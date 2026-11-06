@@ -431,13 +431,17 @@ no longer has; and `InputSource` in
   (`one` or `many`), `inputs` and `outputs` (each a list of `SchemaColumn`, `[]` by
   default), and the read-only `columns`, its inputs then its outputs, which every reader
   of a table's columns whatever their block takes; `own_inputs` and `own_outputs` are a
-  block's columns but the identity Haute gives it, `typed_inputs` its own inputs but the
-  index, and a table holding a typed input is an input table (`has_inputs`), one holding
-  an output of its own an output table (`has_outputs`).
+  block's columns but the identity Haute gives it (the index among them, so a file writes
+  it), `typed_inputs` its own inputs but the index and `priced_outputs` its own outputs
+  but the index, and a table holding a typed input is an input table (`has_inputs`), one
+  holding a priced output an output table (`has_outputs`), and one of outputs alone
+  (`outputs_alone`) holds a priced output and no typed input; the view's `typedInputs`,
+  `pricedOutputs`, `hasInputs`, `hasOutputs` and `outputsAlone` (`quoteIdentity.ts`) are
+  the same rules, so the index never makes a table an output table on either side.
   Its after-validator `_check_keys` refuses, naming the table and column: an `index` or a
   `key` on a one-row table; a many-row table without exactly one index; the index in the
   other block, among the outputs while the table is not one of outputs alone, or among the
-  inputs while it is (`outputs_alone`: holding outputs of its own and no typed input); a
+  inputs while it is (`outputs_alone`: holding a priced output, an output of its own but the index, and no typed input); a
   `key` on an input, on an output of an input table, or on the index. Its property `index`
   is the index column, or None for a one-row table. The index is found by its flag,
   wherever it stands in its block: the editor keeps it first after the identity, and
@@ -1046,9 +1050,9 @@ no longer has; and `InputSource` in
     `withIndexAsNeeded` gives every many-row table its index (`createIndexColumn`,
     `row_number`), keeps an index it has under its name, first after the identity in the
     block it belongs to (`outputsAlone`, as the server's `outputs_alone`: the outputs of a
-    table holding outputs of its own and no typed input, `typedInputs`; else the inputs),
-    moving it between the blocks as the table gains or loses its typed inputs or its last
-    output of its own, takes it from a table of one row, with what shows it, and clears
+    table holding a priced output, `pricedOutputs`, and no typed input, `typedInputs`; else
+    the inputs), moving it between the blocks as the table gains or loses its typed inputs
+    or its last priced output, takes it from a table of one row, with what shows it, and clears
     the outputs' `key` of an input table, the index's `key` and every `key` of a one-row
     table; `withIdentityPlaced`
     (`frontend/src/utils/quoteIdentity.ts`) then moves the identity to the head of the
@@ -2705,12 +2709,18 @@ no longer has; and `InputSource` in
   counted and in a row-for-each table, and a table of outputs alone kept by its index in
   the pricing's order. `frontend/src/utils/__tests__/workbenchForm.test.ts` covers
   adding a column to each block, moving one between blocks (its input-only settings, its
-  key and its sample values as the scenario says), the index given and taken as a
-  many-row table gains its first column of its own, loses its last or changes rows, and
-  keys cleared as a table gains inputs; the last typed input moved to the outputs taking
-  the index, renamed, to the head of the outputs after the identity, no input side and
-  the key toggles offered on every output but the index, and an input added moving it
-  back;
+  key and its sample values as the scenario says), the index given as a table switches
+  to many rows, an empty one included, and taken as it switches to one row, and keys
+  cleared as a table gains inputs; the last typed input moved to the outputs taking the
+  index, renamed, to the head of the outputs after the identity, no input side and the
+  key toggles offered on every output but the index, and an input added moving it back;
+  an empty table switched to many rows, its index renamed, its first output added (the
+  index moving to the outputs) and that output removed: the same renamed index back among
+  the inputs with the identity, neither port (`tablePorts` empty); and
+  `tests/test_workbench_form.py` holds `priced_outputs`, `has_outputs` and
+  `outputs_alone` on that table at each step, the index never an output of its own for
+  them, and `tests/test_quote_store_schema.py` its primary key the identity with the
+  renamed index at each step;
   `frontend/src/utils/__tests__/sheetValues.test.ts` covers an input table's
   outputs lined up by key when the answer comes in another order, two tables of
   outputs alone keyed alike whose answers come in other orders lined up in one Table with

@@ -362,7 +362,8 @@ Out of scope:
 
   Every many-row table has exactly one index, `row_number` until renamed, an Integer
   numbering its rows within a quote from 1, straight after the quote's identity: among the
-  outputs of a table of outputs alone (one holding outputs of its own and no typed input),
+  outputs of a table of outputs alone (one holding outputs of its own, the index aside, and
+  no typed input),
   numbered in the order pricing gives its rows, and among the inputs of any other, an
   input table's numbered as the sheets' grids number the rows, blank rows counted (a table
   holding no column of its own yet, as one just switched to many rows, has its index among
@@ -877,7 +878,7 @@ Out of scope:
   editor gives a table its index, in the same edit, as it switches to many rows; moves it,
   its name kept, to the head of the outputs after the identity as a table holding outputs
   loses its last typed input, and back to the inputs as it gains one or loses its last
-  output of its own; and takes it away, with what shows it, as the table switches to one
+  output but the index; and takes it away, with what shows it, as the table switches to one
   row. A table gaining its first input loses its outputs' keys, and switching a
   table to one row clears them; switching it to many rows clears its columns' defaults.
   Removing a column or a table a sheet shows, a
