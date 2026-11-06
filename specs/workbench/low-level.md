@@ -5,6 +5,11 @@
 Schema maintenance uses one comparison and migration planner. The review workflow below
 exposes its structured results; it never parses SQL text or executes DDL.
 
+The schema review UI stays in the lazy workbench, with its response validation in the
+workbench validator module. Its measured production bundle is 1,786.1 KiB gzip, with
+293.9 KiB initially loaded. The aggregate allowance is 1,788 KiB; the initial 300 KiB,
+single-chunk 650 KiB and chart-vendor 205 KiB limits stay unchanged.
+
 | File | Responsibility |
 |---|---|
 | `frontend/src/utils/sheetRowAlignment.ts` | `inputRowLayout` maps shared display rows to each input table's original records by index, retaining duplicate and blank rows; Table edits and Chart values use these maps. |
