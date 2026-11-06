@@ -2523,8 +2523,9 @@ Out of scope:
   matched by its name, so renaming the index renames the column, its values and the
   table's primary key kept, its old name free for a new column, and a plan never adds an
   index beside the key column it keeps; a rename of the index onto a name another of its
-  table's columns holds, as a swap of two names makes, is refused, and so is a column added
-  under the name a refused rename keeps; a type change as the
+  table's columns holds, as a swap of two names makes, is refused with every change of the
+  table until it is resolved, so no column the swap moved is retyped, and a column added
+  under the name a refused rename keeps is refused; a type change as the
   engine's ALTER in place, with a note that a value which does not convert stops it, and on
   SQLite, which cannot change a column's type, a note alone; a change of a table's rows as
   a note of what the table needs, and a column moved between a table's inputs and outputs

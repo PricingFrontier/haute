@@ -670,30 +670,40 @@ def test_an_index_renamed_onto_another_columns_name_is_refused_changing_nothing(
         {
             "name": "vehicles",
             "rows": "many",
-            "inputs": [_index("row_number"), column("item_number", "int")],
+            "inputs": [_index("row_number"), column("amount", "float")],
         }
     )
-    # The two names swapped: whose values each name should hold is not the SQL's to guess.
+    # The two names swapped, a Decimal's among them, and a column added beside: whose values
+    # each name should hold is not the SQL's to guess, and nothing of the table changes, so no
+    # column is retyped either.
     swapped = form(
         {
             "name": "vehicles",
             "rows": "many",
-            "inputs": [_index("item_number"), column("row_number", "int")],
+            "inputs": [_index("amount"), column("row_number", "float"), column("seats", "int")],
         }
     )
     store.script(store.sql(base))
-    _quote_with_two_vehicles(store, "row_number", "item_number")
+    store.run(
+        "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, archived, "
+        "created_date, created_by, modified_date, modified_by, quote_version, saved_at, saved_by) "
+        "VALUES ('A-1', 1, 'draft', 'ana', 0, '2026-10-30', 'ana', '2026-10-30', 'ana', 1, "
+        "'2026-10-30 09:00:00', 'ana')",
+        "INSERT INTO vehicles (quote_reference, quote_option, row_number, amount) "
+        "VALUES ('A-1', 1, 1, 7.25), ('A-1', 1, 2, 8.5)",
+    )
 
     plan = offline_plan(base, swapped)
     assert plan.steps == ()
     assert plan.refusals == (
-        "the index of vehicles, row_number, renamed item_number, takes the name of its column "
-        "item_number: rename that column to a name of its own first, or drop it",
+        "the index of vehicles, row_number, renamed amount, takes the name of its column "
+        "amount: rename that column to a name of its own first, or drop it; nothing else of "
+        "the table changes until then",
     )
     store.script(store.sql(swapped, base))
-    assert store.read("SELECT row_number, item_number FROM vehicles ORDER BY row_number") == [
-        (1, 7),
-        (2, 8),
+    assert store.read("SELECT row_number, amount FROM vehicles ORDER BY row_number") == [
+        (1, 7.25),
+        (2, 8.5),
     ]
 
 

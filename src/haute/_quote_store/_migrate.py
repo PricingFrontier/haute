@@ -258,8 +258,9 @@ def _plan_columns(
     # name: renamed, it is the earlier index under its new name, a rename keeping its values
     # and the table's key, never a column added beside the one that keys the table, and the
     # earlier index's name is free for a column of the form's own. Its new name taken by
-    # another of the earlier columns, as a swap of two names makes it, is refused: whose
-    # values each name should hold is not the SQL's to guess.
+    # another of the earlier columns, as a swap of two names makes it, is refused with every
+    # change of the table: whose values each name should hold is not the SQL's to guess, and
+    # matching the rest by name would retype the columns the swap moved.
     index = next((column for column in table["columns"] if column.get("index")), None)
     earlier = next((column for column in before["columns"] if column.get("index")), None)
     if index is not None and earlier is not None and index["key"] != earlier["key"]:
@@ -268,18 +269,16 @@ def _plan_columns(
             refusals.append(
                 f"the index of {table['name']}, {earlier['name']}, renamed {index['name']}, takes "
                 f"the name of its column {taken['name']}: rename that column to a name of its "
-                "own first, or drop it"
+                "own first, or drop it; nothing else of the table changes until then"
             )
-        else:
-            paired = {**earlier, "key": index["key"]}
-            old = {key: column for key, column in old.items() if column is not earlier}
-            old[index["key"]] = paired
-            before = {
-                **before,
-                "columns": [
-                    paired if column is earlier else column for column in before["columns"]
-                ],
-            }
+            return list(before["columns"])
+        paired = {**earlier, "key": index["key"]}
+        old = {key: column for key, column in old.items() if column is not earlier}
+        old[index["key"]] = paired
+        before = {
+            **before,
+            "columns": [paired if column is earlier else column for column in before["columns"]],
+        }
     # The names this table's removed columns still hold, since the SQL drops none: no column of
     # the form may take one, added or renamed.
     removed_names = {
