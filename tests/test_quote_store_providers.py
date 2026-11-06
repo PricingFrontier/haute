@@ -597,12 +597,10 @@ def test_a_renamed_index_renames_its_column_keeping_its_values_and_the_tables_ke
     base, renamed = form(before), form(after)
     store.script(store.sql(base))
     other, first, second = values
-    store.run(
-        "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, archived, "
-        "created_date, created_by, modified_date, modified_by, quote_version, saved_at, saved_by) "
-        "VALUES ('A-1', 1, 'draft', 'ana', 0, '2026-10-30', 'ana', '2026-10-30', 'ana', 1, "
-        "'2026-10-30 09:00:00', 'ana')",
-        f"INSERT INTO vehicles (quote_reference, quote_option, row_number, {other}) "
+    _a_quote_holding(
+        store,
+        base,
+        f"(quote_reference, quote_option, row_number, {other}) "
         f"VALUES ('A-1', 1, 1, {first}), ('A-1', 1, 2, {second})",
     )
 
@@ -617,13 +615,23 @@ def test_a_renamed_index_renames_its_column_keeping_its_values_and_the_tables_ke
     ).close()
 
 
-def _quote_with_two_vehicles(store: Target, index: str, other: str) -> None:
-    store.run(
-        "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, archived, "
-        "created_date, created_by, modified_date, modified_by, quote_version, saved_at, saved_by) "
-        "VALUES ('A-1', 1, 'draft', 'ana', 0, '2026-10-30', 'ana', '2026-10-30', 'ana', 1, "
-        "'2026-10-30 09:00:00', 'ana')",
-        f"INSERT INTO vehicles (quote_reference, quote_option, {index}, {other}) "
+def _a_quote_holding(store: Target, base: FormSpec, vehicles: str) -> None:
+    """Quote A-1 made through the app's own book, so its quote_details row is the app's on
+    every engine, then *vehicles*, its rows, written with plain SQL."""
+    with open_book(
+        store.url, base, environment=TEST, haute_version="1", sign_in=store.sign_in
+    ) as book:
+        book.create(
+            operation="operation-0001", actor="ana", values={}, at=book.now(), reference="A-1"
+        )
+    store.run(f"INSERT INTO vehicles {vehicles}")
+
+
+def _quote_with_two_vehicles(store: Target, base: FormSpec, index: str, other: str) -> None:
+    _a_quote_holding(
+        store,
+        base,
+        f"(quote_reference, quote_option, {index}, {other}) "
         "VALUES ('A-1', 1, 1, 7), ('A-1', 1, 2, 8)",
     )
 
@@ -646,7 +654,7 @@ def test_an_index_renamed_its_old_name_given_a_new_column_is_a_rename_and_an_add
         }
     )
     store.script(store.sql(base))
-    _quote_with_two_vehicles(store, "row_number", "seats")
+    _quote_with_two_vehicles(store, base, "row_number", "seats")
 
     # The index paired first: its old name is free for the new column, added after the rename.
     plan = offline_plan(base, reused)
@@ -684,12 +692,10 @@ def test_an_index_renamed_onto_another_columns_name_is_refused_changing_nothing(
         }
     )
     store.script(store.sql(base))
-    store.run(
-        "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, archived, "
-        "created_date, created_by, modified_date, modified_by, quote_version, saved_at, saved_by) "
-        "VALUES ('A-1', 1, 'draft', 'ana', 0, '2026-10-30', 'ana', '2026-10-30', 'ana', 1, "
-        "'2026-10-30 09:00:00', 'ana')",
-        "INSERT INTO vehicles (quote_reference, quote_option, row_number, amount) "
+    _a_quote_holding(
+        store,
+        base,
+        "(quote_reference, quote_option, row_number, amount) "
         "VALUES ('A-1', 1, 1, 7.25), ('A-1', 1, 2, 8.5)",
     )
 
