@@ -489,6 +489,12 @@ def test_a_numbered_index_holds_the_rows_number_as_its_type_holds_it() -> None:
         ),
         pytest.param(column("no", "int", index="typed"), [20, 3, 100], [1, 0, 2], id="typed int"),
         pytest.param(
+            column("no", "int", index="typed"),
+            ["manual-z", 10, "manual-a", 2],
+            [3, 1, 0, 2],
+            id="typed Integer, hand-edited text follows numbers in its original order",
+        ),
+        pytest.param(
             column(
                 "peril",
                 index="values",
