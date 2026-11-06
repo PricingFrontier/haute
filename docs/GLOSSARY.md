@@ -84,7 +84,7 @@ Two naming notes:
 
 - **key** — a column of a many-row schema table that, with the table's other keys, says which row is which; how a Table's output rows are matched to its input rows.
 
-- **index** — a many-row schema table's row-number column, `row_number` until renamed, an Integer numbering the rows from 1.
+- **index** — a many-row schema table's one row-number column, `row_number` until renamed, an Integer numbering the rows from 1 that Haute fills; also each row's number in the saved quotes.
 
 - **the sample** — the quote typed into the sheets in Preview: saved with the sheets, priced live, and what the Workbench Input's previews run on, read as a request is read.
 

@@ -138,13 +138,16 @@ own key. A table you add has them at once. A table with both headings shows them
 Outputs too, on grey, with a many-row table's key column after them, since every row the
 pricing returns carries them.
 
-After them, on grey, a many-row table shows **table_index**, the number the saved quotes
-give each of its rows (see [Reading quotes with SQL](#reading-quotes-with-sql)); it is not
-one of your columns, and the pipeline never sees it.
+After them, a many-row table has its **index**, `row_number` until you rename it: Haute
+adds it as the table gets its first column and numbers the rows from 1, nobody types it,
+and the pipeline never fills it. In a table with inputs it is the first input and numbers
+the rows as the sheets do; in a table of outputs alone it is the first output and numbers
+the rows in the order pricing returns them. It is also each row's number in the saved
+quotes (see [Reading quotes with SQL](#reading-quotes-with-sql)), so name it for what the
+rows are, such as `item_number`; its label is what the sheets show.
 
 A many-row table's **key** says which of its rows is which, and the underwriter never types
-it. A table with inputs is keyed by its **index**, `row_number` until you rename it, which
-Haute adds as the table gets its first input and which numbers the rows from 1; or, when a
+it. A table with inputs is keyed by its index; or, when a
 column gives the table a row for each of its allowed values (below), by that column. Its
 outputs belong to the row holding the same key, so the pipeline must carry the key column
 through to the rows it returns: pricing fails, saying which table and rows, when a row it
@@ -200,8 +203,10 @@ typed, and a value typed equal to its default counts as the default.
   the sample, which only an input has. Drag a table by the grip beside its name, or press
   Alt+Up and Alt+Down in its name, to move the table. A grip shows while the pointer is over
   its row.
-- The index comes first under Inputs, after **quote_reference** and **quote_option**. It is
-  an Integer, cannot be moved or removed, and goes when the table loses its last other input
+- The index comes first under Inputs, or under Outputs in a table of outputs alone, after
+  **quote_reference** and **quote_option**, and moves between them as the table gains or
+  loses its inputs. It is an Integer that can be renamed but not moved or removed, is never
+  a key in a table of outputs alone, and goes when the table loses its last other column
   or switches to one row.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
   an identifier, unique whatever its case, and its pipeline names, the name with `_input`
@@ -950,8 +955,8 @@ schema's columns under their names, its inputs and then its outputs, so an item 
 price are one row: an Integer a 64-bit integer, a Decimal a
 double-precision number, Text text, True/false a boolean and a Date a date. Every row holds
 the quote's **quote_reference** and **quote_option**, and a row of a many-row table its
-**table_index** too: in a table with inputs its row's place on its sheet, blank rows counted
-(the index's number), and in a table of outputs alone its place in the pricing. Read an
+index too, under the name you gave it: in a table with inputs its row's place on its
+sheet, blank rows counted, and in a table of outputs alone its place in the pricing. Read an
 item and its price from one table, and join tables on **quote_reference** and
 **quote_option**:
 
@@ -981,8 +986,9 @@ when.
 
 Names reach the database as the schema writes them, so the schema refuses a name the
 database could not keep: two columns of a table whose names differ only in case, a name
-longer than 63 characters, a name starting `haute_`, a column named `table_index` in a
-many-row table, and a table named starting `sqlite_`.
+longer than 63 characters, a name starting `haute_`, and a table named starting
+`sqlite_`. Renaming a column, the index included, renames the database's column; Compare's
+SQL carries the rename.
 
 ### The Quotes page
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
