@@ -145,6 +145,58 @@ describe("Compare", () => {
     expect(screen.getByRole("region", { name: "Database details for equipment.item" })).toHaveTextContent("the database has no equipment")
   })
 
+  it("explains a separate manual repair alongside a planned field type change", async () => {
+    const repair = "policy.year takes no null, so an empty year could not be saved"
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
+      differences: [...COMPARED.differences, { table: "policy", column: "year", kind: "null", message: repair }],
+      changes: [{ kind: "retype column", table: "policy", column: "year", was: null, disposition: "sql", description: "Change TEXT to Integer. Review value conversion before running.", quotes: 3 }],
+      manual: [repair],
+    })
+    open()
+    choose("dev")
+    await waitFor(() => expect(screen.getByTestId("database-mark-policy-year")).toHaveTextContent("Needs attention"))
+    openField("year")
+    const details = screen.getByRole("region", { name: "Database details for policy.year" })
+    expect(details).toHaveTextContent("Change TEXT to Integer")
+    expect(details).toHaveTextContent(repair)
+  })
+
+  it("keeps database-only fields visible during a manual table reshape", async () => {
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
+      differences: [{ table: "policy", column: null, kind: "rows", message: "the database holds many rows per quote" }],
+      changes: [{ kind: "reshape table", table: "policy", column: null, was: null, disposition: "manual", description: "Rebuild the table and migrate its rows.", quotes: 4 }],
+    })
+    open()
+    choose("dev")
+    const table = screen.getByRole("region", { name: "Table policy" })
+    fireEvent.click(await within(table).findByText(/Database details/))
+    const details = screen.getByRole("region", { name: "Database details for policy" })
+    expect(details).toHaveTextContent("region")
+    expect(details).toHaveTextContent("legacy")
+    expect(details).toHaveTextContent("3 quotes")
+    expect(details).toHaveTextContent(/manual migration/)
+    expect(details).not.toHaveTextContent("survive saves")
+  })
+
+  it("allows removal of an old rename when its target name now belongs to an index", async () => {
+    useStoreCompareStore.getState().pair({ table: "equipment", column: "row_number", was: "old_field" })
+    vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, _tables, renames) => ({ ...COMPARED,
+      blocked: renames.length ? ["Cannot rename equipment.old_field to row_number."] : [],
+    }))
+    open()
+    choose("dev")
+    const table = screen.getByRole("region", { name: "Table equipment" })
+    const status = within(table).getByRole("button", { name: "Database status of row_number" })
+    await waitFor(() => expect(status).toHaveTextContent("Needs attention"))
+    fireEvent.click(status)
+    const details = screen.getByRole("region", { name: "Database details for equipment.row_number" })
+    expect(within(details).queryByRole("combobox")).not.toBeInTheDocument()
+    fireEvent.click(within(details).getByRole("button", { name: "Remove rename choice" }))
+    await waitFor(() => expect(status).toHaveTextContent("New column"))
+    expect(useStoreCompareStore.getState().renames).toEqual([])
+    expect(within(details).queryByRole("alert")).not.toBeInTheDocument()
+  })
+
   it("replaces field summaries with current database status and restores them when deselected", async () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, differences: [], extras: [], changes: [], matches: true })
     open()

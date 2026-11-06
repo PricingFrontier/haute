@@ -807,6 +807,10 @@ Out of scope:
     or accept a new pairing. The ordinary label/rules controls remain available. Without
     a database selected the normal configuration summaries return. Database-only fields
     are listed in a collapsed section inside their table, with their retention behavior.
+    They remain listed during a manual table reshape, where preserving their values is
+    part of that migration. A planned field change never hides a separate manual repair
+    on the same field. A stale rename remains removable if its target name is reused by
+    an index, even though index columns do not offer new rename choices.
     There is no standing comparison summary above the schema tables.
 
     Export SQL opens a concise summary for the selected environment: short action rows,
