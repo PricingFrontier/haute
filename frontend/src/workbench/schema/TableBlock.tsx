@@ -1,10 +1,9 @@
 /**
- * A schema table's block: its name and rows, its problems, its columns under two headings,
- * Inputs and Outputs, each with Add column once populated, or Add inputs/Add outputs before
- * its first column, a column dragged within its block or into
- * the other, or moved within its block; those the quote store keeps in it, locked, under its
- * own columns; and, at the head of a table's Outputs, what the Workbench Output carries ahead
- * of them (specs/workbench).
+ * A schema table's block: its name and rows, its problems, its shared Keys followed by
+ * Inputs and Outputs, each with Add column even while empty in Build. Ordinary columns
+ * move within their block or into the other; keys keep
+ * their canonical placement while shown once. Those the quote store keeps in it are locked,
+ * under its own columns (specs/workbench).
  */
 import { ChevronDown, ChevronRight, Lock, Trash2 } from "lucide-react"
 import { useRef, useState, type DragEvent, type KeyboardEvent } from "react"
@@ -16,11 +15,11 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { type Block, hasInputs, hasOutputs, identityCount, isIdentityColumn, tableColumns, tableIndex } from "../../utils/quoteIdentity"
+import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
 import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { DatabaseMark } from "../StoreCompare"
-import { CarriedColumnRow, ColumnRow, StoreColumnRow } from "./ColumnRow"
+import { ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
@@ -132,22 +131,45 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
     onBlur: () => setAdded(null),
   })
   const count = tableColumns(table).length
-  // The quote's identity leads the inputs, or the outputs of a table with none.
-  const identity = identityCount(table)
-  // What the Workbench Output's table of a table with both blocks carries ahead of its
-  // outputs (`_output_side`): the quote's identity, then a many-row table's index.
-  const indexColumn = tableIndex(table)
-  const outputLead = hasInputs(table) && hasOutputs(table) ? [...table.inputs.slice(0, identity), ...(indexColumn === null ? [] : [indexColumn])] : []
   // Haute's quote_details table keeps its structure, and in Preview every table keeps it.
   const locked = isQuoteDetails(table)
   const fixed = locked || readOnly
   const filtering = matched !== null
+  // Keep each row's canonical block and position for edits and drag targets, even though
+  // the shared keys are displayed separately from the two blocks.
+  const columns = BLOCKS.flatMap(({ block: own }) => table[own].map((column, at) => ({
+    column, own, at,
+    isKey: column.index !== null || isIdentityColumn(table, column) || (locked && IDENTITY_NAMES.has(column.name)),
+  }))).filter(({ column }) => matched === null || matched.has(column.name))
+  const keys = columns.filter(({ isKey }) => isKey)
 
   const insertAt = (into: Block, at: number) => {
     const column = createSchemaColumn(currentForm(), table.name, into, at)
     change((f) => addSchemaColumn(f, table.name, into, column, at))
     setAdded(columnKey(table.name, column.name))
   }
+
+  const renderColumn = ({ column, own, at, isKey }: (typeof columns)[number]) => (
+    <ColumnRow
+      key={column.name}
+      form={form}
+      table={table}
+      column={column}
+      block={own}
+      index={at}
+      refocus={refocus}
+      fresh={fresh(columnKey(table.name, column.name))}
+      open={details === columnKey(table.name, column.name)}
+      onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
+      onInsertAfter={() => {
+        if (!isKey) insertAt(own, at + 1)
+      }}
+      locked={locked}
+      readOnly={readOnly}
+      filtering={filtering}
+      drag={fixed || filtering || isKey ? undefined : dragColumn(own, at)}
+    />
+  )
 
   // Alt+Up and Alt+Down in its name move the table; its name field takes the focus again in its new place.
   const onNameKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -244,49 +266,33 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
       </div>
       {!collapsed && (
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
+          {keys.length > 0 && (
+            <div role="group" aria-label={`${table.name} Keys`} className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-baseline gap-x-2 px-1 text-[11px]">
+                <p className="font-semibold" style={{ color: "var(--text-accent)" }}>Keys</p>
+                <p style={{ color: "var(--text-muted)" }}>Shared by inputs and outputs</p>
+              </div>
+              {keys.map(renderColumn)}
+            </div>
+          )}
           {BLOCKS.map(({ block: own, title, color }) => {
-            const columns = table[own].map((column, at) => ({ column, at })).filter(({ column }) => matched === null || matched.has(column.name))
-            const populated = own === "inputs" ? hasInputs(table) : hasOutputs(table)
+            const ordinary = columns.filter((entry) => entry.own === own && !entry.isKey)
             // quote_details holds inputs alone and is given no column; in Preview or while searched nothing is added.
             const adding = !fixed && !filtering
-            if (columns.length === 0 && !adding) return null
+            if (ordinary.length === 0 && !adding) return null
             const landed = crossing(own) && landing?.block === own && landing.at === table[own].length
             return (
-              <div key={own} role={populated ? "group" : undefined} aria-label={populated ? `${table.name} ${title}` : undefined} className="flex flex-col gap-1">
-                {populated && (
-                  <p
-                    className="px-1 text-[11px] font-semibold"
-                    style={{ color, boxShadow: landed ? `0 2px 0 0 var(--accent)` : undefined }}
-                    onDragOver={carryOver(own, table[own].length)}
-                    onDrop={carryIn(own, table[own].length)}
-                    data-drop-target={landed ? "true" : undefined}
-                  >
-                    {title}
-                  </p>
-                )}
-                {own === "outputs" && !filtering && outputLead.map((column) => <CarriedColumnRow key={column.name} column={column} isIndex={!isIdentityColumn(table, column)} />)}
-                {columns.map(({ column, at }) => (
-                  <ColumnRow
-                    key={column.name}
-                    form={form}
-                    table={table}
-                    column={column}
-                    block={own}
-                    index={at}
-                    refocus={refocus}
-                    fresh={fresh(columnKey(table.name, column.name))}
-                    open={details === columnKey(table.name, column.name)}
-                    onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
-                    onInsertAfter={() => {
-                      if (populated) insertAt(own, at + 1)
-                    }}
-                    locked={locked}
-                    readOnly={readOnly}
-                    filtering={filtering}
-                    // The quote's identity and the index stay where they are, moving only with the blocks.
-                    drag={fixed || filtering || column.index || isIdentityColumn(table, column) ? undefined : dragColumn(own, at)}
-                  />
-                ))}
+              <div key={own} role="group" aria-label={`${table.name} ${title}`} className="flex flex-col gap-1">
+                <p
+                  className="px-1 text-[11px] font-semibold"
+                  style={{ color, boxShadow: landed ? `0 2px 0 0 var(--accent)` : undefined }}
+                  onDragOver={carryOver(own, table[own].length)}
+                  onDrop={carryIn(own, table[own].length)}
+                  data-drop-target={landed ? "true" : undefined}
+                >
+                  {title}
+                </p>
+                {ordinary.map(renderColumn)}
                 {adding && (
                   <QuietAction
                     onClick={() => insertAt(own, table[own].length)}
@@ -296,7 +302,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
                     style={{ boxShadow: landed ? "0 2px 0 0 var(--accent)" : undefined }}
                     className="self-start"
                   >
-                    {populated ? "Add column" : `Add ${own}`}
+                    Add column
                   </QuietAction>
                 )}
               </div>

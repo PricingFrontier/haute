@@ -1,8 +1,7 @@
 /**
- * A schema column's row in its block, the table's inputs or its outputs: its type and name, its
+ * A schema column's row under Keys, Inputs or Outputs: its type and name, its
  * summary to their right, dragged or moved within its block or into the other, removed and opened
- * for its details; the row of a column the quote store keeps; and the row of a column the
- * Workbench Output's table carries ahead of a table's outputs (specs/workbench).
+ * for its details; and the row of a column the quote store keeps (specs/workbench).
  */
 import { SlidersHorizontal, X, type LucideIcon } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
@@ -45,7 +44,7 @@ const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: Lu
 /** The types the index can be given: Integer and Text alone. */
 const INDEX_TYPE_OPTIONS = COLUMN_TYPE_OPTIONS.filter((option) => INDEX_TYPES.has(option.value))
 
-/** Key name cells share a light blue border, including their read-only output copies. */
+/** Key name cells share a light blue border. */
 const KEY_BORDER = "1px solid var(--text-accent)"
 
 interface ColumnRowProps {
@@ -216,7 +215,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
 }
 
 /** A row that is not one of the block's columns, its type marker and its name on grey, with nothing to change. */
-function LockedRow({ name, kind, title, testId, keyColumn }: { name: string; kind: { label: string; icon: LucideIcon; color: string }; title: string; testId: string; keyColumn: boolean }) {
+function LockedRow({ name, kind, title, testId }: { name: string; kind: { label: string; icon: LucideIcon; color: string }; title: string; testId: string }) {
   const { label, icon: Icon, color } = kind
   return (
     <div className="flex items-stretch gap-1 rounded" data-testid={testId}>
@@ -226,7 +225,7 @@ function LockedRow({ name, kind, title, testId, keyColumn }: { name: string; kin
       </span>
       <span
         className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
-        style={{ ...LOCKED_FIELD_STYLE, border: keyColumn ? KEY_BORDER : LOCKED_FIELD_STYLE.border, color: "var(--text-muted)" }}
+        style={{ ...LOCKED_FIELD_STYLE, color: "var(--text-muted)" }}
         title={title}
       >
         {name}
@@ -237,21 +236,5 @@ function LockedRow({ name, kind, title, testId, keyColumn }: { name: string; kin
 
 /** A column the quote store keeps in a table that the form does not: what it holds and its name, locked, with nothing to change. */
 export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
-  return <LockedRow name={column.name} kind={KEPT_KINDS[column.kind]} title="Kept by the quote store" testId={`schema-store-column-${column.name}`} keyColumn={false} />
-}
-
-/**
- * A column the Workbench Output's table carries ahead of its outputs, shown at their head:
- * the quote's identity, or a many-row table's index; its inputs' own, with nothing to change.
- */
-export function CarriedColumnRow({ column, isIndex }: { column: SchemaColumn; isIndex: boolean }) {
-  return (
-    <LockedRow
-      name={column.name}
-      kind={COLUMN_TYPES[column.type]}
-      title={isIndex ? "The table's index, on every row the pricing returns" : "Haute's column, on every row the pricing returns"}
-      testId={`schema-output-carried-${column.name}`}
-      keyColumn
-    />
-  )
+  return <LockedRow name={column.name} kind={KEPT_KINDS[column.kind]} title="Kept by the quote store" testId={`schema-store-column-${column.name}`} />
 }

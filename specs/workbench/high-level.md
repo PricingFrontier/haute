@@ -835,25 +835,31 @@ Out of scope:
     form that cannot be read is reported in the view, with what is wrong and a way to try
     again.
 - **The schema editor.** The form's tables, each with its name, its rows (One row per quote,
-  or Many rows) and its columns under two headings, Inputs (sent to the pricing engine) and
-  Outputs (returned by it), each populated block with its own Add column. A block with
-  no ordinary columns offers Add inputs or Add outputs instead of a heading and Add column.
-  A new table therefore offers both choices, with its automatic identity and any index
-  visible above them without an Inputs heading. Choosing a side adds its first Text
-  column, focuses its name, and places the keys with the chosen block in one undo step;
-  the other side stays available through its Add action. Removing or moving away the last
-  ordinary column restores that side's Add action. The automatic keys alone never enable
-  a block, and Enter in an index name only commits while neither side has ordinary columns.
-  An Add inputs or Add outputs action also accepts a column dragged from the other side,
-  using the same move operation as dropping on a populated heading. Preview and search
-  offer none of these Add actions, and quote_details keeps its fixed Inputs block.
+  or Many rows) and its columns under three headings: Keys (shared by inputs and outputs),
+  Inputs (sent to the pricing engine) and Outputs (returned by it). Keys comes first and
+  shows the quote's identity and, for a many-row table, its index once, with no copies in
+  Inputs or Outputs. This includes the identity in `quote_details`. The index keeps its
+  existing editing controls; Keys offers no Add action or column reordering. While building,
+  every editable table shows both Inputs and Outputs headings, each with Add column even
+  when empty. There are no separate Add inputs or Add outputs actions. A new table has
+  both empty blocks, with its automatic identity and any index visible under Keys above
+  them. Add column in an empty block adds its first Text column, focuses its name, and
+  places the keys with the chosen canonical block in one undo step. A block with no
+  ordinary columns is semantically absent: it creates no input or output port, and its
+  heading and Add column alone do not change the form. Removing or moving away the last
+  ordinary column makes that side absent again while leaving its heading and Add column
+  available. The automatic keys alone never enable a block, and Enter in an index name
+  only commits. Either block's heading and Add column accept a column dragged from the
+  other side, including into an empty block, using the same move operation. Preview and
+  search offer no Add actions and hide blocks with no visible ordinary fields;
+  quote_details keeps its fixed Inputs block.
   This changes only the presentation: the canonical schema still places an empty table's
   keys among its inputs until the existing column operations place them with its blocks.
   Each column has its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, and its name. The name cells of `quote_reference`, `quote_option` and the table's
-  index have a thin light blue outline, including the identity in `quote_details` and
-  the keys repeated under Outputs. The index is identified by its role, so a renamed
+  index have a thin light blue outline, including the identity in `quote_details`.
+  The index is identified by its role, so a renamed
   index keeps the outline and an ordinary column named `table_index` does not acquire it.
   Ordinary fields and store-only columns keep their normal border. The outline remains
   in Preview, preserves the existing fills, and leaves keyboard focus visible; there is
@@ -946,18 +952,18 @@ Out of scope:
   above it; its columns take labels, groups and help, and
   those the underwriter types their defaults, placeholders and rules, while the columns
   the app sets take a label, a group and help alone. Every other table's `quote_reference` and
-  `quote_option` lead its inputs, or its outputs while it has no inputs of its own, locked,
+  `quote_option` appear in Keys, locked,
   their names on a grey lighter than the pane's: not
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
-  format; a table added has them at once, under Inputs, and an index goes after them. A
-  table with both blocks shows them at the head of its Outputs too, on that grey, followed in
-  a many-row table by its index, as the Workbench Output's table of it carries them: rows of
-  what the pricing returns, not columns of the block, with nothing to change. The sheets are
+  format; a table added has them at once, under Keys, and an index goes after them. Their
+  canonical placement and their presence in the pricing request and response are unchanged.
+  The sheets are
   never offered them: a component's fields, a Show when's columns and a
   Chart's rows leave them out. Under each table's own columns are those the quote store
   keeps in it that the form does not, quote_details' own, each with what it holds and its
-  name on that grey. Nothing of them changes, and a search shows none of them, nor the
-  Outputs' identity and index. A column's Label and rules button and its Remove always show,
+  name on that grey. Nothing of them changes, and a search shows none of them. Keys follows
+  the same name-or-label search as other fields and is hidden when none of its columns match;
+  it remains visible in Preview with its controls read only. A column's Label and rules button and its Remove always show,
   but the index's Remove, which it has none of.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
