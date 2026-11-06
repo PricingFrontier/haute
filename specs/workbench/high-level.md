@@ -1181,6 +1181,12 @@ Out of scope:
   line up by value, and two whose indexes take their values from the same params file's
   column and are of one type line up by value. A Chart's fields and the column labelling its rows line up the
   same way, the first of them deciding, and one-row tables all line up with one another.
+  With several input tables, the first table's rows give the display order; an index
+  found only in a later table adds a row at the end. A missing row shows blank cells,
+  never another row's values. Typing into such a cell creates that table's row with the
+  displayed index. Edits and row deletion target the underlying rows by this mapping.
+  Unkeyed rows remain editable placeholders, shared in order while their indexes are blank;
+  repeated indexes remain separate rows and keep their validation errors.
   With no table of the component's kind in the schema, the panel says so and offers the
   schema. A Table's and a Collection's panel puts these in two panes under its header, as
   Haute's node panel puts an Explore node's in panes: **Config**, the data it shows, its
@@ -1470,7 +1476,7 @@ Out of scope:
   like it: of a table with inputs, its answer's row holding the grid row's index value; of
   a table of outputs alone, the row whose index holds what the server typed for the grid
   row's, found through the first many-row input table the grid shows whose index lines up
-  with it (below);
+  with it and which has a record on that display row (below);
   a grid row with nothing typed, or none keyed like it, shows a dash, and a price for other
   values is dimmed on every row. A Table of output columns alone has no typed rows to line
   up with: it shows a row for each of its first field's table's answer, another

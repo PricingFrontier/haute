@@ -2,9 +2,7 @@
 import { useId } from "react"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, INPUT_STYLE, ValidatedTextField } from "../../components/form"
-import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isOutputColumn, tableColumns } from "../../utils/quoteIdentity"
-import { setRowPerValue } from "../../utils/workbenchForm"
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../../panels/explore/pivotNumberFormat"
 import { isNumeric } from "../columnTypes"
@@ -16,9 +14,11 @@ const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, 
 /**
  * A column's label, group and help; whether it needs a value before a quote is marked final,
  * in an input or an output table; in an input table, what a new quote starts with in it (in a
- * one-row table), what an empty cell shows, the other rules its value must meet and, in a
- * many-row table while it has allowed values, whether the table has a row for each; for a
- * number, how the sheets show it. The boxes hold no hint text: the docs say what each is.
+ * one-row table), what an empty cell shows and the other rules its value must meet; for a
+ * number, how the sheets show it. The index, always filled, takes no Required, range or
+ * default: a typed one among the inputs takes what an empty cell shows, an index of values
+ * the allowed values that give its rows, and an Integer one other than numbered its format.
+ * The boxes hold no hint text: the docs say what each is.
  */
 export function ColumnDetails({
   table,
@@ -34,11 +34,15 @@ export function ColumnDetails({
   readOnly: boolean
   set: (patch: Partial<SchemaColumn>) => void
 }) {
-  const change = useWorkbenchFormStore((s) => s.change)
-  // The index takes no rules, nor does a column the app sets: nothing is typed into them.
-  const input = !isOutputColumn(table, column) && !column.index && !managed
+  // The index takes no rules, nor does a column the app sets.
+  const input = !isOutputColumn(table, column) && column.index === null && !managed
   // Required, which marking a quote final checks, an output takes too.
-  const requirable = !column.index && !managed
+  const requirable = column.index === null && !managed
+  const takesText = column.type !== "bool" && column.type !== "date"
+  // What an empty cell shows: an input's, a typed index's among them.
+  const placeholder = takesText && (input || (column.index === "typed" && !isOutputColumn(table, column)))
+  // Allowed values: an input's, and an index of values', which give its rows.
+  const allowed = takesText && (input || column.index === "values")
   // The groups the table's columns are in, offered as one is typed.
   const groupsId = useId()
   const groups = [...new Set(tableColumns(table).map((other) => other.group).filter((group) => group !== ""))]
@@ -83,7 +87,7 @@ export function ColumnDetails({
         className={`${COMPACT_FIELD_CLASS} w-full`}
         style={INPUT_STYLE}
       />
-      {isNumeric(column.type) && !column.index && (
+      {isNumeric(column.type) && column.index !== "numbered" && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Format</span>
           <div className="flex items-center gap-1.5">
@@ -130,7 +134,7 @@ export function ColumnDetails({
           <DefaultField column={column} set={set} />
         </>
       )}
-      {input && column.type !== "bool" && column.type !== "date" && (
+      {placeholder && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Placeholder</span>
           <CommittedTextField
@@ -148,50 +152,36 @@ export function ColumnDetails({
           <ConfigCheckbox label={`${column.name} is required`} checked={column.required} onChange={(required) => set({ required })} />
         </>
       )}
-      {input && (
+      {input && isNumeric(column.type) && (
         <>
-          {isNumeric(column.type) && (
-            <>
-              <span style={{ color: "var(--text-muted)" }}>Range</span>
-              <div className="flex items-center gap-1.5">
-                <ValidatedTextField
-                  dataTestId={`schema-column-${column.name}-min`}
-                  value={column.min === null ? "" : String(column.min)}
-                  onCommit={(text) => set({ min: bound(text) })}
-                  validate={numberOrNothing}
-                  containerClassName="w-24"
-                  className={`${COMPACT_FIELD_CLASS} w-full`}
-                  style={INPUT_STYLE}
-                />
-                <span style={{ color: "var(--text-muted)" }}>to</span>
-                <ValidatedTextField
-                  dataTestId={`schema-column-${column.name}-max`}
-                  value={column.max === null ? "" : String(column.max)}
-                  onCommit={(text) => set({ max: bound(text) })}
-                  validate={numberOrNothing}
-                  containerClassName="w-24"
-                  className={`${COMPACT_FIELD_CLASS} w-full`}
-                  style={INPUT_STYLE}
-                />
-              </div>
-            </>
-          )}
-          {column.type !== "bool" && column.type !== "date" && (
-            <>
-              <span style={{ color: "var(--text-muted)" }}>Allowed</span>
-              <AllowedField tableId={table.name} column={column} set={set} />
-            </>
-          )}
-          {table.rows === "many" && column.type !== "bool" && column.type !== "date" && column.options.length > 0 && (
-            <>
-              <span style={{ color: "var(--text-muted)" }}>Rows</span>
-              <ConfigCheckbox
-                label="A row for each"
-                checked={column.row_per_value}
-                onChange={(on) => change((f) => setRowPerValue(f, table.name, column.name, on))}
-              />
-            </>
-          )}
+          <span style={{ color: "var(--text-muted)" }}>Range</span>
+          <div className="flex items-center gap-1.5">
+            <ValidatedTextField
+              dataTestId={`schema-column-${column.name}-min`}
+              value={column.min === null ? "" : String(column.min)}
+              onCommit={(text) => set({ min: bound(text) })}
+              validate={numberOrNothing}
+              containerClassName="w-24"
+              className={`${COMPACT_FIELD_CLASS} w-full`}
+              style={INPUT_STYLE}
+            />
+            <span style={{ color: "var(--text-muted)" }}>to</span>
+            <ValidatedTextField
+              dataTestId={`schema-column-${column.name}-max`}
+              value={column.max === null ? "" : String(column.max)}
+              onCommit={(text) => set({ max: bound(text) })}
+              validate={numberOrNothing}
+              containerClassName="w-24"
+              className={`${COMPACT_FIELD_CLASS} w-full`}
+              style={INPUT_STYLE}
+            />
+          </div>
+        </>
+      )}
+      {allowed && (
+        <>
+          <span style={{ color: "var(--text-muted)" }}>Allowed</span>
+          <AllowedField tableId={table.name} column={column} set={set} />
         </>
       )}
     </fieldset>

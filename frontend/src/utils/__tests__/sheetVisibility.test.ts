@@ -20,6 +20,7 @@ import {
   newRowTest,
   onPrice,
   quoteEligible,
+  quoteIndexProblems,
   quotedSchema,
   sheetVisibility,
   takesNothingTyped,
@@ -102,14 +103,12 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
   name,
   type: "str",
   label: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -141,7 +140,7 @@ const items: SchemaTable = { name: "items", rows: "many", outputs: [], inputs: [
 /** `items` with an index, which nothing is typed into, and a number column, which a total takes. */
 const valued: SchemaTable = {
   ...items,
-  inputs: [column("row", { type: "int", index: true }), ...items.inputs, column("value", { type: "float" })],
+  inputs: [column("row", { type: "int", index: "numbered" }), ...items.inputs, column("value", { type: "float" })],
 }
 const premium: SchemaTable = { name: "premium", rows: "one", inputs: [], outputs: [column("premium", { type: "float" })] }
 
@@ -296,9 +295,13 @@ describe("quoteEligible", () => {
     ),
   }
 
-  it.each(typedQuotes.cases)("says whether $name is typed as the server does", ({ values, locked, typed }) => {
+  it.each(typedQuotes.cases)("says whether $name is typed as the server does", (testCase) => {
+    const { values, locked, typed } = testCase
     const appSet = new Set(locked.map(([table, columnName]) => columnKey(table, columnName)))
     expect(quoteEligible(form, values as RowsByTable, appSet)).toBe(typed)
+    if ("index_problems" in testCase) {
+      expect(quoteIndexProblems(form, values as RowsByTable).map((problem) => problem.message)).toEqual(testCase.index_problems)
+    }
   })
 })
 
@@ -513,11 +516,11 @@ describe("a table of both blocks", () => {
   const equipment: SchemaTable = {
     name: "equipment",
     rows: "many",
-    inputs: [column("row_number", { type: "int", index: true }), column("item"), column("value", { type: "float" }), column("cap", { type: "float" })],
+    inputs: [column("row_number", { type: "int", index: "numbered" }), column("item"), column("value", { type: "float" }), column("cap", { type: "float" })],
     outputs: [column("premium", { type: "float" }), column("referral")],
   }
   const cover: SchemaTable = { name: "cover", rows: "one", inputs: [column("limit", { type: "float" })], outputs: [column("rate", { type: "float" })] }
-  const breakdown: SchemaTable = { name: "breakdown", rows: "many", inputs: [], outputs: [column("peril", { key: true }), column("share", { type: "float" })] }
+  const breakdown: SchemaTable = { name: "breakdown", rows: "many", inputs: [], outputs: [column("peril", { index: "typed" }), column("share", { type: "float" })] }
   const form = formOf([page("p", [])], [cover, equipment, breakdown])
   const test = (columnName: string, op: RowTest["op"] = "filled", values: string[] = []): RowTest => ({ column: columnName, op, values, field: null, days: 0 })
 
@@ -741,7 +744,7 @@ describe("the editor's steps", () => {
       where: [{ column: "item", op: "equals", values: [], field: null, days: 0 }],
     })
     // A many-row table's index takes no typing, so it is never tested.
-    const numbered = { ...items, inputs: [column("row", { type: "int", index: true })] }
+    const numbered = { ...items, inputs: [column("row", { type: "int", index: "numbered" })] }
     expect(newCondition(formOf([page("p", [])], [numbered, premium, { ...policy, inputs: [] }]))).toBeNull()
   })
 

@@ -1,40 +1,57 @@
 /**
- * A many-row table's index and key as the schema editor marks them (specs/workbench).
- * Neither is a control: the operations give a table its index, move it between its blocks
- * and take it away (`withIndexAsNeeded`), and a table with inputs is keyed by the column
- * giving its rows or by its index (`keyTable`), which no underwriter types; a table of
- * outputs alone's index is never a key.
+ * A many-row table's index as the schema editor offers it (specs/workbench): how it gets its
+ * values, chosen beside it. The operations give a table its index, numbered, move it between
+ * its blocks and take it away (`withIndexAsNeeded`); nothing marks it, or any column, as a
+ * key, every table's key being the quote's identity and a many-row table's its index too.
  */
-import { KeyRound } from "lucide-react"
 import type { SchemaColumn } from "../../api/types"
-import { COLUMN_TYPES } from "../columnTypes"
-import { MARKER_STYLE } from "./schemaText"
+import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
+import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import type { IndexKind } from "../../utils/quoteIdentity"
+import { setIndexKind } from "../../utils/workbenchForm"
 
-/** The index's type marker, a fixed Integer: each row's number, from 1. */
-export function IndexMarker() {
-  const { icon: Icon, color } = COLUMN_TYPES.int
-  return (
-    <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title="Integer: each row's number, from 1">
-      <Icon size={12} aria-hidden="true" />
-    </span>
-  )
-}
+/** The ways an index gets its values, in the order the choice offers them. */
+const INDEX_KINDS: ReadonlyArray<{ value: IndexKind; label: string }> = [
+  { value: "numbered", label: "Numbered" },
+  { value: "typed", label: "Typed" },
+  { value: "values", label: "A row for each value" },
+]
 
 /**
- * Whether a column of a many-row table keys it, blue on the key of a table with inputs (its
- * index, or the column giving its rows) and grey on every other column, a table of outputs
- * alone's index among them.
+ * How the index `column` of the table `tableId` gets its values: Numbered, Typed or A row
+ * for each value (`setIndexKind`), each choice one edit. Choosing a row for each value calls
+ * `onValues`, so the index's details open on the allowed values that give its rows.
  */
-export function KeyMark({ column, isKey }: { column: SchemaColumn; isKey: boolean }) {
-  const title = !isKey ? "Not the key" : column.index ? "The key: each row's number" : "The key: a row for each value"
+export function IndexKindSelect({
+  tableId,
+  column,
+  disabled,
+  onValues,
+}: {
+  tableId: string
+  column: SchemaColumn
+  disabled: boolean
+  onValues: () => void
+}) {
+  const change = useWorkbenchFormStore((s) => s.change)
   return (
-    <span className="flex size-5 shrink-0 items-center justify-center self-center" title={title}>
-      <KeyRound
-        size={12}
-        role="img"
-        aria-label={isKey ? `${column.name} is the key` : `${column.name} is not the key`}
-        style={{ color: isKey ? "var(--accent)" : "var(--text-muted)" }}
-      />
-    </span>
+    <select
+      aria-label={`How ${column.name} gets its values`}
+      value={column.index ?? undefined}
+      disabled={disabled}
+      onChange={(e) => {
+        const kind = e.target.value as IndexKind
+        change((f) => setIndexKind(f, tableId, kind))
+        if (kind === "values") onValues()
+      }}
+      className={`${COMPACT_FIELD_CLASS} shrink-0 self-center`}
+      style={INPUT_STYLE}
+    >
+      {INDEX_KINDS.map(({ value, label }) => (
+        <option key={value} value={value}>
+          {label}
+        </option>
+      ))}
+    </select>
   )
 }

@@ -4881,12 +4881,12 @@ class TestBuildSignature:
                     ],
                 },
                 {
-                    # A side the node is given without a key: what MLflow lets through is
-                    # the matter here, not the rows' keys.
+                    # The side carries the table's Text index, as a Workbench Input does.
                     "name": "items",
                     "side": "input",
                     "port": "items_input",
                     "rows": "many",
+                    "key": "item_id",
                     "columns": [
                         {"name": "item_id", "type": "str"},
                         {"name": "value", "type": "float"},
@@ -4952,14 +4952,17 @@ class TestBuildSignature:
         # left unread; a declared column of mixed types is refused at its row.
         mixed = {
             "policy": {"limit": 1},
-            "items": [{"value": 1.0, "note": "x"}, {"value": 2.0, "note": 42}],
+            "items": [
+                {"item_id": "A", "value": 1.0, "note": "x"},
+                {"item_id": "B", "value": 2.0, "note": 42},
+            ],
         }
         assert served(mixed)["items"] == [
-            {"item_id": None, "value": 1.0},
-            {"item_id": None, "value": 2.0},
+            {"item_id": "A", "value": 1.0},
+            {"item_id": "B", "value": 2.0},
         ]
         with pytest.raises(WorkbenchInputError, match="items\\[1\\].value is 'x', not 'float'"):
-            served({"items": [{"value": 1.0}, {"value": "x"}]})
+            served({"items": [{"item_id": "A", "value": 1.0}, {"item_id": "B", "value": "x"}]})
         # A frame built by hand, numpy's values inside its tables, reads as JSON's would.
         by_hand = pd.DataFrame(
             {

@@ -28,6 +28,8 @@ def project(tmp_path: Path) -> Path:
     root = tmp_path / "p"
     enable(root)
     (root / PARAMS).mkdir(parents=True, exist_ok=True)
+    # The form's perils give a row for each value of their params file.
+    (root / PARAMS / "perils.csv").write_bytes(b"peril\nFire\nFlood\n")
     return root
 
 
@@ -134,4 +136,51 @@ def test_a_params_file_that_cannot_give_the_values_is_refused(
         states.write_bytes(csv)
 
     with pytest.raises(ParamFileError, match=named):
+        read_form_document(config(project))
+
+
+def test_a_table_of_outputs_alones_index_of_values_is_written_by_reference_and_read_from_its_file(
+    project: Path,
+) -> None:
+    (project / PARAMS / "products.csv").write_bytes(b"product\nFire\nFlood\n")
+    form = copy.deepcopy(FORM)
+    source = {"file": "products.csv", "column": "product"}
+    form["schema"]["tables"].append(
+        {
+            "name": "products",
+            "rows": "many",
+            "outputs": [
+                {
+                    "name": "product",
+                    "type": "str",
+                    "options": ["Fire"],
+                    "options_source": source,
+                    "index": "values",
+                },
+                {"name": "premium", "type": "float"},
+            ],
+        }
+    )
+
+    files = _write(project, form)
+
+    written = json.loads(files["schema/products.json"])
+    assert written["outputs"][0] == {
+        "name": "product",
+        "type": "str",
+        "options_source": source,
+        "index": "values",
+    }
+    spec = read_form_document(config(project)).spec
+    products = next(t for t in spec.data_schema.tables if t.name == "products")
+    assert products.index is not None and products.index.options == ["Fire", "Flood"]
+
+
+def test_a_text_index_of_values_longer_than_a_key_is_refused_as_its_file_is_read(
+    project: Path,
+) -> None:
+    _write(project, copy.deepcopy(FORM))
+    (project / PARAMS / "perils.csv").write_bytes(b"peril\nFire\n" + b"x" * 256 + b"\n")
+
+    with pytest.raises(ParamFileError, match="longer than the 255 characters a Text index holds"):
         read_form_document(config(project))

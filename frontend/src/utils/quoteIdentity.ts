@@ -97,14 +97,12 @@ export const blankColumn = (name: string, type: SchemaColumn["type"]): SchemaCol
   type,
   label: "",
   group: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   default_value: "",
@@ -148,7 +146,18 @@ export const ownInputs = (table: Blocks): SchemaColumn[] => table.inputs.slice(b
 /** A table's outputs but the quote's identity Haute leads them with, a table of outputs alone's index among them (`own_outputs`). */
 export const ownOutputs = (table: Blocks): SchemaColumn[] => table.outputs.slice(blockIdentity(table.name, table.outputs))
 
-/** A table's own inputs but the index: what an underwriter types into it (`typed_inputs`). */
+/** How a many-row table's index gets its values: numbered by Haute, typed, or a row for each of its allowed values (`IndexKind`). */
+export type IndexKind = NonNullable<SchemaColumn["index"]>
+
+/**
+ * A table's index, the one column after the quote's identity keying a many-row table's rows,
+ * whatever its kind: among its outputs while it is a table of outputs alone, else among its
+ * inputs; null for a one-row table (`SchemaTable.index`).
+ */
+export const tableIndex = (table: Pick<SchemaTable, "inputs" | "outputs">): SchemaColumn | null =>
+  tableColumns(table).find((column) => column.index !== null) ?? null
+
+/** A table's own inputs but the index, whatever its kind: what an underwriter types into it beside the rows' keys (`typed_inputs`). */
 export const typedInputs = (table: Blocks): SchemaColumn[] => ownInputs(table).filter((column) => !column.index)
 
 /** A table's own outputs but the index: what pricing fills (`priced_outputs`). */

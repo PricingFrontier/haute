@@ -23,7 +23,7 @@ import { apiErrorMessage, apiErrorRawDetail, apiErrorRefused, isStaleRevision } 
 import type { FormSpec, WorkbenchAppQuote, WorkbenchAppQuoteActivityResponse, WorkbenchAppQuoteResponse } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
-import { basisOf, quoteEligible } from "../utils/sheetVisibility"
+import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { latest } from "../utils/latest"
 import {
   appDetails,
@@ -315,9 +315,10 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
 
   /**
    * The values on the sheets as a save sends them, saved as `to` says, or null when there is
-   * nothing to save. Its operation key is the held write's when that saves the same, its
-   * `basis`: the values, what they are saved as, and priced or not (the server prices them
-   * again), so a retry writes once.
+   * nothing to save, or while a typed index has a problem (`quoteIndexProblems`), which the
+   * server refuses and the Save button names. Its operation key is the held write's when
+   * that saves the same, its `basis`: the values, what they are saved as, and priced or not
+   * (the server prices them again), so a retry writes once.
    */
   const prepare = (to: string, write: (body: QuoteWrite["body"]) => QuoteWrite): PendingWrite | null => {
     const { form, revision, release } = useAppStore.getState()
@@ -325,7 +326,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     const preview = useWorkbenchPreviewStore.getState()
     const values = preview.quote
     // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
-    if (!quoteEligible(form, values, preview.locked)) return null
+    if (!quoteEligible(form, values, preview.locked) || quoteIndexProblems(form, values).length > 0) return null
     const price = preview.price
     const shown = price !== null && price.basis === basisOf(form, values) ? (price.tables as QuoteWrite["body"]["shown"]) : null
     const basis = `${valuesKey(values)}|${to}|${shown === null ? "unpriced" : "priced"}`

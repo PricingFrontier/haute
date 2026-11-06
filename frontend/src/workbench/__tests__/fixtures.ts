@@ -1,8 +1,8 @@
 /**
  * A form for the sheet tests (specs/workbench): policy details (one row) shown by a
- * Collection, equipment (many rows of inputs, keyed by its index, row_number) shown by a
- * Table, and premiums (many rows of outputs alone, keyed by row_number like it), in the one
- * section of one sheet, with a second sheet whose one section is empty.
+ * Collection, equipment (many rows of inputs, keyed by its numbered index, row_number) shown
+ * by a Table, and premiums (many rows of outputs alone, keyed by its own numbered index), in
+ * the one section of one sheet, with a second sheet whose one section is empty.
  */
 import { vi } from "vitest"
 import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
@@ -66,14 +66,12 @@ export const column = (name: string, overrides: Partial<SchemaColumn> = {}): Sch
   name,
   type: "str",
   label: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -93,8 +91,8 @@ export const table = (name: string, overrides: Partial<SchemaTable> = {}): Schem
   ...overrides,
 })
 
-/** A many-row input table's index, `row_number` unless named otherwise: each row's number, from 1. */
-export const indexColumn = (name = "row_number"): SchemaColumn => column(name, { type: "int", index: true })
+/** A many-row table's index, `row_number` unless named otherwise, numbered unless said otherwise: each row's number, from 1. */
+export const indexColumn = (name = "row_number", kind: SchemaColumn["index"] = "numbered"): SchemaColumn => column(name, { type: "int", index: kind })
 
 /** Haute's quote_details table, as every form holds it, its columns labelled by name in `labels`. */
 export const detailsTable = (labels: Record<string, string> = {}): SchemaTable =>
@@ -115,7 +113,7 @@ export const sheetForm = (): FormSpec => ({
       }),
       table("premiums", {
         rows: "many",
-        outputs: [column("row_number", { type: "int", key: true }), column("premium", { type: "float" })],
+        outputs: [indexColumn(), column("premium", { type: "float" })],
       }),
     ],
   },
@@ -143,9 +141,9 @@ export const sheetForm = (): FormSpec => ({
 })
 
 /**
- * `sheetForm` with a coverage table given a row for each of its perils, AOP and EQ, and two
- * Tables of it: its perils' shown only while the policy's year is 1900, so hidden, and its
- * limits' always shown.
+ * `sheetForm` with a coverage table whose index, peril, gives it a row for each of its perils,
+ * AOP and EQ, and two Tables of it: its perils' shown only while the policy's year is 1900, so
+ * hidden, and its limits' always shown.
  */
 export const hiddenPerilsForm = (): FormSpec => {
   const form = sheetForm()
@@ -153,8 +151,7 @@ export const hiddenPerilsForm = (): FormSpec => {
     table("coverage", {
       rows: "many",
       inputs: [
-        indexColumn(),
-        column("peril", { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }),
+        column("peril", { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, index: "values" }),
         column("limit", { type: "float" }),
       ],
     }),

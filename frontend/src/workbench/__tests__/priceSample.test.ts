@@ -28,7 +28,9 @@ const side = (name: string, which: WorkbenchTable["side"], rows: WorkbenchTable[
   rows,
   columns,
   key: null,
-  null_key: null, index: null,
+  null_key: null,
+  index_kind: null,
+  index_values: [],
 })
 const policy = side("policy_details", "input", "one", [{ name: "exposure", type: "float" }])
 const pricing = side("pricing", "output", "one", [{ name: "premium", type: "float" }])

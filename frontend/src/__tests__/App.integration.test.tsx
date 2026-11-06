@@ -3340,7 +3340,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [], store_columns: {} }))
   })
 
-  const policyTables = [{ name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null, index: null }]
+  const policyTables = [{ name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null, index_kind: null, index_values: [] }]
   /**
    * A pipeline whose Workbench Input feeds `priced` from its policy table, which the
    * workbench's tables hold when the editor first fetches them.

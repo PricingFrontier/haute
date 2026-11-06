@@ -44,6 +44,15 @@ from haute._workbench_config import WorkbenchError
 #: The column types of the Quote Input's tables (``haute._api_input_schema.ColumnType``).
 ColumnType = Literal["int", "float", "str", "bool", "date"]
 
+#: How a many-row table's index gets its values: Haute numbers the rows 1, 2, 3; the
+#: underwriter types them (in a table of outputs alone, the pricing gives them); or the table
+#: has a row for each of the index's allowed values, read from a params file's column.
+IndexKind = Literal["numbered", "typed", "values"]
+
+#: The longest a Text index's value is: the store keys a many-row table's rows by its index,
+#: and SQL Server keys no row by longer text.
+INDEX_TEXT_LENGTH = 255
+
 #: How a number column shows: the Explore pivot's number formats
 #: (``haute._explore_pivots.PIVOT_NUMBER_FORMATS``).
 ColumnFormat = Literal[
@@ -761,8 +770,6 @@ class SchemaColumn(_Strict):
     label: str = ""
     #: The group it is in, a name it shares with the columns grouped with it; empty for none.
     group: str = ""
-    #: In a many-row table, part of what says which row is which.
-    key: bool = False
     # The rules an input column's value must meet; an output column takes `required` alone,
     # which marking a quote final checks, and ignores the rest.
     required: bool = False
@@ -773,12 +780,12 @@ class SchemaColumn(_Strict):
     #: in when picked or refreshed, and read again when the underwriter app is built. None
     #: while they are typed.
     options_source: OptionsSource | None = None
-    #: In a many-row input table, the table has a row for each of ``options``, in their
-    #: order, each holding its value here (``haute._workbench_tables.preset_rows``).
-    row_per_value: bool = False
-    #: The table's index: each row's number, from 1, as the rows stand. Nothing is typed
-    #: into it, and it is an Integer.
-    index: bool = False
+    #: How the table's index gets its values, which marks the column as its index; None for
+    #: any other column. The index is the key of a many-row table's rows after the quote's
+    #: identity, an Integer or Text. An index of ``values`` gives the table a row for each of
+    #: ``options``, in their order, each holding its value here
+    #: (``haute._workbench_tables.preset_rows``).
+    index: IndexKind | None = None
     #: Shown beside its label when the pointer rests on it; empty shows nothing.
     help: str = ""
     #: What an empty input cell shows, in place of the blank.
@@ -824,7 +831,8 @@ class SchemaTable(_Strict):
 
     @property
     def typed_inputs(self) -> list[SchemaColumn]:
-        """Its own inputs but the index: what an underwriter types into it."""
+        """Its own inputs but the index: what an underwriter types into it beside the rows'
+        keys, which decides whether it is an input table, whatever the index's kind."""
         return [column for column in self.own_inputs if not column.index]
 
     @property
@@ -851,9 +859,9 @@ class SchemaTable(_Strict):
 
     @property
     def index(self) -> SchemaColumn | None:
-        """Its index, the column numbering its rows within a quote, which every many-row
-        table has: among its outputs while it is a table of outputs alone, else among its
-        inputs. None for a one-row table."""
+        """Its index, the column keying its rows within a quote, which every many-row table
+        has: among its outputs while it is a table of outputs alone, else among its inputs.
+        None for a one-row table."""
         return next((column for column in self.columns if column.index), None)
 
     def is_output(self, column: str) -> bool:
@@ -862,9 +870,10 @@ class SchemaTable(_Strict):
 
     @model_validator(mode="after")
     def _check_keys(self) -> SchemaTable:
-        """A table's key is never typed: every many-row table has exactly one index, among
-        its outputs while it is a table of outputs alone and among its inputs otherwise, and
-        a ``key`` marks only an output of a many-row table with no inputs, never its index."""
+        """A table's key is the quote's identity and, in a many-row table, its index: every
+        many-row table has exactly one, among its outputs while it is a table of outputs
+        alone and among its inputs otherwise, an Integer or Text that holds only what its
+        kind takes."""
         indexes = [column for column in self.columns if column.index]
         if self.rows == "one":
             for column in indexes:
@@ -884,17 +893,46 @@ class SchemaTable(_Strict):
                     f"{self.name}.{column.name} is an index among the inputs of a table of "
                     "outputs alone, whose index is among its outputs"
                 )
-            if column.key:
-                raise ValueError(f"{self.name}.{column.name} is the index, which is never a key")
-        for column in self.columns:
-            if column.key and (
-                self.rows == "one" or self.has_inputs or not self.is_output(column.name)
-            ):
-                raise ValueError(
-                    f"{self.name}.{column.name} is a key, which only an output of a table of "
-                    "outputs alone with many rows can be"
-                )
+            _check_index(f"{self.name}.{column.name}", column)
         return self
+
+
+def _check_index(where: str, column: SchemaColumn) -> None:
+    """Refuse an index that is not an Integer or Text, or that holds what its kind does not
+    take: it is always filled, so it takes no Required, range or default; only a typed one
+    shows a placeholder, and only one of values holds allowed values, which give its rows."""
+    if column.type not in ("int", "str"):
+        raise ValueError(f"{where} is the index, an Integer or Text")
+    held = [
+        name
+        for name, given in (
+            ("required", column.required),
+            ("a range", column.min is not None or column.max is not None),
+            ("a default", column.default_value not in ("", False)),
+        )
+        if given
+    ]
+    if held:
+        raise ValueError(f"{where} is the index, which takes no {', '.join(held)}")
+    if column.placeholder and column.index != "typed":
+        raise ValueError(f"{where} is an index nobody types, so it shows no placeholder")
+    if column.index != "values":
+        if column.options or column.options_source is not None:
+            raise ValueError(
+                f"{where} is an index without a row for each value, so it takes no allowed values"
+            )
+        return
+    if column.options_source is None or not column.options:
+        raise ValueError(
+            f"{where} gives a row for each value, so it needs allowed values from a params file"
+        )
+    if column.type == "str":
+        long = [value for value in column.options if len(value) > INDEX_TEXT_LENGTH]
+        if long:
+            raise ValueError(
+                f"{where}'s allowed value {long[0][:40]!r} is longer than {INDEX_TEXT_LENGTH} "
+                "characters, the longest a Text index holds: correct the params file"
+            )
 
 
 class FormSchema(_Strict):
@@ -1175,7 +1213,7 @@ def _check_quote_details(table: SchemaTable) -> None:
         table.outputs
         or table.rows != "one"
         or shape != list(QUOTE_DETAILS_COLUMNS)
-        or any(column.key or column.index or column.row_per_value for column in table.columns)
+        or any(column.index for column in table.columns)
     ):
         raise ValueError(
             f"{QUOTE_DETAILS_NAME} is Haute's: a one-row input table of the columns "

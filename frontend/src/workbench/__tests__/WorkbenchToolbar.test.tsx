@@ -50,7 +50,7 @@ const form: FormSpec = {
         name: "policy",
         rows: "one",
         outputs: [],
-        inputs: [{ name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], options_source: null, row_per_value: false, index: false, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
+        inputs: [{ name: "limit", type: "str", label: "", required: false, min: null, max: null, options: [], options_source: null, index: null, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
       },
     ],
   },

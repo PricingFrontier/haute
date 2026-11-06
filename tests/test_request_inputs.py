@@ -413,8 +413,9 @@ def _column(name: str, kind: str) -> dict[str, Any]:
 
 
 # A one-row and a many-row table's input sides, as the workbench supplies them, each its
-# port ``<table>_input``. The many-row side is given no key here, so its rows read as the
-# Quote Input reads the same quote's; a form keys it by its index (FORM_TABLES).
+# port ``<table>_input``. The many-row side is keyed by a typed index, item_id, each row its
+# own, so its rows read as the Quote Input reads the same quote's; a form numbers its index
+# (FORM_TABLES).
 _TABLES: list[dict[str, Any]] = [
     {
         "name": "policy",
@@ -429,6 +430,8 @@ _TABLES: list[dict[str, Any]] = [
         "port": "items_input",
         "rows": "many",
         "columns": [_column("item_id", "str"), _column("value", "float")],
+        "key": "item_id",
+        "null_key": "1",
     },
 ]
 
@@ -625,8 +628,9 @@ def test_a_workbench_input_reads_a_request_as_a_quote_input_does(
     assert parsed.data.config.get("tables") == (loaded if reads_a_file else None)
     assert ("path" in parsed.data.config) is reads_a_file
 
-    # In the editor, a Quote Input reads its sample and a Workbench Input yields nulls.
-    names = ["NY", "A", "B", "2.0"] if reads_a_file else [None, None, "2.0"]
+    # In the editor, a Quote Input reads its sample and a Workbench Input yields nulls, its
+    # items' index holding the null quote's stand-in.
+    names = ["NY", "A", "B", "2.0"] if reads_a_file else [None, "1", "2.0"]
     assert_frame_equal(_preview(graph, "listed"), pl.DataFrame({"name": names}))
     assert [
         (node_id, kind)
@@ -803,11 +807,12 @@ def test_deploy_derives_a_workbench_inputs_request_schema(project: Path) -> None
         "policy": str(pl.Struct({"state": pl.String, "limit": pl.Int64})),
         "items": str(pl.List(pl.Struct({"item_id": pl.String, "value": pl.Float64}))),
     }
-    # The dry run reads one quote with nothing filled in: one row of nulls per table.
+    # The dry run reads one quote with nothing filled in: one row of nulls per table, a
+    # many-row table's index holding the null quote's stand-in.
     assert _read_sample_row(graph, ["workbench_input"]).to_dicts() == [
         {
             "policy": {"state": None, "limit": None},
-            "items": [{"item_id": None, "value": None}],
+            "items": [{"item_id": "1", "value": None}],
         }
     ]
     empty = graph.model_copy(deep=True)
@@ -987,11 +992,12 @@ def test_a_workbench_input_previews_its_sample(project: Path) -> None:
     frames = workbench_table_frames(partial)
     assert frames["policy_input"].collect().to_dicts() == [{"state": None, "limit": 1000}]
     assert frames["items_input"].collect().to_dicts() == []
-    # No sample, or nothing typed in it: one row of nulls per table, the null quote.
+    # No sample, or nothing typed in it: one row of nulls per table, the null quote, a
+    # many-row table's index its stand-in.
     for sample in ({}, None):
         blank = workbench_table_frames({"tables": _TABLES, "sample": sample})
         assert blank["policy_input"].collect().to_dicts() == [{"state": None, "limit": None}]
-        assert blank["items_input"].collect().to_dicts() == [{"item_id": None, "value": None}]
+        assert blank["items_input"].collect().to_dicts() == [{"item_id": "1", "value": None}]
 
 
 @pytest.mark.parametrize(
@@ -1094,14 +1100,16 @@ def test_a_value_that_is_not_of_its_columns_type_is_refused_naming_it(
                 "side": "input",
                 "port": "t_input",
                 "rows": "many",
-                "columns": [_column("v", kind)],
+                "columns": [_column("k", "int"), _column("v", kind)],
+                "key": "k",
+                "null_key": 1,
             }
         ],
         owner="Workbench Input",
     )
 
     with pytest.raises(WorkbenchInputError, match=re.escape(f"t[0].v is {shown}, not {kind!r}")):
-        read_quote(tables, {"t": [{"v": value}]})
+        read_quote(tables, {"t": [{"k": 1, "v": value}]})
 
 
 def test_a_workbench_inputs_table_point_follows_its_sample(project: Path) -> None:

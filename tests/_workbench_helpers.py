@@ -126,7 +126,7 @@ def form_table(
     columns = [_form_column(column) for column in inputs]
     produced = [_form_column(column) for column in outputs]
     if many and index is not None:
-        numbered = {"name": index, "type": "int", "index": True}
+        numbered = {"name": index, "type": "int", "index": "numbered"}
         if produced and not columns:
             produced = [numbered, *produced]
         else:

@@ -10,20 +10,18 @@ import type { ChartThemeTokens } from "../../panels/explore/chartOptions"
 import { chartMessage, hasValues, sheetChartData, sheetChartOptions, type ChartData, type ChartValues } from "../sheetChart"
 import type { PricedRows, RowsByTable } from "../sheetValues"
 import { quotedSchema, sheetVisibility } from "../sheetVisibility"
-import { addWidget, BLANK_THEME, COLLECTION_OPTIONS, createWidget, TABLE_OPTIONS, type SampleRow } from "../workbenchForm"
+import { addWidget, BLANK_THEME, COLLECTION_OPTIONS, createWidget, setIndexKind, TABLE_OPTIONS, type SampleRow } from "../workbenchForm"
 
 const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   name,
   type: "str",
   label: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -71,7 +69,7 @@ const motorForm = (): FormSpec => ({
       table("equipment", {
         rows: "many",
         inputs: [
-          column("row_number", { type: "int", index: true }),
+          column("row_number", { type: "int", index: "numbered" }),
           column("item"),
           column("value", pounds),
           column("count", { type: "int" }),
@@ -82,21 +80,21 @@ const motorForm = (): FormSpec => ({
       }),
       table("charges", {
         rows: "many",
-        outputs: [column("row_number", { type: "int", key: true }), column("charge", pounds)],
+        outputs: [column("row_number", { type: "int", index: "typed" }), column("charge", pounds)],
       }),
       table("premiums", {
         rows: "many",
         inputs: [],
-        outputs: [column("item", { key: true }), column("premium", pounds)],
+        outputs: [column("item", { index: "typed" }), column("premium", pounds)],
       }),
       table("fees", {
         rows: "many",
         inputs: [],
-        outputs: [column("item", { key: true }), column("fee", pounds)],
+        outputs: [column("item", { index: "typed" }), column("fee", pounds)],
       }),
       table("vehicles", {
         rows: "many",
-        inputs: [column("vehicle", { type: "int", index: true }), column("reg"), column("value", pounds)],
+        inputs: [column("vehicle", { type: "int", index: "numbered" }), column("reg"), column("value", pounds)],
       }),
     ],
   },
@@ -188,6 +186,47 @@ describe("a Chart of one-row tables", () => {
 })
 
 describe("a Chart of many-row tables", () => {
+  it.each([
+    { type: "str", keys: ["A", "B"], sites: ["B", "A"], categories: ["A", "B"], first: [10, 20], second: [200, 100] },
+    { type: "str", keys: ["A", "B"], sites: ["B", "C"], categories: ["A", "B", "—"], first: [10, 20, null], second: [null, 100, 200] },
+    { type: "int", keys: ["1", "2"], sites: ["02", "01"], categories: ["1", "2"], first: [10, 20], second: [200, 100] },
+    { type: "str", keys: ["", "B"], sites: ["B", "C"], categories: ["—", "B", "—"], first: [10, 20, null], second: [null, 100, 200] },
+    { type: "str", keys: ["B", "B"], sites: ["B", "C"], categories: ["B", "B", "—"], first: [10, 20, null], second: [100, null, 200] },
+  ] as const)("matches input series by their typed indexes: $keys / $sites", ({ type, keys, sites, categories, first, second }) => {
+    const tables = ["a", "b"].map((name) => table(name, {
+      rows: "many",
+      inputs: [column("site", { index: "typed", type }), column("amount", { type: "int" })],
+    }))
+    const { widget } = charted([field("a", "amount"), field("b", "amount")], { category: field("a", "site") })
+    const schema = { tables }
+    const data = sheetChartData(schema, widget, {
+      rows: {
+        a: keys.map((site, index) => ({ site, amount: String((index + 1) * 10) })),
+        b: sites.map((site, index) => ({ site, amount: String((index + 1) * 100) })),
+      },
+      price: null,
+      basis: "now",
+      quoted: schema,
+    })
+    expect(data.categories).toEqual(categories)
+    expect(data.series.map((series) => series.values)).toEqual([first, second])
+  })
+
+  it("matches output-only values on rows supplied only by a later input table", () => {
+    const tables = ["a", "b"].map((name) => table(name, {
+      rows: "many", inputs: [column("site", { index: "typed" }), column("amount", { type: "int" })],
+    }))
+    tables.push(table("o", { rows: "many", outputs: [column("site", { index: "typed" }), column("premium", { type: "int" })] }))
+    const schema = { tables }
+    const { widget } = charted([field("a", "amount"), field("b", "amount"), field("o", "premium")])
+    const data = sheetChartData(schema, widget, {
+      rows: { a: [{ site: "A", amount: "10" }], b: [{ site: "B", amount: "20" }] },
+      price: priced({ o: [{ site: "B", premium: 2 }, { site: "A", premium: 1 }] }, { a: [{ site: "A", amount: 10 }], b: [{ site: "B", amount: 20 }] }),
+      basis: "now", quoted: schema,
+    })
+    expect(data.series.map((series) => series.values)).toEqual([[10, null], [null, 20], [1, 2]])
+  })
+
   // Row 1 holds only a note, which the quote leaves out while cover is not ticked; row 3 nothing at all.
   const equipment: SampleRow[] = [{ item: "Crane", value: "5,000", new: true }, { note: "spare" }, { item: "Drill", value: "lots" }, {}, { item: "Lathe", value: "200" }]
   const typed = [
@@ -205,13 +244,13 @@ describe("a Chart of many-row tables", () => {
   })
 
   it("counts a row typed into any of its input tables keyed alike, the others' values gaps on it", () => {
-    const form = motorForm()
-    form.schema.tables.push(table("cover", { rows: "many", inputs: [column("row_number", { type: "int", index: true }), column("item"), column("excess", pounds)] }))
+    const form = setIndexKind(motorForm(), "equipment", "typed")
+    form.schema.tables.push(table("cover", { rows: "many", inputs: [column("row_number", { type: "int", index: "typed" }), column("item"), column("excess", pounds)] }))
     const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }, motorForm()) as ChartWidget), title: "Chart", fields: [field("equipment", "value"), field("cover", "excess")] }
     const spec = addWidget(form, "s1", widget)
-    // Row 1 is typed into equipment alone, row 2 into cover alone, side by side as a Table's grid has them.
-    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment: [{ item: "Crane", value: "5" }, {}], cover: [{}, { item: "Crane", excess: "250" }] }))
-    expect(data.categories).toEqual(["1", "2"])
+    // Equipment's blank row keeps display position 2; cover's unmatched index adds row 3.
+    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment: [{ row_number: "1", item: "Crane", value: "5" }, {}], cover: [{}, { row_number: "2", item: "Crane", excess: "250" }] }))
+    expect(data.categories).toEqual(["1", "3"])
     expect(valuesOfSeries(data)).toEqual([
       { key: "equipment:value", values: [5, null] },
       { key: "cover:excess", values: [null, 250] },
@@ -220,8 +259,10 @@ describe("a Chart of many-row tables", () => {
 
   it("lines its outputs' rows up with the typed rows by key: a table's own, and another's keyed alike", () => {
     const { spec, widget } = charted([field("equipment", "value"), field("equipment", "premium"), field("charges", "charge")])
+    const shared = setIndexKind(spec, "equipment", "typed")
+    const indexed = equipment.map((row, at) => Object.keys(row).some((name) => name !== "note") ? { ...row, row_number: String(at + 1) } : row)
     const price = priced({ equipment: [{ row_number: 5, premium: 20 }, { row_number: 1, premium: 500 }], charges: [{ row_number: 1, charge: 7 }] }, { equipment: typed })
-    const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment }, price))
+    const data = sheetChartData(shared.schema, widget, valuesOf(shared, { equipment: indexed }, price))
     expect(valuesOfSeries(data)).toEqual([
       { key: "equipment:value", values: [5000, null, 200] },
       { key: "equipment:premium", values: [500, null, 20] },
@@ -482,7 +523,8 @@ describe("a Chart's drawing", () => {
 
   it("formats the value axis in the format its columns share, else compactly", () => {
     expect(draw({}, twoSeries).yAxis[0].axisLabel.formatter?.(1500)).toBe("£1,500.00")
-    expect(draw({}, points).yAxis[0].axisLabel.formatter?.(250000)).toBe("250K")
+    // The browser's locale uses k in en-GB and K in en-US.
+    expect(draw({}, points).yAxis[0].axisLabel.formatter?.(250000)).toMatch(/^250[kK]$/)
     expect(draw({ orientation: "horizontal" }, twoSeries).xAxis[0].axisLabel.formatter?.(1500)).toBe("£1,500.00")
   })
 

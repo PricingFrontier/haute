@@ -3,7 +3,7 @@ import { type CSSProperties, type PointerEvent as ReactPointerEvent } from "reac
 import type { FormSchema } from "../../api/types"
 import { formatValue } from "../../utils/formatValue"
 import { isOutputColumn } from "../../utils/quoteIdentity"
-import { formattedNumber } from "../../utils/sheetValues"
+import { formattedNumber, isTyping } from "../../utils/sheetValues"
 import { columnKey, fieldKey, fieldShowWhen } from "../../utils/sheetVisibility"
 import {
   PLAIN_COLUMN_LOOK,
@@ -20,11 +20,11 @@ import {
 
 export type Found = ShownField["found"]
 
-/** An input of a table that is still in the schema, other than its index. */
+/** An input of a table that is still in the schema, other than a numbered index or an index of values. */
 export type Fillable = NonNullable<Found>
 
-/** Whether an underwriter fills this field in: an input, not the index. */
-export const fillable = (found: Found): boolean => found !== null && !isOutputColumn(found.table, found.column) && !found.column.index
+/** Whether an underwriter fills this field in: an input, a typed index among them, never a numbered index or an index of values, whose values the sheets give. */
+export const fillable = (found: Found): boolean => found !== null && !isOutputColumn(found.table, found.column) && isTyping(found.column)
 
 /** Whether a field is an output, which the pricing engine fills. */
 export const isOutputField = (found: Found): boolean => found !== null && isOutputColumn(found.table, found.column)

@@ -14,9 +14,9 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
-import { BLANK_THEME, COLLECTION_OPTIONS, withSampleCell } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, setIndexKind, withSampleCell } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
-import { hiddenPerilsForm } from "../../workbench/__tests__/fixtures"
+import { hiddenPerilsForm, sheetForm } from "../../workbench/__tests__/fixtures"
 import useDataEpochStore from "../useDataEpochStore"
 import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
@@ -28,8 +28,7 @@ const column = (name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   name,
   type,
   label: "",
-  key: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -42,7 +41,6 @@ const column = (name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
 })
 const policy: SchemaTable = { name: "policy_details", rows: "one", inputs: [column("exposure", "float")], outputs: [] }
 const pricing: SchemaTable = { name: "pricing_output", rows: "one", inputs: [], outputs: [column("model_premium", "float")] }
@@ -125,6 +123,25 @@ describe("useWorkbenchPricingStore", () => {
     const spec = useWorkbenchFormStore.getState().form!
     expect(pricer).toHaveBeenCalledWith(spec, workbenchOf(spec))
     expect(premium()).toEqual({ value: 2000, stale: false })
+    expect(useWorkbenchPricingStore.getState().error).toBeNull()
+  })
+
+  it("blocks a sample with duplicate typed indexes until the offending cell is corrected", async () => {
+    const indexed = setIndexKind(sheetForm(), "equipment", "typed")
+    indexed.sample = { equipment: [{ row_number: "1", item: "Crane" }, { row_number: "1", item: "Truck" }] }
+    useWorkbenchFormStore.setState({ form: indexed })
+    const pricer = vi.fn(() => Promise.resolve(priced(2000)))
+    useWorkbenchPricingStore.getState().setPricer(pricer)
+
+    await useWorkbenchPricingStore.getState().priceNow()
+
+    expect(fetchWorkbenchFormTables).not.toHaveBeenCalled()
+    expect(pricer).not.toHaveBeenCalled()
+    expect(useWorkbenchPricingStore.getState()).toMatchObject({ price: null, error: expect.stringContaining("equipment's rows 1 and 2") })
+
+    useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "equipment", 1, "row_number", "2"))
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(pricer).toHaveBeenCalledOnce()
     expect(useWorkbenchPricingStore.getState().error).toBeNull()
   })
 
@@ -311,9 +328,9 @@ describe("useWorkbenchPricingStore", () => {
       rows: "many",
       columns: [...identity, { name: "item_number", type: "int" }, { name: "final_premium", type: "float" }, { name: "referral", type: "str" }],
       key: "item_number",
-      null_key: null, index: null,
+      null_key: null, index_kind: null, index_values: [],
     }
-    const unkeyed: WorkbenchTable = { name: "pricing_output", side: "output", port: "pricing_output_output", rows: "one", columns: [{ name: "model_premium", type: "float" }], key: null, null_key: null, index: null }
+    const unkeyed: WorkbenchTable = { name: "pricing_output", side: "output", port: "pricing_output_output", rows: "one", columns: [{ name: "model_premium", type: "float" }], key: null, null_key: null, index_kind: null, index_values: [] }
     /** What the server makes of the form: the schedule's typed rows, numbered by its index, and both output sides. */
     const keyedOf = (spec: FormSpec): WorkbenchTablesResponse => ({
       ...workbenchOf(spec),

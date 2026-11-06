@@ -599,7 +599,7 @@ describe("PipelineNode", () => {
   describe("a workbench node's ports, the tables the workbench store fetched", () => {
     /** A table's side, as a fetch gives it: its port is the table's name and its side. */
     const sideOf = (side: "input" | "output") => (name: string, columns: { name: string; type: "int" | "float" | "str" }[] = [{ name: "x", type: "int" }]) =>
-      ({ name, side, port: `${name}_${side}`, rows: "one" as const, columns, key: null, null_key: null, index: null })
+      ({ name, side, port: `${name}_${side}`, rows: "one" as const, columns, key: null, null_key: null, index_kind: null, index_values: [] })
     const table = sideOf("input")
     const response = sideOf("output")
     const fetched = (tables: ReturnType<typeof table>[], responseTables: ReturnType<typeof response>[]) =>

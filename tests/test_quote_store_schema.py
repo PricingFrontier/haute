@@ -19,7 +19,7 @@ from haute._quote_store._schema import (
     store_schema,
     structure,
 )
-from haute._workbench_form import FormSpec, with_quote_details
+from haute._workbench_form import INDEX_TEXT_LENGTH, FormSpec, with_quote_details
 
 
 def form(*tables: dict[str, Any]) -> FormSpec:
@@ -55,7 +55,7 @@ VEHICLES = {
     "name": "vehicles",
     "rows": "many",
     "inputs": [
-        column("vehicle", "int", index=True),
+        column("vehicle", "int", index="numbered"),
         column("reg"),
         column("value", "float"),
         column("garaged", "bool"),
@@ -72,10 +72,16 @@ LAYERS = {
     "name": "layers",
     "rows": "many",
     "outputs": [
-        column("layer_no", "int", index=True),
-        column("layer", "int", key=True),
+        column("layer_no", "int", index="numbered"),
+        column("layer", "int"),
         column("layer_premium", "float"),
     ],
+}
+#: A table keyed by a typed Text index: each site named by the underwriter.
+SITES = {
+    "name": "sites",
+    "rows": "many",
+    "inputs": [column("site", index="typed"), column("value", "float")],
 }
 
 
@@ -139,6 +145,14 @@ def test_tables_are_keyed_by_the_quotes_identity_and_refer_to_its_details() -> N
     assert key("vehicles") == ["quote_reference", "quote_option", "vehicle"]
     assert key("layers") == ["quote_reference", "quote_option", "layer_no"]
     assert key("premium") == ["quote_reference", "quote_option"]
+    # A Text index is held to the length every engine keys a row by.
+    sites = store_schema(form(SITES)).by_name("sites").table
+    assert [column.name for column in sites.primary_key.columns] == [
+        "quote_reference",
+        "quote_option",
+        "site",
+    ]
+    assert sites.c["site"].type.length == INDEX_TEXT_LENGTH
     for name in ("policy", "vehicles", "premium", "layers"):
         [foreign] = schema.by_name(name).table.foreign_key_constraints
         assert [element.target_fullname for element in foreign.elements] == [

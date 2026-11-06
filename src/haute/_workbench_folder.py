@@ -60,6 +60,7 @@ from haute._workbench_folder_files import (
     COMPONENT_FILES,
     DETAILS_ANY,
     DETAILS_TYPED,
+    INDEX_VALUES_SETTINGS,
     INPUT_ONLY,
     NAME_PATTERN,
     NOT_IN_COMPONENT_FILE,
@@ -455,7 +456,14 @@ def _table_file_model(table: SchemaTable, problems: list[str]) -> TableFile:
     outputs: list[dict[str, Any]] = []
     for column in table.own_outputs:
         data = column.model_dump(mode="json")
+        # A table of outputs alone's index of values holds its allowed values as an input
+        # does, written as its params file's reference alone.
+        held = INDEX_VALUES_SETTINGS if column.index == "values" else ()
+        if column.index == "values":
+            data["options"] = []
         for key in INPUT_ONLY:
+            if key in held:
+                continue
             if data.pop(key) != SchemaColumn.model_fields[key].get_default(
                 call_default_factory=True
             ):

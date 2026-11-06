@@ -22506,14 +22506,21 @@
           "type": "string"
         },
         "index": {
-          "default": false,
-          "title": "Index",
-          "type": "boolean"
-        },
-        "key": {
-          "default": false,
-          "title": "Key",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "enum": [
+                "numbered",
+                "typed",
+                "values"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Index"
         },
         "label": {
           "default": "",
@@ -22589,11 +22596,6 @@
           "title": "Required",
           "type": "boolean"
         },
-        "row_per_value": {
-          "default": false,
-          "title": "Row Per Value",
-          "type": "boolean"
-        },
         "type": {
           "default": "str",
           "enum": [
@@ -22617,13 +22619,11 @@
         "type",
         "label",
         "group",
-        "key",
         "required",
         "min",
         "max",
         "options",
         "options_source",
-        "row_per_value",
         "index",
         "help",
         "placeholder",
@@ -28463,7 +28463,7 @@
     },
     "WorkbenchTable": {
       "additionalProperties": false,
-      "description": "A side of a schema table: its inputs or its outputs, a port of the node, one row per\nquote or many, its columns, and, for a many-row input table, its key.",
+      "description": "A side of a schema table: its inputs or its outputs, a port of the node, one row per\nquote or many, its columns, and, for a many-row table, its index, which keys its rows.",
       "properties": {
         "columns": {
           "items": {
@@ -28472,9 +28472,14 @@
           "title": "Columns",
           "type": "array"
         },
-        "index": {
+        "index_kind": {
           "anyOf": [
             {
+              "enum": [
+                "numbered",
+                "typed",
+                "values"
+              ],
               "type": "string"
             },
             {
@@ -28482,7 +28487,21 @@
             }
           ],
           "default": null,
-          "title": "Index"
+          "title": "Index Kind"
+        },
+        "index_values": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "title": "Index Values",
+          "type": "array"
         },
         "key": {
           "anyOf": [
@@ -28507,9 +28526,6 @@
             },
             {
               "type": "integer"
-            },
-            {
-              "type": "number"
             },
             {
               "type": "null"
@@ -28547,7 +28563,8 @@
         "columns",
         "key",
         "null_key",
-        "index"
+        "index_kind",
+        "index_values"
       ],
       "title": "WorkbenchTable",
       "type": "object"

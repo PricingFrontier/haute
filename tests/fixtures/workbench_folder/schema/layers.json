@@ -1,7 +1,7 @@
 {
   "rows": "many",
   "inputs": [
-    {"name": "layer", "type": "int", "index": true},
+    {"name": "layer", "type": "int", "index": "numbered"},
     {"name": "limit", "type": "float"},
     {"name": "layer_name", "type": "str"}
   ]

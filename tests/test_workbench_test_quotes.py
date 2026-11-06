@@ -344,21 +344,30 @@ def test_a_run_is_unchanged_until_the_pipeline_moves_a_price(project: Path) -> N
     assert moved["basis"] != unchanged["basis"]
 
 
+def _typed_prices() -> list[dict[str, Any]]:
+    """The input and priced items keyed by item_id, carried through the pricing even on
+    the null quote used to infer the output schema."""
+    keyed = json.loads(json.dumps(FORM_TABLES))
+    for name, side in (("items", "inputs"), ("item_prices", "outputs")):
+        table = next(t for t in keyed if t["name"] == name)
+        table[side] = [
+            {**column, "index": "typed"} if column["name"] == "item_id" else column
+            for column in table[side]
+            if column.get("index") != "numbered"
+        ]
+    return keyed
+
+
 def test_keyed_rows_reordered_and_numbers_within_tolerance_are_unchanged(
     project: Path,
 ) -> None:
-    keyed = json.loads(json.dumps(FORM_TABLES))
-    prices = next(t for t in keyed if t["name"] == "item_prices")
-    next(c for c in prices["outputs"] if c["name"] == "item_id")["key"] = True
-    _sheets(project, keyed)
+    _sheets(project, _typed_prices())
     http = client()
-    assert _save(http).status_code == 200
+    saved = _save(http)
+    assert saved.status_code == 200, saved.text
     [row] = _rows(project)
-    # Answered in the other order once, its index numbered as that answer ran: Haute's
-    # numbering of a table of outputs alone moves nothing.
+    # Answered in the other order once: a typed index matches its rows by their values.
     row["expected"]["item_prices"].reverse()
-    for number, each in enumerate(row["expected"]["item_prices"], 1):
-        each["row_number"] = number
     row["expected"]["pricing"][0]["premium"] = 101.0
     row["tolerance_pct"] = 0.05
     row["_note"] = "kept by hand"
@@ -385,13 +394,30 @@ def test_a_column_the_form_dropped_is_a_removed_field(project: Path) -> None:
     )
 
 
-def test_a_key_held_twice_no_longer_compares(project: Path) -> None:
-    keyed = json.loads(json.dumps(FORM_TABLES))
-    prices = next(t for t in keyed if t["name"] == "item_prices")
-    next(c for c in prices["outputs"] if c["name"] == "item_id")["key"] = True
-    _sheets(project, keyed)
+def test_a_numbered_tables_rows_reordered_are_matched_by_their_places(project: Path) -> None:
     http = client()
     assert _save(http).status_code == 200
+    [row] = _rows(project)
+    # The answer's rows the other way round, numbered again as that answer ran: a numbered
+    # index of outputs alone is the answer's order, so each place's values moved.
+    held = row["expected"]["item_prices"]
+    assert len(held) == 2 and held[0]["item_id"] != held[1]["item_id"]
+    held.reverse()
+    for number, each in enumerate(held, 1):
+        each["row_number"] = number
+    (project / FOLDER / "Fleet.json").write_text(json.dumps([row]), encoding="utf-8")
+
+    result = _run(http).json()
+
+    assert result["outcome"] == "moved", result
+    assert {move["row"] for move in result["moves"]} == {"row_number=1", "row_number=2"}
+
+
+def test_a_key_held_twice_no_longer_compares(project: Path) -> None:
+    _sheets(project, _typed_prices())
+    http = client()
+    saved = _save(http)
+    assert saved.status_code == 200, saved.text
     [row] = _rows(project)
     row["expected"]["item_prices"][1]["item_id"] = "A"
     (project / FOLDER / "Fleet.json").write_text(json.dumps([row]), encoding="utf-8")

@@ -1,12 +1,25 @@
 {
-  "about": "The rows a column gives a table: each case's table (its rows, its inputs and its outputs, each column spelt with what it sets, the rest as a new column's, a many-row table with inputs holding its index), the rows held, and the rows read. frontend/src/utils/__tests__/sheetValues.test.ts holds presetRows to every case and tests/test_workbench_tables.py holds preset_rows to them: one rule in two languages.",
+  "about": "The rows an index of values gives a table: each case's table (its rows, its inputs and its outputs, each column spelt with what it sets, the rest as a new column's, a many-row table with inputs holding its index), the rows held, and the rows read. frontend/src/utils/__tests__/sheetValues.test.ts holds presetRows to every case and tests/test_workbench_tables.py holds preset_rows to them: one rule in two languages.",
   "cases": [
     {
-      "name": "no column gives a row for each value: the rows as they are",
+      "name": "Integer params values match reopened integers by value, retaining every cell and params order",
       "table": {
         "rows": "many",
         "inputs": [
-          { "name": "row_number", "type": "int", "index": true },
+          { "name": "layer", "type": "int", "options": ["02", "01"], "index": "values", "options_source": { "file": "layers.csv", "column": "layer" } },
+          { "name": "limit" }
+        ],
+        "outputs": []
+      },
+      "rows": [{ "layer": "1", "limit": "100" }, { "layer": "2", "limit": "200" }],
+      "read": [{ "layer": "02", "limit": "200" }, { "layer": "01", "limit": "100" }]
+    },
+    {
+      "name": "a numbered index gives no row for each value: the rows as they are",
+      "table": {
+        "rows": "many",
+        "inputs": [
+          { "name": "row_number", "type": "int", "index": "numbered" },
           { "name": "peril", "options": ["AOP", "EQ", "NW"] },
           { "name": "limit" }
         ],
@@ -20,8 +33,7 @@
       "table": {
         "rows": "many",
         "inputs": [
-          { "name": "row_number", "type": "int", "index": true },
-          { "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "name": "peril", "options": ["AOP", "EQ", "NW"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
           { "name": "limit" }
         ],
         "outputs": []
@@ -34,8 +46,7 @@
       "table": {
         "rows": "many",
         "inputs": [
-          { "name": "row_number", "type": "int", "index": true },
-          { "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "name": "peril", "options": ["AOP", "EQ", "NW"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
           { "name": "limit" },
           { "name": "included", "type": "bool" }
         ],
@@ -56,8 +67,7 @@
       "table": {
         "rows": "many",
         "inputs": [
-          { "name": "row_number", "type": "int", "index": true },
-          { "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "name": "peril", "options": ["AOP", "EQ", "NW"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
           { "name": "limit" }
         ],
         "outputs": []
@@ -79,8 +89,7 @@
       "table": {
         "rows": "many",
         "inputs": [
-          { "name": "row_number", "type": "int", "index": true },
-          { "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true },
+          { "name": "peril", "options": ["AOP", "EQ", "NW"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
           { "name": "limit" }
         ],
         "outputs": []
@@ -105,8 +114,7 @@
       "table": {
         "rows": "many",
         "inputs": [
-          { "name": "row_number", "type": "int", "index": true },
-          { "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true },
+          { "name": "peril", "options": ["AOP", "EQ"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
           { "name": "limit" }
         ],
         "outputs": []
@@ -115,13 +123,12 @@
       "read": [{ "peril": "AOP" }, { "peril": "EQ", "limit": "2" }]
     },
     {
-      "name": "the first column giving the rows gives them",
+      "name": "only the index gives the rows, another column's allowed values none",
       "table": {
         "rows": "many",
         "inputs": [
-          { "name": "row_number", "type": "int", "index": true },
-          { "name": "zone", "options": ["North", "South"], "row_per_value": true },
-          { "name": "peril", "options": ["AOP", "EQ", "NW"], "row_per_value": true }
+          { "name": "zone", "options": ["North", "South"], "index": "values", "options_source": { "file": "zones.csv", "column": "zone" } },
+          { "name": "peril", "options": ["AOP", "EQ", "NW"] }
         ],
         "outputs": []
       },
@@ -129,21 +136,24 @@
       "read": [{ "zone": "North" }, { "zone": "South", "peril": "EQ" }]
     },
     {
-      "name": "a one-row table's column gives none",
+      "name": "a one-row table, which has no index, gives none",
       "table": {
         "rows": "one",
-        "inputs": [{ "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true }],
+        "inputs": [{ "name": "peril", "options": ["AOP", "EQ"] }],
         "outputs": []
       },
       "rows": [{ "peril": "EQ" }],
       "read": [{ "peril": "EQ" }]
     },
     {
-      "name": "an output of a table of outputs alone gives none",
+      "name": "a table of outputs alone's index of values gives none: its rows are the pricing's",
       "table": {
         "rows": "many",
         "inputs": [],
-        "outputs": [{ "name": "row_number", "type": "int", "index": true }, { "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true }]
+        "outputs": [
+          { "name": "peril", "options": ["AOP", "EQ"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
+          { "name": "premium", "type": "float" }
+        ]
       },
       "rows": [],
       "read": []
@@ -152,31 +162,11 @@
       "name": "an output of a table with inputs gives none: the rows come from its inputs alone",
       "table": {
         "rows": "many",
-        "inputs": [{ "name": "row_number", "type": "int", "index": true }, { "name": "limit" }],
-        "outputs": [{ "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true }]
+        "inputs": [{ "name": "row_number", "type": "int", "index": "numbered" }, { "name": "limit" }],
+        "outputs": [{ "name": "peril" }]
       },
       "rows": [{ "limit": "5" }],
       "read": [{ "limit": "5" }]
-    },
-    {
-      "name": "a column without allowed values gives none",
-      "table": {
-        "rows": "many",
-        "inputs": [{ "name": "row_number", "type": "int", "index": true }, { "name": "peril", "row_per_value": true }],
-        "outputs": []
-      },
-      "rows": [{ "peril": "EQ" }],
-      "read": [{ "peril": "EQ" }]
-    },
-    {
-      "name": "the index gives none",
-      "table": {
-        "rows": "many",
-        "inputs": [{ "name": "row_number", "type": "int", "index": true, "options": ["1", "2"], "row_per_value": true }, { "name": "limit" }],
-        "outputs": []
-      },
-      "rows": [],
-      "read": []
     }
   ]
 }

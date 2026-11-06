@@ -13,6 +13,7 @@ import { formatValue } from "./formatValue"
 import { formattedNumber, parseTypedNumber, rowFilled, type PricedRows, type RowsByTable } from "./sheetValues"
 import { isOutputColumn, tableColumns } from "./quoteIdentity"
 import { columnKey } from "./sheetVisibility"
+import { inputRowLayout } from "./sheetRowAlignment"
 import {
   answeredOutputs,
   chartGrain,
@@ -146,20 +147,23 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   let valueAt: (found: Found, row: number) => unknown
   let kept: number[]
   if (inputs.length > 0) {
-    // The rows typed into the input tables it shows, by position, as a Table's grid has them.
-    const count = Math.max(0, ...inputs.map((table) => held[table.name]?.length ?? 0))
+    const layout = inputRowLayout(inputs, held)
+    const sourceAt = (table: SchemaTable, row: number) => {
+      const source = layout.rows.get(table.name)?.[row]
+      return source === undefined ? undefined : held[table.name]?.[source]
+    }
     const read = new Map(quoted.tables.map((table) => [table.name, table]))
-    kept = Array.from({ length: count }, (_, row) => row).filter((row) =>
+    kept = Array.from({ length: layout.count }, (_, row) => row).filter((row) =>
       inputs.some((table) => {
         const quotedTable = read.get(table.name)
-        return quotedTable !== undefined && rowFilled(quotedTable, held[table.name]?.[row])
+        return quotedTable !== undefined && rowFilled(quotedTable, sourceAt(table, row))
       }),
     )
-    const matched = linedUpOutputs(inputs, outputs, held, count, price, quoted)
+    const matched = linedUpOutputs(inputs, outputs, held, layout.count, price, quoted, layout.rows)
     valueAt = (found, row) =>
       !isOutput(found)
         ? inQuote(found)
-          ? held[found.table.name]?.[row]?.[found.column.name]
+          ? sourceAt(found.table, row)?.[found.column.name]
           : undefined
         : matched.get(found.table.name)?.[row]?.[found.column.name]
   } else {
@@ -172,7 +176,7 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   const nameOf = (row: number): string => {
     if (label === null) return String(row + 1)
     if (!isOutput(label)) {
-      if (label.column.index) return String(row + 1)
+      if (label.column.index === "numbered") return String(row + 1)
       const typed = valueAt(label, row)
       if (label.column.type === "bool") return typed === true ? "Yes" : "No"
       const text = typeof typed === "string" ? typed.trim() : ""

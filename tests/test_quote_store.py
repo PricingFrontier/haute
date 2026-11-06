@@ -47,7 +47,7 @@ POLICY = {"name": "policy", "rows": "one", "inputs": [column("region")]}
 VEHICLES = {
     "name": "vehicles",
     "rows": "many",
-    "inputs": [column("vehicle", "int", index=True), column("reg"), column("value", "float")],
+    "inputs": [column("vehicle", "int", index="numbered"), column("reg"), column("value", "float")],
 }
 
 

@@ -104,12 +104,13 @@ const testable = (form: FormSpec, priced: boolean): SchemaTable[] =>
 
 /**
  * The columns a test of a row, or a total, may name in its table: its inputs, and, where the
- * price is tested or the table has no inputs, its outputs too, each but the index; once
- * another of the condition's tests, or its total, names a column (`names`), those of that
- * column's block alone, since a condition on rows tests one block.
+ * price is tested or the table has no inputs, its outputs too, each but a numbered index
+ * (`testableColumns`); once another of the condition's tests, or its total, names a column
+ * (`names`), those of that column's block alone, since a condition on rows tests one block.
  */
 function rowColumns(table: SchemaTable, priced: boolean, names: readonly string[]): SchemaColumn[] {
-  const offered = priced || !hasInputs(table) ? testableColumns(table) : typedInputs(table)
+  const columns = testableColumns(table)
+  const offered = priced || !hasInputs(table) ? columns : columns.filter((column) => !isOutputColumn(table, column))
   const named = names.find((name) => tableColumns(table).some((column) => column.name === name))
   if (named === undefined) return offered
   const output = isOutputColumn(table, named)

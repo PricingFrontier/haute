@@ -563,7 +563,7 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
 
 
 def _index(name: str) -> dict[str, Any]:
-    return {"name": name, "type": "int", "index": True}
+    return {"name": name, "type": "int", "index": "numbered"}
 
 
 @pytest.mark.parametrize(

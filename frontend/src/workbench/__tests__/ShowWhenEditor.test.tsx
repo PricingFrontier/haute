@@ -258,8 +258,9 @@ describe("ShowWhenEditor", () => {
     expect(within(columns).getByRole("option", { name: "Rows of premiums" })).toBeInTheDocument()
 
     fireEvent.change(columns, { target: { value: "premiums#rows" } })
-    const key = { column: "row_number", op: "equals", values: [], field: null, days: 0 }
-    expect(widgetsOf(currentForm())[at].show_when.conditions[0]).toEqual({ table: "premiums", rows: "any", where: [key] })
+    const priceTest = { column: "premium", op: "equals", values: [], field: null, days: 0 }
+    expect(widgetsOf(currentForm())[at].show_when.conditions[0]).toEqual({ table: "premiums", rows: "any", where: [priceTest] })
+    expect(options(screen.getByRole("combobox", { name: "Condition 1 where 1 column" }))).toEqual(["Premium"])
     // Tested on the price, it takes a value typed, never another field.
     expect(screen.queryByRole("combobox", { name: "Condition 1 where 1 against" })).not.toBeInTheDocument()
     view.unmount()
@@ -268,7 +269,7 @@ describe("ShowWhenEditor", () => {
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
     expect(within(screen.getByRole("combobox", { name: "Condition 1 column" })).queryByRole("option", { name: "Rows of premiums" })).not.toBeInTheDocument()
-    const first = { ...key, op: "equals" as const, values: ["1"] }
+    const first = { ...priceTest, op: "equals" as const, values: ["1"] }
     act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_boxes", { show_when: { match: "all", conditions: [{ table: "premiums", rows: "any", where: [first] }] } })))
     expect(within(condition(1)).getByText("Tests the rows of premiums, a part of the price, which hides only what takes nothing typed: here it is never applied")).toBeInTheDocument()
   })

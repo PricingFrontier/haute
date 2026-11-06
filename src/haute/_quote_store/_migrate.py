@@ -76,7 +76,7 @@ class Step:
     """One change a plan makes, or one thing it keeps: its kind, the table and column it
     concerns by their names after it and by the keys they are planned by (the form's name, or
     ``database:`` and the database's for one the form does not have), the name each had
-    before when renamed,
+    before when renamed or when an index's type changes,
     and how many quotes hold values in what it concerns (None when not counted)."""
 
     kind: StepKind
@@ -337,6 +337,20 @@ def _plan_columns(
             quotes = _count(counts, key)
             if table["key"] == QUOTE_DETAILS_NAME:
                 refusals.append(f"quote_details.{column['name']} takes no change of its type")
+            elif column.get("index"):
+                # The index keys the table's rows with the quote's identity: retyping it
+                # changes that key, which the SQL notes rather than altering in place.
+                steps.append(
+                    Step(
+                        "reshape table",
+                        name,
+                        table["key"],
+                        column["name"],
+                        column["key"],
+                        was=was["name"],
+                        quotes=quotes,
+                    )
+                )
             else:
                 steps.append(
                     Step(
@@ -490,8 +504,24 @@ def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, st
 
 
 def _reshape_note(operations: Operations, plan: Plan, step: Step) -> None:
-    """A script's note on a table whose rows the form changed, which no statement
-    changes: what the table was and is, and what it needs."""
+    """A script's note on a table whose rows the form changed, or whose index it retyped,
+    which no statement changes: what the table was and is, and what it needs."""
+    if step.column_key is not None:
+        before = next(
+            column
+            for column in _structure_table(plan.before, step.table_key)["columns"]
+            if column["name"] == step.was
+        )
+        after = _structure_column(plan.recorded, step)
+        _note(
+            operations,
+            f"{step.table}{held(step.quotes, 'rows')} has its index {step.column} change from "
+            f"{_INDEX_TYPES.get(str(before['type']), before['type'])} to "
+            f"{_INDEX_TYPES.get(str(after['type']), after['type'])},\n"
+            "which changes the key its rows are held by and which no statement here makes:\n"
+            "make the table again as the form has it and move its rows into it.",
+        )
+        return
     was = _structure_table(plan.before, step.table_key)
     now = _structure_table(plan.recorded, step.table_key)
     _note(
@@ -501,6 +531,10 @@ def _reshape_note(operations: Operations, plan: Plan, step: Step) -> None:
         "which no statement here makes: make the table again as the form has it and move its\n"
         "rows into it.",
     )
+
+
+#: An index's types as a note names them.
+_INDEX_TYPES = {"int": "an Integer", "str": "Text"}
 
 
 def _removed_note(operations: Operations, step: Step, owner: str | None) -> None:

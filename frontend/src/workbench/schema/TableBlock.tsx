@@ -15,10 +15,9 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { type Block, hasInputs, hasOutputs, identityCount, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
+import { type Block, hasInputs, hasOutputs, identityCount, isIdentityColumn, tableColumns, tableIndex } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
 import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
-import { keyTable } from "../../utils/workbenchTables"
 import { DatabaseMark } from "../StoreCompare"
 import { CarriedColumnRow, ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
@@ -135,8 +134,9 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
   // The quote's identity leads the inputs, or the outputs of a table with none.
   const identity = identityCount(table)
   // What the Workbench Output's table of a table with both blocks carries ahead of its
-  // outputs (`_output_side`): the quote's identity, then a many-row table's key column.
-  const outputLead = hasInputs(table) && hasOutputs(table) ? [...table.inputs.slice(0, identity), ...keyTable(table)] : []
+  // outputs (`_output_side`): the quote's identity, then a many-row table's index.
+  const indexColumn = tableIndex(table)
+  const outputLead = hasInputs(table) && hasOutputs(table) ? [...table.inputs.slice(0, identity), ...(indexColumn === null ? [] : [indexColumn])] : []
   // Haute's quote_details table keeps its structure, and in Preview every table keeps it.
   const locked = isQuoteDetails(table)
   const fixed = locked || readOnly
@@ -260,7 +260,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
                 >
                   {title}
                 </p>
-                {own === "outputs" && !filtering && outputLead.map((column) => <CarriedColumnRow key={column.name} column={column} isKey={!isIdentityColumn(table, column)} />)}
+                {own === "outputs" && !filtering && outputLead.map((column) => <CarriedColumnRow key={column.name} column={column} isIndex={!isIdentityColumn(table, column)} />)}
                 {columns.map(({ column, at }) => (
                   <ColumnRow
                     key={column.name}

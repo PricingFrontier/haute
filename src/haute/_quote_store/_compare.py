@@ -307,7 +307,8 @@ def compare(
     made = plan(wanted, {"tables": matcher.tables}, matcher.counts, provider=provider)
     made = replace(made, activity=activity is None, notes=tuple(matcher.notes))
     for step in made.steps:
-        if step.kind == "reshape table":
+        # A retyped index is marked with its column's type, as any column's is.
+        if step.kind == "reshape table" and step.column_key is None:
             rows = next(
                 table["rows"] for table in wanted["tables"] if table["key"] == step.table_key
             )

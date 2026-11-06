@@ -84,7 +84,7 @@ describe("useWorkbenchStore", () => {
 describe("refreshTables", () => {
   /** A table's side as the route answers it: its port is the table's name and its side. */
   const sideOf = (name: string, side: "input" | "output", rows: "one" | "many" = "one", columns: { name: string; type: string }[] = []) =>
-    ({ name, side, port: `${name}_${side}`, rows, columns, key: null, null_key: null, index: null })
+    ({ name, side, port: `${name}_${side}`, rows, columns, key: null, null_key: null, index_kind: null, index_values: [] })
   const tables = (name: string, side: "input" | "output" = "input") => [sideOf(name, side)]
 
   /** Answers each fetch when the test says so, in whatever order it says. */
@@ -200,7 +200,7 @@ describe("refreshTables", () => {
     const structural = structure()
 
     // The same, its keys written in another order.
-    await fetchedAs(1, { store_columns: {}, response_tables: [], sample: {}, tables: [{ null_key: null, index: null, key: null, columns, rows: "one", port: "policy_input", side: "input", name: "policy" }] })
+    await fetchedAs(1, { store_columns: {}, response_tables: [], sample: {}, tables: [{ null_key: null, index_kind: null, index_values: [], key: null, columns, rows: "one", port: "policy_input", side: "input", name: "policy" }] })
     expect(epoch()).toBe(first)
     expect(structure()).toBe(structural)
 

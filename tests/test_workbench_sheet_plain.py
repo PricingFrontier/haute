@@ -15,12 +15,13 @@ from typing import Any
 import pytest
 
 from haute._workbench_folder import read_form_document
-from tests._workbench_helpers import enable, form_folder
+from tests._workbench_helpers import form_folder
 from tests.test_workbench_folder import (
     FORM,
     POLICY_BOXES,
     config,
     files_of,
+    folder_project,
     put,
     spec_of,
     widget_of,
@@ -33,10 +34,7 @@ COLLECTION = "components/policy.json"
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    """A project whose workbench is enabled, its form folder ``rating/workbench``."""
-    root = tmp_path / "p"
-    enable(root)
-    return root
+    return folder_project(tmp_path / "p")
 
 
 def _round_trip(project: Path, form: dict[str, Any], path: str) -> dict[str, Any]:

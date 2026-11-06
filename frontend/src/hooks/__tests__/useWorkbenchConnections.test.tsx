@@ -16,7 +16,7 @@ import { makeNode } from "../../test-utils/factories"
 
 /** A table's side as a fetch gives it: its port is the table's name and its side. */
 const side = (which: "input" | "output") => (name: string) =>
-  ({ name, side: which, port: `${name}_${which}`, rows: "one" as const, columns: [{ name: "c", type: "int" as const }], key: null, null_key: null, index: null })
+  ({ name, side: which, port: `${name}_${which}`, rows: "one" as const, columns: [{ name: "c", type: "int" as const }], key: null, null_key: null, index_kind: null, index_values: [] })
 const inputSide = side("input")
 const outputSide = side("output")
 const edge = (id: string, source: string, sourceHandle: string | null, target: string, targetHandle: string | null = null): Edge =>

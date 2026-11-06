@@ -252,8 +252,8 @@ describe("a Workbench Output's tables", () => {
     tables: [],
     sample: {},
     responseTables: [
-      { name: "pricing", side: "output" as const, port: "pricing_output", rows: "one" as const, columns: [{ name: "premium", type: "float" as const }], key: null, null_key: null, index: null },
-      { name: "layers", side: "output" as const, port: "layers_output", rows: "many" as const, columns: [{ name: "layer", type: "int" as const }], key: null, null_key: null, index: null },
+      { name: "pricing", side: "output" as const, port: "pricing_output", rows: "one" as const, columns: [{ name: "premium", type: "float" as const }], key: null, null_key: null, index_kind: null, index_values: [] },
+      { name: "layers", side: "output" as const, port: "layers_output", rows: "many" as const, columns: [{ name: "layer", type: "int" as const }], key: null, null_key: null, index_kind: null, index_values: [] },
     ],
     fetch: 1,
   }

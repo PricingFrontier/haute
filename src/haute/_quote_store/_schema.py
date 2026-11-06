@@ -46,6 +46,7 @@ from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._workbench_form import (
     IDENTITY_NAMES,
+    INDEX_TEXT_LENGTH,
     QUOTE_DETAILS_NAME,
     ColumnType,
     FormSpec,
@@ -154,6 +155,12 @@ def _reference() -> TypeEngine[Any]:
     return _exact(REFERENCE_LENGTH)
 
 
+def _index_text() -> TypeEngine[Any]:
+    """A Text index: it keys its table's rows with the identity, and SQL Server keys no row
+    by unbounded text, so it is held to ``INDEX_TEXT_LENGTH`` characters, compared exactly."""
+    return _exact(INDEX_TEXT_LENGTH)
+
+
 #: The store's own columns of quote_details, in order: each one's name, type and whether it
 #: may be null. None of them is the form's, and no request holds them.
 STORE_COLUMNS: tuple[tuple[str, Callable[[], TypeEngine[Any]], bool], ...] = (
@@ -242,8 +249,10 @@ def structure(form: FormSpec) -> dict[str, Any]:
                     {
                         "key": column.name,
                         "name": column.name,
-                        "type": "int" if column.index else column.type,
-                        "index": column.index,
+                        "type": column.type,
+                        # Whether it is the index, not how it gets its values: the key
+                        # column and its SQL type are the same whichever way it does.
+                        "index": column.index is not None,
                     }
                     for column in table.columns
                 ],
@@ -328,9 +337,13 @@ def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
         elif details and column.name in _BOUNDED_DETAILS:
             sql_type = _BOUNDED_DETAILS[column.name]()
         else:
-            sql_type = _TYPES["int" if column.index else column.type]()
+            sql_type = (
+                _index_text()
+                if column.index is not None and column.type == "str"
+                else _TYPES[column.type]()
+            )
         # The index keys a many-row table's rows with the identity, so it is never null.
-        required = identity or column.index or (details and column.name in _SET_DETAILS)
+        required = identity or column.index is not None or (details and column.name in _SET_DETAILS)
         columns.append(Column(column.name, sql_type, nullable=not required))
     keys = list(_IDENTITY)
     if details:

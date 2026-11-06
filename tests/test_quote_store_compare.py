@@ -315,7 +315,7 @@ def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target
 def _vehicles(index: str) -> dict[str, Any]:
     """A many-row input table keyed by its index, named *index*."""
     return table(
-        "vehicles", {"name": index, "type": "int", "index": True}, column("reg"), rows="many"
+        "vehicles", {"name": index, "type": "int", "index": "numbered"}, column("reg"), rows="many"
     )
 
 
@@ -349,10 +349,32 @@ def _vehicles_of(index: str, other: str) -> dict[str, Any]:
     """A many-row input table keyed by its index *index*, with an Integer *other*."""
     return table(
         "vehicles",
-        {"name": index, "type": "int", "index": True},
+        {"name": index, "type": "int", "index": "numbered"},
         column(other, "int"),
         rows="many",
     )
+
+
+@pytest.mark.parametrize("index_name", ["row_number", "vehicle_name"])
+def test_live_comparison_renders_an_index_type_change_with_its_previous_column(
+    target: Target, index_name: str
+) -> None:
+    made_from_sql(target, form(_vehicles("row_number")))
+    changed = form(
+        table(
+            "vehicles",
+            {"name": index_name, "type": "str", "index": "typed"},
+            column("reg"),
+            rows="many",
+        )
+    )
+    comparison = compared(target, changed)
+
+    written = sql(target, changed, comparison)
+
+    assert f"vehicles has its index {index_name} change from an Integer to Text" in written
+    assert "make the table again as the form has it" in written
+    assert "ALTER COLUMN" not in written
 
 
 def test_an_index_paired_first_frees_its_old_name_for_a_new_column(target: Target) -> None:
@@ -361,7 +383,7 @@ def test_an_index_paired_first_frees_its_old_name_for_a_new_column(target: Targe
     reused = form(
         table(
             "vehicles",
-            {"name": "vehicle_no", "type": "int", "index": True},
+            {"name": "vehicle_no", "type": "int", "index": "numbered"},
             column("seats", "int"),
             column("row_number"),
             rows="many",

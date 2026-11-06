@@ -319,7 +319,9 @@ def _list_holds(
     if tested:
         if not all((table.name, column_name) in shown for column_name in tested):
             return False
-    elif not any((table.name, column.name) in shown for column in table.inputs if not column.index):
+    elif not any(
+        (table.name, column.name) in shown for column in table.inputs if column.index != "numbered"
+    ):
         return False
     typed = _typed_rows(table, rows.get(table.name, ()))
     passing = _passing_rows(table, condition.where, typed)
@@ -408,12 +410,15 @@ def _typed_rows(
     table: SchemaTable, rows: Sequence[Mapping[str, str | bool]]
 ) -> list[Mapping[str, str | bool]]:
     """A many-row table's rows as a grid holds them (``preset_rows``), each with anything
-    but the index typed in it, whatever the sheets hide: counting only what shows would let
-    hiding a column drop a row and show something again (``typedRows`` in the view)."""
+    but a numbered index in it, so every row an index of values gives is one, whatever the
+    sheets hide: counting only what shows would let hiding a column drop a row and show
+    something again (``typedRows`` in the view)."""
     return [
         row
         for row in preset_rows(table, rows)
-        if any(_filled(row.get(column.name)) for column in table.inputs if not column.index)
+        if any(
+            _filled(row.get(column.name)) for column in table.inputs if column.index != "numbered"
+        )
     ]
 
 
@@ -493,9 +498,14 @@ def _list_fits(table: SchemaTable, condition: ListCondition) -> bool:
 
 
 def _row_column(table: SchemaTable, column_name: str) -> SchemaColumn | None:
-    """*table*'s column by name, other than its index, which nothing is typed into."""
+    """*table*'s column by name, other than a numbered index, the sheets' numbering of its
+    rows, which no condition tests."""
     return next(
-        (column for column in table.columns if column.name == column_name and not column.index),
+        (
+            column
+            for column in table.columns
+            if column.name == column_name and column.index != "numbered"
+        ),
         None,
     )
 

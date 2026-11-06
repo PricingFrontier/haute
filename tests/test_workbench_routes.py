@@ -74,7 +74,8 @@ DETAILS = {
     ],
     "key": None,
     "null_key": None,
-    "index": None,
+    "index_kind": None,
+    "index_values": [],
 }
 
 
@@ -197,7 +198,8 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
             ],
             "key": None,
             "null_key": None,
-            "index": None,
+            "index_kind": None,
+            "index_values": [],
         },
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
@@ -258,14 +260,12 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
         "type": "float",
         "label": "",
         "group": "",
-        "key": False,
         "required": False,
         "min": None,
         "max": None,
         "options": [],
         "options_source": None,
-        "row_per_value": False,
-        "index": False,
+        "index": None,
         "help": "",
         "placeholder": "",
         "default_value": "",
