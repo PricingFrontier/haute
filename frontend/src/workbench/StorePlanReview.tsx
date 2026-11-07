@@ -69,11 +69,9 @@ export default function StorePlanReview({ answer }: { answer: WorkbenchStoreComp
     </section>}
     {(manual.length > 0 || answer.manual.length > 0) && <section aria-label="Manual work">
       <h3 className="flex items-center gap-1.5 font-semibold" style={{ color: "var(--warning)" }}><AlertTriangle size={13} aria-hidden="true" className="shrink-0" />Manual work required</h3>
-      <p className="mt-1" style={QUIET}>The SQL does not complete these changes.</p>
       {manual.map((change) => <ChangeRow key={`${change.table}.${change.column}.${change.kind}`} change={change} />)}
       {answer.manual.map((message) => <p key={message} className="mt-1" style={QUIET}>{message}</p>)}
     </section>}
-    {answer.requires_maintenance && <p style={{ color: "var(--warning)" }}>Coordinate these changes with the app release; running-app compatibility has not been checked.</p>}
     {retained.length > 0 && <DatabaseDisclosure className="text-[var(--text-secondary)]" title={`${retained.length} unused database ${retained.length === 1 ? "item" : "items"} kept`}>
       <section aria-label="Retained in database" className="pt-1">{retained.map((change) => <ChangeRow key={`${change.table}.${change.column}`} change={change} />)}</section>
     </DatabaseDisclosure>}

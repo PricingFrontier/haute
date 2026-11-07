@@ -935,29 +935,24 @@ builder on screen. With a quote store it is where they manage their quotes too.
   its `database`, the file's path from the project root. A password or a connection string
   written into the file is refused, as is `managed-identity`, which is the hosted app's own.
   The hosted app never reads `connections.toml`.
-- Haute never changes an environment's tables, `dev` included: the people who own the
-  database make and change them in SQL, as they do any other table. To see how a database
-  differs from the schema you are building, open **Schema** and choose an environment in
-  **Compare**: Haute reads that database through its connection (and again when you press
-  the refresh beside it) and marks each table and column that differs, such as **missing**,
-  **renamed** or **type**, the mark's tooltip saying how and how many quotes hold values
-  there. Above the tables it lists what the database holds that your schema does not, with
-  its quotes; pick **Rename to…** beside such a column to pair it with a column of yours the
-  database lacks, so the SQL renames it rather than adding one and leaving the other, and
-  undo a pairing under **Renamed**. When nothing differs it says the database matches.
-- To change the tables, press **SQL** while building. For each environment you declare it
-  shows the SQL that brings that environment's tables to the schema you are building, in its
-  database's own SQL, starting from the tables the database holds (on the tab of the
-  environment Compare shows), from the schema your default branch holds, which is what
-  staging and prod run, or from nothing, for a new database. It adds tables and columns,
-  renames a column you paired in Compare rather than adding another, keeps a column or
-  table you renamed or removed, with its values, beside the one you added, changes a column's type in place (a value that does not convert stops it),
-  and leaves a table or column your schema does not have with its DROP commented out, since
-  the app does not need it gone. What it cannot write, such as a table changing between one
-  row and many rows per quote, or a column taking no null, it says in a comment, with the
-  quotes holding values there. The SQL is one transaction, so a statement that fails changes
-  nothing, and Haute keeps no record of it: copy it, have it reviewed and adapted, and run it
-  in each environment in turn.
+- Haute never changes an environment's tables, `dev` included. Open **Schema** and
+  choose an environment in **Database** to compare its tables with your working schema.
+  **Local** shows the schema without a database comparison. Previously fetched database
+  schemas are cached across sessions; press **Refresh** to fetch the current tables.
+  Field statuses open the corresponding database details. **Database changes** contains
+  the full comparison, including changes needing manual work and unused database fields.
+- **Export SQL**, beside **Refresh**, opens the query for the selected database and your
+  current working schema, including unsaved edits. Use **Copy SQL** or **Download SQL**.
+  The script creates new tables and columns only. A renamed field becomes a new, empty
+  column; the old column and its values stay intact, even if you paired the names in the
+  schema pane. Existing column types and keys are unchanged. Data transfers, type/key
+  changes and removal of old names are manual work for the database owner.
+  Specific omissions and manual tasks appear in SQL comments; they do not prevent
+  exporting valid additions. Have the database owner review and run the script, then
+  press **Refresh** to compare the actual tables again. Coordinate manual structural
+  changes with the app release, since a running app may still use the old structure.
+  Copying SQL or saving the schema does not change the database or verify release
+  compatibility.
 - The app starts whatever its database holds. Until the tables fit its release it opens no
   quote, new or saved, and prices none, and the page says quotes are unavailable and why: a
   table or column missing or of another type, a permission the app's identity lacks, a

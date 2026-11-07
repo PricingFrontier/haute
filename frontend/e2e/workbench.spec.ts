@@ -62,7 +62,7 @@ test.describe("workbench", () => {
     const code = await dialog.getByTestId("store-sql").innerText()
     expect(code).toContain("CREATE TABLE")
     expect(code).toContain("policy.quote_row, renamed limit")
-    await expect(dialog.getByText(/Changes needing manual work are explained in the SQL comments/)).toBeVisible()
+    await expect(dialog.getByText(/Changes needing manual work are explained in the SQL comments/)).toHaveCount(0)
     await expect(dialog.getByRole("alert")).toHaveCount(0)
     await dialog.getByRole("button", { name: "Copy SQL", exact: true }).click()
     await expect(dialog.getByRole("status")).toHaveText("SQL copied.")

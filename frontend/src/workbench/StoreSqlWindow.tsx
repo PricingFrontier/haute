@@ -17,7 +17,6 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
   const { environment, comparison, reason } = useStoreSqlExport()
   const sql = comparison?.sql
   const disabled = reason !== null || sql === undefined
-  const manual = comparison !== null && (comparison.blocked.length > 0 || comparison.manual.length > 0 || comparison.changes.some((change) => change.disposition === "manual"))
   const [notice, setNotice] = useState<{ environment: string; sql: string; text: string; error: boolean } | null>(null)
   const target = dirty ? "Working schema · Unsaved changes" : "Working schema · Saved"
 
@@ -41,12 +40,10 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
         <div className="shrink-0"><ModalFormHeader title="Export SQL"><span>{target}</span>{environment !== null && <span className="ml-2">· {environment}</span>}</ModalFormHeader></div>
         <div className="flex min-h-0 flex-col gap-3 overflow-auto p-4 text-xs leading-relaxed">
           {reason !== null && <p role="alert" style={{ color: "var(--warning)" }}>{reason}</p>}
-          {manual && <p style={{ color: "var(--warning)" }}>This SQL adds tables and columns only. Changes needing manual work are explained in the SQL comments below.</p>}
           {sql !== undefined && <pre data-testid="store-sql" className="overflow-auto rounded-md p-3 font-mono text-[11px] leading-relaxed" style={{ background: "var(--bg-base)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>{sql}</pre>}
         </div>
         <div className="shrink-0 border-t p-4 text-xs" style={{ borderColor: "var(--border)" }}>
           {notice !== null && notice.environment === environment && notice.sql === sql && <p role={notice.error ? "alert" : "status"} className="mb-2 leading-relaxed" style={{ color: notice.error ? "var(--danger-text)" : "var(--text-secondary)" }}>{notice.text}</p>}
-          <p className="mb-3 text-[11px] leading-relaxed" style={QUIET_STYLE}>Run through your database owner, then use Refresh on the schema pane to verify.</p>
           <div className="flex items-center justify-end gap-3">
             <button type="button" className="focus-ring hover-bg rounded-md px-3 py-1.5 font-medium" style={QUIET_STYLE} onClick={onClose}>Close</button>
             <QuietAction icon={Copy} disabled={disabled} onClick={() => void exportSql(false)}>Copy SQL</QuietAction>

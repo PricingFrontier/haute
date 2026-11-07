@@ -873,17 +873,19 @@ Out of scope:
     or the database is compatible. Retained input-table columns say that supported values
     survive saves until their row is deleted; retained output-only columns say that later
     saves clear their values. Permanent database deletion is left to the database owner, never performed
-    by a schema edit. Renames, retyping, row/key changes and manual database repairs say to
-    coordinate with the app release because a running app may still require the old
-    structure; the pane does not claim that release compatibility was checked.
+    by a schema edit. Documentation covers coordinating renames, retyping, row/key changes
+    and manual repairs with the app release; the pane shows the actual changes and does
+    not claim that release compatibility was checked.
 
     Export SQL shows the query immediately for the database selected on the schema pane,
     with Copy SQL, Download SQL and Close. It has no environment/source selector, refresh
     action, options or change-review disclosures. Opening it never changes the selected
     database or initiates a database fetch. The target is explicitly the current working
     schema, labelled as saved or unsaved, never presented as the deployed release. A plain
-    database name identifies the query's destination. A brief notice flags manual work
-    that the SQL cannot complete and points to specific SQL comments in the same window.
+    database name identifies the query's destination. General instructions belong in the
+    workbench documentation: the window has no explanatory banner or instructional footer,
+    and Database changes has no generic manual-work or release-coordination paragraphs.
+    Specific change details, SQL comments, unavailable-state errors and action feedback remain.
     The pane labels refused operations as Not included in SQL, without requiring their
     resolution before exporting the valid additions.
     Export SQL always opens the query window; it is beside Refresh, not in the pane header.
