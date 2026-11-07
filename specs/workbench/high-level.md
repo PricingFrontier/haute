@@ -799,8 +799,7 @@ Out of scope:
     assistive technology and in tooltips. A labelled Refresh button beside the selector
     checks the selected database again; it is disabled for Local and while fetching. Choosing one reads
     it only if it has not been loaded in the session, reusing the project's persisted
-    snapshot when available; Check environments is available in the schema pane's
-    collapsed Database changes section.
+    snapshot when available.
     Editing the shared
     schema compares it with those snapshots without rereading databases. A comparison is
     current only for the form, rename choices and catalogue it was requested for. Each
@@ -808,7 +807,7 @@ Out of scope:
     `.haute_cache/workbench/catalogues/`, surviving page reloads and server restarts.
     Snapshots hold schema metadata and counts, not quote values or credentials. The
     database target and sign-in identity are fingerprinted: a changed connection never
-    reuses a snapshot of another target. Refresh and Check environments always read the
+    reuses a snapshot of another target. Refresh always reads the
     database and replace its snapshot only on success. There is no automatic expiry;
     the original fetch time is shown as the snapshot time, never the time it was loaded
     from cache. A failed refresh is shown as failed, without displaying an old match;
@@ -821,10 +820,11 @@ Out of scope:
 
     With a database selected, each field's usual configuration-summary area shows its
     database status, including matches and pending/failed checks. Hidden managed and
-    storage columns remain in every database comparison and SQL plan. Their differences
+    storage columns remain in every database comparison; missing schema columns enter the
+    additions plan. Their differences
     identify the affected field in the table's collapsed Database details and contribute
     to its warning, with no field configuration or rename controls. Manual-repair notes
-    remain in the SQL review. Local, a pending comparison or a failed check hides stale
+    remain in the field/table database details. Local, a pending comparison or a failed check hides stale
     table details and warnings. Each visible field's status opens the
     existing field details, where a Database section explains the difference (including
     creation of a missing table) and accepts
@@ -838,7 +838,7 @@ Out of scope:
     part of that migration. A planned field change never hides a separate manual repair
     on the same field. A stale rename remains removable if its target name is reused by
     an index, even though index columns do not offer new rename choices.
-    The full comparison review stays collapsed in Database changes.
+    Missing additions are summarised in the collapsed Database changes section.
 
     Database controls follow the library's existing field sizes, rounded corners,
     focus and hover treatments, muted labels and status colours. Field statuses keep
@@ -848,34 +848,28 @@ Out of scope:
     only its content scrolls, keeping Close and Download SQL visible on short screens.
     Secondary actions use the existing quiet icon actions and all controls use theme tokens.
 
-    The schema pane's collapsed Database changes section contains short action rows,
-    with technical descriptions and retained items behind disclosures. Its heading flags
-    manual work and blockers as Needs attention. Rename choices whose field was removed
-    are removable here so no blocker loses its remedy. Provider, checked time, saved
-    revision and Check environments are secondary details in this section. It uses only
-    the current comparison, hiding old decisions during a refresh or schema edit.
-    Additions name the new table or column,
-    with new ordinary columns initially empty. Exported SQL creates new tables and columns
-    only: a renamed column is added under its new name, with the old column and values
-    untouched, even when an explicit rename pairing is present. The database owner transfers
-    values and removes old columns separately. Type conversions and row/key changes require
-    manual work on every provider. The generated script includes explanatory comments,
-    but no rename, drop, data-copy, or type-conversion statements, including commented-out
-    destructive commands. A case-only change or an occupied destination is left for manual
-    handling rather than adding a duplicate name. A newly named index is nullable until
-    the owner populates it and updates the key; the script leaves the existing key intact.
-    This export policy also applies to the offline SQL API. It does not change schema
-    editing, rename pairing, saved fields, quote persistence or compatibility checks.
-    Planner refusals and unresolved rename choices do not prevent copying or downloading
-    valid additions. Refused operations, including names the provider cannot store, are
-    omitted from executable SQL and explained in comments. Unresolved rename choices
-    also appear in those comments; copying never implies that values were transferred
-    or the database is compatible. Retained input-table columns say that supported values
-    survive saves until their row is deleted; retained output-only columns say that later
-    saves clear their values. Permanent database deletion is left to the database owner, never performed
-    by a schema edit. Documentation covers coordinating renames, retyping, row/key changes
-    and manual repairs with the app release; the pane shows the actual changes and does
-    not claim that release compatibility was checked.
+    The schema pane's collapsed Database changes section lists only missing columns,
+    grouped by table, and missing tables labelled New table. Its heading counts columns
+    and tables to add instead of saying Needs attention. With no additions it says No
+    additions, not that the database is compatible. It has no migration-review prose,
+    retained-field lists, rename decisions, provider/revision metadata or Check environments
+    action. The original snapshot time is available in Refresh's tooltip. It uses only the
+    current comparison, hiding stale additions during a refresh or schema edit.
+
+    Live SQL export and this list use the same name-based additions plan: each Haute schema
+    column absent from its database table is added, and each missing table is created.
+    Existing columns are never changed, renamed or removed, regardless of type, key, row
+    structure or explicit rename choices. Renaming a field adds its new name empty if absent.
+    Index/row conflicts cannot suppress unrelated additions within the same table. Matching
+    ignores column-name case when deciding whether adding another would duplicate a name.
+    New columns on existing tables are nullable; existing data and keys remain intact.
+    SQL omits migration, retention and unresolved-rename commentary. Only a problem that
+    prevents an addition, such as an invalid provider name, is shown beside that addition
+    and in SQL comments. Valid additions remain exportable. The shared renderer still writes
+    the script, and the offline API keeps its additions-only policy.
+    Full compatibility checks, saved fields, schema editing and field/table difference
+    details remain separate from this additions list; no additions does not imply the
+    current app can use the database. Operational guidance belongs in documentation.
 
     Export SQL shows the query immediately for the database selected on the schema pane,
     with Copy SQL, Download SQL and Close. It has no environment/source selector, refresh
@@ -886,8 +880,6 @@ Out of scope:
     workbench documentation: the window has no explanatory banner or instructional footer,
     and Database changes has no generic manual-work or release-coordination paragraphs.
     Specific change details, SQL comments, unavailable-state errors and action feedback remain.
-    The pane labels refused operations as Not included in SQL, without requiring their
-    resolution before exporting the valid additions.
     Export SQL always opens the query window; it is beside Refresh, not in the pane header.
     When SQL is unavailable, the window explains why. Copy and Download remain disabled
     for Local, Preview, a stale form or a pending/failed comparison.

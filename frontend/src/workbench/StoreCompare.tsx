@@ -37,7 +37,7 @@ export function CompareControls() {
           {state.environment !== null && <span id="schema-database-status" role="status" className="sr-only"
             title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>}
           <QuietAction icon={RefreshCw} onClick={state.readAgain} disabled={state.environment === null || read.status === "reading"}
-            className="shrink-0" title="Refresh database status">Refresh</QuietAction>
+            className="shrink-0" title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : "Refresh database status"}>Refresh</QuietAction>
         </>}
         <QuietAction icon={Code2} onClick={() => setSqlOpen(true)} aria-haspopup="dialog"
           className="shrink-0" title="View and copy generated SQL">Export SQL</QuietAction>

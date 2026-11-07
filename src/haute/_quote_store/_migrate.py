@@ -712,7 +712,11 @@ def render_sql(
         buffer.write(_commented(f"Not changed here: {note}.") + "\n")
     if not plan.steps and not plan.activity:
         if not plan.refusals and not plan.notes:
-            buffer.write("-- The tables already fit the form: nothing to change.\n")
+            buffer.write(
+                "-- No missing tables or columns.\n"
+                if additions_only
+                else "-- The tables already fit the form: nothing to change.\n"
+            )
         return buffer.getvalue()
     if plan.refusals or plan.notes:
         buffer.write("\n")

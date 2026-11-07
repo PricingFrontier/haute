@@ -150,8 +150,8 @@ describe("StoreSqlWindow", () => {
     expect(fetchStoreSql).not.toHaveBeenCalled()
   })
 
-  it.each(["Unresolved rename", "The provider does not accept this identifier"])("exports valid additions with comments for %s", async (blocker) => {
-    const sql = `-- Not written: ${blocker}.\nALTER TABLE policy ADD flood_zone TEXT;`
+  it.each(["Unresolved rename", "Existing key differs"])("exports additions independently of %s", async (blocker) => {
+    const sql = "ALTER TABLE policy ADD flood_zone TEXT;"
     live({ ...LIVE, sql, blocked: [blocker] })
     render(<StoreSqlWindow onClose={vi.fn()} />)
     expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled()
@@ -159,7 +159,7 @@ describe("StoreSqlWindow", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.queryByText(/This SQL adds tables and columns only/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Run through your database owner/)).not.toBeInTheDocument()
-    expect(screen.getByTestId("store-sql")).toHaveTextContent(blocker)
+    expect(screen.getByTestId("store-sql")).toHaveTextContent(sql)
     expect(screen.queryByTestId("store-plan-review")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
     expect(writeClipboardText).toHaveBeenCalledWith(sql)

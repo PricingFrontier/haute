@@ -87,49 +87,48 @@ describe("SchemaPane", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(state === "preview" ? "Switch to Build" : "Reload")
   })
 
-  it("keeps a removed field's unresolved rename removable without blocking additive export", async () => {
-    useStoreCompareStore.getState().pair({ table: "policy", column: "removed_field", was: "region" })
-    vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _env, _tables, renames) => ({ ...ANSWER, blocked: renames.length ? ["Cannot rename policy.region to removed_field."] : [] }))
+  it("shows no additions without claiming compatibility when existing fields differ", async () => {
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...ANSWER, matches: false,
+      manual: ["Fix the primary key."], blocked: ["Cannot rename an existing index."],
+      requires_maintenance: true,
+    })
     render(<SchemaPane />)
     selectDev()
-    const summary = await screen.findByText("Database changes · Needs attention")
+    const summary = await screen.findByText("Database changes · No additions")
     expect(summary.closest("details")).not.toHaveAttribute("open")
-    fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
-    const window = screen.getByRole("dialog")
-    expect(within(window).getByRole("button", { name: "Copy SQL" })).toBeEnabled()
-    fireEvent.click(within(window).getByRole("button", { name: "Close" }))
     fireEvent.click(summary)
-    expect(screen.getByRole("alert")).toHaveTextContent("Not included in SQL")
-    expect(screen.getByRole("alert")).toHaveTextContent("Cannot rename")
-    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
-    expect(screen.getByRole("button", { name: "Remove rename choice" })).toBeDisabled()
-    act(() => useWorkbenchViewStore.setState({ mode: "build" }))
-    fireEvent.click(screen.getByRole("button", { name: "Remove rename choice" }))
+    const review = screen.getByTestId("store-plan-review")
+    expect(review).toHaveTextContent("No missing tables or columns.")
+    expect(review).not.toHaveTextContent(/Compatible|primary key|rename|Needs attention/)
+    expect(screen.getByRole("option", { name: "dev" })).toHaveAccessibleDescription("Needs attention")
     fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
-    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
-    expect(useStoreCompareStore.getState().renames).toEqual([])
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled()
   })
 
-  it("keeps manual work, retention, metadata and checking environments on the pane", async () => {
-    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...ANSWER, matches: false, manual: ["Fix the primary key."], requires_maintenance: true, changes: [
-      { kind: "retype column", table: "policy", column: "year", was: null, disposition: "manual", description: "SQLite requires a rebuild.", quotes: 2 },
-      { kind: "keep column", table: "pricing", column: "old", was: null, disposition: "retained", description: "Later saves clear its values.", quotes: 1 },
-    ] })
+  it("groups missing columns and new tables without migration-review clutter", async () => {
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...ANSWER, matches: false,
+      manual: ["Fix the primary key."], blocked: ["Cannot rename an existing index."], requires_maintenance: true, changes: [
+        { kind: "add column", table: "policy", column: "flood_zone", was: null, disposition: "sql", description: "Add Text column; existing rows are empty.", quotes: null },
+        { kind: "add column", table: "policy", column: "territory", was: null, disposition: "sql", description: "Add Text column; existing rows are empty.", quotes: null },
+        { kind: "add column", table: "policy", column: "invalid_name", was: null, disposition: "manual", description: "Name is too long for this database.", quotes: null },
+        { kind: "create table", table: "pricing", column: null, was: null, disposition: "sql", description: "Create table with keys.", quotes: null },
+        { kind: "retype column", table: "policy", column: "year", was: null, disposition: "manual", description: "SQLite requires a rebuild.", quotes: 2 },
+        { kind: "keep column", table: "pricing", column: "old", was: null, disposition: "retained", description: "Later saves clear its values.", quotes: 1 },
+      ] })
     render(<SchemaPane />)
     selectDev()
-    fireEvent.click(await screen.findByText("Database changes · Needs attention"))
-    expect(screen.getByRole("region", { name: "Manual work" })).toHaveTextContent("Fix the primary key")
-    fireEvent.click(screen.getByText("Change type of policy.year"))
-    expect(screen.getByText("SQLite requires a rebuild.")).toBeVisible()
-    fireEvent.click(screen.getByText("1 unused database item kept"))
-    fireEvent.click(screen.getByText("Keep pricing.old"))
-    expect(screen.getByText("Later saves clear its values.")).toBeVisible()
-    expect(screen.getByText(/Saved revision rev-1/)).toBeVisible()
-    expect(screen.queryByText(/Coordinate these changes/)).not.toBeInTheDocument()
-    expect(screen.queryByText("The SQL does not complete these changes.")).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Check environments" }))
-    await waitFor(() => expect(fetchStoreCatalogue).toHaveBeenCalledTimes(3))
-    expect(fetchStoreCatalogue).toHaveBeenCalledWith("prod", true)
+    fireEvent.click(await screen.findByText("Database changes · 3 columns · 1 table"))
+    const review = screen.getByTestId("store-plan-review")
+    const policy = within(review).getByRole("region", { name: "Additions for policy" })
+    expect(within(policy).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "flood_zone", "territory", "invalid_nameName is too long for this database.",
+    ])
+    expect(within(policy).getByRole("alert")).toHaveTextContent("Name is too long")
+    expect(within(review).getByRole("region", { name: "Additions for pricing" })).toHaveTextContent("New table")
+    expect(review).not.toHaveTextContent(/primary key|rename|rebuild|saves clear|quotes|Add Text/)
+    expect(review.querySelector("details")).toBeNull()
+    expect(screen.queryByText(/Saved revision/)).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Check environments" })).not.toBeInTheDocument()
   })
 
   it("explains why SQL is unavailable with no configured databases", () => {

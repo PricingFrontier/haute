@@ -34,10 +34,13 @@ test.describe("workbench", () => {
     appendFileSync(resolve(e2eProjectRoot, "haute.toml"), '\n[workbench.store.dev]\nprovider = "sqlite"\n')
     writeFileSync(resolve(e2eProjectRoot, "connections.toml"), '[dev]\nprovider = "sqlite"\ndatabase = "dev.sqlite"\n')
     writeFormFiles({ "schema/policy.json": {
-      rows: "many", inputs: [{ name: "limit", type: "int", index: "numbered" }, { name: "region", type: "str" }],
+      rows: "many", inputs: [
+        { name: "limit", type: "int", index: "numbered" }, { name: "region", type: "str" },
+        { name: "territory", type: "str" }, { name: "flood_zone", type: "str" },
+      ],
     } })
     // An existing index collides with the desired name. The real comparison must
-    // explain that omission while still allowing the other tables' SQL to be copied.
+    // list only missing columns/tables and export their SQL without migration commentary.
     await page.route("**/api/workbench/store-catalogue", (route) => route.fulfill({
       json: { environment: "dev", checked_at: 1700000000000, tables: [{
         name: "policy", primary_key: ["quote_reference", "quote_option", "quote_row"], refers: true, quotes: 1,
@@ -61,7 +64,8 @@ test.describe("workbench", () => {
     await expect(dialog).toBeVisible()
     const code = await dialog.getByTestId("store-sql").innerText()
     expect(code).toContain("CREATE TABLE")
-    expect(code).toContain("policy.quote_row, renamed limit")
+    expect(code).not.toContain("policy.quote_row, renamed limit")
+    expect(code).not.toContain("Not changed here")
     await expect(dialog.getByText(/Changes needing manual work are explained in the SQL comments/)).toHaveCount(0)
     await expect(dialog.getByRole("alert")).toHaveCount(0)
     await dialog.getByRole("button", { name: "Copy SQL", exact: true }).click()
@@ -74,6 +78,12 @@ test.describe("workbench", () => {
     await expect(pane).toBeVisible()
     await expect(page.getByRole("toolbar", { name: "Workbench toolbar" })).toBeVisible()
     await expect(exportButton).toBeFocused()
+    await pane.getByText(/^Database changes/).click()
+    const additions = pane.getByTestId("store-plan-review")
+    await expect(additions.getByRole("region", { name: "Additions for policy" }).getByRole("listitem")).toHaveText(["territory", "flood_zone"])
+    await expect(additions.getByRole("region", { name: "Additions for quote_details" })).toContainText("New table")
+    await expect(additions).not.toContainText(/Needs attention|rename|Saved revision|quotes with values/)
+    await expect(additions.locator("details")).toHaveCount(0)
     const search = await pane.getByRole("textbox", { name: "Search fields" }).boundingBox()
     const refresh = await pane.getByRole("button", { name: "Refresh", exact: true }).boundingBox()
     const exported = await exportButton.boundingBox()

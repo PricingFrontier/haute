@@ -1,79 +1,50 @@
-import { AlertTriangle, RefreshCw, Undo2 } from "lucide-react"
 import type { WorkbenchStoreCompareResponse } from "../api/types"
-import { QuietAction } from "../components/form"
-import useStoreCompareStore, { currentComparison, environmentState } from "../stores/useStoreCompareStore"
+import useStoreCompareStore, { currentComparison } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchStore from "../stores/useWorkbenchStore"
-import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { tableColumns } from "../utils/quoteIdentity"
 import DatabaseDisclosure from "./DatabaseDisclosure"
 
-const QUIET = { color: "var(--text-secondary)" } as const
-type WorkbenchStoreChange = WorkbenchStoreCompareResponse["changes"][number]
-const ACTIONS: Record<WorkbenchStoreChange["kind"], string> = {
-  "create table": "Create table", "add column": "Add", "rename column": "Rename", "rename table": "Rename table",
-  "retype column": "Change type of", "reshape table": "Change rows of", "keep column": "Keep", "keep table": "Keep table",
-}
+type Change = WorkbenchStoreCompareResponse["changes"][number]
+const additionsOf = (answer: WorkbenchStoreCompareResponse) => answer.changes.filter((change) => change.kind === "add column" || change.kind === "create table")
 
-function ChangeRow({ change }: { change: WorkbenchStoreChange }) {
-  const name = `${change.table}${change.column === null ? "" : `.${change.column}`}`
-  return <DatabaseDisclosure title={`${ACTIONS[change.kind]} ${change.was !== null ? `${change.was} → ` : ""}${name}`}>
-    <p className="pb-1" style={QUIET}>{change.description}</p>
-    {change.quotes !== null && <p className="pb-1 text-[11px]" style={QUIET}>{change.quotes.toLocaleString()} {change.quotes === 1 ? "quote" : "quotes"} with values</p>}
-  </DatabaseDisclosure>
-}
-
-/** Secondary review and database actions stay collapsed on the main schema pane. */
+/** A compact inventory of what Export SQL will add. */
 export function DatabaseChanges() {
   const form = useWorkbenchFormStore((s) => s.form)
-  const revision = useWorkbenchFormStore((s) => s.revision)
-  const configured = useWorkbenchStore((s) => s.environments)
   const state = useStoreCompareStore()
   const answer = currentComparison(state, form)
   if (answer === null) return null
-  const { read } = environmentState(state)
-  const attention = answer.blocked.length > 0 || answer.manual.length > 0 || answer.changes.some((change) => change.disposition === "manual")
-  return <DatabaseDisclosure title={<span style={attention ? { color: "var(--warning)" } : QUIET}>Database changes{attention ? " · Needs attention" : ""}</span>} className="text-[11px]">
+  const additions = additionsOf(answer)
+  const columns = additions.filter((change) => change.kind === "add column").length
+  const tables = additions.length - columns
+  const count = [columns > 0 ? `${columns} ${columns === 1 ? "column" : "columns"}` : "", tables > 0 ? `${tables} ${tables === 1 ? "table" : "tables"}` : ""].filter(Boolean).join(" · ")
+  return <DatabaseDisclosure title={`Database changes · ${count || "No additions"}`} className="text-[11px] text-[var(--text-secondary)]">
     <StorePlanReview answer={answer} />
-    <div className="mt-3 flex flex-col gap-2 pb-2" style={QUIET}>
-      <p className="break-all">{answer.provider} · Saved revision {revision ?? "not recorded"}</p>
-      {read.status === "read" && <p>Schema snapshot fetched <time dateTime={new Date(read.checkedAt).toISOString()}>{new Date(read.checkedAt).toLocaleString()}</time></p>}
-      <QuietAction icon={RefreshCw} className="self-start" onClick={() => state.checkAll(configured)}>Check environments</QuietAction>
-    </div>
   </DatabaseDisclosure>
 }
 
-/** A brief review on the schema pane. Field decisions live in their own details. */
 export default function StorePlanReview({ answer }: { answer: WorkbenchStoreCompareResponse }) {
-  const form = useWorkbenchFormStore((s) => s.form)
-  const renames = useStoreCompareStore((s) => s.renames)
-  const unpair = useStoreCompareStore((s) => s.unpair)
-  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
-  const orphaned = renames.filter((rename) => !form?.schema.tables.some((table) => table.name === rename.table && tableColumns(table).some((column) => column.name === rename.column)))
-  const changes = answer.changes.filter((each) => each.disposition === "sql")
-  const manual = answer.changes.filter((each) => each.disposition === "manual")
-  const retained = answer.changes.filter((each) => each.disposition === "retained")
-  return <div className="flex flex-col gap-3" data-testid="store-plan-review">
-    {answer.blocked.length > 0 && <div role="alert" className="rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}>
-      <h3 className="flex items-center gap-1.5 font-semibold" style={{ color: "var(--warning)" }}><AlertTriangle size={13} aria-hidden="true" className="shrink-0" />Not included in SQL</h3>
-      <ul className="mt-1 list-disc pl-4" style={QUIET}>{answer.blocked.map((message) => <li key={message}>{message}</li>)}</ul>
-    </div>}
-    {orphaned.map((rename) => <div key={`${rename.table}.${rename.column}`} className="flex flex-wrap items-center gap-2">
-      <span>Removed field: {rename.table}.{rename.was} → {rename.column}</span>
-      <QuietAction icon={Undo2} disabled={previewing} onClick={() => unpair(rename.table, rename.column)}>Remove rename choice</QuietAction>
-    </div>)}
-    {answer.matches && answer.blocked.length === 0 && <p role="status" style={{ color: "var(--success)" }}>Compatible with this schema{retained.length > 0 ? " · unused database fields kept" : ""}.</p>}
-    {changes.length > 0 && <section aria-label="SQL changes">
-      <h3 className="mb-1 font-semibold">{changes.length} {changes.length === 1 ? "change" : "changes"} to apply</h3>
-      {changes.map((change) => <ChangeRow key={`${change.table}.${change.column}.${change.kind}`} change={change} />)}
-    </section>}
-    {(manual.length > 0 || answer.manual.length > 0) && <section aria-label="Manual work">
-      <h3 className="flex items-center gap-1.5 font-semibold" style={{ color: "var(--warning)" }}><AlertTriangle size={13} aria-hidden="true" className="shrink-0" />Manual work required</h3>
-      {manual.map((change) => <ChangeRow key={`${change.table}.${change.column}.${change.kind}`} change={change} />)}
-      {answer.manual.map((message) => <p key={message} className="mt-1" style={QUIET}>{message}</p>)}
-    </section>}
-    {retained.length > 0 && <DatabaseDisclosure className="text-[var(--text-secondary)]" title={`${retained.length} unused database ${retained.length === 1 ? "item" : "items"} kept`}>
-      <section aria-label="Retained in database" className="pt-1">{retained.map((change) => <ChangeRow key={`${change.table}.${change.column}`} change={change} />)}</section>
-    </DatabaseDisclosure>}
+  const groups = new Map<string, Change[]>()
+  for (const change of additionsOf(answer)) {
+    const group = groups.get(change.table)
+    if (group) group.push(change)
+    else groups.set(change.table, [change])
+  }
+  return <div className="flex flex-col gap-3 py-1" data-testid="store-plan-review">
+    {groups.size === 0 && <p>No missing tables or columns.</p>}
+    {[...groups].map(([table, changes]) => {
+      const created = changes.find((change) => change.kind === "create table")
+      return <section key={table} aria-label={`Additions for ${table}`}>
+        <div className="flex items-baseline gap-2">
+          <span className="break-all font-medium text-[var(--text-primary)]">{table}</span>
+          {created && <span className="shrink-0 text-[var(--text-muted)]">New table</span>}
+        </div>
+        {created?.disposition === "manual" && <p role="alert" className="mt-1 break-words text-[var(--warning)]">{created.description}</p>}
+        {changes.some((change) => change.column !== null) && <ul className="mt-1 grid gap-1 pl-3">
+          {changes.filter((change) => change.column !== null).map((change) => <li key={change.column}>
+            <code className="break-all">{change.column}</code>
+            {change.disposition === "manual" && <p role="alert" className="mt-1 break-words text-[var(--warning)]">{change.description}</p>}
+          </li>)}
+        </ul>}
+      </section>
+    })}
   </div>
 }

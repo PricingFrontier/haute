@@ -1259,9 +1259,7 @@ def test_the_tables_sql_starts_from_none_when_asked_or_when_the_branch_holds_no_
     # From the branch, a form it already holds has nothing to change.
     same = _store_sql(form(POLICY)).json()
     assert same["branch"] == "main"
-    assert same["environments"][0]["sql"] == (
-        "-- The tables already fit the form: nothing to change.\n"
-    )
+    assert same["environments"][0]["sql"] == "-- No missing tables or columns.\n"
 
 
 def test_the_tables_sql_with_no_environment_declared_is_none(project: Path) -> None:
@@ -1486,8 +1484,8 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
     assert "ADD COLUMN value DOUBLE" in body["sql"]
     assert "RENAME" not in body["sql"] and "DROP " not in body["sql"]
     change = next(each for each in body["changes"] if each["column"] == "value")
-    assert change["disposition"] == "manual"
-    assert "Transfer values" in change["description"]
+    assert change["kind"] == "add column" and change["disposition"] == "sql"
+    assert "initially empty" in change["description"]
 
     import sqlite3
 
@@ -1498,7 +1496,7 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
         raw.close()
     again = _compare(renamed, _catalogue().json()["tables"]).json()
     assert again["matches"], again["differences"]
-    assert "Keep unused policy_details.exposure" in again["sql"]
+    assert "Keep unused" not in again["sql"]
     assert "ADD COLUMN" not in again["sql"]
 
 
@@ -1553,16 +1551,13 @@ def test_store_export_adds_new_names_without_moving_or_removing_old_values(
     assert added["kind"] == "add column" and added["disposition"] == "sql"
     assert "initially empty" in added["description"]
     renamed = changes["policy_details", "territory"]
-    assert renamed["kind"] == "rename column" and renamed["was"] == "state"
-    assert renamed["quotes"] == 1
-    assert renamed["disposition"] == "manual"
-    assert "Transfer values" in renamed["description"]
-    retained = changes["policy_details", "legacy"]
-    assert retained["disposition"] == "retained"
-    assert "until the row is deleted" in retained["description"]
-    output = changes["pricing_output", "old_premium"]
-    assert output["disposition"] == "retained"
-    assert "later saves clear" in output["description"]
+    assert renamed["kind"] == "add column" and renamed["was"] is None
+    assert renamed["disposition"] == "sql"
+    assert set(changes) == {("policy_details", "flood_zone"), ("policy_details", "territory")}
+    assert {(extra["table"], extra["column"]) for extra in review["extras"]} >= {
+        ("policy_details", "legacy"),
+        ("pricing_output", "old_premium"),
+    }
     assert not review["matches"]
     assert database.read_bytes() == before
 
@@ -1576,10 +1571,10 @@ def test_store_export_adds_new_names_without_moving_or_removing_old_values(
     verified = _compare(proposed, _catalogue().json()["tables"]).json()
     assert verified["matches"]
     assert verified["blocked"] == []
-    assert all(each["disposition"] == "retained" for each in verified["changes"])
+    assert verified["changes"] == []
 
 
-def test_store_export_explains_an_unresolved_rename_alongside_valid_additions(
+def test_store_export_ignores_an_unresolved_rename_when_adding_missing_columns(
     project: Path,
 ) -> None:
     enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
@@ -1595,14 +1590,17 @@ def test_store_export_explains_an_unresolved_rename_alongside_valid_additions(
         "Cannot rename policy_details.missing_source to value in this database. "
         "Check the source and destination before transferring data manually."
     )
-    assert diagnostic in review["sql"]
+    assert diagnostic not in review["sql"]
+    assert "Cannot rename" not in review["sql"]
     assert review["blocked"] == [diagnostic]
     assert "ADD COLUMN value DOUBLE" in review["sql"]
     assert "RENAME" not in review["sql"] and "DROP " not in review["sql"]
 
 
-def test_store_export_keeps_an_index_collision_manual_and_applies_valid_additions(
+@pytest.mark.parametrize("rows", ["one", "many"])
+def test_store_export_adds_columns_despite_existing_index_or_row_differences(
     project: Path,
+    rows: str,
 ) -> None:
     import sqlite3
 
@@ -1610,9 +1608,9 @@ def test_store_export_keeps_an_index_collision_manual_and_applies_valid_addition
     old = form(
         {
             "name": "perils",
-            "rows": "many",
+            "rows": rows,
             "inputs": [
-                column("quote_row", "int", index="numbered"),
+                column("quote_row", "int", **({"index": "numbered"} if rows == "many" else {})),
                 column("peril", "int"),
             ],
         },
@@ -1631,7 +1629,8 @@ def test_store_export_keeps_an_index_collision_manual_and_applies_valid_addition
             "name": "perils",
             "rows": "many",
             "inputs": [
-                column("peril", "int", index="numbered"),
+                column("PERIL" if rows == "one" else "peril", "int", index="numbered"),
+                column("new_cover", "float"),
             ],
         },
         {**POLICY, "inputs": [*POLICY["inputs"], column("flood_zone")]},
@@ -1642,8 +1641,9 @@ def test_store_export_keeps_an_index_collision_manual_and_applies_valid_addition
 
     assert response.status_code == 200, response.text
     review = response.json()
-    assert any("perils.quote_row, renamed peril" in message for message in review["blocked"])
-    assert all(message in review["sql"] for message in review["blocked"])
+    assert "ALTER TABLE perils ADD COLUMN new_cover DOUBLE" in review["sql"]
+    assert "renamed" not in review["sql"] and "Keep unused" not in review["sql"]
+    assert {change["kind"] for change in review["changes"]} <= {"create table", "add column"}
     assert "ALTER TABLE policy_details ADD COLUMN flood_zone" in review["sql"]
     assert "CREATE TABLE pricing_output" in review["sql"]
     assert "RENAME" not in review["sql"] and "DROP " not in review["sql"]
@@ -1651,8 +1651,15 @@ def test_store_export_keeps_an_index_collision_manual_and_applies_valid_addition
     with sqlite3.connect(database) as raw:
         raw.executescript(review["sql"])
         assert raw.execute("SELECT quote_row, peril FROM perils").fetchall() == [(1, 7)]
-        assert raw.execute("PRAGMA table_info(perils)").fetchall() == before_key
+        after = raw.execute("PRAGMA table_info(perils)").fetchall()
+        assert after[: len(before_key)] == before_key
+        assert after[-1][1] == "new_cover" and after[-1][5] == 0
+        assert raw.execute("SELECT new_cover FROM perils").fetchall() == [(None,)]
         assert "flood_zone" in {row[1] for row in raw.execute("PRAGMA table_info(policy_details)")}
+
+    again = _compare(proposed, _catalogue().json()["tables"]).json()
+    assert again["changes"] == []
+    assert again["sql"] == "-- No missing tables or columns.\n"
 
 
 def test_store_review_requires_release_coordination_for_manual_key_repairs(project: Path) -> None:

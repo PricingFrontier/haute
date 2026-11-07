@@ -388,11 +388,11 @@ async def store_catalogue(body: WorkbenchStoreCatalogueRequest) -> WorkbenchStor
 def _store_compare(
     config: WorkbenchConfig, body: WorkbenchStoreCompareRequest
 ) -> WorkbenchStoreCompareResponse:
-    from dataclasses import asdict, replace
+    from dataclasses import asdict
 
     from haute._quote_store import render_sql
     from haute._quote_store._catalogue import Catalogue, CatalogueColumn, CatalogueTable
-    from haute._quote_store._compare import Rename, compare
+    from haute._quote_store._compare import Rename, additions_plan, compare
     from haute._quote_store._environment import connection_of
     from haute._quote_store._migrate import PROVIDER_DIALECTS
     from haute._quote_store._providers import PROVIDERS
@@ -431,6 +431,7 @@ def _store_compare(
         renames=renames,
     )
     unresolved = rename_problems(renames, comparison.renames, catalogue, spec)
+    additions = additions_plan(spec, catalogue)
     return WorkbenchStoreCompareResponse(
         differences=[
             WorkbenchStoreDifference(
@@ -455,7 +456,7 @@ def _store_compare(
         provider=provider.name,
         changes=[
             WorkbenchStoreChange(**asdict(each))
-            for each in review_plan(comparison.plan, spec, provider, additions_only=True)
+            for each in review_plan(additions, spec, provider, additions_only=True)
         ],
         manual=list(comparison.plan.notes),
         blocked=[
@@ -465,7 +466,7 @@ def _store_compare(
         requires_maintenance=bool(comparison.plan.notes)
         or any(step.kind in MAINTENANCE_KINDS for step in comparison.plan.steps),
         sql=render_sql(
-            replace(comparison.plan, notes=(*comparison.plan.notes, *unresolved)),
+            additions,
             spec,
             PROVIDER_DIALECTS[provider.name],
             sql_schema=connection.schema,
