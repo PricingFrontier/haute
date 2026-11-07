@@ -1,11 +1,11 @@
 /**
  * A schema column's row under Keys, Inputs or Outputs: its type and name, its
  * summary to their right, dragged or moved within its block or into the other, removed and opened
- * for its details; and the row of a column the quote store keeps (specs/workbench).
+ * for its details (specs/workbench).
  */
-import { SlidersHorizontal, X, type LucideIcon } from "lucide-react"
+import { SlidersHorizontal, X } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
-import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
+import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
 import type { RowDrag } from "../../hooks/useListReorder"
 import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
@@ -34,13 +34,6 @@ import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
-
-/** What a column the quote store keeps holds, drawn as the marker of the column type nearest it. */
-const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: LucideIcon; color: string }> = {
-  int: COLUMN_TYPES.int,
-  str: COLUMN_TYPES.str,
-  datetime: { ...COLUMN_TYPES.date, label: "Date and time" },
-}
 
 /** The types the index can be given: Integer and Text alone. */
 const INDEX_TYPE_OPTIONS = COLUMN_TYPE_OPTIONS.filter((option) => INDEX_TYPES.has(option.value))
@@ -92,7 +85,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.name)
   // The quote's reference and option are Haute's: nothing of them changes.
-  const identity = isIdentityColumn(table, column)
+  const identity = isIdentityColumn(table, column) || (locked && IDENTITY_NAMES.has(column.name))
   const keyColumn = IDENTITY_NAMES.has(column.name) || column.index !== null
   // Its name and type stay, and it stays: in quote_details, the quote's identity, and in Preview.
   const fixed = locked || readOnly || identity
@@ -213,36 +206,6 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
       {open && (identity
         ? <div className="mr-12 ml-7 max-w-[32rem] px-2 py-1.5 text-[11px]"><ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} /></div>
         : <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />)}
-    </div>
-  )
-}
-
-/** A store-owned column stays fixed, with the same database status and details as a form field. */
-export function StoreColumnRow({ table, column, open, onToggleDetails }: {
-  table: SchemaTable; column: WorkbenchStoreColumn; open: boolean; onToggleDetails: () => void
-}) {
-  const { label, icon: Icon, color } = KEPT_KINDS[column.kind]
-  const database = useStoreCompareStore((s) => s.environment)
-  return (
-    <div className="flex flex-col gap-1 rounded" data-testid={`schema-store-column-${column.name}`}>
-      <div className="flex items-stretch gap-1 rounded">
-        <span className="w-3 shrink-0" aria-hidden="true" />
-        <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
-          <Icon size={12} aria-hidden="true" />
-        </span>
-        <span
-          className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
-          style={{ ...LOCKED_FIELD_STYLE, color: "var(--text-muted)" }}
-          title="Kept by the quote store"
-        >
-          {column.name}
-        </span>
-        <span className="w-11 shrink-0" aria-hidden="true" />
-        <ColumnDatabaseStatus table={table.name} column={column.name} open={open} onOpen={onToggleDetails} />
-      </div>
-      {open && database !== null && <div className="mr-12 ml-7 max-w-[32rem] px-2 py-1.5 text-[11px]">
-        <ColumnDatabaseDetails table={table} column={column} readOnly />
-      </div>}
     </div>
   )
 }

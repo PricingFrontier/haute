@@ -2,12 +2,12 @@
  * A schema table's block: its name and rows, its problems, its shared Keys followed by
  * Inputs and Outputs, each with Add column even while empty in Build. Ordinary columns
  * move within their block or into the other; keys keep
- * their canonical placement while shown once. Those the quote store keeps in it are locked,
- * under its own columns (specs/workbench).
+ * their canonical placement while shown once. Managed metadata is hidden, with its
+ * database problems available in the table's details (specs/workbench).
  */
 import { ChevronDown, ChevronRight, Lock, Trash2 } from "lucide-react"
 import { useRef, useState, type DragEvent, type KeyboardEvent } from "react"
-import type { FormSpec, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
+import type { FormSpec, SchemaTable } from "../../api/types"
 import { CommittedTextField, INPUT_STYLE, QuietAction } from "../../components/form"
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
@@ -15,19 +15,15 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
+import { type Block, IDENTITY_NAMES, isIdentityColumn } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
-import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { DatabaseMark } from "../StoreCompare"
 import { TableDatabaseDetails } from "../ColumnDatabaseDetails"
-import { ColumnRow, StoreColumnRow } from "./ColumnRow"
+import { ColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
-
-/** The quote_details columns the app sets, by name, in order: "a, b and c". */
-const appSetNames = QUOTE_DETAILS_COLUMNS.map(([name]) => name).filter((name) => QUOTE_DETAILS_MANAGED.has(name))
-const APP_SET = `${appSetNames.slice(0, -1).join(", ")} and ${appSetNames[appSetNames.length - 1]}`
+import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, schemaColumns, selectAll, usedBy } from "./schemaText"
 
 const ROWS: ReadonlyArray<{ value: SchemaTable["rows"]; label: string; title: string }> = [
   { value: "one", label: "One row", title: "One row per quote, such as policy details" },
@@ -56,8 +52,6 @@ interface TableBlockProps {
    * table open and nothing in it added or moved; null while it is not.
    */
   matched: ReadonlySet<string> | null
-  /** The columns the quote store keeps in the table that the form does not, shown under its own while it is not searched. */
-  kept: readonly WorkbenchStoreColumn[]
   added: string | null
   setAdded: (id: string | null) => void
   details: string | null
@@ -67,7 +61,7 @@ interface TableBlockProps {
   problems: string[]
 }
 
-export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, matched, kept, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
+export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, matched, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const addToast = useToastStore((s) => s.addToast)
   const schemaTableRenamed = useWorkbenchViewStore((s) => s.schemaTableRenamed)
@@ -131,7 +125,8 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
     onFocus: added === id ? selectAll : undefined,
     onBlur: () => setAdded(null),
   })
-  const count = tableColumns(table).length
+  const visible = new Set(schemaColumns(table).map((column) => column.name))
+  const count = visible.size
   // Haute's quote_details table keeps its structure, and in Preview every table keeps it.
   const locked = isQuoteDetails(table)
   const fixed = locked || readOnly
@@ -141,7 +136,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
   const columns = BLOCKS.flatMap(({ block: own }) => table[own].map((column, at) => ({
     column, own, at,
     isKey: column.index !== null || isIdentityColumn(table, column) || (locked && IDENTITY_NAMES.has(column.name)),
-  }))).filter(({ column }) => matched === null || matched.has(column.name))
+  }))).filter(({ column }) => visible.has(column.name) && (matched === null || matched.has(column.name)))
   const keys = columns.filter(({ isKey }) => isKey)
 
   const insertAt = (into: Block, at: number) => {
@@ -254,7 +249,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           {count} {count === 1 ? "col" : "cols"}
           {problems.length > 0 && `, ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`}
         </span>
-        <DatabaseMark table={table.name} />
+        <DatabaseMark table={table} />
         {!fixed && (
           <IconButton
             icon={Trash2}
@@ -309,13 +304,10 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
               </div>
             )
           })}
-          {!filtering && kept.map((column) => <StoreColumnRow key={column.name} table={table} column={column}
-            open={details === columnKey(table.name, column.name)}
-            onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))} />)}
-          {!filtering && <TableDatabaseDetails table={table.name} />}
+          {!filtering && <TableDatabaseDetails table={table} />}
           {locked && (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Kept with each quote and listed on the Quotes page; the app sets {APP_SET}.
+              Quote details for the form. Haute manages workflow, history and storage fields automatically.
             </p>
           )}
           {problems.map((message) => (

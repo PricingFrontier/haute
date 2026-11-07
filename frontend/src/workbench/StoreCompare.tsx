@@ -1,10 +1,11 @@
 /** Compact database selection; column decisions stay beside the schema fields. */
 import { RefreshCw } from "lucide-react"
-import type { WorkbenchStoreDifference } from "../api/types"
+import type { SchemaTable, WorkbenchStoreDifference } from "../api/types"
 import { FIELD_CLASS, INPUT_STYLE, QuietAction } from "../components/form"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import { schemaColumns } from "./schema/schemaText"
 
 export function CompareControls() {
   const environments = useWorkbenchStore((s) => s.environments)
@@ -46,12 +47,13 @@ const MARKS: Record<WorkbenchStoreDifference["kind"], string> = {
 }
 
 /** Table marks accompany their local database-details disclosure. */
-export function DatabaseMark({ table }: { table: string }) {
+export function DatabaseMark({ table }: { table: SchemaTable }) {
   const form = useWorkbenchFormStore((s) => s.form)
   const state = useStoreCompareStore()
-  const differences = currentComparison(state, form)?.differences.filter((each) => each.table === table && each.column === null) ?? []
+  const visible = new Set(schemaColumns(table).map((column) => column.name))
+  const differences = currentComparison(state, form)?.differences.filter((each) => each.table === table.name && (each.column === null || !visible.has(each.column))) ?? []
   if (differences.length === 0) return null
-  return <span data-testid={`database-mark-${table}`} className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium"
+  return <span data-testid={`database-mark-${table.name}`} className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium"
     style={{ color: "var(--warning)", background: "var(--bg-base)" }} title={differences.map((each) => each.message).join("\n")}>
     {differences.length === 1 ? MARKS[differences[0].kind] : `${differences.length} differences`}
   </span>

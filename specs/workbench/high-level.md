@@ -807,13 +807,12 @@ Out of scope:
     a running app, permissions to run that app, or which migrations were executed.
 
     With a database selected, each field's usual configuration-summary area shows its
-    database status, including matches and pending/failed checks. This includes the
-    internal storage columns shown under `quote_details`, such as `quote_version`,
-    `saved_at` and `saved_by`: each has its own status and read-only database details.
-    Missing, mistyped or incorrectly nullable internal columns identify the affected
-    field and retain their manual-repair notes in the SQL review. These rows offer no
-    schema editing or rename choices. Their status and details disappear under Local,
-    and a pending or failed comparison never keeps an old match. Each field's status opens the
+    database status, including matches and pending/failed checks. Hidden managed and
+    storage columns remain in every database comparison and SQL plan. Their differences
+    identify the affected field in the table's collapsed Database details and contribute
+    to its warning, with no field configuration or rename controls. Manual-repair notes
+    remain in the SQL review. Local, a pending comparison or a failed check hides stale
+    table details and warnings. Each visible field's status opens the
     existing field details, where a Database section explains the difference (including
     creation of a missing table) and accepts
     the information needed to resolve it. A missing field offers Create a new column or
@@ -1036,9 +1035,16 @@ Out of scope:
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name and rows, its inputs alone and its columns' names,
   types and order are fixed, it is neither deleted nor given a column, and no table moves
-  above it; its columns take labels, groups and help, and
-  those the underwriter types their defaults, placeholders and rules, while the columns
-  the app sets take a label, a group and help alone. Every other table's `quote_reference` and
+  above it. Its schema view shows eight fields: `quote_reference` and `quote_option`
+  locked under Keys, without configuration buttons, and `quote_name`, `insured`, `broker`,
+  `inception_date`, `expiry_date` and `is_renewal` under Inputs, with labels, groups, help,
+  defaults, placeholders and rules where applicable. Its field count is eight. The
+  remaining managed fields (`stage`, `assignee`, `archived`, `created_date`, `created_by`,
+  `modified_date`, `modified_by`, `haute_version`) and all ten storage-only fields are
+  hidden in Build, Preview and schema search. Existing forms, field settings, sheets,
+  runtime behavior and SQL definitions are preserved; this is schema-pane visibility
+  only. A user column with the same name in another table remains visible and editable.
+  Every other table's `quote_reference` and
   `quote_option` appear in Keys, locked,
   their names on a grey lighter than the pane's: not
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
@@ -1046,12 +1052,13 @@ Out of scope:
   canonical placement and their presence in the pricing request and response are unchanged.
   The sheets are
   never offered them: a component's fields, a Show when's columns and a
-  Chart's rows leave them out. Under each table's own columns are those the quote store
-  keeps in it that the form does not, quote_details' own, each with what it holds and its
-  name on that grey. Nothing of them changes, and a search shows none of them. Keys follows
+  Chart's rows leave them out. Storage-only columns are not listed as schema rows.
+  Database problems with hidden columns remain accessible in the table's database details.
+  Keys follows
   the same name-or-label search as other fields and is hidden when none of its columns match;
-  it remains visible in Preview with its controls read only. A column's Label and rules button and its Remove always show,
-  but the index's Remove, which it has none of.
+  it remains visible in Preview with its controls read only. Label and rules is shown
+  for configurable fields; fixed identity keys have no configuration button. Remove
+  is shown only for removable columns, never for keys or quote_details fields.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas

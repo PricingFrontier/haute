@@ -1,11 +1,12 @@
 /** Database information and explicit rename choices in each field's existing details. */
 import { Undo2 } from "lucide-react"
-import type { SchemaColumn, SchemaTable, WorkbenchStoreColumn, WorkbenchStoreCompareResponse, WorkbenchStoreDifference } from "../api/types"
+import type { SchemaColumn, SchemaTable, WorkbenchStoreCompareResponse, WorkbenchStoreDifference } from "../api/types"
 import { COMPACT_FIELD_CLASS, EditorLabel, INPUT_STYLE, QuietAction } from "../components/form"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { IDENTITY_NAMES } from "../utils/quoteIdentity"
 import DatabaseDisclosure from "./DatabaseDisclosure"
+import { schemaColumns } from "./schema/schemaText"
 
 const QUIET = { color: "var(--text-muted)" } as const
 const DESCRIBED_DIFFERENCES: Partial<Record<WorkbenchStoreCompareResponse["changes"][number]["kind"], WorkbenchStoreDifference["kind"]>> = {
@@ -50,11 +51,11 @@ export function ColumnDatabaseStatus({ table, column, open, onOpen }: { table: s
   </button>
 }
 
-export function ColumnDatabaseDetails({ table, column, readOnly }: { table: SchemaTable; column: SchemaColumn | WorkbenchStoreColumn; readOnly: boolean }) {
+export function ColumnDatabaseDetails({ table, column, readOnly }: { table: SchemaTable; column: SchemaColumn; readOnly: boolean }) {
   const { state, answer, additional, changes, missing, label, failure, pairing, invalidRename } = useColumnDatabase(table.name, column.name)
   if (state.environment === null) return null
   const candidates = answer?.extras.filter((each) => each.form_table === table.name && each.column !== null) ?? []
-  const ordinary = "index" in column && column.index === null && !IDENTITY_NAMES.has(column.name)
+  const ordinary = column.index === null && !IDENTITY_NAMES.has(column.name)
   const canPair = ordinary && (pairing !== undefined || (missing && candidates.length > 0))
   return <section aria-label={`Database details for ${table.name}.${column.name}`} className="col-span-2 mb-2 flex min-w-0 flex-col gap-2 border-b pb-2 leading-relaxed" style={{ borderColor: "var(--border)" }}>
     <div className="flex items-baseline justify-between gap-2">
@@ -87,20 +88,21 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
   </section>
 }
 
-export function TableDatabaseDetails({ table }: { table: string }) {
+export function TableDatabaseDetails({ table }: { table: SchemaTable }) {
   const state = useStoreCompareStore()
   const form = useWorkbenchFormStore((s) => s.form)
   const answer = currentComparison(state, form)
   if (answer === null) return null
-  const differences = answer.differences.filter((each) => each.table === table && each.column === null)
-  const retained = answer.changes.filter((each) => each.table === table && each.disposition === "retained")
-  const extras = answer.extras.filter((each) => each.form_table === table && each.column !== null && !retained.some((change) => change.column === each.column))
-  const reshape = answer.changes.some((each) => each.table === table && each.kind === "reshape table")
+  const visible = new Set(schemaColumns(table).map((column) => column.name))
+  const differences = answer.differences.filter((each) => each.table === table.name && (each.column === null || !visible.has(each.column)))
+  const retained = answer.changes.filter((each) => each.table === table.name && each.disposition === "retained")
+  const extras = answer.extras.filter((each) => each.form_table === table.name && each.column !== null && !retained.some((change) => change.column === each.column))
+  const reshape = answer.changes.some((each) => each.table === table.name && each.kind === "reshape table")
   const count = retained.length + extras.length
   if (differences.length === 0 && count === 0) return null
   return <DatabaseDisclosure className="mt-1 px-1 text-[11px] text-[var(--text-muted)]"
     title={`Database details${count > 0 ? ` · ${count} ${extras.length === 0 ? "retained" : "database-only"} ${count === 1 ? "field" : "fields"}` : ""}`}>
-    <div role="region" aria-label={`Database details for ${table}`} className="flex flex-col gap-2 pb-1 leading-relaxed">
+    <div role="region" aria-label={`Database details for ${table.name}`} className="flex flex-col gap-2 pb-1 leading-relaxed">
       {differences.map((each) => <p key={each.message}>{each.message}</p>)}
       {retained.map((each) => <div key={each.column}><code>{each.column}</code><p>{each.description}</p>{each.quotes !== null && each.quotes > 0 && <p>{each.quotes} quotes with values</p>}</div>)}
       {extras.map((each) => <div key={each.column}><code>{each.column}</code>

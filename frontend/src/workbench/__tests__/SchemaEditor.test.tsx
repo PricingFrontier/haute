@@ -207,27 +207,16 @@ describe("SchemaEditor", () => {
     // The columns the app sets are not marked so beside their names.
     expect(within(details).queryByText("set by the app")).toBeNull()
 
-    // A column the underwriter types takes a label, a default and rules; one the app sets, a
-    // label and a group alone.
+    // Only fields the underwriter types have configuration controls.
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of insured" }))
     commit(screen.getByRole("textbox", { name: "Label of insured" }), "Client")
     commit(screen.getByRole("textbox", { name: "Default of insured" }), "Acme Ltd")
     fireEvent.click(screen.getByRole("checkbox", { name: "insured is required" }))
-    fireEvent.click(screen.getByRole("button", { name: "Label and rules of stage" }))
-    commit(screen.getByRole("textbox", { name: "Label of stage" }), "Status")
-    commit(screen.getByRole("combobox", { name: "Group of stage" }), "Workflow")
-    expect(screen.queryByRole("checkbox", { name: "stage is required" })).toBeNull()
-    expect(screen.queryByLabelText("Default of stage")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Label and rules of stage" })).toBeNull()
     expect(current().schema.tables[0].inputs.find((column) => column.name === "insured")).toMatchObject({
       label: "Client",
       required: true,
       default_value: "Acme Ltd",
-    })
-    expect(current().schema.tables[0].inputs.find((column) => column.name === "stage")).toMatchObject({
-      label: "Status",
-      group: "Workflow",
-      required: false,
-      default_value: "",
     })
   })
 
@@ -803,44 +792,46 @@ describe("SchemaEditor", () => {
     expect(screen.queryByTestId("schema-column-exposure-min")).toBeNull()
   })
 
-  it("shows the columns the quote store keeps in each table under the table's own, locked, with nothing to change", () => {
-    load(form(detailsTable(), POLICY, LAYERS))
-    useWorkbenchStore.setState({
-      storeColumns: {
-        quote_details: [
-          { name: "quote_version", kind: "int" },
-          { name: "saved_at", kind: "datetime" },
-          { name: "priced_release", kind: "str" },
-        ],
-      },
-    })
-    render(<SchemaEditor />)
-
-    const details = tableNamed("quote_details")
-    const version = within(details).getByTestId("schema-store-column-quote_version")
-    expect(version).toHaveTextContent("quote_version")
-    expect(within(version).getByTitle("Kept by the quote store")).toHaveTextContent("quote_version")
-    expect(within(version).getByTitle("Integer")).toBeInTheDocument()
-    expect(within(within(details).getByTestId("schema-store-column-saved_at")).getByTitle("Date and time")).toBeInTheDocument()
-    // After the table's own columns, under its inputs, and none of them.
-    const inputs = within(details).getByRole("group", { name: "quote_details Inputs" })
-    expect(version.previousElementSibling).toBe(inputs)
-    expect(within(inputs).getAllByTestId(/^schema-column-[a-z_]+$/).at(-1)).toHaveAttribute("data-testid", "schema-column-haute_version")
-    expect(columnNames("quote_details")).not.toContain("quote_version")
-    // Read only: no field, button or menu of their own.
-    for (const name of ["quote_version", "saved_at", "priced_release"]) {
-      const row = within(details).getByTestId(`schema-store-column-${name}`)
-      expect(within(row).queryByRole("textbox")).toBeNull()
-      expect(within(row).queryByRole("button")).toBeNull()
-      expect(within(row).queryByRole("combobox")).toBeNull()
+  it.each([false, true])("shows only form fields and fixed keys in quote_details without changing the form (readOnly=%s)", (readOnly) => {
+    const details = detailsTable()
+    details.inputs.find((each) => each.name === "modified_date")!.label = "Last changed"
+    const original = form(details, table("audit", { inputs: [column("modified_date")] }))
+    load(original)
+    useWorkbenchStore.setState({ storeColumns: { quote_details: [
+      { name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" },
+      { name: "saved_by", kind: "str" }, { name: "priced_release", kind: "str" },
+      { name: "source_reference", kind: "str" }, { name: "source_option", kind: "int" },
+      { name: "source_relation", kind: "str" }, { name: "handover_note", kind: "str" },
+      { name: "note_by", kind: "str" }, { name: "note_at", kind: "datetime" },
+    ] } })
+    render(<SchemaEditor readOnly={readOnly} />)
+    const shown = within(tableNamed("quote_details"))
+    expect(nameFields(tableNamed("quote_details"))).toEqual([
+      "quote_reference", "quote_option", "quote_name", "insured", "broker",
+      "inception_date", "expiry_date", "is_renewal",
+    ])
+    expect(shown.getByText("8 cols")).toBeInTheDocument()
+    expect(shown.queryByTestId(/^schema-store-column-/)).toBeNull()
+    expect(shown.getAllByRole("button", { name: /^Label and rules of / })).toHaveLength(6)
+    for (const name of ["quote_reference", "quote_option"]) {
+      const key = within(shown.getByTestId(`schema-column-${name}`))
+      expect(key.getByRole("textbox", { name: "Column name" })).toHaveAttribute("readonly")
+      expect(key.queryByRole("button", { name: `Label and rules of ${name}` })).toBeNull()
     }
-    // The store keeps no column of its own in any other table: a many-row table's rows are numbered by its index.
-    expect(within(tableNamed("layers")).queryByTestId(/^schema-store-column-/)).toBeNull()
-    expect(within(tableNamed("policy_details")).queryByTestId(/^schema-store-column-/)).toBeNull()
-
-    // A search shows the form's columns alone.
-    fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "quote" } })
-    expect(screen.queryByTestId(/^schema-store-column-/)).toBeNull()
+    // User fields in other tables are not hidden by their name.
+    fireEvent.click(within(tableNamed("audit")).getByRole("button", { name: "Label and rules of modified_date" }))
+    expect(screen.getByRole("textbox", { name: "Label of modified_date" })).toBeInTheDocument()
+    const search = screen.getByRole("textbox", { name: "Search fields" })
+    for (const query of ["Last changed", "saved_at", "haute_version", "stage"]) {
+      fireEvent.change(search, { target: { value: query } })
+      expect(screen.getByText("No fields match")).toBeInTheDocument()
+      expect(screen.queryByRole("region", { name: "Table quote_details" })).toBeNull()
+    }
+    fireEvent.change(search, { target: { value: "insured" } })
+    expect(nameFields(tableNamed("quote_details"))).toEqual(["insured"])
+    expect(current()).toEqual(original)
+    expect(current().schema.tables[0].inputs).toHaveLength(16)
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
   })
 
   it.each([false, true])("shows shared keys once before inputs and outputs (readOnly=%s)", (readOnly) => {
@@ -866,7 +857,7 @@ describe("SchemaEditor", () => {
       const groups = within(tableNamed(each.name)).getAllByRole("group")
       expect(groups[0]).toBe(keys)
       // Every column has exactly one row, including keys shared by the two sides.
-      expect(within(tableNamed(each.name)).getAllByTestId(/^schema-column-[a-z_]+$/)).toHaveLength(each.inputs.length + each.outputs.length)
+      expect(within(tableNamed(each.name)).getAllByTestId(/^schema-column-[a-z_]+$/)).toHaveLength(each.name === "quote_details" ? 8 : each.inputs.length + each.outputs.length)
     }
     expect(everyName("items", "Inputs")).toEqual(["value"])
     expect(everyName("items", "Outputs")).toEqual(["premium"])
@@ -874,7 +865,7 @@ describe("SchemaEditor", () => {
     expect(everyName("policy_details", "Outputs")).toEqual(["rate"])
     expect(everyName("cover", "Inputs")).toEqual(["state"])
     expect(everyName("layers", "Outputs")).toEqual(["limit"])
-    expect(everyName("quote_details", "Inputs")).toEqual(original.schema.tables[0].inputs.slice(2).map((column) => column.name))
+    expect(everyName("quote_details", "Inputs")).toEqual(["quote_name", "insured", "broker", "inception_date", "expiry_date", "is_renewal"])
     expect(screen.queryByTestId(/^schema-output-carried-/)).toBeNull()
 
     const search = screen.getByRole("textbox", { name: "Search fields" })

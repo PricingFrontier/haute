@@ -4,10 +4,9 @@
  * an edit is one undo step; Enter in the last column's name adds the next column. A table or a
  * column is dragged by its grip, or moved by Alt+Up and Alt+Down in its name, as the step
  * editor's cards move. Removing what a sheet shows asks first. Haute's quote_details table,
- * first, keeps its structure and its place: its columns' labels, groups and help, and the
- * rules and defaults of those the underwriter types, are the project's. Under each table's
- * columns are those the quote store keeps in it that the form does not, locked, as the newest
- * fetch of the workbench's tables names them. Read only, in Preview, it shows the schema as it
+ * first, shows its two fixed keys and six form fields. Managed and storage-only fields
+ * stay in the stored schema, with database issues in the table's details.
+ * Read only, in Preview, it shows the schema as it
  * is: a table still collapses and a column's details still open, but nothing in it changes.
  * It opens again as it was left: its tables collapsed, the column whose details are open, its
  * scroll and its search are the view store's. The search shows only the columns whose name or
@@ -15,29 +14,23 @@
  * moved, so each edit is to a column it shows.
  */
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
-import type { SchemaTable, WorkbenchStoreColumn } from "../api/types"
+import type { SchemaTable } from "../api/types"
 import { QuietAction, SearchField } from "../components/form"
 import useListReorder from "../hooks/useListReorder"
 import useRefocusAfterMove from "../hooks/useRefocusAfterMove"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import { tableColumns } from "../utils/quoteIdentity"
 import { addSchemaTable, createSchemaTable, isQuoteDetails, moveSchemaTable, schemaProblems } from "../utils/workbenchForm"
-import { columnMatches } from "./schema/schemaText"
+import { columnMatches, schemaColumns } from "./schema/schemaText"
 import { TableBlock } from "./schema/TableBlock"
 import { CompareControls } from "./StoreCompare"
 import { DatabaseChanges } from "./StorePlanReview"
-
-/** A table the quote store keeps nothing more in. */
-const NOTHING_KEPT: readonly WorkbenchStoreColumn[] = []
 
 /** The schema's pane's editor: the form's tables of named, typed columns. */
 export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean }) {
   const form = useWorkbenchFormStore((s) => s.form)
   const change = useWorkbenchFormStore((s) => s.change)
-  const storeColumns = useWorkbenchStore((s) => s.storeColumns)
   const reservedLabels = useDocumentStatusStore((s) => s.capabilities?.reserved_api_input_frame_labels)
   const reserved = useMemo(() => new Set(reservedLabels ?? []), [reservedLabels])
   // The table or column just added, whose name takes the focus.
@@ -65,7 +58,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   const filtering = query !== ""
   // While searched, the columns of a table the search matches, by name; null while it is not.
   const matched = (table: SchemaTable): ReadonlySet<string> | null =>
-    filtering ? new Set(tableColumns(table).filter((column) => columnMatches(column, query)).map((column) => column.name)) : null
+    filtering ? new Set(schemaColumns(table).filter((column) => columnMatches(column, query)).map((column) => column.name)) : null
   const shownTables = tables.map((table, index) => ({ table, index, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const addTable = () => {
@@ -108,7 +101,6 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
               drag={readOnly || filtering || isQuoteDetails(table) ? undefined : dragTable(index)}
               readOnly={readOnly}
               matched={shown}
-              kept={storeColumns[table.name] ?? NOTHING_KEPT}
               added={added}
               setAdded={setAdded}
               details={details}
