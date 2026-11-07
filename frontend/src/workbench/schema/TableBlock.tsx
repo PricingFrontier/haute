@@ -264,10 +264,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
           {keys.length > 0 && (
             <div role="group" aria-label={`${table.name} Keys`} className="flex flex-col gap-1">
-              <div className="flex flex-wrap items-baseline gap-x-2 px-1 text-[11px]">
-                <p className="font-semibold" style={{ color: "var(--text-accent)" }}>Keys</p>
-                <p style={{ color: "var(--text-muted)" }}>Shared by inputs and outputs</p>
-              </div>
+              <p className="px-1 text-[11px] font-semibold" style={{ color: "var(--text-accent)" }}>Keys</p>
               {keys.map(renderColumn)}
             </div>
           )}

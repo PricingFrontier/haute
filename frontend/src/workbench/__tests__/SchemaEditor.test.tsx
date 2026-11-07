@@ -851,7 +851,7 @@ describe("SchemaEditor", () => {
       const keys = blockOf(each.name, "Keys")
       const index = [...each.inputs, ...each.outputs].find((column) => column.index !== null)
       expect(nameFields(keys)).toEqual(["quote_reference", "quote_option", ...(index ? [index.name] : [])])
-      expect(within(keys).getByText("Shared by inputs and outputs")).toBeInTheDocument()
+      expect(within(keys).getByText("Keys")).toBeInTheDocument()
       expect(within(keys).queryByRole("button", { name: /^Add / })).toBeNull()
       expect(within(keys).queryByTitle("Drag to move")).toBeNull()
       const groups = within(tableNamed(each.name)).getAllByRole("group")

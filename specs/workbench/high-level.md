@@ -921,7 +921,7 @@ Out of scope:
     form that cannot be read is reported in the view, with what is wrong and a way to try
     again.
 - **The schema editor.** The form's tables, each with its name, its rows (One row per quote,
-  or Many rows) and its columns under three headings: Keys (shared by inputs and outputs),
+  or Many rows) and its columns under three headings: Keys,
   Inputs (sent to the pricing engine) and Outputs (returned by it). Keys comes first and
   shows the quote's identity and, for a many-row table, its index once, with no copies in
   Inputs or Outputs. This includes the identity in `quote_details`. The index keeps its
