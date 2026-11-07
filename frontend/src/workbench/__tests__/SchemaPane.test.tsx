@@ -8,9 +8,11 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/workbench")>()),
   fetchStoreCatalogue: vi.fn(), fetchStoreCompare: vi.fn(), fetchStoreSql: vi.fn(),
 }))
+vi.mock("../../panels/editors/shared/tableClipboard", () => ({ downloadTextFile: vi.fn(), writeClipboardText: vi.fn() }))
 
 import type { WorkbenchStoreCompareResponse } from "../../api/types"
 import { fetchStoreCatalogue, fetchStoreCompare, fetchStoreSql } from "../../api/workbench"
+import { writeClipboardText } from "../../panels/editors/shared/tableClipboard"
 import useStoreCompareStore from "../../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
@@ -33,6 +35,7 @@ describe("SchemaPane", () => {
     useStoreCompareStore.getState().reset()
     vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, checked_at: 1700000000000, tables: [] }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(ANSWER)
+    vi.mocked(writeClipboardText).mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -41,34 +44,47 @@ describe("SchemaPane", () => {
     useStoreCompareStore.getState().reset()
   })
 
-  it("opens SQL only after the database selected on the pane has a current comparison", async () => {
+  it("opens SQL beside Refresh, explains unavailable states, and copies the current query", async () => {
     let finish!: (value: { environment: string; checked_at: number; tables: [] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     render(<SchemaPane />)
     const exportButton = screen.getByRole("button", { name: "Export SQL" })
-    expect(exportButton).toBeDisabled()
-    expect(exportButton).toHaveAttribute("title", expect.stringContaining("Select a database"))
-    selectDev()
-    expect(exportButton).toBeDisabled()
-    await act(async () => finish({ environment: "dev", checked_at: 1700000000000, tables: [] }))
-    await waitFor(() => expect(exportButton).toBeEnabled())
+    expect(exportButton.previousElementSibling).toBe(screen.getByRole("button", { name: "Refresh" }))
     fireEvent.click(exportButton)
+    expect(screen.getByRole("alert")).toHaveTextContent("Select a database")
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }))
+    selectDev()
+    exportButton.focus()
+    fireEvent.click(exportButton)
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(screen.getByRole("alert")).toHaveTextContent("Wait for the database comparison")
+    await act(async () => finish({ environment: "dev", checked_at: 1700000000000, tables: [] }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
     const window = screen.getByTestId("store-sql-window")
     expect(within(window).getByTestId("store-sql")).toBeVisible()
     expect(within(window).queryByRole("combobox")).not.toBeInTheDocument()
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
     expect(fetchStoreSql).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
+    await waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith(ANSWER.sql))
+    fireEvent.click(within(window).getByRole("button", { name: "Close" }))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.getByTestId("schema-pane")).toBeVisible()
+    expect(exportButton).toHaveFocus()
   })
 
   it.each(["preview", "stale"])("keeps SQL disabled for %s even with a current comparison", async (state) => {
     render(<SchemaPane />)
     selectDev()
-    await waitFor(() => expect(screen.getByRole("button", { name: "Export SQL" })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole("option", { name: "dev" })).toHaveAccessibleDescription("Compatible"))
     act(() => {
       if (state === "preview") useWorkbenchViewStore.setState({ mode: "preview" })
       else useWorkbenchFormStore.setState({ stale: true })
     })
-    expect(screen.getByRole("button", { name: "Export SQL" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
+    expect(screen.getByRole("dialog")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(screen.getByRole("alert")).toHaveTextContent(state === "preview" ? "Switch to Build" : "Reload")
   })
 
   it("keeps a removed field's blocking rename removable on the pane", async () => {
@@ -78,14 +94,18 @@ describe("SchemaPane", () => {
     selectDev()
     const summary = await screen.findByText("Database changes · Needs attention")
     expect(summary.closest("details")).not.toHaveAttribute("open")
-    expect(screen.getByRole("button", { name: "Export SQL" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
+    const window = screen.getByRole("dialog")
+    expect(within(window).getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    fireEvent.click(within(window).getByRole("button", { name: "Close" }))
     fireEvent.click(summary)
     expect(screen.getByRole("alert")).toHaveTextContent("Cannot rename")
     act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(screen.getByRole("button", { name: "Remove rename choice" })).toBeDisabled()
     act(() => useWorkbenchViewStore.setState({ mode: "build" }))
     fireEvent.click(screen.getByRole("button", { name: "Remove rename choice" }))
-    await waitFor(() => expect(screen.getByRole("button", { name: "Export SQL" })).toBeEnabled())
+    fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
     expect(useStoreCompareStore.getState().renames).toEqual([])
   })
 
@@ -113,7 +133,9 @@ describe("SchemaPane", () => {
   it("explains why SQL is unavailable with no configured databases", () => {
     useWorkbenchStore.setState({ environments: [] })
     render(<SchemaPane />)
-    expect(screen.getByRole("button", { name: "Export SQL" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Export SQL" })).toHaveAttribute("title", expect.stringContaining("Configure a database"))
+    fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
+    expect(screen.getByRole("dialog", { name: "Export database changes" })).toBeVisible()
+    expect(screen.getByRole("alert")).toHaveTextContent("Configure a database")
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
   })
 })

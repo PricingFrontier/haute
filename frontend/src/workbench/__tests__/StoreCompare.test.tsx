@@ -589,6 +589,7 @@ describe("Compare", () => {
     openField("state")
     act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(screen.getByRole("combobox", { name: "Database column for policy.state" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Export SQL" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
   })
 })

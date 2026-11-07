@@ -70,7 +70,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="schema-editor">
       <div className="flex max-w-[896px] flex-wrap items-center gap-2 px-4 pt-3 pb-1.5">
-        <SearchField value={search} onChange={setSearch} label="Search fields" className="max-w-[608px] flex-1" />
+        <SearchField value={search} onChange={setSearch} label="Search fields" className="max-w-[400px] basis-32 flex-1" />
         <CompareControls />
       </div>
       <div

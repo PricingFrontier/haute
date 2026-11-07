@@ -788,7 +788,8 @@ Out of scope:
     in it are its own, never the sheet's.
 
   - **Reviewing database changes.** One compact Database selector sits to the right of
-    Search fields on the same row, with refresh beside it. Both controls shrink with the
+    Search fields on the same row, followed by Refresh and Export SQL. The search box is
+    shorter to leave room for the actions, with wrapping on narrow panes. Controls shrink with the
     pane; database failures appear below the shared row. There is no separate database
     toolbar. Local is the neutral choice for editing without a database selected. Other
     choices show only their environment names, coloured red until fetched, orange when
@@ -881,8 +882,12 @@ Out of scope:
     schema, labelled as saved or unsaved, never presented as the deployed release. A plain
     database name identifies the query's destination. A brief notice flags manual work
     that the SQL cannot complete; its details and remedies remain on the schema pane.
-    Export SQL is disabled for Local, Preview, a stale form, an unresolved blocker or a
-    pending/failed comparison, with a reason on the action. If any of these invalidates an
+    Export SQL always opens the query window; it is beside Refresh, not in the pane header.
+    When SQL is unavailable, the window explains why. Copy and Download remain disabled
+    for Local, Preview, a stale form, an unresolved blocker or a pending/failed comparison.
+    The window is rendered above the editor through a document-body portal, keeping the
+    schema and workbench open underneath. Closing returns focus to Export SQL.
+    If any of these invalidates an
     already-open window, stale SQL is removed or export disabled with an explanation.
     No offline source is offered in this UI; the existing offline SQL API remains available.
     Copy and download failures are actionable errors. Download names the environment and database source.
@@ -891,8 +896,8 @@ Out of scope:
     to the form, pairings or environment invalidate earlier displayed SQL until the current
     answer arrives. Project/form adoption and changes to the configured environment list
     clear the comparison and cannot auto-select another database. With no environments
-    declared the export action explains that a database must be configured. Rename changes
-    and SQL export are disabled in Preview. Direct execution, saved migration packages and deployed-release
+    declared the export window explains that a database must be configured. Rename changes,
+    Copy SQL and Download SQL are disabled in Preview. Direct execution, saved migration packages and deployed-release
     selection are outside this workflow.
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a

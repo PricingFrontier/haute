@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { createPortal } from "react-dom"
 import { Copy, Download } from "lucide-react"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "../components/ModalShell"
@@ -34,7 +35,7 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
     }
   }
 
-  return (
+  return createPortal(
     <ModalShell ariaLabel="Export database changes" onClose={onClose} width="w-[560px] max-w-[calc(100vw-24px)]" testId="store-sql-window">
       <div className="flex max-h-[calc(100vh-48px)] flex-col">
         <div className="shrink-0"><ModalFormHeader title="Export SQL"><span>{target}</span>{environment !== null && <span className="ml-2">· {environment}</span>}</ModalFormHeader></div>
@@ -54,6 +55,7 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
           </div>
         </div>
       </div>
-    </ModalShell>
+    </ModalShell>,
+    document.body,
   )
 }

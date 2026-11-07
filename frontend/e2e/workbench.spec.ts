@@ -7,7 +7,7 @@
  * pipeline folder's workbench/ folder and the pipeline after them, its workbench nodes
  * holding no copy of the tables, both on the project's ledger.
  */
-import { readFileSync } from "node:fs"
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { expect, test, type Locator } from "@playwright/test"
 
@@ -28,6 +28,63 @@ test.describe("workbench", () => {
   test.beforeEach(() => {
     resetE2eProject()
     enableWorkbench()
+  })
+
+  test("opens schema SQL beside Refresh and copies it without leaving the workbench", async ({ page, context }, testInfo) => {
+    appendFileSync(resolve(e2eProjectRoot, "haute.toml"), '\n[workbench.store.dev]\nprovider = "sqlite"\n')
+    writeFileSync(resolve(e2eProjectRoot, "connections.toml"), '[dev]\nprovider = "sqlite"\ndatabase = "dev.sqlite"\n')
+    // An empty database catalogue; the real compare endpoint generates the SQL.
+    await page.route("**/api/workbench/store-catalogue", (route) => route.fulfill({
+      json: { environment: "dev", checked_at: 1700000000000, tables: [] },
+    }))
+    await context.grantPermissions(["clipboard-read", "clipboard-write"])
+    await page.goto("/")
+    await page.getByTestId("view-switcher-workbench").click()
+    await page.getByRole("button", { name: "Schema", exact: true }).click()
+    const pane = page.getByTestId("schema-pane")
+    await pane.getByRole("combobox", { name: "Database" }).selectOption("dev")
+    await expect(pane.getByRole("status")).toHaveText("Changes needed")
+    const exportButton = pane.getByRole("button", { name: "Export SQL", exact: true })
+    await exportButton.click()
+    const dialog = page.getByRole("dialog", { name: "Export database changes" })
+    await expect(dialog).toBeVisible()
+    const code = await dialog.getByTestId("store-sql").innerText()
+    expect(code).toContain("CREATE TABLE")
+    await dialog.getByRole("button", { name: "Copy SQL", exact: true }).click()
+    await expect(dialog.getByRole("status")).toHaveText("SQL copied.")
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+    expect(copied.replace(/\r\n/g, "\n")).toBe(code.replace(/\r\n/g, "\n"))
+    await dialog.screenshot({ path: testInfo.outputPath("schema-sql-code.png") })
+    await dialog.getByRole("button", { name: "Close", exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(pane).toBeVisible()
+    await expect(page.getByRole("toolbar", { name: "Workbench toolbar" })).toBeVisible()
+    await expect(exportButton).toBeFocused()
+    const search = await pane.getByRole("textbox", { name: "Search fields" }).boundingBox()
+    const refresh = await pane.getByRole("button", { name: "Refresh", exact: true }).boundingBox()
+    const exported = await exportButton.boundingBox()
+    expect(search).not.toBeNull()
+    expect(refresh).not.toBeNull()
+    expect(exported).not.toBeNull()
+    expect(exported!.x).toBeGreaterThanOrEqual(refresh!.x + refresh!.width)
+    expect(Math.abs(exported!.y - refresh!.y)).toBeLessThan(4)
+    expect(search!.width).toBeLessThanOrEqual(400)
+    await pane.screenshot({ path: testInfo.outputPath("schema-export-toolbar.png") })
+    const handle = await centre(pane.getByTestId("panel-resize-handle"))
+    await page.mouse.move(handle.x, handle.y)
+    await page.mouse.down()
+    await page.mouse.move(handle.x - 550, handle.y, { steps: 8 })
+    await page.mouse.up()
+    const narrowPane = await pane.boundingBox()
+    const narrowRefresh = await pane.getByRole("button", { name: "Refresh", exact: true }).boundingBox()
+    const narrowExport = await exportButton.boundingBox()
+    expect(narrowPane!.width).toBeLessThan(400)
+    expect(narrowExport!.x).toBeGreaterThanOrEqual(narrowRefresh!.x + narrowRefresh!.width)
+    expect(narrowExport!.x + narrowExport!.width).toBeLessThanOrEqual(narrowPane!.x + narrowPane!.width)
+    await exportButton.click()
+    await expect(dialog.getByRole("button", { name: "Copy SQL", exact: true })).toBeVisible()
+    await dialog.getByRole("button", { name: "Close", exact: true }).click()
+    await pane.screenshot({ path: testInfo.outputPath("schema-export-toolbar-narrow.png") })
   })
 
   test("lays out a sheet from the schema, drawn as a new quote, prices the sample live in Preview, and saves the sheets", async ({ page }) => {
