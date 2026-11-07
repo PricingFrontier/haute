@@ -87,7 +87,7 @@ describe("SchemaPane", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(state === "preview" ? "Switch to Build" : "Reload")
   })
 
-  it("keeps a removed field's blocking rename removable on the pane", async () => {
+  it("keeps a removed field's unresolved rename removable without blocking additive export", async () => {
     useStoreCompareStore.getState().pair({ table: "policy", column: "removed_field", was: "region" })
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _env, _tables, renames) => ({ ...ANSWER, blocked: renames.length ? ["Cannot rename policy.region to removed_field."] : [] }))
     render(<SchemaPane />)
@@ -96,9 +96,10 @@ describe("SchemaPane", () => {
     expect(summary.closest("details")).not.toHaveAttribute("open")
     fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
     const window = screen.getByRole("dialog")
-    expect(within(window).getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(within(window).getByRole("button", { name: "Copy SQL" })).toBeEnabled()
     fireEvent.click(within(window).getByRole("button", { name: "Close" }))
     fireEvent.click(summary)
+    expect(screen.getByRole("alert")).toHaveTextContent("Not included in SQL")
     expect(screen.getByRole("alert")).toHaveTextContent("Cannot rename")
     act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
     expect(screen.getByRole("button", { name: "Remove rename choice" })).toBeDisabled()

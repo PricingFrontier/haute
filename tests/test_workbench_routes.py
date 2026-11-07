@@ -1579,7 +1579,7 @@ def test_store_export_adds_new_names_without_moving_or_removing_old_values(
     assert all(each["disposition"] == "retained" for each in verified["changes"])
 
 
-def test_store_review_blocks_an_unresolved_rename_instead_of_suggesting_an_empty_replacement(
+def test_store_export_explains_an_unresolved_rename_alongside_valid_additions(
     project: Path,
 ) -> None:
     enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
@@ -1590,10 +1590,69 @@ def test_store_review_blocks_an_unresolved_rename_instead_of_suggesting_an_empty
     response = _compare(form(_exposure_named("value")), _catalogue().json()["tables"], [pairing])
 
     assert response.status_code == 200, response.text
-    assert response.json()["blocked"] == [
+    review = response.json()
+    diagnostic = (
         "Cannot rename policy_details.missing_source to value in this database. "
-        "Remove or update the rename choice before exporting SQL."
-    ]
+        "Check the source and destination before transferring data manually."
+    )
+    assert diagnostic in review["sql"]
+    assert review["blocked"] == [diagnostic]
+    assert "ADD COLUMN value DOUBLE" in review["sql"]
+    assert "RENAME" not in review["sql"] and "DROP " not in review["sql"]
+
+
+def test_store_export_keeps_an_index_collision_manual_and_applies_valid_additions(
+    project: Path,
+) -> None:
+    import sqlite3
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    old = form(
+        {
+            "name": "perils",
+            "rows": "many",
+            "inputs": [
+                column("quote_row", "int", index="numbered"),
+                column("peril", "int"),
+            ],
+        },
+        POLICY,
+    )
+    write_form(project, old)
+    database = _dev_database(project, old)
+    with sqlite3.connect(database) as raw:
+        raw.execute(
+            "INSERT INTO perils (quote_reference, quote_option, quote_row, peril) "
+            "VALUES ('Q1', 1, 1, 7)"
+        )
+        before_key = raw.execute("PRAGMA table_info(perils)").fetchall()
+    proposed = form(
+        {
+            "name": "perils",
+            "rows": "many",
+            "inputs": [
+                column("peril", "int", index="numbered"),
+            ],
+        },
+        {**POLICY, "inputs": [*POLICY["inputs"], column("flood_zone")]},
+        PRICING,
+    )
+
+    response = _compare(proposed, _catalogue().json()["tables"])
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    assert any("perils.quote_row, renamed peril" in message for message in review["blocked"])
+    assert all(message in review["sql"] for message in review["blocked"])
+    assert "ALTER TABLE policy_details ADD COLUMN flood_zone" in review["sql"]
+    assert "CREATE TABLE pricing_output" in review["sql"]
+    assert "RENAME" not in review["sql"] and "DROP " not in review["sql"]
+    assert not review["matches"]
+    with sqlite3.connect(database) as raw:
+        raw.executescript(review["sql"])
+        assert raw.execute("SELECT quote_row, peril FROM perils").fetchall() == [(1, 7)]
+        assert raw.execute("PRAGMA table_info(perils)").fetchall() == before_key
+        assert "flood_zone" in {row[1] for row in raw.execute("PRAGMA table_info(policy_details)")}
 
 
 def test_store_review_requires_release_coordination_for_manual_key_repairs(project: Path) -> None:

@@ -113,7 +113,7 @@ def _describe(
         "rename table",
         "rename column",
     ):
-        problem = addition_problem(plan, step)
+        problem = addition_problem(plan, step, provider)
         if problem is not None:
             disposition = "manual"
             description = problem
@@ -174,6 +174,6 @@ def rename_problems(
             continue
         problems.append(
             f"Cannot rename {rename.table}.{rename.was} to {rename.column} in this database. "
-            "Remove or update the rename choice before exporting SQL."
+            "Check the source and destination before transferring data manually."
         )
     return problems

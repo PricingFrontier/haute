@@ -22,6 +22,5 @@ export default function useStoreSqlExport() {
   else if (compared.status === "failed" && compared.form === form && compared.renames === state.renames && compared.read === read) reason = compared.message
   else if (read.status === "idle") reason = "Refresh the database on the schema pane before exporting SQL."
   else if (comparison === null) reason = "Wait for the database comparison to finish."
-  else if (comparison.blocked.length > 0) reason = "Resolve the issues in Database changes on the schema pane before exporting SQL."
   return { environment, comparison, reason }
 }

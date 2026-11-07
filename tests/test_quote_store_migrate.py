@@ -300,6 +300,40 @@ def test_additions_only_sql_keeps_old_columns_types_and_keys(dialect: str) -> No
             assert columns["site"][5] == 3 and columns["location"][5] == 0
 
 
+@pytest.mark.parametrize("provider_name", ["postgresql", "sqlserver"])
+def test_additions_only_sql_omits_invalid_names_but_keeps_valid_additions(
+    provider_name: str,
+) -> None:
+    from haute._quote_store._providers import PROVIDERS
+    from haute._quote_store._review import review_plan
+
+    provider = PROVIDERS[provider_name]
+    long_name = "field_" + "x" * 128
+    base = form(POLICY)
+    proposed = form(
+        table("policy", *POLICY["inputs"], column(long_name), column("valid_addition")),
+        table(long_name, column("value")),
+        table("invalid_table", column(long_name)),
+        table("valid_table", column("value")),
+    )
+    planned = _migrate.plan(structure(proposed), structure(base), provider=provider)
+
+    written = render_sql(planned, proposed, provider.dialect, additions_only=True)
+
+    executable = "\n".join(line for line in written.splitlines() if not line.startswith("--"))
+    assert long_name not in executable
+    assert "invalid_table" not in executable
+    addition = "ADD COLUMN" if provider_name == "postgresql" else "ADD"
+    assert f"ALTER TABLE policy {addition} valid_addition" in executable
+    assert "CREATE TABLE valid_table" in executable
+    assert any(long_name in line for line in written.splitlines() if line.startswith("--"))
+    review = review_plan(planned, proposed, provider, additions_only=True)
+    assert {(change.table, change.column) for change in review if change.disposition == "sql"} == {
+        ("policy", "valid_addition"),
+        ("valid_table", None),
+    }
+
+
 @pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
 def test_additions_only_sql_leaves_case_only_names_manual(dialect: str) -> None:
     base = form(table("policy", column("region")))

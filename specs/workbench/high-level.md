@@ -866,11 +866,13 @@ Out of scope:
     the owner populates it and updates the key; the script leaves the existing key intact.
     This export policy also applies to the offline SQL API. It does not change schema
     editing, rename pairing, saved fields, quote persistence or compatibility checks.
-    Planner refusals and unresolved rename choices prevent SQL export until
-    resolved; other manual work remains visible even when SQL for part of the plan can be
-    exported. Retained input-table columns say that supported values survive saves until
-    their row is deleted; retained output-only columns say that later saves clear their
-    values. Permanent database deletion is left to the database owner, never performed
+    Planner refusals and unresolved rename choices do not prevent copying or downloading
+    valid additions. Refused operations, including names the provider cannot store, are
+    omitted from executable SQL and explained in comments. Unresolved rename choices
+    also appear in those comments; copying never implies that values were transferred
+    or the database is compatible. Retained input-table columns say that supported values
+    survive saves until their row is deleted; retained output-only columns say that later
+    saves clear their values. Permanent database deletion is left to the database owner, never performed
     by a schema edit. Renames, retyping, row/key changes and manual database repairs say to
     coordinate with the app release because a running app may still require the old
     structure; the pane does not claim that release compatibility was checked.
@@ -881,10 +883,12 @@ Out of scope:
     database or initiates a database fetch. The target is explicitly the current working
     schema, labelled as saved or unsaved, never presented as the deployed release. A plain
     database name identifies the query's destination. A brief notice flags manual work
-    that the SQL cannot complete; its details and remedies remain on the schema pane.
+    that the SQL cannot complete and points to specific SQL comments in the same window.
+    The pane labels refused operations as Not included in SQL, without requiring their
+    resolution before exporting the valid additions.
     Export SQL always opens the query window; it is beside Refresh, not in the pane header.
     When SQL is unavailable, the window explains why. Copy and Download remain disabled
-    for Local, Preview, a stale form, an unresolved blocker or a pending/failed comparison.
+    for Local, Preview, a stale form or a pending/failed comparison.
     The window is rendered above the editor through a document-body portal, keeping the
     schema and workbench open underneath. Closing returns focus to Export SQL.
     If any of these invalidates an

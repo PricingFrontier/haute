@@ -12,7 +12,7 @@ import { resolve } from "node:path"
 import { expect, test, type Locator } from "@playwright/test"
 
 import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
-import { buildWorkbenchPipeline, enableWorkbench, readFormFile } from "./workbenchProject"
+import { buildWorkbenchPipeline, enableWorkbench, readFormFile, writeFormFiles } from "./workbenchProject"
 
 /** A node's config file in the pipeline folder's config/. */
 const readNodeConfig = (folder: string, node: string) =>
@@ -33,9 +33,20 @@ test.describe("workbench", () => {
   test("opens schema SQL beside Refresh and copies it without leaving the workbench", async ({ page, context }, testInfo) => {
     appendFileSync(resolve(e2eProjectRoot, "haute.toml"), '\n[workbench.store.dev]\nprovider = "sqlite"\n')
     writeFileSync(resolve(e2eProjectRoot, "connections.toml"), '[dev]\nprovider = "sqlite"\ndatabase = "dev.sqlite"\n')
-    // An empty database catalogue; the real compare endpoint generates the SQL.
+    writeFormFiles({ "schema/policy.json": {
+      rows: "many", inputs: [{ name: "limit", type: "int", index: "numbered" }, { name: "region", type: "str" }],
+    } })
+    // An existing index collides with the desired name. The real comparison must
+    // explain that omission while still allowing the other tables' SQL to be copied.
     await page.route("**/api/workbench/store-catalogue", (route) => route.fulfill({
-      json: { environment: "dev", checked_at: 1700000000000, tables: [] },
+      json: { environment: "dev", checked_at: 1700000000000, tables: [{
+        name: "policy", primary_key: ["quote_reference", "quote_option", "quote_row"], refers: true, quotes: 1,
+        columns: [
+          { name: "quote_reference", kind: "str", type: "TEXT", nullable: false, collation: null, quotes: 1 },
+          ...["quote_option", "quote_row", "limit"].map((name) => ({ name, kind: "int", type: "INTEGER", nullable: false, collation: null, quotes: 1 })),
+          { name: "region", kind: "str", type: "TEXT", nullable: true, collation: null, quotes: 1 },
+        ],
+      }] },
     }))
     await context.grantPermissions(["clipboard-read", "clipboard-write"])
     await page.goto("/")
@@ -43,13 +54,16 @@ test.describe("workbench", () => {
     await page.getByRole("button", { name: "Schema", exact: true }).click()
     const pane = page.getByTestId("schema-pane")
     await pane.getByRole("combobox", { name: "Database" }).selectOption("dev")
-    await expect(pane.getByRole("status")).toHaveText("Changes needed")
+    await expect(pane.getByRole("status")).toHaveText("Needs attention")
     const exportButton = pane.getByRole("button", { name: "Export SQL", exact: true })
     await exportButton.click()
     const dialog = page.getByRole("dialog", { name: "Export database changes" })
     await expect(dialog).toBeVisible()
     const code = await dialog.getByTestId("store-sql").innerText()
     expect(code).toContain("CREATE TABLE")
+    expect(code).toContain("policy.quote_row, renamed limit")
+    await expect(dialog.getByText(/Changes needing manual work are explained in the SQL comments/)).toBeVisible()
+    await expect(dialog.getByRole("alert")).toHaveCount(0)
     await dialog.getByRole("button", { name: "Copy SQL", exact: true }).click()
     await expect(dialog.getByRole("status")).toHaveText("SQL copied.")
     const copied = await page.evaluate(() => navigator.clipboard.readText())

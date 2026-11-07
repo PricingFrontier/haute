@@ -9,7 +9,8 @@ and download. `SchemaPane` no longer has an export header action. `StoreSqlWindo
 its existing `ModalShell` to document.body so its backdrop, code and actions sit above the
 workbench and pane. Unit tests cover opening with unavailable SQL and copying available
 SQL, with close/focus restoration; the workbench browser test checks control positions,
-opening without leaving the workbench, exact clipboard contents and closing back to the pane.
+opening without leaving the workbench, exact clipboard contents (including refused index
+rename comments alongside valid additions) and closing back to the pane.
 
 Workbench SQL export uses `render_sql(..., additions_only=True)` for both catalogue and
 offline routes. The shared renderer emits CREATE/ADD only in this mode: column rename
@@ -24,6 +25,17 @@ behavior remains available to existing library callers; comparison and schema ed
 semantics are unchanged. Tests execute the exported SQL on populated SQLite stores and
 assert old values/types/keys remain, new columns are empty, no rename/drop/conversion SQL
 appears for any provider, and occupied or case-only destinations are left manual.
+Planner refusals and unresolved rename choices are diagnostics, not export gates.
+`store-compare` includes unresolved rename diagnostics in the rendered plan's notes as
+well as the existing `blocked` response field, without changing comparison semantics.
+`addition_problem` checks provider name limits as well as occupied destinations; an
+invalid table name or any invalid column name omits creation of that table, while an
+invalid added column omits just that addition. Renderer and review use this same check.
+SQL comments identify every omission and manual task. Copy/Download remain available
+for the valid additions; the window points to those comments, not an unspecified remedy
+elsewhere. Tests execute additions alongside an index-name collision on SQLite, preserve
+its existing data and primary key, verify unresolved rename comments, and check provider
+name omissions separately from valid additions.
 
 Database catalogue persistence: `POST /api/workbench/store-catalogue` accepts `refresh`
 (default true for existing callers). The browser requests false on initial environment
@@ -56,7 +68,7 @@ Stored forms, including existing labels and sheet references, are never changed 
 filtering or opening this view. Grey backgrounds and fixed structure remain unchanged.
 
 The schema review UI stays in the lazy workbench, with its response validation in the
-workbench validator module. Its measured production bundle is 1,787.2 KiB gzip, with
+workbench validator module. Its measured production bundle is 1,787.1 KiB gzip, with
 293.9 KiB initially loaded. The aggregate allowance is 1,788 KiB; the initial 300 KiB,
 single-chunk 650 KiB and chart-vendor 205 KiB limits stay unchanged.
 
@@ -160,9 +172,9 @@ single-chunk 650 KiB and chart-vendor 205 KiB limits stay unchanged.
 | `frontend/src/workbench/StoreCompare.tsx` | `CompareControls` sits to the right of Search fields in the schema editor's shared row. The Database select has an accessible label, a neutral Local option and name-only environment options. Both each option and the selected name use red (`--danger-text`) without a successful catalogue read, orange (`--caution`) after a read while comparison is pending, failed or has differences/manual repairs/blockers, and green (`--success`) only for a current Compatible comparison. Local uses normal text. Option descriptions/tooltips and the selected live status retain the status words accessibly, without visible suffixes. A visible `QuietAction` Refresh button beside the select calls `readAgain`, disabled for Local and while reading. Export SQL follows Refresh and always opens `StoreSqlWindow`, which explains unavailability and gates copying/download separately. It uses `FIELD_CLASS` and `INPUT_STYLE`; its width is bounded so search remains usable in a narrow pane. Selected status updates are announced accessibly. Failures wrap onto a full-width line below both controls. `DatabaseMark` retains table difference marks. Field status and decisions live in the field details; no environment button strip or standing comparison panel is rendered. |
 | `frontend/src/workbench/ColumnDatabaseDetails.tsx` | Field-local database status and choices, using the form kit's `EditorLabel` and `QuietAction` with the schema's compact controls. `ColumnDatabaseStatus` replaces the usual row summary only while a database is selected, including pending/failure/matching states, and opens the existing field details. `ColumnDatabaseDetails` explains the current field changes and offers an explicit new-column/rename-source choice for missing or paired ordinary fields, disabled in Preview and while comparison is pending. Existing rename choices remain removable after the target becomes an index. A planned field change does not hide additional manual repair differences. `TableDatabaseDetails` places table differences and database-only fields in a collapsed disclosure inside the table, including fields omitted by a manual reshape plan, without promising automatic preservation during that migration. All views use the current form, rename and snapshot basis; no stale match or choice is shown. |
 | `frontend/src/workbench/useStoreComparison.ts` | `useStoreComparison` compares the form with each environment's snapshot when the form, snapshots or shared rename choices change. Closing the pane keeps comparison state; project/form invalidation belongs to the store. |
-| `frontend/src/workbench/StoreSqlWindow.tsx` | The query-only Export SQL window portals `ModalShell` to document.body with `createPortal`, reads `useStoreSqlExport` and shows the current query immediately, plain database name and saved/unsaved working-schema target. It has no selection, refresh, options, plan review or collapsed SQL, and initiates no reads or offline generation. A brief notice flags partial SQL needing manual work and refers to Database changes on the pane. Standard 16px modal gutters align the header, scrolling query and fixed Close/Copy SQL/Download SQL footer. Shared clipboard/download helpers export the exact query as `<environment>-database-schema.sql`; pending/failed/blocked/stale/Preview/Local states prevent export and show the reason. Notices are scoped to environment and SQL. |
-| `frontend/src/workbench/useStoreSqlExport.ts` | Shared read-only derivation for the pane action and export window: selected environment, `currentComparison` and an export refusal reason. Local, no configured database, Preview, stale form, pending/failed comparison or blockers refuse export. Failed comparison messages are current only for the selected snapshot, form and rename choices. It never chooses or fetches a database, generates offline SQL or changes comparison state. |
-| `frontend/src/workbench/StorePlanReview.tsx` | `DatabaseChanges` reads the current selected comparison and wraps `StorePlanReview` in a collapsed Database changes disclosure in the schema editor's scroll area. Its title says Needs attention for blockers/manual work; unavailable comparisons render no old plan. Metadata and Check environments live here. `StorePlanReview` renders short action rows through `DatabaseDisclosure`, with descriptions behind disclosures. Secondary actions use `QuietAction`; manual work, blockers and release coordination remain visible when expanded; retained details are collapsed. Shared rename choices for fields no longer in the form can be removed here, disabled in Preview. It renders the server plan without parsing SQL or inferring deployed-release compatibility. |
+| `frontend/src/workbench/StoreSqlWindow.tsx` | The query-only Export SQL window portals `ModalShell` to document.body with `createPortal`, reads `useStoreSqlExport` and shows the current query immediately, plain database name and saved/unsaved working-schema target. It has no selection, refresh, options, plan review or collapsed SQL, and initiates no reads or offline generation. A brief notice explains that the SQL adds tables/columns only and points to its comments for manual work. Standard 16px modal gutters align the header, scrolling query and fixed Close/Copy SQL/Download SQL footer. Shared clipboard/download helpers export the exact query as `<environment>-database-schema.sql`; pending/failed/stale/Preview/Local states prevent export and show the reason. Notices are scoped to environment and SQL. |
+| `frontend/src/workbench/useStoreSqlExport.ts` | Shared read-only derivation for the pane action and export window: selected environment, `currentComparison` and an export refusal reason. Local, no configured database, Preview, stale form, pending/failed comparison refuse export. Planner refusals and unresolved renames do not block exporting valid additions. Failed comparison messages are current only for the selected snapshot, form and rename choices. It never chooses or fetches a database, generates offline SQL or changes comparison state. |
+| `frontend/src/workbench/StorePlanReview.tsx` | `DatabaseChanges` reads the current selected comparison and wraps `StorePlanReview` in a collapsed Database changes disclosure in the schema editor's scroll area. Its title says Needs attention for blockers/manual work; unavailable comparisons render no old plan. Metadata and Check environments live here. `StorePlanReview` renders short action rows through `DatabaseDisclosure`, with descriptions behind disclosures. Secondary actions use `QuietAction`; manual work, refused operations (Not included in SQL) and release coordination remain visible when expanded; retained details are collapsed. Shared rename choices for fields no longer in the form can be removed here, disabled in Preview. It renders the server plan without parsing SQL or inferring deployed-release compatibility. |
 | `frontend/src/workbench/DatabaseDisclosure.tsx` | `DatabaseDisclosure` shares native details/summary semantics across the field/table details and SQL review. Its Lucide chevron, rounded hover/focus treatment and indented content match the schema table controls. Only the directly owned chevron rotates on open, including nested disclosures. It holds no separate open state and keeps native summary keyboard behavior. |
 | `src/haute/_quote_store/_review.py` | `review_plan` describes the existing `Plan` as typed `ReviewChange` items (`kind`, `table`, `column`, `was`, `disposition`, `description`, `quotes`) grouped by disposition (`sql`, `manual`, `retained`). SQLite retyping and reshaping are manual; rename/retype/reshape and any manual repair notes require release coordination, including key-only repairs without a plan step; activity-table creation is included. Retention descriptions use the form table's input role, with quote_details updated in place. `rename_problems` reports explicit mappings neither accepted nor already satisfied by destination-present/source-absent; it does not infer migration history. The compare response adds provider, changes, manual notes, blockers and maintenance status from this same plan. |
 | `frontend/src/workbench/columnTypes.ts` | `COLUMN_TYPES`, each column type's label, icon (the step editor's for the kind) and colour (`getDtypeColor` of its dtype), `COLUMN_TYPE_OPTIONS` for the marker, and `isNumeric`. |
@@ -2916,12 +2928,12 @@ no longer has; and `InputSource` in
   `frontend/src/workbench/__tests__/StoreSqlWindow.test.tsx` the selected live environment
   retained on opening, query visible immediately with no selectors/refresh/disclosures,
   the saved/unsaved working-schema label, no reads or offline generation on opening,
-  Copy and Download with exact SQL/environment/source and actionable failures, blockers
-  preventing export and partial SQL flagged briefly, changed form/pairings invalidating
-  SQL, configured-environment changes and document adoption removing old SQL with no
-  auto-selection, and Local/no environments declared refusing export;
+  Copy and Download with exact SQL/environment/source and actionable failures, refused
+  operations permitting export with specific comments and partial SQL flagged briefly,
+  changed form/pairings invalidating SQL, configured-environment changes and document
+  adoption removing old SQL with no auto-selection, and Local/no environments declared refusing export;
   `frontend/src/workbench/__tests__/SchemaPane.test.tsx` Export SQL opening the window
-  beside Refresh, unavailable Local/pending/blocked/stale/Preview states explained inside
+  beside Refresh, unavailable Local/pending/stale/Preview states explained inside
   it with copying disabled, a current query copied exactly, and focus restored on close;
   Database changes collapsed on
   the pane, orphaned rename choices removable there, manual/retained work visible there,

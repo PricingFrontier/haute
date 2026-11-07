@@ -55,7 +55,7 @@ export default function StorePlanReview({ answer }: { answer: WorkbenchStoreComp
   const retained = answer.changes.filter((each) => each.disposition === "retained")
   return <div className="flex flex-col gap-3" data-testid="store-plan-review">
     {answer.blocked.length > 0 && <div role="alert" className="rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}>
-      <h3 className="flex items-center gap-1.5 font-semibold" style={{ color: "var(--warning)" }}><AlertTriangle size={13} aria-hidden="true" className="shrink-0" />Resolve before exporting</h3>
+      <h3 className="flex items-center gap-1.5 font-semibold" style={{ color: "var(--warning)" }}><AlertTriangle size={13} aria-hidden="true" className="shrink-0" />Not included in SQL</h3>
       <ul className="mt-1 list-disc pl-4" style={QUIET}>{answer.blocked.map((message) => <li key={message}>{message}</li>)}</ul>
     </div>}
     {orphaned.map((rename) => <div key={`${rename.table}.${rename.column}`} className="flex flex-wrap items-center gap-2">

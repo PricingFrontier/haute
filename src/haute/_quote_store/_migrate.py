@@ -393,8 +393,17 @@ def _plan_columns(
     return after
 
 
-def addition_problem(plan: Plan, step: Step) -> str | None:
-    """A destination already occupied in the unchanged database cannot be added again."""
+def addition_problem(plan: Plan, step: Step, provider: Provider) -> str | None:
+    """An invalid or already occupied destination cannot be added to the unchanged database."""
+    names = [step.table]
+    if step.column is not None:
+        names.append(step.column)
+    else:
+        wanted = next(table for table in plan.recorded["tables"] if table["key"] == step.table_key)
+        names.extend(column["name"] for column in wanted["columns"])
+    problems = name_problems(provider, names)
+    if problems:
+        return f"Not added: {step.table}: {'; '.join(problems)}."
     table = next(
         (
             table
@@ -414,7 +423,12 @@ def addition_problem(plan: Plan, step: Step) -> str | None:
 
 
 def _emit(
-    operations: Operations, plan: Plan, schema: StoreSchema, *, additions_only: bool = False
+    operations: Operations,
+    plan: Plan,
+    schema: StoreSchema,
+    provider: Provider,
+    *,
+    additions_only: bool = False,
 ) -> None:
     """The DDL of *plan* through *operations*, as offline SQL: every rename in two phases
     through temporary names (tables, then columns), then what is made, each in the store's
@@ -458,7 +472,7 @@ def _emit(
             if step.table_key in new_tables and step.kind != "rename table":
                 continue
             if step.kind in ("create table", "add column", "rename table", "rename column"):
-                problem = addition_problem(plan, step)
+                problem = addition_problem(plan, step, provider)
                 if problem is not None:
                     _note(operations, problem)
                     continue
@@ -711,6 +725,7 @@ def render_sql(
     schema = store_schema(form, sql_schema=sql_schema)
     begin, commit = _SCRIPT_TRANSACTIONS[dialect]
     buffer.write(begin)
-    _emit(operations, plan, schema, additions_only=additions_only)
+    provider = next(each for each in PROVIDERS.values() if each.dialect == dialect)
+    _emit(operations, plan, schema, provider, additions_only=additions_only)
     buffer.write(commit)
     return buffer.getvalue()

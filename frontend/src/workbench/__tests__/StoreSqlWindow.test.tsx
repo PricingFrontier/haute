@@ -150,14 +150,22 @@ describe("StoreSqlWindow", () => {
     expect(fetchStoreSql).not.toHaveBeenCalled()
   })
 
-  it.each(["Unresolved rename", "The provider does not accept this identifier"])("blocks export for %s and points back to the schema pane", (blocker) => {
-    live({ ...LIVE, blocked: [blocker], manual: ["Fix the primary key."] })
+  it.each(["Unresolved rename", "The provider does not accept this identifier"])("exports valid additions with comments for %s", async (blocker) => {
+    const sql = `-- Not written: ${blocker}.\nALTER TABLE policy ADD flood_zone TEXT;`
+    live({ ...LIVE, sql, blocked: [blocker] })
     render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(screen.getByRole("alert")).toHaveTextContent("Resolve the issues in Database changes")
-    expect(screen.getByText(/This SQL completes only part/)).toHaveTextContent("schema pane")
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByText(/This SQL adds tables and columns only/)).toHaveTextContent("SQL comments")
+    expect(screen.getByTestId("store-sql")).toHaveTextContent(blocker)
     expect(screen.queryByTestId("store-plan-review")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
+    expect(writeClipboardText).toHaveBeenCalledWith(sql)
+    expect(await screen.findByText("SQL copied.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
+    expect(downloadTextFile).toHaveBeenCalledWith(sql, "prod-database-schema.sql", "application/sql")
+    expect(useStoreCompareStore.getState().environments.prod.compared).toMatchObject({ answer: { matches: false, blocked: [blocker] } })
   })
 
   it.each(["document", "environments"])("discards the query after %s changes without selecting another database", (change) => {
