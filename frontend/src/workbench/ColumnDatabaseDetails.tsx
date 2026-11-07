@@ -1,9 +1,11 @@
 /** Database information and explicit rename choices in each field's existing details. */
+import { Undo2 } from "lucide-react"
 import type { SchemaColumn, SchemaTable, WorkbenchStoreCompareResponse, WorkbenchStoreDifference } from "../api/types"
-import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../components/form"
+import { COMPACT_FIELD_CLASS, EditorLabel, INPUT_STYLE, QuietAction } from "../components/form"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { IDENTITY_NAMES } from "../utils/quoteIdentity"
+import DatabaseDisclosure from "./DatabaseDisclosure"
 
 const QUIET = { color: "var(--text-muted)" } as const
 const DESCRIBED_DIFFERENCES: Partial<Record<WorkbenchStoreCompareResponse["changes"][number]["kind"], WorkbenchStoreDifference["kind"]>> = {
@@ -39,12 +41,12 @@ function useColumnDatabase(table: string, column: string) {
 export function ColumnDatabaseStatus({ table, column, open, onOpen }: { table: string; column: string; open: boolean; onOpen: () => void }) {
   const { state, label, differences } = useColumnDatabase(table, column)
   if (state.environment === null) return null
-  const color = label === "Matches" ? "var(--success)" : label === "Rename" ? "var(--accent)"
+  const color = label === "Check failed" ? "var(--danger-text)" : label === "Matches" ? "var(--success)" : label === "Rename" ? "var(--text-accent)"
     : label === "New column" || label === "Type change" || label === "Needs attention" ? "var(--warning)" : "var(--text-muted)"
   return <button type="button" aria-label={`Database status of ${column}`} aria-expanded={open} onClick={onOpen}
-    data-testid={`database-mark-${table}-${column}`} className="focus-ring max-w-[45%] shrink-0 self-center truncate rounded px-1.5 py-0.5 text-left text-[11px] hover:bg-[var(--bg-hover)]"
+    data-testid={`database-mark-${table}-${column}`} className="focus-ring hover-bg inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1.5 self-center rounded-md px-1.5 py-0.5 text-left text-[11px]"
     style={{ color }} title={differences.map((each) => each.message).join("\n") || `${state.environment}: ${label}`}>
-    <span aria-hidden="true" className="mr-1">●</span>{label}
+    <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" /><span className="truncate">{label}</span>
   </button>
 }
 
@@ -54,10 +56,10 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
   const candidates = answer?.extras.filter((each) => each.form_table === table.name && each.column !== null) ?? []
   const ordinary = column.index === null && !IDENTITY_NAMES.has(column.name)
   const canPair = ordinary && (pairing !== undefined || (missing && candidates.length > 0))
-  return <section aria-label={`Database details for ${table.name}.${column.name}`} className="col-span-2 mb-2 flex min-w-0 flex-col gap-2 border-b pb-2" style={{ borderColor: "var(--border)" }}>
+  return <section aria-label={`Database details for ${table.name}.${column.name}`} className="col-span-2 mb-2 flex min-w-0 flex-col gap-2 border-b pb-2 leading-relaxed" style={{ borderColor: "var(--border)" }}>
     <div className="flex items-baseline justify-between gap-2">
-      <span className="font-medium">Database <span style={QUIET}>· {state.environment}</span></span>
-      <span style={QUIET}>{label}</span>
+      <EditorLabel as="span">Database</EditorLabel>
+      <span className="truncate" style={QUIET}>{state.environment}</span>
     </div>
     {failure !== null ? <p role="alert" style={{ color: "var(--danger-text)" }}>{failure}</p>
       : answer === null ? <p style={QUIET}>Waiting for the current database comparison…</p>
@@ -80,9 +82,8 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
       </select>
       <span style={QUIET}>A rename keeps existing values and applies across environments.</span>
     </label>}
-    {!ordinary && pairing !== undefined && <button type="button" disabled={readOnly || answer === null}
-      className="focus-ring hover-bg self-start rounded px-2 py-1 disabled:opacity-50"
-      onClick={() => state.unpair(table.name, column.name)}>Remove rename choice</button>}
+    {!ordinary && pairing !== undefined && <QuietAction icon={Undo2} disabled={readOnly || answer === null}
+      className="self-start" onClick={() => state.unpair(table.name, column.name)}>Remove rename choice</QuietAction>}
   </section>
 }
 
@@ -97,9 +98,9 @@ export function TableDatabaseDetails({ table }: { table: string }) {
   const reshape = answer.changes.some((each) => each.table === table && each.kind === "reshape table")
   const count = retained.length + extras.length
   if (differences.length === 0 && count === 0) return null
-  return <details className="mt-1 px-1 text-[11px]" style={QUIET}>
-    <summary className="cursor-pointer py-1">Database details{count > 0 ? ` · ${count} ${extras.length === 0 ? "retained" : "database-only"} ${count === 1 ? "field" : "fields"}` : ""}</summary>
-    <div role="region" aria-label={`Database details for ${table}`} className="flex flex-col gap-2 py-1">
+  return <DatabaseDisclosure className="mt-1 px-1 text-[11px] text-[var(--text-muted)]"
+    title={`Database details${count > 0 ? ` · ${count} ${extras.length === 0 ? "retained" : "database-only"} ${count === 1 ? "field" : "fields"}` : ""}`}>
+    <div role="region" aria-label={`Database details for ${table}`} className="flex flex-col gap-2 pb-1 leading-relaxed">
       {differences.map((each) => <p key={each.message}>{each.message}</p>)}
       {retained.map((each) => <div key={each.column}><code>{each.column}</code><p>{each.description}</p>{each.quotes !== null && each.quotes > 0 && <p>{each.quotes} quotes with values</p>}</div>)}
       {extras.map((each) => <div key={each.column}><code>{each.column}</code>
@@ -107,5 +108,5 @@ export function TableDatabaseDetails({ table }: { table: string }) {
         <p>{each.quotes === null ? "Quote count unavailable" : `${each.quotes} quotes with values`}</p>
       </div>)}
     </div>
-  </details>
+  </DatabaseDisclosure>
 }

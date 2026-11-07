@@ -1,7 +1,7 @@
 /** Compact database selection; column decisions stay beside the schema fields. */
 import { RefreshCw } from "lucide-react"
 import type { WorkbenchStoreDifference } from "../api/types"
-import { INPUT_STYLE } from "../components/form"
+import { FIELD_CLASS, INPUT_STYLE } from "../components/form"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
@@ -20,7 +20,7 @@ export function CompareControls() {
       <div className="flex w-52 max-w-[48%] min-w-0 items-center gap-1.5 text-[11px]">
         <label htmlFor="schema-database" className="sr-only">Database</label>
         <select id="schema-database" aria-label="Database" value={state.environment ?? ""}
-          className="focus-ring min-w-0 flex-1 rounded px-1.5 py-1 text-xs" style={INPUT_STYLE}
+          className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE}
           title={state.environment === null ? "Database" : `${state.environment} · ${status}`}
           onChange={(event) => state.choose(event.target.value || null)}>
           <option value="">No database</option>
@@ -30,6 +30,7 @@ export function CompareControls() {
           <span role="status" className="sr-only"
             title={read.status === "read" ? `Database checked ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>
           <IconButton icon={RefreshCw} onClick={state.readAgain} disabled={read.status === "reading"}
+            className="disabled:opacity-50" style={{ color: "var(--text-muted)" }}
             aria-label={`Check ${state.environment} again`} title="Refresh database status" />
         </>}
       </div>
@@ -49,8 +50,8 @@ export function DatabaseMark({ table }: { table: string }) {
   const state = useStoreCompareStore()
   const differences = currentComparison(state, form)?.differences.filter((each) => each.table === table && each.column === null) ?? []
   if (differences.length === 0) return null
-  return <span data-testid={`database-mark-${table}`} className="shrink-0 rounded px-1 text-[10px]"
-    style={{ color: "var(--warning)", border: "1px solid var(--warning)" }} title={differences.map((each) => each.message).join("\n")}>
+  return <span data-testid={`database-mark-${table}`} className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium"
+    style={{ color: "var(--warning)", background: "var(--bg-base)" }} title={differences.map((each) => each.message).join("\n")}>
     {differences.length === 1 ? MARKS[differences[0].kind] : `${differences.length} differences`}
   </span>
 }

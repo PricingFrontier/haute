@@ -815,6 +815,14 @@ Out of scope:
     an index, even though index columns do not offer new rename choices.
     There is no standing comparison summary above the schema tables.
 
+    Database controls follow the library's existing field sizes, rounded corners,
+    focus and hover treatments, muted labels and status colours. Field statuses keep
+    their compact dots; failures use the error colour. Expandable database details use
+    the same chevron treatment as the schema tables, retaining native keyboard behavior.
+    The export dialog aligns its header, content and footer to the standard modal gutter;
+    only its content scrolls, keeping Close and Download SQL visible on short screens.
+    Secondary actions use the existing quiet icon actions and all controls use theme tokens.
+
     Export SQL opens a concise summary for the selected environment: short action rows,
     with technical descriptions and retained items behind disclosures. Manual work and
     blockers remain clearly identified. Rename choices whose field was removed are
