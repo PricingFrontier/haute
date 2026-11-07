@@ -170,7 +170,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           onKeyDown={onKeyDown}
           title={identity ? "Haute's column" : undefined}
           className={`${COMPACT_FIELD_CLASS} ${COLUMN_NAME_WIDTH} font-mono`}
-          style={{ ...(identity ? LOCKED_FIELD_STYLE : INPUT_STYLE), border: keyColumn ? KEY_BORDER : INPUT_STYLE.border }}
+          style={{ ...(identity || locked ? LOCKED_FIELD_STYLE : INPUT_STYLE), border: keyColumn ? KEY_BORDER : INPUT_STYLE.border }}
         />
         {identity ? (
           // The quote's identity has no label or rules to open.

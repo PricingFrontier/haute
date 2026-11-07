@@ -735,7 +735,9 @@ Out of scope:
 
   - **The schema's pane.** Schema opens the schema editor in a pane that slides in from
     the left over the sheet, under the sheet tabs, covering the sheet's left part without
-    moving it; the part it covers takes no presses and no drops while it is open. Its
+    moving it; the part it covers takes no presses and no drops while it is open. Every
+    column-name cell in `quote_details` uses the existing grey locked-field background,
+    including its non-key columns; labels, help and permitted rules remain editable. Its
     right edge is dragged to resize it, from 320px to half the window, or to the width its
     fields take at full stretch where that is wider, and never wider than the sheet's area
     beside the palette, so a narrow window keeps its right edge in view; it opens at that
