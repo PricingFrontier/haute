@@ -1,11 +1,10 @@
 /** Compact database selection; column decisions stay beside the schema fields. */
 import { RefreshCw } from "lucide-react"
 import type { WorkbenchStoreDifference } from "../api/types"
-import { FIELD_CLASS, INPUT_STYLE } from "../components/form"
+import { FIELD_CLASS, INPUT_STYLE, QuietAction } from "../components/form"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
-import { IconButton } from "./schema/IconButton"
 
 export function CompareControls() {
   const environments = useWorkbenchStore((s) => s.environments)
@@ -15,24 +14,26 @@ export function CompareControls() {
   const { read, compared } = environmentState(state)
   const status = comparisonStatus(state, form)
   const failure = status !== "Check failed" ? null : read.status === "failed" ? read.message : compared.status === "failed" ? compared.message : null
+  const colour = (name: string | null) => name === null ? "var(--text-primary)"
+    : environmentState(state, name).read.status !== "read" ? "var(--danger-text)"
+      : comparisonStatus(state, form, name) === "Compatible" ? "var(--success)" : "var(--caution)"
   return (
     <>
-      <div className="flex w-52 max-w-[48%] min-w-0 items-center gap-1.5 text-[11px]">
+      <div className="flex w-52 max-w-[48%] min-w-0 items-center gap-2 text-[11px]">
         <label htmlFor="schema-database" className="sr-only">Database</label>
         <select id="schema-database" aria-label="Database" value={state.environment ?? ""}
-          className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE}
-          title={state.environment === null ? "Database" : `${state.environment} · ${status}`}
+          className={`${FIELD_CLASS} flex-1`} style={{ ...INPUT_STYLE, color: colour(state.environment) }}
+          title={state.environment === null ? "Local schema" : `${state.environment} · ${status}`}
+          aria-describedby={state.environment === null ? undefined : "schema-database-status"}
           onChange={(event) => state.choose(event.target.value || null)}>
-          <option value="">No database</option>
-          {environments.map((name) => <option key={name} value={name}>{name} · {comparisonStatus(state, form, name)}</option>)}
+          <option value="" style={{ color: colour(null) }}>Local</option>
+          {environments.map((name) => <option key={name} value={name} style={{ color: colour(name) }}
+            title={comparisonStatus(state, form, name)} aria-description={comparisonStatus(state, form, name)}>{name}</option>)}
         </select>
-        {state.environment !== null && <>
-          <span role="status" className="sr-only"
-            title={read.status === "read" ? `Database checked ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>
-          <IconButton icon={RefreshCw} onClick={state.readAgain} disabled={read.status === "reading"}
-            className="disabled:opacity-50" style={{ color: "var(--text-muted)" }}
-            aria-label={`Check ${state.environment} again`} title="Refresh database status" />
-        </>}
+        {state.environment !== null && <span id="schema-database-status" role="status" className="sr-only"
+          title={read.status === "read" ? `Database checked ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>}
+        <QuietAction icon={RefreshCw} onClick={state.readAgain} disabled={state.environment === null || read.status === "reading"}
+          className="shrink-0" title="Refresh database status">Refresh</QuietAction>
       </div>
       {failure !== null && <p role="alert" className="w-full break-words text-[11px]" style={{ color: "var(--danger-text)" }}>{failure}</p>}
     </>

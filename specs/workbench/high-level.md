@@ -788,9 +788,13 @@ Out of scope:
   - **Reviewing database changes.** One compact Database selector sits to the right of
     Search fields on the same row, with refresh beside it. Both controls shrink with the
     pane; database failures appear below the shared row. There is no separate database
-    toolbar. Its choices include each environment's status:
-    Not checked, Checking, Comparing, Compatible, Changes needed, Needs attention, or
-    Check failed. A refresh action checks the selected database again. Choosing one reads
+    toolbar. Local is the neutral choice for editing without a database selected. Other
+    choices show only their environment names, coloured red until fetched, orange when
+    fetched but differences, unresolved checks or repairs remain, and green when the
+    current comparison matches. Refreshing clears the previous result: red while fetching,
+    then orange until comparison completes. Status explanations remain available to
+    assistive technology and in tooltips. A labelled Refresh button beside the selector
+    checks the selected database again; it is disabled for Local and while fetching. Choosing one reads
     it only if it has not been read; Check environments is available in the SQL options.
     Editing the shared
     schema compares it with those snapshots without rereading databases. A comparison is

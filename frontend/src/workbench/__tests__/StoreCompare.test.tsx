@@ -61,7 +61,7 @@ const open = () => {
 }
 
 const choose = (environment: string) => fireEvent.change(screen.getByRole("combobox", { name: "Database" }), { target: { value: environment } })
-const option = (name: string) => screen.getByRole("option", { name: new RegExp(`^${name}( ·|$)`) })
+const option = (name: string) => screen.getByRole("option", { name })
 const openField = (name: string) => {
   const button = within(screen.getByTestId(`schema-column-${name}`)).getByRole("button", { name: `Database status of ${name}` })
   if (button.getAttribute("aria-expanded") !== "true") fireEvent.click(button)
@@ -81,6 +81,48 @@ describe("Compare", () => {
     cleanup()
     vi.resetAllMocks()
     useStoreCompareStore.getState().reset()
+  })
+
+  it("uses Local and name-only database colours, clearing a match throughout refresh", async () => {
+    let finishRead!: (value: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
+    let finishCompare!: (value: WorkbenchStoreCompareResponse) => void
+    vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finishRead = resolve }))
+    vi.mocked(fetchStoreCompare).mockImplementation(() => new Promise((resolve) => { finishCompare = resolve }))
+    open()
+    const database = screen.getByRole("combobox", { name: "Database" })
+    const refresh = screen.getByRole("button", { name: "Refresh" })
+    expect(within(database).getAllByRole("option").map((each) => each.textContent)).toEqual(["Local", "dev", "prod"])
+    expect(database).toHaveValue("")
+    expect(database).toHaveStyle({ color: "var(--text-primary)" })
+    expect(refresh).toHaveTextContent("Refresh")
+    expect(refresh).toBeDisabled()
+    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
+
+    choose("dev")
+    expect(database).toHaveStyle({ color: "var(--danger-text)" })
+    expect(option("dev")).toHaveAccessibleDescription("Checking")
+    expect(refresh).toBeDisabled()
+    await act(async () => finishRead({ environment: "dev", tables: TABLES }))
+    expect(database).toHaveStyle({ color: "var(--caution)" })
+    expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
+    expect(option("dev")).toHaveAccessibleDescription("Comparing")
+    expect(refresh).toBeEnabled()
+    await act(async () => finishCompare({ ...COMPARED, differences: [], extras: [], changes: [], matches: true }))
+    expect(database).toHaveStyle({ color: "var(--success)" })
+    expect(option("dev")).toHaveStyle({ color: "var(--success)" })
+    expect(option("prod")).toHaveStyle({ color: "var(--danger-text)" })
+
+    fireEvent.click(refresh)
+    expect(fetchStoreCatalogue).toHaveBeenCalledTimes(2)
+    expect(database).toHaveStyle({ color: "var(--danger-text)" })
+    expect(option("dev")).toHaveStyle({ color: "var(--danger-text)" })
+    expect(refresh).toBeDisabled()
+    await act(async () => finishRead({ environment: "dev", tables: TABLES }))
+    expect(database).toHaveStyle({ color: "var(--caution)" })
+    await act(async () => finishCompare(COMPARED))
+    expect(database).toHaveStyle({ color: "var(--caution)" })
+    expect(option("dev")).toHaveAccessibleDescription("Changes needed")
+    expect(option("dev")).toHaveTextContent(/^dev$/)
   })
 
   it("keeps database selection compact and resolves a rename in the field's own details", async () => {
@@ -107,8 +149,8 @@ describe("Compare", () => {
 
   it("reads the chosen environment's database and marks each table and column of the form where it differs", async () => {
     open()
-    expect(option("dev")).toHaveTextContent("Not checked")
-    expect(option("prod")).toHaveTextContent("Not checked")
+    expect(option("dev")).toHaveStyle({ color: "var(--danger-text)" })
+    expect(option("prod")).toHaveStyle({ color: "var(--danger-text)" })
 
     choose("dev")
 
@@ -133,7 +175,7 @@ describe("Compare", () => {
     choose("dev")
 
     expect(await screen.findByRole("status")).toHaveTextContent("Compatible")
-    expect(option("dev")).toHaveTextContent("Compatible")
+    expect(option("dev")).toHaveStyle({ color: "var(--success)" })
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Matches")
   })
 
@@ -155,6 +197,7 @@ describe("Compare", () => {
     open()
     choose("dev")
     await waitFor(() => expect(screen.getByTestId("database-mark-policy-year")).toHaveTextContent("Needs attention"))
+    expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
     openField("year")
     const details = screen.getByRole("region", { name: "Database details for policy.year" })
     expect(details).toHaveTextContent("Change TEXT to Integer")
@@ -211,6 +254,7 @@ describe("Compare", () => {
     vi.mocked(fetchStoreCompare).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject }))
     act(() => useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "Changed" })))
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Comparing")
+    expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
     expect(screen.queryByText("This field matches the database.")).not.toBeInTheDocument()
     await act(async () => fail(new Error("Compare failed")))
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Check failed")
@@ -230,7 +274,7 @@ describe("Compare", () => {
     expect(within(field).getByRole("alert")).toHaveTextContent("This rename cannot be used in dev")
     let finish!: (value: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
-    fireEvent.click(screen.getByRole("button", { name: "Check dev again" }))
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     expect(within(field).getByRole("combobox")).toBeDisabled()
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Checking")
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, differences: [], changes: [], extras: [], matches: true })
@@ -282,7 +326,7 @@ describe("Compare", () => {
     await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, []))
   })
 
-  it("reads the database again on Read again, keeping the pairings", async () => {
+  it("reads the database again on Refresh, keeping the pairings", async () => {
     // The comparison takes every pairing it is sent.
     vi.mocked(fetchStoreCompare).mockImplementation((_form, _environment, _tables, renames) => Promise.resolve({ ...COMPARED, renames }))
     open()
@@ -290,7 +334,7 @@ describe("Compare", () => {
     await screen.findByTestId("database-mark-policy-state")
     useStoreCompareStore.getState().pair({ table: "policy", column: "state", was: "region" })
 
-    fireEvent.click(screen.getByRole("button", { name: "Check dev again" }))
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
 
     await waitFor(() => expect(fetchStoreCatalogue).toHaveBeenCalledTimes(2))
     expect(useStoreCompareStore.getState().renames).toEqual([{ table: "policy", column: "state", was: "region" }])
@@ -304,6 +348,7 @@ describe("Compare", () => {
     choose("prod")
 
     expect(await screen.findByRole("alert")).toHaveTextContent("connections.toml has no [prod] connection")
+    expect(option("prod")).toHaveStyle({ color: "var(--danger-text)" })
     expect(fetchStoreCompare).not.toHaveBeenCalled()
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Check failed")
   })
@@ -314,6 +359,7 @@ describe("Compare", () => {
     choose("dev")
 
     expect(await screen.findByRole("alert")).toHaveTextContent("A column name is refused.")
+    expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Check failed")
   })
@@ -327,7 +373,8 @@ describe("Compare", () => {
 
     expect(screen.queryByTestId("store-compare")).not.toBeInTheDocument()
     expect(screen.queryByTestId("database-mark-policy-state")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /Check .* again/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "Database" })).toHaveStyle({ color: "var(--text-primary)" })
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled()
     expect(useStoreCompareStore.getState()).toMatchObject({ environment: null, renames: [] })
     useStoreCompareStore.getState().readAgain()
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
@@ -347,7 +394,7 @@ describe("Compare", () => {
     choose("dev")
     expect(await screen.findByRole("region", { name: "Database details for policy.state" })).toHaveTextContent("region → state")
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(2)
-    expect(option("prod")).toHaveTextContent("Changes needed")
+    expect(option("prod")).toHaveStyle({ color: "var(--caution)" })
   })
 
   it("replaces conflicting pairings, preserves shared intent and ignores superseded reads and comparisons", async () => {
@@ -406,8 +453,9 @@ describe("Compare", () => {
       : Promise.resolve({ environment, tables: TABLES }))
     open()
     act(() => useStoreCompareStore.getState().checkAll(["dev", "prod"]))
-    await waitFor(() => expect(option("dev")).toHaveTextContent("Changes needed"))
-    expect(option("prod")).toHaveTextContent("Checking")
+    await waitFor(() => expect(option("dev")).toHaveAccessibleDescription("Changes needed"))
+    expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
+    expect(option("prod")).toHaveStyle({ color: "var(--danger-text)" })
     await act(async () => finishProd({ environment: "prod", tables: TABLES }))
     choose("prod")
     expect(await screen.findByTestId("database-mark-policy-state")).toBeInTheDocument()
@@ -416,7 +464,7 @@ describe("Compare", () => {
     vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "prod", tables: [] })
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, tables) => tables.length === 0
       ? { ...COMPARED, differences: [], matches: true } : COMPARED)
-    fireEvent.click(screen.getByRole("button", { name: "Check prod again" }))
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Compatible"))
     expect(within(screen.getByRole("region", { name: "Table policy" })).getByText("Database details · 2 retained fields").closest("details")).not.toHaveAttribute("open")
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(3)
