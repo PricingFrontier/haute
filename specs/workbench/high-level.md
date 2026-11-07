@@ -797,12 +797,24 @@ Out of scope:
     then orange until comparison completes. Status explanations remain available to
     assistive technology and in tooltips. A labelled Refresh button beside the selector
     checks the selected database again; it is disabled for Local and while fetching. Choosing one reads
-    it only if it has not been read; Check environments is available in the schema pane's
+    it only if it has not been loaded in the session, reusing the project's persisted
+    snapshot when available; Check environments is available in the schema pane's
     collapsed Database changes section.
     Editing the shared
     schema compares it with those snapshots without rereading databases. A comparison is
     current only for the form, rename choices and catalogue it was requested for. Each
-    successful read shows its date and time. Compatible means the tables support this
+    successful database fetch is cached locally per project and environment under
+    `.haute_cache/workbench/catalogues/`, surviving page reloads and server restarts.
+    Snapshots hold schema metadata and counts, not quote values or credentials. The
+    database target and sign-in identity are fingerprinted: a changed connection never
+    reuses a snapshot of another target. Refresh and Check environments always read the
+    database and replace its snapshot only on success. There is no automatic expiry;
+    the original fetch time is shown as the snapshot time, never the time it was loaded
+    from cache. A failed refresh is shown as failed, without displaying an old match;
+    the last successful disk snapshot remains intact. Invalid/unreadable cache files
+    give an actionable error and can be replaced by an explicit Refresh. Comparisons
+    and SQL are recalculated from the current form and rename choices, never cached.
+    Compatible means the snapshot's tables support this
     schema, including permitted retained columns; it does not establish compatibility with
     a running app, permissions to run that app, or which migrations were executed.
 

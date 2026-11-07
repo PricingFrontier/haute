@@ -73,7 +73,7 @@ describe("Compare", () => {
     useWorkbenchStore.setState({ environments: ["dev", "prod"], storeColumns: {} })
     useStoreCompareStore.getState().reset()
     useWorkbenchViewStore.setState({ schemaDetails: null, schemaSearch: "" })
-    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, tables: TABLES }))
+    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, checked_at: 1700000000000, tables: TABLES }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(COMPARED)
   })
 
@@ -81,6 +81,26 @@ describe("Compare", () => {
     cleanup()
     vi.resetAllMocks()
     useStoreCompareStore.getState().reset()
+  })
+
+  it("reuses persisted snapshot times after a session reset and explicitly refreshes the database", async () => {
+    open()
+    choose("dev")
+    await waitFor(() => expect(option("dev")).toHaveAccessibleDescription("Changes needed"))
+    fireEvent.click(screen.getByText("Database changes", { exact: true }))
+    expect(screen.getByText(new Date(1700000000000).toLocaleString())).toHaveAttribute("datetime", "2023-11-14T22:13:20.000Z")
+    act(() => useStoreCompareStore.getState().reset())
+    choose("dev")
+    await waitFor(() => expect(fetchStoreCompare).toHaveBeenCalledTimes(2))
+    expect(fetchStoreCatalogue).toHaveBeenLastCalledWith("dev", false)
+    fireEvent.click(screen.getByText("Database changes", { exact: true }))
+    expect(screen.getByText(new Date(1700000000000).toLocaleString())).toBeVisible()
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000060000, tables: TABLES })
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    await waitFor(() => expect(fetchStoreCompare).toHaveBeenCalledTimes(3))
+    expect(fetchStoreCatalogue).toHaveBeenLastCalledWith("dev", true)
+    fireEvent.click(screen.getByText("Database changes", { exact: true }))
+    expect(screen.getByText(new Date(1700000060000).toLocaleString())).toBeVisible()
   })
 
   it("shows hidden managed and storage repairs in table details without field controls", async () => {
@@ -123,7 +143,7 @@ describe("Compare", () => {
     await act(async () => fail(new Error("Database unavailable")))
     expect(screen.getByRole("alert")).toHaveTextContent("Database unavailable")
     expect(table.queryByText("Database details")).toBeNull()
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", tables: TABLES })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     await waitFor(() => expect(table.getByText("Database details")).toBeInTheDocument())
     choose("")
@@ -132,7 +152,7 @@ describe("Compare", () => {
   })
 
   it("uses Local and name-only database colours, clearing a match throughout refresh", async () => {
-    let finishRead!: (value: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
+    let finishRead!: (value: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     let finishCompare!: (value: WorkbenchStoreCompareResponse) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finishRead = resolve }))
     vi.mocked(fetchStoreCompare).mockImplementation(() => new Promise((resolve) => { finishCompare = resolve }))
@@ -150,7 +170,7 @@ describe("Compare", () => {
     expect(database).toHaveStyle({ color: "var(--danger-text)" })
     expect(option("dev")).toHaveAccessibleDescription("Checking")
     expect(refresh).toBeDisabled()
-    await act(async () => finishRead({ environment: "dev", tables: TABLES }))
+    await act(async () => finishRead({ environment: "dev", checked_at: 1700000000000, tables: TABLES }))
     expect(database).toHaveStyle({ color: "var(--caution)" })
     expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
     expect(option("dev")).toHaveAccessibleDescription("Comparing")
@@ -165,7 +185,7 @@ describe("Compare", () => {
     expect(database).toHaveStyle({ color: "var(--danger-text)" })
     expect(option("dev")).toHaveStyle({ color: "var(--danger-text)" })
     expect(refresh).toBeDisabled()
-    await act(async () => finishRead({ environment: "dev", tables: TABLES }))
+    await act(async () => finishRead({ environment: "dev", checked_at: 1700000000000, tables: TABLES }))
     expect(database).toHaveStyle({ color: "var(--caution)" })
     await act(async () => finishCompare(COMPARED))
     expect(database).toHaveStyle({ color: "var(--caution)" })
@@ -230,7 +250,7 @@ describe("Compare", () => {
     choose("dev")
 
     expect(await screen.findByTestId("database-mark-policy-state")).toHaveTextContent("New column")
-    expect(fetchStoreCatalogue).toHaveBeenCalledWith("dev")
+    expect(fetchStoreCatalogue).toHaveBeenCalledWith("dev", false)
     expect(fetchStoreCompare).toHaveBeenCalledWith(useWorkbenchFormStore.getState().form, "dev", TABLES, [])
     const typed = screen.getByTestId("database-mark-policy-year")
     expect(typed).toHaveTextContent("Type change")
@@ -347,13 +367,13 @@ describe("Compare", () => {
     openField("state")
     const field = screen.getByRole("region", { name: "Database details for policy.state" })
     expect(within(field).getByRole("alert")).toHaveTextContent("This rename cannot be used in dev")
-    let finish!: (value: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
+    let finish!: (value: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     expect(within(field).getByRole("combobox")).toBeDisabled()
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Checking")
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, differences: [], changes: [], extras: [], matches: true })
-    await act(async () => finish({ environment: "dev", tables: [{ ...TABLES[0], columns: [{ ...TABLES[0].columns[0], name: "state" }] }] }))
+    await act(async () => finish({ environment: "dev", checked_at: 1700000000000, tables: [{ ...TABLES[0], columns: [{ ...TABLES[0].columns[0], name: "state" }] }] }))
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Matches")
     expect(within(field).queryByRole("alert")).not.toBeInTheDocument()
     expect(within(field).getByRole("combobox")).toBeEnabled()
@@ -489,7 +509,7 @@ describe("Compare", () => {
     ])
 
     // Superseded catalogue read (both success and failure) is ignored after reset.
-    let resolveRead!: (value: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
+    let resolveRead!: (value: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     let rejectRead!: (error: unknown) => void
     vi.mocked(fetchStoreCatalogue)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve }))
@@ -497,14 +517,14 @@ describe("Compare", () => {
 
     store.choose("dev")
     store.choose("prod")
-    resolveRead({ environment: "dev", tables: TABLES })
+    resolveRead({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
     store.reset()
     rejectRead(new ApiError("Stale failure", 503))
     await Promise.resolve()
     expect(useStoreCompareStore.getState().environments).toEqual({})
 
     // A rejected pairing stays explicit for other environments; an older failure cannot land.
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", tables: TABLES })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
     let rejectCompare!: (error: unknown) => void
     vi.mocked(fetchStoreCompare)
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCompare = reject }))
@@ -522,21 +542,21 @@ describe("Compare", () => {
   })
 
   it("checks environments independently, shows freshness, and verifies only from a fresh catalogue", async () => {
-    let finishProd!: (answer: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
+    let finishProd!: (answer: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation((environment) => environment === "prod"
       ? new Promise((resolve) => { finishProd = resolve })
-      : Promise.resolve({ environment, tables: TABLES }))
+      : Promise.resolve({ environment, checked_at: 1700000000000, tables: TABLES }))
     open()
     act(() => useStoreCompareStore.getState().checkAll(["dev", "prod"]))
     await waitFor(() => expect(option("dev")).toHaveAccessibleDescription("Changes needed"))
     expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
     expect(option("prod")).toHaveStyle({ color: "var(--danger-text)" })
-    await act(async () => finishProd({ environment: "prod", tables: TABLES }))
+    await act(async () => finishProd({ environment: "prod", checked_at: 1700000000000, tables: TABLES }))
     choose("prod")
     expect(await screen.findByTestId("database-mark-policy-state")).toBeInTheDocument()
-    expect(screen.getByRole("status")).toHaveAttribute("title", expect.stringContaining("Database checked"))
+    expect(screen.getByRole("status")).toHaveAttribute("title", expect.stringContaining("Schema snapshot fetched"))
 
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "prod", tables: [] })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "prod", checked_at: 1700000000000, tables: [] })
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, tables) => tables.length === 0
       ? { ...COMPARED, differences: [], matches: true } : COMPARED)
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
@@ -546,13 +566,13 @@ describe("Compare", () => {
   })
 
   it("forgets session choices and late replies on document, form and environment changes", async () => {
-    let finish!: (answer: { environment: string; tables: WorkbenchCatalogueTable[] }) => void
+    let finish!: (answer: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     const store = useStoreCompareStore.getState()
     store.choose("dev")
     store.pair({ table: "policy", column: "state", was: "region" })
     useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 }))
-    await finish({ environment: "dev", tables: TABLES })
+    await finish({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
     expect(useStoreCompareStore.getState()).toMatchObject({ environment: null, environments: {}, renames: [] })
     store.pair({ table: "policy", column: "state", was: "region" })
     useWorkbenchFormStore.setState((state) => ({ reads: state.reads + 1 }))

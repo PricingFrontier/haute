@@ -87,8 +87,6 @@ from haute.routes._save_pipeline import (
     capture_save_in_ledger,
 )
 from haute.schemas import (
-    WorkbenchCatalogueColumn,
-    WorkbenchCatalogueTable,
     WorkbenchFormResponse,
     WorkbenchFormSaveRequest,
     WorkbenchFormSaveResponse,
@@ -369,40 +367,18 @@ def _store_catalogue(
 ) -> WorkbenchStoreCatalogueResponse:
     from haute._connections import project_environ
     from haute._quote_store import connected_store
-    from haute._quote_store._compare import read_store_catalogue
+    from haute._workbench_catalogue import catalogue_snapshot
 
     location = connected_store(config, body.environment, project_environ(config.project_root))
-    catalogue = read_store_catalogue(location)
-    return WorkbenchStoreCatalogueResponse(
-        environment=body.environment,
-        tables=[
-            WorkbenchCatalogueTable(
-                name=table.name,
-                columns=[
-                    WorkbenchCatalogueColumn(
-                        name=column.name,
-                        kind=column.kind,
-                        type=column.type,
-                        nullable=column.nullable,
-                        collation=column.collation,
-                        quotes=column.quotes,
-                    )
-                    for column in table.columns
-                ],
-                primary_key=list(table.primary_key),
-                refers=table.refers,
-                quotes=table.quotes,
-            )
-            for table in catalogue.tables
-        ],
-    )
+    return catalogue_snapshot(config.project_root, location, refresh=body.refresh)
 
 
 @router.post("/store-catalogue", response_model=WorkbenchStoreCatalogueResponse)
 async def store_catalogue(body: WorkbenchStoreCatalogueRequest) -> WorkbenchStoreCatalogueResponse:
     """The tables an environment's database holds, read through its connection in
     ``connections.toml`` under the analyst's sign-in, with the quotes holding values in each
-    table and column; nothing written. An environment with no connection, or a database that
+    table and column; persisted locally for reuse when refresh is false. No database writes.
+    An environment with no connection, or a database that
     cannot be reached or read, answers 409 naming what to set."""
     config = await _enabled_config()
     return await run_in_threadpool(_store_catalogue, config, body)

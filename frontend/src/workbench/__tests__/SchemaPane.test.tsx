@@ -31,7 +31,7 @@ describe("SchemaPane", () => {
     useWorkbenchStore.setState({ environments: ["dev", "prod"] })
     useWorkbenchViewStore.setState({ mode: "build", schemaOpen: true, schemaSearch: "" })
     useStoreCompareStore.getState().reset()
-    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, tables: [] }))
+    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, checked_at: 1700000000000, tables: [] }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(ANSWER)
   })
 
@@ -42,7 +42,7 @@ describe("SchemaPane", () => {
   })
 
   it("opens SQL only after the database selected on the pane has a current comparison", async () => {
-    let finish!: (value: { environment: string; tables: [] }) => void
+    let finish!: (value: { environment: string; checked_at: number; tables: [] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     render(<SchemaPane />)
     const exportButton = screen.getByRole("button", { name: "Export SQL" })
@@ -50,7 +50,7 @@ describe("SchemaPane", () => {
     expect(exportButton).toHaveAttribute("title", expect.stringContaining("Select a database"))
     selectDev()
     expect(exportButton).toBeDisabled()
-    await act(async () => finish({ environment: "dev", tables: [] }))
+    await act(async () => finish({ environment: "dev", checked_at: 1700000000000, tables: [] }))
     await waitFor(() => expect(exportButton).toBeEnabled())
     fireEvent.click(exportButton)
     const window = screen.getByTestId("store-sql-window")
@@ -107,7 +107,7 @@ describe("SchemaPane", () => {
     expect(screen.getByText(/Coordinate these changes/)).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Check environments" }))
     await waitFor(() => expect(fetchStoreCatalogue).toHaveBeenCalledTimes(3))
-    expect(fetchStoreCatalogue).toHaveBeenCalledWith("prod")
+    expect(fetchStoreCatalogue).toHaveBeenCalledWith("prod", true)
   })
 
   it("explains why SQL is unavailable with no configured databases", () => {

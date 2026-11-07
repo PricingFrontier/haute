@@ -37,7 +37,7 @@ describe("StoreSqlWindow", () => {
     useWorkbenchStore.setState({ environments: ["test", "prod"] })
     useWorkbenchViewStore.setState({ mode: "build" })
     useStoreCompareStore.getState().reset()
-    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, tables: [] }))
+    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, checked_at: 1700000000000, tables: [] }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(LIVE)
     vi.mocked(downloadTextFile).mockReturnValue(true)
     vi.mocked(writeClipboardText).mockResolvedValue(undefined)

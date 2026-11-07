@@ -286,6 +286,7 @@ class WorkbenchStoreCatalogueRequest(BaseModel):
     """The environment whose database's tables to read, one ``haute.toml`` declares."""
 
     environment: BoundedName
+    refresh: bool = True
 
 
 class WorkbenchStoreCatalogueResponse(BaseModel):
@@ -295,6 +296,7 @@ class WorkbenchStoreCatalogueResponse(BaseModel):
 
     environment: str
     tables: list[WorkbenchCatalogueTable]
+    checked_at: int = Field(gt=0)
 
 
 class WorkbenchStoreRename(BaseModel):

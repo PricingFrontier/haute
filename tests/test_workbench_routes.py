@@ -1345,6 +1345,113 @@ def test_the_catalogue_is_read_through_the_environment_s_connection_changing_not
     assert database.read_bytes() == before
 
 
+def test_catalogue_snapshots_persist_until_refreshed_and_follow_the_connection(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from haute._quote_store import _compare as compare_module
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    database = _dev_database(project, form(POLICY))
+    first = _catalogue().json()
+    assert first["checked_at"] > 0
+    cache = project / ".haute_cache/workbench/catalogues/dev.json"
+    saved = cache.read_bytes()
+    assert str(project).encode() not in saved
+    assert b"dev.sqlite" not in saved
+    with sqlite3.connect(database) as connection:
+        connection.execute("ALTER TABLE policy_details ADD COLUMN new_field TEXT")
+
+    # A new client reads the persisted snapshot without reaching the database.
+    with monkeypatch.context() as patch:
+
+        def unavailable(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("The cached request must not read the database")
+
+        patch.setattr(compare_module, "read_store_catalogue", unavailable)
+        cached = client().post(
+            "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+        )
+        assert cached.status_code == 200, cached.text
+        assert cached.json() == first
+    refreshed = _catalogue().json()
+    assert refreshed["checked_at"] >= first["checked_at"]
+    assert "new_field" in {
+        column["name"] for table in refreshed["tables"] for column in table["columns"]
+    }
+    assert cache.read_bytes() != saved
+
+    # A changed database under the same environment name must not reuse old metadata.
+    (project / "connections.toml").write_text(
+        '[dev]\nprovider = "sqlite"\ndatabase = "other.sqlite"\n'
+    )
+    missing = client().post(
+        "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+    )
+    assert missing.status_code == 409, missing.text
+    assert not (project / "other.sqlite").exists()
+
+
+def test_catalogue_cache_errors_require_refresh_and_failed_refresh_keeps_the_snapshot(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _workbench_catalogue as catalogue_module
+    from haute._quote_store import _compare as compare_module
+    from haute._workbench_config import WorkbenchError
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    assert _catalogue().status_code == 200
+    cache = project / ".haute_cache/workbench/catalogues/dev.json"
+    saved = cache.read_bytes()
+    with monkeypatch.context() as patch:
+
+        def unavailable(*args: Any, **kwargs: Any) -> Any:
+            raise WorkbenchError("Database unavailable")
+
+        patch.setattr(compare_module, "read_store_catalogue", unavailable)
+        failed = _catalogue()
+        assert failed.status_code == 409
+        assert "Database unavailable" in failed.text
+        assert cache.read_bytes() == saved
+    with monkeypatch.context() as patch:
+
+        def unwritable(*args: Any, **kwargs: Any) -> None:
+            raise PermissionError("Read-only directory")
+
+        patch.setattr(catalogue_module, "atomic_write_text", unwritable)
+        failed = _catalogue()
+        assert failed.status_code == 409
+        assert "Check write access" in failed.text
+        assert cache.read_bytes() == saved
+    cache.write_text("broken json")
+    invalid = client().post(
+        "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+    )
+    assert invalid.status_code == 409
+    assert "Refresh" in invalid.text
+    assert _catalogue().status_code == 200
+    assert json.loads(cache.read_text())["snapshot"]["environment"] == "dev"
+
+
+def test_catalogue_cache_cannot_follow_a_directory_link_outside_the_project(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    outside = project.parent / "outside-catalogue-cache"
+    outside.mkdir()
+    _link_directory(outside, project / ".haute_cache")
+    response = _catalogue()
+    assert response.status_code == 403, response.text
+    assert "outside the project root" in response.text
+    assert not list(outside.iterdir())
+
+
 def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_match(
     project: Path,
 ) -> None:

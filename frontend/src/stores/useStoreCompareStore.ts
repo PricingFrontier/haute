@@ -1,6 +1,7 @@
 /** Per-environment catalogue snapshots and shared, explicit rename choices (specs/workbench).
- * Snapshots survive pane closure. A project/form adoption invalidates them and all replies
- * in flight; editing the form only recomputes comparisons, without reading a database.
+ * Snapshots survive pane closure and are persisted by the server. A project/form adoption
+ * invalidates session state and all replies in flight; editing the form only recomputes
+ * comparisons, without reading a database.
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
@@ -75,13 +76,13 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
   const update = (name: string, value: EnvironmentComparison) =>
     set((state) => ({ environments: { ...state.environments, [name]: value } }))
 
-  const readDatabase = (name: string) => {
+  const readDatabase = (name: string, refresh = false) => {
     const pending: CatalogueRead = { status: "reading" }
     update(name, { read: pending, compared: { status: "none" } })
-    void fetchStoreCatalogue(name).then((answer) => {
+    void fetchStoreCatalogue(name, refresh).then((answer) => {
       if (answer.environment !== name) throw new Error("The database check answered for a different environment. Check again.")
       if (get().environments[name]?.read !== pending) return
-      update(name, { read: { status: "read", tables: answer.tables, checkedAt: Date.now() }, compared: { status: "none" } })
+      update(name, { read: { status: "read", tables: answer.tables, checkedAt: answer.checked_at }, compared: { status: "none" } })
     }).catch((error: unknown) => {
       if (get().environments[name]?.read === pending) {
         update(name, { read: { status: "failed", message: apiErrorMessage(error) }, compared: { status: "none" } })
@@ -100,10 +101,10 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
     },
     readAgain: () => {
       const name = get().environment
-      if (name !== null) readDatabase(name)
+      if (name !== null) readDatabase(name, true)
     },
     checkAll: (environments) => {
-      for (const name of environments) readDatabase(name)
+      for (const name of environments) readDatabase(name, true)
     },
     pair: (rename) => set((state) => ({
       renames: [...state.renames.filter((each) => !(each.table === rename.table && (each.column === rename.column || each.was === rename.was))), rename],

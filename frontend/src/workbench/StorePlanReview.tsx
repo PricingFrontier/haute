@@ -37,7 +37,7 @@ export function DatabaseChanges() {
     <StorePlanReview answer={answer} />
     <div className="mt-3 flex flex-col gap-2 pb-2" style={QUIET}>
       <p className="break-all">{answer.provider} · Saved revision {revision ?? "not recorded"}</p>
-      {read.status === "read" && <p>Database checked <time dateTime={new Date(read.checkedAt).toISOString()}>{new Date(read.checkedAt).toLocaleString()}</time></p>}
+      {read.status === "read" && <p>Schema snapshot fetched <time dateTime={new Date(read.checkedAt).toISOString()}>{new Date(read.checkedAt).toLocaleString()}</time></p>}
       <QuietAction icon={RefreshCw} className="self-start" onClick={() => state.checkAll(configured)}>Check environments</QuietAction>
     </div>
   </DatabaseDisclosure>

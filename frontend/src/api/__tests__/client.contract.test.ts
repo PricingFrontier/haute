@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { ApiResponseValidationError } from "../responseValidation"
 import type { FormSpec, OptimiserApplyQuery } from "../types"
+import { fetchStoreCatalogue } from "../workbench"
 import {
   applyOptimiser,
   cancelExplorePivot,
@@ -120,6 +121,23 @@ afterEach(() => {
 })
 
 describe("client runtime contracts", () => {
+  it("loads saved database snapshots by default and explicitly requests refresh", async () => {
+    const snapshot = { environment: "dev", tables: [], checked_at: 1700000000000 }
+    mockFetch.mockImplementation(() => jsonResponse(snapshot))
+
+    expect(await fetchStoreCatalogue("dev")).toEqual(snapshot)
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/workbench/store-catalogue", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ environment: "dev", refresh: false }),
+    }))
+    expect(await fetchStoreCatalogue("dev", true)).toEqual(snapshot)
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/workbench/store-catalogue", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ environment: "dev", refresh: true }),
+    }))
+
+    mockFetch.mockReturnValue(jsonResponse({ environment: "dev", tables: [] }))
+    await expect(fetchStoreCatalogue("dev")).rejects.toThrow("WorkbenchStoreCatalogueResponse: invalid contract at /checked_at: required")
+  })
+
   it("savePipeline rejects malformed 200 payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ file: 123, pipeline_name: "pricing" }))
 

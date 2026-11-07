@@ -32,7 +32,7 @@ export function CompareControls() {
             title={comparisonStatus(state, form, name)} aria-description={comparisonStatus(state, form, name)}>{name}</option>)}
         </select>
         {state.environment !== null && <span id="schema-database-status" role="status" className="sr-only"
-          title={read.status === "read" ? `Database checked ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>}
+          title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>}
         <QuietAction icon={RefreshCw} onClick={state.readAgain} disabled={state.environment === null || read.status === "reading"}
           className="shrink-0" title="Refresh database status">Refresh</QuietAction>
       </div>

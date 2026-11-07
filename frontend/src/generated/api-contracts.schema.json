@@ -28190,6 +28190,11 @@
     "WorkbenchStoreCatalogueResponse": {
       "description": "The tables an environment's database holds, read through its connection: each table\nholding the quote's identity, ``haute_activity`` among them. Names, kinds and counts\nalone, never a value, a location or a sign-in.",
       "properties": {
+        "checked_at": {
+          "exclusiveMinimum": 0,
+          "title": "Checked At",
+          "type": "integer"
+        },
         "environment": {
           "title": "Environment",
           "type": "string"
@@ -28204,7 +28209,8 @@
       },
       "required": [
         "environment",
-        "tables"
+        "tables",
+        "checked_at"
       ],
       "title": "WorkbenchStoreCatalogueResponse",
       "type": "object"

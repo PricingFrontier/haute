@@ -6012,6 +6012,7 @@ export interface WorkbenchStoreSqlEnvironment {
  * alone, never a value, a location or a sign-in.
  */
 export interface WorkbenchStoreCatalogueResponse {
+  checked_at: number;
   environment: string;
   tables: WorkbenchCatalogueTable[];
 }
