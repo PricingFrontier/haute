@@ -1,8 +1,9 @@
-import { AlertTriangle, Undo2 } from "lucide-react"
+import { AlertTriangle, RefreshCw, Undo2 } from "lucide-react"
 import type { WorkbenchStoreCompareResponse } from "../api/types"
 import { QuietAction } from "../components/form"
-import useStoreCompareStore from "../stores/useStoreCompareStore"
+import useStoreCompareStore, { currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { tableColumns } from "../utils/quoteIdentity"
 import DatabaseDisclosure from "./DatabaseDisclosure"
@@ -22,7 +23,27 @@ function ChangeRow({ change }: { change: WorkbenchStoreChange }) {
   </DatabaseDisclosure>
 }
 
-/** A brief export summary. Decisions about fields live in their own details. */
+/** Secondary review and database actions stay collapsed on the main schema pane. */
+export function DatabaseChanges() {
+  const form = useWorkbenchFormStore((s) => s.form)
+  const revision = useWorkbenchFormStore((s) => s.revision)
+  const configured = useWorkbenchStore((s) => s.environments)
+  const state = useStoreCompareStore()
+  const answer = currentComparison(state, form)
+  if (answer === null) return null
+  const { read } = environmentState(state)
+  const attention = answer.blocked.length > 0 || answer.manual.length > 0 || answer.changes.some((change) => change.disposition === "manual")
+  return <DatabaseDisclosure title={<span style={attention ? { color: "var(--warning)" } : QUIET}>Database changes{attention ? " · Needs attention" : ""}</span>} className="text-[11px]">
+    <StorePlanReview answer={answer} />
+    <div className="mt-3 flex flex-col gap-2 pb-2" style={QUIET}>
+      <p className="break-all">{answer.provider} · Saved revision {revision ?? "not recorded"}</p>
+      {read.status === "read" && <p>Database checked <time dateTime={new Date(read.checkedAt).toISOString()}>{new Date(read.checkedAt).toLocaleString()}</time></p>}
+      <QuietAction icon={RefreshCw} className="self-start" onClick={() => state.checkAll(configured)}>Check environments</QuietAction>
+    </div>
+  </DatabaseDisclosure>
+}
+
+/** A brief review on the schema pane. Field decisions live in their own details. */
 export default function StorePlanReview({ answer }: { answer: WorkbenchStoreCompareResponse }) {
   const form = useWorkbenchFormStore((s) => s.form)
   const renames = useStoreCompareStore((s) => s.renames)

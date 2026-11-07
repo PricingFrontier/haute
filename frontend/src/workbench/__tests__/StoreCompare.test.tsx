@@ -465,7 +465,7 @@ describe("Compare", () => {
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, tables) => tables.length === 0
       ? { ...COMPARED, differences: [], matches: true } : COMPARED)
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Compatible"))
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Database" })).toHaveAccessibleDescription("Compatible"))
     expect(within(screen.getByRole("region", { name: "Table policy" })).getByText("Database details · 2 retained fields").closest("details")).not.toHaveAttribute("open")
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(3)
   })

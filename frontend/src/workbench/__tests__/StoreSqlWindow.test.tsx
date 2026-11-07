@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/workbench", async (importOriginal) => ({
@@ -18,13 +18,6 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import StoreSqlWindow from "../StoreSqlWindow"
 import { sheetForm } from "./fixtures"
 
-const OFFLINE = {
-  branch: "main",
-  environments: [
-    { name: "test", provider: "postgresql", sql: "-- offline test SQL" },
-    { name: "prod", provider: "sqlserver", sql: "-- offline prod SQL" },
-  ],
-}
 const LIVE: WorkbenchStoreCompareResponse = {
   differences: [{ table: "policy", column: "territory", kind: "renamed", message: "the database names it region" }],
   extras: [], renames: [], matches: false, sql: "-- from the prod database", provider: "sqlserver",
@@ -32,10 +25,10 @@ const LIVE: WorkbenchStoreCompareResponse = {
   manual: [], blocked: [], requires_maintenance: true,
 }
 
-function live(answer = LIVE, renames = answer.renames) {
+function live(answer = LIVE, renames = answer.renames, environment = "prod") {
   const form = useWorkbenchFormStore.getState().form!
   const read: CatalogueRead = { status: "read", tables: [], checkedAt: Date.UTC(2026, 10, 6, 10, 42) }
-  useStoreCompareStore.setState({ environment: "prod", renames, environments: { prod: { read, compared: { status: "compared", form, renames, read, answer } } } })
+  useStoreCompareStore.setState({ environment, renames, environments: { [environment]: { read, compared: { status: "compared", form, renames, read, answer } } } })
 }
 
 describe("StoreSqlWindow", () => {
@@ -44,7 +37,6 @@ describe("StoreSqlWindow", () => {
     useWorkbenchStore.setState({ environments: ["test", "prod"] })
     useWorkbenchViewStore.setState({ mode: "build" })
     useStoreCompareStore.getState().reset()
-    vi.mocked(fetchStoreSql).mockResolvedValue(OFFLINE)
     vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, tables: [] }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(LIVE)
     vi.mocked(downloadTextFile).mockReturnValue(true)
@@ -52,32 +44,20 @@ describe("StoreSqlWindow", () => {
   })
   afterEach(() => { cleanup(); vi.resetAllMocks(); useStoreCompareStore.getState().reset() })
 
-  it("keeps the export summary short and puts technical options and SQL behind disclosures", () => {
+  it("shows just the selected query immediately with no selection, refresh or options", () => {
     live()
     render(<StoreSqlWindow onClose={vi.fn()} />)
     expect(screen.getByRole("heading", { name: "Export SQL" })).toBeInTheDocument()
-    expect(screen.getByText("SQL options").closest("details")).not.toHaveAttribute("open")
-    expect(screen.getByText("View SQL").closest("details")).not.toHaveAttribute("open")
-    expect(screen.getByText("Rename region → policy.territory")).toBeInTheDocument()
-    expect(screen.getByText("Working schema · Saved")).toBeInTheDocument()
-  })
-
-  it("opens the selected live environment and its readable plan without requesting offline SQL", async () => {
-    live()
-    render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(screen.getByRole("combobox", { name: "Environment" })).toHaveValue("prod")
+    expect(screen.getByTestId("store-sql")).toBeVisible()
     expect(screen.getByTestId("store-sql")).toHaveTextContent(LIVE.sql)
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+    expect(screen.queryByText("SQL options")).not.toBeInTheDocument()
+    expect(screen.queryByText("View SQL")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("store-plan-review")).not.toBeInTheDocument()
+    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual(["Close", "Copy SQL", "Download SQL"])
     expect(screen.getByText("Working schema · Saved")).toBeInTheDocument()
-    fireEvent.click(screen.getByText("SQL options"))
-    expect(screen.getByText(/Saved revision rev-1/)).toBeInTheDocument()
-    expect(within(screen.getByRole("region", { name: "SQL changes" })).getByText(/keeping existing values/)).toBeInTheDocument()
-    expect(screen.getByText("3 quotes with values")).toBeInTheDocument()
-    expect(screen.getByText(/Coordinate these changes with the app release/)).toBeInTheDocument()
+    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
     expect(fetchStoreSql).not.toHaveBeenCalled()
-
-    fireEvent.change(screen.getByRole("combobox", { name: "Environment" }), { target: { value: "test" } })
-    await waitFor(() => expect(fetchStoreCatalogue).toHaveBeenCalledWith("test"))
-    expect(useStoreCompareStore.getState().environment).toBe("test")
   })
 
   it("removes obsolete SQL while edits are compared and never substitutes offline SQL", async () => {
@@ -90,35 +70,9 @@ describe("StoreSqlWindow", () => {
     expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
     expect(screen.getByText("Working schema · Unsaved changes")).toBeInTheDocument()
     expect(fetchStoreSql).not.toHaveBeenCalled()
+    act(() => useStoreCompareStore.getState().compare(useWorkbenchFormStore.getState().form!))
     await act(async () => finish({ ...LIVE, sql: "-- newest SQL" }))
     expect(screen.getByTestId("store-sql")).toHaveTextContent("-- newest SQL")
-  })
-
-  it("keeps a failed live check explicit and verifies with a fresh read after the owner runs SQL", async () => {
-    useStoreCompareStore.setState({ environment: "prod", environments: { prod: { read: { status: "failed", message: "Check connections.toml [prod]." }, compared: { status: "none" } } } })
-    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...LIVE, changes: [], differences: [], matches: true, requires_maintenance: false })
-    render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(screen.getByRole("alert")).toHaveTextContent("Check connections.toml")
-    expect(screen.queryByRole("button", { name: "Copy SQL" })).not.toBeInTheDocument()
-    expect(fetchStoreSql).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole("button", { name: "Check prod again" }))
-    expect(await screen.findByText("Compatible with this schema.")).toBeInTheDocument()
-    expect(fetchStoreCatalogue).toHaveBeenCalledWith("prod")
-  })
-
-  it("offers offline sources explicitly and keeps their environment selection in the pane's store", async () => {
-    render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(await screen.findByTestId("store-sql")).toHaveTextContent(OFFLINE.environments[0].sql)
-    expect(screen.getByText(/Offline SQL · Not checked/)).toHaveTextContent("Starts from main.")
-    fireEvent.change(screen.getByRole("combobox", { name: "Environment" }), { target: { value: "prod" } })
-    expect(screen.getByTestId("store-sql")).toHaveTextContent(OFFLINE.environments[1].sql)
-    expect(useStoreCompareStore.getState().environment).toBe("prod")
-    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
-
-    vi.mocked(fetchStoreSql).mockResolvedValue({ ...OFFLINE, branch: null })
-    fireEvent.change(screen.getByRole("combobox", { name: "Compare from" }), { target: { value: "none" } })
-    await waitFor(() => expect(fetchStoreSql).toHaveBeenLastCalledWith(useWorkbenchFormStore.getState().form, "none"))
-    expect(await screen.findByText(/Starts from a new database/)).toBeInTheDocument()
   })
 
   it("downloads and copies the reviewed SQL without marking the environment compatible", async () => {
@@ -128,7 +82,7 @@ describe("StoreSqlWindow", () => {
     expect(downloadTextFile).toHaveBeenCalledWith(LIVE.sql, "prod-database-schema.sql", "application/sql")
     fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
     expect(writeClipboardText).toHaveBeenCalledWith(LIVE.sql)
-    expect(await screen.findByText(/SQL copied/)).toHaveTextContent("then check again")
+    expect(await screen.findByText("SQL copied.")).toBeInTheDocument()
     expect(screen.queryByText(/Compatible with this schema/)).not.toBeInTheDocument()
     expect(fetchStoreCatalogue).not.toHaveBeenCalled()
   })
@@ -142,41 +96,6 @@ describe("StoreSqlWindow", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard permission denied")
     fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
     expect(await screen.findByRole("alert")).toHaveTextContent("SQL download is unavailable")
-  })
-
-  it("can remove a blocking rename after its field was removed from the schema", async () => {
-    live({ ...LIVE, blocked: ["Cannot rename policy.region to removed_field."] }, [{ table: "policy", column: "removed_field", was: "region" }])
-    render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
-    fireEvent.click(screen.getByRole("button", { name: "Remove rename choice" }))
-    await waitFor(() => expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled())
-    expect(useStoreCompareStore.getState().renames).toEqual([])
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-  })
-
-  it("checks all environments from the secondary SQL options", async () => {
-    live()
-    render(<StoreSqlWindow onClose={vi.fn()} />)
-    fireEvent.click(screen.getByText("SQL options"))
-    fireEvent.click(screen.getByRole("button", { name: "Check environments" }))
-    await waitFor(() => expect(fetchStoreCatalogue).toHaveBeenCalledTimes(2))
-    expect(fetchStoreCatalogue).toHaveBeenCalledWith("test")
-    expect(fetchStoreCatalogue).toHaveBeenCalledWith("prod")
-  })
-
-  it("blocks export for unresolved renames and exposes manual and retained work", () => {
-    live({ ...LIVE, blocked: ["Remove or update the rename choice before exporting SQL."], manual: ["Fix the primary key."], changes: [
-      ...LIVE.changes,
-      { kind: "retype column", table: "policy", column: "year", was: null, disposition: "manual", description: "SQLite requires a rebuild.", quotes: 2 },
-      { kind: "keep column", table: "pricing", column: "old", was: null, disposition: "retained", description: "Later saves clear its values.", quotes: 1 },
-    ] })
-    render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(screen.getByRole("alert")).toHaveTextContent("Remove or update")
-    expect(screen.getByRole("region", { name: "Manual work" })).toHaveTextContent("SQLite requires a rebuild")
-    expect(screen.getByRole("region", { name: "Manual work" })).toHaveTextContent("Fix the primary key")
-    expect(screen.getByRole("region", { name: "Retained in database" })).toHaveTextContent("Later saves clear")
-    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
   })
 
   it("prevents export in Preview and when the form changed on disk", () => {
@@ -193,44 +112,67 @@ describe("StoreSqlWindow", () => {
     view.unmount()
   })
 
-  it("reports an offline failure and no declared environments", async () => {
-    vi.mocked(fetchStoreSql).mockRejectedValue(new Error("The default branch form could not be read"))
+  it("follows the database chosen on the pane without choosing or fetching one itself", () => {
+    live()
     render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not be read")
-    cleanup()
-    useStoreCompareStore.getState().reset()
-    useWorkbenchStore.setState({ environments: [] })
-    vi.mocked(fetchStoreSql).mockResolvedValue({ branch: null, environments: [] })
-    render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(await screen.findByText("No hosted environments are declared.")).toBeInTheDocument()
+    expect(screen.getByText("· prod")).toBeInTheDocument()
+    act(() => live({ ...LIVE, sql: "-- test query" }, [], "test"))
+    expect(screen.getByTestId("store-sql")).toHaveTextContent("-- test query")
+    fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
+    expect(downloadTextFile).toHaveBeenCalledWith("-- test query", "test-database-schema.sql", "application/sql")
+    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
+    expect(fetchStoreSql).not.toHaveBeenCalled()
   })
 
-  it("discards an offline answer from a previous document even if the form is unchanged", async () => {
-    let oldAnswer!: (answer: typeof OFFLINE) => void
-    vi.mocked(fetchStoreSql).mockImplementationOnce(() => new Promise((resolve) => { oldAnswer = resolve }))
+  it.each([true, false])("keeps Local unselected and refuses export (databases configured: %s)", (configured) => {
+    if (!configured) useWorkbenchStore.setState({ environments: [] })
     render(<StoreSqlWindow onClose={vi.fn()} />)
-    act(() => useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 })))
-    await screen.findByTestId("store-sql")
-    await act(async () => oldAnswer({ ...OFFLINE, environments: [{ ...OFFLINE.environments[0], sql: "-- stale branch SQL" }] }))
-    expect(screen.getByTestId("store-sql")).toHaveTextContent(OFFLINE.environments[0].sql)
-    expect(screen.getByTestId("store-sql")).not.toHaveTextContent("stale branch")
+    expect(screen.getByRole("alert")).toHaveTextContent(configured ? "Select a database" : "Configure a database")
+    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(useStoreCompareStore.getState().environment).toBeNull()
+    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
+    expect(fetchStoreSql).not.toHaveBeenCalled()
   })
 
-  it("invalidates offline SQL when the configured environments change", async () => {
+  it.each(["read", "compare"])("shows a failed %s without fetching or offering alternative SQL", (failure) => {
+    live()
+    const snapshot = useStoreCompareStore.getState().environments.prod
+    useStoreCompareStore.setState({ environments: { prod: failure === "read"
+      ? { read: { status: "failed", message: "Database unavailable" }, compared: { status: "none" } }
+      : { ...snapshot, compared: { status: "failed", form: useWorkbenchFormStore.getState().form!, renames: useStoreCompareStore.getState().renames, read: snapshot.read, message: "Invalid schema" } },
+    } })
     render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(await screen.findByTestId("store-sql")).toHaveTextContent(OFFLINE.environments[0].sql)
-    let finish!: (answer: typeof OFFLINE) => void
-    vi.mocked(fetchStoreSql).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
-
-    act(() => useWorkbenchStore.setState({ environments: ["staging"] }))
+    expect(screen.getByRole("alert")).toHaveTextContent(failure === "read" ? "Database unavailable" : "Invalid schema")
     expect(screen.queryByTestId("store-sql")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
-    expect(screen.queryByRole("button", { name: "Copy SQL" })).not.toBeInTheDocument()
-    expect(screen.getByRole("combobox", { name: "Environment" })).toHaveValue("staging")
-
-    await act(async () => finish({ branch: "main", environments: [{ name: "staging", provider: "postgresql", sql: "-- current staging SQL" }] }))
-    fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
-    expect(downloadTextFile).toHaveBeenCalledWith("-- current staging SQL", "staging-branch-schema.sql", "application/sql")
-    expect(screen.queryByRole("option", { name: "test" })).not.toBeInTheDocument()
+    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
+    expect(fetchStoreSql).not.toHaveBeenCalled()
   })
+
+  it("blocks unresolved renames and points manual work back to the schema pane", () => {
+    live({ ...LIVE, blocked: ["Unresolved rename"], manual: ["Fix the primary key."] })
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    expect(screen.getByRole("alert")).toHaveTextContent("Resolve the rename choices in Database changes")
+    expect(screen.getByText(/This SQL completes only part/)).toHaveTextContent("schema pane")
+    expect(screen.queryByTestId("store-plan-review")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
+  })
+
+  it.each(["document", "environments"])("discards the query after %s changes without selecting another database", (change) => {
+    live()
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    act(() => {
+      if (change === "document") useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 }))
+      else useWorkbenchStore.setState({ environments: ["staging"] })
+    })
+    expect(screen.queryByTestId("store-sql")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
+    expect(useStoreCompareStore.getState().environment).toBeNull()
+    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
+    expect(fetchStoreSql).not.toHaveBeenCalled()
+  })
+
 })

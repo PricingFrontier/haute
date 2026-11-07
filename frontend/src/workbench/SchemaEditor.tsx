@@ -28,6 +28,7 @@ import { addSchemaTable, createSchemaTable, isQuoteDetails, moveSchemaTable, sch
 import { columnMatches } from "./schema/schemaText"
 import { TableBlock } from "./schema/TableBlock"
 import { CompareControls } from "./StoreCompare"
+import { DatabaseChanges } from "./StorePlanReview"
 
 /** A table the quote store keeps nothing more in. */
 const NOTHING_KEPT: readonly WorkbenchStoreColumn[] = []
@@ -86,6 +87,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
         data-testid="schema-tables"
       >
         <div className="flex max-w-[896px] flex-col gap-1.5 px-4 pt-1.5 pb-3 text-xs">
+          <DatabaseChanges />
           {tables.length === 0 && (
             <p className="px-1" style={{ color: "var(--text-muted)" }}>
               No tables yet. A table holds related columns, such as <code className="font-mono">policy_details</code>.

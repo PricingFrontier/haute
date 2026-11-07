@@ -795,7 +795,8 @@ Out of scope:
     then orange until comparison completes. Status explanations remain available to
     assistive technology and in tooltips. A labelled Refresh button beside the selector
     checks the selected database again; it is disabled for Local and while fetching. Choosing one reads
-    it only if it has not been read; Check environments is available in the SQL options.
+    it only if it has not been read; Check environments is available in the schema pane's
+    collapsed Database changes section.
     Editing the shared
     schema compares it with those snapshots without rereading databases. A comparison is
     current only for the form, rename choices and catalogue it was requested for. Each
@@ -817,7 +818,7 @@ Out of scope:
     part of that migration. A planned field change never hides a separate manual repair
     on the same field. A stale rename remains removable if its target name is reused by
     an index, even though index columns do not offer new rename choices.
-    There is no standing comparison summary above the schema tables.
+    The full comparison review stays collapsed in Database changes.
 
     Database controls follow the library's existing field sizes, rounded corners,
     focus and hover treatments, muted labels and status colours. Field statuses keep
@@ -827,12 +828,13 @@ Out of scope:
     only its content scrolls, keeping Close and Download SQL visible on short screens.
     Secondary actions use the existing quiet icon actions and all controls use theme tokens.
 
-    Export SQL opens a concise summary for the selected environment: short action rows,
-    with technical descriptions and retained items behind disclosures. Manual work and
-    blockers remain clearly identified. Rename choices whose field was removed are
-    removable in this window so no blocker loses its remedy. SQL, provider, checked time,
-    saved revision, alternative planning sources and Check environments are secondary
-    details; the selected environment and offline status remain visible. Additions name the new table or column,
+    The schema pane's collapsed Database changes section contains short action rows,
+    with technical descriptions and retained items behind disclosures. Its heading flags
+    manual work and blockers as Needs attention. Rename choices whose field was removed
+    are removable here so no blocker loses its remedy. Provider, checked time, saved
+    revision and Check environments are secondary details in this section. It uses only
+    the current comparison, hiding old decisions during a refresh or schema edit.
+    Additions name the new table or column,
     with new ordinary columns initially empty; confirmed renames keep the existing values;
     type changes require conversion review, SQLite type changes and row/key changes need
     manual work. Planner refusals and unresolved rename choices prevent SQL export until
@@ -844,21 +846,25 @@ Out of scope:
     coordinate with the app release because a running app may still require the old
     structure; the pane does not claim that release compatibility was checked.
 
-    The target is explicitly the current working schema, labelled as unsaved or with its
-    saved form revision, never presented as the deployed release. One environment selection
-    follows comparison, review, Copy SQL, Download SQL and Check again. SQL defaults to the
-    selected database snapshot; a pending or failed live comparison offers no substituted
-    SQL. Offline SQL is an explicit alternative, from the default branch or a new database,
-    labelled as not checked against the database. The existing SQL entry opens this same
-    window; with no selected environment it offers offline generation. Copy and download
-    failures are actionable errors. Download names the environment and planning source.
+    Export SQL shows the query immediately for the database selected on the schema pane,
+    with Copy SQL, Download SQL and Close. It has no environment/source selector, refresh
+    action, options or change-review disclosures. Opening it never changes the selected
+    database or initiates a database fetch. The target is explicitly the current working
+    schema, labelled as saved or unsaved, never presented as the deployed release. A plain
+    database name identifies the query's destination. A brief notice flags manual work
+    that the SQL cannot complete; its details and remedies remain on the schema pane.
+    Export SQL is disabled for Local, Preview, a stale form, an unresolved blocker or a
+    pending/failed comparison, with a reason on the action. If any of these invalidates an
+    already-open window, stale SQL is removed or export disabled with an explanation.
+    No offline source is offered in this UI; the existing offline SQL API remains available.
+    Copy and download failures are actionable errors. Download names the environment and database source.
     Neither export nor saving the schema changes the database or marks it compatible;
-    after the database owner runs the SQL, Check again verifies the actual tables. Changes
+    after the database owner runs the SQL, Refresh on the schema pane verifies the actual tables. Changes
     to the form, pairings or environment invalidate earlier displayed SQL until the current
     answer arrives. Project/form adoption and changes to the configured environment list
-    invalidate offline answers too, including replies still in flight. With no environments
-    declared the window says so. Review and SQL export
-    are disabled in Preview. Direct execution, saved migration packages and deployed-release
+    clear the comparison and cannot auto-select another database. With no environments
+    declared the export action explains that a database must be configured. Rename changes
+    and SQL export are disabled in Preview. Direct execution, saved migration packages and deployed-release
     selection are outside this workflow.
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
