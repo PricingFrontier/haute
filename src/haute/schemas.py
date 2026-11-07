@@ -341,6 +341,27 @@ class WorkbenchStoreExtra(BaseModel):
     quotes: int | None = None
 
 
+class WorkbenchStoreChange(BaseModel):
+    """A readable operation from the same plan as the SQL, not an execution result."""
+
+    kind: Literal[
+        "create table",
+        "add column",
+        "rename table",
+        "rename column",
+        "keep table",
+        "keep column",
+        "retype column",
+        "reshape table",
+    ]
+    table: str
+    column: str | None
+    was: str | None
+    disposition: Literal["sql", "manual", "retained"]
+    description: str
+    quotes: int | None
+
+
 class WorkbenchStoreCompareResponse(BaseModel):
     """The form compared with an environment's tables: each difference, each extra, the
     pairings taken, whether the database matches the form, and the SQL that brings its tables
@@ -351,6 +372,11 @@ class WorkbenchStoreCompareResponse(BaseModel):
     renames: list[WorkbenchStoreRename]
     matches: bool
     sql: str
+    provider: str
+    changes: list[WorkbenchStoreChange]
+    manual: list[str]
+    blocked: list[str]
+    requires_maintenance: bool
 
 
 class WorkbenchFormFile(BaseModel):

@@ -109,6 +109,51 @@ def script(base: FormSpec | None, release: FormSpec, dialect: str = "sqlite") ->
 # ── The plan ────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("renamed", ["table", "column"])
+def test_requested_counts_cover_table_and_column_renames(renamed: str) -> None:
+    after = structure(form(POLICY))
+    before = json.loads(json.dumps(after))
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    if renamed == "table":
+        policy["name"] = "previous_policy"
+    else:
+        region = next(column for column in policy["columns"] if column["name"] == "region")
+        region["name"] = "previous_region"
+
+    counts = dict.fromkeys(_migrate.wanted_counts(after, before), 7)
+    made = _migrate.plan(after, before, counts)
+
+    assert len(made.steps) == 1
+    assert made.steps[0].kind == f"rename {renamed}"
+    assert made.steps[0].quotes == 7
+    assert counts == {("policy", None if renamed == "table" else "region"): 7}
+
+
+@pytest.mark.parametrize("reuse_name", [False, True])
+def test_a_renamed_index_uses_its_original_count_key(reuse_name: bool) -> None:
+    before = structure(form(table("sites", column("site", "int", index="numbered"), rows="many")))
+    after = structure(
+        form(
+            table(
+                "sites",
+                column("location_name", "int", index="numbered"),
+                *([column("site", "int")] if reuse_name else []),
+                rows="many",
+            )
+        )
+    )
+
+    counts = dict.fromkeys(_migrate.wanted_counts(after, before), 7)
+    made = _migrate.plan(after, before, counts)
+
+    assert counts == {("sites", "site"): 7}
+    renamed = next(step for step in made.steps if step.kind == "rename column")
+    assert (renamed.was, renamed.column, renamed.quotes) == ("site", "location_name", 7)
+    assert [step.column for step in made.steps if step.kind == "add column"] == (
+        ["site"] if reuse_name else []
+    )
+
+
 def test_a_plan_names_each_step_by_name_a_rename_one_kept_and_one_made() -> None:
     before = structure(form(POLICY, table("extras", column("notes"))))
     # region renamed area and seats added in policy, extras renamed additions, drivers new.

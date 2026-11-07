@@ -131,6 +131,54 @@ def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:
     assert "nothing to change" in sql(target, RELEASED, comparison)
 
 
+def test_review_distinguishes_generated_type_changes_from_manual_key_migrations(
+    target: Target,
+) -> None:
+    from haute._quote_store._review import review_plan
+
+    made_from_sql(target, RELEASED)
+    retyped = form(table("policy", column("region"), column("drivers"), column("value", "int")))
+    comparison = compared(target, retyped)
+    review = review_plan(comparison.plan, retyped, PROVIDERS[target.backend])
+    change = next(each for each in review if each.kind == "retype column")
+    assert change.table == "policy" and change.column == "value"
+    assert "Integer" in change.description
+    if target.backend == "sqlite":
+        assert change.disposition == "manual"
+        assert "this SQL does not perform it" in change.description
+        assert "ALTER TABLE" not in sql(target, retyped, comparison)
+    else:
+        assert change.disposition == "sql"
+        assert "Review value conversion" in change.description
+        assert "ALTER TABLE" in sql(target, retyped, comparison)
+
+    many = form(
+        table(
+            "policy",
+            column("region"),
+            column("drivers"),
+            column("value", "float"),
+            {**column("row_number", "int"), "index": "numbered"},
+            rows="many",
+        )
+    )
+    reshaped = compared(target, many)
+    changes = review_plan(reshaped.plan, many, PROVIDERS[target.backend])
+    assert len(changes) == 1
+    assert changes[0].kind == "reshape table" and changes[0].disposition == "manual"
+    assert "migrate its rows" in changes[0].description
+    assert "ALTER TABLE" not in sql(target, many, reshaped)
+
+
+def test_review_includes_every_table_for_an_empty_database() -> None:
+    from haute._quote_store._review import review_plan
+
+    comparison = compare(RELEASED, Catalogue(tables=()), provider=PROVIDERS["sqlite"])
+    changes = review_plan(comparison.plan, RELEASED, PROVIDERS["sqlite"])
+    assert {each.table for each in changes} == {"quote_details", "policy", "haute_activity"}
+    assert all(each.kind == "create table" and each.disposition == "sql" for each in changes)
+
+
 def _read_counting(target: Target) -> tuple[Catalogue, int]:
     """*target*'s catalogue, its quotes counted, and the statements reading it sent."""
     engine = make_engine(target.url, sign_in=target.sign_in)

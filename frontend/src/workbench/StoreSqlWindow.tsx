@@ -1,139 +1,58 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
+import { Copy, Download } from "lucide-react"
 import { apiErrorMessage } from "../api/errors"
-import type { FormSpec, WorkbenchStoreSqlResponse } from "../api/types"
-import { fetchStoreSql } from "../api/workbench"
 import ModalShell from "../components/ModalShell"
 import { ModalFormHeader } from "../components/ModalForm"
-import useStoreCompareStore, { currentComparison } from "../stores/useStoreCompareStore"
+import { QuietAction } from "../components/form"
+import { downloadTextFile, writeClipboardText } from "../panels/editors/shared/tableClipboard"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import useStoreSqlExport from "./useStoreSqlExport"
 
-type Start = "branch" | "none"
-/** Where the SQL starts: the database Compare read, on its environment's tab, or a start the server writes from. */
-type Chosen = Start | "database"
+const QUIET_STYLE = { color: "var(--text-secondary)" } as const
 
-type Shown =
-  | { status: "loading" }
-  | { status: "failed"; message: string }
-  | { status: "ready"; answer: WorkbenchStoreSqlResponse }
-
-const QUIET_STYLE = { color: "var(--text-muted)" } as const
-
-/**
- * The tables' SQL (specs/workbench): the SQL that brings each environment's tables to the form
- * the view holds, saved or not, as the server writes it, a tab for each environment
- * `haute.toml` declares: on the tab of the environment Compare shows, from the tables its
- * database holds, first; else from the form the default branch holds while it holds one, or
- * from none; read only, with Copy. It changes nothing.
- */
+/** Query and export actions only; all database decisions belong to the schema pane. */
 export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
-  const form = useWorkbenchFormStore((s) => s.form)
-  // The comparison of the form and the pairings the view holds, by its environment; null
-  // while there is none, or while a newer one is on its way.
-  const comparedSql = useStoreCompareStore((s) => currentComparison(s, form)?.sql ?? null)
-  const comparedEnvironment = useStoreCompareStore((s) => s.environment)
-  const compared =
-    comparedSql !== null && comparedEnvironment !== null ? { environment: comparedEnvironment, sql: comparedSql } : null
-  const [chosen, setChosen] = useState<Chosen>(compared === null ? "branch" : "database")
-  const start: Start = chosen === "none" ? "none" : "branch"
-  // The last answer, with what it was asked for: loading until it is the one asked now.
-  const [answered, setAnswered] = useState<{ form: FormSpec; start: Start; shown: Shown } | null>(null)
-  const [tab, setTab] = useState(0)
-  // The default branch holding a form, as the first answer named it: the start offered.
-  const [branch, setBranch] = useState<string | null>(null)
+  const dirty = useWorkbenchFormStore((s) => s.dirty)
+  const { environment, comparison, reason } = useStoreSqlExport()
+  const sql = comparison?.sql
+  const disabled = reason !== null || sql === undefined
+  const manual = comparison !== null && (comparison.manual.length > 0 || comparison.changes.some((change) => change.disposition === "manual"))
+  const [notice, setNotice] = useState<{ environment: string; sql: string; text: string; error: boolean } | null>(null)
+  const target = dirty ? "Working schema · Unsaved changes" : "Working schema · Saved"
 
-  useEffect(() => {
-    if (form === null) return
-    let live = true
-    fetchStoreSql(form, start).then(
-      (answer) => {
-        if (!live) return
-        if (start === "branch") setBranch(answer.branch)
-        setAnswered({ form, start, shown: { status: "ready", answer } })
-      },
-      (error: unknown) => {
-        if (live) setAnswered({ form, start, shown: { status: "failed", message: apiErrorMessage(error) } })
-      },
-    )
-    return () => {
-      live = false
+  const exportSql = async (download: boolean) => {
+    if (disabled || sql === undefined || environment === null) return
+    try {
+      if (download) {
+        if (!downloadTextFile(sql, `${environment}-database-schema.sql`, "application/sql")) {
+          throw new Error("SQL download is unavailable in this browser. Use Copy SQL.")
+        }
+      } else await writeClipboardText(sql)
+      setNotice({ environment, sql, error: false, text: download ? "SQL downloaded." : "SQL copied." })
+    } catch (error: unknown) {
+      setNotice({ environment, sql, error: true, text: apiErrorMessage(error) })
     }
-  }, [form, start])
+  }
 
-  const shown: Shown =
-    answered !== null && answered.form === form && answered.start === start ? answered.shown : { status: "loading" }
-  const answer = shown.status === "ready" ? shown.answer : null
-  const environment = answer?.environments[Math.min(tab, answer.environments.length - 1)] ?? null
-  const fromDatabase = chosen === "database" && compared !== null && environment?.name === compared.environment
-  const sql = fromDatabase ? compared.sql : environment?.sql
   return (
-    <ModalShell ariaLabel="SQL" onClose={onClose} width="w-[760px]" testId="store-sql-window">
-      <ModalFormHeader title="SQL" />
-      <div className="flex flex-col gap-3 px-4 py-3 text-[12px]">
-        {shown.status === "loading" ? (
-          <div role="status" style={QUIET_STYLE}>
-            Writing the SQL…
+    <ModalShell ariaLabel="Export database changes" onClose={onClose} width="w-[560px] max-w-[calc(100vw-24px)]" testId="store-sql-window">
+      <div className="flex max-h-[calc(100vh-48px)] flex-col">
+        <div className="shrink-0"><ModalFormHeader title="Export SQL"><span>{target}</span>{environment !== null && <span className="ml-2">· {environment}</span>}</ModalFormHeader></div>
+        <div className="flex min-h-0 flex-col gap-3 overflow-auto p-4 text-xs leading-relaxed">
+          {reason !== null && <p role="alert" style={{ color: "var(--warning)" }}>{reason}</p>}
+          {manual && <p style={{ color: "var(--warning)" }}>This SQL completes only part of the changes. Review the manual work in Database changes on the schema pane.</p>}
+          {sql !== undefined && <pre data-testid="store-sql" className="overflow-auto rounded-md p-3 font-mono text-[11px] leading-relaxed" style={{ background: "var(--bg-base)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>{sql}</pre>}
+        </div>
+        <div className="shrink-0 border-t p-4 text-xs" style={{ borderColor: "var(--border)" }}>
+          {notice !== null && notice.environment === environment && notice.sql === sql && <p role={notice.error ? "alert" : "status"} className="mb-2 leading-relaxed" style={{ color: notice.error ? "var(--danger-text)" : "var(--text-secondary)" }}>{notice.text}</p>}
+          <p className="mb-3 text-[11px] leading-relaxed" style={QUIET_STYLE}>Run through your database owner, then use Refresh on the schema pane to verify.</p>
+          <div className="flex items-center justify-end gap-3">
+            <button type="button" className="focus-ring hover-bg rounded-md px-3 py-1.5 font-medium" style={QUIET_STYLE} onClick={onClose}>Close</button>
+            <QuietAction icon={Copy} disabled={disabled} onClick={() => void exportSql(false)}>Copy SQL</QuietAction>
+            <button type="button" className="focus-ring inline-flex items-center gap-1.5 rounded-md bg-[var(--structure-action)] px-4 py-1.5 font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
+              style={{ color: "var(--text-on-accent)" }} disabled={disabled} onClick={() => void exportSql(true)}><Download size={13} aria-hidden="true" />Download SQL</button>
           </div>
-        ) : shown.status === "failed" ? (
-          <div role="alert" style={{ color: "var(--danger-text)" }}>
-            {shown.message}
-          </div>
-        ) : answer !== null && answer.environments.length === 0 ? (
-          <div role="status" style={QUIET_STYLE}>
-            No hosted environments are declared.
-          </div>
-        ) : (
-          answer !== null &&
-          environment !== null && (
-            <>
-              <div className="flex flex-wrap items-center gap-3">
-                <div role="tablist" aria-label="Environments" className="flex gap-1">
-                  {answer.environments.map((each, index) => (
-                    <button
-                      key={each.name}
-                      type="button"
-                      role="tab"
-                      aria-selected={each.name === environment.name}
-                      className="btn-ghost rounded px-2 py-1"
-                      style={each.name === environment.name ? { background: "var(--bg-hover)" } : undefined}
-                      onClick={() => setTab(index)}
-                    >
-                      {each.name} <span style={QUIET_STYLE}>{each.provider}</span>
-                    </button>
-                  ))}
-                </div>
-                <label className="ml-auto flex items-center gap-1.5">
-                  <span style={QUIET_STYLE}>From</span>
-                  <select
-                    value={fromDatabase ? "database" : start === "branch" && branch !== null ? "branch" : "none"}
-                    onChange={(event) => setChosen(event.target.value as Chosen)}
-                    className="rounded border px-1.5 py-0.5"
-                    style={{ background: "var(--bg-input)", borderColor: "var(--border)" }}
-                  >
-                    {compared !== null && environment.name === compared.environment && (
-                      <option value="database">The {compared.environment} database</option>
-                    )}
-                    {branch !== null && <option value="branch">{branch}</option>}
-                    <option value="none">A new database</option>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  className="btn-ghost rounded px-2 py-1"
-                  onClick={() => void navigator.clipboard.writeText(sql ?? environment.sql)}
-                >
-                  Copy
-                </button>
-              </div>
-              <pre
-                data-testid="store-sql"
-                className="max-h-[60vh] overflow-auto rounded p-3 font-mono text-[11px] leading-relaxed"
-                style={{ background: "var(--bg-base)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-              >
-                {sql}
-              </pre>
-            </>
-          )
-        )}
+        </div>
       </div>
     </ModalShell>
   )

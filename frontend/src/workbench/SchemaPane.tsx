@@ -3,9 +3,9 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react"
 import { halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchViewStore, { SCHEMA_FULL_WIDTH } from "../stores/useWorkbenchViewStore"
 import SchemaEditor from "./SchemaEditor"
-import { ComparePanel, CompareControls } from "./StoreCompare"
 import StoreSqlWindow from "./StoreSqlWindow"
 import useStoreComparison from "./useStoreComparison"
+import useStoreSqlExport from "./useStoreSqlExport"
 import { COMPONENT_COLOR } from "./widgetKinds"
 
 const MIN_WIDTH = 320
@@ -30,9 +30,9 @@ function useRoom(pane: { current: HTMLElement | null }): number | null {
  * The schema's pane (specs/workbench): over the sheet's left part, under the sheet tabs,
  * while the toolbar's Schema has it open, on Haute's side panel opened on the left. The
  * sheet stays where it is under it. It edits the schema while building and shows it read
- * only in Preview. Its Compare compares the form with an environment's tables
- * (`StoreCompare`), its marks on the tables and what it found above them; its SQL, while
- * building, opens the tables' SQL (`StoreSqlWindow`). It registers itself with the view
+ * only in Preview. Database selection compares the form with an environment's tables,
+ * with status and decisions beside each field. Export SQL opens `StoreSqlWindow` while
+ * building. It registers itself with the view
  * store, so nothing dragged out of the palette lands on the sheet it covers. It is never
  * wider than the sheet's area, so a narrow window keeps its right edge, its Close and its
  * drag handle in view.
@@ -44,6 +44,7 @@ export default function SchemaPane() {
   const setOpen = useWorkbenchViewStore((s) => s.setSchemaOpen)
   const setPane = useWorkbenchViewStore((s) => s.setSchemaPane)
   const [storeSqlOpen, setStoreSqlOpen] = useState(false)
+  const { reason: exportReason } = useStoreSqlExport()
   useStoreComparison()
   const pane = useRef<HTMLDivElement | null>(null)
   const register = useCallback(
@@ -70,14 +71,14 @@ export default function SchemaPane() {
         onClose={() => setOpen(false)}
         actions={
           <>
-            <CompareControls />
             <button
               type="button"
-              className="btn-ghost rounded px-1.5 py-0.5 text-[11px]"
-              disabled={previewing}
+              className="focus-ring hover-bg rounded px-1.5 py-0.5 text-[11px] disabled:opacity-50"
+              disabled={exportReason !== null}
+              title={exportReason ?? "Export SQL for the selected database"}
               onClick={() => setStoreSqlOpen(true)}
             >
-              SQL
+              Export SQL
             </button>
           </>
         }
@@ -86,7 +87,6 @@ export default function SchemaPane() {
         minWidth={MIN_WIDTH}
         maxWidth={widest}
       >
-        <ComparePanel />
         <SchemaEditor readOnly={previewing} />
       </SidePanel>
       {storeSqlOpen && <StoreSqlWindow onClose={() => setStoreSqlOpen(false)} />}

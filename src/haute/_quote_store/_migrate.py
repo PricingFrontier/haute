@@ -124,7 +124,7 @@ def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
 
 def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[Key]:
     """The tables and columns of *recorded* a plan to *form* says the quotes of: those the
-    form removed, and those whose type or rows it changed."""
+    form removed or renamed, and those whose type or rows it changed."""
     new = _by_key(form["tables"])
     wanted: set[Key] = set()
     for table in recorded["tables"]:
@@ -133,12 +133,19 @@ def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[K
             # A table removed is counted whole.
             wanted.add((table["key"], None))
             continue
-        if table["rows"] != after["rows"]:
+        if table["rows"] != after["rows"] or table["name"] != after["name"]:
             wanted.add((table["key"], None))
         columns = _by_key(after["columns"])
+        index = next((column for column in after["columns"] if column.get("index")), None)
         for column in table["columns"]:
-            changed = columns.get(column["key"])
-            if changed is None or changed["type"] != column["type"]:
+            changed = (
+                index if column.get("index") and index is not None else columns.get(column["key"])
+            )
+            if (
+                changed is None
+                or changed["type"] != column["type"]
+                or changed["name"] != column["name"]
+            ):
                 wanted.add((table["key"], column["key"]))
     return wanted
 
@@ -226,7 +233,15 @@ def _plan(
             recorded_after.append(before)
             continue
         if before["name"] != table["name"]:
-            steps.append(Step("rename table", table["name"], table["key"], was=before["name"]))
+            steps.append(
+                Step(
+                    "rename table",
+                    table["name"],
+                    table["key"],
+                    was=before["name"],
+                    quotes=_count(counts, (table["key"], None)),
+                )
+            )
         columns_after = _plan_columns(table, before, counts, steps, refusals)
         recorded_after.append({**table, "columns": columns_after})
 
@@ -297,7 +312,11 @@ def _plan_columns(
     name = table["name"]
     for column in table["columns"]:
         was = old.get(column["key"])
-        key: Key = (table["key"], column["key"])
+        # Index pairing changes its plan key, but counts still describe the earlier structure.
+        key: Key = (
+            table["key"],
+            earlier["key"] if column is index and earlier is not None else column["key"],
+        )
         if was is None:
             if column["name"].casefold() in removed_names:
                 refusals.append(
@@ -331,6 +350,7 @@ def _plan_columns(
                     column["name"],
                     column["key"],
                     was=was["name"],
+                    quotes=_count(counts, key),
                 )
             )
         if was["type"] != column["type"]:

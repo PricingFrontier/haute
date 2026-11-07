@@ -246,7 +246,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // 1,783.3 KiB, up 1.7 KiB from the table-block baseline above. 1,785 KiB restores about
 // 1.7 KiB headroom; the initial bundle is 293.7 KiB, within the unchanged 300 KiB cap,
 // and the separate single-chunk and chart-vendor caps stay unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1785
+// Schema maintenance review (6 November 2026): the per-environment comparison state,
+// readable plan and SQL export UI in the lazy workbench, plus its response validator,
+// bring the complete bundle to 1,786.1 KiB (initial 293.9 KiB). 1,788 KiB restores
+// about 1.9 KiB headroom. Initial, single-chunk and chart-vendor limits stay unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1788
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

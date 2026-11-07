@@ -97,6 +97,7 @@ from haute.schemas import (
     WorkbenchStatusResponse,
     WorkbenchStoreCatalogueRequest,
     WorkbenchStoreCatalogueResponse,
+    WorkbenchStoreChange,
     WorkbenchStoreColumn,
     WorkbenchStoreCompareRequest,
     WorkbenchStoreCompareResponse,
@@ -410,12 +411,15 @@ async def store_catalogue(body: WorkbenchStoreCatalogueRequest) -> WorkbenchStor
 def _store_compare(
     config: WorkbenchConfig, body: WorkbenchStoreCompareRequest
 ) -> WorkbenchStoreCompareResponse:
+    from dataclasses import asdict
+
     from haute._quote_store import render_sql
     from haute._quote_store._catalogue import Catalogue, CatalogueColumn, CatalogueTable
     from haute._quote_store._compare import Rename, compare
     from haute._quote_store._environment import connection_of
     from haute._quote_store._migrate import PROVIDER_DIALECTS
     from haute._quote_store._providers import PROVIDERS
+    from haute._quote_store._review import MAINTENANCE_KINDS, rename_problems, review_plan
 
     spec = _checked_form(body.form)
     connection = connection_of(config, body.environment)
@@ -442,11 +446,12 @@ def _store_compare(
         )
     )
     provider = PROVIDERS[connection.provider]
+    renames = [Rename(each.table, each.column, each.was) for each in body.renames]
     comparison = compare(
         spec,
         catalogue,
         provider=provider,
-        renames=[Rename(each.table, each.column, each.was) for each in body.renames],
+        renames=renames,
     )
     return WorkbenchStoreCompareResponse(
         differences=[
@@ -469,6 +474,18 @@ def _store_compare(
             for each in comparison.renames
         ],
         matches=comparison.matches,
+        provider=provider.name,
+        changes=[
+            WorkbenchStoreChange(**asdict(each))
+            for each in review_plan(comparison.plan, spec, provider)
+        ],
+        manual=list(comparison.plan.notes),
+        blocked=[
+            *comparison.plan.refusals,
+            *rename_problems(renames, comparison.renames, catalogue, spec),
+        ],
+        requires_maintenance=bool(comparison.plan.notes)
+        or any(step.kind in MAINTENANCE_KINDS for step in comparison.plan.steps),
         sql=render_sql(
             comparison.plan,
             spec,
