@@ -217,27 +217,32 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
   )
 }
 
-/** A row that is not one of the block's columns, its type marker and its name on grey, with nothing to change. */
-function LockedRow({ name, kind, title, testId }: { name: string; kind: { label: string; icon: LucideIcon; color: string }; title: string; testId: string }) {
-  const { label, icon: Icon, color } = kind
+/** A store-owned column stays fixed, with the same database status and details as a form field. */
+export function StoreColumnRow({ table, column, open, onToggleDetails }: {
+  table: SchemaTable; column: WorkbenchStoreColumn; open: boolean; onToggleDetails: () => void
+}) {
+  const { label, icon: Icon, color } = KEPT_KINDS[column.kind]
+  const database = useStoreCompareStore((s) => s.environment)
   return (
-    <div className="flex items-stretch gap-1 rounded" data-testid={testId}>
-      <span className="w-3 shrink-0" aria-hidden="true" />
-      <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
-        <Icon size={12} aria-hidden="true" />
-      </span>
-      <span
-        className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
-        style={{ ...LOCKED_FIELD_STYLE, color: "var(--text-muted)" }}
-        title={title}
-      >
-        {name}
-      </span>
+    <div className="flex flex-col gap-1 rounded" data-testid={`schema-store-column-${column.name}`}>
+      <div className="flex items-stretch gap-1 rounded">
+        <span className="w-3 shrink-0" aria-hidden="true" />
+        <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
+          <Icon size={12} aria-hidden="true" />
+        </span>
+        <span
+          className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
+          style={{ ...LOCKED_FIELD_STYLE, color: "var(--text-muted)" }}
+          title="Kept by the quote store"
+        >
+          {column.name}
+        </span>
+        <span className="w-11 shrink-0" aria-hidden="true" />
+        <ColumnDatabaseStatus table={table.name} column={column.name} open={open} onOpen={onToggleDetails} />
+      </div>
+      {open && database !== null && <div className="mr-12 ml-7 max-w-[32rem] px-2 py-1.5 text-[11px]">
+        <ColumnDatabaseDetails table={table} column={column} readOnly />
+      </div>}
     </div>
   )
-}
-
-/** A column the quote store keeps in a table that the form does not: what it holds and its name, locked, with nothing to change. */
-export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
-  return <LockedRow name={column.name} kind={KEPT_KINDS[column.kind]} title="Kept by the quote store" testId={`schema-store-column-${column.name}`} />
 }

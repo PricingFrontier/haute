@@ -5,6 +5,14 @@
 Schema maintenance uses one comparison and migration planner. The review workflow below
 exposes its structured results; it never parses SQL text or executes DDL.
 
+The comparison's `store` differences identify each internal column of a form-backed
+table by its table and column name; activity-table differences keep their table-wide
+scope. The manual-repair SQL notes and matching criteria are unchanged. `StoreColumnRow`
+uses the shared `ColumnDatabaseStatus` and read-only `ColumnDatabaseDetails`, including
+pending/failure and missing-table states. Its disclosure uses the same `schemaDetails`
+selection as ordinary fields; it offers no form controls or rename selector. Local hides
+its database status and details. Grey backgrounds and fixed structure remain unchanged.
+
 The schema review UI stays in the lazy workbench, with its response validation in the
 workbench validator module. Its measured production bundle is 1,787.1 KiB gzip, with
 293.8 KiB initially loaded. The aggregate allowance is 1,788 KiB; the initial 300 KiB,
@@ -2875,6 +2883,8 @@ no longer has; and `InputSource` in
   the pane, orphaned rename choices removable there, manual/retained work visible there,
   and Check environments available there; and
   `frontend/src/workbench/__tests__/StoreCompare.test.tsx` a compact Database selector,
+  internal storage rows with matching and field-specific repair statuses, read-only
+  details, missing-table/pending/failure states and Local hiding database information,
   neutral Local and name-only environment choices, red before/during a fetch or after a
   failed fetch, orange for a fetched but pending/failed/differing comparison or manual
   repair, green only for a current match, no stale green after edits or refresh, and a
@@ -2895,6 +2905,8 @@ no longer has; and `InputSource` in
   nullable extras compatible, concurrent reads of different environments isolated,
   late replies ignored after a refresh or project reset, and document/form/configuration
   changes clearing session state. Preview offers no rename changes or SQL export.
+- `tests/test_quote_store_compare.py` covers real SQLite internal-column missing/type/nullability
+  defects identifying that column and retaining the same manual SQL notes.
 - The quote store's routes: `tests/test_workbench_routes.py` covers
   `POST /api/workbench/store-catalogue` reading dev's tables through its connection,
   changing nothing, and `POST /api/workbench/store-compare` marking a renamed column

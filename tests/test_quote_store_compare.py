@@ -511,6 +511,29 @@ def test_what_no_statement_changes_is_marked_and_noted(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("replacement", [None, "TEXT NOT NULL DEFAULT ''"])
+def test_internal_column_repairs_identify_the_field_and_keep_manual_sql_notes(
+    tmp_path: Path, replacement: str | None
+) -> None:
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    made_from_sql(target, RELEASED)
+    assert compared(target, RELEASED).matches
+    target.run("ALTER TABLE quote_details DROP COLUMN note_at")
+    if replacement is not None:
+        target.run(f"ALTER TABLE quote_details ADD COLUMN note_at {replacement}")
+
+    comparison = compared(target, RELEASED)
+
+    assert not comparison.matches
+    assert len(comparison.differences) == (1 if replacement is None else 2)
+    assert kinds(comparison) == {("quote_details", "note_at", "store")}
+    assert not comparison.plan.steps
+    written = sql(target, RELEASED, comparison)
+    for difference in comparison.differences:
+        assert difference.message in comparison.plan.notes
+        assert f"-- Not changed here: {difference.message}" in written
+
+
 def test_a_database_whose_tables_cannot_be_read_is_said_naming_the_connection(
     tmp_path: Path,
 ) -> None:

@@ -309,7 +309,9 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
               </div>
             )
           })}
-          {!filtering && kept.map((column) => <StoreColumnRow key={column.name} column={column} />)}
+          {!filtering && kept.map((column) => <StoreColumnRow key={column.name} table={table} column={column}
+            open={details === columnKey(table.name, column.name)}
+            onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))} />)}
           {!filtering && <TableDatabaseDetails table={table.name} />}
           {locked && (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>

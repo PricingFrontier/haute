@@ -194,17 +194,22 @@ class _Matcher:
     ) -> None:
         """The columns of *expected* the store keeps that the form does not (its own, the
         identity of ``haute_activity``), each missing, of another kind or nullable otherwise
-        a note on the table."""
+        a note on its field (on the table for activity, which has no schema field)."""
         for column in expected.columns:
             if column.name in skip:
                 continue
             held = found.column(column.name)
             where = f"{expected.name}.{column.name}"
+            column_key = column.name if table_key is not None else None
             if held is None:
-                self.note(table_key, None, "store", f"{where}, the store's own column, is missing")
+                self.note(
+                    table_key, column_key, "store", f"{where}, the store's own column, is missing"
+                )
                 continue
             for _, said in column_problems(column, held, self.dialect):
-                self.note(table_key, None, "store", f"{where}, the store's own column, {said}")
+                self.note(
+                    table_key, column_key, "store", f"{where}, the store's own column, {said}"
+                )
 
     def not_null_extras(
         self, table_key: str | None, found: CatalogueTable, known: set[str]

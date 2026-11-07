@@ -807,7 +807,13 @@ Out of scope:
     a running app, permissions to run that app, or which migrations were executed.
 
     With a database selected, each field's usual configuration-summary area shows its
-    database status, including matches and pending/failed checks. Its status opens the
+    database status, including matches and pending/failed checks. This includes the
+    internal storage columns shown under `quote_details`, such as `quote_version`,
+    `saved_at` and `saved_by`: each has its own status and read-only database details.
+    Missing, mistyped or incorrectly nullable internal columns identify the affected
+    field and retain their manual-repair notes in the SQL review. These rows offer no
+    schema editing or rename choices. Their status and details disappear under Local,
+    and a pending or failed comparison never keeps an old match. Each field's status opens the
     existing field details, where a Database section explains the difference (including
     creation of a missing table) and accepts
     the information needed to resolve it. A missing field offers Create a new column or

@@ -1,6 +1,6 @@
 /** Database information and explicit rename choices in each field's existing details. */
 import { Undo2 } from "lucide-react"
-import type { SchemaColumn, SchemaTable, WorkbenchStoreCompareResponse, WorkbenchStoreDifference } from "../api/types"
+import type { SchemaColumn, SchemaTable, WorkbenchStoreColumn, WorkbenchStoreCompareResponse, WorkbenchStoreDifference } from "../api/types"
 import { COMPACT_FIELD_CLASS, EditorLabel, INPUT_STYLE, QuietAction } from "../components/form"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
@@ -50,11 +50,11 @@ export function ColumnDatabaseStatus({ table, column, open, onOpen }: { table: s
   </button>
 }
 
-export function ColumnDatabaseDetails({ table, column, readOnly }: { table: SchemaTable; column: SchemaColumn; readOnly: boolean }) {
+export function ColumnDatabaseDetails({ table, column, readOnly }: { table: SchemaTable; column: SchemaColumn | WorkbenchStoreColumn; readOnly: boolean }) {
   const { state, answer, additional, changes, missing, label, failure, pairing, invalidRename } = useColumnDatabase(table.name, column.name)
   if (state.environment === null) return null
   const candidates = answer?.extras.filter((each) => each.form_table === table.name && each.column !== null) ?? []
-  const ordinary = column.index === null && !IDENTITY_NAMES.has(column.name)
+  const ordinary = "index" in column && column.index === null && !IDENTITY_NAMES.has(column.name)
   const canPair = ordinary && (pairing !== undefined || (missing && candidates.length > 0))
   return <section aria-label={`Database details for ${table.name}.${column.name}`} className="col-span-2 mb-2 flex min-w-0 flex-col gap-2 border-b pb-2 leading-relaxed" style={{ borderColor: "var(--border)" }}>
     <div className="flex items-baseline justify-between gap-2">

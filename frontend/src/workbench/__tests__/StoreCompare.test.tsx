@@ -23,7 +23,7 @@ import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { updateSchemaTable } from "../../utils/workbenchForm"
 import SchemaPane from "../SchemaPane"
-import { sheetForm } from "./fixtures"
+import { detailsTable, sheetForm } from "./fixtures"
 
 const TABLES: WorkbenchCatalogueTable[] = [
   {
@@ -70,7 +70,7 @@ const openField = (name: string) => {
 describe("Compare", () => {
   beforeEach(() => {
     useWorkbenchFormStore.getState().install(sheetForm(), "rev-1")
-    useWorkbenchStore.setState({ environments: ["dev", "prod"] })
+    useWorkbenchStore.setState({ environments: ["dev", "prod"], storeColumns: {} })
     useStoreCompareStore.getState().reset()
     useWorkbenchViewStore.setState({ schemaDetails: null, schemaSearch: "" })
     vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, tables: TABLES }))
@@ -81,6 +81,47 @@ describe("Compare", () => {
     cleanup()
     vi.resetAllMocks()
     useStoreCompareStore.getState().reset()
+  })
+
+  it("shows internal storage checks beside each field, with read-only repair details", async () => {
+    const form = sheetForm()
+    form.schema.tables.unshift(detailsTable())
+    useWorkbenchFormStore.getState().install(form, "rev-1")
+    useWorkbenchStore.setState({ storeColumns: { quote_details: [
+      { name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" },
+    ] } })
+    const problem = "quote_details.saved_at, the store's own column, is missing"
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, differences: [
+      { table: "quote_details", column: "saved_at", kind: "store", message: problem },
+    ], changes: [], extras: [], manual: [problem] })
+    open()
+    const version = within(screen.getByTestId("schema-store-column-quote_version"))
+    const saved = within(screen.getByTestId("schema-store-column-saved_at"))
+    expect(version.queryByRole("button", { name: "Database status of quote_version" })).not.toBeInTheDocument()
+    choose("dev")
+    await waitFor(() => expect(saved.getByRole("button", { name: "Database status of saved_at" })).toHaveTextContent("Needs attention"))
+    expect(version.getByRole("button", { name: "Database status of quote_version" })).toHaveTextContent("Matches")
+    fireEvent.click(saved.getByRole("button", { name: "Database status of saved_at" }))
+    expect(saved.getByRole("region", { name: "Database details for quote_details.saved_at" })).toHaveTextContent(problem)
+    expect(saved.queryByRole("combobox")).not.toBeInTheDocument()
+    expect(saved.queryByRole("textbox")).not.toBeInTheDocument()
+
+    fireEvent.click(version.getByRole("button", { name: "Database status of quote_version" }))
+    expect(saved.queryByRole("region")).not.toBeInTheDocument()
+    expect(version.getByRole("region")).toHaveTextContent("This field matches the database.")
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
+    expect(version.getByRole("button", { name: "Database status of quote_version" })).toBeEnabled()
+    let fail!: (error: Error) => void
+    vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject }))
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    expect(version.getByRole("button", { name: "Database status of quote_version" })).toHaveTextContent("Checking")
+    expect(version.queryByText("This field matches the database.")).not.toBeInTheDocument()
+    await act(async () => fail(new Error("Database unavailable")))
+    expect(version.getByRole("button", { name: "Database status of quote_version" })).toHaveTextContent("Check failed")
+    expect(version.getByRole("alert")).toHaveTextContent("Database unavailable")
+    choose("")
+    expect(version.queryByRole("button")).not.toBeInTheDocument()
+    expect(version.queryByRole("region")).not.toBeInTheDocument()
   })
 
   it("uses Local and name-only database colours, clearing a match throughout refresh", async () => {
@@ -123,6 +164,31 @@ describe("Compare", () => {
     expect(database).toHaveStyle({ color: "var(--caution)" })
     expect(option("dev")).toHaveAccessibleDescription("Changes needed")
     expect(option("dev")).toHaveTextContent(/^dev$/)
+  })
+
+  it("clears internal-field matches while comparing and explains a missing table", async () => {
+    const form = sheetForm()
+    form.schema.tables.unshift(detailsTable())
+    useWorkbenchFormStore.getState().install(form, "rev-1")
+    useWorkbenchStore.setState({ storeColumns: { quote_details: [{ name: "quote_version", kind: "int" }] } })
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, differences: [], changes: [], extras: [], matches: true })
+    open()
+    choose("dev")
+    const row = within(screen.getByTestId("schema-store-column-quote_version"))
+    const status = row.getByRole("button", { name: "Database status of quote_version" })
+    await waitFor(() => expect(status).toHaveTextContent("Matches"))
+    fireEvent.click(status)
+    let finish!: (answer: WorkbenchStoreCompareResponse) => void
+    vi.mocked(fetchStoreCompare).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    act(() => useWorkbenchFormStore.getState().change((current) => ({ ...current, name: "Changed" })))
+    expect(status).toHaveTextContent("Comparing")
+    expect(row.queryByText("This field matches the database.")).not.toBeInTheDocument()
+    await act(async () => finish({ ...COMPARED, differences: [
+      { table: "quote_details", column: null, kind: "missing", message: "the database has no quote_details" },
+    ], changes: [], extras: [] }))
+    expect(status).toHaveTextContent("New column")
+    expect(row.getByRole("region")).toHaveTextContent("the database has no quote_details")
+    expect(row.queryByRole("combobox")).not.toBeInTheDocument()
   })
 
   it("keeps database selection compact and resolves a rename in the field's own details", async () => {
