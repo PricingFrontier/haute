@@ -785,8 +785,10 @@ Out of scope:
     select takes a choice, and no table or column is added, removed or moved. Keys pressed
     in it are its own, never the sheet's.
 
-  - **Reviewing database changes.** One compact Database selector replaces an environment
-    button strip and comparison panel. Its choices include each environment's status:
+  - **Reviewing database changes.** One compact Database selector sits to the right of
+    Search fields on the same row, with refresh beside it. Both controls shrink with the
+    pane; database failures appear below the shared row. There is no separate database
+    toolbar. Its choices include each environment's status:
     Not checked, Checking, Comparing, Compatible, Changes needed, Needs attention, or
     Check failed. A refresh action checks the selected database again. Choosing one reads
     it only if it has not been read; Check environments is available in the SQL options.

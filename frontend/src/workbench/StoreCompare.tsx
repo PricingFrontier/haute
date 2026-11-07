@@ -7,8 +7,6 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { IconButton } from "./schema/IconButton"
 
-const QUIET_STYLE = { color: "var(--text-muted)" } as const
-
 export function CompareControls() {
   const environments = useWorkbenchStore((s) => s.environments)
   const state = useStoreCompareStore()
@@ -18,13 +16,14 @@ export function CompareControls() {
   const status = comparisonStatus(state, form)
   const failure = status !== "Check failed" ? null : read.status === "failed" ? read.message : compared.status === "failed" ? compared.message : null
   return (
-    <div className="shrink-0 px-4 py-2 text-[11px]" style={{ borderBottom: "1px solid var(--border)" }}>
-      <div className="flex items-center gap-2">
-        <label htmlFor="schema-database" style={QUIET_STYLE}>Database</label>
+    <>
+      <div className="flex w-52 max-w-[48%] min-w-0 items-center gap-1.5 text-[11px]">
+        <label htmlFor="schema-database" className="sr-only">Database</label>
         <select id="schema-database" aria-label="Database" value={state.environment ?? ""}
-          className="focus-ring min-w-0 max-w-48 rounded px-1.5 py-1 text-xs" style={INPUT_STYLE}
+          className="focus-ring min-w-0 flex-1 rounded px-1.5 py-1 text-xs" style={INPUT_STYLE}
+          title={state.environment === null ? "Database" : `${state.environment} · ${status}`}
           onChange={(event) => state.choose(event.target.value || null)}>
-          <option value="">None selected</option>
+          <option value="">No database</option>
           {environments.map((name) => <option key={name} value={name}>{name} · {comparisonStatus(state, form, name)}</option>)}
         </select>
         {state.environment !== null && <>
@@ -34,8 +33,8 @@ export function CompareControls() {
             aria-label={`Check ${state.environment} again`} title="Refresh database status" />
         </>}
       </div>
-      {failure !== null && <p role="alert" className="mt-1.5" style={{ color: "var(--danger-text)" }}>{failure}</p>}
-    </div>
+      {failure !== null && <p role="alert" className="w-full break-words text-[11px]" style={{ color: "var(--danger-text)" }}>{failure}</p>}
+    </>
   )
 }
 

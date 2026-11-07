@@ -207,6 +207,10 @@ test.describe("the underwriter app's quotes", () => {
       await expect(page.getByRole("textbox", { name: "Label of excess" })).toBeVisible()
       await page.getByTestId("schema-column-excess").scrollIntoViewIfNeeded()
       await page.screenshot({ path: testInfo.outputPath("schema-field-details.png") })
+      const viewport = page.viewportSize()!
+      await page.setViewportSize({ width: 500, height: 844 })
+      await page.getByTestId("schema-pane").screenshot({ path: testInfo.outputPath("schema-search-database-narrow.png") })
+      await page.setViewportSize(viewport)
 
       await page.getByRole("button", { name: "Export SQL", exact: true }).click()
       const window = page.getByTestId("store-sql-window")
@@ -216,7 +220,6 @@ test.describe("the underwriter app's quotes", () => {
       await window.getByText("SQL options", { exact: true }).click()
       await expect(window.getByRole("region", { name: "SQL changes" })).toContainText("policy.excess")
       await page.screenshot({ path: testInfo.outputPath("schema-review.png") })
-      const viewport = page.viewportSize()!
       await page.setViewportSize({ width: 390, height: 844 })
       await page.screenshot({ path: testInfo.outputPath("schema-review-narrow.png") })
       await page.setViewportSize(viewport)

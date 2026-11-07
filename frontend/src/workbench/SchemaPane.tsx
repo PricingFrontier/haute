@@ -3,7 +3,6 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react"
 import { halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchViewStore, { SCHEMA_FULL_WIDTH } from "../stores/useWorkbenchViewStore"
 import SchemaEditor from "./SchemaEditor"
-import { CompareControls } from "./StoreCompare"
 import StoreSqlWindow from "./StoreSqlWindow"
 import useStoreComparison from "./useStoreComparison"
 import { COMPONENT_COLOR } from "./widgetKinds"
@@ -85,7 +84,6 @@ export default function SchemaPane() {
         minWidth={MIN_WIDTH}
         maxWidth={widest}
       >
-        <CompareControls />
         <SchemaEditor readOnly={previewing} />
       </SidePanel>
       {storeSqlOpen && <StoreSqlWindow onClose={() => setStoreSqlOpen(false)} />}
