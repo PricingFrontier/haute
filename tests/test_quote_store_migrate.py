@@ -254,6 +254,86 @@ def test_a_retype_is_the_engines_alter_in_place_with_its_note() -> None:
     assert "ALTER COLUMN" not in sqlite
 
 
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
+def test_additions_only_sql_keeps_old_columns_types_and_keys(dialect: str) -> None:
+    base = form(
+        table("policy", column("region"), column("value", "float"), column("legacy")),
+        table("sites", column("site", "int", index="numbered"), rows="many"),
+    )
+    proposed = form(
+        table("policy", column("area"), column("value", "int"), column("extra")),
+        table("sites", column("location", "int", index="numbered"), rows="many"),
+    )
+    # Explicitly paired ordinary rename, alongside the index's role-based pairing.
+    before = structure(base)
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    next(column for column in policy["columns"] if column["name"] == "region")["key"] = "area"
+    planned = _migrate.plan(structure(proposed), before)
+
+    written = render_sql(planned, proposed, dialect, additions_only=True)
+
+    assert "RENAME" not in written and "sp_rename" not in written
+    assert "DROP " not in written and "ALTER COLUMN" not in written
+    assert "UPDATE " not in written and "INSERT " not in written
+    assert "policy" in written and "area" in written and "extra" in written
+    assert "sites" in written and "location" in written
+    assert "manually" in written and "value" in written
+    from haute._quote_store._providers import PROVIDERS
+    from haute._quote_store._review import review_plan
+
+    provider = PROVIDERS["sqlserver" if dialect == "mssql" else dialect]
+    review = review_plan(planned, proposed, provider, additions_only=True)
+    manual = {change.column for change in review if change.disposition == "manual"}
+    assert manual == {"area", "value", "location"}
+    if dialect == "sqlite":
+        with sqlite3.connect(":memory:") as raw:
+            raw.executescript(script(None, base))
+            raw.execute("INSERT INTO policy VALUES ('Q1', 1, 'CA', 12.5, 'keep')")
+            raw.execute("INSERT INTO sites VALUES ('Q1', 1, 7)")
+            raw.commit()
+            raw.executescript(written)
+            assert raw.execute(
+                "SELECT region, area, value, legacy, extra FROM policy"
+            ).fetchone() == ("CA", None, 12.5, "keep", None)
+            assert raw.execute("SELECT site, location FROM sites").fetchone() == (7, None)
+            columns = {row[1]: row for row in raw.execute("PRAGMA table_info(sites)")}
+            assert columns["site"][5] == 3 and columns["location"][5] == 0
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
+def test_additions_only_sql_leaves_case_only_names_manual(dialect: str) -> None:
+    base = form(table("policy", column("region")))
+    proposed = form(table("policy", column("Region")))
+    before = structure(base)
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    next(column for column in policy["columns"] if column["name"] == "region")["key"] = "Region"
+    planned = _migrate.plan(structure(proposed), before)
+
+    written = render_sql(planned, proposed, dialect, additions_only=True)
+
+    assert "Not added: policy.Region already exists" in written
+    assert "ALTER TABLE" not in written and "sp_rename" not in written
+    assert "CREATE TABLE" not in written
+
+
+def test_additions_only_sql_creates_a_renamed_table_once_and_keeps_the_old(url: str) -> None:
+    base = form(table("policy", column("region")))
+    proposed = form(table("cover", column("region"), column("added")))
+    before = structure(base)
+    next(table for table in before["tables"] if table["name"] == "policy")["key"] = "cover"
+    planned = _migrate.plan(structure(proposed), before)
+    script_run(url, script(None, base))
+    quote(url, region="CA")
+
+    written = render_sql(planned, proposed, "sqlite", additions_only=True)
+    script_run(url, written)
+
+    assert sql(url, "SELECT region FROM policy") == [("CA",)]
+    assert sql(url, "SELECT region, added FROM cover") == []
+    assert written.count("CREATE TABLE cover") == 1
+    assert "ALTER TABLE" not in written and "RENAME" not in written
+
+
 @pytest.mark.parametrize("index_name", ["site", "location_name"])
 def test_an_index_retyped_is_a_note_and_a_change_of_its_kind_no_step(index_name: str) -> None:
     numbered = form(

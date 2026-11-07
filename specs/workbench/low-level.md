@@ -2,6 +2,20 @@
 
 ## Module map
 
+Workbench SQL export uses `render_sql(..., additions_only=True)` for both catalogue and
+offline routes. The shared renderer emits CREATE/ADD only in this mode: column rename
+steps add a nullable destination and retain the source; table rename steps create the
+new table without copying rows. Existing names (case-insensitive) are never added twice,
+and column steps under a renamed table are covered by creating that table. Index renames
+leave the old primary key intact and explain the remaining population/key work. Retypes,
+reshapes and cleanup are manual comments without executable or commented-out destructive
+commands. `review_plan(..., additions_only=True)` describes these same outcomes, marking
+rename/data migration and every type conversion as manual work. Default renderer/planner
+behavior remains available to existing library callers; comparison and schema editing
+semantics are unchanged. Tests execute the exported SQL on populated SQLite stores and
+assert old values/types/keys remain, new columns are empty, no rename/drop/conversion SQL
+appears for any provider, and occupied or case-only destinations are left manual.
+
 Database catalogue persistence: `POST /api/workbench/store-catalogue` accepts `refresh`
 (default true for existing callers). The browser requests false on initial environment
 selection and true for Refresh/Check environments. Responses include `checked_at`, the
@@ -2936,11 +2950,11 @@ no longer has; and `InputSource` in
   explicit refresh replacing metadata, changed-target isolation, corrupt cache recovery,
   failed database reads and cache writes preserving the previous file, and path containment;
   `POST /api/workbench/store-compare` comparing the current form and marking a renamed column
-  missing until the analyst pairs it, its SQL then renaming it and, run on the database,
-  leaving it matching; a combined add/rename/remove review describing the same SQL, run
-  against a real SQLite store with values, preserving renamed and retained input values,
-  leaving added values NULL and becoming compatible only after a fresh catalogue; manual
-  SQLite retyping and row/key changes distinguished from server ALTER; retained output-only
+  missing until the analyst pairs it, its exported SQL adding the new name empty while
+  retaining the old one; a combined add/rename/remove review describing the same SQL, run
+  against a real SQLite store with values, preserving old and retained input values,
+  leaving added values NULL and becoming structurally compatible only after a fresh catalogue;
+  manual retyping on every provider and manual row/key changes; retained output-only
   columns explaining later clearing; mismatched rename choices blocking export, with an
   already-present destination and absent source needing no further rename; and an
   environment not declared, with no connection or whose server

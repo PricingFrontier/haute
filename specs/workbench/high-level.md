@@ -854,9 +854,18 @@ Out of scope:
     revision and Check environments are secondary details in this section. It uses only
     the current comparison, hiding old decisions during a refresh or schema edit.
     Additions name the new table or column,
-    with new ordinary columns initially empty; confirmed renames keep the existing values;
-    type changes require conversion review, SQLite type changes and row/key changes need
-    manual work. Planner refusals and unresolved rename choices prevent SQL export until
+    with new ordinary columns initially empty. Exported SQL creates new tables and columns
+    only: a renamed column is added under its new name, with the old column and values
+    untouched, even when an explicit rename pairing is present. The database owner transfers
+    values and removes old columns separately. Type conversions and row/key changes require
+    manual work on every provider. The generated script includes explanatory comments,
+    but no rename, drop, data-copy, or type-conversion statements, including commented-out
+    destructive commands. A case-only change or an occupied destination is left for manual
+    handling rather than adding a duplicate name. A newly named index is nullable until
+    the owner populates it and updates the key; the script leaves the existing key intact.
+    This export policy also applies to the offline SQL API. It does not change schema
+    editing, rename pairing, saved fields, quote persistence or compatibility checks.
+    Planner refusals and unresolved rename choices prevent SQL export until
     resolved; other manual work remains visible even when SQL for part of the plan can be
     exported. Retained input-table columns say that supported values survive saves until
     their row is deleted; retained output-only columns say that later saves clear their

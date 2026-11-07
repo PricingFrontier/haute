@@ -12,7 +12,7 @@ from typing import Literal
 
 from haute._quote_store._catalogue import Catalogue
 from haute._quote_store._compare import Rename
-from haute._quote_store._migrate import Plan, Step, StepKind, _structure_column
+from haute._quote_store._migrate import Plan, Step, StepKind, _structure_column, addition_problem
 from haute._quote_store._providers import Provider
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
 
@@ -31,7 +31,9 @@ class ReviewChange:
     quotes: int | None
 
 
-def _describe(step: Step, plan: Plan, form: FormSpec, provider: Provider) -> ReviewChange:
+def _describe(
+    step: Step, plan: Plan, form: FormSpec, provider: Provider, *, additions_only: bool
+) -> ReviewChange:
     disposition: Literal["sql", "manual", "retained"] = "sql"
     match step.kind:
         case "create table":
@@ -42,15 +44,29 @@ def _describe(step: Step, plan: Plan, form: FormSpec, provider: Provider) -> Rev
                 f"Add {_TYPES[column['type']]} column; existing database rows are initially empty."
             )
         case "rename column" | "rename table":
-            description = (
-                f"Rename {step.was} to {step.column or step.table}, keeping existing values."
-            )
+            if additions_only:
+                disposition = "manual"
+                description = (
+                    f"SQL creates {step.column or step.table} empty "
+                    f"and keeps {step.was} unchanged. "
+                    "Transfer values, update any affected keys and remove the old name manually."
+                )
+            else:
+                description = (
+                    f"Rename {step.was} to {step.column or step.table}, keeping existing values."
+                )
         case "retype column":
             before = _structure_column(plan.before, step)
             after = _structure_column(plan.recorded, step)
             old = before.get("sql_type", _TYPES.get(before["type"], before["type"]))
             description = f"Change {old} to {_TYPES[after['type']]}. "
-            if provider.dialect == "sqlite":
+            if additions_only:
+                disposition = "manual"
+                description += (
+                    "Existing types and values are unchanged by this SQL. "
+                    "Review and convert the data manually before changing the column type."
+                )
+            elif provider.dialect == "sqlite":
                 disposition = "manual"
                 description += (
                     "SQLite needs a table/column rebuild and data migration; "
@@ -91,6 +107,16 @@ def _describe(step: Step, plan: Plan, form: FormSpec, provider: Provider) -> Rev
                     "Retain this unused column; this is an output-only table, "
                     "so later saves clear its values."
                 )
+    if additions_only and step.kind in (
+        "create table",
+        "add column",
+        "rename table",
+        "rename column",
+    ):
+        problem = addition_problem(plan, step)
+        if problem is not None:
+            disposition = "manual"
+            description = problem
     return ReviewChange(
         kind=step.kind,
         table=step.table,
@@ -102,8 +128,12 @@ def _describe(step: Step, plan: Plan, form: FormSpec, provider: Provider) -> Rev
     )
 
 
-def review_plan(plan: Plan, form: FormSpec, provider: Provider) -> tuple[ReviewChange, ...]:
-    changes = [_describe(step, plan, form, provider) for step in plan.steps]
+def review_plan(
+    plan: Plan, form: FormSpec, provider: Provider, *, additions_only: bool = False
+) -> tuple[ReviewChange, ...]:
+    changes = [
+        _describe(step, plan, form, provider, additions_only=additions_only) for step in plan.steps
+    ]
     if plan.activity:
         changes.append(
             ReviewChange(

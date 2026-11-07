@@ -1225,7 +1225,8 @@ def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: P
     assert "ALTER TABLE policy_details ADD COLUMN value" in test
     assert "ALTER TABLE policy_details ADD value" in prod
     for sql in (test, prod):
-        assert "-- ALTER TABLE policy_details DROP COLUMN exposure" in sql
+        assert "Keep unused policy_details.exposure" in sql
+        assert "DROP " not in sql
     assert "RENAME" not in test and "sp_rename" not in prod
     assert "CREATE TABLE" not in test + prod
     assert "exposure_feature" not in test + prod
@@ -1482,7 +1483,11 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
     body = paired.json()
     assert body["renames"] == [pairing]
     assert body["extras"] == []
-    assert "RENAME COLUMN exposure TO haute_tmp_" in body["sql"]
+    assert "ADD COLUMN value DOUBLE" in body["sql"]
+    assert "RENAME" not in body["sql"] and "DROP " not in body["sql"]
+    change = next(each for each in body["changes"] if each["column"] == "value")
+    assert change["disposition"] == "manual"
+    assert "Transfer values" in change["description"]
 
     import sqlite3
 
@@ -1493,10 +1498,11 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
         raw.close()
     again = _compare(renamed, _catalogue().json()["tables"]).json()
     assert again["matches"], again["differences"]
-    assert again["sql"] == "-- The tables already fit the form: nothing to change.\n"
+    assert "Keep unused policy_details.exposure" in again["sql"]
+    assert "ADD COLUMN" not in again["sql"]
 
 
-def test_store_review_adds_renames_and_retains_values_then_verifies_the_database(
+def test_store_export_adds_new_names_without_moving_or_removing_old_values(
     project: Path,
 ) -> None:
     import sqlite3
@@ -1549,7 +1555,8 @@ def test_store_review_adds_renames_and_retains_values_then_verifies_the_database
     renamed = changes["policy_details", "territory"]
     assert renamed["kind"] == "rename column" and renamed["was"] == "state"
     assert renamed["quotes"] == 1
-    assert "existing values" in renamed["description"]
+    assert renamed["disposition"] == "manual"
+    assert "Transfer values" in renamed["description"]
     retained = changes["policy_details", "legacy"]
     assert retained["disposition"] == "retained"
     assert "until the row is deleted" in retained["description"]
@@ -1562,10 +1569,11 @@ def test_store_review_adds_renames_and_retains_values_then_verifies_the_database
     with sqlite3.connect(database) as raw:
         raw.executescript(review["sql"])
         assert raw.execute(
-            "SELECT territory, exposure, flood_zone, legacy FROM policy_details"
-        ).fetchone() == ("CA", 125.0, None, "kept")
+            "SELECT state, territory, exposure, flood_zone, legacy FROM policy_details"
+        ).fetchone() == ("CA", None, 125.0, None, "kept")
 
-    verified = _compare(proposed, _catalogue().json()["tables"], [pairing]).json()
+    # Comparing structure does not claim that values have been transferred.
+    verified = _compare(proposed, _catalogue().json()["tables"]).json()
     assert verified["matches"]
     assert verified["blocked"] == []
     assert all(each["disposition"] == "retained" for each in verified["changes"])

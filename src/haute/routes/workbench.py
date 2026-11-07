@@ -347,6 +347,7 @@ def _store_sql(
                 offline_plan(base, spec, provider=PROVIDERS[environment.provider]),
                 spec,
                 PROVIDER_DIALECTS[environment.provider],
+                additions_only=True,
             ),
         )
         for environment in config.store
@@ -453,7 +454,7 @@ def _store_compare(
         provider=provider.name,
         changes=[
             WorkbenchStoreChange(**asdict(each))
-            for each in review_plan(comparison.plan, spec, provider)
+            for each in review_plan(comparison.plan, spec, provider, additions_only=True)
         ],
         manual=list(comparison.plan.notes),
         blocked=[
@@ -467,6 +468,7 @@ def _store_compare(
             spec,
             PROVIDER_DIALECTS[provider.name],
             sql_schema=connection.schema,
+            additions_only=True,
         ),
     )
 
@@ -476,8 +478,8 @@ async def store_compare(body: WorkbenchStoreCompareRequest) -> WorkbenchStoreCom
     """A form the view holds, saved or not, compared with the tables an environment's
     database holds, as the store's catalogue read them: each difference by the form's ids,
     each table or column the database holds beyond it, and the SQL that brings the tables to
-    the form from what they hold, renaming what the analyst paired or the default branch's
-    form names by one id. Reads no database."""
+    the form's new names. Exported SQL adds empty columns and tables, leaving existing
+    names, types, values and keys untouched. Reads no database."""
     config = await _enabled_config()
     return await run_in_threadpool(_store_compare, config, body)
 
