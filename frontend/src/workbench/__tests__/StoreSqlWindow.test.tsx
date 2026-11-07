@@ -150,10 +150,10 @@ describe("StoreSqlWindow", () => {
     expect(fetchStoreSql).not.toHaveBeenCalled()
   })
 
-  it("blocks unresolved renames and points manual work back to the schema pane", () => {
-    live({ ...LIVE, blocked: ["Unresolved rename"], manual: ["Fix the primary key."] })
+  it.each(["Unresolved rename", "The provider does not accept this identifier"])("blocks export for %s and points back to the schema pane", (blocker) => {
+    live({ ...LIVE, blocked: [blocker], manual: ["Fix the primary key."] })
     render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(screen.getByRole("alert")).toHaveTextContent("Resolve the rename choices in Database changes")
+    expect(screen.getByRole("alert")).toHaveTextContent("Resolve the issues in Database changes")
     expect(screen.getByText(/This SQL completes only part/)).toHaveTextContent("schema pane")
     expect(screen.queryByTestId("store-plan-review")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
