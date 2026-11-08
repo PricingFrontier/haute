@@ -828,14 +828,19 @@ Out of scope:
     identify the affected field in the table's collapsed Database details and contribute
     to its warning, with no field configuration or rename controls. Manual-repair notes
     remain in the field/table database details. Local, a pending comparison or a failed check hides stale
-    table details and warnings. Each visible field's status opens the
-    existing field details, where a Database section explains the difference (including
-    creation of a missing table) and accepts
+    table details and warnings. Each visible field's status opens its own database
+    details, separate from field configuration. These explain the difference (including
+    creation of a missing table) and accept
     the information needed to resolve it. A missing field offers Create a new column or
     an explicit rename from an available database-only column of that table; a shared
     rename can be changed or removed there. Pending comparisons never show an old match
-    or accept a new pairing. The ordinary label/rules controls remain available. Without
-    a database selected the normal configuration summaries return. Database-only fields
+    or accept a new pairing. The configuration button opens only label, help, rules and
+    format controls; the database status opens only database information and choices.
+    One detail view is open at a time: selecting the other control or another field
+    switches views, and pressing the active control closes it. Each control reports
+    only its own expanded state. The selected view follows table/column renames and
+    survives closing the schema pane. Fixed identity keys offer only database details.
+    Without a database selected the normal configuration summaries return. Database-only fields
     are listed in a collapsed section inside their table, with their retention behavior.
     They remain listed during a manual table reshape, where preserving their values is
     part of that migration. A planned field change never hides a separate manual repair

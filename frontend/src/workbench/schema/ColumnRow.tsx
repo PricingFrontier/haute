@@ -12,7 +12,7 @@ import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfter
 import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { type SchemaDetails } from "../../stores/useWorkbenchViewStore"
 import useStoreCompareStore from "../../stores/useStoreCompareStore"
 import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import {
@@ -52,8 +52,8 @@ interface ColumnRowProps {
   /** The table's columns' name fields, one focused again after Alt+arrows moves it. */
   refocus: RefocusAfterMove<HTMLInputElement>
   fresh: Fresh
-  open: boolean
-  onToggleDetails: () => void
+  details: SchemaDetails["view"] | null
+  onToggleDetails: (view: SchemaDetails["view"]) => void
   onInsertAfter: () => void
   /** In Haute's quote_details table: the column's name and type are fixed, and it stays. */
   locked: boolean
@@ -65,7 +65,7 @@ interface ColumnRowProps {
   drag: RowDrag | undefined
 }
 
-export function ColumnRow({ form, table, column, block, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
+export function ColumnRow({ form, table, column, block, index, refocus, fresh, details, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const addToast = useToastStore((s) => s.addToast)
   const schemaColumnRenamed = useWorkbenchViewStore((s) => s.schemaColumnRenamed)
@@ -171,12 +171,12 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
         ) : (
           <IconButton
             icon={SlidersHorizontal}
-            onClick={onToggleDetails}
-            aria-expanded={open}
+            onClick={() => onToggleDetails("config")}
+            aria-expanded={details === "config"}
             aria-label={`Label and rules of ${column.name}`}
             title="Label, help, rules and format"
             className="self-center"
-            style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
+            style={{ color: details === "config" ? "var(--text-primary)" : "var(--text-muted)" }}
           />
         )}
         {fixed || column.index ? (
@@ -191,7 +191,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
             className="icon-danger-btn self-center"
           />
         )}
-        {database !== null ? <ColumnDatabaseStatus table={table.name} column={column.name} open={open} onOpen={onToggleDetails} /> : summary && (
+        {database !== null ? <ColumnDatabaseStatus table={table.name} column={column.name} open={details === "database"} onOpen={() => onToggleDetails("database")} /> : summary && (
           // To the right of the name and its buttons, on one line: cut short, whole in its title, as the pane narrows.
           <p
             className="min-w-0 flex-1 self-center truncate text-[11px]"
@@ -203,9 +203,8 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           </p>
         )}
       </div>
-      {open && (identity
-        ? <div className="mr-12 ml-7 max-w-[32rem] px-2 py-1.5 text-[11px]"><ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} /></div>
-        : <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />)}
+      {details === "database" && <ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} />}
+      {details === "config" && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
     </div>
   )
 }

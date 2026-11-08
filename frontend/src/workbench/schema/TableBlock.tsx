@@ -14,7 +14,7 @@ import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../
 import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { type SchemaDetails } from "../../stores/useWorkbenchViewStore"
 import { type Block, IDENTITY_NAMES, isIdentityColumn } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
 import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
@@ -54,8 +54,8 @@ interface TableBlockProps {
   matched: ReadonlySet<string> | null
   added: string | null
   setAdded: (id: string | null) => void
-  details: string | null
-  setDetails: (id: string | null) => void
+  details: SchemaDetails | null
+  setDetails: (details: SchemaDetails | null) => void
   collapsed: boolean
   onToggleCollapsed: () => void
   problems: string[]
@@ -155,8 +155,9 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
       index={at}
       refocus={refocus}
       fresh={fresh(columnKey(table.name, column.name))}
-      open={details === columnKey(table.name, column.name)}
-      onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
+      details={details?.table === table.name && details.column === column.name ? details.view : null}
+      onToggleDetails={(view) => setDetails(details?.table === table.name && details.column === column.name && details.view === view
+        ? null : { table: table.name, column: column.name, view })}
       onInsertAfter={() => {
         if (!isKey) insertAt(own, at + 1)
       }}

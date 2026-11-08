@@ -35,7 +35,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   const reserved = useMemo(() => new Set(reservedLabels ?? []), [reservedLabels])
   // The table or column just added, whose name takes the focus.
   const [added, setAdded] = useState<string | null>(null)
-  // The column whose label and rules are showing, and the tables shown collapsed.
+  // The column and detail view showing, and the tables shown collapsed.
   const details = useWorkbenchViewStore((s) => s.schemaDetails)
   const setDetails = useWorkbenchViewStore((s) => s.setSchemaDetails)
   const collapsed = useWorkbenchViewStore((s) => s.schemaCollapsed)

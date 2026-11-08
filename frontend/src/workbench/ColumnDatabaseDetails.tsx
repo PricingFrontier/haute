@@ -1,4 +1,4 @@
-/** Database information and explicit rename choices in each field's existing details. */
+/** Database information and explicit rename choices, separate from field configuration. */
 import { Undo2 } from "lucide-react"
 import type { SchemaColumn, SchemaTable, WorkbenchStoreCompareResponse, WorkbenchStoreDifference } from "../api/types"
 import { COMPACT_FIELD_CLASS, EditorLabel, INPUT_STYLE, QuietAction } from "../components/form"
@@ -57,7 +57,9 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
   const candidates = answer?.extras.filter((each) => each.form_table === table.name && each.column !== null) ?? []
   const ordinary = column.index === null && !IDENTITY_NAMES.has(column.name)
   const canPair = ordinary && (pairing !== undefined || (missing && candidates.length > 0))
-  return <section aria-label={`Database details for ${table.name}.${column.name}`} className="col-span-2 mb-2 flex min-w-0 flex-col gap-2 border-b pb-2 leading-relaxed" style={{ borderColor: "var(--border)" }}>
+  return <section aria-label={`Database details for ${table.name}.${column.name}`}
+    className="mr-12 ml-7 flex max-w-[32rem] min-w-0 flex-col gap-2 rounded-md px-2 py-1.5 text-[11px] leading-relaxed"
+    style={{ border: "1px solid var(--border)", background: "var(--bg-base)" }}>
     <div className="flex items-baseline justify-between gap-2">
       <EditorLabel as="span">Database</EditorLabel>
       <span className="truncate" style={QUIET}>{state.environment}</span>
