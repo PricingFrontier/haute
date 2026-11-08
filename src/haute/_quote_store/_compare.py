@@ -37,7 +37,7 @@ from haute._quote_store._catalogue import (
     table_problems,
 )
 from haute._quote_store._environment import StoreLocation
-from haute._quote_store._migrate import UNCOUNTED, Key, Plan, held, plan
+from haute._quote_store._migrate import UNCOUNTED, Key, Plan, Step, held, plan
 from haute._quote_store._providers import Provider
 from haute._quote_store._schema import ACTIVITY_TABLE, StoreSchema, store_schema, structure
 from haute._quote_store._store import (
@@ -194,17 +194,22 @@ class _Matcher:
     ) -> None:
         """The columns of *expected* the store keeps that the form does not (its own, the
         identity of ``haute_activity``), each missing, of another kind or nullable otherwise
-        a note on the table."""
+        a note on its field (on the table for activity, which has no schema field)."""
         for column in expected.columns:
             if column.name in skip:
                 continue
             held = found.column(column.name)
             where = f"{expected.name}.{column.name}"
+            column_key = column.name if table_key is not None else None
             if held is None:
-                self.note(table_key, None, "store", f"{where}, the store's own column, is missing")
+                self.note(
+                    table_key, column_key, "store", f"{where}, the store's own column, is missing"
+                )
                 continue
             for _, said in column_problems(column, held, self.dialect):
-                self.note(table_key, None, "store", f"{where}, the store's own column, {said}")
+                self.note(
+                    table_key, column_key, "store", f"{where}, the store's own column, {said}"
+                )
 
     def not_null_extras(
         self, table_key: str | None, found: CatalogueTable, known: set[str]
@@ -258,6 +263,35 @@ def _dialect(name: str) -> Dialect:
     from."""
     dialect: Dialect = make_url(f"{name}://").get_dialect()()
     return dialect
+
+
+def additions_plan(form: FormSpec, catalogue: Catalogue) -> Plan:
+    """Missing schema names only, independent of migration pairings or compatibility repairs."""
+    wanted = structure(form)
+    steps: list[Step] = []
+    for table in wanted["tables"]:
+        found = catalogue.table(table["name"])
+        if found is None:
+            steps.append(Step("create table", table["name"], table["key"]))
+            continue
+        present = {column.name.casefold() for column in found.columns}
+        steps.extend(
+            Step("add column", table["name"], table["key"], column["name"], column["key"])
+            for column in table["columns"]
+            if column["name"].casefold() not in present
+        )
+    return Plan(
+        steps=tuple(steps),
+        refusals=(),
+        recorded=wanted,
+        before={
+            "tables": [
+                {"name": table.name, "columns": [{"name": column.name} for column in table.columns]}
+                for table in catalogue.tables
+            ]
+        },
+        activity=not any(table.name.casefold() == ACTIVITY_TABLE for table in catalogue.tables),
+    )
 
 
 def compare(

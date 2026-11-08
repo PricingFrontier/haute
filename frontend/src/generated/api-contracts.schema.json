@@ -28190,6 +28190,11 @@
     "WorkbenchStoreCatalogueResponse": {
       "description": "The tables an environment's database holds, read through its connection: each table\nholding the quote's identity, ``haute_activity`` among them. Names, kinds and counts\nalone, never a value, a location or a sign-in.",
       "properties": {
+        "checked_at": {
+          "exclusiveMinimum": 0,
+          "title": "Checked At",
+          "type": "integer"
+        },
         "environment": {
           "title": "Environment",
           "type": "string"
@@ -28200,13 +28205,69 @@
           },
           "title": "Tables",
           "type": "array"
+        },
+        "target": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Target",
+          "type": "string"
         }
       },
       "required": [
         "environment",
-        "tables"
+        "tables",
+        "checked_at",
+        "target"
       ],
       "title": "WorkbenchStoreCatalogueResponse",
+      "type": "object"
+    },
+    "WorkbenchStoreChange": {
+      "description": "An addition from the exported SQL plan; compatibility details are separate.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "sql",
+            "manual"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "create table",
+            "add column"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "column",
+        "disposition",
+        "description"
+      ],
+      "title": "WorkbenchStoreChange",
       "type": "object"
     },
     "WorkbenchStoreColumn": {
@@ -28236,6 +28297,20 @@
     "WorkbenchStoreCompareResponse": {
       "description": "The form compared with an environment's tables: each difference, each extra, the\npairings taken, whether the database matches the form, and the SQL that brings its tables\nto the form, from what they hold.",
       "properties": {
+        "blocked": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocked",
+          "type": "array"
+        },
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreChange"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
         "differences": {
           "items": {
             "$ref": "#/$defs/WorkbenchStoreDifference"
@@ -28248,6 +28323,13 @@
             "$ref": "#/$defs/WorkbenchStoreExtra"
           },
           "title": "Extras",
+          "type": "array"
+        },
+        "manual": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Manual",
           "type": "array"
         },
         "matches": {
@@ -28271,7 +28353,10 @@
         "extras",
         "renames",
         "matches",
-        "sql"
+        "sql",
+        "changes",
+        "manual",
+        "blocked"
       ],
       "title": "WorkbenchStoreCompareResponse",
       "type": "object"
@@ -28367,6 +28452,10 @@
           "default": null,
           "title": "Quotes"
         },
+        "retention": {
+          "title": "Retention",
+          "type": "string"
+        },
         "table": {
           "title": "Table",
           "type": "string"
@@ -28376,7 +28465,8 @@
         "table",
         "column",
         "form_table",
-        "quotes"
+        "quotes",
+        "retention"
       ],
       "title": "WorkbenchStoreExtra",
       "type": "object"

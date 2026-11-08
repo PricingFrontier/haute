@@ -1,0 +1,1103 @@
+{
+  "form": {
+    "version": 1,
+    "name": "x",
+    "theme": {
+      "sheet_color": null,
+      "background_color": null,
+      "border_color": null,
+      "font_color": null,
+      "input_cell_color": null,
+      "output_cell_color": null
+    },
+    "schema": {
+      "tables": [
+        {
+          "name": "quote_details",
+          "rows": "one",
+          "inputs": [
+            {
+              "name": "quote_reference",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "quote_option",
+              "type": "int",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "quote_name",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "insured",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "broker",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "inception_date",
+              "type": "date",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "expiry_date",
+              "type": "date",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "is_renewal",
+              "type": "bool",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "stage",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "assignee",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "archived",
+              "type": "bool",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "created_date",
+              "type": "date",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "created_by",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "modified_date",
+              "type": "date",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "modified_by",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "haute_version",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            }
+          ],
+          "outputs": []
+        },
+        {
+          "name": "policy_details",
+          "rows": "one",
+          "inputs": [
+            {
+              "name": "quote_reference",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "quote_option",
+              "type": "int",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "territory",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "exposure",
+              "type": "float",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            }
+          ],
+          "outputs": []
+        },
+        {
+          "name": "pricing_output",
+          "rows": "one",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "quote_reference",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "quote_option",
+              "type": "int",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "premium",
+              "type": "float",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            }
+          ]
+        },
+        {
+          "name": "locations",
+          "rows": "one",
+          "inputs": [
+            {
+              "name": "quote_reference",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "quote_option",
+              "type": "int",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            },
+            {
+              "name": "new_location",
+              "type": "str",
+              "label": "",
+              "group": "",
+              "required": false,
+              "min": null,
+              "max": null,
+              "options": [],
+              "options_source": null,
+              "index": null,
+              "help": "",
+              "placeholder": "",
+              "default_value": "",
+              "number_format": "general",
+              "decimal_places": null,
+              "use_grouping": true
+            }
+          ],
+          "outputs": []
+        }
+      ]
+    },
+    "pages": [
+      {
+        "id": "p",
+        "title": "Sheet 1",
+        "width": 1280,
+        "show_when": {
+          "match": "all",
+          "conditions": []
+        },
+        "sections": [
+          {
+            "id": "s",
+            "title": "s",
+            "height": 120,
+            "show_when": {
+              "match": "all",
+              "conditions": []
+            },
+            "widgets": []
+          }
+        ]
+      }
+    ],
+    "sample": {}
+  },
+  "tables": [
+    {
+      "name": "haute_activity",
+      "columns": [
+        {
+          "name": "activity_id",
+          "kind": "integer",
+          "type": "INTEGER",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "operation_key",
+          "kind": "string",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_reference",
+          "kind": "string",
+          "type": "VARCHAR(40)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_option",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_version",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "occurred_at",
+          "kind": "datetime",
+          "type": "DATETIME",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "action",
+          "kind": "string",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "assignee",
+          "kind": "string",
+          "type": "VARCHAR(320)",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "note",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "reason",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "priced_release",
+          "kind": "string",
+          "type": "VARCHAR(200)",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        }
+      ],
+      "primary_key": [
+        "activity_id"
+      ],
+      "refers": true,
+      "quotes": 0
+    },
+    {
+      "name": "locations",
+      "columns": [
+        {
+          "name": "quote_reference",
+          "kind": "string",
+          "type": "VARCHAR(40)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_option",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "row_number",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "old_location",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        }
+      ],
+      "primary_key": [
+        "quote_reference",
+        "quote_option",
+        "row_number"
+      ],
+      "refers": true,
+      "quotes": 0
+    },
+    {
+      "name": "policy_details",
+      "columns": [
+        {
+          "name": "quote_reference",
+          "kind": "string",
+          "type": "VARCHAR(40)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_option",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "exposure",
+          "kind": "float",
+          "type": "DOUBLE",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "legacy",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "state",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        }
+      ],
+      "primary_key": [
+        "quote_reference",
+        "quote_option"
+      ],
+      "refers": true,
+      "quotes": 0
+    },
+    {
+      "name": "pricing_output",
+      "columns": [
+        {
+          "name": "quote_reference",
+          "kind": "string",
+          "type": "VARCHAR(40)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_option",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "premium",
+          "kind": "float",
+          "type": "DOUBLE",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "old_premium",
+          "kind": "float",
+          "type": "DOUBLE",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        }
+      ],
+      "primary_key": [
+        "quote_reference",
+        "quote_option"
+      ],
+      "refers": true,
+      "quotes": 0
+    },
+    {
+      "name": "quote_details",
+      "columns": [
+        {
+          "name": "quote_reference",
+          "kind": "string",
+          "type": "VARCHAR(40)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_option",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_name",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "insured",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "broker",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "inception_date",
+          "kind": "date",
+          "type": "DATE",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "expiry_date",
+          "kind": "date",
+          "type": "DATE",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "is_renewal",
+          "kind": "boolean",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "stage",
+          "kind": "string",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "assignee",
+          "kind": "string",
+          "type": "VARCHAR(320)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "archived",
+          "kind": "boolean",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "created_date",
+          "kind": "date",
+          "type": "DATE",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "created_by",
+          "kind": "string",
+          "type": "VARCHAR(320)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "modified_date",
+          "kind": "date",
+          "type": "DATE",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "modified_by",
+          "kind": "string",
+          "type": "VARCHAR(320)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "haute_version",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "quote_version",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "saved_at",
+          "kind": "datetime",
+          "type": "DATETIME",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "saved_by",
+          "kind": "string",
+          "type": "VARCHAR(320)",
+          "nullable": false,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "priced_release",
+          "kind": "string",
+          "type": "VARCHAR(200)",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "source_reference",
+          "kind": "string",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "source_option",
+          "kind": "integer",
+          "type": "BIGINT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "source_relation",
+          "kind": "string",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "handover_note",
+          "kind": "string",
+          "type": "TEXT",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "note_by",
+          "kind": "string",
+          "type": "VARCHAR(320)",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        },
+        {
+          "name": "note_at",
+          "kind": "datetime",
+          "type": "DATETIME",
+          "nullable": true,
+          "collation": null,
+          "quotes": 0
+        }
+      ],
+      "primary_key": [
+        "quote_reference",
+        "quote_option"
+      ],
+      "refers": false,
+      "quotes": 0
+    }
+  ],
+  "renames": [
+    {
+      "table": "policy_details",
+      "column": "territory",
+      "was": "state"
+    }
+  ],
+  "answer": {
+    "differences": [
+      {
+        "table": "policy_details",
+        "column": "territory",
+        "kind": "renamed",
+        "message": "the database names it state"
+      },
+      {
+        "table": "policy_details",
+        "column": "territory",
+        "kind": "null",
+        "message": "policy_details.state takes no null, unlike the store's"
+      },
+      {
+        "table": "locations",
+        "column": "new_location",
+        "kind": "missing",
+        "message": "the database has no new_location"
+      },
+      {
+        "table": "locations",
+        "column": null,
+        "kind": "null",
+        "message": "locations.row_number is no column of the form's and takes no null, so no row of it could be saved"
+      },
+      {
+        "table": null,
+        "column": null,
+        "kind": "store",
+        "message": "haute_activity.actor, the store's own column, is missing"
+      },
+      {
+        "table": "locations",
+        "column": null,
+        "kind": "rows",
+        "message": "the database holds many rows per quote"
+      }
+    ],
+    "extras": [
+      {
+        "table": "policy_details",
+        "column": "legacy",
+        "form_table": "policy_details",
+        "quotes": 0,
+        "retention": "Retain this unused column; supported values survive saves until the row is deleted."
+      },
+      {
+        "table": "pricing_output",
+        "column": "old_premium",
+        "form_table": "pricing_output",
+        "quotes": 0,
+        "retention": "Retain this unused column; this is an output-only table, so later saves clear its values."
+      },
+      {
+        "table": "locations",
+        "column": "row_number",
+        "form_table": "locations",
+        "quotes": 0,
+        "retention": "Preserving these values is part of the table's manual migration."
+      },
+      {
+        "table": "locations",
+        "column": "old_location",
+        "form_table": "locations",
+        "quotes": 0,
+        "retention": "Preserving these values is part of the table's manual migration."
+      }
+    ],
+    "renames": [
+      {
+        "table": "policy_details",
+        "column": "territory",
+        "was": "state"
+      }
+    ],
+    "matches": false,
+    "sql": "-- Run with sqlite3 -bail, which stops at a failing statement before the COMMIT.\nBEGIN;\n\nALTER TABLE policy_details ADD COLUMN territory TEXT;\n\nALTER TABLE locations ADD COLUMN new_location TEXT;\n\nCOMMIT;\n",
+    "changes": [
+      {
+        "kind": "add column",
+        "table": "policy_details",
+        "column": "territory",
+        "disposition": "sql",
+        "description": "Add Text column; existing database rows are initially empty."
+      },
+      {
+        "kind": "add column",
+        "table": "locations",
+        "column": "new_location",
+        "disposition": "sql",
+        "description": "Add Text column; existing database rows are initially empty."
+      }
+    ],
+    "manual": [
+      "policy_details.state takes no null, unlike the store's",
+      "locations.row_number is no column of the form's and takes no null, so no row of it could be saved",
+      "haute_activity.actor, the store's own column, is missing"
+    ],
+    "blocked": []
+  }
+}

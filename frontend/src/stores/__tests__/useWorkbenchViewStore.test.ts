@@ -149,11 +149,23 @@ describe("useWorkbenchViewStore", () => {
     store().toggleSchemaCollapsed("t_policy")
     store().toggleSchemaCollapsed("t_items")
     store().toggleSchemaCollapsed("t_policy")
-    store().setSchemaDetails("c_limit")
+    store().setSchemaDetails({ table: "t_items", column: "c_limit", view: "config" })
     store().setSchemaScroll(120)
     store().setSchemaOpen(false)
     store().setSchemaOpen(true)
-    expect(store()).toMatchObject({ schemaWidth: 560, schemaCollapsed: new Set(["t_items"]), schemaDetails: "c_limit", schemaScroll: 120 })
+    expect(store()).toMatchObject({ schemaWidth: 560, schemaCollapsed: new Set(["t_items"]), schemaDetails: { table: "t_items", column: "c_limit", view: "config" }, schemaScroll: 120 })
+  })
+
+  it.each(["config", "database"] as const)("keeps the open %s view with its field when the column or table is renamed", (view) => {
+    const store = useWorkbenchViewStore.getState
+    store().setSchemaDetails({ table: "policy", column: "state", view })
+    store().schemaColumnRenamed("equipment", "state", "region")
+    store().schemaTableRenamed("equipment", "items")
+    expect(store().schemaDetails).toEqual({ table: "policy", column: "state", view })
+    store().schemaColumnRenamed("policy", "state", "region")
+    expect(store().schemaDetails).toEqual({ table: "policy", column: "region", view })
+    store().schemaTableRenamed("policy", "policy_details")
+    expect(store().schemaDetails).toEqual({ table: "policy_details", column: "region", view })
   })
 
   it("follows a section dragged by its header, with the place it would move to, until it is let go", () => {

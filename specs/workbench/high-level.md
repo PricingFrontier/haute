@@ -735,7 +735,9 @@ Out of scope:
 
   - **The schema's pane.** Schema opens the schema editor in a pane that slides in from
     the left over the sheet, under the sheet tabs, covering the sheet's left part without
-    moving it; the part it covers takes no presses and no drops while it is open. Its
+    moving it; the part it covers takes no presses and no drops while it is open. Every
+    column-name cell in `quote_details` uses the existing grey locked-field background,
+    including its non-key columns; labels, help and permitted rules remain editable. Its
     right edge is dragged to resize it, from 320px to half the window, or to the width its
     fields take at full stretch where that is wider, and never wider than the sheet's area
     beside the palette, so a narrow window keeps its right edge in view; it opens at that
@@ -747,11 +749,11 @@ Out of scope:
     match". While it filters nothing is added, moved or collapsed (no Add column, Add table
     or index, no grips, no Alt+Up or Alt+Down, Enter in a name only committing it, the
     collapse toggles off), so each edit is to a column it shows; emptying it, by its clear
-    button or Escape, shows the whole schema again as it was. Its Compare, beside its SQL,
-    chooses one of the environments `haute.toml` declares, or none, and compares the form
+    button or Escape, shows the whole schema again as it was. Its environment strip
+    chooses one of the environments `haute.toml` declares and compares the form
     with the tables that environment's database holds: Haute reads them through the
-    environment's connection in `connections.toml` (the quote store, below) as Compare
-    chooses it and as its Read again is pressed, never as the form is edited, counting the
+    environment's connection in `connections.toml` (the quote store, below) as an unchecked
+    environment is chosen and as Check again is pressed, never as the form is edited, counting the
     quotes holding values in each table and column, and changes nothing; the form the view
     holds, saved or not, is compared with what was read as it changes. Each table and column
     of the form is marked where it differs there (missing, renamed from another name, of
@@ -770,7 +772,14 @@ Out of scope:
     An environment with no connection, one that cannot be read
     or a database that cannot be reached or refuses the sign-in is said, naming the file and
     the variables to set, never a server, a database, a user, a credential or a value read.
-    The comparison is the view's own, neither saved nor undone, and closes with the pane.
+    The comparison is the view's own, neither saved nor undone. Each environment keeps
+    its own last read and comparison while this project is open; closing the pane keeps
+    them. Explicit column rename choices are shared across these environments and checked
+    against each one's catalogue. A choice no longer applicable is reported, never silently
+    replaced by adding an empty column. A destination already present with its source absent
+    needs no rename, without claiming that a migration ran. Adopting another pipeline
+    document, reloading the form, or changing the configured environment list clears this
+    session state and ignores its outstanding answers.
     It stays open as the mode changes and as another
     sheet shows, and opening it keeps the selection and the properties panel. While building
     it edits the schema; in Preview it shows the schema read only: a table still collapses
@@ -778,15 +787,154 @@ Out of scope:
     select takes a choice, and no table or column is added, removed or moved. Keys pressed
     in it are its own, never the sheet's.
 
-  - **The tables' SQL.** While building, the schema's pane's SQL, beside its Close, opens a
-    window of the SQL that brings an environment's tables to the form the view holds, saved
-    or not (the quote store, below): a tab for each environment `haute.toml` declares, its
-    SQL in that environment's engine; what it starts from: the tables the database holds, on
-    the tab of the environment Compare shows, the first there, with its renames and the
-    quotes holding values in each table and column a change touches; the form as the
-    project's default branch holds it, the first elsewhere while that branch holds a form;
-    or none, for a database that holds no store yet; and Copy. With no environment declared
-    the window says so. In Preview, SQL is disabled.
+  - **Reviewing database changes.** One compact Database selector sits to the right of
+    Search fields on the same row, followed by Refresh and Export SQL. Both actions use
+    raised, bordered buttons matching the library toolbar controls.
+    Refresh shows a small spinning circle while fetching or comparing, exposes its busy
+    state accessibly, and stops on success or failure without changing its label or width.
+    The search box is shorter to leave room for the actions, with wrapping on narrow panes.
+    Controls shrink with the pane; database failures appear below the shared row. There is no separate database
+    toolbar. Local is the neutral choice for editing without a database selected. Other
+    choices show only their environment names, coloured red until fetched, orange when
+    fetched but differences, unresolved checks or repairs remain, and green when the
+    current comparison matches. Refreshing clears the previous result: red while fetching,
+    then orange until comparison completes. Status explanations remain available to
+    assistive technology and in tooltips. A labelled Refresh button beside the selector
+    checks the selected database again; it is disabled for Local and while fetching or
+    comparing. Choosing one reads it only if it has not been loaded in the session, reusing the project's persisted
+    snapshot when available.
+    Editing the shared
+    schema compares it with those snapshots without rereading databases. A comparison is
+    current only for the form, rename choices and catalogue it was requested for. Each
+    successful database fetch is cached locally per project and environment under
+    `.haute_cache/workbench/catalogues/`, surviving page reloads and server restarts.
+    Snapshots hold schema metadata and counts, not quote values or credentials. The
+    database target and sign-in identity are fingerprinted: a changed connection never
+    reuses a snapshot of another target. Refresh always reads the
+    database and replace its snapshot only on success. There is no automatic expiry;
+    the original fetch time is shown as the snapshot time, never the time it was loaded
+    from cache. A failed refresh is shown as failed, without displaying an old match;
+    the last successful disk snapshot remains intact. Invalid/unreadable cache files
+    give an actionable error and can be replaced by an explicit Refresh. Comparisons
+    and SQL are recalculated from the current form and rename choices, never cached.
+    Compatible means the snapshot's tables support this
+    schema, including permitted retained columns; it does not establish compatibility with
+    a running app, permissions to run that app, or which migrations were executed.
+
+    With a database selected, each field's usual configuration-summary area shows its
+    database status, including matches and pending/failed checks. Hidden managed and
+    storage columns remain in every database comparison; missing schema columns enter the
+    additions plan. Their differences
+    identify the affected field in the table's collapsed Database details and contribute
+    to its warning, with no field configuration or rename controls. Manual-repair notes
+    remain in the field/table database details. Local, a pending comparison or a failed check hides stale
+    table details and warnings. Each visible field's status opens its own database
+    details, separate from field configuration. These explain the difference (including
+    creation of a missing table) and accept
+    the information needed to resolve it. A missing field offers Create a new column or
+    an explicit rename from an available database-only column of that table; a shared
+    rename can be changed or removed there. Pending comparisons never show an old match
+    or accept a new pairing. The configuration button opens only label, help, rules and
+    format controls; the database status opens only database information and choices.
+    One detail view is open at a time: selecting the other control or another field
+    switches views, and pressing the active control closes it. Each control reports
+    only its own expanded state. The selected view follows table/column renames and
+    survives closing the schema pane. Fixed identity keys offer only database details.
+    Database detail cards use short issue titles, plain-language explanations and a
+    concrete next step. SQL type names, collation diagnostics and quote counts remain
+    available under a collapsed SQL details disclosure. A new column that replaces a
+    differently named database field is explained once, with both names and readable
+    types: Export SQL adds the new column; moving values and updating a row key remain
+    manual work. Type/collation differences on that old column do not become duplicate
+    repair tasks when the addition supplies the new definition. Existing-column type,
+    blank-value and text-comparison differences explain the required manual change;
+    they never imply Export SQL changes existing columns. Fixed Haute field types direct
+    the user to database repair, not an unavailable schema edit. A blocked addition retains
+    its specific reason and is never presented as ready to export.
+    Without a database selected the normal configuration summaries return. Database-only fields
+    are listed in a collapsed section inside their table, with their retention behavior.
+    They remain listed during a manual table reshape, where preserving their values is
+    part of that migration. A planned field change never hides a separate manual repair
+    on the same field. A stale rename remains removable if its target name is reused by
+    an index, even though index columns do not offer new rename choices.
+    Missing additions are summarised in the collapsed Database changes section.
+
+    Database controls follow the library's existing field sizes, rounded corners,
+    focus and hover treatments, muted labels and status colours. Field statuses keep
+    their compact dots; failures use the error colour. Expandable database details use
+    the same chevron treatment as the schema tables, retaining native keyboard behavior.
+    The export dialog aligns its header, content and footer to the standard modal gutter;
+    only its content scrolls, keeping Close and Download SQL visible on short screens.
+    Secondary actions use the existing quiet icon actions and all controls use theme tokens.
+
+    The schema pane's collapsed Database changes section lists only missing columns,
+    grouped by table, and missing tables labelled New table. Its heading counts columns
+    and tables to add instead of saying Needs attention. With no additions it says No
+    additions, not that the database is compatible. It has no migration-review prose,
+    retained-field lists, rename decisions, provider/revision metadata or Check environments
+    action. The original snapshot time is available in Refresh's tooltip. It uses only the
+    current comparison, hiding stale additions during a refresh or schema edit.
+
+    Live SQL export and this list use the same name-based additions plan: each Haute schema
+    column absent from its database table is added, and each missing table is created.
+    Existing columns are never changed, renamed or removed, regardless of type, key, row
+    structure or explicit rename choices. Renaming a field adds its new name empty if absent.
+    Index/row conflicts cannot suppress unrelated additions within the same table. Matching
+    ignores column-name case when deciding whether adding another would duplicate a name.
+    New columns on existing tables are nullable; existing data and keys remain intact.
+    SQL omits migration, retention and unresolved-rename commentary. Only a problem that
+    prevents an addition, such as an invalid provider name, is shown beside that addition
+    and in SQL comments. Valid additions remain exportable. The shared renderer still writes
+    the script, and the offline API keeps its additions-only policy.
+    Full compatibility checks, saved fields, schema editing and field/table difference
+    details remain separate from this additions list; no additions does not imply the
+    current app can use the database. Operational guidance belongs in documentation.
+
+    Export SQL validates the connection before showing the query for the selected database,
+    with Copy SQL, Download SQL and Close. It has no environment/source selector, refresh
+    action, options or change-review disclosures. Opening it never changes the selected
+    database or initiates a database fetch. The target is explicitly the current working
+    schema, labelled as saved or unsaved, never presented as the deployed release. A plain
+    database name identifies the query's destination. General instructions belong in the
+    workbench documentation: the window has no explanatory banner or instructional footer,
+    and Database changes has no generic manual-work or release-coordination paragraphs.
+    Specific change details, SQL comments, unavailable-state errors and action feedback remain.
+    Export SQL always opens the query window; it is beside Refresh, not in the pane header.
+    When SQL is unavailable, the window explains why. Copy and Download remain disabled
+    for Local, Preview, a stale form or a pending/failed comparison.
+    The window is rendered above the editor through a document-body portal, keeping the
+    schema and workbench open underneath. Closing returns focus to Export SQL.
+    If any of these invalidates an
+    already-open window, stale SQL is removed or export disabled with an explanation.
+    No offline source is offered in this UI; the existing offline SQL API remains available.
+    Copy and download failures are actionable errors. Download names the environment and database source.
+    Neither export nor saving the schema changes the database or marks it compatible;
+    after the database owner runs the SQL, Refresh on the schema pane verifies the actual tables. Changes
+    to the form, pairings or environment invalidate earlier displayed SQL until the current
+    answer arrives. Project/form adoption and changes to the configured environment list
+    clear the comparison and cannot auto-select another database. With no environments
+    declared the export window explains that a database must be configured. Rename changes,
+    Copy SQL and Download SQL are disabled in Preview. Direct execution, saved migration packages and deployed-release
+    selection are outside this workflow.
+
+    Reusing a session snapshot must also check its connection identity. Choosing a
+    database or reopening the pane loads its persisted snapshot through the server,
+    which validates the current target before reuse. Comparisons carry the snapshot's
+    opaque target fingerprint; a changed target or sign-in refuses the comparison and
+    asks for Refresh. Opening Export SQL and each Copy/Download revalidate the comparison
+    without reading the database. Pending validation hides the previous query; a failed
+    or superseded validation cannot copy or download it.
+
+    Compatibility details are independent of the additions plan. Each database-only
+    field explains whether its values survive saves, are cleared in an output-only
+    table, or need preserving during a manual table reshape. Adding a new column never
+    resolves a NOT NULL constraint on a retained source column: the field's resolution
+    keeps that separate repair, naming the old column. A collapsed Database checks
+    section shows activity-table defects, comparison blockers and unused tables that
+    have no field in the editor. Rename choices whose target field or table was renamed
+    or deleted remain visible there with Remove rename choice; valid choices on other
+    fields and environments are preserved. These details disappear while comparison
+    is pending or failed and never enter the additions list or SQL.
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or
@@ -835,25 +983,31 @@ Out of scope:
     form that cannot be read is reported in the view, with what is wrong and a way to try
     again.
 - **The schema editor.** The form's tables, each with its name, its rows (One row per quote,
-  or Many rows) and its columns under two headings, Inputs (sent to the pricing engine) and
-  Outputs (returned by it), each populated block with its own Add column. A block with
-  no ordinary columns offers Add inputs or Add outputs instead of a heading and Add column.
-  A new table therefore offers both choices, with its automatic identity and any index
-  visible above them without an Inputs heading. Choosing a side adds its first Text
-  column, focuses its name, and places the keys with the chosen block in one undo step;
-  the other side stays available through its Add action. Removing or moving away the last
-  ordinary column restores that side's Add action. The automatic keys alone never enable
-  a block, and Enter in an index name only commits while neither side has ordinary columns.
-  An Add inputs or Add outputs action also accepts a column dragged from the other side,
-  using the same move operation as dropping on a populated heading. Preview and search
-  offer none of these Add actions, and quote_details keeps its fixed Inputs block.
+  or Many rows) and its columns under three headings: Keys,
+  Inputs (sent to the pricing engine) and Outputs (returned by it). Keys comes first and
+  shows the quote's identity and, for a many-row table, its index once, with no copies in
+  Inputs or Outputs. This includes the identity in `quote_details`. The index keeps its
+  existing editing controls; Keys offers no Add action or column reordering. While building,
+  every editable table shows both Inputs and Outputs headings, each with Add column even
+  when empty. There are no separate Add inputs or Add outputs actions. A new table has
+  both empty blocks, with its automatic identity and any index visible under Keys above
+  them. Add column in an empty block adds its first Text column, focuses its name, and
+  places the keys with the chosen canonical block in one undo step. A block with no
+  ordinary columns is semantically absent: it creates no input or output port, and its
+  heading and Add column alone do not change the form. Removing or moving away the last
+  ordinary column makes that side absent again while leaving its heading and Add column
+  available. The automatic keys alone never enable a block, and Enter in an index name
+  only commits. Either block's heading and Add column accept a column dragged from the
+  other side, including into an empty block, using the same move operation. Preview and
+  search offer no Add actions and hide blocks with no visible ordinary fields;
+  quote_details keeps its fixed Inputs block.
   This changes only the presentation: the canonical schema still places an empty table's
   keys among its inputs until the existing column operations place them with its blocks.
   Each column has its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, and its name. The name cells of `quote_reference`, `quote_option` and the table's
-  index have a thin light blue outline, including the identity in `quote_details` and
-  the keys repeated under Outputs. The index is identified by its role, so a renamed
+  index have a thin light blue outline, including the identity in `quote_details`.
+  The index is identified by its role, so a renamed
   index keeps the outline and an ordinary column named `table_index` does not acquire it.
   Ordinary fields and store-only columns keep their normal border. The outline remains
   in Preview, preserves the existing fills, and leaves keyboard focus visible; there is
@@ -943,22 +1097,30 @@ Out of scope:
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name and rows, its inputs alone and its columns' names,
   types and order are fixed, it is neither deleted nor given a column, and no table moves
-  above it; its columns take labels, groups and help, and
-  those the underwriter types their defaults, placeholders and rules, while the columns
-  the app sets take a label, a group and help alone. Every other table's `quote_reference` and
-  `quote_option` lead its inputs, or its outputs while it has no inputs of its own, locked,
+  above it. Its schema view shows eight fields: `quote_reference` and `quote_option`
+  locked under Keys, without configuration buttons, and `quote_name`, `insured`, `broker`,
+  `inception_date`, `expiry_date` and `is_renewal` under Inputs, with labels, groups, help,
+  defaults, placeholders and rules where applicable. Its field count is eight. The
+  remaining managed fields (`stage`, `assignee`, `archived`, `created_date`, `created_by`,
+  `modified_date`, `modified_by`, `haute_version`) and all ten storage-only fields are
+  hidden in Build, Preview and schema search. Existing forms, field settings, sheets,
+  runtime behavior and SQL definitions are preserved; this is schema-pane visibility
+  only. A user column with the same name in another table remains visible and editable.
+  Every other table's `quote_reference` and
+  `quote_option` appear in Keys, locked,
   their names on a grey lighter than the pane's: not
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
-  format; a table added has them at once, under Inputs, and an index goes after them. A
-  table with both blocks shows them at the head of its Outputs too, on that grey, followed in
-  a many-row table by its index, as the Workbench Output's table of it carries them: rows of
-  what the pricing returns, not columns of the block, with nothing to change. The sheets are
+  format; a table added has them at once, under Keys, and an index goes after them. Their
+  canonical placement and their presence in the pricing request and response are unchanged.
+  The sheets are
   never offered them: a component's fields, a Show when's columns and a
-  Chart's rows leave them out. Under each table's own columns are those the quote store
-  keeps in it that the form does not, quote_details' own, each with what it holds and its
-  name on that grey. Nothing of them changes, and a search shows none of them, nor the
-  Outputs' identity and index. A column's Label and rules button and its Remove always show,
-  but the index's Remove, which it has none of.
+  Chart's rows leave them out. Storage-only columns are not listed as schema rows.
+  Database problems with hidden columns remain accessible in the table's database details.
+  Keys follows
+  the same name-or-label search as other fields and is hidden when none of its columns match;
+  it remains visible in Preview with its controls read only. Label and rules is shown
+  for configurable fields; fixed identity keys have no configuration button. Remove
+  is shown only for removable columns, never for keys or quote_details fields.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas

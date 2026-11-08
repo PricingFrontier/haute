@@ -7,12 +7,13 @@
  * pipeline folder's workbench/ folder and the pipeline after them, its workbench nodes
  * holding no copy of the tables, both on the project's ledger.
  */
-import { readFileSync } from "node:fs"
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { resolve } from "node:path"
 import { expect, test, type Locator } from "@playwright/test"
 
-import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
-import { buildWorkbenchPipeline, enableWorkbench, readFormFile } from "./workbenchProject"
+import { e2eProjectRoot, repoRoot, resetE2eProject } from "./projectIsolation"
+import { buildWorkbenchPipeline, enableWorkbench, readFormFile, writeFormFiles } from "./workbenchProject"
 
 /** A node's config file in the pipeline folder's config/. */
 const readNodeConfig = (folder: string, node: string) =>
@@ -28,6 +29,122 @@ test.describe("workbench", () => {
   test.beforeEach(() => {
     resetE2eProject()
     enableWorkbench()
+  })
+
+  test("opens schema SQL beside Refresh and copies it without leaving the workbench", async ({ page, context, browserName }, testInfo) => {
+    appendFileSync(resolve(e2eProjectRoot, "haute.toml"), '\n[workbench.store.dev]\nprovider = "sqlite"\n')
+    writeFileSync(resolve(e2eProjectRoot, "connections.toml"), '[dev]\nprovider = "sqlite"\ndatabase = "dev.sqlite"\n')
+    writeFormFiles({ "schema/policy.json": {
+      rows: "many", inputs: [
+        { name: "limit", type: "int", index: "numbered" }, { name: "region", type: "str" },
+        { name: "territory", type: "str" }, { name: "flood_zone", type: "str" },
+      ],
+    } })
+    // An existing index collides with the desired name. The real comparison must
+    // list only missing columns/tables and export their SQL without migration commentary.
+    execFileSync("uv", ["run", "python", "-c", [
+      "import sqlite3, sys",
+      "with sqlite3.connect(sys.argv[1]) as db:",
+      "    db.execute('CREATE TABLE policy (quote_reference TEXT NOT NULL, quote_option INTEGER NOT NULL, quote_row INTEGER NOT NULL, [limit] INTEGER NOT NULL, region TEXT, PRIMARY KEY (quote_reference, quote_option, quote_row), FOREIGN KEY (quote_reference, quote_option) REFERENCES quote_details (quote_reference, quote_option))')",
+    ].join("\n"), resolve(e2eProjectRoot, "dev.sqlite")], { cwd: repoRoot, stdio: "pipe" })
+    let finishCatalogue!: () => void
+    const catalogueReady = new Promise<void>((resolve) => { finishCatalogue = resolve })
+    await page.route("**/api/workbench/store-catalogue", async (route) => {
+      await catalogueReady
+      await route.continue()
+    })
+    if (browserName === "chromium") await context.grantPermissions(["clipboard-read", "clipboard-write"])
+    await page.goto("/")
+    await page.getByTestId("view-switcher-workbench").click()
+    await page.getByRole("button", { name: "Schema", exact: true }).click()
+    const pane = page.getByTestId("schema-pane")
+    await pane.getByRole("combobox", { name: "Database" }).selectOption("dev")
+    const refreshButton = pane.getByRole("button", { name: "Refresh", exact: true })
+    await expect(refreshButton).toHaveAttribute("aria-busy", "true")
+    await expect(refreshButton).toBeDisabled()
+    await expect(refreshButton.locator("svg")).toHaveCSS("animation-name", "spin")
+    await pane.screenshot({ path: testInfo.outputPath("schema-refresh-busy.png") })
+    finishCatalogue()
+    await expect(pane.getByRole("status")).toHaveText("Needs attention")
+    await expect(refreshButton).toHaveAttribute("aria-busy", "false")
+    await expect(refreshButton).toBeEnabled()
+    await expect(refreshButton).toHaveCSS("border-top-style", "solid")
+    await expect(refreshButton).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)")
+    const exportButton = pane.getByRole("button", { name: "Export SQL", exact: true })
+    await expect(exportButton).toHaveCSS("border-top-style", "solid")
+    await expect(exportButton).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)")
+    await exportButton.press("Enter")
+    const dialog = page.getByRole("dialog", { name: "Export database changes" })
+    await expect(dialog).toBeVisible()
+    const code = await dialog.getByTestId("store-sql").innerText()
+    expect(code).toContain("CREATE TABLE")
+    expect(code).not.toContain("policy.quote_row, renamed limit")
+    expect(code).not.toContain("Not changed here")
+    await expect(dialog.getByText(/Changes needing manual work are explained in the SQL comments/)).toHaveCount(0)
+    await expect(dialog.getByRole("alert")).toHaveCount(0)
+    // Let transient activation expire during verification. Copy must reserve its
+    // clipboard operation within the click. WebKit runs without a permission grant.
+    await page.route("**/api/workbench/store-compare", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 6000))
+      await route.continue()
+    }, { times: 1 })
+    // WebKit's test browser does not grant clipboard reads. Inspect the native
+    // item's contents after the real write succeeds; do not replace the write.
+    if (browserName === "webkit") {
+      await page.evaluate(() => {
+        const write = navigator.clipboard.write.bind(navigator.clipboard)
+        navigator.clipboard.write = async (items) => {
+          const [, text] = await Promise.all([write(items), items[0].getType("text/plain")])
+          document.documentElement.dataset.copiedSql = await text.text()
+        }
+      })
+    }
+    await dialog.getByRole("button", { name: "Copy SQL", exact: true }).click()
+    await expect(dialog.getByRole("status")).toHaveText("SQL copied.")
+    const verifiedCode = await dialog.getByTestId("store-sql").innerText()
+    if (browserName === "chromium") {
+      const copied = await page.evaluate(() => navigator.clipboard.readText())
+      expect(copied.replace(/\r\n/g, "\n")).toBe(verifiedCode.replace(/\r\n/g, "\n"))
+    } else {
+      await expect(page.locator("html")).toHaveAttribute("data-copied-sql", verifiedCode)
+    }
+    await dialog.screenshot({ path: testInfo.outputPath("schema-sql-code.png") })
+    await dialog.getByRole("button", { name: "Close", exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(pane).toBeVisible()
+    await expect(page.getByRole("toolbar", { name: "Workbench toolbar" })).toBeVisible()
+    await expect(exportButton).toBeFocused()
+    await pane.getByText(/^Database changes/).click()
+    const additions = pane.getByTestId("store-plan-review")
+    await expect(additions.getByRole("region", { name: "Additions for policy" }).getByRole("listitem")).toHaveText(["territory", "flood_zone"])
+    await expect(additions.getByRole("region", { name: "Additions for quote_details" })).toContainText("New table")
+    await expect(additions).not.toContainText(/Needs attention|rename|Saved revision|quotes with values/)
+    await expect(additions.locator("details")).toHaveCount(0)
+    const search = await pane.getByRole("textbox", { name: "Search fields" }).boundingBox()
+    const refresh = await pane.getByRole("button", { name: "Refresh", exact: true }).boundingBox()
+    const exported = await exportButton.boundingBox()
+    expect(search).not.toBeNull()
+    expect(refresh).not.toBeNull()
+    expect(exported).not.toBeNull()
+    expect(exported!.x).toBeGreaterThanOrEqual(refresh!.x + refresh!.width)
+    expect(Math.abs(exported!.y - refresh!.y)).toBeLessThan(4)
+    expect(search!.width).toBeLessThanOrEqual(400)
+    await pane.screenshot({ path: testInfo.outputPath("schema-export-toolbar.png") })
+    const handle = await centre(pane.getByTestId("panel-resize-handle"))
+    await page.mouse.move(handle.x, handle.y)
+    await page.mouse.down()
+    await page.mouse.move(handle.x - 550, handle.y, { steps: 8 })
+    await page.mouse.up()
+    const narrowPane = await pane.boundingBox()
+    const narrowRefresh = await pane.getByRole("button", { name: "Refresh", exact: true }).boundingBox()
+    const narrowExport = await exportButton.boundingBox()
+    expect(narrowPane!.width).toBeLessThan(400)
+    expect(narrowExport!.x).toBeGreaterThanOrEqual(narrowRefresh!.x + narrowRefresh!.width)
+    expect(narrowExport!.x + narrowExport!.width).toBeLessThanOrEqual(narrowPane!.x + narrowPane!.width)
+    await exportButton.click()
+    await expect(dialog.getByRole("button", { name: "Copy SQL", exact: true })).toBeVisible()
+    await dialog.getByRole("button", { name: "Close", exact: true }).click()
+    await pane.screenshot({ path: testInfo.outputPath("schema-export-toolbar-narrow.png") })
   })
 
   test("lays out a sheet from the schema, drawn as a new quote, prices the sample live in Preview, and saves the sheets", async ({ page }) => {

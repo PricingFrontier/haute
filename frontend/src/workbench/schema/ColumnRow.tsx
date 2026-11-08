@@ -1,19 +1,19 @@
 /**
- * A schema column's row in its block, the table's inputs or its outputs: its type and name, its
+ * A schema column's row under Keys, Inputs or Outputs: its type and name, its
  * summary to their right, dragged or moved within its block or into the other, removed and opened
- * for its details; the row of a column the quote store keeps; and the row of a column the
- * Workbench Output's table carries ahead of a table's outputs (specs/workbench).
+ * for its details (specs/workbench).
  */
-import { SlidersHorizontal, X, type LucideIcon } from "lucide-react"
+import { SlidersHorizontal, X } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
-import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
+import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
 import type { RowDrag } from "../../hooks/useListReorder"
 import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import useWorkbenchViewStore, { type SchemaDetails } from "../../stores/useWorkbenchViewStore"
+import useStoreCompareStore from "../../stores/useStoreCompareStore"
 import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import {
   buttonUses,
@@ -29,23 +29,16 @@ import {
   updateSchemaColumn,
 } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
-import { DatabaseMark } from "../StoreCompare"
+import { ColumnDatabaseDetails, ColumnDatabaseStatus } from "../ColumnDatabaseDetails"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
 
-/** What a column the quote store keeps holds, drawn as the marker of the column type nearest it. */
-const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: LucideIcon; color: string }> = {
-  int: COLUMN_TYPES.int,
-  str: COLUMN_TYPES.str,
-  datetime: { ...COLUMN_TYPES.date, label: "Date and time" },
-}
-
 /** The types the index can be given: Integer and Text alone. */
 const INDEX_TYPE_OPTIONS = COLUMN_TYPE_OPTIONS.filter((option) => INDEX_TYPES.has(option.value))
 
-/** Key name cells share a light blue border, including their read-only output copies. */
+/** Key name cells share a light blue border. */
 const KEY_BORDER = "1px solid var(--text-accent)"
 
 interface ColumnRowProps {
@@ -59,8 +52,8 @@ interface ColumnRowProps {
   /** The table's columns' name fields, one focused again after Alt+arrows moves it. */
   refocus: RefocusAfterMove<HTMLInputElement>
   fresh: Fresh
-  open: boolean
-  onToggleDetails: () => void
+  details: SchemaDetails["view"] | null
+  onToggleDetails: (view: SchemaDetails["view"]) => void
   onInsertAfter: () => void
   /** In Haute's quote_details table: the column's name and type are fixed, and it stays. */
   locked: boolean
@@ -72,10 +65,11 @@ interface ColumnRowProps {
   drag: RowDrag | undefined
 }
 
-export function ColumnRow({ form, table, column, block, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
+export function ColumnRow({ form, table, column, block, index, refocus, fresh, details, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const addToast = useToastStore((s) => s.addToast)
   const schemaColumnRenamed = useWorkbenchViewStore((s) => s.schemaColumnRenamed)
+  const database = useStoreCompareStore((s) => s.environment)
   const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.name, column.name).length
   const tested = conditionUses(form, table.name, column.name).length
@@ -91,7 +85,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
   // A column the underwriter app sets takes no rules.
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.name)
   // The quote's reference and option are Haute's: nothing of them changes.
-  const identity = isIdentityColumn(table, column)
+  const identity = isIdentityColumn(table, column) || (locked && IDENTITY_NAMES.has(column.name))
   const keyColumn = IDENTITY_NAMES.has(column.name) || column.index !== null
   // Its name and type stay, and it stays: in quote_details, the quote's identity, and in Preview.
   const fixed = locked || readOnly || identity
@@ -169,21 +163,20 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           onKeyDown={onKeyDown}
           title={identity ? "Haute's column" : undefined}
           className={`${COMPACT_FIELD_CLASS} ${COLUMN_NAME_WIDTH} font-mono`}
-          style={{ ...(identity ? LOCKED_FIELD_STYLE : INPUT_STYLE), border: keyColumn ? KEY_BORDER : INPUT_STYLE.border }}
+          style={{ ...(identity || locked ? LOCKED_FIELD_STYLE : INPUT_STYLE), border: keyColumn ? KEY_BORDER : INPUT_STYLE.border }}
         />
-        <DatabaseMark table={table.name} column={column.name} />
         {identity ? (
           // The quote's identity has no label or rules to open.
           <span className="size-5 shrink-0" aria-hidden="true" />
         ) : (
           <IconButton
             icon={SlidersHorizontal}
-            onClick={onToggleDetails}
-            aria-expanded={open}
+            onClick={() => onToggleDetails("config")}
+            aria-expanded={details === "config"}
             aria-label={`Label and rules of ${column.name}`}
             title="Label, help, rules and format"
             className="self-center"
-            style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
+            style={{ color: details === "config" ? "var(--text-primary)" : "var(--text-muted)" }}
           />
         )}
         {fixed || column.index ? (
@@ -198,7 +191,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
             className="icon-danger-btn self-center"
           />
         )}
-        {summary && (
+        {database !== null ? <ColumnDatabaseStatus table={table.name} column={column.name} open={details === "database"} onOpen={() => onToggleDetails("database")} /> : summary && (
           // To the right of the name and its buttons, on one line: cut short, whole in its title, as the pane narrows.
           <p
             className="min-w-0 flex-1 self-center truncate text-[11px]"
@@ -210,48 +203,8 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           </p>
         )}
       </div>
-      {open && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
+      {details === "database" && <ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} />}
+      {details === "config" && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
     </div>
-  )
-}
-
-/** A row that is not one of the block's columns, its type marker and its name on grey, with nothing to change. */
-function LockedRow({ name, kind, title, testId, keyColumn }: { name: string; kind: { label: string; icon: LucideIcon; color: string }; title: string; testId: string; keyColumn: boolean }) {
-  const { label, icon: Icon, color } = kind
-  return (
-    <div className="flex items-stretch gap-1 rounded" data-testid={testId}>
-      <span className="w-3 shrink-0" aria-hidden="true" />
-      <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
-        <Icon size={12} aria-hidden="true" />
-      </span>
-      <span
-        className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
-        style={{ ...LOCKED_FIELD_STYLE, border: keyColumn ? KEY_BORDER : LOCKED_FIELD_STYLE.border, color: "var(--text-muted)" }}
-        title={title}
-      >
-        {name}
-      </span>
-    </div>
-  )
-}
-
-/** A column the quote store keeps in a table that the form does not: what it holds and its name, locked, with nothing to change. */
-export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
-  return <LockedRow name={column.name} kind={KEPT_KINDS[column.kind]} title="Kept by the quote store" testId={`schema-store-column-${column.name}`} keyColumn={false} />
-}
-
-/**
- * A column the Workbench Output's table carries ahead of its outputs, shown at their head:
- * the quote's identity, or a many-row table's index; its inputs' own, with nothing to change.
- */
-export function CarriedColumnRow({ column, isIndex }: { column: SchemaColumn; isIndex: boolean }) {
-  return (
-    <LockedRow
-      name={column.name}
-      kind={COLUMN_TYPES[column.type]}
-      title={isIndex ? "The table's index, on every row the pricing returns" : "Haute's column, on every row the pricing returns"}
-      testId={`schema-output-carried-${column.name}`}
-      keyColumn
-    />
   )
 }

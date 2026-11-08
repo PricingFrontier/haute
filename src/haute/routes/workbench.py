@@ -34,7 +34,7 @@ from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._workbench_app import ResolvedRelease, resolve_release
-from haute._workbench_config import WorkbenchConfig, read_workbench_config
+from haute._workbench_config import WorkbenchConfig, WorkbenchError, read_workbench_config
 from haute._workbench_folder import (
     FormFolderNameError,
     folder_files,
@@ -87,8 +87,6 @@ from haute.routes._save_pipeline import (
     capture_save_in_ledger,
 )
 from haute.schemas import (
-    WorkbenchCatalogueColumn,
-    WorkbenchCatalogueTable,
     WorkbenchFormResponse,
     WorkbenchFormSaveRequest,
     WorkbenchFormSaveResponse,
@@ -97,6 +95,7 @@ from haute.schemas import (
     WorkbenchStatusResponse,
     WorkbenchStoreCatalogueRequest,
     WorkbenchStoreCatalogueResponse,
+    WorkbenchStoreChange,
     WorkbenchStoreColumn,
     WorkbenchStoreCompareRequest,
     WorkbenchStoreCompareResponse,
@@ -348,6 +347,7 @@ def _store_sql(
                 offline_plan(base, spec, provider=PROVIDERS[environment.provider]),
                 spec,
                 PROVIDER_DIALECTS[environment.provider],
+                additions_only=True,
             ),
         )
         for environment in config.store
@@ -368,40 +368,18 @@ def _store_catalogue(
 ) -> WorkbenchStoreCatalogueResponse:
     from haute._connections import project_environ
     from haute._quote_store import connected_store
-    from haute._quote_store._compare import read_store_catalogue
+    from haute._workbench_catalogue import catalogue_snapshot
 
     location = connected_store(config, body.environment, project_environ(config.project_root))
-    catalogue = read_store_catalogue(location)
-    return WorkbenchStoreCatalogueResponse(
-        environment=body.environment,
-        tables=[
-            WorkbenchCatalogueTable(
-                name=table.name,
-                columns=[
-                    WorkbenchCatalogueColumn(
-                        name=column.name,
-                        kind=column.kind,
-                        type=column.type,
-                        nullable=column.nullable,
-                        collation=column.collation,
-                        quotes=column.quotes,
-                    )
-                    for column in table.columns
-                ],
-                primary_key=list(table.primary_key),
-                refers=table.refers,
-                quotes=table.quotes,
-            )
-            for table in catalogue.tables
-        ],
-    )
+    return catalogue_snapshot(config.project_root, location, refresh=body.refresh)
 
 
 @router.post("/store-catalogue", response_model=WorkbenchStoreCatalogueResponse)
 async def store_catalogue(body: WorkbenchStoreCatalogueRequest) -> WorkbenchStoreCatalogueResponse:
     """The tables an environment's database holds, read through its connection in
     ``connections.toml`` under the analyst's sign-in, with the quotes holding values in each
-    table and column; nothing written. An environment with no connection, or a database that
+    table and column; persisted locally for reuse when refresh is false. No database writes.
+    An environment with no connection, or a database that
     cannot be reached or read, answers 409 naming what to set."""
     config = await _enabled_config()
     return await run_in_threadpool(_store_catalogue, config, body)
@@ -410,15 +388,26 @@ async def store_catalogue(body: WorkbenchStoreCatalogueRequest) -> WorkbenchStor
 def _store_compare(
     config: WorkbenchConfig, body: WorkbenchStoreCompareRequest
 ) -> WorkbenchStoreCompareResponse:
-    from haute._quote_store import render_sql
+    from haute._connections import project_environ
+    from haute._quote_store import connected_store, render_sql
     from haute._quote_store._catalogue import Catalogue, CatalogueColumn, CatalogueTable
-    from haute._quote_store._compare import Rename, compare
-    from haute._quote_store._environment import connection_of
+    from haute._quote_store._compare import Rename, additions_plan, compare
     from haute._quote_store._migrate import PROVIDER_DIALECTS
-    from haute._quote_store._providers import PROVIDERS
+    from haute._quote_store._providers import provider_of
+    from haute._quote_store._review import (
+        rename_problems,
+        retention_description,
+        review_plan,
+    )
+    from haute._workbench_catalogue import catalogue_target
 
     spec = _checked_form(body.form)
-    connection = connection_of(config, body.environment)
+    location = connected_store(config, body.environment, project_environ(config.project_root))
+    if body.target != catalogue_target(location):
+        raise WorkbenchError(
+            f"The {body.environment} connection changed since this database schema was read. "
+            "Use Refresh on the schema pane before comparing or exporting SQL."
+        )
     catalogue = Catalogue(
         tables=tuple(
             CatalogueTable(
@@ -441,13 +430,16 @@ def _store_compare(
             for table in body.tables
         )
     )
-    provider = PROVIDERS[connection.provider]
+    provider = provider_of(location.url)
+    renames = [Rename(each.table, each.column, each.was) for each in body.renames]
     comparison = compare(
         spec,
         catalogue,
         provider=provider,
-        renames=[Rename(each.table, each.column, each.was) for each in body.renames],
+        renames=renames,
     )
+    unresolved = rename_problems(renames, comparison.renames, catalogue, spec)
+    additions = additions_plan(spec, catalogue)
     return WorkbenchStoreCompareResponse(
         differences=[
             WorkbenchStoreDifference(
@@ -461,6 +453,7 @@ def _store_compare(
                 column=each.column,
                 form_table=each.form_table,
                 quotes=each.quotes,
+                retention=retention_description(spec, each.form_table, comparison.plan),
             )
             for each in comparison.extras
         ],
@@ -469,11 +462,21 @@ def _store_compare(
             for each in comparison.renames
         ],
         matches=comparison.matches,
+        changes=[
+            WorkbenchStoreChange.model_validate(each, from_attributes=True)
+            for each in review_plan(additions, spec, provider, additions_only=True)
+        ],
+        manual=list(comparison.plan.notes),
+        blocked=[
+            *comparison.plan.refusals,
+            *unresolved,
+        ],
         sql=render_sql(
-            comparison.plan,
+            additions,
             spec,
             PROVIDER_DIALECTS[provider.name],
-            sql_schema=connection.schema,
+            sql_schema=location.sql_schema,
+            additions_only=True,
         ),
     )
 
@@ -483,8 +486,8 @@ async def store_compare(body: WorkbenchStoreCompareRequest) -> WorkbenchStoreCom
     """A form the view holds, saved or not, compared with the tables an environment's
     database holds, as the store's catalogue read them: each difference by the form's ids,
     each table or column the database holds beyond it, and the SQL that brings the tables to
-    the form from what they hold, renaming what the analyst paired or the default branch's
-    form names by one id. Reads no database."""
+    the form's new names. Exported SQL adds empty columns and tables, leaving existing
+    names, types, values and keys untouched. Reads no database."""
     config = await _enabled_config()
     return await run_in_threadpool(_store_compare, config, body)
 

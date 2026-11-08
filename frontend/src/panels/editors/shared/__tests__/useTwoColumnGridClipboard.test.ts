@@ -2,10 +2,45 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderHook, waitFor } from "@testing-library/react"
 import useToastStore from "../../../../stores/useToastStore"
 import { isGridHeaderRow, useTwoColumnGridClipboard } from "../useTwoColumnGridClipboard"
+import { writeClipboardText } from "../tableClipboard"
 
 const GRID = { name: "sample", fields: ["code", "group"], copyHeaders: ["Code", "Group"] } as const
 
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+
+describe("deferred clipboard text", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard)
+    else Reflect.deleteProperty(navigator, "clipboard")
+  })
+
+  it.each([true, false])("reserves the gesture and only writes validated text (valid: %s)", async (valid) => {
+    let finish!: (text: string) => void
+    let fail!: (error: Error) => void
+    const text = new Promise<string>((resolve, reject) => { finish = resolve; fail = reject })
+    let contents = "existing clipboard"
+    class Item {
+      readonly values: Record<string, Promise<string>>
+      constructor(values: Record<string, Promise<string>>) { this.values = values }
+    }
+    vi.stubGlobal("ClipboardItem", Item)
+    const write = vi.fn(async ([item]: Item[]) => { contents = await item.values["text/plain"] })
+    Object.defineProperty(navigator, "clipboard", { value: { write }, configurable: true })
+    const copying = writeClipboardText(text)
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(contents).toBe("existing clipboard")
+    if (valid) {
+      finish("verified SQL")
+      await copying
+      expect(contents).toBe("verified SQL")
+    } else {
+      fail(new Error("Connection changed"))
+      await expect(copying).rejects.toThrow("Connection changed")
+      expect(contents).toBe("existing clipboard")
+    }
+  })
+})
 
 function pasteEvent(text: string) {
   return {

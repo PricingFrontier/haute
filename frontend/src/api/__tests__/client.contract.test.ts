@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { ApiResponseValidationError } from "../responseValidation"
-import type { FormSpec, OptimiserApplyQuery } from "../types"
+import type { FormSpec, OptimiserApplyQuery, WorkbenchCatalogueTable, WorkbenchStoreCompareResponse, WorkbenchStoreRename } from "../types"
+import { fetchStoreCatalogue, fetchStoreCompare } from "../workbench"
 import {
   applyOptimiser,
   cancelExplorePivot,
@@ -120,6 +121,34 @@ afterEach(() => {
 })
 
 describe("client runtime contracts", () => {
+  it("compares a catalogue with its connection identity and validates real retention metadata", async () => {
+    const { form, tables, renames, answer } = loadUiContractFixture<{
+      form: FormSpec; tables: WorkbenchCatalogueTable[]; renames: WorkbenchStoreRename[]; answer: WorkbenchStoreCompareResponse
+    }>("workbench_store_review")
+    const target = "a".repeat(64)
+    mockFetch.mockReturnValue(jsonResponse(answer))
+    expect(await fetchStoreCompare(form, "dev", tables, renames, target)).toEqual(answer)
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/workbench/store-compare", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ form, environment: "dev", tables, renames, target }),
+    }))
+  })
+  it("loads saved database snapshots by default and explicitly requests refresh", async () => {
+    const snapshot = { environment: "dev", tables: [], target: "a".repeat(64), checked_at: 1700000000000 }
+    mockFetch.mockImplementation(() => jsonResponse(snapshot))
+
+    expect(await fetchStoreCatalogue("dev")).toEqual(snapshot)
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/workbench/store-catalogue", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ environment: "dev", refresh: false }),
+    }))
+    expect(await fetchStoreCatalogue("dev", true)).toEqual(snapshot)
+    expect(mockFetch).toHaveBeenLastCalledWith("/api/workbench/store-catalogue", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ environment: "dev", refresh: true }),
+    }))
+
+    mockFetch.mockReturnValue(jsonResponse({ environment: "dev", tables: [] }))
+    await expect(fetchStoreCatalogue("dev")).rejects.toThrow("WorkbenchStoreCatalogueResponse: invalid contract at /checked_at: required")
+  })
+
   it("savePipeline rejects malformed 200 payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ file: 123, pipeline_name: "pricing" }))
 

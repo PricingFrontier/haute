@@ -16,12 +16,15 @@ export function buildTsv(rows: readonly (readonly string[])[]): string {
   return rows.map(row => row.join("\t")).join("\n")
 }
 
-export function writeClipboardText(text: string): Promise<void> {
+export async function writeClipboardText(text: string | Promise<string>): Promise<void> {
   const clipboard = navigator.clipboard
   if (!clipboard) {
-    return Promise.reject(new Error("Clipboard API is not available"))
+    throw new Error("Clipboard API is not available")
   }
-  return clipboard.writeText(text)
+  if (typeof text !== "string" && (typeof ClipboardItem === "undefined" || typeof clipboard.write !== "function")) throw new Error("This browser cannot copy text after validation.")
+  // Reserve user activation now; callers may still be validating the text over HTTP.
+  return typeof text === "string" ? clipboard.writeText(text)
+    : clipboard.write([new ClipboardItem({ "text/plain": text })])
 }
 
 /**
