@@ -39,7 +39,6 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
-| ASSIST-54 | Planned | P2 | The provider client uses the validated endpoint, classifies SDK errors by type, builds its request outside the failure catch-all, and logs provider errors redacted. |
 | ASSIST-55 | Planned | P2 | A message is bounded, the turn deadline ends every stream with a terminal event, the chat list is read off the event loop, and an oversized document is counted, not dropped. |
 | ASSIST-56 | Planned | P3 | The assistant core carries no test-only methods, one one-line helper, one readiness resolution per message, and names that mean one thing. |
 | ASSIST-57 | Planned | P2 | A tool never stalls the server: `inspect_node` profiles outside the save lock, the capability manifest is built once per installed set, an example is loaded once, and the egress policy is resolved once per call. |
@@ -142,44 +141,6 @@ per configuration with run identifiers.
 **Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-54 — The provider client as the policy describes it
-**Why:** The endpoint trust validation and the readiness `endpoint_host`
-describe `api.anthropic.com` and `api.openai.com`, but the SDK clients are built
-without an explicit `base_url`, so `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in
-the process environment, which `haute serve` fills from the project `.env`,
-silently redirects the key, the prompt and project material to an endpoint the
-policy never checked (the installed SDKs read the variable whenever no
-`base_url` is passed); no code or test accounts for the override. Failures are
-classified by substrings of the SDK exception class name, so a wrong model name
-(404) or an overloaded endpoint (529) reads as a "stream failure", and the
-installed-SDK test parametrises only the classes that classify as intended. The
-Anthropic adapter builds its request inside the `try` whose catch-all classifies
-every exception as a provider failure, so a programming error in the history
-translation is shown as a provider failure, while the OpenAI adapter builds
-outside it. The raw SDK error string, which embeds the HTTP response body, is
-logged unredacted.
-
-**Plan:** Pass the validated endpoint explicitly to both constructors (or
-validate the environment variables like `[assistant].base_url` and report the
-real host); classify by `isinstance` against the SDKs' status and connection
-hierarchies with `stream` reserved for mid-stream failures, and extend the
-installed-SDK test to every status class; build the request before the `try`;
-log the error through `redact_sensitive_text` with the key as a known secret.
-
-**Acceptance:** With `ANTHROPIC_BASE_URL` set in the environment the constructed
-client's `base_url` is the validated endpoint (or readiness reports the
-variable's host after validation); a `NotFoundError` is reported as a status
-failure; a translation error reaches the internal-error path; no log line
-carries the response body unredacted.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_providers.py::AnthropicProvider`;
-`src/haute/assistant/_providers.py::OpenAIProvider`;
-`src/haute/assistant/_providers.py::_failure_category`;
-`src/haute/assistant/_providers.py::_classify_sdk_error`;
-`src/haute/assistant/_config.py::_endpoint`; `tests/test_assistant_providers.py`.
 
 ### ASSIST-55 — Bounded requests and a terminal event on every stream
 **Why:** `AssistantMessageRequest.message` has no length bounds and the server no

@@ -88,6 +88,9 @@ hostname and no embedded user information; malformed, relative, unsupported-
 scheme, whitespace/control-bearing, or invalid-port values raise a
 field-specific `ConfigError` without echoing the URL. Anthropic continues to
 reject the field entirely, as does Databricks because its endpoint is derived.
+The endpoint the egress policy checks and readiness reports is the one the SDK client
+is built with: it is passed explicitly, so `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`
+in the environment cannot redirect the key or the prompt.
 During lifespan startup, `haute serve` loads the project `.env` into the process environment
 without overriding variables the caller already exported. A status endpoint reports whether the
 assistant is ready and, if not, exactly which piece is missing (no `[assistant]` table, unknown

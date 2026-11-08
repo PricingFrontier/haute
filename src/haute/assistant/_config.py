@@ -331,13 +331,21 @@ def _databricks_base_url(raw_host: str) -> str:
     return f"{workspace_root}/serving-endpoints"
 
 
+def endpoint_url(provider: AssistantProvider, base_url: str | None) -> str:
+    """The URL the egress policy validates and the SDK client is built with.
+
+    Passing it explicitly is what stops ``ANTHROPIC_BASE_URL`` or
+    ``OPENAI_BASE_URL``, which the SDKs read whenever no ``base_url`` is given,
+    from sending the key and the prompt somewhere the policy never checked.
+    """
+
+    if provider == "anthropic":
+        return "https://api.anthropic.com"
+    return base_url or "https://api.openai.com/v1"
+
+
 def _endpoint(provider: AssistantProvider, base_url: str | None) -> SplitResult:
-    url = (
-        "https://api.anthropic.com"
-        if provider == "anthropic"
-        else base_url or "https://api.openai.com/v1"
-    )
-    return urlsplit(url)
+    return urlsplit(endpoint_url(provider, base_url))
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -676,6 +684,7 @@ __all__ = [
     "Sensitivity",
     "TURN_TIMEOUT_ENV",
     "assistant_readiness",
+    "endpoint_url",
     "mutations_readiness",
     "resolve_assistant_config",
     "resolve_egress_policy",

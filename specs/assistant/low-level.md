@@ -239,7 +239,12 @@ orphaned halves).
 - **`AssistantProviderError(HauteError)`** (`src/haute/assistant/_providers.py`): hand-authored message carrying
   provider name and a classified failure such as `authentication`, `rate_limit`,
   `connection`, `status`, `stream`, `dependency`, `malformed_stream`, `truncated`, or
-  `filtered` — never the raw provider response body.
+  `filtered` — never the raw provider response body. `authentication`, `rate_limit`,
+  `connection` and `status` come from `isinstance` against the installed SDKs' own
+  status and connection hierarchies; `stream` is every exception neither claims. A
+  request is built before the `try` that classifies, so a defect translating the
+  history reaches the loop's internal-error path. The operator log carries the error
+  through `redact_sensitive_text` with the API key as a known secret.
 - **`GraphEditOp`** (discriminated union, `_ops.py`), addressing nodes by id (the function
   name shown by `get_pipeline`) or — within one batch — by `$<ref>`, the batch-local handle
   a preceding `add_node` declared. Refs are resolved server-side to the real sanitised node

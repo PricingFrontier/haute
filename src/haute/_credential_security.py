@@ -46,6 +46,8 @@ _CREDENTIAL_MARKERS = (
 _URI_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 _ASSIGNMENT_RE = re.compile(
     r"(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)"
+    # A key quoted as in JSON or a Python dict, which an HTTP error body embeds.
+    r"(?P<quote>[\"']?)"
     r"(?P<separator>\s*[=:]\s*)"
     r'(?P<value>"[^"]*"|\'[^\']*\'|[^\s,;]+)'
 )
@@ -97,6 +99,29 @@ def _redact_uri(uri: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path, query, parsed.fragment))
 
 
+def _redact_assignments(text: str) -> str:
+    """Replace the value of every credential-named assignment in *text*.
+
+    A value that opens an object or a quoted string is scanned in turn, because
+    it can hold the credential: ``Error: {"token": "abc"}``. That includes a
+    credential key opening an object, whose first token is the next key and not
+    a value. A bare scalar, such as a URL, is passed whole.
+    """
+    pieces: list[str] = []
+    position = 0
+    while (match := _ASSIGNMENT_RE.search(text, position)) is not None:
+        value = match.group("value")
+        if is_credential_name(match.group("key")) and value[:2] not in ('{"', "{'"):
+            pieces += [text[position : match.start("value")], _REDACTED]
+            position = match.end()
+            continue
+        end = match.end("separator") if value[0] in "{[\"'" else match.end()
+        pieces.append(text[position:end])
+        position = end
+    pieces.append(text[position:])
+    return "".join(pieces)
+
+
 def redact_sensitive_text(text: str, *, known_secrets: Iterable[str] = ()) -> str:
     """Scrub credential-bearing URI/query/assignment values from diagnostic text."""
     redacted = text
@@ -115,9 +140,4 @@ def redact_sensitive_text(text: str, *, known_secrets: Iterable[str] = ()) -> st
 
     redacted = _QUERY_PARAMETER_RE.sub(redact_query_parameter, redacted)
 
-    def redact_assignment(match: re.Match[str]) -> str:
-        if not is_credential_name(match.group("key")):
-            return match.group(0)
-        return f"{match.group('key')}{match.group('separator')}{_REDACTED}"
-
-    return _ASSIGNMENT_RE.sub(redact_assignment, redacted)
+    return _redact_assignments(redacted)
