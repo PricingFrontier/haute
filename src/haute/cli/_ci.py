@@ -143,9 +143,10 @@ def handle_ci_update() -> None:
     staging steps on its
     ``[ci.staging] endpoint_suffix`` and the production job under its ``[ci.production]
     environment``; every other generated file (another provider's, or the other kind of
-    project's) is removed, and every other file is left alone. Reports each file as updated
-    or unchanged, and records those Git does not track yet in version history
-    (:func:`capture_new_files`): Commit would never take them.
+    project's) is removed, and every other file is left alone, but for the
+    ``.python-version`` a GitHub project without one gains, since its jobs run the Python uv
+    reads there. Reports each file as updated or unchanged, and records those Git does not
+    track yet in version history (:func:`capture_new_files`): Commit would never take them.
     """
     from haute._connections import ConnectionsError
     from haute._project_python import ProjectPythonError, project_python_version
@@ -216,6 +217,8 @@ def handle_ci_update() -> None:
         else env_example(credentials, variables)
     )
     files = {**generated, ".env.example": env_text}
+    if provider == "github" and not (project_dir / ".python-version").exists():
+        files[".python-version"] = f"{python_version}\n"
     _prune_stale_ci_files(project_dir, keep=generated.keys())
     changed = write_generated_files(project_dir, files)
     for rel in files:

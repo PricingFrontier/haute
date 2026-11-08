@@ -278,7 +278,8 @@ sign-in (`connection_sign_in`, each environment's variables `HAUTE_<ENVIRONMENT>
 `connection_variables`, the variables a project's `connections.toml` names, which
 `app_env_example` adds to `.env.example` beside the host's credentials, the workbench's
 workflows, `workbench_ci_files` (`.github/workflows/ci.yml` and `release.yml`, or
-`.gitlab-ci.yml`, or `azure-pipelines.yml`: the validate job ending in `haute app build`, its
+`.gitlab-ci.yml`, or `azure-pipelines.yml`: the validate job ending in `haute app build`, on
+GitHub the jobs of `ci.yml`, which `release.yml` calls ([pipeline-config](../pipeline-config/low-level.md)), its
 `test_quotes_report.md` kept as the job's artifact whether it passes or fails (GitHub's
 `actions/upload-artifact` under `if: always()`, GitLab's `artifacts` with `when: always`,
 Azure DevOps' `publish` under `condition: succeededOrFailed()`), and

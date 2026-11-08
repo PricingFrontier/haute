@@ -83,6 +83,9 @@ my-project/
   .githooks/
   .githooks/pre-commit
   .github/
+  .github/actions/
+  .github/actions/setup/
+  .github/actions/setup/action.yml
   .github/workflows/
   .github/workflows/ci.yml
   .github/workflows/deploy-production.yml

@@ -221,9 +221,9 @@ DEFAULT_CI_PYTHON = DEFAULT_PYTHON
 # one on the project's Python.
 _TEMPLATE_BASE_IMAGE = 'base_image = "python:3.11.9-slim"'
 
-# Every form a template pins the job's Python in: setup-uv, Azure's UsePythonVersion and
-# GitLab's job image.
-_CI_PYTHON_PINS = ('python-version: "{}"', 'versionSpec: "{}"', "image: python:{}\n")
+# Every form a template pins the job's Python in: Azure's UsePythonVersion and GitLab's job
+# image. GitHub's jobs name none: uv reads the project's .python-version.
+_CI_PYTHON_PINS = ('versionSpec: "{}"', "image: python:{}\n")
 
 
 def _pin_ci_python(text: str, python_version: str) -> str:
@@ -746,12 +746,13 @@ def _format_secrets(target: str, indent: str, fmt: str) -> str:
 
 
 def _github_secrets_env(target: str) -> str:
-    """Return the env: block for GitHub Actions secrets, indented for YAML."""
-    return _format_secrets(
+    """The ``env:`` of a GitHub job that reads *target*'s secrets, which all its steps have."""
+    secrets = _format_secrets(
         target,
-        indent="          ",
+        indent="      ",
         fmt="{key}: ${{{{ secrets.{key} }}}}",
     )
+    return f"    env:\n{secrets}"
 
 
 def _gitlab_secrets_env(target: str) -> str:
@@ -780,7 +781,7 @@ def _azure_devops_secrets_env(target: str, indent: str = "              ") -> st
     )
 
 
-def _github_login_step(target: str, secrets_env: str) -> str:
+def _github_login_step(target: str) -> str:
     """A container-based target's registry login step, before its deploy step.
 
     Empty for Databricks, which pushes no image.
@@ -789,8 +790,6 @@ def _github_login_step(target: str, secrets_env: str) -> str:
         return ""
     return f"""\
       - name: Log in to the registry
-        env:
-{secrets_env}
         run: |
 {_registry_login_script(target, " " * 10)}
 """
@@ -808,6 +807,15 @@ def _github_login_step(target: str, secrets_env: str) -> str:
 _CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
 _SETUP_UV = "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2"
 _UPLOAD_ARTIFACT = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2"
+#: The folder of the composite action every job but the production rollout sets up with.
+_GITHUB_SETUP_ACTION_DIR = ".github/actions/setup"
+#: What a job opens with: the project checked out, then that action.
+_GITHUB_SETUP_STEPS = f"      - uses: {_CHECKOUT}\n      - uses: ./{_GITHUB_SETUP_ACTION_DIR}"
+#: The job of a merge-to-main workflow that runs ci.yml's checks. It passes no secrets.
+_GITHUB_VALIDATE_JOB = """\
+  validate:
+    name: Validate
+    uses: ./.github/workflows/ci.yml"""
 _DRY_RUN_CHECK = ("Dry-run deploy (score test quotes)", "uv run haute deploy --dry-run")
 _APP_BUILD_CHECK = ("Build the app's release (score test quotes)", "uv run haute app build")
 #: The report a workbench project's ``haute app build`` writes of its test quotes
@@ -840,20 +848,38 @@ _STAGING_GROUP = "haute-app-staging"
 _PRODUCTION_GROUP = "haute-app-prod"
 
 
-def github_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
-    """:func:`_github_ci_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_github_ci_yml(_DRY_RUN_CHECK), python_version)
+def github_setup_action_yml() -> str:
+    """The composite action that sets a project up on GitHub: uv with its cache, on the Python
+    ``.python-version`` names, then the locked environment."""
+    return f"""\
+name: Set up the project
+description: Install uv and the locked dependencies, on the Python .python-version names.
+runs:
+  using: composite
+  steps:
+    - uses: {_SETUP_UV}
+      with:
+        enable-cache: true
+    - run: uv sync --frozen
+      shell: bash
+"""
 
 
-def github_app_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
-    """A workbench project's PR checks: :func:`_github_ci_yml` ending in the app's release
-    build, every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_github_ci_yml(_APP_BUILD_CHECK, report=True), python_version)
+def github_ci_yml() -> str:
+    """An automated project's checks: :func:`_github_ci_yml` ending in the dry-run deploy."""
+    return _github_ci_yml(_DRY_RUN_CHECK)
+
+
+def github_app_ci_yml() -> str:
+    """A workbench project's checks: :func:`_github_ci_yml` ending in the app's release build."""
+    return _github_ci_yml(_APP_BUILD_CHECK, report=True)
 
 
 def _github_ci_yml(check: tuple[str, str], *, report: bool = False) -> str:
-    """PR checks workflow for GitHub Actions, its pipeline validation ending in *check*, and
-    with *report* keeping the test quotes' report whether it passes or fails."""
+    """The checks for GitHub Actions, run on a pull request and called by the merge-to-main
+    workflow, the pipeline validation ending in *check*, and with *report* keeping the test
+    quotes' report whether it passes or fails. A called workflow holds no more than its caller
+    gives it, so this asks for read access alone."""
     check_name, check_run = check
     upload = _GITHUB_TEST_QUOTES_UPLOAD if report else ""
     return f"""\
@@ -862,10 +888,10 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   lint:
@@ -873,12 +899,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
+{_GITHUB_SETUP_STEPS}
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
@@ -887,12 +908,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
+{_GITHUB_SETUP_STEPS}
       - run: uv run mypy .
 
   test:
@@ -900,12 +916,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
+{_GITHUB_SETUP_STEPS}
       - run: uv run pytest -v
 
   pipeline-validate:
@@ -913,12 +924,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
+{_GITHUB_SETUP_STEPS}
       - name: Lint pipeline
         run: uv run haute lint
       - name: {check_name}
@@ -929,19 +935,17 @@ jobs:
 def github_deploy_yml(
     target: str,
     *,
-    python_version: str = DEFAULT_CI_PYTHON,
     staging_suffix: str = DEFAULT_STAGING_ENDPOINT_SUFFIX,
 ) -> str:
-    """:func:`_github_deploy_yml` on *python_version*, its staging steps on *staging_suffix*."""
-    text = _pin_ci_python(_github_deploy_yml(target), python_version)
-    return _pin_staging_suffix(text, staging_suffix)
+    """:func:`_github_deploy_yml` with its staging steps on *staging_suffix*."""
+    return _pin_staging_suffix(_github_deploy_yml(target), staging_suffix)
 
 
 def _github_deploy_yml(target: str) -> str:
     """Merge-to-main deploy workflow for GitHub Actions.
 
-    Runs automatically: validate → staging → smoke test → impact analysis.
-    Production is a separate manual workflow (``deploy-production.yml``)
+    Runs automatically: validate (``ci.yml``'s checks) → staging → smoke test → impact
+    analysis. Production is a separate manual workflow (``deploy-production.yml``)
     so it works on GitHub Free without environment protection rules.
 
     The impact-analysis job outputs the deployed git SHA so the
@@ -949,7 +953,7 @@ def _github_deploy_yml(target: str) -> str:
     A build-and-push-only target stops after staging's image push: there is
     no updated service to smoke-test or compare.
     """
-    secrets_env = _github_secrets_env(target)
+    job_env = _github_secrets_env(target)
     verify_suffix = _verification_suffix_option(target)
     verification_jobs = (
         ""
@@ -960,16 +964,10 @@ def _github_deploy_yml(target: str) -> str:
     needs: deploy-staging
     runs-on: ubuntu-latest
     timeout-minutes: 10
+{job_env}
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
+{_GITHUB_SETUP_STEPS}
       - name: Score test quotes against staging endpoint
-        env:
-{secrets_env}
         run: uv run haute smoke{verify_suffix}
 
   impact-analysis:
@@ -977,16 +975,10 @@ def _github_deploy_yml(target: str) -> str:
     needs: smoke-test
     runs-on: ubuntu-latest
     timeout-minutes: 10
+{job_env}
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
+{_GITHUB_SETUP_STEPS}
       - name: Compare staging vs production predictions
-        env:
-{secrets_env}
         run: uv run haute impact{verify_suffix}
       - name: Upload impact report
         if: always()
@@ -1017,43 +1009,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - name: Lint
-        run: uv run ruff check .
-      - name: Type check
-        run: uv run mypy .
-      - name: Test
-        run: uv run pytest -v
-      - name: Pipeline lint
-        run: uv run haute lint
-      - name: Dry-run deploy
-        run: uv run haute deploy --dry-run
+{_GITHUB_VALIDATE_JOB}
 
   deploy-staging:
     name: Deploy → Staging
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: {_deploy_timeout_minutes(target)}
+{job_env}
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-{_github_login_step(target, secrets_env)}      - name: Deploy to staging
-        env:
-{secrets_env}
+{_GITHUB_SETUP_STEPS}
+{_github_login_step(target)}      - name: Deploy to staging
         run: uv run haute deploy --endpoint-suffix "-staging"
 """
         + verification_jobs
@@ -1063,12 +1029,10 @@ jobs:
 def github_deploy_prod_yml(
     target: str,
     *,
-    python_version: str = DEFAULT_CI_PYTHON,
     production_environment: str = "",
 ) -> str:
-    """:func:`_github_deploy_prod_yml` on *python_version*, under *production_environment*."""
-    text = _github_deploy_prod_yml(target, _production_environment(production_environment))
-    return _pin_ci_python(text, python_version)
+    """:func:`_github_deploy_prod_yml` under *production_environment*."""
+    return _github_deploy_prod_yml(target, _production_environment(production_environment))
 
 
 def _github_deploy_prod_yml(target: str, environment: str) -> str:
@@ -1085,10 +1049,8 @@ def _github_deploy_prod_yml(target: str, environment: str) -> str:
     checked-out HEAD matches, preventing accidental deployment of
     untested code.
     """
-    secrets_env = _github_secrets_env(target)
+    job_env = _github_secrets_env(target)
     release_tag = _release_tag_script(target, " " * 10)
-    # A Databricks release tag reads the registered version from MLflow.
-    tag_env = "" if target in _CONTAINER_BASED_TARGETS else f"        env:\n{secrets_env}\n"
     environment_line = f'    environment: "{environment}"\n' if environment else ""
 
     return (
@@ -1118,6 +1080,7 @@ jobs:
     name: Deploy → Production
     runs-on: ubuntu-latest
 {environment_line}    timeout-minutes: {_deploy_timeout_minutes(target)}
+{job_env}
     steps:
       - uses: {_CHECKOUT}
       - name: Verify commit matches staged SHA
@@ -1128,17 +1091,11 @@ jobs:
               "staged SHA (${{{{ inputs.sha }}}}). Merge may have occurred since staging."
             exit 1
           fi
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-{_github_login_step(target, secrets_env)}      - name: Deploy to production
-        env:
-{secrets_env}
+      - uses: ./{_GITHUB_SETUP_ACTION_DIR}
+{_github_login_step(target)}      - name: Deploy to production
         run: uv run haute deploy
       - name: Tag release
-{tag_env}        run: |
+        run: |
           set -euo pipefail
 {release_tag}
 """
@@ -1653,24 +1610,24 @@ def ci_files(
     """The CI files ``haute init`` and ``haute ci update`` write for *ci*: path -> content.
 
     Paths are relative to the project root, in the order they are reported; ``"none"``
-    has no files. Every job runs *python_version*, the project's Python; the staging
-    deploy steps pass *staging_suffix*, its ``[ci.staging] endpoint_suffix``, as a
+    has no files. GitLab's and Azure DevOps' jobs run *python_version*, the project's
+    Python, and GitHub's the one its ``.python-version`` names; the staging deploy steps
+    pass *staging_suffix*, its ``[ci.staging] endpoint_suffix``, as a
     Databricks project's smoke and impact steps do; and the production job runs under
     *production_environment*, its ``[ci.production] environment``, when it names one.
     """
     if ci == "github":
         return {
-            ".github/workflows/ci.yml": github_ci_yml(python_version=python_version),
+            ".github/workflows/ci.yml": github_ci_yml(),
             ".github/workflows/deploy-staging.yml": github_deploy_yml(
                 target,
-                python_version=python_version,
                 staging_suffix=staging_suffix,
             ),
             ".github/workflows/deploy-production.yml": github_deploy_prod_yml(
                 target,
-                python_version=python_version,
                 production_environment=production_environment,
             ),
+            f"{_GITHUB_SETUP_ACTION_DIR}/action.yml": github_setup_action_yml(),
         }
     if ci == "gitlab":
         return {
@@ -1725,17 +1682,11 @@ def _publish_and_stage_script(indent: str) -> str:
     return "\n".join(indent + line for line in lines)
 
 
-def github_release_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
-    """:func:`_github_release_yml` on *python_version*."""
-    return _pin_ci_python(_github_release_yml(host), python_version)
-
-
-def _github_release_yml(host: str) -> str:
-    """A workbench project's merge-to-main workflow for GitHub Actions: validate, then publish
-    the underwriter app's image once and roll staging out to it, logged in with *host*'s
-    credentials, one staging rollout at a time."""
-    secrets_env = _github_secrets_env(host)
-    check_name, check_run = _APP_BUILD_CHECK
+def github_release_yml(host: str) -> str:
+    """A workbench project's merge-to-main workflow for GitHub Actions: ``ci.yml``'s checks,
+    then publish the underwriter app's image once and roll staging out to it, logged in with
+    *host*'s credentials, one staging rollout at a time."""
+    job_env = _github_secrets_env(host)
     return (
         _app_publish_notice(host)
         + f"""\
@@ -1753,28 +1704,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - name: Lint
-        run: uv run ruff check .
-      - name: Type check
-        run: uv run mypy .
-      - name: Test
-        run: uv run pytest -v
-      - name: Pipeline lint
-        run: uv run haute lint
-      - name: {check_name}
-        run: {check_run}
-{_GITHUB_TEST_QUOTES_UPLOAD}
+{_GITHUB_VALIDATE_JOB}
+
   publish:
     name: Publish → Staging
     needs: validate
@@ -1786,21 +1717,13 @@ jobs:
     concurrency:
       group: {_STAGING_GROUP}
       cancel-in-progress: false
+{job_env}
     steps:
-      - uses: {_CHECKOUT}
-      - uses: {_SETUP_UV}
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-{_github_login_step(host, secrets_env)}      - name: Publish the app's image and roll staging out
-        env:
-{secrets_env}
+{_GITHUB_SETUP_STEPS}
+{_github_login_step(host)}      - name: Publish the app's image and roll staging out
         run: |
 {_publish_and_stage_script(" " * 10)}
       - name: Compare staging with production on saved quotes
-        env:
-{secrets_env}
         run: {_APP_IMPACT}
       - name: Upload impact report
         if: always()
@@ -1812,16 +1735,12 @@ jobs:
     )
 
 
-def github_release_production_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
-    """:func:`_github_release_production_yml` on *python_version*."""
-    return _pin_ci_python(_github_release_production_yml(host), python_version)
-
-
-def _github_release_production_yml(host: str) -> str:
+def github_release_production_yml(host: str) -> str:
     """A workbench project's production rollout for GitHub Actions, run by hand from the
     Actions tab: production rolled out to the release staging runs for the commit chosen,
-    main's head unless another is given, one production rollout at a time."""
-    secrets_env = _github_secrets_env(host)
+    main's head unless another is given, one production rollout at a time. Its job sets the
+    project up itself, since that commit may predate the shared setup action."""
+    job_env = _github_secrets_env(host)
     return f"""\
 # Run by hand from the Actions tab: rolls production out to the release staging runs,
 # refusing when staging runs another commit than the one given (main's head when blank).
@@ -1847,18 +1766,17 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: {_PRODUCTION_TIMEOUT_MINUTES}
+{job_env}
     steps:
       - uses: {_CHECKOUT}
         with:
           ref: ${{{{ inputs.commit || github.sha }}}}
+      # Set up here, not through the shared action: this commit may predate it.
       - uses: {_SETUP_UV}
         with:
           enable-cache: true
-          python-version: "3.11"
       - run: uv sync --frozen
       - name: Roll production out to the release staging runs
-        env:
-{secrets_env}
         run: {_APP_PROMOTE}
 """
 
@@ -2018,21 +1936,18 @@ def workbench_ci_files(
     the app's release on every change; on the default branch they publish the underwriter
     app's image, roll staging out to it and compare it with production on saved quotes, and
     roll production out by hand, logged in with *host*'s credentials; none deploys an
-    endpoint. Every job runs *python_version*, the
-    project's Python."""
+    endpoint. GitLab's and Azure DevOps' jobs run *python_version*, the project's Python, and
+    GitHub's the one its ``.python-version`` names."""
     from haute._workbench_config import APP_HOSTS
 
     if host not in APP_HOSTS:
         raise ValueError(f"Unknown app host: {host}")
     if ci == "github":
         return {
-            ".github/workflows/ci.yml": github_app_ci_yml(python_version=python_version),
-            ".github/workflows/release.yml": github_release_yml(
-                host, python_version=python_version
-            ),
-            ".github/workflows/release-production.yml": github_release_production_yml(
-                host, python_version=python_version
-            ),
+            ".github/workflows/ci.yml": github_app_ci_yml(),
+            ".github/workflows/release.yml": github_release_yml(host),
+            ".github/workflows/release-production.yml": github_release_production_yml(host),
+            f"{_GITHUB_SETUP_ACTION_DIR}/action.yml": github_setup_action_yml(),
         }
     if ci == "gitlab":
         return {".gitlab-ci.yml": gitlab_app_ci_yml(host, python_version=python_version)}

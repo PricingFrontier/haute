@@ -1,0 +1,69 @@
+# On a push to main this builds the underwriter app's image once, pushes it to the
+# registry [deploy.container] names and rolls the staging app on
+# Azure Container Apps out to it (haute app rollout), then prices a sample
+# of production's saved quotes on both apps (haute app impact, its report kept as
+# impact_report.md). Production is rolled out by hand to the release staging runs.
+# [workbench.app.staging] and [workbench.app.prod] in haute.toml name the Container
+# Apps.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rating/**"
+      - "tests/quotes/**"
+      - "haute.toml"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish → Staging
+    needs: validate
+    # A manual run may pick any branch: only main's commits are published.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # One staging rollout at a time.
+    concurrency:
+      group: haute-app-staging
+      cancel-in-progress: false
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - name: Log in to the registry
+        run: |
+          set -eo pipefail
+          registry="$(uv run haute ci registry-host | tail -n 1)"
+          if [ -n "$registry" ]; then
+            printf '%s' "$AZURE_CLIENT_SECRET" | docker login "$registry" --username "$AZURE_CLIENT_ID" --password-stdin
+          fi
+      - name: Publish the app's image and roll staging out
+        run: |
+          set -eo pipefail
+          uv run haute app build --push | tee publish.log
+          image="$(tail -n 1 publish.log)"
+          uv run haute app rollout staging --image "$image"
+      - name: Compare staging with production on saved quotes
+        run: uv run haute app impact
+      - name: Upload impact report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: impact-report
+          path: impact_report.md

@@ -281,6 +281,37 @@ def test_update_names_the_sign_ins_connections_toml_reads_in_env_example(
     assert (project / ".env.example").read_text(encoding="utf-8") == written
 
 
+def test_update_gives_a_github_project_the_python_its_jobs_read(runner, project: Path) -> None:
+    (project / ".python-version").unlink()
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert (project / ".python-version").read_text(encoding="utf-8") == "3.11\n"
+    assert "updated   .python-version" in result.output
+
+
+def test_update_leaves_a_python_version_the_project_has(runner, project: Path) -> None:
+    (project / ".python-version").write_text("3.12.8\n", encoding="utf-8")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert (project / ".python-version").read_text(encoding="utf-8") == "3.12.8\n"
+    assert ".python-version" not in result.output
+
+
+def test_update_writes_no_python_version_for_another_provider(runner, project: Path) -> None:
+    # GitLab's and Azure DevOps' jobs name their Python in the file generated.
+    (project / ".python-version").unlink()
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert not (project / ".python-version").exists()
+
+
 def test_update_follows_a_change_of_provider(runner, project: Path) -> None:
     toml = project / "haute.toml"
     toml.write_text(
