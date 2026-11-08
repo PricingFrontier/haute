@@ -1882,7 +1882,9 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   gapped categorical cells dropped), equal that row's contribution for every table; `support`
   sums to the training rows' weight times exposure for an unweighted, a weighted, an
   exposure-only and a weighted-with-exposure Poisson fit, and to the weights alone for an
-  `RMSE` fit with an offset; every bag's every round reaches the progress callback (so a
+  `RMSE` fit with an offset; a table whose log-link score overflows a float records one
+  `tboost_tables` diagnostic error naming that table, leaves the report null, and the job
+  completes with a loadable model and a response the finite guard accepts; every bag's every round reaches the progress callback (so a
   cancellation during a later bag stops the fit), and through `_FitRounds` with a still clock
   four bags boosted to the ceiling send only the first and the final round; `save`/`load` round-trips predictions exactly through plain
   t-boost as well; and `load`, through a project file and through an MLflow run, refuses
@@ -2518,7 +2520,12 @@ used for staged input.
   distribution only (no pandas). `explain_native_prediction` marks each contribution of an
   additive-term family (EBM and t-boost) with its term, term type and term features.
   `TrainResult.tboost_tables` carries the table report into the training response (a nullable
-  field the response always carries) and the MLflow diagnostic artifact `tboost_tables`.
+  field the response always carries) and the MLflow diagnostic artifact `tboost_tables`. The
+  report is built inside the fit, where a failure would cost the fitted model, so a log-link
+  score whose exponent overflows a float stays `inf` there and `TBoostAlgorithm.tboost_tables`
+  refuses a report holding a non-finite relativity with a `ValueError` naming the tables:
+  `_compute_metrics` records it as the `tboost_tables` entry in `diagnostics_errors`, the
+  result's report is null, and the job completes with its model.
 - `AlgorithmDescriptor.monotone_unsupported_losses` (LightGBM: `MAE`, whose `regression_l1`
   objective refuses them) drives `monotone_constraint_issue`, raised by
   `build_training_job_kwargs` for the effective (non-excluded) constraints and by the adapter
