@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 import xgboost as xgb
 
+from haute._execution_context import ExecutionCancelledError
 from haute._mlflow_io import load_local_model
 from haute._model_explainability import explain_native_prediction
 from haute._model_scorer import score_frame
@@ -679,3 +680,173 @@ def test_early_stopping_selects_what_native_xgboost_selects() -> None:
     np.testing.assert_allclose(
         fitted.model.predict(data), selected.predict(native_matrix(data)), rtol=1e-6
     )
+
+
+# -- external memory (MOD-M02) -------------------------------------------------------
+
+EXTERNAL_MEMORY_JOBS: dict[str, dict[str, object]] = {
+    "poisson_weight_offset": {
+        "target": "claims",
+        "loss": "Poisson",
+        "weight": "weight",
+        "offset": "exposure",
+    },
+    "gamma_weight": {"target": "severity", "loss": "Gamma", "weight": "weight"},
+    "rmse": {"target": "severity", "loss": "RMSE"},
+    "classification": {
+        "target": "flag",
+        "loss": "Logloss",
+        "task": "classification",
+        "positive_class": "yes",
+        "metrics": ["auc"],
+    },
+    "early_stopping": {
+        "target": "severity",
+        "loss": "RMSE",
+        "params": {"num_boost_round": 300, "eta": 0.5, "max_depth": 4, "early_stopping_rounds": 3},
+    },
+    "subsampled_lossguide": {
+        "target": "severity",
+        "loss": "RMSE",
+        "params": {
+            "num_boost_round": 30,
+            "eta": 0.3,
+            "subsample": 0.7,
+            "colsample_bytree": 0.8,
+            "grow_policy": "lossguide",
+            "max_leaves": 12,
+            "max_bin": 64,
+        },
+    },
+}
+
+
+@pytest.fixture
+def small_external_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Several batches per partition, whatever the frame's size."""
+    monkeypatch.setattr("haute._chunked_writes.SINGLE_FILE_ROW_GROUP_SIZE", 400)
+
+
+@pytest.mark.usefixtures("small_external_batches")
+@pytest.mark.parametrize("name", sorted(EXTERNAL_MEMORY_JOBS))
+def test_an_external_memory_fit_is_the_in_memory_fit(tmp_path: Path, name: str) -> None:
+    data = frame(n=3_000)
+    scratch = tmp_path / "scratch"
+    memory, external = (
+        train(
+            tmp_path / mode,
+            data=data,
+            fit_mode=mode,
+            scratch_dir=str(scratch),
+            **EXTERNAL_MEMORY_JOBS[name],
+        )[1]
+        for mode in ("in_memory", "out_of_core")
+    )
+
+    for field in ("metrics", "holdout_metrics", "loss_history", "final_tree_count", "train_rows"):
+        assert getattr(external, field) == getattr(memory, field), field
+    external_model, memory_model = (
+        XGBoostModel.load(result.model_path) for result in (external, memory)
+    )
+    assert external_model.booster.get_dump() == memory_model.booster.get_dump()
+    np.testing.assert_array_equal(
+        external_model.predict_response(data), memory_model.predict_response(data)
+    )
+    assert external.fit_evidence == {**memory.fit_evidence, "mode": "out_of_core"}
+    assert "mode" not in memory.fit_evidence
+    assert not list(scratch.iterdir())
+
+
+def _external_job(tmp_path: Path) -> TrainingJob:
+    return TrainingJob(
+        name="xgb",
+        data=frame(n=3_000),
+        target="severity",
+        algorithm="xgboost",
+        loss_function="RMSE",
+        params={"num_boost_round": 5, "eta": 0.3, "max_depth": 3},
+        metrics=["rmse"],
+        output_dir=str(tmp_path / "output"),
+        evaluation=EVALUATION,
+        feature_columns=["region", "age"],
+        fit_mode="out_of_core",
+        scratch_dir=str(tmp_path / "scratch"),
+    )
+
+
+def _served_batches(monkeypatch: pytest.MonkeyPatch, *, fail_at: int | None = None) -> list[int]:
+    """Record the fit's batches as they are read; raise while reading batch *fail_at*."""
+    import haute._polars_utils as polars_utils
+
+    served: list[int] = []
+    read = polars_utils.bounded_collect_batches
+
+    def counting(*args: object, **kwargs: object):
+        for batch in read(*args, **kwargs):
+            if kwargs.get("stage_name") == "training_xgboost_batch":
+                if len(served) == fail_at:
+                    raise RuntimeError("the batch could not be read")
+                served.append(batch.height)
+            yield batch
+
+    monkeypatch.setattr(polars_utils, "bounded_collect_batches", counting)
+    return served
+
+
+@pytest.mark.usefixtures("small_external_batches")
+def test_cancelling_stops_at_the_next_batch_and_removes_the_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    served = _served_batches(monkeypatch)
+
+    def check_cancelled() -> None:
+        if len(served) >= 3:
+            raise ExecutionCancelledError("training_job")
+
+    with pytest.raises(ExecutionCancelledError):
+        _external_job(tmp_path).run(check_cancelled=check_cancelled)
+
+    # A pass holds eight batches: a check made only per pass would have read them all.
+    assert len(served) == 3
+    assert not list((tmp_path / "scratch").iterdir())
+
+
+@pytest.mark.usefixtures("small_external_batches")
+def test_a_failed_batch_reaches_the_caller_and_removes_the_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _served_batches(monkeypatch, fail_at=2)
+
+    with pytest.raises(RuntimeError, match="the batch could not be read"):
+        _external_job(tmp_path).run()
+
+    assert not list((tmp_path / "scratch").iterdir())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"algorithm": "xgboost", "device": "gpu"}, "trains on the CPU"),
+        ({"algorithm": "catboost"}, "trains in memory only"),
+        ({"algorithm": "lightgbm"}, "trains in memory only"),
+    ],
+)
+def test_only_a_cpu_xgboost_or_a_glm_fits_out_of_core(
+    kwargs: dict[str, object], message: str
+) -> None:
+    with pytest.raises(HauteValidationError, match=message):
+        TrainingJob(name="x", data="d.parquet", target="y", fit_mode="out_of_core", **kwargs)
+
+
+def test_an_external_memory_fit_states_its_mode_alone() -> None:
+    from pydantic import ValidationError
+
+    from haute.schemas import FitEvidencePayload
+
+    assert FitEvidencePayload(threads=2, mode="out_of_core").mode == "out_of_core"
+    with pytest.raises(ValidationError, match="external-memory"):
+        FitEvidencePayload(threads=2, mode="in_memory")
+    with pytest.raises(ValidationError, match="external-memory"):
+        FitEvidencePayload(threads=2, mode="out_of_core", max_bytes=1_024)
+    with pytest.raises(ValidationError, match="solver caps"):
+        FitEvidencePayload(threads=2, mode="out_of_core", max_iter=25)

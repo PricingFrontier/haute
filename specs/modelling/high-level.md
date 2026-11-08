@@ -203,7 +203,8 @@ compatibility facade and route own no duplicate state or worker implementation.
   A GLM is never downsampled by the RAM row limit: where the estimate would downsample,
   the GLM trains on every row in chunks read from disk (`fit_mode="out_of_core"`), giving
   the model the in-memory fit would have produced bit for bit; the estimate reports the
-  planned `fit_mode`, and the result, model card and candidate run record it. An exception
+  planned `fit_mode`, and the result, model card and candidate run record it. XGBoost on
+  the CPU does the same through its external memory. An exception
   raised while estimating is not an unavailable estimate. It propagates as an error
   response and is logged as a failure, never answered with an empty estimate.
   Once the relevant modelling and evaluation fields

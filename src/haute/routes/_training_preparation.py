@@ -64,6 +64,7 @@ from haute.modelling._glm_terms import (
 from haute.modelling._train_config import (
     NO_FEATURES_MESSAGE,
     build_train_params,
+    fits_out_of_core,
     is_glm_config,
     role_column_reasons,
     selected_feature_columns,
@@ -194,8 +195,8 @@ class TrainingRowPlan:
     """How a training run treats its rows, decided once from the memory estimate.
 
     ``ram_limit_binds`` is true when the estimate's RAM row limit, not the user's
-    own ``row_limit``, decides the rows. A GLM then fits out of core on every row
-    instead of being sampled, so ``row_limit`` is only the user's.
+    own ``row_limit``, decides the rows. A family that can fit out of core then
+    trains on every row instead of being sampled, so ``row_limit`` is only the user's.
     """
 
     fit_mode: FitMode
@@ -223,7 +224,7 @@ def training_row_plan(config: Mapping[str, Any], estimate: RamEstimate) -> Train
         and int(user_limit) > 0
         and row_limit == int(user_limit)
     )
-    if ram_limit_binds and is_glm_config(config):
+    if ram_limit_binds and fits_out_of_core(config):
         return TrainingRowPlan(
             fit_mode="out_of_core",
             row_limit=_clamp_row_limit(None, user_limit),

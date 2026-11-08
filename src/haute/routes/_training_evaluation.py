@@ -48,8 +48,8 @@ def _evaluation_preview_payload(
         "schema_version": 1,
         "strategy": plan.config.strategy,
         "validation_method": plan.config.validation["method"],
-        "development_rows": len(plan.development_positions),
-        "final_test_rows": len(plan.test_positions),
+        "development_rows": plan.development_rows,
+        "final_test_rows": plan.test_rows,
         "validation_fit_count": len(plan.validation_fits),
     }
     if plan.validation_fits:

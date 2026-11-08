@@ -3799,7 +3799,7 @@ class FitEvidencePayload(BaseModel):
     term_update_steps: list[Annotated[int, Field(ge=0)]] | None = None
     #: The device a GPU fit actually trained on (``cuda:0``).
     device: str | None = Field(default=None, min_length=1)
-    #: A GLM's fit mode: in memory, or out of core in passes over its rows on disk.
+    #: A GLM's fit mode, or XGBoost's when it trains through external memory.
     mode: Literal["in_memory", "out_of_core"] | None = None
     #: The GLM solver's caps: its iteration budget, convergence tolerance and
     #: step-halving candidates per iteration.
@@ -3820,9 +3820,15 @@ class FitEvidencePayload(BaseModel):
             if any(value is not None for value in (*caps, *passes)):
                 raise ValueError("solver caps and passes belong to a fit that states its mode")
             return self
+        out_of_core = self.mode == "out_of_core"
+        if all(value is None for value in caps):
+            # XGBoost's external memory states its mode alone: it has no solver caps,
+            # passes over the rows or memory plan.
+            if not out_of_core or any(value is not None for value in passes):
+                raise ValueError("a fit that states only its mode is an external-memory fit")
+            return self
         if any(value is None for value in caps):
             raise ValueError("a fit that states its mode states its solver caps")
-        out_of_core = self.mode == "out_of_core"
         if any(out_of_core != (value is not None) for value in (self.passes, self.encode_rows)):
             raise ValueError("an out-of-core fit, and only one, states its passes and encode rows")
         if self.max_bytes is not None and not out_of_core:

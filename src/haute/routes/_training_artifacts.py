@@ -138,8 +138,8 @@ def _validate_evaluation_artifact_contents(
             "validation_fit_count": len(plan.validation_fits),
             "fit_count": response_fit_count,
             "refit_on_development": response_refit_on_development,
-            "development_rows": len(plan.development_positions),
-            "final_test_rows": len(plan.test_positions),
+            "development_rows": plan.development_rows,
+            "final_test_rows": plan.test_rows,
             "selection_fits": [fit.to_plain_data() for fit in results.fits],
             "selection_metrics": {
                 metric: dict(values) for metric, values in report.metrics.items()

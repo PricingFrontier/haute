@@ -28,6 +28,7 @@ _EVALUATION = {
 }
 _GLM = {"algorithm": "glm", "target": "y", "terms": {"x1": {"type": "linear"}}}
 _CATBOOST = {"algorithm": "catboost", "target": "y"}
+_XGBOOST = {"algorithm": "xgboost", "target": "y"}
 
 
 def _estimate(
@@ -51,6 +52,26 @@ def _estimate(
 
 
 class TestTrainingRowPlan:
+    def test_xgboost_on_the_cpu_the_ram_limit_binds_on_trains_every_row_out_of_core(self) -> None:
+        plan = training_row_plan(_XGBOOST, _estimate(2_000))
+
+        assert plan.fit_mode == "out_of_core"
+        assert plan.row_limit is None
+        assert not plan.ram_downsamples
+
+    def test_xgboost_on_a_gpu_the_ram_limit_binds_on_downsamples(self) -> None:
+        plan = training_row_plan({**_XGBOOST, "device": "gpu"}, _estimate(2_000))
+
+        assert plan.fit_mode == "in_memory"
+        assert plan.row_limit == 2_000
+        assert plan.ram_downsamples
+
+    def test_xgboost_that_fits_trains_in_memory(self) -> None:
+        plan = training_row_plan(_XGBOOST, _estimate(None))
+
+        assert plan.fit_mode == "in_memory"
+        assert plan.row_limit is None
+
     def test_a_glm_the_ram_limit_binds_on_fits_out_of_core_on_every_row(self) -> None:
         plan = training_row_plan(_GLM, _estimate(2_000))
 

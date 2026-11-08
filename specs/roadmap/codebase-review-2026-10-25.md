@@ -209,9 +209,7 @@ three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's frontier points without convergence traces
 (`OPT-PC04`); the test-only
-`_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
-their budget
-(`MOD-M02`); the assistant
+`_compute_schema_hash` and the training facade (`ENGQ-R01`); the assistant
 catalog's whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`

@@ -519,12 +519,12 @@ while it counts):
 - **Will downsample** means the data would not fit: training uses a seeded random sample of
   rows capped at a limit that fits, shown as **Training rows**, and the result records the
   downsampling. A **Row limit** you set in the **SPLIT** pane still applies when it is lower.
-- **Will train in chunks** replaces **Will downsample** for a GLM. The GLM trains on every
-  row, reading them from disk in passes instead of holding them in memory, and gives the
-  same model, to the last digit, as fitting them in memory. It takes longer, because every
-  pass reads the rows again. **Est. in-memory RAM** is what fitting in memory would have
-  needed. The result, the model card and the MLflow run record the fit mode and the number
-  of passes.
+- **Will train in chunks** replaces **Will downsample** for a GLM, and for XGBoost on the
+  CPU. The model trains on every row, reading them from disk instead of holding them in
+  memory, and gives the same model, to the last digit, as fitting them in memory. It takes
+  longer, because the rows are read again from disk. **Est. in-memory RAM** is what fitting in memory would have
+  needed. The result, the model card and the MLflow run record the fit mode and, for a GLM,
+  the number of passes.
 - **Row count not proven** appears when the data passes through a join that has no key
   contract: the pane shows the upper bound instead of a verdict, and an **Open "…"** button
   for each such join. Declaring the join many-to-one bounds the rows by its base input.

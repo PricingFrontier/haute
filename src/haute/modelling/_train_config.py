@@ -95,6 +95,15 @@ def is_glm_config(config: Mapping[str, Any]) -> bool:
     return str(config.get("algorithm", "catboost")).lower() == "glm"
 
 
+def fits_out_of_core(config: Mapping[str, Any]) -> bool:
+    """Whether a node can train on every row out of core when the RAM limit binds."""
+    if is_glm_config(config):
+        return True
+    return str(config.get("algorithm", "catboost")).lower() == "xgboost" and (
+        config.get("device") != "gpu"
+    )
+
+
 def glm_effective_link(params: Mapping[str, Any]) -> str:
     """The link a GLM fits: the explicit link, else the family's canonical link."""
     link = params.get("link") or None

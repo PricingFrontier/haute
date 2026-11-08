@@ -8,7 +8,7 @@ import math
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
@@ -298,41 +298,12 @@ _LABEL_CODES = np.frombuffer(_GROUP_LABELS.encode("ascii"), dtype=np.uint8)
 _GROUP_OF_CODE = np.full(256, -2, dtype=np.int16)
 _GROUP_OF_CODE[ord(_TEST_LABEL)] = _TEST_GROUP
 _GROUP_OF_CODE[_LABEL_CODES] = np.arange(len(_GROUP_LABELS), dtype=np.int16)
-
-
-def _encode_memberships(plan: EvaluationPlan) -> tuple[str, list[dict[str, str]]]:
-    """A plan's memberships as one label per row, and each fit's groups by label.
-
-    Development rows that every validation fit treats alike (train, validation or
-    outside it) form one group; groups are labelled in the order of their roles, so
-    one plan has one encoding.
-    """
-    development = np.asarray(plan.development_positions, dtype=np.int64)
-    roles = np.zeros((len(plan.validation_fits), plan.row_count), dtype=np.int8)
-    for index, fit in enumerate(plan.validation_fits):
-        roles[index, np.asarray(fit.train_positions, dtype=np.int64)] = 1
-        roles[index, np.asarray(fit.validation_positions, dtype=np.int64)] = 2
-    if plan.validation_fits:
-        signatures, groups = np.unique(roles[:, development].T, axis=0, return_inverse=True)
-        groups = groups.reshape(-1)
-    else:
-        signatures, groups = np.zeros((1, 0), dtype=np.int8), np.zeros(len(development), int)
-    if len(signatures) > len(_GROUP_LABELS):
-        raise HauteValidationError("evaluation plan has more development groups than labels")
-    codes = np.full(plan.row_count, ord(_TEST_LABEL), dtype=np.uint8)
-    codes[development] = _LABEL_CODES[groups]
-    fits = [
-        {
-            role: "".join(
-                _GROUP_LABELS[group]
-                for group in range(len(signatures))
-                if signatures[group, index] == value
-            )
-            for role, value in (("train", 1), ("validation", 2))
-        }
-        for index in range(len(plan.validation_fits))
-    ]
-    return codes.tobytes().decode("ascii"), fits
+#: Each group's label code; the last entry, which group -1 indexes, is the final test's.
+_CODE_OF_GROUP = np.frombuffer((_GROUP_LABELS + _TEST_LABEL).encode("ascii"), dtype=np.uint8)
+#: A development row's role in one validation fit.
+_ROLE_OUTSIDE, _ROLE_TRAIN, _ROLE_VALIDATION = 0, 1, 2
+#: The codes of a partition mask.
+_MASK_TRAIN, _MASK_VALIDATION, _MASK_TEST, _MASK_UNUSED = 0, 1, 2, 3
 
 
 def _decode_memberships(value: object, row_count: int) -> np.ndarray:
@@ -342,7 +313,7 @@ def _decode_memberships(value: object, row_count: int) -> np.ndarray:
     groups = _GROUP_OF_CODE[np.frombuffer(value.encode("ascii"), dtype=np.uint8)]
     if (groups == -2).any():
         raise HauteValidationError("memberships hold an unknown label")
-    return groups
+    return groups.astype(np.int8)
 
 
 def _fit_groups(value: object, group_count: int, name: str) -> frozenset[int]:
@@ -356,64 +327,138 @@ def _fit_groups(value: object, group_count: int, name: str) -> frozenset[int]:
     return frozenset(groups)
 
 
-@dataclass(frozen=True)
+def _group_labels(groups: frozenset[int]) -> str:
+    return "".join(_GROUP_LABELS[group] for group in sorted(groups))
+
+
+def _row_positions(row_groups: np.ndarray, groups: frozenset[int]) -> tuple[int, ...]:
+    """The source positions of *groups*' rows, as Python integers."""
+    return tuple(np.flatnonzero(np.isin(row_groups, sorted(groups))).tolist())
+
+
+@dataclass(frozen=True, eq=False)
 class EvaluationValidationFit:
-    train_positions: tuple[int, ...]
-    validation_positions: tuple[int, ...]
+    """One validation fit's memberships: the development groups it trains and validates on.
+
+    ``row_groups`` is the plan's own array of labels, shared by every fit.
+    """
+
+    row_groups: np.ndarray = field(repr=False)
+    train_groups: frozenset[int]
+    validation_groups: frozenset[int]
+    train_rows: int
+    validation_rows: int
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EvaluationValidationFit):
+            return NotImplemented
+        return (
+            self.train_groups == other.train_groups
+            and self.validation_groups == other.validation_groups
+            and np.array_equal(self.row_groups, other.row_groups)
+        )
 
     @property
-    def train_rows(self) -> int:
-        return len(self.train_positions)
+    def train_positions(self) -> tuple[int, ...]:
+        return _row_positions(self.row_groups, self.train_groups)
 
     @property
-    def validation_rows(self) -> int:
-        return len(self.validation_positions)
+    def validation_positions(self) -> tuple[int, ...]:
+        return _row_positions(self.row_groups, self.validation_groups)
 
 
-@dataclass(frozen=True)
+def _validation_fit(
+    row_groups: np.ndarray,
+    group_rows: Sequence[int],
+    train: frozenset[int],
+    validation: frozenset[int],
+) -> EvaluationValidationFit:
+    return EvaluationValidationFit(
+        row_groups,
+        train,
+        validation,
+        sum(group_rows[group] for group in train),
+        sum(group_rows[group] for group in validation),
+    )
+
+
+@dataclass(frozen=True, eq=False)
 class EvaluationPlan:
+    """A source's memberships: one development group per row, ``-1`` for the final test.
+
+    The labels are the plan file's encoding. Development rows that every validation
+    fit treats alike form one group; groups are numbered in the order of their roles,
+    so one plan has one encoding.
+    """
+
     schema_version: int
     source_sha256: str
     row_count: int
     config: EvaluationConfig
-    development_positions: tuple[int, ...]
-    test_positions: tuple[int, ...]
+    row_groups: np.ndarray = field(repr=False)
     validation_fits: tuple[EvaluationValidationFit, ...]
     summary: Mapping[str, Any]
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EvaluationPlan):
+            return NotImplemented
+        return self.to_plain_data() == other.to_plain_data()
 
     @property
     def fit_count(self) -> int:
         return len(self.validation_fits) + 1
 
+    @property
+    def test_rows(self) -> int:
+        return int(np.count_nonzero(self.row_groups == _TEST_GROUP))
+
+    @property
+    def development_rows(self) -> int:
+        return self.row_count - self.test_rows
+
+    @property
+    def development_positions(self) -> tuple[int, ...]:
+        return tuple(np.flatnonzero(self.row_groups != _TEST_GROUP).tolist())
+
+    @property
+    def test_positions(self) -> tuple[int, ...]:
+        return tuple(np.flatnonzero(self.row_groups == _TEST_GROUP).tolist())
+
     def final_mask(self) -> np.ndarray:
-        mask = np.full(self.row_count, 3, dtype=np.int8)
-        mask[list(self.development_positions)] = 0
-        mask[list(self.test_positions)] = 2
+        return np.where(self.row_groups == _TEST_GROUP, _MASK_TEST, _MASK_TRAIN).astype(np.int8)
+
+    def _fit_mask(self, fit_index: int, test_code: int) -> np.ndarray:
+        fit_index = _integer(fit_index, "fit_index", low=0, high=len(self.validation_fits) - 1)
+        fit = self.validation_fits[fit_index]
+        code_of_group = np.full(len(_GROUP_LABELS) + 1, _MASK_UNUSED, dtype=np.int8)
+        code_of_group[sorted(fit.train_groups)] = _MASK_TRAIN
+        code_of_group[sorted(fit.validation_groups)] = _MASK_VALIDATION
+        # The final test's group, -1, indexes the last entry.
+        code_of_group[-1] = test_code
+        mask: np.ndarray = code_of_group[self.row_groups]
         return mask
 
     def selection_mask(self, fit_index: int) -> np.ndarray:
-        fit_index = _integer(fit_index, "fit_index", low=0, high=len(self.validation_fits) - 1)
-        fit = self.validation_fits[fit_index]
-        mask = np.full(self.row_count, 3, dtype=np.int8)
-        mask[list(fit.train_positions)] = 0
-        mask[list(fit.validation_positions)] = 1
-        return mask
+        return self._fit_mask(fit_index, _MASK_UNUSED)
 
     def saved_selection_mask(self, fit_index: int) -> np.ndarray:
         """Keep final-test rows held out when a validation fit is the saved model."""
-        mask = self.selection_mask(fit_index)
-        mask[list(self.test_positions)] = 2
-        return mask
+        return self._fit_mask(fit_index, _MASK_TEST)
 
     def to_plain_data(self) -> dict[str, Any]:
-        memberships, fits = _encode_memberships(self)
         return {
             "schema_version": self.schema_version,
             "source_sha256": self.source_sha256,
             "row_count": self.row_count,
             "config": self.config.to_plain_data(),
-            "memberships": memberships,
-            "validation_fits": fits,
+            "memberships": _CODE_OF_GROUP[self.row_groups].tobytes().decode("ascii"),
+            "validation_fits": [
+                {
+                    "train": _group_labels(fit.train_groups),
+                    "validation": _group_labels(fit.validation_groups),
+                }
+                for fit in self.validation_fits
+            ],
             "summary": dict(self.summary),
         }
 
@@ -435,13 +480,16 @@ class EvaluationPlan:
         count = _integer(data["row_count"], "row_count", low=1)
         config = EvaluationConfig.from_plain_data(data["config"])
         groups = _decode_memberships(data["memberships"], count)
-        group_count = int(groups.max()) + 1 if (groups >= 0).any() else 0
+        development_groups = groups[groups >= 0]
+        group_count = int(development_groups.max()) + 1 if len(development_groups) else 0
         if group_count == 0:
             raise HauteValidationError("development/test positions overlap or are empty")
-        if set(np.unique(groups[groups >= 0]).tolist()) != set(range(group_count)):
+        group_rows = np.bincount(development_groups, minlength=group_count).tolist()
+        if 0 in group_rows:
             raise HauteValidationError("development group labels are not contiguous")
-        test_rows = np.flatnonzero(groups == _TEST_GROUP)
-        if bool(len(test_rows)) != (config.test is not None):
+        development_rows = len(development_groups)
+        test_rows = count - development_rows
+        if bool(test_rows) != (config.test is not None):
             raise HauteValidationError("test membership disagrees with evaluation config")
         if (
             not isinstance(data["validation_fits"], list)
@@ -487,22 +535,13 @@ class EvaluationPlan:
                 raise HauteValidationError("cross-validation fit does not cover development")
         elif fit_groups and fit_groups[0][0] | fit_groups[0][1] != every_group:
             raise HauteValidationError("single validation fit does not cover development")
-        dev = tuple(np.flatnonzero(groups >= 0).tolist())
-        test = tuple(test_rows.tolist())
-
-        def members(selected: frozenset[int]) -> tuple[int, ...]:
-            return tuple(np.flatnonzero(np.isin(groups, sorted(selected))).tolist())
-
-        fits = [
-            EvaluationValidationFit(members(train), members(valid)) for train, valid in fit_groups
-        ]
         if not isinstance(data["summary"], dict):
             raise TypeError("summary must be an object")
         summary = data["summary"]
         expected_summary = {
-            "development_rows": len(dev),
-            "test_rows": len(test),
-            "validation_fit_count": len(fits),
+            "development_rows": development_rows,
+            "test_rows": test_rows,
+            "validation_fit_count": len(fit_groups),
         }
         if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in summary.values()):
             raise HauteValidationError("summary values must be non-negative integers")
@@ -518,22 +557,86 @@ class EvaluationPlan:
         if config.strategy == "group":
             if summary["development_group_count"] < 1:
                 raise HauteValidationError("summary must contain a development group")
-            if bool(test) != bool(summary["test_group_count"]):
+            if bool(test_rows) != bool(summary["test_group_count"]):
                 raise HauteValidationError("summary test group count disagrees with membership")
             if summary["development_group_count"] + summary["test_group_count"] > count:
                 raise HauteValidationError("summary group counts exceed source rows")
         if config.strategy == "temporal":
             if summary["development_date_count"] < 1:
                 raise HauteValidationError("summary must contain a development date")
-            if bool(test) != bool(summary["test_date_count"]):
+            if bool(test_rows) != bool(summary["test_date_count"]):
                 raise HauteValidationError("summary test date count disagrees with membership")
             if summary["development_date_count"] + summary["test_date_count"] > count:
                 raise HauteValidationError("summary date counts exceed source rows")
-        plan = cls(PLAN_SCHEMA_VERSION, source, count, config, dev, test, tuple(fits), summary)
-        memberships, encoded_fits = _encode_memberships(plan)
-        if memberships != data["memberships"] or encoded_fits != data["validation_fits"]:
+        # One plan has one encoding: groups numbered by their roles, no two alike, and
+        # each fit's labels in order.
+        signatures = [
+            tuple(
+                _ROLE_TRAIN
+                if group in train
+                else (_ROLE_VALIDATION if group in valid else _ROLE_OUTSIDE)
+                for train, valid in fit_groups
+            )
+            for group in range(group_count)
+        ]
+        canonical_fits = [
+            {"train": _group_labels(train), "validation": _group_labels(valid)}
+            for train, valid in fit_groups
+        ]
+        if signatures != sorted(set(signatures)) or canonical_fits != data["validation_fits"]:
             raise HauteValidationError("evaluation plan memberships are not in canonical form")
-        return plan
+        groups.setflags(write=False)
+        fits = tuple(
+            _validation_fit(groups, group_rows, train, valid) for train, valid in fit_groups
+        )
+        return cls(PLAN_SCHEMA_VERSION, source, count, config, groups, fits, summary)
+
+
+def _plan_from_roles(
+    config: EvaluationConfig,
+    source_sha256: str,
+    is_test: np.ndarray,
+    fit_roles: Sequence[np.ndarray],
+    summary: dict[str, Any],
+) -> EvaluationPlan:
+    """The plan for each row's final-test flag and its role in every validation fit.
+
+    Each development row's roles, read as a base-3 number with the first fit most
+    significant, order the groups lexicographically by their roles.
+    """
+    row_count = len(is_test)
+    development = np.flatnonzero(~is_test)
+    key = np.zeros(len(development), dtype=np.int32)
+    for roles in fit_roles:
+        key = key * 3 + roles[development]
+    keys, groups = np.unique(key, return_inverse=True)
+    if len(keys) > len(_GROUP_LABELS):
+        raise HauteValidationError("evaluation plan has more development groups than labels")
+    row_groups = np.full(row_count, _TEST_GROUP, dtype=np.int8)
+    row_groups[development] = groups.reshape(-1)
+    row_groups.setflags(write=False)
+    group_rows = np.bincount(groups.reshape(-1), minlength=len(keys)).tolist()
+    fits = []
+    for index in range(len(fit_roles)):
+        role = keys // 3 ** (len(fit_roles) - 1 - index) % 3
+        fits.append(
+            _validation_fit(
+                row_groups,
+                group_rows,
+                frozenset(np.flatnonzero(role == _ROLE_TRAIN).tolist()),
+                frozenset(np.flatnonzero(role == _ROLE_VALIDATION).tolist()),
+            )
+        )
+    summary.update(
+        {
+            "development_rows": len(development),
+            "test_rows": row_count - len(development),
+            "validation_fit_count": len(fits),
+        }
+    )
+    return EvaluationPlan(
+        PLAN_SCHEMA_VERSION, source_sha256, row_count, config, row_groups, tuple(fits), summary
+    )
 
 
 def _count(size: float, total: int) -> int:
@@ -543,24 +646,33 @@ def _count(size: float, total: int) -> int:
     return value
 
 
+def _class_rows(positions: np.ndarray, values: Sequence[object]) -> dict[object, np.ndarray]:
+    """*positions* by class, classes as first seen, each keeping the order given."""
+    classes: dict[object, int] = {}
+    codes = np.fromiter(
+        (classes.setdefault(values[position], len(classes)) for position in positions),
+        dtype=np.int64,
+        count=len(positions),
+    )
+    return {key: positions[codes == code] for key, code in classes.items()}
+
+
 def _stratified_parts(
-    positions: Sequence[int], values: Sequence[object], parts: int, seed: int
-) -> list[list[int]]:
-    classes: dict[object, list[int]] = {}
-    for p in positions:
-        classes.setdefault(values[p], []).append(p)
+    positions: Sequence[int] | np.ndarray, values: Sequence[object], parts: int, seed: int
+) -> list[np.ndarray]:
+    classes = _class_rows(np.asarray(positions, dtype=np.int64), values)
     counts = {str(k): len(v) for k, v in classes.items()}
     if min(map(len, classes.values())) < parts:
         raise HauteValidationError(f"class counts {counts}; required minimum {parts}")
     rng = np.random.default_rng(seed)
-    output: list[list[int]] = [[] for _ in range(parts)]
+    output: list[list[np.ndarray]] = [[] for _ in range(parts)]
     # Classes in label order, so the seeded stream does not follow which appeared first.
     for key in sorted(classes, key=str):
-        rows = list(classes[key])
+        rows = classes[key]
         rng.shuffle(rows)
-        for index, row in enumerate(rows):
-            output[index % parts].append(row)
-    return output
+        for index in range(parts):
+            output[index].append(rows[index::parts])
+    return [np.concatenate(part) for part in output]
 
 
 def _development_reserve(validation: Mapping[str, Any]) -> tuple[int, list[str]]:
@@ -580,14 +692,14 @@ def _development_reserve(validation: Mapping[str, Any]) -> tuple[int, list[str]]
 
 
 def _stratified_sample(
-    positions: Sequence[int],
+    positions: np.ndarray,
     values: Sequence[object],
     size: int,
     seed: int,
     reserve: int,
     *,
     partition: str,
-) -> list[int]:
+) -> np.ndarray:
     """Exactly *size* of *positions*, at least one of every class, *reserve* of each left.
 
     Each class starts at its proportional share (at least one, at most its rows less the
@@ -595,9 +707,7 @@ def _stratified_sample(
     those furthest above it give up rows past the total, ties going by label. The rows
     then come from each class's seeded shuffle, classes in label order.
     """
-    classes: dict[object, list[int]] = {}
-    for position in positions:
-        classes.setdefault(values[position], []).append(position)
+    classes = _class_rows(positions, values)
     counts = {str(key): len(rows) for key, rows in classes.items()}
     ceiling = {key: len(rows) - reserve for key, rows in classes.items()}
     capacity = sum(ceiling.values())
@@ -618,71 +728,66 @@ def _stratified_sample(
         key = max(over, key=lambda item: (allocations[item] - raw[item], str(item)))
         allocations[key] -= 1
     rng = np.random.default_rng(seed)
-    selected: list[int] = []
+    selected: list[np.ndarray] = []
     for key in sorted(classes, key=str):
-        rows = list(classes[key])
+        rows = classes[key]
         rng.shuffle(rows)
-        selected.extend(rows[: allocations[key]])
-    return selected
+        selected.append(rows[: allocations[key]])
+    return np.concatenate(selected)
 
 
-def _balanced_groups(groups: Mapping[str, list[int]], buckets: int, seed: int) -> list[list[int]]:
+def _balanced_groups(sizes: Mapping[str, int], buckets: int, seed: int) -> list[list[str]]:
+    """The groups in each of *buckets* buckets, largest first into the emptiest bucket."""
     rng = np.random.default_rng(seed)
     # Shuffled from key order, not the order the groups appeared in.
-    keys = sorted(groups)
+    keys = sorted(sizes)
     rng.shuffle(keys)
     rank = {x: i for i, x in enumerate(keys)}
-    keys.sort(key=lambda x: (-len(groups[x]), rank[x]))
-    result: list[list[int]] = [[] for _ in range(buckets)]
-    sizes = [0] * buckets
+    keys.sort(key=lambda x: (-sizes[x], rank[x]))
+    result: list[list[str]] = [[] for _ in range(buckets)]
+    totals = [0] * buckets
     for key in keys:
-        index = min(range(buckets), key=lambda i: (sizes[i], i))
-        result[index].extend(groups[key])
-        sizes[index] += len(groups[key])
+        index = min(range(buckets), key=lambda i: (totals[i], i))
+        result[index].append(key)
+        totals[index] += sizes[key]
     if any(not item for item in result):
         raise HauteValidationError("requested group partition would be empty")
     return result
 
 
-def _groups_near_target(groups: Mapping[str, list[int]], target: int, seed: int) -> list[int]:
+def _groups_near_target(sizes: Mapping[str, int], target: int, seed: int) -> list[str]:
     """Seeded greedy assignment that minimises distance from one requested row target."""
     rng = np.random.default_rng(seed)
     # Shuffled from key order, not the order the groups appeared in.
-    keys = sorted(groups)
+    keys = sorted(sizes)
     rng.shuffle(keys)
     rank = {key: index for index, key in enumerate(keys)}
-    keys.sort(key=lambda key: (-len(groups[key]), rank[key]))
+    keys.sort(key=lambda key: (-sizes[key], rank[key]))
     # Begin with the closest viable whole group. Starting from the largest
     # group can strand a much closer smaller group when the requested
     # fraction is small.
     first = min(
         keys,
-        key=lambda key: (abs(len(groups[key]) - target), rank[key]),
+        key=lambda key: (abs(sizes[key] - target), rank[key]),
     )
     selected_keys = {first}
-    selected_rows = len(groups[first])
+    selected_rows = sizes[first]
     for key in keys:
         if key in selected_keys:
             continue
-        candidate = selected_rows + len(groups[key])
+        candidate = selected_rows + sizes[key]
         if abs(candidate - target) < abs(selected_rows - target):
             selected_keys.add(key)
             selected_rows = candidate
-    selected = [position for key in keys if key in selected_keys for position in groups[key]]
-    if not selected or len(selected) == sum(map(len, groups.values())):
+    if selected_rows == sum(sizes.values()):
         raise HauteValidationError("requested group partition would be empty")
-    return selected
+    return [key for key in keys if key in selected_keys]
 
 
 def _canonical_positions(
-    row_order: Sequence[int] | np.ndarray | None, all_positions: tuple[int, ...]
-) -> list[int]:
-    """A random plan's source positions in canonical order, checked to be every position once.
-
-    The list holds *all_positions*' own integers rather than new ones, so it costs a
-    pointer a row.
-    """
-    row_count = len(all_positions)
+    row_order: Sequence[int] | np.ndarray | None, row_count: int
+) -> np.ndarray:
+    """A random plan's source positions in canonical order, checked to be every position once."""
     if row_order is None:
         raise HauteValidationError(
             "A random plan selects rows by position and needs the canonical row order"
@@ -699,7 +804,33 @@ def _canonical_positions(
         raise HauteValidationError(
             f"The canonical row order is not a permutation of the source's {row_count} positions"
         )
-    return [all_positions[position] for position in order]
+    return order.astype(np.int64)
+
+
+def _date_codes(
+    date_values: Sequence[object], boundaries: Sequence[object]
+) -> tuple[np.ndarray, list[datetime], list[datetime]]:
+    """Each row's index among the distinct dates, those dates parsed, and *boundaries* parsed."""
+    distinct: dict[object, int] = {}
+    codes = np.empty(len(date_values), dtype=np.int64)
+    for position, value in enumerate(date_values):
+        if not isinstance(value, (str, date)):
+            raise TypeError("date values must be ISO strings or native date/datetime values")
+        codes[position] = distinct.setdefault(value, len(distinct))
+    parsed = _parsed_dates([*distinct, *boundaries])
+    return codes, parsed[: len(distinct)], parsed[len(distinct) :]
+
+
+def _roles_for_parts(is_test: np.ndarray, parts: Sequence[np.ndarray]) -> list[np.ndarray]:
+    """Each fit's roles: its part validates and the rest of development trains on."""
+    fit_roles = []
+    for part in parts:
+        roles = np.where(is_test, _ROLE_OUTSIDE, _ROLE_TRAIN).astype(np.int8)
+        roles[part] = _ROLE_VALIDATION
+        if not (roles == _ROLE_TRAIN).any() or not (roles == _ROLE_VALIDATION).any():
+            raise HauteValidationError("requested validation partition is empty")
+        fit_roles.append(roles)
+    return fit_roles
 
 
 def generate_evaluation_plan(
@@ -727,101 +858,117 @@ def generate_evaluation_plan(
         raise HauteValidationError(
             f"Only a random plan takes a row order; a {config.strategy} plan decides by values"
         )
-    all_positions = tuple(range(row_count))
     method = config.validation["method"]
     summary: dict[str, Any] = {}
     if task not in {"regression", "classification"}:
         raise HauteValidationError("evaluation task must be regression or classification")
+    is_test = np.zeros(row_count, dtype=bool)
+    fit_roles: list[np.ndarray]
     if config.strategy == "temporal":
         if date_values is None or len(date_values) != row_count:
             raise HauteValidationError("temporal evaluation requires date values")
-        boundary_values = list(date_values)
-        if config.test:
-            boundary_values.append(config.test["start"])
+        boundaries = [config.test["start"]] if config.test else []
         if method == "single":
-            boundary_values.append(config.validation["start"])
-        parsed = _parsed_dates(boundary_values)
-        dates = parsed[:row_count]
-        cursor = row_count
-        test_start = parsed[cursor] if config.test else None
-        cursor += bool(config.test)
-        validation_start = parsed[cursor] if method == "single" else None
-        test = tuple(p for p in all_positions if test_start is not None and dates[p] >= test_start)
-        test_membership = set(test)
-        dev = tuple(p for p in all_positions if p not in test_membership)
-        if config.test and (not test or not dev):
-            raise HauteValidationError("temporal test partition is empty")
-        ordered = sorted(set(dates[p] for p in dev))
+            boundaries.append(config.validation["start"])
+        codes, dates, parsed_boundaries = _date_codes(date_values, boundaries)
+        if config.test:
+            test_start = parsed_boundaries[0]
+            is_test_date = np.array([value >= test_start for value in dates], dtype=bool)
+            is_test = is_test_date[codes]
+            if is_test.all() or not is_test.any():
+                raise HauteValidationError("temporal test partition is empty")
+        else:
+            is_test_date = np.zeros(len(dates), dtype=bool)
+        ordered = sorted({v for v, test_date in zip(dates, is_test_date.tolist()) if not test_date})
         summary.update(
             {
                 "development_date_count": len(ordered),
-                "test_date_count": len(set(dates[p] for p in test)),
+                "test_date_count": len(
+                    {v for v, test_date in zip(dates, is_test_date.tolist()) if test_date}
+                ),
             }
         )
         if method == "none":
-            fits = []
+            fit_roles = []
         elif method == "single":
-            assert validation_start is not None
-            boundary = validation_start
-            train = tuple(p for p in dev if dates[p] < boundary)
-            valid = tuple(p for p in dev if dates[p] >= boundary)
-            if not train or not valid:
+            boundary = parsed_boundaries[-1]
+            before = np.array([value < boundary for value in dates], dtype=bool)[codes]
+            roles = np.full(row_count, _ROLE_OUTSIDE, dtype=np.int8)
+            roles[~is_test & before] = _ROLE_TRAIN
+            roles[~is_test & ~before] = _ROLE_VALIDATION
+            if not (roles == _ROLE_TRAIN).any() or not (roles == _ROLE_VALIDATION).any():
                 raise HauteValidationError("temporal validation partition is empty")
-            fits = [EvaluationValidationFit(train, valid)]
+            fit_roles = [roles]
         else:
             k = config.validation["fold_count"]
             if len(ordered) < k + 1:
                 raise HauteValidationError("temporal cross_validation needs enough distinct dates")
             blocks = np.array_split(np.asarray(ordered, dtype=object), k + 1)
-            fits = []
-            for i in range(k):
-                train_dates = set(x for block in blocks[: i + 1] for x in block.tolist())
-                valid_dates = set(blocks[i + 1].tolist())
-                fits.append(
-                    EvaluationValidationFit(
-                        tuple(p for p in dev if dates[p] in train_dates),
-                        tuple(p for p in dev if dates[p] in valid_dates),
-                    )
-                )
+            block_of_date = {
+                value: index for index, block in enumerate(blocks) for value in block.tolist()
+            }
+            # A final-test date belongs to no block.
+            row_block = np.array([block_of_date.get(v, -1) for v in dates], dtype=np.int64)[codes]
+            fit_roles = []
+            for index in range(k):
+                roles = np.full(row_count, _ROLE_OUTSIDE, dtype=np.int8)
+                roles[(row_block >= 0) & (row_block <= index)] = _ROLE_TRAIN
+                roles[row_block == index + 1] = _ROLE_VALIDATION
+                fit_roles.append(roles)
     else:
+        parts: list[np.ndarray]
         if config.strategy == "group":
             if group_values is None or len(group_values) != row_count:
                 raise HauteValidationError("group evaluation requires group values")
-            groups: dict[str, list[int]] = {}
-            for p, value in enumerate(group_values):
-                groups.setdefault(_json_key(value), []).append(p)
+            group_index: dict[str, int] = {}
+            group_codes = np.fromiter(
+                (
+                    group_index.setdefault(_json_key(value), len(group_index))
+                    for value in group_values
+                ),
+                dtype=np.int64,
+                count=row_count,
+            )
+            sizes = dict(
+                zip(group_index, np.bincount(group_codes, minlength=len(group_index)).tolist())
+            )
+
+            def rows_of(keys: Sequence[str]) -> np.ndarray:
+                selected = np.zeros(len(group_index), dtype=bool)
+                selected[[group_index[key] for key in keys]] = True
+                return selected[group_codes]
+
+            development_sizes = sizes
             if config.test:
                 target = _count(config.test["size"], row_count)
-                test = tuple(_groups_near_target(groups, target, config.seed or 0))
-                test_membership = set(test)
-                dev = tuple(p for p in all_positions if p not in test_membership)
-            else:
-                dev, test = all_positions, ()
-            dev_membership = set(dev)
-            dev_groups = {
-                key: [p for p in rows if p in dev_membership]
-                for key, rows in groups.items()
-                if any(p in dev_membership for p in rows)
-            }
+                test_groups = _groups_near_target(sizes, target, config.seed or 0)
+                is_test = rows_of(test_groups)
+                held_out = set(test_groups)
+                development_sizes = {k: v for k, v in sizes.items() if k not in held_out}
             summary.update(
                 {
-                    "development_group_count": len(dev_groups),
-                    "test_group_count": len(groups) - len(dev_groups),
+                    "development_group_count": len(development_sizes),
+                    "test_group_count": len(sizes) - len(development_sizes),
                 }
             )
             if method == "cross_validation":
-                parts = _balanced_groups(
-                    dev_groups, config.validation["fold_count"], config.seed or 0
-                )
+                parts = [
+                    rows_of(keys)
+                    for keys in _balanced_groups(
+                        development_sizes, config.validation["fold_count"], config.seed or 0
+                    )
+                ]
             elif method == "single":
                 target = _count(config.validation["size"], row_count)
-                parts = [_groups_near_target(dev_groups, target, (config.seed or 0) + 1)]
+                parts = [
+                    rows_of(_groups_near_target(development_sizes, target, (config.seed or 0) + 1))
+                ]
             else:
                 parts = []
         else:
-            canonical = _canonical_positions(row_order, all_positions)
+            canonical = _canonical_positions(row_order, row_count)
             rng = np.random.default_rng(config.seed)
-            positions = list(canonical)
+            positions = canonical.copy()
             rng.shuffle(positions)
             if task == "classification":
                 if target_values is None or len(target_values) != row_count:
@@ -845,7 +992,7 @@ def generate_evaluation_plan(
                 n = _count(config.test["size"], row_count)
                 if task == "classification":
                     assert target_values is not None
-                    test = tuple(
+                    is_test[
                         _stratified_sample(
                             canonical,
                             target_values,
@@ -854,20 +1001,12 @@ def generate_evaluation_plan(
                             reserve,
                             partition="final test",
                         )
-                    )
+                    ] = True
                 else:
-                    test = tuple(positions[:n])
-                test_membership = set(test)
-                dev = tuple(p for p in all_positions if p not in test_membership)
-            else:
-                dev, test = all_positions, ()
-            development_membership = set(dev)
-            development_order = [
-                position for position in positions if position in development_membership
-            ]
-            canonical_development = [
-                position for position in canonical if position in development_membership
-            ]
+                    is_test[positions[:n]] = True
+            in_development = ~is_test
+            development_order = positions[in_development[positions]]
+            canonical_development = canonical[in_development[canonical]]
             if method == "cross_validation":
                 if task == "classification":
                     assert target_values is not None
@@ -878,13 +1017,7 @@ def generate_evaluation_plan(
                         config.seed or 0,
                     )
                 else:
-                    parts = [
-                        list(x)
-                        for x in np.array_split(
-                            np.asarray(development_order),
-                            config.validation["fold_count"],
-                        )
-                    ]
+                    parts = np.array_split(development_order, config.validation["fold_count"])
             elif method == "single":
                 n = _count(config.validation["size"], row_count)
                 if task == "classification":
@@ -903,30 +1036,8 @@ def generate_evaluation_plan(
                     parts = [development_order[:n]]
             else:
                 parts = []
-        fits = []
-        for part in parts:
-            part_membership = set(part)
-            fits.append(
-                EvaluationValidationFit(
-                    tuple(p for p in dev if p not in part_membership),
-                    tuple(sorted(part)),
-                )
-            )
-        if any(not x.train_positions or not x.validation_positions for x in fits):
-            raise HauteValidationError("requested validation partition is empty")
-    summary.update(
-        {"development_rows": len(dev), "test_rows": len(test), "validation_fit_count": len(fits)}
-    )
-    return EvaluationPlan(
-        PLAN_SCHEMA_VERSION,
-        source_sha256,
-        row_count,
-        config,
-        tuple(sorted(dev)),
-        tuple(sorted(test)),
-        tuple(fits),
-        summary,
-    )
+        fit_roles = _roles_for_parts(is_test, parts)
+    return _plan_from_roles(config, source_sha256, is_test, fit_roles, summary)
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -949,7 +1060,9 @@ def canonical_json_bytes(value: object) -> bytes:
 
 
 def file_sha256(path: str | Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    """The file's SHA-256, without holding it: a training source can be many gigabytes."""
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def save_canonical_json(value: object, path: str | Path) -> None:
