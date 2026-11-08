@@ -105,8 +105,8 @@ collisions or different row structure and verify missing columns are added, exis
 values and primary keys remain, re-comparison proposes no duplicate additions, and
 migration/retention/rename commentary is absent. Library and offline planning are unchanged.
 
-Database catalogue persistence: `POST /api/workbench/store-catalogue` accepts `refresh`
-(default true for existing callers). The browser requests false on initial environment
+Database catalogue persistence: `POST /api/workbench/store-catalogue` requires `refresh`;
+a request without it is refused (422). The browser sends false on initial environment
 selection and true for Refresh (the store also retains its check-all operation). Responses include `checked_at`, the
 successful database fetch's Unix time in milliseconds. `useStoreCompareStore` uses that
 timestamp, not the browser load time; its existing session invalidation still drops

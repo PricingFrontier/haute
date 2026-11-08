@@ -1310,7 +1310,9 @@ def _dev_database(project: Path, spec: dict[str, Any]) -> Path:
 
 
 def _catalogue(environment: str = "dev") -> Any:
-    return client().post("/api/workbench/store-catalogue", json={"environment": environment})
+    return client().post(
+        "/api/workbench/store-catalogue", json={"environment": environment, "refresh": True}
+    )
 
 
 def _compare(spec: dict[str, Any], tables: Any, renames: Any = ()) -> Any:
@@ -1352,6 +1354,18 @@ def test_the_catalogue_is_read_through_the_environment_s_connection_changing_not
     }
     assert tables["policy_details"]["quotes"] == 0
     assert database.read_bytes() == before
+
+
+def test_a_catalogue_request_must_say_whether_to_refresh(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+
+    response = client().post("/api/workbench/store-catalogue", json={"environment": "dev"})
+
+    assert response.status_code == 422, response.text
+    assert "refresh" in response.text
+    assert not (project / ".haute_cache/workbench/catalogues/dev.json").exists()
 
 
 def test_catalogue_snapshots_persist_until_refreshed_and_follow_the_connection(

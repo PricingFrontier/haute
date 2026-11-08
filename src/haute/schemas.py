@@ -283,10 +283,11 @@ class WorkbenchCatalogueTable(BaseModel):
 
 
 class WorkbenchStoreCatalogueRequest(BaseModel):
-    """The environment whose database's tables to read, one ``haute.toml`` declares."""
+    """The environment whose database's tables to read, one ``haute.toml`` declares, and
+    whether to read them afresh (``refresh``) or reuse its saved snapshot."""
 
     environment: BoundedName
-    refresh: bool = True
+    refresh: bool
 
 
 class WorkbenchStoreCatalogueResponse(BaseModel):
