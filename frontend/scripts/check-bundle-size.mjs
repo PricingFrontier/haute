@@ -254,7 +254,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // validation bring the measured editor bundle to 1,788.3 KiB after removing unused
 // comparison metadata and duplicated views. A 1 KiB increment restores 0.7 KiB
 // headroom; startup, single-chunk and vendor allowances are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1789
+// Chunked GLM fitting (8 November 2026): the training contracts' fit plan and evidence
+// and the Train pane's chunked verdict bring the complete bundle to 1,789.1 KiB (initial
+// 293.9 KiB). 1,790 KiB restores 0.9 KiB headroom; the other limits are unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1790
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
