@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import threading
 import time
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from haute._cache import canonical_json
 from haute._file_ops import atomic_write_text
 from haute._quote_store._environment import StoreLocation
 from haute._sandbox import contained_path
@@ -47,7 +47,7 @@ def catalogue_target(location: StoreLocation) -> str:
         )
     )
     return hashlib.sha256(
-        json.dumps(
+        canonical_json(
             [
                 location.environment,
                 location.url,
