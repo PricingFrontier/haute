@@ -156,7 +156,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-2",
     "polars-node-clarity",
     "readable-output",
-    "t-boost",
     "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
