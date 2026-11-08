@@ -1,17 +1,15 @@
 /** Database information and explicit rename choices, separate from field configuration. */
 import { Undo2 } from "lucide-react"
-import type { SchemaColumn, SchemaTable, WorkbenchStoreCompareResponse, WorkbenchStoreDifference } from "../api/types"
+import type { SchemaColumn, SchemaTable } from "../api/types"
 import { COMPACT_FIELD_CLASS, EditorLabel, INPUT_STYLE, QuietAction } from "../components/form"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { IDENTITY_NAMES } from "../utils/quoteIdentity"
 import DatabaseDisclosure from "./DatabaseDisclosure"
+import { fieldDatabaseIssues } from "./fieldDatabaseIssues"
 import { schemaColumns } from "./schema/schemaText"
 
 const QUIET = { color: "var(--text-muted)" } as const
-const DESCRIBED_DIFFERENCES: Partial<Record<WorkbenchStoreCompareResponse["changes"][number]["kind"], WorkbenchStoreDifference["kind"]>> = {
-  "add column": "missing", "rename column": "renamed", "retype column": "type",
-}
 
 function useColumnDatabase(table: string, column: string) {
   const state = useStoreCompareStore()
@@ -28,7 +26,6 @@ function useColumnDatabase(table: string, column: string) {
   const invalidRename = answer !== null && pairing !== undefined && !accepted && !alreadyPresent
   const missing = differences.some((each) => each.kind === "missing")
   const manualRepair = differences.some((each) => each.kind !== "missing" && each.kind !== "renamed" && each.kind !== "type")
-  const additional = differences.filter((each) => !changes.some((change) => DESCRIBED_DIFFERENCES[change.kind] === each.kind))
   const label = answer === null ? comparisonStatus(state, form)
     : invalidRename || manualRepair || changes.some((each) => each.disposition === "manual") ? "Needs attention"
       : differences.some((each) => each.kind === "renamed") ? "Rename"
@@ -36,7 +33,7 @@ function useColumnDatabase(table: string, column: string) {
           : differences.some((each) => each.kind === "type") ? "Type change"
             : differences.length > 0 ? "Needs attention" : "Matches"
   const failure = label !== "Check failed" ? null : read.status === "failed" ? read.message : compared.status === "failed" ? compared.message : null
-  return { state, answer, differences, additional, changes, missing, label, failure, pairing, invalidRename }
+  return { state, answer, differences, changes, missing, label, failure, pairing, invalidRename, stored }
 }
 
 export function ColumnDatabaseStatus({ table, column, open, onOpen }: { table: string; column: string; open: boolean; onOpen: () => void }) {
@@ -52,7 +49,7 @@ export function ColumnDatabaseStatus({ table, column, open, onOpen }: { table: s
 }
 
 export function ColumnDatabaseDetails({ table, column, readOnly }: { table: SchemaTable; column: SchemaColumn; readOnly: boolean }) {
-  const { state, answer, additional, changes, missing, label, failure, pairing, invalidRename } = useColumnDatabase(table.name, column.name)
+  const { state, answer, differences, changes, missing, label, failure, pairing, invalidRename, stored } = useColumnDatabase(table.name, column.name)
   if (state.environment === null) return null
   const candidates = answer?.extras.filter((each) => each.form_table === table.name && each.column !== null) ?? []
   const ordinary = column.index === null && !IDENTITY_NAMES.has(column.name)
@@ -67,10 +64,19 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
     {failure !== null ? <p role="alert" style={{ color: "var(--danger-text)" }}>{failure}</p>
       : answer === null ? <p style={QUIET}>Waiting for the current database comparison…</p>
         : <>
-          {changes.map((change) => <p key={change.kind} style={QUIET}>{change.description}{change.quotes !== null && change.quotes > 0 && ` ${change.quotes.toLocaleString()} ${change.quotes === 1 ? "quote has" : "quotes have"} values.`}</p>)}
-          {additional.map((each) => <p key={each.message} style={QUIET}>{each.message}</p>)}
+          {fieldDatabaseIssues(table, column, differences, answer, stored).map((issue) => <div key={issue.title} className="flex flex-col gap-1">
+            <p className="font-medium" style={{ color: "var(--text-primary)" }}>{issue.title}</p>
+            <p style={QUIET}>{issue.description}</p>
+            <p style={QUIET}><span className="font-medium">To resolve: </span>{issue.action}</p>
+          </div>)}
           {label === "Matches" && <p style={QUIET}>This field matches the database.</p>}
           {invalidRename && <p role="alert" style={{ color: "var(--warning)" }}>This rename cannot be used in {state.environment}. Choose an available column or remove the rename choice.</p>}
+          {(changes.length > 0 || differences.length > 0) && <DatabaseDisclosure title="SQL details" className="text-[var(--text-muted)]">
+            <div className="flex flex-col gap-2 break-words">
+              {changes.map((change) => <p key={change.kind}>{change.description}{change.quotes !== null && change.quotes > 0 && ` ${change.quotes.toLocaleString()} ${change.quotes === 1 ? "quote has" : "quotes have"} values.`}</p>)}
+              {differences.map((each) => <p key={each.message}>{each.message}</p>)}
+            </div>
+          </DatabaseDisclosure>}
         </>}
     {canPair && <label className="flex min-w-0 flex-col gap-1">
       <span style={QUIET}>Use database values from</span>
@@ -83,7 +89,7 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
         {pairing !== undefined && !candidates.some((each) => each.column === pairing.was) && <option value={pairing.was}>{pairing.was} → {column.name}</option>}
         {candidates.map((each) => <option key={each.column} value={each.column!}>{each.column} → {column.name}{each.quotes === null ? " · count unavailable" : ` · ${each.quotes} quotes`}</option>)}
       </select>
-      <span style={QUIET}>A rename keeps existing values and applies across environments.</span>
+      <span style={QUIET}>This records which column holds the old values. Moving data is a manual step.</span>
     </label>}
     {!ordinary && pairing !== undefined && <QuietAction icon={Undo2} disabled={readOnly || answer === null}
       className="self-start" onClick={() => state.unpair(table.name, column.name)}>Remove rename choice</QuietAction>}

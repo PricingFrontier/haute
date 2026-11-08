@@ -840,6 +840,17 @@ Out of scope:
     switches views, and pressing the active control closes it. Each control reports
     only its own expanded state. The selected view follows table/column renames and
     survives closing the schema pane. Fixed identity keys offer only database details.
+    Database detail cards use short issue titles, plain-language explanations and a
+    concrete next step. SQL type names, collation diagnostics and quote counts remain
+    available under a collapsed SQL details disclosure. A new column that replaces a
+    differently named database field is explained once, with both names and readable
+    types: Export SQL adds the new column; moving values and updating a row key remain
+    manual work. Type/collation differences on that old column do not become duplicate
+    repair tasks when the addition supplies the new definition. Existing-column type,
+    blank-value and text-comparison differences explain the required manual change;
+    they never imply Export SQL changes existing columns. Fixed Haute field types direct
+    the user to database repair, not an unavailable schema edit. A blocked addition retains
+    its specific reason and is never presented as ready to export.
     Without a database selected the normal configuration summaries return. Database-only fields
     are listed in a collapsed section inside their table, with their retention behavior.
     They remain listed during a manual table reshape, where preserving their values is
