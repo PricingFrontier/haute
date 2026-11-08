@@ -13,6 +13,11 @@ permissions:
   pages: write
   id-token: write
 
+# The build takes .python-version's interpreter, which the runner image lacks; see
+# ci.yml for why uv downloads it from Astral's mirror.
+env:
+  UV_PYTHON_INSTALL_MIRROR: https://releases.astral.sh/github/python-build-standalone/releases/download
+
 concurrency:
   group: pages
   cancel-in-progress: false
