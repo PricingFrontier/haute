@@ -10209,6 +10209,87 @@
           "default": null,
           "title": "Device"
         },
+        "encode_rows": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Encode Rows"
+        },
+        "max_bytes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Bytes"
+        },
+        "max_half_steps": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Half Steps"
+        },
+        "max_iter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Iter"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "in_memory",
+                "out_of_core"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "passes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passes"
+        },
         "rounds_configured": {
           "anyOf": [
             {
@@ -10272,6 +10353,19 @@
           "minimum": 1,
           "title": "Threads",
           "type": "integer"
+        },
+        "tol": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tol"
         }
       },
       "required": [
@@ -10280,7 +10374,14 @@
         "rounds_fitted",
         "stopping_reason",
         "term_update_steps",
-        "device"
+        "device",
+        "mode",
+        "max_iter",
+        "tol",
+        "max_half_steps",
+        "passes",
+        "encode_rows",
+        "max_bytes"
       ],
       "title": "FitEvidencePayload",
       "type": "object"
@@ -24907,6 +25008,15 @@
         "evaluation_preview": {
           "$ref": "#/$defs/EvaluationPreviewPayload"
         },
+        "fit_mode": {
+          "default": "in_memory",
+          "enum": [
+            "in_memory",
+            "out_of_core"
+          ],
+          "title": "Fit Mode",
+          "type": "string"
+        },
         "gpu_vram_available_mb": {
           "anyOf": [
             {
@@ -25038,7 +25148,8 @@
         "gpu_vram_available_mb",
         "gpu_warning",
         "unavailable",
-        "unbounded_join_node_ids"
+        "unbounded_join_node_ids",
+        "fit_mode"
       ],
       "title": "TrainEstimateResponse",
       "type": "object"

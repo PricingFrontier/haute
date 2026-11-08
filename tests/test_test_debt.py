@@ -37,6 +37,10 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # The chunked GLM suite (MOD-M01) fits real RustyStats models in both fit modes;
+    # rustystats is an optional dependency, so the module importorskips it like the
+    # other GLM suites. See tests/test_glm_chunked_fit.py.
+    "586f4dc88064defc",
     # Native Windows HighQoS requires the real Windows process API. The
     # strong-revision cache witness requires a filesystem exposing that proof;
     # unsupported filesystems are covered separately by cache-bypass tests.

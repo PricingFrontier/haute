@@ -1681,6 +1681,7 @@ class TestLaunchBackgroundWorker:
                 tmp_parquet,
                 warning=None,
                 total_source_rows=100,
+                fit_mode="in_memory",
                 execution_context=context,
             )
             assert thread is not None
@@ -1736,6 +1737,7 @@ class TestLaunchBackgroundWorker:
                 tmp_parquet,
                 warning=None,
                 total_source_rows=100,
+                fit_mode="in_memory",
                 execution_context=context,
             )
             assert thread is not None
@@ -1777,6 +1779,7 @@ class TestLaunchBackgroundWorker:
                 tmp_parquet,
                 warning=None,
                 total_source_rows=None,
+                fit_mode="in_memory",
                 execution_context=context,
             )
             assert thread is not None
@@ -1817,6 +1820,7 @@ class TestLaunchBackgroundWorker:
                 tmp_parquet,
                 warning=None,
                 total_source_rows=None,
+                fit_mode="in_memory",
                 execution_context=context,
             )
             assert thread is not None
@@ -1867,6 +1871,7 @@ class TestLaunchBackgroundWorker:
                 tmp_parquet,
                 warning=None,
                 total_source_rows=None,
+                fit_mode="in_memory",
                 execution_context=context,
             )
 
@@ -1922,6 +1927,7 @@ class TestProtocolCallbackValidation:
                 str(prepared),
                 None,
                 None,
+                fit_mode="in_memory",
                 execution_context=_training_execution_context(),
             )
 
@@ -2343,6 +2349,7 @@ class TestProtocolLaunchCleanup:
                 str(prepared),
                 None,
                 None,
+                fit_mode="in_memory",
                 execution_context=context,
             )
         return service._launch_dispersion_protocol(

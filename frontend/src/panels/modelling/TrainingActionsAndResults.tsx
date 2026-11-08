@@ -112,9 +112,11 @@ export function TrainingActionsAndResults({
     const trainingMb = rows * ramEstimate.bytes_per_row * TRAINING_OVERHEAD / (1024 * 1024)
     const isLimited = rows < sourceRows
 
+    // A GLM the RAM limit binds on trains on every row in chunks instead.
+    const chunked = ramEstimate.fit_mode === "out_of_core"
     // Amber when RAM requires downsampling, unless the user's limit
     // is already at or below the safe limit (they've preempted it)
-    const wasDownsampled = ramEstimate.was_downsampled
+    const wasDownsampled = !chunked && ramEstimate.was_downsampled
       && !(hasUserLimit && rowLimit <= (ramEstimate.safe_row_limit ?? sourceRows))
 
     // GPU VRAM: the server sized it at gpu_vram_rows, the rows training would
@@ -125,7 +127,7 @@ export function TrainingActionsAndResults({
       gpuVramMb = gpuVramMb * rows / vramRows
     }
 
-    return { rows, trainingMb, wasDownsampled, isLimited, gpuVramMb }
+    return { rows, trainingMb, chunked, wasDownsampled, isLimited, gpuVramMb }
   }, [ramEstimate, rowLimit])
   // A row total resting on a join without a key contract is its worst case,
   // never a count to call "fits" or "will downsample".
@@ -253,6 +255,12 @@ export function TrainingActionsAndResults({
                 <span style={{ color: "var(--text-primary)" }}>{ramEstimate.safe_row_limit.toLocaleString()}</span>
               </>
             )}
+            {ramEstimate.fit_mode === "out_of_core" && (
+              <>
+                <span>Fit</span>
+                <span style={{ color: "var(--text-primary)" }}>In chunks</span>
+              </>
+            )}
             <span>Available RAM</span>
             <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.available_mb)}</span>
           </div>
@@ -266,7 +274,7 @@ export function TrainingActionsAndResults({
           <div className="flex items-center gap-2">
             {adjusted.wasDownsampled && <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />}
             <span className="font-medium" style={{ color: adjusted.wasDownsampled ? "var(--warning)" : "var(--train-summary-success-text)" }}>
-              {adjusted.wasDownsampled ? "Will downsample" : "Dataset fits in memory"}
+              {adjusted.chunked ? "Will train in chunks" : adjusted.wasDownsampled ? "Will downsample" : "Dataset fits in memory"}
             </span>
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
@@ -278,7 +286,7 @@ export function TrainingActionsAndResults({
                 <span style={{ color: adjusted.wasDownsampled ? "var(--warning-strong)" : "var(--text-primary)" }}>{adjusted.rows.toLocaleString()}</span>
               </>
             )}
-            <span>Est. training RAM</span>
+            <span>{adjusted.chunked ? "Est. in-memory RAM" : "Est. training RAM"}</span>
             <span style={{ color: "var(--text-primary)" }}>{formatMb(adjusted.trainingMb)}</span>
             <span>Available RAM</span>
             <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.available_mb)}</span>

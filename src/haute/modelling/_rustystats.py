@@ -9,16 +9,16 @@ config validation lives in :mod:`haute.modelling._train_config`.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
-from haute._polars_utils import release_freed_memory
+from haute._polars_utils import bounded_collect_batches, release_freed_memory
 from haute.errors import HauteValidationError
 from haute.modelling._algorithms import (
     BaseAlgorithm,
@@ -40,52 +40,158 @@ from haute.modelling._train_config import (
     validate_glm_params,
 )
 
+if TYPE_CHECKING:
+    from rustystats import BatchProgress, BatchSource, OutOfCoreOptions
+
+    from haute._execution_context import ExecutionContext
+
 logger = get_logger(component="rustystats")
+
+_T = TypeVar("_T")
+
+#: Rows Haute asks for per source batch of an out-of-core fit; each pass's batches
+#: shrink to the execution context's headroom (``bounded_collect_batches``).
+GLM_SOURCE_BATCH_ROWS = 262_144
+
+
+class GLMMemoryPlanError(MemoryError):
+    """An out-of-core GLM's fixed or learned state does not fit its memory budget.
+
+    RustyStats refuses before allocating (``MemoryPlanExceededError``,
+    ``DesignTooWideError``, ``LearnedStateTooLargeError``); the message is Haute's
+    curated text with that detail.
+    """
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(
+            f"Training could not fit the GLM within its memory budget: {detail} Use fewer "
+            "design columns (fewer categorical levels, interactions or spline degrees of "
+            "freedom), or run on a server with more memory."
+        )
+
+
+def _rustystats_call(function: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """Call RustyStats, turning a planned memory refusal into ``GLMMemoryPlanError``."""
+    from rustystats.exceptions import (
+        DesignTooWideError,
+        LearnedStateTooLargeError,
+        MemoryPlanExceededError,
+    )
+
+    try:
+        return function(*args, **kwargs)
+    except (MemoryPlanExceededError, DesignTooWideError, LearnedStateTooLargeError) as exc:
+        raise GLMMemoryPlanError(str(exc)) from exc
+
+
+# ── Out-of-core source and options ───────────────────────────────────────
+
+
+def glm_batch_source(
+    path: Path,
+    *,
+    execution_context: ExecutionContext | None,
+) -> BatchSource:
+    """A RustyStats batch source over a Parquet file of training rows.
+
+    Every pass reads the file in order, one bounded batch at a time, with a
+    checkpoint after each batch.
+    """
+    import rustystats as rs
+
+    def open_batches(columns: Sequence[str]) -> Iterator[pl.DataFrame]:
+        return bounded_collect_batches(
+            pl.scan_parquet(path).select(list(columns)),
+            chunk_size=GLM_SOURCE_BATCH_ROWS,
+            execution_context=execution_context,
+            stage_name="training_glm_batch",
+        )
+
+    return rs.BatchSource(open_batches, pl.read_parquet_schema(path))
+
+
+def glm_out_of_core_options(
+    *,
+    execution_context: ExecutionContext | None,
+    scratch_dir: Path,
+    on_batch: Callable[[BatchProgress], None],
+) -> OutOfCoreOptions:
+    """The out-of-core fit's limits: half the headroom left when the fit starts.
+
+    The source's batches are sized from the other half. A context without a
+    budget leaves RustyStats unbounded.
+    """
+    import rustystats as rs
+
+    remaining = (
+        execution_context.remaining_memory_bytes() if execution_context is not None else None
+    )
+    return rs.OutOfCoreOptions(
+        max_bytes=None if remaining is None else max(1, remaining // 2),
+        scratch_dir=str(scratch_dir),
+        on_batch=on_batch,
+    )
+
+
+def glm_fit_evidence(model: Any) -> dict[str, Any]:
+    """The fit mode, solver caps and (out of core) passes a RustyStats result reports."""
+    settings = model.solver_settings
+    evidence: dict[str, Any] = {
+        "mode": str(model.fit_mode),
+        "max_iter": int(settings["max_iter"]),
+        "tol": float(settings["tol"]),
+        "max_half_steps": int(settings["max_half_steps"]),
+    }
+    if evidence["mode"] == "out_of_core":
+        plan = model.memory_plan
+        evidence["passes"] = int(sum(model.passes.values()))
+        evidence["encode_rows"] = int(model.encode_rows)
+        evidence["max_bytes"] = None if plan.max_bytes is None else int(plan.max_bytes)
+    return evidence
 
 
 # ── Design preparation ───────────────────────────────────────────────────
 
 
-def _observed_category_labels(series: pl.Series) -> list[str]:
-    """Non-null labels exactly as RustyStats compares categorical levels.
-
-    RustyStats matches ``levels`` against ``column.to_numpy().astype(str)``
-    over the whole column, so an integer column with nulls is labelled
-    ``2.0`` rather than ``2``. Null rows are excluded from the labels.
-    """
-    strings = np.asarray(series.to_numpy()).astype(str)
-    present = ~series.is_null().to_numpy()
-    return sorted(set(strings[present].tolist()))
-
-
 def prepare_glm_design(
     params: Mapping[str, Any],
-    frame: pl.DataFrame,
+    data: pl.DataFrame | BatchSource,
+    *,
+    out_of_core: OutOfCoreOptions | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     """Resolve stored GLM params into the terms and interactions RustyStats fits.
 
-    Validates every model column against the frame's dtypes, translates
-    categorical reference levels using the frame's observed labels, and
-    resolves interactions independently of card order.
+    Validates every model column against the data's schema, translates
+    categorical reference levels using the labels RustyStats observes (over the
+    frame in memory, or in one bounded pass over a batch source), and resolves
+    interactions independently of card order.
     """
+    import rustystats as rs
+
     terms = params.get("terms") or {}
     if not terms:
         raise HauteValidationError("GLM config has no terms. Add a term to at least one feature.")
     interactions = params.get("interactions") or []
-    schema = {name: str(dtype) for name, dtype in frame.schema.items()}
+    schema = {name: str(dtype) for name, dtype in data.schema.items()}
     validate_glm_model_columns(terms, interactions, schema)
-    observed = {
-        name: _observed_category_labels(frame[name])
+    labelled = [
+        name
         for name, spec in terms.items()
         if spec["type"] == "categorical" and ("levels" in spec or "reference" in spec)
-    }
+    ]
+    observed = (
+        _rustystats_call(rs.observed_category_labels, data, labelled, out_of_core=out_of_core)
+        if labelled
+        else {}
+    )
     resolved_terms = resolve_categorical_levels(terms, observed)
     dtype_classes = {name: glm_dtype_class(dtype) for name, dtype in schema.items()}
     rs_interactions, effective_terms = resolve_glm_design(
         resolved_terms,
         interactions,
         dtype_classes,
-        reserved_names=frame.columns,
+        reserved_names=list(schema),
     )
     return effective_terms, rs_interactions
 
@@ -94,18 +200,20 @@ def _build_glm_builder_kwargs(
     *,
     target: str,
     terms: dict[str, dict[str, Any]],
-    data: pl.DataFrame,
+    data: pl.DataFrame | BatchSource,
     params: Mapping[str, Any],
     weight: str | None = None,
     offset: str | None = None,
     interactions: list[dict[str, Any]] | None = None,
     var_power: float | None = None,
     theta: float | None = None,
+    seed: int,
 ) -> dict[str, Any]:
     """Build kwargs for ``rs.glm_dict()``.
 
     ``var_power`` and ``theta`` override the params values for profile
-    likelihood candidates.
+    likelihood candidates. ``seed`` keys target encoding's order, so a model is
+    the same in both fit modes and on every rerun.
     """
     family = str(params["family"])
     kwargs: dict[str, Any] = {
@@ -114,6 +222,7 @@ def _build_glm_builder_kwargs(
         "data": data,
         "family": family,
         "intercept": params.get("intercept", True),
+        "seed": int(seed),
     }
     link = params.get("link") or None
     if link:
@@ -171,8 +280,10 @@ def glm_fit_kwargs(params: Mapping[str, Any]) -> dict[str, Any]:
         kwargs["max_iter"] = int(params["max_iter"])
     if params.get("tol") is not None:
         kwargs["tol"] = float(params["tol"])
-    if params.get("robust_standard_errors"):
-        kwargs["store_design_matrix"] = True
+    robust = params.get("robust_standard_errors")
+    if robust:
+        # Computed at fit time, so neither mode keeps the n x p design.
+        kwargs["robust"] = [str(robust)]
     return kwargs
 
 
@@ -209,6 +320,7 @@ def estimate_glm_dispersion(
     weight: str | None = None,
     offset: str | None = None,
     on_fit: Callable[[int], None] | None = None,
+    seed: int,
 ) -> DispersionEstimate:
     """Estimate a GLM dispersion parameter by profile likelihood.
 
@@ -256,6 +368,7 @@ def estimate_glm_dispersion(
             interactions=interactions,
             var_power=value if param == "var_power" else None,
             theta=value if param == "theta" else None,
+            seed=seed,
         )
         n_fits += 1
         try:
@@ -595,18 +708,32 @@ class GLMAlgorithm(BaseAlgorithm):
         offset: str | None = None,
         monotone_constraints: dict[str, int] | None = None,
         feature_weights: dict[str, float] | None = None,
+        *,
+        source: BatchSource | None = None,
+        out_of_core: OutOfCoreOptions | None = None,
+        seed: int = 0,
         **kwargs: Any,
     ) -> FitResult:
         """Fit a GLM using the RustyStats dict API.
 
         GLM configuration (terms, family, link, regularization, and so on)
-        arrives in ``params``. The design is resolved from ``train_df``'s
-        dtypes; ``features`` and ``cat_features`` only bound the columns read.
+        arrives in ``params``. The design is resolved from the data's dtypes;
+        ``features`` and ``cat_features`` only bound the columns read. In memory
+        the rows are ``train_df``; out of core they are ``source``, read in
+        passes under ``out_of_core``, and ``train_df`` is ``None``. ``seed`` keys
+        target encoding's order (the job passes its fit seed).
         """
         import rustystats as rs
 
-        if train_df is None:
-            raise HauteValidationError("GLMAlgorithm.fit() requires train_df (pool bypass)")
+        if (train_df is None) == (source is None):
+            raise HauteValidationError(
+                "GLMAlgorithm.fit() takes the training rows as train_df (in memory) or "
+                "source (out of core), exactly one of them"
+            )
+        if (source is None) != (out_of_core is None):
+            raise HauteValidationError(
+                "GLMAlgorithm.fit() takes out_of_core options exactly when it reads a source"
+            )
         if monotone_constraints:
             raise HauteValidationError(
                 "monotone_constraints is a CatBoost lever; GLM monotonicity lives on each "
@@ -622,23 +749,33 @@ class GLMAlgorithm(BaseAlgorithm):
         validate_glm_params(params)
 
         _mem_checkpoint("glm fit() START")
-        terms, rs_interactions = prepare_glm_design(params, train_df)
+        data: pl.DataFrame | BatchSource
+        if source is None:
+            assert train_df is not None  # exactly one of them, checked above
+            data = train_df
+        else:
+            data = source
+        terms, rs_interactions = prepare_glm_design(params, data, out_of_core=out_of_core)
         builder = rs.glm_dict(
             **_build_glm_builder_kwargs(
                 target=target,
                 terms=terms,
-                data=train_df,
+                data=data,
                 params=params,
                 weight=weight,
                 offset=offset,
                 interactions=rs_interactions,
+                seed=seed,
             )
         )
 
         if on_iteration:
             on_iteration(0, 1, {}, None)
         _mem_checkpoint("glm fitting")
-        result = builder.fit(**glm_fit_kwargs(params))
+        fit_kwargs = glm_fit_kwargs(params)
+        if out_of_core is not None:
+            fit_kwargs["out_of_core"] = out_of_core
+        result = _rustystats_call(builder.fit, **fit_kwargs)
         _mem_checkpoint("glm fit() DONE")
         # A GLM converges in a few IRLS steps, not iteratively like a GBM.
         loss_history: list[dict[str, float]] = [
@@ -647,9 +784,10 @@ class GLMAlgorithm(BaseAlgorithm):
         if on_iteration:
             on_iteration(1, 1, {"deviance": float(result.deviance)}, loss_history[0])
 
-        freed_bytes = train_df.estimated_size()
-        del train_df
-        release_freed_memory(freed_bytes)
+        if train_df is not None:
+            freed_bytes = train_df.estimated_size()
+            del train_df
+            release_freed_memory(freed_bytes)
 
         # No early stopping: the IRLS iteration count is a fit statistic
         # (``glm_fit_statistics``), not the round every other family's value names.
@@ -657,6 +795,7 @@ class GLMAlgorithm(BaseAlgorithm):
             model=result,
             best_iteration=None,
             loss_history=loss_history,
+            evidence=glm_fit_evidence(result),
         )
 
     def predict(

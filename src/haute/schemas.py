@@ -3780,6 +3780,35 @@ class FitEvidencePayload(BaseModel):
     term_update_steps: list[Annotated[int, Field(ge=0)]] | None = None
     #: The device a GPU fit actually trained on (``cuda:0``).
     device: str | None = Field(default=None, min_length=1)
+    #: A GLM's fit mode: in memory, or out of core in passes over its rows on disk.
+    mode: Literal["in_memory", "out_of_core"] | None = None
+    #: The GLM solver's caps: its iteration budget, convergence tolerance and
+    #: step-halving candidates per iteration.
+    max_iter: int | None = Field(default=None, strict=True, ge=1)
+    tol: float | None = Field(default=None, gt=0)
+    max_half_steps: int | None = Field(default=None, strict=True, ge=0)
+    #: Out of core only: passes over the rows, rows per encoded block, and the
+    #: memory plan's limit (null without a budget).
+    passes: int | None = Field(default=None, strict=True, ge=1)
+    encode_rows: int | None = Field(default=None, strict=True, ge=1)
+    max_bytes: int | None = Field(default=None, strict=True, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_fit_mode(self) -> FitEvidencePayload:
+        caps = (self.max_iter, self.tol, self.max_half_steps)
+        passes = (self.passes, self.encode_rows, self.max_bytes)
+        if self.mode is None:
+            if any(value is not None for value in (*caps, *passes)):
+                raise ValueError("solver caps and passes belong to a fit that states its mode")
+            return self
+        if any(value is None for value in caps):
+            raise ValueError("a fit that states its mode states its solver caps")
+        out_of_core = self.mode == "out_of_core"
+        if any(out_of_core != (value is not None) for value in (self.passes, self.encode_rows)):
+            raise ValueError("an out-of-core fit, and only one, states its passes and encode rows")
+        if self.max_bytes is not None and not out_of_core:
+            raise ValueError("only an out-of-core fit states a memory-plan limit")
+        return self
 
 
 class TrainShapBeeswarmFeature(BaseModel):
@@ -4237,6 +4266,8 @@ class TrainEstimateResponse(BaseModel):
     """Set, with the memory figures null, when the estimate cannot size its input."""
     unbounded_join_node_ids: list[str]
     """Joins without a key contract that make ``total_rows`` a worst case, in graph order."""
+    fit_mode: Literal["in_memory", "out_of_core"] = "in_memory"
+    """``out_of_core`` when a GLM will train on every row in chunks instead of downsampling."""
     evaluation_preview: EvaluationPreviewPayload | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -4247,6 +4278,12 @@ class TrainEstimateResponse(BaseModel):
         figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
         if self.unbounded_join_node_ids and (self.was_downsampled or self.warning is not None):
             raise ValueError("a worst-case row bound has no downsampling verdict or warning")
+        if self.fit_mode == "out_of_core" and (
+            self.unavailable is not None or self.was_downsampled or self.warning is not None
+        ):
+            raise ValueError(
+                "an out-of-core fit plan rests on an available estimate and downsamples nothing"
+            )
         if (self.gpu_vram_rows is None) != (self.gpu_vram_estimated_mb is None):
             raise ValueError("a GPU VRAM figure states the rows it is sized at")
         if self.unavailable is None:

@@ -510,6 +510,7 @@ def _launch(
         str(prepared),
         None,
         10,
+        fit_mode="in_memory",
         execution_context=execution_context
         or ExecutionContext(
             operation="training_pipeline",
@@ -1187,6 +1188,86 @@ def test_cancel_before_publication_removes_the_job_artifact_directory(
     assert not prepared.exists()
 
 
+def test_a_killed_workers_out_of_core_scratch_goes_with_the_job_artifacts(
+    tmp_path: Path, training_root: Path
+) -> None:
+    """MOD-M01: the parent's cleanup after a worker death removes the fit's directory."""
+    from haute._worker_isolation import IsolatedWorkerCrashedError
+
+    scratch_dirs: list[Path] = []
+
+    class _Killed(BaseException):
+        pass
+
+    class _ChunkedTrainingJob:
+        def __init__(self, **kwargs) -> None:
+            assert kwargs["fit_mode"] == "out_of_core"
+            self.scratch_dir = Path(kwargs["scratch_dir"])
+
+        def run(self, *_args, **_kwargs):
+            # What an out-of-core fit holds on disk when its process is killed.
+            self.scratch_dir.mkdir(parents=True, exist_ok=True)
+            fit_dir = self.scratch_dir / "haute-glm-killed"
+            fit_dir.mkdir()
+            (fit_dir / "glm-train.parquet").write_bytes(b"rows")
+            scratch_dirs.append(fit_dir)
+            raise _Killed
+
+    def killed(function, request, **kwargs):
+        try:
+            _inline_protocol_runner(function, request, **kwargs)
+        except _Killed:
+            raise IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=None) from None
+        raise AssertionError("the worker was not killed")
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=killed)
+    with patch("haute.modelling.TrainingJob", _ChunkedTrainingJob):
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "job_type": "training",
+                "node_id": "quoted",
+                "node_label": "quoted",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
+        )
+        prepared = tmp_path / "prepared.parquet"
+        prepared.write_bytes(b"prepared")
+        thread = service._launch_background(
+            job_id,
+            "quoted",
+            {
+                "name": "quoted",
+                "target": "y",
+                "algorithm": "glm",
+                "family": "gaussian",
+                "terms": {"x": {"type": "linear"}},
+                "output_dir": str(tmp_path / "outputs"),
+                "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
+            },
+            {"family": "gaussian", "terms": {"x": {"type": "linear"}}},
+            str(prepared),
+            None,
+            10,
+            fit_mode="out_of_core",
+            execution_context=ExecutionContext(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_limit_bytes=_TEST_WORKER_MEMORY_LIMIT_BYTES,
+            ),
+        )
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
+
+    assert store.require_job(job_id)["status"] == "error"
+    assert len(scratch_dirs) == 1
+    assert training_root in scratch_dirs[0].parents
+    assert not scratch_dirs[0].exists()
+    assert not list(training_root.glob("train_*"))
+
+
 def test_publication_rejects_model_name_not_declared_by_request(tmp_path: Path) -> None:
     root, output, manifest, expected = _staged_training_manifest(tmp_path)
     model = next(artifact for artifact in manifest.artifacts if artifact.kind == "model")
@@ -1258,6 +1339,9 @@ def test_worker_timing_rejects_all_invalid_values() -> None:
 
 def _prepared_job(data: Path, dtypes: dict[str, str], captured: dict | None = None) -> type:
     class Job:
+        #: The seed the job's fits use (TrainingJob._fit_seed).
+        _fit_seed = 42
+
         def __init__(self, **kwargs):
             if captured is not None:
                 captured["job_kwargs"] = kwargs
@@ -1285,7 +1369,10 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
     frame.write_parquet(data)
     queue = _ForwardingQueue()
 
+    seeds: list[int] = []
+
     def estimate(**kwargs):
+        seeds.append(kwargs["seed"])
         kwargs["on_fit"](0)
         return SimpleNamespace(param="theta", value=1.25, llf=-4.5, n_fits=1)
 
@@ -1320,6 +1407,8 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
     assert isinstance(result, WorkerResultManifest)
     assert result.metadata["value"] == 1.25
     assert [event.kind for event in queue.events] == ["progress", "progress", "dispersion_fit"]
+    # Every candidate fits with the job's seed, so a target-encoded design never changes.
+    assert seeds == [42]
 
 
 def test_a_dispersion_candidate_out_of_memory_ends_the_search_memory_limited(
@@ -1512,6 +1601,34 @@ def test_a_thread_that_cannot_start_under_the_cap_is_a_memory_limit_failure(
         assert result.error_type == "RuntimeError"
 
 
+def test_a_glm_memory_plan_refusal_is_a_curated_memory_limit_failure(tmp_path: Path) -> None:
+    """MOD-M01: RustyStats' planned refusal ends memory_limited in Haute's words."""
+    from haute.modelling._rustystats import GLMMemoryPlanError
+
+    detail = "The solve phase plans a peak of 900 bytes, more than max_bytes = 100."
+
+    class RefusedJob:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def run(self, *_args, **_kwargs):
+            raise GLMMemoryPlanError(detail)
+
+    with patch("haute.modelling.TrainingJob", RefusedJob):
+        result = _run_training_process_job(
+            WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")), _request(tmp_path)
+        )
+
+    assert isinstance(result, WorkerFailurePayload)
+    assert result.terminal_reason == "memory_limited"
+    assert result.fields["error_code"] == "memory_limit"
+    assert result.message == (
+        f"Training could not fit the GLM within its memory budget: {detail} Use fewer design "
+        "columns (fewer categorical levels, interactions or spline degrees of freedom), or run "
+        "on a server with more memory."
+    )
+
+
 def test_completed_job_owns_its_artifact_directory_after_parent_cleanup(
     tmp_path: Path, training_root: Path
 ) -> None:
@@ -1546,6 +1663,7 @@ def test_completed_job_owns_its_artifact_directory_after_parent_cleanup(
             str(prepared),
             None,
             10,
+            fit_mode="in_memory",
             execution_context=ExecutionContext(
                 operation="training_pipeline",
                 profile=ExecutionProfile.TRAINING_PREP,
@@ -1601,6 +1719,7 @@ def _complete_training_job(
             str(prepared),
             None,
             10,
+            fit_mode="in_memory",
             execution_context=ExecutionContext(
                 operation="training_pipeline",
                 profile=ExecutionProfile.TRAINING_PREP,
@@ -1744,6 +1863,7 @@ def test_terminal_job_after_preparation_does_not_launch_worker(tmp_path: Path) -
         str(prepared),
         None,
         10,
+        fit_mode="in_memory",
         execution_context=context,
     )
     assert thread is None and calls == [] and not prepared.exists() and released == [True]
@@ -1807,6 +1927,7 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
             str(prepared),
             None,
             10,
+            fit_mode="in_memory",
             execution_context=ExecutionContext(
                 operation="training_pipeline",
                 profile=ExecutionProfile.TRAINING_PREP,
@@ -1858,6 +1979,7 @@ def test_live_training_never_auto_logs(tmp_path: Path) -> None:
             str(prepared),
             None,
             10,
+            fit_mode="in_memory",
             execution_context=ExecutionContext(
                 operation="training_pipeline",
                 profile=ExecutionProfile.TRAINING_PREP,

@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 import polars as pl
@@ -20,6 +20,10 @@ from haute.errors import ConfigError, HauteValidationError
 
 # (iteration, total, readout metrics, the loss-history row this iteration adds or None).
 IterationCallback = Callable[[int, int, dict[str, float], dict[str, float] | None], None]
+
+
+#: Whether a fit holds its training rows in memory or reads them in passes from disk.
+FitMode = Literal["in_memory", "out_of_core"]
 
 
 @dataclass
@@ -44,6 +48,9 @@ class FitResult:
     #: EBM's native ``best_iteration_``: executed term updates per boosting
     #: stage. Neither a tree count nor a round budget, and never converted.
     term_update_steps: list[int] | None = None
+    #: Further ``FitEvidencePayload`` fields the family reports (the GLM's fit
+    #: mode, solver caps and, out of core, its passes and memory plan).
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 class BaseAlgorithm(ABC):

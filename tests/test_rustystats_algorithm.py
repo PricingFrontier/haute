@@ -498,9 +498,11 @@ class TestGLMFit:
         assert model.inference_status == "constrained_boundary"
         assert float(model.params[1]) <= 0.0
 
-    def test_fit_requires_dataframe(self, algo):
-        with pytest.raises(ValueError, match="requires train_df"):
+    def test_fit_requires_the_rows_one_way(self, algo, interaction_df):
+        with pytest.raises(ValueError, match="train_df \\(in memory\\) or source"):
             algo.fit(None, [], [], "target", None, {}, "regression")
+        with pytest.raises(ValueError, match="out_of_core options exactly when it reads a source"):
+            algo.fit(interaction_df, [], [], "y", None, {}, "regression", out_of_core=object())
 
     def test_fit_calls_on_iteration(self, algo, interaction_df):
         calls = []
@@ -594,9 +596,13 @@ class TestRegularizationAndSolverControls:
         assert glm_fit_kwargs(controlled) == {
             "max_iter": 50,
             "tol": 1e-6,
-            "store_design_matrix": True,
+            # Robust covariance is computed at fit time, so no n x p design is kept.
+            "robust": ["HC1"],
         }
-        assert bool(_fit(algo, penalty_df, controlled).model.converged)
+        fitted = _fit(algo, penalty_df, controlled)
+        assert bool(fitted.model.converged)
+        assert fitted.evidence["max_iter"] == 50
+        assert fitted.evidence["tol"] == 1e-6
 
     def test_robust_standard_errors_use_hc_statistics(self, algo, penalty_df):
         params = {"family": "poisson", "terms": _PENALTY_TERMS, "robust_standard_errors": "HC1"}
@@ -641,12 +647,12 @@ class TestRegularizationAndSolverControls:
         for power in (1.0, 2.0):
             params = {"family": "tweedie", "var_power": power, "terms": {"x": {"type": "linear"}}}
             assert _build_glm_builder_kwargs(
-                target="y", terms=params["terms"], data=frame, params=params
+                target="y", terms=params["terms"], data=frame, params=params, seed=0
             )["allow_extended_tweedie"]
             assert bool(_fit(algo, frame, params).model.converged)
         interior = {"family": "tweedie", "var_power": 1.5, "terms": {"x": {"type": "linear"}}}
         assert "allow_extended_tweedie" not in _build_glm_builder_kwargs(
-            target="y", terms=interior["terms"], data=frame, params=interior
+            target="y", terms=interior["terms"], data=frame, params=interior, seed=0
         )
 
 
@@ -742,14 +748,16 @@ class TestEstimateGlmDispersion:
         """Golden value: statsmodels NB2 MLE on this exact draw gives
         1/alpha = 2.4487 (betas match rustystats to 4 d.p.). Pinned as a
         literal so statsmodels is not a test dependency."""
-        est = estimate_glm_dispersion(data=nb_df, params=_NB_PARAMS, target="y", param="theta")
+        est = estimate_glm_dispersion(
+            data=nb_df, params=_NB_PARAMS, target="y", param="theta", seed=0
+        )
         assert est.param == "theta"
         assert est.value == pytest.approx(2.4487, abs=0.01)
         assert est.llf == pytest.approx(-693.038, abs=0.05)
         assert est.n_fits > 0
 
     def test_estimate_is_deterministic(self, nb_df):
-        kwargs = {"data": nb_df, "params": _NB_PARAMS, "target": "y", "param": "theta"}
+        kwargs = {"data": nb_df, "params": _NB_PARAMS, "target": "y", "param": "theta", "seed": 0}
         first = estimate_glm_dispersion(**kwargs)
         second = estimate_glm_dispersion(**kwargs)
         assert first.value == second.value
@@ -766,6 +774,7 @@ class TestEstimateGlmDispersion:
             params={"family": "tweedie", "terms": {"x1": {"type": "linear"}}},
             target="y",
             param="var_power",
+            seed=0,
         )
         assert est.param == "var_power"
         assert 1.01 < est.value < 1.99
@@ -778,7 +787,7 @@ class TestEstimateGlmDispersion:
             "terms": {**_NB_TERMS, "g": {"type": "categorical", "reference": "z"}},
         }
         with pytest.raises(HauteValidationError, match="reference level 'z'"):
-            estimate_glm_dispersion(data=frame, params=params, target="y", param="theta")
+            estimate_glm_dispersion(data=frame, params=params, target="y", param="theta", seed=0)
 
     def test_on_fit_callback_can_abort(self, nb_df):
         class _StopError(RuntimeError):
@@ -794,11 +803,14 @@ class TestEstimateGlmDispersion:
                 target="y",
                 param="theta",
                 on_fit=abort_immediately,
+                seed=0,
             )
 
     def test_unknown_param_rejected(self, nb_df):
         with pytest.raises(ValueError, match="Unknown dispersion parameter"):
-            estimate_glm_dispersion(data=nb_df, params=_NB_PARAMS, target="y", param="alpha")
+            estimate_glm_dispersion(
+                data=nb_df, params=_NB_PARAMS, target="y", param="alpha", seed=0
+            )
 
     def test_family_param_mismatch_rejected(self, nb_df):
         with pytest.raises(ValueError, match="belongs to the negbinomial family"):
@@ -807,6 +819,7 @@ class TestEstimateGlmDispersion:
                 params={"family": "poisson", "terms": _NB_TERMS},
                 target="y",
                 param="theta",
+                seed=0,
             )
 
 
@@ -845,12 +858,12 @@ class TestOffsetExposureSemantics:
     def test_builder_routes_the_offset_by_the_effective_link(self, params, key):
         frame = pl.DataFrame({"y": [1.0], "x": [0.0], "e": [1.0]})
         kwargs = _build_glm_builder_kwargs(
-            target="y", terms=_EXPOSURE_TERMS, data=frame, params=params, offset="e"
+            target="y", terms=_EXPOSURE_TERMS, data=frame, params=params, offset="e", seed=0
         )
         assert kwargs[key] == "e"
         assert {"exposure", "offset"} - {key} <= {"exposure", "offset"} - set(kwargs)
         without = _build_glm_builder_kwargs(
-            target="y", terms=_EXPOSURE_TERMS, data=frame, params=params
+            target="y", terms=_EXPOSURE_TERMS, data=frame, params=params, seed=0
         )
         assert "exposure" not in without and "offset" not in without
 
