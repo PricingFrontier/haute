@@ -1044,7 +1044,8 @@ def handle_init(config: InitConfig) -> None:
         written = [
             "haute.toml",
             *(["pyproject.toml"] if pyproject_changed else []),
-            *([".python-version"] if wrote_python_version else []),
+            # GitHub's jobs name no Python, so an existing pin must reach the repository too.
+            *([".python-version"] if wrote_python_version or ci == "github" else []),
             *(f"rating/{FORM_FOLDER}/{rel}" for rel in form_files),
             *([CONNECTIONS_FILE] if write_connections else []),
             *generated,

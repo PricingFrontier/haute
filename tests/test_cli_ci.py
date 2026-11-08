@@ -368,6 +368,23 @@ def test_update_records_a_workflow_it_adds_for_the_next_commit(runner, project: 
     )
 
 
+def test_update_records_a_python_version_nobody_committed(runner, project: Path) -> None:
+    # GitHub's jobs name no Python: without the pin in the repository uv picks one.
+    pin = project / ".python-version"
+    kept = pin.read_text(encoding="utf-8")
+    pin.unlink()
+    _in_a_repository(project, working_branch="pricing-dev")
+    pin.write_text(kept, encoding="utf-8")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
+    assert ".python-version" in saved
+    assert pin.read_text(encoding="utf-8") == kept
+    assert "Recorded in version history: .python-version" in result.output
+
+
 def test_update_names_a_file_it_adds_that_it_could_not_record(runner, project: Path) -> None:
     _in_a_repository(project, working_branch=None)
     _to_provider(project, "gitlab")

@@ -196,12 +196,12 @@ The deploy jobs log in to ACR as the service principal (see [Azure Container App
 The workflow files were created by `haute init` in `.github/workflows/`. Make sure they're committed to your [repository](../before-you-start.md#getting-your-project-ready-for-deployment):
 
 ```powershell
-git add .github/ pyproject.toml uv.lock
+git add .github/ .python-version pyproject.toml uv.lock
 git commit -m "Add CI/CD workflows"
 git push
 ```
 
-Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`: commit it with `pyproject.toml`. `uv add` creates it; run `uv sync` once if it is missing.
+Every job installs with `uv sync --frozen`, which needs the project's `uv.lock`: commit it with `pyproject.toml`. `uv add` creates it; run `uv sync` once if it is missing. The jobs run the Python that `.python-version` names, so commit that file too.
 
 !!! note "What do these commands mean?"
     - `git add` - tells Git to include these files in your next save

@@ -886,7 +886,9 @@ made in one place:
   predate the action, so it runs those two steps itself.
 - **Python.** No GitHub job names a Python. uv reads the project's `.python-version`, which
   `haute init` writes when the project has none and `haute ci update` writes for a GitHub
-  project that has none.
+  project that has none. So that CI sees it, the first commit takes it
+  (`src/haute/_git_setup.py::_SEED_PATHSPECS`), and on a GitHub project a re-run of `haute init`
+  and `haute ci update` record it when Git does not track it yet, leaving its content alone.
 - **Checks.** `ci.yml` holds them, in the jobs `lint`, `typecheck`, `test` and
   `pipeline-validate`. It runs on a pull request and, through `workflow_call`, as the `validate`
   job of `deploy-staging.yml` and `release.yml`, which is `uses: ./.github/workflows/ci.yml`

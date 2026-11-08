@@ -146,7 +146,8 @@ def handle_ci_update() -> None:
     project's) is removed, and every other file is left alone, but for the
     ``.python-version`` a GitHub project without one gains, since its jobs run the Python uv
     reads there. Reports each file as updated or unchanged, and records those Git does not
-    track yet in version history (:func:`capture_new_files`): Commit would never take them.
+    track yet in version history (:func:`capture_new_files`), a GitHub project's existing
+    ``.python-version`` among them: Commit would never take them.
     """
     from haute._connections import ConnectionsError
     from haute._project_python import ProjectPythonError, project_python_version
@@ -217,7 +218,9 @@ def handle_ci_update() -> None:
         else env_example(credentials, variables)
     )
     files = {**generated, ".env.example": env_text}
-    if provider == "github" and not (project_dir / ".python-version").exists():
+    # GitHub's jobs name no Python: the pin they run on must exist and reach the repository.
+    python_pin = [".python-version"] if provider == "github" else []
+    if python_pin and not (project_dir / ".python-version").exists():
         files[".python-version"] = f"{python_version}\n"
     _prune_stale_ci_files(project_dir, keep=generated.keys())
     changed = write_generated_files(project_dir, files)
@@ -225,7 +228,7 @@ def handle_ci_update() -> None:
         click.echo(f"  {'updated  ' if rel in changed else 'unchanged'} {rel}")
     # Every generated file, not only those just changed: one written by an earlier run and
     # never committed is recorded now.
-    capture_new_files(project_dir, list(files))
+    capture_new_files(project_dir, [*files, *python_pin])
     if changed:
         click.echo("Review the changes (git status, then git diff) and commit them.")
     else:
