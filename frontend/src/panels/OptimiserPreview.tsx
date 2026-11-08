@@ -29,7 +29,7 @@ import type {
 import type { PreviewData } from "./DataPreview"
 import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
-import ConvergenceChart from "./optimiser/ConvergenceChart"
+import ConvergenceChart, { type FrontierPointHistory, type PointHistories } from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
 import { constraintBoundKind, isPercentBound } from "./optimiser/constraintBounds"
 import {
@@ -106,8 +106,10 @@ type OptimiserReview = {
   /** The key Rates and Segments share (a rating factor or segment key), and its search. */
   featureKey: string | null
   featureSearch: string
-  /** Frontier point adjustment reports loaded in this review, by `pointAdjustmentKey`. */
+  /** Frontier point adjustment reports loaded in this review, by `frontierPointKey`. */
   adjustmentReports: PointAdjustmentReports
+  /** Frontier point convergence traces loaded in this review, by `frontierPointKey`. */
+  pointHistories: PointHistories
   /** Segment breakdowns and indexes loaded in this review. */
   segmentResults: SegmentResults
 }
@@ -222,6 +224,7 @@ export default function OptimiserPreview({
     featureKey: null,
     featureSearch: "",
     adjustmentReports: {},
+    pointHistories: {},
     segmentResults: { breakdowns: {}, indexes: {} },
   }
   const [review, setReview] = useState(freshReview)
@@ -235,6 +238,7 @@ export default function OptimiserPreview({
     featureKey,
     featureSearch,
     adjustmentReports,
+    pointHistories,
     segmentResults,
   } = review.key === reviewKey ? review : freshReview
   const setTab = useCallback((next: OptimiserResultView) => {
@@ -274,6 +278,12 @@ export default function OptimiserPreview({
     setReview((current) => ({
       ...current,
       adjustmentReports: { ...current.adjustmentReports, [key]: report },
+    }))
+  }, [])
+  const recordPointHistory = useCallback((key: string, history: FrontierPointHistory) => {
+    setReview((current) => ({
+      ...current,
+      pointHistories: { ...current.pointHistories, [key]: history },
     }))
   }, [])
   const openAdjustments = useCallback(() => setTab("adjustments"), [setTab])
@@ -615,8 +625,11 @@ export default function OptimiserPreview({
 
       {activeTab === "convergence" && (
         <ConvergenceChart
+          jobId={jobId}
           solvedResult={solvedResult}
           selectedPoint={selectedIdx == null ? null : { index: selectedIdx, result }}
+          pointHistories={pointHistories}
+          onPointHistory={recordPointHistory}
         />
       )}
 

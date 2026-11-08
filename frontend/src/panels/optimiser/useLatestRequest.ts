@@ -19,6 +19,11 @@ import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../../api/errors"
 
 const APPLY_REPLACED = "frontier_point_apply_replaced"
 
+/** A loaded point answer's identity: point indices mean something only within one job. */
+export function frontierPointKey(jobId: string, pointIndex: number): string {
+  return `${jobId}:${pointIndex}`
+}
+
 /** Why the wanted request failed; `gone` (a 410) offers no Retry. */
 export type RequestFailure = { gone: boolean; message: string }
 

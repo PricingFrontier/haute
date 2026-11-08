@@ -552,20 +552,19 @@ test.describe("frontend canvas assurance", () => {
     expect(chosenValues).toHaveLength(8)
     expect(chosenValues).toEqual([...chosenValues].sort((a, b) => b - a))
 
-    // Convergence: every online solve records its history, drawn on real axes.
+    // Convergence: the selected point's own bisection, drawn on real axes.
     await openResultPane(page, "Convergence")
-    const objectiveHistory = optimiserPreview.getByRole("img", { name: "Objective by iteration" })
-    await expect(objectiveHistory).toBeVisible()
-    await expect(objectiveHistory.getByText("Iteration", { exact: true })).toBeVisible()
+    const objectiveHistory = optimiserPreview.getByRole("img", { name: "Objective by step" })
+    await expect(objectiveHistory).toBeVisible({ timeout: 60_000 })
+    await expect(objectiveHistory.getByText("Step", { exact: true })).toBeVisible()
     await expect(objectiveHistory.getByText("Objective", { exact: true })).toBeVisible()
     expect(await objectiveHistory.getByTestId("chart-x-tick").count()).toBeGreaterThan(0)
     expect(await objectiveHistory.getByTestId("chart-value-tick").count()).toBeGreaterThan(1)
+    await expect(optimiserPreview.getByRole("img", { name: "λ by step" })).toBeVisible()
     await expect(
-      optimiserPreview.getByRole("img", { name: "volume total by iteration" }),
+      optimiserPreview.getByRole("img", { name: "volume total by step" }),
     ).toBeVisible()
-    await expect(optimiserPreview.getByText(
-      /^History is recorded for the solved result; frontier point 2: /,
-    )).toBeVisible()
+    await expect(optimiserPreview.getByText(/^Frontier point 2: /)).toBeVisible()
 
     // Focus view keeps the pane and closes on Escape.
     await optimiserPreview.getByRole("button", { name: "Focus view", exact: true }).click()

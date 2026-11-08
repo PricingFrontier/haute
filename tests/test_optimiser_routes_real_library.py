@@ -791,6 +791,106 @@ class TestFrontierPointSummaryContract:
                 assert selected.get(field) == expected, field
 
 
+def _select_with_history(client: TestClient, job_id: str, point_index: int) -> dict:
+    """Select *point_index* with its trace, proving no solver runs to answer it."""
+    no_solver = AssertionError("frontier select ran price-contour")
+    with (
+        patch("haute.routes._optimiser_solver.price_contour", side_effect=no_solver),
+        patch("haute.routes._optimiser_frontier.price_contour", side_effect=no_solver),
+    ):
+        response = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": job_id, "point_index": point_index, "include_history": True},
+        )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+class TestFrontierPointHistoryContract:
+    """Each frontier point's own convergence trace (OPT-PC04), read from the job."""
+
+    def test_a_one_constraint_point_answers_its_own_bisection(self, client, tmp_path):
+        path = tmp_path / "bisection.parquet"
+        _scored_frame(n_quotes=5, n_steps=3).write_parquet(path)
+        job_id = _solve_completed(client, _online_graph(str(path), _volume_frontier(4.0, 6.0, 3)))
+        status = _poll_until_done(client, job_id)
+        # The traces stay out of the status payload, whose shape is unchanged.
+        serialised = json.dumps(status)
+        assert "point_history" not in serialised
+        assert "probes" not in serialised
+
+        points = status["frontier"]["points"]
+        assert len(points) == 3
+        assert any(point["lambdas"]["volume"] > 0 for point in points)
+        for index, point in enumerate(points):
+            trace = _select_with_history(client, job_id, index)["point_history"]
+            assert trace["kind"] == "bisection"
+            probes = trace["probes"]
+            assert len(probes) == point["iterations"]
+            assert [probe["step"] for probe in probes] == list(range(len(probes)))
+            # The point's lambda and totals are exactly its last accepted probe's.
+            answer = [probe for probe in probes if probe["accepted"]][-1]
+            assert answer["lambdas"] == point["lambdas"]
+            assert answer["total_constraints"] == point["totals"]
+            assert answer["total_objective"] == point["total_objective"]
+
+        plain = client.post(
+            "/api/optimiser/frontier/select", json={"job_id": job_id, "point_index": 1}
+        )
+        assert plain.status_code == 200, plain.text
+        assert plain.json()["point_history"] is None
+
+    def test_a_two_constraint_point_answers_its_subgradient_iterations(self, client, tmp_path):
+        path = tmp_path / "subgradient.parquet"
+        _scored_frame(n_quotes=6, n_steps=3, extra_constraint_columns=True).write_parquet(path)
+        config = {
+            "constraints": {"volume": {"min": 4.0}, "conversion": {"min": 2.0}},
+            "frontier_ranges": {
+                "volume": {"min": 4.0, "max": 5.0},
+                "conversion": {"min": 2.0, "max": 2.5},
+            },
+            "frontier_steps": 2,
+        }
+        job_id = _solve_completed(client, _online_graph(str(path), config))
+        points = _solve_frontier(client, job_id)["points"]
+        assert len(points) == 4
+        for index, point in enumerate(points):
+            trace = _select_with_history(client, job_id, index)["point_history"]
+            assert trace["kind"] == "subgradient"
+            history = trace["history"]
+            assert len(history) == point["iterations"]
+            assert [entry["iteration"] for entry in history] == list(range(len(history)))
+            for entry in history:
+                assert (
+                    set(entry["lambdas"])
+                    == set(entry["total_constraints"])
+                    == {
+                        "volume",
+                        "conversion",
+                    }
+                )
+
+    def test_a_ratebook_point_answers_its_coordinate_descent(self, client, tmp_path):
+        scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
+        job_id = _solve_completed(
+            client,
+            _ratebook_graph(scored_path, banding_path, config=_volume_frontier(4.0, 6.0, 2)),
+        )
+        points = _solve_frontier(client, job_id)["points"]
+        assert len(points) == 2
+        for index, point in enumerate(points):
+            trace = _select_with_history(client, job_id, index)["point_history"]
+            assert trace["kind"] == "ratebook"
+            records = trace["cd_trace"]["records"]
+            assert records
+            assert {record["factor"] for record in records} == {"region"}
+            # A ratebook point's lambda is its last inner solve's.
+            assert records[-1]["lambdas"] == point["lambdas"]
+            assert [record["cd_iteration"] for record in records] == sorted(
+                record["cd_iteration"] for record in records
+            )
+
+
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestSolveResultContract:
     """OPT-V04: a real solve returns its provenance, no degraded diagnostics, and

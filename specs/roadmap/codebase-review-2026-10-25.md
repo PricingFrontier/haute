@@ -207,8 +207,7 @@ puts it in front of the owner because of what it can cost in production:
 Already tracked before this review and not repeated: the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the test-only config helpers and
-event-bus hooks (`ENGQ-R01`); the optimiser's frontier points without convergence traces
-(`OPT-PC04`); the test-only
+event-bus hooks (`ENGQ-R01`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
 (`MOD-M02`); the assistant

@@ -2722,11 +2722,59 @@ export interface OptimiserFrontierSelectResponse {
   lambdas: {
     [k: string]: number;
   };
+  point_history:
+    (OptimiserBisectionPointHistory | OptimiserSubgradientPointHistory | OptimiserRatebookPointHistory) | null;
   point_index: number | null;
   ratebook_cd_trace: OptimiserRatebookCdTrace | null;
   status: string;
   total_objective: number;
   warning: string | null;
+}
+/**
+ * A 1-D frontier point's bisection on λ, probe by probe.
+ */
+export interface OptimiserBisectionPointHistory {
+  kind: 'bisection';
+  /**
+   * @minItems 1
+   */
+  probes: OptimiserBisectionProbe[];
+}
+/**
+ * One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's
+ * ``point_history``), in the order it ran.
+ */
+export interface OptimiserBisectionProbe {
+  accepted: boolean;
+  all_constraints_satisfied: boolean;
+  bracket_hi: number | null;
+  bracket_lo: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  phase: 'bracket' | 'bisect';
+  step: number;
+  total_constraints: {
+    [k: string]: number;
+  };
+  total_objective: number;
+}
+/**
+ * A multi-constraint frontier point's subgradient iterations, as a solve records them.
+ */
+export interface OptimiserSubgradientPointHistory {
+  /**
+   * @minItems 1
+   */
+  history: OptimiserHistoryEntry[];
+  kind: 'subgradient';
+}
+/**
+ * A ratebook frontier point's coordinate-descent trace, shaped as a solve's.
+ */
+export interface OptimiserRatebookPointHistory {
+  cd_trace: OptimiserRatebookCdTrace;
+  kind: 'ratebook';
 }
 /**
  * The chosen scenario values of one target, per level of one key (OPT-V11).

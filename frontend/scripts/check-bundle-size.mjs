@@ -257,7 +257,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Chunked GLM fitting (8 November 2026): the training contracts' fit plan and evidence
 // and the Train pane's chunked verdict bring the complete bundle to 1,789.1 KiB (initial
 // 293.9 KiB). 1,790 KiB restores 0.9 KiB headroom; the other limits are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1790
+// A selected frontier point's convergence trace (OPT-PC04), its bisection view and
+// response validators, bring the total to 1,790.7 KiB (initial 293.9 KiB); 1,792 KiB
+// restores about 1.3 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1792
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

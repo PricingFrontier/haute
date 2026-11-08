@@ -909,3 +909,148 @@ def test_the_session_forecasts_its_solve_from_the_solver_input(tmp_path) -> None
         quote_id_bytes=9.0,
         chunk_rows=64,
     )
+
+
+def _point_trace(rows: list[dict[str, object]]) -> pl.DataFrame:
+    import price_contour
+
+    schema = price_contour.frontier_point_history_schema("online", ["volume"])
+    return pl.DataFrame(rows, schema=schema)
+
+
+def _online_trace_row(step: int, phase: str, **fields: object) -> dict[str, object]:
+    return {
+        "point_index": 0,
+        "step": step,
+        "phase": phase,
+        "bracket_lo": None,
+        "bracket_hi": None,
+        "lambda_volume": 0.0,
+        "total_objective": 10.0,
+        "total_volume": 1.0,
+        "all_satisfied": False,
+        "accepted": None,
+        "max_lambda_change": None,
+        **fields,
+    }
+
+
+def test_a_point_trace_is_bisection_or_subgradient_never_both_or_empty() -> None:
+    from haute.routes._optimiser_solver import frontier_point_history_payload
+
+    bisection = _point_trace(
+        [
+            _online_trace_row(1, "bracket", lambda_volume=1.0, accepted=True, all_satisfied=True),
+            _online_trace_row(0, "bracket", accepted=False),
+        ]
+    )
+    payload = frontier_point_history_payload(
+        bisection, mode="online", constraint_names=["volume"], point_index=0
+    )
+    assert payload["kind"] == "bisection"
+    assert [probe["step"] for probe in payload["probes"]] == [0, 1]
+    assert payload["probes"][1]["lambdas"] == {"volume": 1.0}
+
+    subgradient = _point_trace(
+        [_online_trace_row(0, "subgradient", max_lambda_change=0.5, all_satisfied=True)]
+    )
+    payload = frontier_point_history_payload(
+        subgradient, mode="online", constraint_names=["volume"], point_index=0
+    )
+    assert payload == {
+        "kind": "subgradient",
+        "history": [
+            {
+                "iteration": 0,
+                "total_objective": 10.0,
+                "max_lambda_change": 0.5,
+                "all_constraints_satisfied": True,
+                "lambdas": {"volume": 0.0},
+                "total_constraints": {"volume": 1.0},
+            }
+        ],
+    }
+
+    mixed = _point_trace(
+        [
+            _online_trace_row(0, "bracket", accepted=True),
+            _online_trace_row(1, "subgradient", max_lambda_change=0.1),
+        ]
+    )
+    with pytest.raises(RuntimeError, match="mixes trace phases"):
+        frontier_point_history_payload(
+            mixed, mode="online", constraint_names=["volume"], point_index=3
+        )
+    with pytest.raises(RuntimeError, match="recorded no convergence trace"):
+        frontier_point_history_payload(
+            _point_trace([]), mode="online", constraint_names=["volume"], point_index=3
+        )
+
+
+def test_a_cleaned_up_trace_artifact_answers_gone() -> None:
+    from haute.errors import GoneError
+    from haute.routes import _optimiser_artifacts as artifacts
+
+    frame = _point_trace(
+        [
+            _online_trace_row(0, "bracket", accepted=False),
+            {**_online_trace_row(0, "bracket", accepted=True), "point_index": 1},
+        ]
+    )
+    handle = artifacts.persist_frontier_history_artifact(frame)
+
+    assert artifacts.read_frontier_point_history(handle, 1)["accepted"].to_list() == [True]
+
+    artifacts._cleanup_frontier_history_artifact(handle)
+    with pytest.raises(GoneError, match="Re-run the solve"):
+        artifacts.read_frontier_point_history(handle, 1)
+
+
+def test_an_orphan_trace_artifact_is_removed_by_its_kind() -> None:
+    from haute.routes import _optimiser_artifacts as artifacts
+
+    handle = artifacts.persist_frontier_history_artifact(
+        _point_trace([_online_trace_row(0, "bracket")])
+    )
+
+    artifacts._cleanup_orphan_apply_result_artifact(
+        handle, job_id="job", event="orphan_trace_cleanup_failed"
+    )
+
+    assert not Path(handle["directory"]).exists()
+
+
+def test_a_frontier_without_its_documented_trace_breaks_the_library_contract() -> None:
+    from types import SimpleNamespace
+
+    from haute.routes._optimiser_solver import frontier_point_history_frame
+
+    with pytest.raises(RuntimeError, match="returned no point history"):
+        frontier_point_history_frame(
+            SimpleNamespace(point_history=None),
+            mode="online",
+            constraint_names=["volume"],
+            points_returned=1,
+        )
+    with pytest.raises(RuntimeError, match="expected"):
+        frontier_point_history_frame(
+            SimpleNamespace(point_history=pl.DataFrame({"point_index": [0]})),
+            mode="online",
+            constraint_names=["volume"],
+            points_returned=1,
+        )
+    kept = frontier_point_history_frame(
+        SimpleNamespace(
+            point_history=_point_trace(
+                [
+                    {**_online_trace_row(0, "bracket", accepted=True), "point_index": 0},
+                    {**_online_trace_row(0, "bracket", accepted=True), "point_index": 5},
+                ]
+            )
+        ),
+        mode="online",
+        constraint_names=["volume"],
+        points_returned=2,
+    )
+    # Only the points the frontier payload returns keep their traces.
+    assert kept["point_index"].to_list() == [0]

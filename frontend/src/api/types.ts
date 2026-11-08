@@ -755,6 +755,7 @@ export type {
   OptimiserAdjustmentBar,
   OptimiserAdjustmentReport,
   OptimiserAdjustmentWeighting,
+  OptimiserBisectionProbe,
   OptimiserDiagnosticError,
   OptimiserEffectiveBound,
   OptimiserFactorTableRow,

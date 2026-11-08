@@ -16354,6 +16354,111 @@
       "title": "OptimiserApplyResponse",
       "type": "object"
     },
+    "OptimiserBisectionPointHistory": {
+      "additionalProperties": false,
+      "description": "A 1-D frontier point's bisection on λ, probe by probe.",
+      "properties": {
+        "kind": {
+          "const": "bisection",
+          "title": "Kind",
+          "type": "string"
+        },
+        "probes": {
+          "items": {
+            "$ref": "#/$defs/OptimiserBisectionProbe"
+          },
+          "minItems": 1,
+          "title": "Probes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "probes"
+      ],
+      "title": "OptimiserBisectionPointHistory",
+      "type": "object"
+    },
+    "OptimiserBisectionProbe": {
+      "additionalProperties": false,
+      "description": "One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's\n``point_history``), in the order it ran.",
+      "properties": {
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "all_constraints_satisfied": {
+          "title": "All Constraints Satisfied",
+          "type": "boolean"
+        },
+        "bracket_hi": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bracket Hi"
+        },
+        "bracket_lo": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bracket Lo"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "phase": {
+          "enum": [
+            "bracket",
+            "bisect"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "step": {
+          "minimum": 0,
+          "title": "Step",
+          "type": "integer"
+        },
+        "total_constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Total Constraints",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        }
+      },
+      "required": [
+        "step",
+        "phase",
+        "bracket_lo",
+        "bracket_hi",
+        "lambdas",
+        "total_objective",
+        "total_constraints",
+        "all_constraints_satisfied",
+        "accepted"
+      ],
+      "title": "OptimiserBisectionProbe",
+      "type": "object"
+    },
     "OptimiserCombinedFactorBounds": {
       "description": "The scenario range a ratebook solve scored: the deployed factor's collar.\n\n``min``/``max`` are the solved grid's first and last scenario values\n(Float32 widened). Every apply clips the combined ratebook factor to them.",
       "properties": {
@@ -17318,6 +17423,28 @@
           "title": "Lambdas",
           "type": "object"
         },
+        "point_history": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/OptimiserBisectionPointHistory"
+                },
+                {
+                  "$ref": "#/$defs/OptimiserSubgradientPointHistory"
+                },
+                {
+                  "$ref": "#/$defs/OptimiserRatebookPointHistory"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point History"
+        },
         "point_index": {
           "anyOf": [
             {
@@ -17379,6 +17506,7 @@
         "ratebook_cd_trace",
         "warning",
         "adjustments",
+        "point_history",
         "clamp_rate",
         "combined_factor_bounds",
         "diagnostics_errors",
@@ -18050,6 +18178,26 @@
         "n_quotes_clamped_high"
       ],
       "title": "OptimiserRatebookFrontierPoint",
+      "type": "object"
+    },
+    "OptimiserRatebookPointHistory": {
+      "additionalProperties": false,
+      "description": "A ratebook frontier point's coordinate-descent trace, shaped as a solve's.",
+      "properties": {
+        "cd_trace": {
+          "$ref": "#/$defs/OptimiserRatebookCdTrace"
+        },
+        "kind": {
+          "const": "ratebook",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "cd_trace"
+      ],
+      "title": "OptimiserRatebookPointHistory",
       "type": "object"
     },
     "OptimiserSaveRequest": {
@@ -19017,6 +19165,31 @@
         "execution_metrics"
       ],
       "title": "OptimiserStatusResponse",
+      "type": "object"
+    },
+    "OptimiserSubgradientPointHistory": {
+      "additionalProperties": false,
+      "description": "A multi-constraint frontier point's subgradient iterations, as a solve records them.",
+      "properties": {
+        "history": {
+          "items": {
+            "$ref": "#/$defs/OptimiserHistoryEntry"
+          },
+          "minItems": 1,
+          "title": "History",
+          "type": "array"
+        },
+        "kind": {
+          "const": "subgradient",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "history"
+      ],
+      "title": "OptimiserSubgradientPointHistory",
       "type": "object"
     },
     "OptionsSource": {

@@ -11,10 +11,11 @@ import {
   makeOnlineFrontier,
   makeOnlineFrontierPoint,
   makeOnlineSolveResult,
+  makeOnlineHistory,
   makePointSummary,
   makeRatebookSolveResult,
 } from "../optimiser/__tests__/fixtures"
-import { makeFrontierSelect } from "../../test-utils/factories"
+import { makeFrontierSelect, makeHistoryEntry } from "../../test-utils/factories"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -693,7 +694,8 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("Point 3 of 5")).toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
       expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 3)
-      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
+      // Stepping goes through the store; the only request is the open view's trace.
+      expect(mockSelectFrontierPointAPI.mock.calls.filter(([payload]) => !payload.include_history)).toEqual([])
     })
   })
 
@@ -1233,17 +1235,39 @@ describe("OptimiserPreview", () => {
         .toHaveTextContent("18 quotes (9.0%)")
     })
 
-    it("keeps Convergence for a selected point and says whose history it shows", () => {
+    function historyRequests() {
+      return mockSelectFrontierPointAPI.mock.calls.filter(([payload]) => payload.include_history)
+    }
+
+    it("charts a selected point's own trace, loaded only while Convergence is open", async () => {
       const frontier = makeFrontier()
+      const history = [...makeOnlineHistory(), makeHistoryEntry({
+        iteration: 3,
+        total_constraints: { loss_ratio: 0.65 },
+        lambdas: { loss_ratio: 0.005 },
+      })]
+      mockSelectFrontierPointAPI.mockResolvedValue(makeFrontierSelect({
+        point_index: 1,
+        point_history: { kind: "subgradient", history },
+      }))
       renderPreview({ data: selectedData(frontier, 1) })
+      expect(historyRequests()).toHaveLength(0)
 
       fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
 
-      expect(screen.getByText(
-        "History is recorded for the solved result; frontier point 2: converged, 11 iterations",
-      )).toBeInTheDocument()
-      // The solve's two recorded iterations.
-      expect(within(screen.getByRole("table", { name: "Iteration values" })).getAllByRole("row")).toHaveLength(3)
+      expect(screen.getByText("Frontier point 2: converged, 11 iterations")).toBeInTheDocument()
+      // The point's three recorded iterations, not the solve's two.
+      const table = await screen.findByRole("table", { name: "Iteration values" })
+      expect(within(table).getAllByRole("row")).toHaveLength(4)
+      expect(historyRequests()).toEqual([
+        [{ job_id: "job_123", point_index: 1, include_history: true }, expect.anything()],
+      ])
+
+      // The loaded trace belongs to the review: reopening the tab asks again for nothing.
+      fireEvent.click(screen.getByRole("tab", { name: "Frontier" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+      expect(screen.getByRole("table", { name: "Iteration values" })).toBeInTheDocument()
+      expect(historyRequests()).toHaveLength(1)
     })
 
     it("says when the selected point did not converge", () => {
@@ -1253,9 +1277,7 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
 
-      expect(screen.getByText(
-        "History is recorded for the solved result; frontier point 2: not converged, 50 iterations",
-      )).toBeInTheDocument()
+      expect(screen.getByText("Frontier point 2: not converged, 50 iterations")).toBeInTheDocument()
     })
 
 
@@ -1267,7 +1289,7 @@ describe("OptimiserPreview", () => {
       rerender(<OptimiserPreview {...props} data={selectedData(frontier, 2)} />)
 
       expect(screen.getByRole("tab", { name: "Convergence" })).toHaveAttribute("aria-selected", "true")
-      expect(screen.getByText(/frontier point 3: converged, 12 iterations/)).toBeInTheDocument()
+      expect(screen.getByText("Frontier point 3: converged, 12 iterations")).toBeInTheDocument()
     })
 
     it("returns to the default tab for a new solve job", () => {
