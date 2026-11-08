@@ -1829,6 +1829,13 @@ the turn that follows.
   those sources, replays the exact plan, saves, reparses, verifies, and publishes
   under the process-wide `save_lock`. A GUI save before apply therefore produces
   `stale_revision`; a GUI save after apply is a distinct later save.
+- **Apply saves against the revision it authenticated.** `save_lock` cannot exclude an
+  external editor, so `_prepare_apply` reads the editor document revision before and
+  after the reads that build the snapshot and refuses `stale_revision` unless the two
+  agree. `_commit` passes that revision as the save's `base_revision` and never reads
+  a fresh one, which would treat an intervening edit as the authorised baseline; the
+  save's `StaleDocumentRevisionError` becomes `stale_revision`, and the external bytes
+  are untouched.
 - **A batch is all-or-nothing**: op validation failures abort before the save; a mid-save
   failure rolls back every staged file (the save service's existing `_TouchedFile`
   snapshot/rollback); in both cases the pipeline on disk is exactly what it was.

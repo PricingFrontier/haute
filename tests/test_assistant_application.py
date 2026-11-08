@@ -524,12 +524,12 @@ class TestApply:
         original_commit = service._commit
         commit_attempts = 0
 
-        def fail_once(source_file, after, receipt):
+        def fail_once(source_file, after, receipt, document_revision):
             nonlocal commit_attempts
             commit_attempts += 1
             if commit_attempts == 1:
                 raise RuntimeError("simulated pre-commit failure")
-            return original_commit(source_file, after, receipt)
+            return original_commit(source_file, after, receipt, document_revision)
 
         monkeypatch.setattr(service, "_commit", fail_once)
         operations = [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}]
@@ -567,6 +567,41 @@ class TestApply:
             await service.apply("main.py", plan.plan_hash)
         assert exc.value.code == "stale_revision"
         assert (project_root / "main.py").read_text(encoding="utf-8") == changed
+        assert published == []
+
+    @pytest.mark.parametrize(
+        "barrier",
+        [
+            pytest.param("_parse_graph", id="while-the-snapshot-is-read"),
+            pytest.param("_snapshot_for_plan", id="after-the-snapshot-is-read"),
+            pytest.param("_prepare_apply", id="after-freshness-before-the-save"),
+        ],
+    )
+    async def test_an_external_edit_during_apply_is_refused_and_kept(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch, barrier: str
+    ):
+        published: list[dict] = []
+        service = _service(project_root, published=published)
+        plan = service.dry_run(
+            "main.py",
+            [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}],
+            summary="Test plan.",
+        ).plan
+        edited = PIPELINE_SOURCE.replace("application fixture", "edited in an IDE")
+        original = getattr(service, barrier)
+
+        def edit_once_read(*args, **kwargs):
+            result = original(*args, **kwargs)
+            (project_root / "main.py").write_text(edited, encoding="utf-8")
+            return result
+
+        monkeypatch.setattr(service, barrier, edit_once_read)
+
+        with pytest.raises(AssistantOperationError) as exc:
+            await service.apply("main.py", plan.plan_hash)
+
+        assert exc.value.code == "stale_revision"
+        assert (project_root / "main.py").read_text(encoding="utf-8") == edited
         assert published == []
 
     async def test_retrieved_project_source_is_rechecked_from_the_stored_plan_manifest(
@@ -1443,13 +1478,13 @@ class TestSteppedWrites:
         ).plan
         original_commit = service._commit
 
-        def commit_other_steps(source_file, after, receipt):
+        def commit_other_steps(source_file, after, receipt, document_revision):
             node = next(item for item in after.nodes if item.id == "rated")
             other = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
             after.nodes[after.nodes.index(node)] = node.with_config(
                 {**node.data.config, "steps": other}
             )
-            return original_commit(source_file, after, receipt)
+            return original_commit(source_file, after, receipt, document_revision)
 
         monkeypatch.setattr(service, "_commit", commit_other_steps)
 

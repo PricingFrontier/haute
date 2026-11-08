@@ -1152,7 +1152,10 @@ Under the shared save lock it reloads the snapshot, rejects a stale revision,
 recomputes the normalized plan, warnings, schema evidence, and hash through the
 same `build_verified_plan` path used by dry-run, checks exact-plan authority, and
 commits once through `SavePipelineService`, with the change headline as the Git
-commit message. A plan is single-use; a repeated
+commit message. The lock cannot exclude an editor outside Haute, so the save's
+base-revision precondition names the editor document revision read around the
+snapshot, never a later read: an external edit at any point before the save
+fails the apply with `stale_revision` and keeps its bytes. A plan is single-use; a repeated
 apply returns `plan_already_applied` with no write, until a fresh dry-run of the
 same plan succeeds against its base revision again (after an undo; see **Undo and
 Compare**). Any changed authority fact invalidates the plan.
@@ -2034,11 +2037,6 @@ see [the assistant evaluation](evaluation.md#tiers).
   to `commit_save` as the commit message.
 
 ## Failure model
-
-> NOTE: Apply currently rereads the editor revision after authenticating its plan,
-> so an external edit in that interval can be overwritten despite successful
-> verification. Binding commit to the authenticated snapshot is tracked in
-> [ASSIST-61](../roadmap/assistant.md#assist-61--keep-the-authenticated-revision-through-commit).
 
 Loud, typed, and never averaged away:
 

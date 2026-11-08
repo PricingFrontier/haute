@@ -238,11 +238,11 @@ class TestMutationEndToEnd:
         original_blocking = PipelineApplicationService._commit
         loop = asyncio.get_running_loop()
 
-        def slow_blocking(self, source_file, after, receipt):
+        def slow_blocking(self, source_file, after, receipt, document_revision):
             loop.call_soon_threadsafe(in_save.set)
             while not release_save.is_set():
                 pass
-            return original_blocking(self, source_file, after, receipt)
+            return original_blocking(self, source_file, after, receipt, document_revision)
 
         monkeypatch.setattr(PipelineApplicationService, "_commit", slow_blocking)
 

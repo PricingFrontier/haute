@@ -59,19 +59,9 @@ follow-up checked the job log.
 Priorities follow the roadmap convention: P1 threatens saved work, calculated
 results or security; P2 materially affects correctness, UX or assurance; P3 covers
 the limited-impact or rare-input items. The review recorded 42 groups: 13 P1, 25 P2 and
-4 P3. Groups whose packages were delivered have since been removed, so the tables hold
-the open ones. The table keeps what is open of the ten initial finding groups; every
-full-source finding has been delivered. A group is not an individual failing assertion
-or a release-wide blocker count.
-
-| Priority | Trigger and observed consequence | Owning package | Evidence strength |
-|---|---|---|---|
-| P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-
-The first implementation pass should address the P1 packages before opportunistic
-cleanup. Each package includes the expected behaviour, scope, regression scenarios
-and dependencies. These additions are not assigned delivery rounds; adding them
-does not silently reorder the existing delivery plan.
+4 P3. Groups whose packages were delivered have since been removed; every group has now
+been delivered. A group is not an individual failing assertion or a release-wide
+blocker count.
 
 ## Reproduction details
 
