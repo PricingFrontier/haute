@@ -23,7 +23,7 @@ The packages come from an investigation of [commercial-pricing pull request #1](
 The owner decided the following on 3 November 2026:
 - **Polars code lives only in `main.py`.** Haute rebuilds as many steps as it can from the code. Statements it cannot recognise become a code step, and the rest of the node stays as steps.
 - **Only commercial-pricing is converted to each new format.** No other project needs converting.
-- **Workbench columns and tables have no ids.** Their names identify them. Following a rename in the quote store's SQL is left to a later package (`READ-33`).
+- **Workbench columns and tables have no ids.** Their names identify them. A rename against the default branch reads as a removal and an addition, and the owner decided on 8 November 2026 that the quote store's SQL does not follow it.
 - **Sheets, sections and components have no random ids.** A sheet is identified by its file name, a section by its title, and a component by a number.
 - **`main.py` keeps its function order.** A new node's function goes just above the first function that uses it.
 - **Formats:**
@@ -55,21 +55,9 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
-
-### READ-33 — A column or table renamed against the default branch keeps its values
-**Why:** Workbench tables and columns are known by their names, so a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.
-
-**Plan:** If reopened, let the analyst pair a removed column with an added one when comparing against the default branch too, as the pane does against a database. The SQL then renames the column, or the table, so saved quotes keep their values in it.
-
-**Acceptance:** A column renamed and paired keeps every saved value, on SQLite and on the hosted engines.
-
-**Dependencies:** The owner's decision to reopen it.
-
-**Evidence:** `src/haute/_quote_store/_migrate.py::_plan_columns`.
 
 ### READ-40 — Generated workflows declare each secret, setup and check once
 **Why:** In the generated workflows:
