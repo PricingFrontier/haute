@@ -1,8 +1,9 @@
 /** Compact database selection; column decisions stay beside the schema fields. */
-import { Code2, RefreshCw } from "lucide-react"
+import { Code2, Loader2, RefreshCw } from "lucide-react"
 import { useState } from "react"
 import type { SchemaTable, WorkbenchStoreDifference } from "../api/types"
-import { FIELD_CLASS, INPUT_STYLE, QuietAction } from "../components/form"
+import { FIELD_CLASS, INPUT_STYLE } from "../components/form"
+import { ToolbarButton } from "../haute-ui"
 import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
@@ -16,13 +17,14 @@ export function CompareControls() {
   const [sqlOpen, setSqlOpen] = useState(false)
   const { read, compared } = environmentState(state)
   const status = comparisonStatus(state, form)
+  const busy = status === "Checking" || status === "Comparing"
   const failure = status !== "Check failed" ? null : read.status === "failed" ? read.message : compared.status === "failed" ? compared.message : null
   const colour = (name: string | null) => name === null ? "var(--text-primary)"
     : environmentState(state, name).read.status !== "read" ? "var(--danger-text)"
       : comparisonStatus(state, form, name) === "Compatible" ? "var(--success)" : "var(--caution)"
   return (
     <>
-      <div className="flex min-w-0 basis-72 items-center gap-2 text-[11px]">
+      <div className="flex min-w-0 basis-80 items-center gap-2 text-[11px]">
         {environments.length > 0 && <>
           <label htmlFor="schema-database" className="sr-only">Database</label>
           <select id="schema-database" aria-label="Database" value={state.environment ?? ""}
@@ -36,11 +38,14 @@ export function CompareControls() {
           </select>
           {state.environment !== null && <span id="schema-database-status" role="status" className="sr-only"
             title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>}
-          <QuietAction icon={RefreshCw} onClick={state.readAgain} disabled={state.environment === null || read.status === "reading"}
-            className="shrink-0" title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : "Refresh database status"}>Refresh</QuietAction>
+          <ToolbarButton onClick={state.readAgain} disabled={state.environment === null || busy} aria-busy={busy}
+            className="focus-ring shrink-0" style={{ width: "auto" }} title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : "Refresh database status"}>
+            {busy ? <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
+            Refresh
+          </ToolbarButton>
         </>}
-        <QuietAction icon={Code2} onClick={() => setSqlOpen(true)} aria-haspopup="dialog"
-          className="shrink-0" title="View and copy generated SQL">Export SQL</QuietAction>
+        <ToolbarButton icon={Code2} onClick={() => setSqlOpen(true)} aria-haspopup="dialog"
+          className="focus-ring shrink-0" style={{ width: "auto" }} title="View and copy generated SQL">Export SQL</ToolbarButton>
       </div>
       {failure !== null && <p role="alert" className="w-full break-words text-[11px]" style={{ color: "var(--danger-text)" }}>{failure}</p>}
       {sqlOpen && <StoreSqlWindow onClose={() => setSqlOpen(false)} />}

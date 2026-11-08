@@ -788,17 +788,20 @@ Out of scope:
     in it are its own, never the sheet's.
 
   - **Reviewing database changes.** One compact Database selector sits to the right of
-    Search fields on the same row, followed by Refresh and Export SQL. The search box is
-    shorter to leave room for the actions, with wrapping on narrow panes. Controls shrink with the
-    pane; database failures appear below the shared row. There is no separate database
+    Search fields on the same row, followed by Refresh and Export SQL. Both actions use
+    raised, bordered buttons matching the library toolbar controls.
+    Refresh shows a small spinning circle while fetching or comparing, exposes its busy
+    state accessibly, and stops on success or failure without changing its label or width.
+    The search box is shorter to leave room for the actions, with wrapping on narrow panes.
+    Controls shrink with the pane; database failures appear below the shared row. There is no separate database
     toolbar. Local is the neutral choice for editing without a database selected. Other
     choices show only their environment names, coloured red until fetched, orange when
     fetched but differences, unresolved checks or repairs remain, and green when the
     current comparison matches. Refreshing clears the previous result: red while fetching,
     then orange until comparison completes. Status explanations remain available to
     assistive technology and in tooltips. A labelled Refresh button beside the selector
-    checks the selected database again; it is disabled for Local and while fetching. Choosing one reads
-    it only if it has not been loaded in the session, reusing the project's persisted
+    checks the selected database again; it is disabled for Local and while fetching or
+    comparing. Choosing one reads it only if it has not been loaded in the session, reusing the project's persisted
     snapshot when available.
     Editing the shared
     schema compares it with those snapshots without rereading databases. A comparison is

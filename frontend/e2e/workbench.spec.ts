@@ -41,24 +41,41 @@ test.describe("workbench", () => {
     } })
     // An existing index collides with the desired name. The real comparison must
     // list only missing columns/tables and export their SQL without migration commentary.
-    await page.route("**/api/workbench/store-catalogue", (route) => route.fulfill({
-      json: { environment: "dev", checked_at: 1700000000000, tables: [{
-        name: "policy", primary_key: ["quote_reference", "quote_option", "quote_row"], refers: true, quotes: 1,
-        columns: [
-          { name: "quote_reference", kind: "str", type: "TEXT", nullable: false, collation: null, quotes: 1 },
-          ...["quote_option", "quote_row", "limit"].map((name) => ({ name, kind: "int", type: "INTEGER", nullable: false, collation: null, quotes: 1 })),
-          { name: "region", kind: "str", type: "TEXT", nullable: true, collation: null, quotes: 1 },
-        ],
-      }] },
-    }))
+    let finishCatalogue!: () => void
+    const catalogueReady = new Promise<void>((resolve) => { finishCatalogue = resolve })
+    await page.route("**/api/workbench/store-catalogue", async (route) => {
+      await catalogueReady
+      await route.fulfill({
+        json: { environment: "dev", checked_at: 1700000000000, tables: [{
+          name: "policy", primary_key: ["quote_reference", "quote_option", "quote_row"], refers: true, quotes: 1,
+          columns: [
+            { name: "quote_reference", kind: "str", type: "TEXT", nullable: false, collation: null, quotes: 1 },
+            ...["quote_option", "quote_row", "limit"].map((name) => ({ name, kind: "int", type: "INTEGER", nullable: false, collation: null, quotes: 1 })),
+            { name: "region", kind: "str", type: "TEXT", nullable: true, collation: null, quotes: 1 },
+          ],
+        }] },
+      })
+    })
     await context.grantPermissions(["clipboard-read", "clipboard-write"])
     await page.goto("/")
     await page.getByTestId("view-switcher-workbench").click()
     await page.getByRole("button", { name: "Schema", exact: true }).click()
     const pane = page.getByTestId("schema-pane")
     await pane.getByRole("combobox", { name: "Database" }).selectOption("dev")
+    const refreshButton = pane.getByRole("button", { name: "Refresh", exact: true })
+    await expect(refreshButton).toHaveAttribute("aria-busy", "true")
+    await expect(refreshButton).toBeDisabled()
+    await expect(refreshButton.locator("svg")).toHaveCSS("animation-name", "spin")
+    await pane.screenshot({ path: testInfo.outputPath("schema-refresh-busy.png") })
+    finishCatalogue()
     await expect(pane.getByRole("status")).toHaveText("Needs attention")
+    await expect(refreshButton).toHaveAttribute("aria-busy", "false")
+    await expect(refreshButton).toBeEnabled()
+    await expect(refreshButton).toHaveCSS("border-top-style", "solid")
+    await expect(refreshButton).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)")
     const exportButton = pane.getByRole("button", { name: "Export SQL", exact: true })
+    await expect(exportButton).toHaveCSS("border-top-style", "solid")
+    await expect(exportButton).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)")
     await exportButton.click()
     const dialog = page.getByRole("dialog", { name: "Export database changes" })
     await expect(dialog).toBeVisible()
