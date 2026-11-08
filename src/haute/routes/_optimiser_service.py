@@ -171,6 +171,7 @@ from haute.routes._optimiser_solver import (
     _solve_ratebook,
     anchor_swept_constraints,
     solver_worker_context,
+    swept_frontier_ranges,
 )
 from haute.routes._optimiser_worker import (
     AUTO_RANGE_OPERATION_NOUN,
@@ -1462,6 +1463,9 @@ class OptimiserSolveService:
         outcome_handles: list[dict[str, Any]] = []
         # The session writes the as-solved apply artifact here; removed unless adopted.
         apply_artifact_dir: Path | None = None
+        # The frontier traces' directory, when the solve sweeps; removed unless a handle adopts it.
+        frontier_history_dir: Path | None = None
+        history_adopted = False
 
         def stop_reason() -> Any:
             return self._jobs.cancellation_reason(job_id)
@@ -1479,6 +1483,7 @@ class OptimiserSolveService:
             )
 
         def publish(outcome: SessionSolveOutcome) -> bool:
+            nonlocal history_adopted
             if outcome.solve_memory_forecast_bytes is not None:
                 self._store.atomic_update(
                     job_id,
@@ -1493,6 +1498,7 @@ class OptimiserSolveService:
             _optimiser_artifacts._validate_apply_result_artifact_handle(
                 handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY]
             )
+            history_handle = handles.get(_optimiser_artifacts.FRONTIER_HISTORY_HANDLE_KEY)
             fields[SESSION_KEY] = session
             fields[RUNTIME_MODE_KEY] = SESSION_RUNTIME
             published = self._lifecycle.publish_completion(
@@ -1501,10 +1507,14 @@ class OptimiserSolveService:
                 message="Completed",
                 elapsed_seconds=time.monotonic() - start_time,
             )
+            if published is not None and history_handle is not None:
+                history_adopted = True
             return published is not None
 
         try:
             apply_artifact_dir = _optimiser_artifacts._new_apply_artifact_directory()
+            if swept_frontier_ranges(config):
+                frontier_history_dir = _optimiser_artifacts.new_frontier_history_directory()
             if (
                 self._store.atomic_update(
                     job_id,
@@ -1532,6 +1542,9 @@ class OptimiserSolveService:
                     quote_analysis_handle=solve_input.quote_analysis_handle,
                     factor_level_order=factor_level_order,
                     apply_artifact_dir=str(apply_artifact_dir),
+                    frontier_history_dir=(
+                        None if frontier_history_dir is None else str(frontier_history_dir)
+                    ),
                 ),
                 operation="optimiser_solve",
                 stage="building the quote grid",
@@ -1592,6 +1605,9 @@ class OptimiserSolveService:
                         )
                 if apply_artifact_dir is not None:
                     _optimiser_artifacts._remove_apply_artifact_directory(apply_artifact_dir)
+            if frontier_history_dir is not None and not history_adopted:
+                # A failed or frontier-less solve wrote no traces the job owns.
+                _optimiser_artifacts.remove_frontier_history_directory(frontier_history_dir)
             # The session command's own admission and cap describe the solve, not setup's.
             command_context = session.last_context
             self._record_execution_metrics(

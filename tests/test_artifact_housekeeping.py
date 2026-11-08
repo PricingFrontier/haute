@@ -402,12 +402,14 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
     analysis_root = tmp_path / "analysis"
+    history_root = tmp_path / "history"
     scratch_root = tmp_path / "scratch"
-    for root in (apply_root, factors_root, analysis_root, scratch_root):
+    for root in (apply_root, factors_root, analysis_root, history_root, scratch_root):
         root.mkdir()
     _marker(apply_root / "stale", owner="optimiser_apply")
     _marker(factors_root / "stale", owner="optimiser_ratebook_factors")
     _marker(analysis_root / "stale", owner="optimiser_quote_analysis")
+    _marker(history_root / "stale", owner="optimiser_frontier_history")
     _marker(scratch_root / "stale", owner="optimiser_scratch")
     # A marker owned by another family is not this root's to reap.
     _marker(analysis_root / "foreign", owner="optimiser_apply")
@@ -416,12 +418,14 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: apply_root)
     monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: factors_root)
     monkeypatch.setattr(artifacts, "_quote_analysis_artifact_root", lambda: analysis_root)
+    monkeypatch.setattr(artifacts, "_frontier_history_artifact_root", lambda: history_root)
     monkeypatch.setattr(artifacts, "_scratch_artifact_root", lambda: scratch_root)
     reports = artifacts.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
     assert reports["quote_analysis"]["removed"] == 1
+    assert reports["frontier_history"]["removed"] == 1
     assert reports["scratch"]["removed"] == 1
     assert unrelated.exists()
     assert (analysis_root / "foreign").exists()

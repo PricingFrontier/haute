@@ -29,12 +29,11 @@ export function formatOptimiserIterationSummary(result: OptimiserSolveResult): I
   return null
 }
 
-/** Convergence's note for a selected frontier point, whose own history is not
- *  recorded: "History is recorded for the solved result; frontier point N:
+/** Convergence's note for a selected frontier point: "Frontier point N:
  *  converged, K iterations" (the count omitted when the point reports none). */
 export function selectedPointConvergenceNote(index: number, result: OptimiserSolveResult): string {
   const iterations = formatOptimiserIterationSummary(result)
   const outcome = result.converged ? "converged" : "not converged"
-  return `History is recorded for the solved result; frontier point ${index + 1}: ${outcome}`
+  return `Frontier point ${index + 1}: ${outcome}`
     + (iterations ? `, ${iterations.long}` : "")
 }

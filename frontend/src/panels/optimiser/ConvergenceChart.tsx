@@ -1,19 +1,28 @@
 /**
- * Convergence diagnostics for an optimiser solve, as small multiples on real
- * axes (`IterationLinesChart`) with the values behind them in a closed table.
+ * Convergence diagnostics for an optimiser solve or a selected frontier point,
+ * as small multiples on real axes (`IterationLinesChart`) with the values behind
+ * them in a closed table.
  *
  * An online solve always records its per-iteration history: the objective, the
  * largest λ change (log axis), each constraint total against its bound with the
  * first iteration that met every constraint, and λ per constraint. A ratebook
  * solve shows its coordinate-descent trace by CD pass, one line per factor: the
- * objective and each constraint total against its bound. Only the solve records
- * either (a frontier point reports its convergence and iteration count, not its
- * iterations), so the chart always shows the solved result's and, with a point
- * selected, states whose history it is and how that point ended.
+ * objective and each constraint total against its bound.
+ *
+ * With a frontier point selected the view draws that point's own solve. Its
+ * trace is loaded only while this view is open, through frontier select with
+ * `include_history` and `useLatestRequest` (the policy `AdjustmentsTab` states),
+ * and belongs to the preview's review (`pointHistories`), so stepping back to a
+ * point already loaded makes no request. A point solved by bisection charts its
+ * probes; any other uses the solve's views, against the point's own bounds.
  */
 
 import type { ReactNode } from "react"
+import { Loader2 } from "lucide-react"
+import { selectFrontierPoint } from "../../api/client"
 import type {
+  FrontierSelectResponse,
+  OptimiserBisectionProbe,
   OptimiserEffectiveBound,
   OptimiserHistoryEntry,
   OptimiserRatebookCdTrace,
@@ -30,12 +39,23 @@ import {
 } from "../IterationLinesChart"
 import { ChartValuesTable, ResponsiveChart } from "../modelling/ChartScaffold"
 import { selectedPointConvergenceNote } from "./iterationSummary"
+import RequestFailureNotice from "./RequestFailureNotice"
+import { frontierPointKey, useLatestRequest } from "./useLatestRequest"
+
+/** How one frontier point was solved, step by step. */
+export type FrontierPointHistory = NonNullable<FrontierSelectResponse["point_history"]>
+
+/** Loaded frontier point traces, keyed by `frontierPointKey`. */
+export type PointHistories = Readonly<Record<string, FrontierPointHistory>>
 
 interface ConvergenceChartProps {
-  /** The as-solved result, whose history or CD trace is drawn. */
+  jobId: string
+  /** The as-solved result, whose history or CD trace is drawn without a selected point. */
   solvedResult: OptimiserSolveResult
   /** The selected frontier point and its displayed result, if one is selected. */
   selectedPoint: { index: number; result: OptimiserSolveResult } | null
+  pointHistories: PointHistories
+  onPointHistory: (key: string, history: FrontierPointHistory) => void
   /** A fixed width instead of the measured one. */
   width?: number
 }
@@ -43,6 +63,7 @@ interface ConvergenceChartProps {
 const CHART_HEIGHT = 220
 const TWO_COLUMNS_FROM = 720
 const COLUMN_GAP = 24
+const NO_BRACKET = "—"
 const LIVE_SOLVES_ONLY =
   "The coordinate-descent trace is recorded by live solves only; this result has none."
 
@@ -326,18 +347,198 @@ function RatebookConvergence({
   )
 }
 
-export default function ConvergenceChart({ solvedResult, selectedPoint, width }: ConvergenceChartProps) {
-  const bounds = effectiveConstraintBounds(solvedResult)
-  let body: ReactNode
-  if (solvedResult.mode === "online") {
-    const history = solvedResult.history
+/** A 1-D frontier point's bisection on λ, probe by probe. */
+function BisectionConvergence({
+  probes,
+  bounds,
+  width,
+}: {
+  probes: OptimiserBisectionProbe[]
+  bounds: Record<string, OptimiserEffectiveBound>
+  width?: number
+}) {
+  const names = Object.keys(bounds)
+  const totals = Object.fromEntries(names.map((name) => [
+    name,
+    probes.map((probe) => constraintValue(probe.total_constraints, name, `Step ${probe.step}'s totals`)),
+  ]))
+  const lambdas = Object.fromEntries(names.map((name) => [
+    name,
+    probes.map((probe) => constraintValue(probe.lambdas, name, `Step ${probe.step}'s λ`)),
+  ]))
+  const lastAccepted = probes.map((probe) => probe.accepted).lastIndexOf(true)
+  const acceptedMarker: IterationMarker | null = lastAccepted < 0
+    ? null
+    : { index: lastAccepted, label: `Accepted (step ${probes[lastAccepted].step})`, color: CHART_COLORS.positive }
+  const common = {
+    x: probes.map((probe) => probe.step),
+    height: CHART_HEIGHT,
+    xLabel: "Step",
+    showPoints: true,
+    marker: acceptedMarker,
+  }
+  const formatBracket = (value: number | null) => (value === null ? NO_BRACKET : value.toFixed(6))
+
+  return (
+    <>
+      {!acceptedMarker && <Note>No probe was accepted.</Note>}
+      <SmallMultiples width={width}>
+        {(chartWidth) => (
+          <>
+            <Panel heading="Probed λ">
+              <IterationLinesChart
+                {...common}
+                width={chartWidth}
+                title="λ by step"
+                ariaLabel="λ by step"
+                yLabel="λ"
+                series={[
+                  ...names.map((name) => ({ label: "Probed λ", color: CHART_COLORS.lambdaChange, values: lambdas[name] })),
+                  { label: "Bracket low", color: seriesColor(0), values: probes.map((probe) => probe.bracket_lo) },
+                  { label: "Bracket high", color: seriesColor(1), values: probes.map((probe) => probe.bracket_hi) },
+                ]}
+              />
+            </Panel>
+            {names.map((name, index) => (
+              <Panel key={name} heading={`${name} total`}>
+                <IterationLinesChart
+                  {...common}
+                  width={chartWidth}
+                  title={`${name} total by step`}
+                  ariaLabel={`${name} total by step`}
+                  yLabel={`${name} total`}
+                  series={[{ label: `${name} total`, color: seriesColor(index), values: totals[name] }]}
+                  referenceLines={[boundLine(bounds[name])]}
+                />
+              </Panel>
+            ))}
+            <Panel heading="Objective">
+              <IterationLinesChart
+                {...common}
+                width={chartWidth}
+                title="Objective by step"
+                ariaLabel="Objective by step"
+                yLabel="Objective"
+                series={[{ label: "Objective", color: CHART_COLORS.objective, values: probes.map((probe) => probe.total_objective) }]}
+              />
+            </Panel>
+          </>
+        )}
+      </SmallMultiples>
+      <ChartValuesTable
+        summary="View probe values"
+        ariaLabel="Probe values"
+        headers={[
+          "Step",
+          "Phase",
+          ...names.map((name) => `λ ${name}`),
+          "Bracket low",
+          "Bracket high",
+          "Objective",
+          ...names.map((name) => `${name} total`),
+          "All constraints met",
+          "Accepted",
+        ]}
+        rows={probes.map((probe, index) => [
+          probe.step,
+          probe.phase,
+          ...names.map((name) => lambdas[name][index].toFixed(6)),
+          formatBracket(probe.bracket_lo),
+          formatBracket(probe.bracket_hi),
+          formatExact(probe.total_objective),
+          ...names.map((name) => formatExact(totals[name][index])),
+          probe.all_constraints_satisfied ? "Yes" : "No",
+          probe.accepted ? "Yes" : "No",
+        ])}
+      />
+    </>
+  )
+}
+
+function PointConvergence({
+  history,
+  bounds,
+  width,
+}: {
+  history: FrontierPointHistory
+  bounds: Record<string, OptimiserEffectiveBound>
+  width?: number
+}) {
+  switch (history.kind) {
+    case "bisection":
+      return <BisectionConvergence probes={history.probes} bounds={bounds} width={width} />
+    case "subgradient":
+      return <OnlineConvergence history={history.history} bounds={bounds} width={width} />
+    case "ratebook":
+      return <RatebookConvergence trace={history.cd_trace} bounds={bounds} width={width} />
+  }
+}
+
+function SolvedConvergence({ result, width }: { result: OptimiserSolveResult; width?: number }) {
+  const bounds = effectiveConstraintBounds(result)
+  if (result.mode === "online") {
+    const history = result.history
     if (!history?.length) throw new Error("An online solve always records its history; this result has none")
-    body = <OnlineConvergence history={history} bounds={bounds} width={width} />
+    return <OnlineConvergence history={history} bounds={bounds} width={width} />
+  }
+  const trace = result.ratebook_cd_trace
+  return trace
+    ? <RatebookConvergence trace={trace} bounds={bounds} width={width} />
+    : <Note>{LIVE_SOLVES_ONLY}</Note>
+}
+
+export default function ConvergenceChart({
+  jobId,
+  solvedResult,
+  selectedPoint,
+  pointHistories,
+  onPointHistory,
+  width,
+}: ConvergenceChartProps) {
+  const wanted = selectedPoint === null
+    ? null
+    : { key: frontierPointKey(jobId, selectedPoint.index), jobId, pointIndex: selectedPoint.index }
+  const pointHistory = wanted === null ? undefined : pointHistories[wanted.key]
+  const request = useLatestRequest(
+    pointHistory === undefined ? wanted : null,
+    (point, signal) => selectFrontierPoint(
+      { job_id: point.jobId, point_index: point.pointIndex, include_history: true },
+      { signal },
+    ),
+    (point, response) => {
+      if (response.point_history === null) {
+        throw new Error(`The server sent no convergence trace for frontier point ${point.pointIndex + 1}.`)
+      }
+      onPointHistory(point.key, response.point_history)
+    },
+  )
+
+  let body: ReactNode
+  if (selectedPoint === null) {
+    body = <SolvedConvergence result={solvedResult} width={width} />
+  } else if (request.failure) {
+    body = (
+      <RequestFailureNotice
+        what="The convergence trace could not be loaded"
+        failure={request.failure}
+        onRetry={request.retry}
+      />
+    )
+  } else if (pointHistory === undefined) {
+    body = (
+      <div className="flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
+        <Loader2 size={14} className="animate-spin" />
+        {`Loading frontier point ${selectedPoint.index + 1}'s convergence trace...`}
+      </div>
+    )
   } else {
-    const trace = solvedResult.ratebook_cd_trace
-    body = trace
-      ? <RatebookConvergence trace={trace} bounds={bounds} width={width} />
-      : <Note>{LIVE_SOLVES_ONLY}</Note>
+    body = (
+      <PointConvergence
+        history={pointHistory}
+        bounds={effectiveConstraintBounds(selectedPoint.result)}
+        width={width}
+      />
+    )
   }
 
   return (

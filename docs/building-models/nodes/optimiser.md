@@ -116,7 +116,7 @@ A finished solve opens in a results panel under the canvas. Its header shows whe
 - **Adjustments**: how many quotes (or how much weight) sit at each scenario value of the grid, against 1.0, the base price with no adjustment.
 - **Segments**: the mean chosen scenario value for each level of a validation or rating factor, with the shares adjusted up, down and at the edge of the range.
 - **Quotes**: the scenario value chosen for each quote, with its expected objective and constraint values.
-- **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes).
+- **Convergence**: how the objective, each constraint total and each λ settled over the solve's iterations (a ratebook solve's coordinate-descent passes). With a frontier point selected, it shows that point's own solve; a point found by bisection shows each λ probed within its bracket.
 - **Curves**, **Statistics**: the optimiser's input from the node's preview, per quote across its scenarios and per scenario across quotes. On these views the header describes the sampled input instead of the solve.
 
 When the node's settings have changed since the solve, the results panel says so and offers **Re-run**.

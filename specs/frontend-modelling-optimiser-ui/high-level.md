@@ -667,7 +667,7 @@ values table. A **Weight by** switch weighs the means and shares as Adjustments 
 whose weight totals 0 shows "—" for its weighted figures and says why. The key chosen here and
 on Rates is the same choice. A key with too many levels says why it cannot be broken down; a
 result with no keys says "Tick validation factors in the optimiser's Factors pane".
-Selecting a frontier point never removes a view: Convergence stays available and, for a selected point, says "History is recorded for the solved result; frontier point N: converged
+Selecting a frontier point never removes a view: Convergence stays available and, for a selected point, charts that point's own solve under "Frontier point N: converged
 (or not converged), K iterations", and the frontier chart's as-solved marker stays at the solve's
 position. The Frontier chart fits the pane, names its axes (the objective
 column and the x constraint) at 12 px, and has a legend. A multi-constraint sweep is shown one
@@ -693,13 +693,40 @@ that met every constraint; and λ per constraint. A ratebook solve instead shows
 coordinate-descent trace by CD pass, one line per factor: the objective and each constraint
 total against its dashed bound (λ per record is in the values table). A ratebook result without a trace says the trace is recorded
 by live solves only. The values behind the charts sit in a closed values table ("View iteration
-values", or "View coordinate-descent values" for a trace), and a truncated trace says so. Stepping through points keeps the current tab; a new solve job, or switching to another
+values", or "View coordinate-descent values" for a trace), and a truncated trace says so. With a frontier point selected, Convergence draws that point's own solve instead, loaded only while the tab is open: a point solved by bisection charts, by step, the probed λ within its bracket, each constraint total against the point's dashed bound with a marker at the accepted probe, and the objective; any other point uses the small multiples or the trace view above, against its own bounds. Stepping through points keeps the current tab; a new solve job, or switching to another
 optimiser node, returns to the default tab. A displayed result's warning (such as the
 non-convergence reason) shows as an amber strip. When the node configuration has changed since the result was produced,
 the preview shows a strip saying so with a **Re-run** action that starts the solve directly. Re-run applies the Solve pane's blocking rules: while any issue blocks the solve it is disabled and the strip names the first issue. λ is shown
 for online and ratebook results alike, labelled "λ (multiplier)" and explained as the solver's
 Lagrange multiplier on the constraint's term; it is never read as a tightness claim, because in
 this discrete solve a positive λ can sit beside positive slack.
+
+## Modelling views the optimiser workspace does not carry over
+
+| Modelling feature | Why it does not carry over |
+|---|---|
+| Double lift, Lorenz, Gini | They measure how a predictor ranks observed outcomes. The optimiser's objective and constraints are model-expected values with no observed outcome. The nearest descriptive analogue is the Adjustments tab's distribution of chosen adjustments; impact analysis is out of scope. |
+| Residual histogram, actual-vs-predicted scatter | There are no actuals. |
+| AvE semantics (A/E ratio) | There are no actuals. The **layout** (feature browser, per-level chart, exposure strip) is reused by the Segments tab. |
+| PDP | There is no fitted model to vary. In ratebook mode the factor tables already are the per-level effect (the Rates tab). |
+| Feature importance / SHAP | There are no learned attributions. The beeswarm's quote-weighted \|log rate\| is the existing analogue. |
+| GLM inference (SE, Wald intervals, significance) | λ is a Lagrange multiplier from a dual solve, not a fitted coefficient, so Wald-style inference does not apply. This says nothing about how the solution varies with the book or the models (see the robustness question below). |
+| EBM terms | Not applicable. |
+| Tuning details / "Use best as fixed parameters" | There is no hyper-parameter search. Picking a frontier point as the publish target is the analogous action, and it lives in the Export pane. |
+| Train vs eval loss with a best-iteration line | No eval set. The Convergence tab is the analogue. |
+| k-fold CV selection spread | Re-solving per fold has no standard interpretation. |
+| **Holdout / robustness validation** | A decision about scope, not a claim that the solve carries no uncertainty. The figures are expected values from scoring models on one fixed book, so model error, mix drift and sampling variation are all real risks. A random holdout alone may not measure them well, and scaling absolute bounds to a sample needs a separate definition. The optimiser node documentation says the figures are model-expected, not observed. It stays an open question below. |
+| Modelling's "Training diagnostics are in-sample" wording | The wrong disclaimer for an optimiser. The accurate one is: "Expected values from the scoring models on the solve quotes; not observed outcomes." |
+| **Current vs optimised, dislocation and impact analysis (decided 25 September 2026)** | The optimiser is an adjustment on top of a base price: it reapplies scenarios to that base and never sees the live, currently deployed pricing. A "Current → Optimised → Change" view would compare against something the optimiser does not know. Analysts set up impact analysis elsewhere. The tests pinning the absence of Baseline and Uplift stay. |
+| Export buttons in the results workspace | Modelling excludes them deliberately, and so does the optimiser workspace. Parity means a values-table disclosure under every chart. Any CSV belongs in the Export pane (`OptimiserPublishSection.tsx`), which is the CSV question below. |
+
+Two questions stay open:
+
+- **Robustness checks:** out of scope as a scope choice, not a claim that the solve carries no
+  uncertainty. Is any robustness view wanted later: an out-of-time or group split, or a stressed
+  re-score?
+- **CSV downloads:** should frontier points and per-quote choices be downloadable from the Export
+  pane? The results panes keep the no-export rule either way.
 
 ## Model family capabilities
 

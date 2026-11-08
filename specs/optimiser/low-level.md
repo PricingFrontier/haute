@@ -9,7 +9,7 @@
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
 | `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (`select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier point and artifact-handle helpers. |
 | `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), the solve-memory forecast's readings of a config, a solver input or an estimate (`solve_forecast_shape`, `forecast_solve_memory_from_input`, `estimate_solve_memory_forecast`) and the thread mode's admission on it (`_admit_solve_memory`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
-| `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and the marked scratch root (`new_scratch_directory`, `scratch_directory`) that holds setup's and the log's temporary files (the solver-input parquet, a worker's scratch, the range reducer's spill directory, the MLflow log's staging folder). No optimiser module creates an unmarked temporary file. |
+| `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the four ownership-marked artifact families (apply result, ratebook factors, quote analysis, frontier history) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and the marked scratch root (`new_scratch_directory`, `scratch_directory`) that holds setup's and the log's temporary files (the solver-input parquet, a worker's scratch, the range reducer's spill directory, the MLflow log's staging folder). No optimiser module creates an unmarked temporary file. |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
 | `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
 | `src/haute/routes/_optimiser_segments.py` | Segment breakdowns (OPT-V11): the result's segment keys and their cardinality gate (`segment_keys`), the analysis and rating-factor level reducers (`AnalysisSegments`, `FactorLevelSegments`: quantile bins, the top 15 and Other, Missing, the exact level check), the typed response with its weighting rules (`segments_response`), and the routes' service (`SegmentQueries`: a breakdown, and the adjustment-spread index with its per-target cache). See "Segment breakdowns (OPT-V11)" below. |
@@ -141,8 +141,8 @@ ranges or resolution means editing the node and solving again.
 
 ### Artifact handle shape
 
-`{"kind": "optimiser_apply_result" | "optimiser_ratebook_factors" | "optimiser_quote_analysis",
-"version": 1, "format": "parquet", "path": str, "directory": str, "row_count": int,
+`{"kind": "optimiser_apply_result" | "optimiser_ratebook_factors" | "optimiser_quote_analysis"
+| "optimiser_frontier_history", "version": 1, "format": "parquet", "path": str, "directory": str, "row_count": int,
 ["size_bytes", "columns"]}`. A quote-analysis handle also carries `analysis_source`
 (`"data_input"` or `"side_input"`), `missing_quote_count` and `column_stats` (see
 "Analysis-column side table and scenario grid"). Handles
@@ -177,13 +177,16 @@ its native extension `price_contour._price_contour` and collects **every** probl
 - the module's `__version__` differs from the distribution metadata (a stale or shadowing
   build, such as `0.0.0+local`);
 - the version is outside `REQUIRED_SPECIFIER`, which equals `pyproject.toml`'s
-  `price-contour` specifier exactly (`>=0.7.0,<0.8`, pinned by
+  `price-contour` specifier exactly (`>=0.8.0,<0.9`, pinned by
   `tests/test_dependency_contracts.py`); prereleases are rejected even inside the range;
 - a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls,
-  including 0.6.0's `CancelToken`, `CancelToken.cancel` and `Cancelled`);
+  including 0.6.0's `CancelToken`, `CancelToken.cancel` and `Cancelled`, and 0.8.0's
+  `frontier_point_history_schema`, `FrontierResult.point_history`,
+  `RatebookFrontierResult.point_history` and `PerFactorRecord`);
 - a keyword haute passes by name that a Python wrapper no longer accepts
   (`REQUIRED_PARAMETERS`, checked with `inspect.signature`, including `cancel` on
-  `apply_from_grid` and `RatebookOptimiser.evaluate`; PyO3 classes are covered by the symbol
+  `apply_from_grid` and `RatebookOptimiser.evaluate`, and `record_history` on both
+  `frontier` methods; PyO3 classes are covered by the symbol
   check only);
 - a failed import, chained as the error's cause;
 - when nothing above failed, a one-row frame that does not pass through the native module
@@ -632,7 +635,8 @@ read, write or deletion for one solve never delays frontier work on another; the
 The frontier itself is computed once, inline with the solve, by
 `haute.routes._optimiser_solver._compute_frontier`, a thin dispatcher: ratebook passes
 `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`, while online omits them.
-The library sweeps serially (its `parallel` flag stays off): its parallel sweep was 39-89%
+Both pass `record_history=True`: the sweep records the steps it already takes, so each point's
+trace adds no solver work (see "Frontier point traces (OPT-PC04)"). The library sweeps serially (its `parallel` flag stays off): its parallel sweep was 39-89%
 faster on the measured frontiers but raised peak memory by up to forty times, moved 1-D lambdas
 by up to 9e-4 relative and changed 2-D points' convergence and lambdas, so it was not adopted
 (`scripts/benchmarks/opt-p06-frontier-parallelism.json`). The payload is capped via
@@ -663,7 +667,39 @@ concurrently). Missing or misaligned `frontier_factor_tables` is a `500`, never 
 With `include_adjustments` requested it also answers the point's adjustment report (see
 "Adjustment reports (OPT-V10)"); the route runs off the event loop through
 `run_until_disconnected`, so a client that leaves while the point materialises detaches only
-itself.
+itself. With `include_history` requested it also answers the point's convergence trace.
+
+### Frontier point traces (OPT-PC04)
+
+price-contour returns each swept point's convergence trace as `point_history`, one long frame
+aligned to `points` by `point_index`, with exactly the columns of
+`frontier_point_history_schema(mode, constraint_names)`. `frontier_point_history_frame` checks
+that schema, treats a missing frame or any other column set as a library contract failure, and
+keeps only the points the frontier payload returns. The solve persists the frame as
+`point_history.parquet`, the fourth artifact family (`optimiser_frontier_history`, handle key
+`frontier_point_history` in the job's `artifact_handles`). The traces never enter the result or
+the status payload, whose size is unchanged. In a solver session the parent creates the directory
+before the command, only when the config sweeps (`new_frontier_history_directory`), and removes
+it unless the published job adopted the handle, as it does the apply artifact's.
+
+`POST /frontier/select` with `include_history: true` selects the point as before and answers
+`point_history` with that point's `OptimiserFrontierPointHistory`, read from the artifact by
+`point_index` with a filtered scan and no solver work. It is `null` without the flag or without
+a point. Its `kind` says how the point was solved:
+
+- `bisection` (`probes`): a one-constraint online point's fixed-λ applies in run order, each with
+  `step`, `phase` (`bracket` or `bisect`), the bracket a `bisect` probe halved (`bracket_lo` and
+  `bracket_hi`, `null` on a `bracket` probe), `lambdas`, `total_objective`, `total_constraints`,
+  `all_constraints_satisfied` and `accepted`. The point's λ and totals are its last accepted
+  probe's.
+- `subgradient` (`history`): `OptimiserHistoryEntry` rows, as a solve records them.
+- `ratebook` (`cd_trace`): an `OptimiserRatebookCdTrace`, shaped by `ratebook_cd_trace` as a
+  solve's is.
+
+A point with no rows, online rows that mix phases, or a job with a frontier but no handle breaks
+the contract and is a `500`. An artifact that has gone is a `410` ("The frontier points'
+convergence traces are no longer available. Re-run the solve."); an invalid or corrupt one is a
+`500` naming the re-run.
 
 ### Typed frontier points (`OptimiserFrontierPoint`)
 
@@ -872,11 +908,12 @@ automatically.
 
 ### Artifact lifecycle (persist / validate / load / cleanup) (`src/haute/routes/_optimiser_artifacts.py`)
 
-Three artifact families, all rooted under the versioned marker-aware OS-temp hierarchy
+Four artifact families, all rooted under the versioned marker-aware OS-temp hierarchy
 (`<tempdir>/haute/artifacts/v1/optimiser_apply`,
 `<tempdir>/haute/artifacts/v1/optimiser_ratebook_factors`,
-`<tempdir>/haute/artifacts/v1/optimiser_quote_analysis`; the third is described in
-"Analysis-column side table and scenario grid"):
+`<tempdir>/haute/artifacts/v1/optimiser_quote_analysis`,
+`<tempdir>/haute/artifacts/v1/optimiser_frontier_history`; the third is described in
+"Analysis-column side table and scenario grid", the fourth in "Frontier point traces (OPT-PC04)"):
 
 - **Persist** (`_persist_apply_frame_artifact`, `_persist_apply_result_artifact`,
   `_persist_ratebook_factors_lazy_artifact`, which sinks the factors `LazyFrame` via
@@ -924,7 +961,7 @@ Three artifact families, all rooted under the versioned marker-aware OS-temp hie
 - **Restart cleanup**: the server lifespan reads the strict non-negative
   `HAUTE_ARTIFACT_STALE_SECONDS` interval (default 86,400 seconds) after loading the project
   environment, then passes it to `reap_stale_optimiser_artifacts`. The reaper checks only valid
-  stale markers from the four dedicated roots (the three artifact families and the scratch
+  stale markers from the five dedicated roots (the four artifact families and the scratch
   root, `haute/artifacts/v1/optimiser_scratch`, owner `optimiser_scratch`) and logs bounded
   inspected/removed/failed/reclaimed-byte counts. One tracked worker-thread reap is scheduled
   without delaying readiness; shutdown observes the task.
@@ -1306,6 +1343,15 @@ whose message already names every problem and the remedy.
   in `diagnostics_errors`, the artifact reading the result's input summary, and the status route's
   non-finite walk (a NaN or Infinity corrects the job to `error`; a clean walk is cached per
   generation and selection).
+- OPT-PC04's traces: `TestFrontierPointHistoryContract` in
+  `tests/test_optimiser_routes_real_library.py` runs the real library and answers
+  `/frontier/select` with `include_history` for a one-constraint point (a bisection ending on the
+  point's λ and totals), a two-constraint point (subgradient) and a ratebook point (CD trace),
+  with price-contour patched to fail so no solver can run, and checks the status payload carries
+  no trace. `tests/test_optimiser_service_validation.py` rejects an empty or mixed trace and a
+  frontier without its documented frame, keeps only the returned points, and answers a `410` once
+  the artifact is cleaned up. `tests/test_optimiser_solver_session.py` reads the trace from a
+  session solve and shows a solve that sweeps nothing leaves no directory behind.
 - `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
   preparation (thread and process mode): a non-solver `region` column configured as an analysis
   column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are

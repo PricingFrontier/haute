@@ -535,6 +535,7 @@ export function makeFrontierSelect(
 ): FrontierSelectResponse {
   return {
     status: "ok",
+    point_history: null,
     point_index: null,
     total_objective: 0,
     constraints: {},

@@ -1,11 +1,12 @@
 """Ownership-marked optimiser artifacts and setup-owned solver-input files.
 
-Three artifact families live under dedicated, marker-owned temp roots: the
+Four artifact families live under dedicated, marker-owned temp roots: the
 per-quote apply result of either mode (``optimiser_apply_result``: an online
 apply frame, or a ratebook result's canonical ``quote_results``), the ratebook
 factor table
-(``optimiser_ratebook_factors``) and the per-quote analysis side table
-(``optimiser_quote_analysis``). Their handle is the canonical persisted wire
+(``optimiser_ratebook_factors``), the per-quote analysis side table
+(``optimiser_quote_analysis``) and the frontier points' convergence traces
+(``optimiser_frontier_history``). Their handle is the canonical persisted wire
 schema. This module persists, validates, loads and removes them, registers the
 job store's cleaners for evicted jobs, and reaps stale directories at startup.
 Solve setup's solver-input parquet and the directory a setup worker writes
@@ -58,6 +59,12 @@ _QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_quote_analysi
 _QUOTE_ANALYSIS_ARTIFACT_DIR_PREFIX = "analysis_"
 _QUOTE_ANALYSIS_FILENAME = "quote_analysis.parquet"
 _QUOTE_ANALYSIS_ARTIFACT_OWNER = "optimiser_quote_analysis"
+FRONTIER_HISTORY_HANDLE_KEY = "frontier_point_history"
+_FRONTIER_HISTORY_HANDLE_KIND = "optimiser_frontier_history"
+_FRONTIER_HISTORY_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_frontier_history"
+_FRONTIER_HISTORY_ARTIFACT_DIR_PREFIX = "history_"
+_FRONTIER_HISTORY_FILENAME = "point_history.parquet"
+_FRONTIER_HISTORY_ARTIFACT_OWNER = "optimiser_frontier_history"
 # Setup and request scratch: the solver input, a worker's temporary files, the
 # auto-range reducer's parts and the MLflow log's staging folder. Marked like
 # the artifacts, so a server crash mid-setup leaves nothing the next start
@@ -80,6 +87,10 @@ def _ratebook_factors_artifact_root() -> Path:
 
 def _quote_analysis_artifact_root() -> Path:
     return (Path(tempfile.gettempdir()) / _QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME).resolve()
+
+
+def _frontier_history_artifact_root() -> Path:
+    return (Path(tempfile.gettempdir()) / _FRONTIER_HISTORY_ARTIFACT_ROOT_NAME).resolve()
 
 
 def _scratch_artifact_root() -> Path:
@@ -152,6 +163,11 @@ def reap_stale_optimiser_artifacts(
         ("apply", _apply_artifact_root(), _APPLY_ARTIFACT_OWNER),
         ("ratebook_factors", _ratebook_factors_artifact_root(), _RATEBOOK_FACTORS_ARTIFACT_OWNER),
         ("quote_analysis", _quote_analysis_artifact_root(), _QUOTE_ANALYSIS_ARTIFACT_OWNER),
+        (
+            "frontier_history",
+            _frontier_history_artifact_root(),
+            _FRONTIER_HISTORY_ARTIFACT_OWNER,
+        ),
         ("scratch", _scratch_artifact_root(), _SCRATCH_ARTIFACT_OWNER),
     ):
         if root.is_dir():
@@ -301,6 +317,115 @@ def _quote_analysis_path(handle: dict[str, Any]) -> Path:
 QUOTE_ANALYSIS_UNAVAILABLE_DETAIL = (
     "Optimiser quote analysis is no longer available. Re-run the solve to regenerate it."
 )
+
+
+def _validate_frontier_history_artifact_handle(handle: dict[str, Any]) -> tuple[Path, Path]:
+    """Return validated ``(path, directory)`` for a server-owned frontier-history artifact."""
+    return _validate_server_owned_parquet_handle(
+        handle,
+        kind=_FRONTIER_HISTORY_HANDLE_KIND,
+        root=_frontier_history_artifact_root(),
+        directory_prefix=_FRONTIER_HISTORY_ARTIFACT_DIR_PREFIX,
+        filename=_FRONTIER_HISTORY_FILENAME,
+        description="Optimiser frontier history",
+    )
+
+
+def new_frontier_history_directory() -> Path:
+    """Create the marked directory one solve's frontier traces are written into.
+
+    A solver session's parent creates it before the command that writes the
+    traces and removes it when no job adopts the handle, as it does the apply
+    artifact's.
+    """
+    root = _frontier_history_artifact_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return create_owned_artifact_directory(
+        root, _FRONTIER_HISTORY_ARTIFACT_DIR_PREFIX, _FRONTIER_HISTORY_ARTIFACT_OWNER
+    )
+
+
+def remove_frontier_history_directory(directory: Path) -> None:
+    """Remove a frontier-history directory no job adopted; a failure is logged."""
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        return
+    except OSError as cleanup_exc:
+        logger.warning(
+            "orphan_frontier_history_cleanup_failed",
+            path=str(directory),
+            error=str(cleanup_exc),
+        )
+
+
+def persist_frontier_history_artifact(
+    frame: pl.DataFrame, *, artifact_dir: Path | None = None
+) -> dict[str, Any]:
+    """Persist a frontier's ``point_history`` behind an explicit handle.
+
+    *artifact_dir* is a directory the caller's parent created with
+    :func:`new_frontier_history_directory` and owns; without one, a new
+    directory is created here and removed if the write fails.
+    """
+    owns_directory = artifact_dir is None
+    if artifact_dir is None:
+        artifact_dir = new_frontier_history_directory()
+    elif artifact_dir.resolve().parent != _frontier_history_artifact_root() or not (
+        artifact_dir.is_dir()
+    ):
+        raise ValueError(f"{artifact_dir} is not a directory under the frontier history root")
+    artifact_path = artifact_dir / _FRONTIER_HISTORY_FILENAME
+    try:
+        frame.write_parquet(artifact_path)
+    except BaseException:
+        if owns_directory:
+            shutil.rmtree(artifact_dir, ignore_errors=True)
+        raise
+    return {
+        "kind": _FRONTIER_HISTORY_HANDLE_KIND,
+        "version": _ARTIFACT_HANDLE_VERSION,
+        "format": "parquet",
+        "path": str(artifact_path),
+        "directory": str(artifact_dir),
+        "row_count": len(frame),
+    }
+
+
+def _cleanup_frontier_history_artifact(handle: dict[str, Any]) -> None:
+    """Remove a frontier-history artifact whose job has ended."""
+    _artifact_path, artifact_dir = _validate_frontier_history_artifact_handle(handle)
+    if artifact_dir.exists():
+        shutil.rmtree(artifact_dir)
+
+
+FRONTIER_HISTORY_UNAVAILABLE_DETAIL = (
+    "The frontier points' convergence traces are no longer available. Re-run the solve."
+)
+
+
+def read_frontier_point_history(handle: dict[str, Any], point_index: int) -> pl.DataFrame:
+    """One frontier point's trace rows, in step order: a 410 when the artifact is gone."""
+    import polars as pl
+
+    try:
+        artifact_path, _artifact_dir = _validate_frontier_history_artifact_handle(handle)
+    except ValueError as exc:
+        _log_artifact_load_failure("optimiser_frontier_history_validation_failed", handle, exc)
+        raise ServiceFailedError(
+            "Optimiser frontier history reference is invalid. Re-run the solve."
+        ) from exc
+    if not artifact_path.is_file():
+        logger.warning("optimiser_frontier_history_missing", path=str(artifact_path))
+        raise GoneError(FRONTIER_HISTORY_UNAVAILABLE_DETAIL)
+    try:
+        point_rows = pl.scan_parquet(artifact_path).filter(pl.col("point_index") == point_index)
+        return point_rows.collect(engine="in-memory")
+    except Exception as exc:
+        _log_artifact_load_failure("optimiser_frontier_history_scan_failed", handle, exc)
+        raise ServiceFailedError(
+            "Optimiser frontier history artifact is corrupt. Re-run the solve."
+        ) from exc
 
 
 def _new_apply_artifact_directory() -> Path:
@@ -576,6 +701,7 @@ def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
 register_artifact_cleaner(_APPLY_RESULT_HANDLE_KIND, _cleanup_apply_result_artifact)
 register_artifact_cleaner(_RATEBOOK_FACTORS_HANDLE_KIND, _cleanup_ratebook_factors_artifact)
 register_artifact_cleaner(_QUOTE_ANALYSIS_HANDLE_KIND, _cleanup_quote_analysis_artifact)
+register_artifact_cleaner(_FRONTIER_HISTORY_HANDLE_KIND, _cleanup_frontier_history_artifact)
 
 
 def _cleanup_orphan_apply_result_artifact(
@@ -590,6 +716,8 @@ def _cleanup_orphan_apply_result_artifact(
             _cleanup_ratebook_factors_artifact(handle)
         elif handle.get("kind") == _QUOTE_ANALYSIS_HANDLE_KIND:
             _cleanup_quote_analysis_artifact(handle)
+        elif handle.get("kind") == _FRONTIER_HISTORY_HANDLE_KIND:
+            _cleanup_frontier_history_artifact(handle)
         else:
             _cleanup_apply_result_artifact(handle)
     except Exception as cleanup_exc:

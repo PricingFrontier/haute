@@ -45,7 +45,7 @@ NATIVE_MODULE = "price_contour._price_contour"
 
 # Must equal the ``price-contour`` specifier in pyproject.toml exactly
 # (``tests/test_dependency_contracts.py`` pins the equality).
-REQUIRED_SPECIFIER = ">=0.7.0,<0.8"
+REQUIRED_SPECIFIER = ">=0.8.0,<0.9"
 
 # Prereleases (``0.4.2rc1``, ``0.4.2.dev0``) are rejected even inside the
 # specifier: haute is only verified against released builds.
@@ -79,6 +79,11 @@ REQUIRED_SYMBOLS: tuple[str, ...] = (
     "RatebookFrontierResult.factor_tables",
     # The exact column set of a frontier's points, per mode; haute types the rows from it.
     "frontier_points_schema",
+    # Each frontier point's convergence trace and its exact columns (OPT-PC04).
+    "frontier_point_history_schema",
+    "FrontierResult.point_history",
+    "RatebookFrontierResult.point_history",
+    "PerFactorRecord",
     # Cooperative cancellation of a frontier point's apply or evaluation (OPT-PC02).
     "CancelToken",
     "CancelToken.cancel",
@@ -111,7 +116,12 @@ REQUIRED_PARAMETERS: dict[str, tuple[str, ...]] = {
         "expected_n_quotes",
     ),
     "OnlineOptimiser": ("objective", "constraints", "max_iter", "tolerance", "record_history"),
-    "OnlineOptimiser.frontier": ("threshold_ranges", "n_points_per_dim", "initial_lambdas"),
+    "OnlineOptimiser.frontier": (
+        "threshold_ranges",
+        "n_points_per_dim",
+        "initial_lambdas",
+        "record_history",
+    ),
     "RatebookOptimiser": (
         "objective",
         "constraints",
@@ -128,6 +138,7 @@ REQUIRED_PARAMETERS: dict[str, tuple[str, ...]] = {
         "n_points_per_dim",
         "factor_columns",
         "initial_lambdas",
+        "record_history",
     ),
 }
 
