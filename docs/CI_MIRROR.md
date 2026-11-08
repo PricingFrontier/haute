@@ -47,7 +47,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 | `ci.yml` | `mutation-config-smoke` | push+PR | **Yes** | `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci` |
 | `ci.yml` | `frontend-static` | push+PR | **Yes** | `npm ci` → `npm run check:contracts`, `typecheck`, `lint`, `build`, `check:bundle`, `test:benchmark:pr` as separate steps (each runs even after another fails; the bundle budget only after a successful build) |
 | `ci.yml` | `frontend-tests` | push+PR | **Yes** | `npm ci` → `npm run test:coverage` (Vitest with coverage thresholds, then the critical-coverage check) |
-| `ci.yml` | `browser-e2e` (×2 shards) | push+PR | **Yes** | `npm ci` → `playwright install --with-deps chromium firefox` → `npm run test:e2e -- --shard=K/2` → `scripts/report_flaky_browser_tests.py` names any test that passed only on a retry in the job summary; on a push to `main` such a test fails the run (`failOnFlakyTests`) |
+| `ci.yml` | `browser-e2e` (×2 shards) | push+PR | **Yes** | `npm ci` → `playwright install --with-deps chromium firefox webkit` → `npm run test:e2e -- --shard=K/2` → `scripts/report_flaky_browser_tests.py` names any test that passed only on a retry in the job summary; on a push to `main` such a test fails the run (`failOnFlakyTests`) |
 | `mutation.yml` | `plan` → `shard` (matrix) → `mutation` (gate) | PR **iff** `src/haute/**/*.py`, `tests/**/*.py`, `mutation/**`, `scripts/run_mutation_suite.py`, or the workflow changed | **Conditional** | `plan` selects targets and builds the shared Cosmic Ray session; matrix `shard` jobs execute disjoint mutant subsets in parallel; `mutation` merges shard results and checks survival thresholds — equivalent to one bounded run (`run_mutation_suite.py --changed-files-from <difflist>`) |
 | `docs.yml` | `build`+`deploy` | push to main **iff** `docs/**` or `mkdocs.yml` changed (NOT on PR) | **Post-merge** (the strict build itself gates PRs through `ci.yml`'s `docs-build`) | `uv run mkdocs build --strict` → deploy to GitHub Pages |
 | `performance.yml` | `python-perf` + `frontend-performance` | `workflow_dispatch` + weekly cron (Mon 03:17 UTC) | **No** | perf lanes; not a PR gate (see Deficiencies) |
@@ -181,7 +181,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 12. **`mutation-config-smoke`** →
    `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci`.
 13. **`browser-e2e`** →
-   `cd frontend && ./node_modules/.bin/playwright install chromium firefox && CI=1 npm run test:e2e`.
+   `cd frontend && ./node_modules/.bin/playwright install chromium firefox webkit && CI=1 npm run test:e2e`.
    CI runs this as two shards (`npm run test:e2e -- --shard=K/2`); one
    unsharded local run covers both.
    **`CI=1` matters**: `frontend/playwright.config.ts` branches on it — with
@@ -438,7 +438,7 @@ uv venv .pkg-sdist --python 3.12 && uv pip install --python .pkg-sdist/bin/pytho
 # linux-only missing wheel — Docker is the only local mirror for that (Deficiencies).
 
 # --- E. Browser e2e (CI=1 so retries/reuseExistingServer match CI) ---
-( cd frontend && ./node_modules/.bin/playwright install chromium firefox && CI=1 npm run test:e2e )
+( cd frontend && ./node_modules/.bin/playwright install chromium firefox webkit && CI=1 npm run test:e2e )
 
 # --- Conditional (run iff the relevant paths changed) ---
 # docs/** or mkdocs.yml changed (post-merge gate):
