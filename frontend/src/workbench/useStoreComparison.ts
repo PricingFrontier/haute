@@ -8,6 +8,10 @@ import useStoreCompareStore from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 
 export default function useStoreComparison() {
+  useEffect(() => {
+    const state = useStoreCompareStore.getState()
+    state.choose(state.environment)
+  }, [])
   const form = useWorkbenchFormStore((s) => s.form)
   const environments = useStoreCompareStore((s) => s.environments)
   const renames = useStoreCompareStore((s) => s.renames)

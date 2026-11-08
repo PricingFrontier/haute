@@ -1,18 +1,14 @@
 import type { WorkbenchStoreCompareResponse } from "../api/types"
-import useStoreCompareStore, { currentComparison } from "../stores/useStoreCompareStore"
-import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import { useDatabaseComparison } from "../stores/useStoreCompareStore"
 import DatabaseDisclosure from "./DatabaseDisclosure"
 
 type Change = WorkbenchStoreCompareResponse["changes"][number]
-const additionsOf = (answer: WorkbenchStoreCompareResponse) => answer.changes.filter((change) => change.kind === "add column" || change.kind === "create table")
 
 /** A compact inventory of what Export SQL will add. */
 export function DatabaseChanges() {
-  const form = useWorkbenchFormStore((s) => s.form)
-  const state = useStoreCompareStore()
-  const answer = currentComparison(state, form)
+  const { answer } = useDatabaseComparison()
   if (answer === null) return null
-  const additions = additionsOf(answer)
+  const additions = answer.changes
   const columns = additions.filter((change) => change.kind === "add column").length
   const tables = additions.length - columns
   const count = [columns > 0 ? `${columns} ${columns === 1 ? "column" : "columns"}` : "", tables > 0 ? `${tables} ${tables === 1 ? "table" : "tables"}` : ""].filter(Boolean).join(" · ")
@@ -23,7 +19,7 @@ export function DatabaseChanges() {
 
 export default function StorePlanReview({ answer }: { answer: WorkbenchStoreCompareResponse }) {
   const groups = new Map<string, Change[]>()
-  for (const change of additionsOf(answer)) {
+  for (const change of answer.changes) {
     const group = groups.get(change.table)
     if (group) group.push(change)
     else groups.set(change.table, [change])

@@ -890,7 +890,7 @@ Out of scope:
     details remain separate from this additions list; no additions does not imply the
     current app can use the database. Operational guidance belongs in documentation.
 
-    Export SQL shows the query immediately for the database selected on the schema pane,
+    Export SQL validates the connection before showing the query for the selected database,
     with Copy SQL, Download SQL and Close. It has no environment/source selector, refresh
     action, options or change-review disclosures. Opening it never changes the selected
     database or initiates a database fetch. The target is explicitly the current working
@@ -916,6 +916,25 @@ Out of scope:
     declared the export window explains that a database must be configured. Rename changes,
     Copy SQL and Download SQL are disabled in Preview. Direct execution, saved migration packages and deployed-release
     selection are outside this workflow.
+
+    Reusing a session snapshot must also check its connection identity. Choosing a
+    database or reopening the pane loads its persisted snapshot through the server,
+    which validates the current target before reuse. Comparisons carry the snapshot's
+    opaque target fingerprint; a changed target or sign-in refuses the comparison and
+    asks for Refresh. Opening Export SQL and each Copy/Download revalidate the comparison
+    without reading the database. Pending validation hides the previous query; a failed
+    or superseded validation cannot copy or download it.
+
+    Compatibility details are independent of the additions plan. Each database-only
+    field explains whether its values survive saves, are cleared in an output-only
+    table, or need preserving during a manual table reshape. Adding a new column never
+    resolves a NOT NULL constraint on a retained source column: the field's resolution
+    keeps that separate repair, naming the old column. A collapsed Database checks
+    section shows activity-table defects, comparison blockers and unused tables that
+    have no field in the editor. Rename choices whose target field or table was renamed
+    or deleted remain visible there with Remove rename choice; valid choices on other
+    fields and environments are preserved. These details disappear while comparison
+    is pending or failed and never enter the additions list or SQL.
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or

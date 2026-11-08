@@ -297,6 +297,7 @@ class WorkbenchStoreCatalogueResponse(BaseModel):
     environment: str
     tables: list[WorkbenchCatalogueTable]
     checked_at: int = Field(gt=0)
+    target: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class WorkbenchStoreRename(BaseModel):
@@ -316,6 +317,7 @@ class WorkbenchStoreCompareRequest(BaseModel):
     form: FormSpec
     environment: BoundedName
     tables: list[WorkbenchCatalogueTable] = Field(max_length=MAX_REQUEST_ITEMS)
+    target: str = Field(pattern=r"^[0-9a-f]{64}$")
     renames: list[WorkbenchStoreRename] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
 
 
@@ -341,27 +343,17 @@ class WorkbenchStoreExtra(BaseModel):
     column: str | None
     form_table: str | None
     quotes: int | None = None
+    retention: str
 
 
 class WorkbenchStoreChange(BaseModel):
-    """A readable operation from the same plan as the SQL, not an execution result."""
+    """An addition from the exported SQL plan; compatibility details are separate."""
 
-    kind: Literal[
-        "create table",
-        "add column",
-        "rename table",
-        "rename column",
-        "keep table",
-        "keep column",
-        "retype column",
-        "reshape table",
-    ]
+    kind: Literal["create table", "add column"]
     table: str
     column: str | None
-    was: str | None
-    disposition: Literal["sql", "manual", "retained"]
+    disposition: Literal["sql", "manual"]
     description: str
-    quotes: int | None
 
 
 class WorkbenchStoreCompareResponse(BaseModel):
@@ -374,11 +366,9 @@ class WorkbenchStoreCompareResponse(BaseModel):
     renames: list[WorkbenchStoreRename]
     matches: bool
     sql: str
-    provider: str
     changes: list[WorkbenchStoreChange]
     manual: list[str]
     blocked: list[str]
-    requires_maintenance: bool
 
 
 class WorkbenchFormFile(BaseModel):

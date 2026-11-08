@@ -1314,9 +1314,19 @@ def _catalogue(environment: str = "dev") -> Any:
 
 
 def _compare(spec: dict[str, Any], tables: Any, renames: Any = ()) -> Any:
+    snapshot = client().post(
+        "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+    )
+    assert snapshot.status_code == 200, snapshot.text
     return client().post(
         "/api/workbench/store-compare",
-        json={"form": spec, "environment": "dev", "tables": tables, "renames": list(renames)},
+        json={
+            "form": spec,
+            "environment": "dev",
+            "tables": tables,
+            "renames": list(renames),
+            "target": snapshot.json()["target"],
+        },
     )
 
 
@@ -1392,6 +1402,138 @@ def test_catalogue_snapshots_persist_until_refreshed_and_follow_the_connection(
     )
     assert missing.status_code == 409, missing.text
     assert not (project / "other.sqlite").exists()
+
+
+def test_comparison_refuses_a_snapshot_from_a_previous_connection(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    snapshot = _catalogue().json()
+    (project / "connections.toml").write_text(
+        '[dev]\nprovider = "sqlite"\ndatabase = "other.sqlite"\n'
+    )
+
+    response = client().post(
+        "/api/workbench/store-compare",
+        json={
+            "form": form(POLICY),
+            "environment": "dev",
+            "tables": snapshot["tables"],
+            "target": snapshot["target"],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "connection changed" in response.text
+    assert "Refresh" in response.text
+    assert "other.sqlite" not in response.text
+    assert not (project / "other.sqlite").exists()
+
+
+@pytest.mark.parametrize("changed", ["schema", "username"])
+def test_comparison_checks_schema_and_sign_in_without_reading_the_database(
+    project: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    from haute._quote_store import _compare as compare_module
+    from haute._quote_store._catalogue import Catalogue
+
+    enable(
+        project,
+        '[workbench]\nenabled = true\n[workbench.store.dev]\nprovider = "postgresql"\n'
+        'auth = "password"\nusername_env = "DEV_USER"\npassword_env = "DEV_PASSWORD"\n',
+    )
+    write_form(project, form(POLICY))
+    connection = (
+        '[dev]\nprovider = "postgresql"\nserver = "hidden-host.invalid"\ndatabase = "quotes"\n'
+        'schema = "original"\nauth = "password"\nusername_env = "DEV_USER"\n'
+        'password_env = "DEV_PASSWORD"\n'
+    )
+    (project / "connections.toml").write_text(connection)
+    monkeypatch.setenv("DEV_USER", "hidden-user")
+    monkeypatch.setenv("DEV_PASSWORD", "hidden-password")
+    reads = []
+
+    def read_catalogue(location: Any) -> Catalogue:
+        reads.append(location)
+        return Catalogue(tables=())
+
+    monkeypatch.setattr(compare_module, "read_store_catalogue", read_catalogue)
+    snapshot = _catalogue().json()
+    body = {
+        "form": form(POLICY),
+        "environment": "dev",
+        "tables": snapshot["tables"],
+        "target": snapshot["target"],
+    }
+    assert client().post("/api/workbench/store-compare", json=body).status_code == 200
+    if changed == "schema":
+        (project / "connections.toml").write_text(
+            connection.replace('schema = "original"', 'schema = "replacement"')
+        )
+    else:
+        monkeypatch.setenv("DEV_USER", "replacement-user")
+    response = client().post("/api/workbench/store-compare", json=body)
+    assert response.status_code == 409, response.text
+    assert "connection changed" in response.text
+    assert "Refresh" in response.text
+    assert len(reads) == 1
+    assert "hidden" not in response.text and "replacement" not in response.text
+
+
+def test_store_review_keeps_retention_separate_from_additions(project: Path) -> None:
+    import sqlite3
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    old = form(
+        {**POLICY, "inputs": [*POLICY["inputs"], column("legacy")]},
+        {**PRICING, "outputs": [*PRICING["outputs"], column("old_premium", "float")]},
+        {
+            "name": "locations",
+            "rows": "many",
+            "inputs": [column("row_number", "int", index="numbered"), column("old_location")],
+        },
+    )
+    write_form(project, old)
+    database = _dev_database(project, old)
+    with sqlite3.connect(database) as raw:
+        raw.execute("ALTER TABLE haute_activity DROP COLUMN actor")
+        raw.execute("ALTER TABLE policy_details DROP COLUMN state")
+        raw.execute("ALTER TABLE policy_details ADD COLUMN state TEXT NOT NULL DEFAULT ''")
+    proposed = form(
+        {**POLICY, "inputs": [column("territory"), column("exposure", "float")]},
+        PRICING,
+        {"name": "locations", "rows": "one", "inputs": [column("new_location")]},
+    )
+    tables = _catalogue().json()["tables"]
+    renames = [{"table": "policy_details", "column": "territory", "was": "state"}]
+    response = _compare(proposed, tables, renames)
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    extras = {(each["table"], each["column"]): each for each in answer["extras"]}
+    assert "survive saves" in extras["policy_details", "legacy"]["retention"]
+    assert "later saves clear" in extras["pricing_output", "old_premium"]["retention"]
+    assert "manual migration" in extras["locations", "old_location"]["retention"]
+    assert all(each["kind"] in {"add column", "create table"} for each in answer["changes"])
+    assert any(
+        each["table"] is None and "haute_activity.actor" in each["message"]
+        for each in answer["differences"]
+    )
+    assert any(
+        each["column"] == "territory" and each["kind"] == "null" for each in answer["differences"]
+    )
+    from haute._workbench_form import FormSpec, with_quote_details
+
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/ui_contracts/workbench_store_review.json").read_text()
+    )
+    assert fixture == {
+        "form": with_quote_details(FormSpec.model_validate(proposed)).model_dump(
+            mode="json", by_alias=True
+        ),
+        "tables": tables,
+        "renames": renames,
+        "answer": answer,
+    }
 
 
 def test_catalogue_cache_errors_require_refresh_and_failed_refresh_keeps_the_snapshot(
@@ -1471,6 +1613,9 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
         "column": "exposure",
         "form_table": "policy_details",
         "quotes": 0,
+        "retention": (
+            "Retain this unused column; supported values survive saves until the row is deleted."
+        ),
     } in (unpaired["extras"])
     assert not unpaired["matches"]
     assert "branch" not in unpaired
@@ -1542,8 +1687,6 @@ def test_store_export_adds_new_names_without_moving_or_removing_old_values(
 
     assert response.status_code == 200, response.text
     review = response.json()
-    assert review["provider"] == "sqlite"
-    assert review["requires_maintenance"]
     assert review["blocked"] == []
     assert review["manual"] == []
     changes = {(each["table"], each["column"]): each for each in review["changes"]}
@@ -1551,7 +1694,7 @@ def test_store_export_adds_new_names_without_moving_or_removing_old_values(
     assert added["kind"] == "add column" and added["disposition"] == "sql"
     assert "initially empty" in added["description"]
     renamed = changes["policy_details", "territory"]
-    assert renamed["kind"] == "add column" and renamed["was"] is None
+    assert renamed["kind"] == "add column" and "was" not in renamed
     assert renamed["disposition"] == "sql"
     assert set(changes) == {("policy_details", "flood_zone"), ("policy_details", "territory")}
     assert {(extra["table"], extra["column"]) for extra in review["extras"]} >= {
@@ -1677,7 +1820,6 @@ def test_store_review_requires_release_coordination_for_manual_key_repairs(proje
     assert not review["matches"]
     assert review["changes"] == []
     assert any("is keyed by nothing" in note for note in review["manual"])
-    assert review["requires_maintenance"]
 
 
 def test_an_environment_the_editor_cannot_read_is_said_naming_what_to_set(

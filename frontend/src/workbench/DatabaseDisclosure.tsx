@@ -1,5 +1,13 @@
 import { ChevronRight } from "lucide-react"
 import type { ReactNode } from "react"
+import type { WorkbenchStoreExtra } from "../api/types"
+
+export function DatabaseExtras({ extras }: { extras: WorkbenchStoreExtra[] }) {
+  return extras.map((each) => <div key={`${each.table}.${each.column}`}>
+    <code>{each.column ?? each.table}</code><p>{each.retention}</p>
+    <p>{each.quotes === null ? "Quote count unavailable" : `${each.quotes} quotes with values`}</p>
+  </div>)
+}
 
 /** Native disclosure behavior with the schema tables' chevron and focus treatment. */
 export default function DatabaseDisclosure({ title, children, className = "" }: { title: ReactNode; children: ReactNode; className?: string }) {

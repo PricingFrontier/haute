@@ -21,8 +21,8 @@ import SchemaPane from "../SchemaPane"
 import { sheetForm } from "./fixtures"
 
 const ANSWER: WorkbenchStoreCompareResponse = {
-  differences: [], extras: [], renames: [], matches: true, sql: "-- dev query", provider: "sqlite",
-  changes: [], manual: [], blocked: [], requires_maintenance: false,
+  differences: [], extras: [], renames: [], matches: true, sql: "-- dev query",
+  changes: [], manual: [], blocked: [],
 }
 
 const selectDev = () => fireEvent.change(screen.getByRole("combobox", { name: "Database" }), { target: { value: "dev" } })
@@ -33,7 +33,7 @@ describe("SchemaPane", () => {
     useWorkbenchStore.setState({ environments: ["dev", "prod"] })
     useWorkbenchViewStore.setState({ mode: "build", schemaOpen: true, schemaSearch: "" })
     useStoreCompareStore.getState().reset()
-    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, checked_at: 1700000000000, tables: [] }))
+    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, target: "a".repeat(64), checked_at: 1700000000000, tables: [] }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(ANSWER)
     vi.mocked(writeClipboardText).mockResolvedValue(undefined)
   })
@@ -45,7 +45,7 @@ describe("SchemaPane", () => {
   })
 
   it("opens SQL beside Refresh, explains unavailable states, and copies the current query", async () => {
-    let finish!: (value: { environment: string; checked_at: number; tables: [] }) => void
+    let finish!: (value: { environment: string; target: string; checked_at: number; tables: [] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     render(<SchemaPane />)
     const exportButton = screen.getByRole("button", { name: "Export SQL" })
@@ -58,7 +58,7 @@ describe("SchemaPane", () => {
     fireEvent.click(exportButton)
     expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
     expect(screen.getByRole("alert")).toHaveTextContent("Wait for the database comparison")
-    await act(async () => finish({ environment: "dev", checked_at: 1700000000000, tables: [] }))
+    await act(async () => finish({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: [] }))
     await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
     const window = screen.getByTestId("store-sql-window")
     expect(within(window).getByTestId("store-sql")).toBeVisible()
@@ -66,7 +66,7 @@ describe("SchemaPane", () => {
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
     expect(fetchStoreSql).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
-    await waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith(ANSWER.sql))
+    await waitFor(() => expect(writeClipboardText).toHaveBeenCalledWith(expect.any(Promise)))
     fireEvent.click(within(window).getByRole("button", { name: "Close" }))
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     expect(screen.getByTestId("schema-pane")).toBeVisible()
@@ -90,7 +90,7 @@ describe("SchemaPane", () => {
   it("shows no additions without claiming compatibility when existing fields differ", async () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...ANSWER, matches: false,
       manual: ["Fix the primary key."], blocked: ["Cannot rename an existing index."],
-      requires_maintenance: true,
+
     })
     render(<SchemaPane />)
     selectDev()
@@ -102,18 +102,16 @@ describe("SchemaPane", () => {
     expect(review).not.toHaveTextContent(/Compatible|primary key|rename|Needs attention/)
     expect(screen.getByRole("option", { name: "dev" })).toHaveAccessibleDescription("Needs attention")
     fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
-    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
   })
 
   it("groups missing columns and new tables without migration-review clutter", async () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...ANSWER, matches: false,
-      manual: ["Fix the primary key."], blocked: ["Cannot rename an existing index."], requires_maintenance: true, changes: [
-        { kind: "add column", table: "policy", column: "flood_zone", was: null, disposition: "sql", description: "Add Text column; existing rows are empty.", quotes: null },
-        { kind: "add column", table: "policy", column: "territory", was: null, disposition: "sql", description: "Add Text column; existing rows are empty.", quotes: null },
-        { kind: "add column", table: "policy", column: "invalid_name", was: null, disposition: "manual", description: "Name is too long for this database.", quotes: null },
-        { kind: "create table", table: "pricing", column: null, was: null, disposition: "sql", description: "Create table with keys.", quotes: null },
-        { kind: "retype column", table: "policy", column: "year", was: null, disposition: "manual", description: "SQLite requires a rebuild.", quotes: 2 },
-        { kind: "keep column", table: "pricing", column: "old", was: null, disposition: "retained", description: "Later saves clear its values.", quotes: 1 },
+      manual: ["Fix the primary key."], blocked: ["Cannot rename an existing index."], changes: [
+        { kind: "add column", table: "policy", column: "flood_zone", disposition: "sql", description: "Add Text column; existing rows are empty." },
+        { kind: "add column", table: "policy", column: "territory", disposition: "sql", description: "Add Text column; existing rows are empty." },
+        { kind: "add column", table: "policy", column: "invalid_name", disposition: "manual", description: "Name is too long for this database." },
+        { kind: "create table", table: "pricing", column: null, disposition: "sql", description: "Create table with keys." },
       ] })
     render(<SchemaPane />)
     selectDev()

@@ -33,7 +33,7 @@ class _Snapshot(BaseModel):
     snapshot: WorkbenchStoreCatalogueResponse
 
 
-def _target(location: StoreLocation) -> str:
+def catalogue_target(location: StoreLocation) -> str:
     """Fingerprint the target and non-secret identity without persisting either."""
     sign_in = location.sign_in
     identity = (
@@ -65,6 +65,7 @@ def _read(location: StoreLocation) -> WorkbenchStoreCatalogueResponse:
     return WorkbenchStoreCatalogueResponse(
         environment=location.environment,
         checked_at=time.time_ns() // 1_000_000,
+        target=catalogue_target(location),
         tables=[
             WorkbenchCatalogueTable(
                 name=table.name,
@@ -102,7 +103,7 @@ def catalogue_snapshot(
     path = contained_path(
         root, root / ".haute_cache/workbench/catalogues" / f"{location.environment}.json"
     )
-    target = _target(location)
+    target = catalogue_target(location)
     with _locks_guard:
         lock = _locks.setdefault(path, threading.Lock())
     with lock:
@@ -117,6 +118,11 @@ def catalogue_snapshot(
                     "Use Refresh on the schema pane to replace it."
                 ) from exc
             if held is not None and held.target == target:
+                if held.snapshot.target != target:
+                    raise WorkbenchError(
+                        "The saved database schema has an inconsistent connection identity. "
+                        "Use Refresh to replace it."
+                    )
                 if held.snapshot.environment != location.environment:
                     raise WorkbenchError(
                         "The saved database schema names another environment. "

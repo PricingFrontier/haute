@@ -100,11 +100,12 @@ export async function fetchStoreCompare(
   environment: string,
   tables: WorkbenchCatalogueTable[],
   renames: WorkbenchStoreRename[],
+  target: string,
 ): Promise<WorkbenchStoreCompareResponse> {
   const data = await request<unknown>("/api/workbench/store-compare", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ form, environment, tables, renames }),
+    body: JSON.stringify({ form, environment, tables, renames, target }),
   })
   return expectGeneratedContract(
     "WorkbenchStoreCompareResponse",

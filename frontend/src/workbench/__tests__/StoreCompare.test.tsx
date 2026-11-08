@@ -24,6 +24,8 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { updateSchemaTable } from "../../utils/workbenchForm"
 import SchemaPane from "../SchemaPane"
 import { detailsTable, sheetForm } from "./fixtures"
+import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import type { FormSpec, WorkbenchStoreRename } from "../../api/types"
 
 const TABLES: WorkbenchCatalogueTable[] = [
   {
@@ -46,16 +48,13 @@ const COMPARED: WorkbenchStoreCompareResponse = {
     { table: null, column: null, kind: "missing", message: "the database has no haute_activity" },
   ],
   extras: [
-    { table: "policy", column: "region", form_table: "policy", quotes: 3 },
-    { table: "policy", column: "legacy", form_table: "policy", quotes: null },
+    { table: "policy", column: "region", form_table: "policy", quotes: 3, retention: "Retain this unused column; supported values survive saves until the row is deleted." },
+    { table: "policy", column: "legacy", form_table: "policy", quotes: null, retention: "Retain this unused column; supported values survive saves until the row is deleted." },
   ],
   renames: [],
   matches: false,
   sql: "BEGIN;\nALTER TABLE policy ADD COLUMN state TEXT;\nCOMMIT;\n",
-  provider: "sqlite", changes: [
-    { kind: "keep column", table: "policy", column: "region", was: null, disposition: "retained", description: "Retain this unused column; supported values survive saves until the row is deleted.", quotes: 3 },
-    { kind: "keep column", table: "policy", column: "legacy", was: null, disposition: "retained", description: "Retain this unused column; supported values survive saves until the row is deleted.", quotes: null },
-  ], manual: [], blocked: [], requires_maintenance: false,
+  changes: [], manual: [], blocked: [],
 }
 
 const open = () => {
@@ -76,7 +75,7 @@ describe("Compare", () => {
     useWorkbenchStore.setState({ environments: ["dev", "prod"], storeColumns: {} })
     useStoreCompareStore.getState().reset()
     useWorkbenchViewStore.setState({ schemaDetails: null, schemaSearch: "" })
-    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, checked_at: 1700000000000, tables: TABLES }))
+    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(COMPARED)
   })
 
@@ -84,6 +83,24 @@ describe("Compare", () => {
     cleanup()
     vi.resetAllMocks()
     useStoreCompareStore.getState().reset()
+  })
+
+  it("shows retention, reshape, required-source and activity repairs from a real backend comparison", async () => {
+    const fixture = loadUiContractFixture<{ form: FormSpec; tables: WorkbenchCatalogueTable[]; renames: WorkbenchStoreRename[]; answer: WorkbenchStoreCompareResponse }>("workbench_store_review")
+    useWorkbenchFormStore.getState().install(fixture.form, "rev-1")
+    useStoreCompareStore.setState({ renames: fixture.renames })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: fixture.tables })
+    vi.mocked(fetchStoreCompare).mockResolvedValue(fixture.answer)
+    open()
+    choose("dev")
+    fireEvent.click(await screen.findByText("Database checks"))
+    expect(screen.getByRole("region", { name: "Database checks" })).toHaveTextContent("haute_activity.actor")
+    for (const [table, expected] of [["policy_details", "survive saves"], ["pricing_output", "later saves clear"], ["locations", "manual migration"]]) {
+      fireEvent.click(within(screen.getByRole("region", { name: `Table ${table}` })).getByText(/Database details/))
+      expect(screen.getByRole("region", { name: `Database details for ${table}` })).toHaveTextContent(expected)
+    }
+    openField("territory")
+    expect(screen.getByRole("region", { name: "Database details for policy_details.territory" })).toHaveTextContent("Allow NULL in state")
   })
 
   it("reuses persisted snapshot times after a session reset and explicitly refreshes the database", async () => {
@@ -96,7 +113,7 @@ describe("Compare", () => {
     await waitFor(() => expect(fetchStoreCompare).toHaveBeenCalledTimes(2))
     expect(fetchStoreCatalogue).toHaveBeenLastCalledWith("dev", false)
     expect(screen.getByRole("button", { name: "Refresh" })).toHaveAttribute("title", `Schema snapshot fetched ${new Date(1700000000000).toLocaleString()}`)
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000060000, tables: TABLES })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000060000, tables: TABLES })
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     await waitFor(() => expect(fetchStoreCompare).toHaveBeenCalledTimes(3))
     expect(fetchStoreCatalogue).toHaveBeenLastCalledWith("dev", true)
@@ -123,7 +140,7 @@ describe("Compare", () => {
     expect(table.queryByText(/^Database details/)).toBeNull()
     choose("dev")
     await waitFor(() => expect(table.getByTestId("database-mark-quote_details")).toHaveTextContent("2 differences"))
-    expect(fetchStoreCompare).toHaveBeenCalledWith(form, "dev", TABLES, [])
+    expect(fetchStoreCompare).toHaveBeenCalledWith(form, "dev", TABLES, [], "a".repeat(64))
     expect(table.queryByTestId(/^schema-store-column-/)).toBeNull()
     expect(table.queryByTestId("schema-column-modified_date")).toBeNull()
     fireEvent.click(table.getByText("Database details"))
@@ -143,7 +160,7 @@ describe("Compare", () => {
     await act(async () => fail(new Error("Database unavailable")))
     expect(screen.getByRole("alert")).toHaveTextContent("Database unavailable")
     expect(table.queryByText("Database details")).toBeNull()
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES })
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     await waitFor(() => expect(table.getByText("Database details")).toBeInTheDocument())
     choose("")
@@ -152,7 +169,7 @@ describe("Compare", () => {
   })
 
   it("uses Local and name-only database colours, clearing a match throughout refresh", async () => {
-    let finishRead!: (value: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
+    let finishRead!: (value: { environment: string; target: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     let finishCompare!: (value: WorkbenchStoreCompareResponse) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finishRead = resolve }))
     vi.mocked(fetchStoreCompare).mockImplementation(() => new Promise((resolve) => { finishCompare = resolve }))
@@ -173,7 +190,7 @@ describe("Compare", () => {
     expect(refresh).toBeDisabled()
     expect(refresh).toHaveAttribute("aria-busy", "true")
     expect(refresh.querySelector("svg")).toHaveClass("animate-spin")
-    await act(async () => finishRead({ environment: "dev", checked_at: 1700000000000, tables: TABLES }))
+    await act(async () => finishRead({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES }))
     expect(database).toHaveStyle({ color: "var(--caution)" })
     expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
     expect(option("dev")).toHaveAccessibleDescription("Comparing")
@@ -193,7 +210,7 @@ describe("Compare", () => {
     expect(option("dev")).toHaveStyle({ color: "var(--danger-text)" })
     expect(refresh).toBeDisabled()
     expect(refresh).toHaveAttribute("aria-busy", "true")
-    await act(async () => finishRead({ environment: "dev", checked_at: 1700000000000, tables: TABLES }))
+    await act(async () => finishRead({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES }))
     expect(database).toHaveStyle({ color: "var(--caution)" })
     await act(async () => finishCompare(COMPARED))
     expect(refresh).toHaveAttribute("aria-busy", "false")
@@ -245,10 +262,10 @@ describe("Compare", () => {
     expect(source).toHaveValue("")
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, _tables, renames) => ({ ...COMPARED, renames }))
     fireEvent.change(source, { target: { value: "region" } })
-    await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, [{ table: "policy", column: "state", was: "region" }]))
+    await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, [{ table: "policy", column: "state", was: "region" }], "a".repeat(64)))
     expect(within(row).getByRole("combobox", { name: "Database column for policy.state" })).toHaveValue("region")
     fireEvent.change(within(row).getByRole("combobox", { name: "Database column for policy.state" }), { target: { value: "" } })
-    await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, []))
+    await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, [], "a".repeat(64)))
   })
 
   it("opens database details and field configuration separately, switching or closing the active view", async () => {
@@ -306,13 +323,13 @@ describe("Compare", () => {
 
     expect(await screen.findByTestId("database-mark-policy-state")).toHaveTextContent("New column")
     expect(fetchStoreCatalogue).toHaveBeenCalledWith("dev", false)
-    expect(fetchStoreCompare).toHaveBeenCalledWith(useWorkbenchFormStore.getState().form, "dev", TABLES, [])
+    expect(fetchStoreCompare).toHaveBeenCalledWith(useWorkbenchFormStore.getState().form, "dev", TABLES, [], "a".repeat(64))
     const typed = screen.getByTestId("database-mark-policy-year")
     expect(typed).toHaveTextContent("Type change")
     expect(typed).toHaveAttribute("title", expect.stringContaining("3 quotes hold values in it"))
     expect(screen.getByTestId("database-mark-equipment")).toHaveTextContent("missing")
     expect(screen.queryByTestId("store-compare")).not.toBeInTheDocument()
-    fireEvent.click(within(screen.getByRole("region", { name: "Table policy" })).getByText("Database details · 2 retained fields"))
+    fireEvent.click(within(screen.getByRole("region", { name: "Table policy" })).getByText("Database details · 2 database-only fields"))
     const extras = screen.getByRole("region", { name: "Database details for policy" })
     expect(extras).toHaveTextContent("region")
     expect(extras).toHaveTextContent("3 quotes")
@@ -331,7 +348,7 @@ describe("Compare", () => {
 
   it("explains a missing table in its fields' database details", async () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, changes: [
-      { kind: "create table", table: "equipment", column: null, was: null, disposition: "sql", description: "Create equipment.", quotes: null },
+      { kind: "create table", table: "equipment", column: null, disposition: "sql", description: "Create equipment." },
     ] })
     open()
     choose("dev")
@@ -339,7 +356,7 @@ describe("Compare", () => {
     openField("item")
     const details = within(screen.getByRole("region", { name: "Database details for equipment.item" }))
     expect(details.getByText("Table missing")).toBeVisible()
-    expect(details.getByText(/Use Export SQL, then run the query/)).toHaveTextContent("create equipment")
+    expect(details.getByText(/Run Export SQL on this database/)).toHaveTextContent("create equipment")
     expect(details.getByText("the database has no equipment")).not.toBeVisible()
   })
 
@@ -354,7 +371,7 @@ describe("Compare", () => {
       name: "equipment", primary_key: ["quote_reference", "quote_option", "quote_row"], refers: true, quotes: 3,
       columns: [{ name: "quote_row", kind: "integer", type: "BIGINT", nullable: false, collation: null, quotes: 3 }],
     }
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000000000, tables: [...TABLES, catalogue] })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: [...TABLES, catalogue] })
     const messages = [
       "the database names it quote_row",
       "the database holds it as BIGINT, not NVARCHAR(366) COLLATE Latin1_General_100_BIN2",
@@ -362,7 +379,7 @@ describe("Compare", () => {
     ]
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
       differences: (["renamed", "type", "collation"] as const).map((kind, index) => ({ table: "equipment", column: "row_number", kind, message: messages[index] })),
-      changes: [{ kind: "add column", table: "equipment", column: "row_number", was: null, disposition: "sql", description: "Add row_number as Text.", quotes: 3 }],
+      changes: [{ kind: "add column", table: "equipment", column: "row_number", disposition: "sql", description: "Add row_number as Text." }],
     })
     open()
     choose("dev")
@@ -411,12 +428,33 @@ describe("Compare", () => {
     expect(within(details).getByText(repair)).toBeVisible()
   })
 
+  it("keeps the retained source's NOT NULL repair beside a renamed addition", async () => {
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000,
+      tables: [{ ...TABLES[0], columns: [{ ...TABLES[0].columns[0], nullable: false }] }],
+    })
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
+      differences: [
+        { table: "policy", column: "state", kind: "renamed", message: "the database names it region" },
+        { table: "policy", column: "state", kind: "null", message: "policy.region takes no null" },
+      ],
+      renames: [{ table: "policy", column: "state", was: "region" }],
+      changes: [{ kind: "add column", table: "policy", column: "state", disposition: "sql", description: "Add state." }],
+    })
+    open()
+    choose("dev")
+    await waitFor(() => expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Needs attention"))
+    openField("state")
+    const details = within(screen.getByRole("region", { name: "Database details for policy.state" }))
+    expect(details.getByText("New column needed")).toBeVisible()
+    expect(details.getByText(/Allow NULL in region/)).toBeVisible()
+  })
+
   it("directs fixed field types to database repair without offering a Haute type change", async () => {
     const form = sheetForm()
     form.schema.tables.unshift(detailsTable())
     useWorkbenchFormStore.getState().install(form, "rev-1")
     const names = ["quote_reference", "insured"]
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000000000, tables: [{
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: [{
       name: "quote_details", primary_key: ["quote_reference", "quote_option"], refers: false, quotes: 3,
       columns: names.map((name) => ({ name, kind: "integer", type: "BIGINT", nullable: false, collation: null, quotes: 3 })),
     }] })
@@ -454,7 +492,7 @@ describe("Compare", () => {
   it("shows a blocked addition's reason without claiming SQL will add it", async () => {
     const reason = "Not added: policy.state already exists. Resolve the name change manually."
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
-      changes: [{ kind: "add column", table: "policy", column: "state", was: null, disposition: "manual", description: reason, quotes: null }],
+      changes: [{ kind: "add column", table: "policy", column: "state", disposition: "manual", description: reason }],
     })
     open()
     choose("dev")
@@ -470,7 +508,7 @@ describe("Compare", () => {
   it("keeps database-only fields visible during a manual table reshape", async () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
       differences: [{ table: "policy", column: null, kind: "rows", message: "the database holds many rows per quote" }],
-      changes: [{ kind: "reshape table", table: "policy", column: null, was: null, disposition: "manual", description: "Rebuild the table and migrate its rows.", quotes: 4 }],
+      changes: [], extras: COMPARED.extras.map((extra) => ({ ...extra, retention: "Preserving these values is part of the table's manual migration." })),
     })
     open()
     choose("dev")
@@ -537,13 +575,13 @@ describe("Compare", () => {
     openField("state")
     const field = screen.getByRole("region", { name: "Database details for policy.state" })
     expect(within(field).getByRole("alert")).toHaveTextContent("This rename cannot be used in dev")
-    let finish!: (value: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
+    let finish!: (value: { environment: string; target: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     expect(within(field).getByRole("combobox")).toBeDisabled()
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Checking")
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, differences: [], changes: [], extras: [], matches: true })
-    await act(async () => finish({ environment: "dev", checked_at: 1700000000000, tables: [{ ...TABLES[0], columns: [{ ...TABLES[0].columns[0], name: "state" }] }] }))
+    await act(async () => finish({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: [{ ...TABLES[0], columns: [{ ...TABLES[0].columns[0], name: "state" }] }] }))
     expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Matches")
     expect(within(field).queryByRole("alert")).not.toBeInTheDocument()
     expect(within(field).getByRole("combobox")).toBeEnabled()
@@ -573,7 +611,7 @@ describe("Compare", () => {
       ...COMPARED,
       extras: [],
       differences: [{ table: "policy", column: "state", kind: "renamed", message: "the database names it region" }],
-      changes: [{ kind: "add column", table: "policy", column: "state", was: null, disposition: "sql", description: "Add state as Text.", quotes: null }],
+      changes: [{ kind: "add column", table: "policy", column: "state", disposition: "sql", description: "Add state as Text." }],
       renames: [{ table: "policy", column: "state", was: "region" }],
     })
 
@@ -582,7 +620,7 @@ describe("Compare", () => {
     await waitFor(() =>
       expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, [
         { table: "policy", column: "state", was: "region" },
-      ]),
+      ], "a".repeat(64)),
     )
     const renamed = await screen.findByRole("region", { name: "Database details for policy.state" })
     expect(renamed).toHaveTextContent("region → state")
@@ -593,7 +631,7 @@ describe("Compare", () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue(COMPARED)
     fireEvent.change(within(renamed).getByRole("combobox"), { target: { value: "" } })
 
-    await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, []))
+    await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, [], "a".repeat(64)))
   })
 
   it("reads the database again on Refresh, keeping the pairings", async () => {
@@ -652,7 +690,7 @@ describe("Compare", () => {
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
   })
 
-  it("keeps snapshots and explicit rename choices when changing environments and closing the pane", async () => {
+  it("revalidates snapshots and keeps explicit rename choices when changing environments and closing the pane", async () => {
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, _tables, renames) => ({ ...COMPARED, renames }))
     const shown = open()
     choose("dev")
@@ -660,13 +698,56 @@ describe("Compare", () => {
     openField("state")
     fireEvent.change(screen.getByRole("combobox", { name: "Database column for policy.state" }), { target: { value: "region" } })
     choose("prod")
-    await waitFor(() => expect(fetchStoreCompare).toHaveBeenCalledWith(expect.anything(), "prod", TABLES, [{ table: "policy", column: "state", was: "region" }]))
+    await waitFor(() => expect(fetchStoreCompare).toHaveBeenCalledWith(expect.anything(), "prod", TABLES, [{ table: "policy", column: "state", was: "region" }], "a".repeat(64)))
     shown.unmount()
     open()
     choose("dev")
     expect(await screen.findByRole("region", { name: "Database details for policy.state" })).toHaveTextContent("region → state")
-    expect(fetchStoreCatalogue).toHaveBeenCalledTimes(2)
+    expect(fetchStoreCatalogue).toHaveBeenCalledTimes(4)
     expect(option("prod")).toHaveStyle({ color: "var(--caution)" })
+  })
+
+  it("clears a previous match when a reselected connection needs Refresh", async () => {
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, differences: [], changes: [], extras: [], matches: true })
+    open()
+    choose("dev")
+    await waitFor(() => expect(option("dev")).toHaveAccessibleDescription("Compatible"))
+    choose("")
+    vi.mocked(fetchStoreCatalogue).mockRejectedValue(new Error("Connection changed. Use Refresh."))
+    choose("dev")
+    expect(option("dev")).toHaveAccessibleDescription("Checking")
+    expect(await screen.findByRole("alert")).toHaveTextContent("Connection changed. Use Refresh.")
+    expect(option("dev")).toHaveAccessibleDescription("Check failed")
+    expect(screen.getByTestId("database-mark-policy-state")).toHaveTextContent("Check failed")
+  })
+
+  it.each(["column", "table"])("lets an orphaned rename be removed after its %s is deleted", async (removed) => {
+    const rename = { table: "policy", column: "state", was: "region" }
+    vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, _tables, renames) => ({
+      ...COMPARED, renames: [], blocked: renames.length ? ["policy.state is not in this schema"] : [],
+    }))
+    open()
+    choose("dev")
+    await screen.findByTestId("database-mark-policy-state")
+    act(() => {
+      useStoreCompareStore.getState().pair(rename)
+      useWorkbenchFormStore.getState().change((form) => ({ ...form, schema: { ...form.schema,
+        tables: removed === "table" ? form.schema.tables.filter((table) => table.name !== "policy")
+          : form.schema.tables.map((table) => table.name === "policy" ? { ...table, inputs: table.inputs.filter((column) => column.name !== "state") } : table),
+      } }))
+    })
+    fireEvent.click(await screen.findByText(/^Database checks/))
+    const checks = screen.getByRole("region", { name: "Database checks" })
+    expect(checks).toHaveTextContent("policy.state")
+    expect(checks).toHaveTextContent("region")
+    act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
+    expect(within(checks).getByRole("button", { name: "Remove rename choice" })).toBeDisabled()
+    act(() => useWorkbenchViewStore.setState({ mode: "build" }))
+    fireEvent.click(within(checks).getByRole("button", { name: "Remove rename choice" }))
+    await waitFor(() => expect(useStoreCompareStore.getState().renames).toEqual([]))
+    await screen.findByText("Database checks")
+    expect(screen.queryByText("policy.state is not in this schema")).toBeNull()
+    expect(screen.queryByText("Remove rename choice")).toBeNull()
   })
 
   it("replaces conflicting pairings, preserves shared intent and ignores superseded reads and comparisons", async () => {
@@ -686,7 +767,7 @@ describe("Compare", () => {
     ])
 
     // Superseded catalogue read (both success and failure) is ignored after reset.
-    let resolveRead!: (value: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
+    let resolveRead!: (value: { environment: string; target: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     let rejectRead!: (error: unknown) => void
     vi.mocked(fetchStoreCatalogue)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve }))
@@ -694,14 +775,14 @@ describe("Compare", () => {
 
     store.choose("dev")
     store.choose("prod")
-    resolveRead({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
+    resolveRead({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES })
     store.reset()
     rejectRead(new ApiError("Stale failure", 503))
     await Promise.resolve()
     expect(useStoreCompareStore.getState().environments).toEqual({})
 
     // A rejected pairing stays explicit for other environments; an older failure cannot land.
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES })
     let rejectCompare!: (error: unknown) => void
     vi.mocked(fetchStoreCompare)
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCompare = reject }))
@@ -712,44 +793,49 @@ describe("Compare", () => {
     store.pair({ table: "policy", column: "state", was: "region" })
     const form = useWorkbenchFormStore.getState().form!
     store.compare(form)
-    store.compare({ ...form, name: "New target" })
+    useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "New target" }))
+    store.compare(useWorkbenchFormStore.getState().form!)
     rejectCompare(new ApiError("Stale compare error", 422))
     await waitFor(() => expect(useStoreCompareStore.getState().environments.dev.compared.status).toBe("compared"))
     expect(useStoreCompareStore.getState().renames).toEqual([{ table: "policy", column: "state", was: "region" }])
   })
 
   it("checks environments independently, shows freshness, and verifies only from a fresh catalogue", async () => {
-    let finishProd!: (answer: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
+    let finishProd!: (answer: { environment: string; target: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation((environment) => environment === "prod"
       ? new Promise((resolve) => { finishProd = resolve })
-      : Promise.resolve({ environment, checked_at: 1700000000000, tables: TABLES }))
+      : Promise.resolve({ environment, target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES }))
     open()
-    act(() => useStoreCompareStore.getState().checkAll(["dev", "prod"]))
+    act(() => {
+      useStoreCompareStore.getState().choose("dev")
+      useStoreCompareStore.getState().choose("prod")
+    })
     await waitFor(() => expect(option("dev")).toHaveAccessibleDescription("Changes needed"))
     expect(option("dev")).toHaveStyle({ color: "var(--caution)" })
     expect(option("prod")).toHaveStyle({ color: "var(--danger-text)" })
-    await act(async () => finishProd({ environment: "prod", checked_at: 1700000000000, tables: TABLES }))
+    await act(async () => finishProd({ environment: "prod", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES }))
     choose("prod")
     expect(await screen.findByTestId("database-mark-policy-state")).toBeInTheDocument()
+    await act(async () => finishProd({ environment: "prod", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES }))
     expect(screen.getByRole("status")).toHaveAttribute("title", expect.stringContaining("Schema snapshot fetched"))
 
-    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "prod", checked_at: 1700000000000, tables: [] })
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "prod", target: "a".repeat(64), checked_at: 1700000000000, tables: [] })
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, tables) => tables.length === 0
       ? { ...COMPARED, differences: [], matches: true } : COMPARED)
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Database" })).toHaveAccessibleDescription("Compatible"))
-    expect(within(screen.getByRole("region", { name: "Table policy" })).getByText("Database details · 2 retained fields").closest("details")).not.toHaveAttribute("open")
-    expect(fetchStoreCatalogue).toHaveBeenCalledTimes(3)
+    expect(within(screen.getByRole("region", { name: "Table policy" })).getByText("Database details · 2 database-only fields").closest("details")).not.toHaveAttribute("open")
+    expect(fetchStoreCatalogue).toHaveBeenCalledTimes(4)
   })
 
   it("forgets session choices and late replies on document, form and environment changes", async () => {
-    let finish!: (answer: { environment: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
+    let finish!: (answer: { environment: string; target: string; checked_at: number; tables: WorkbenchCatalogueTable[] }) => void
     vi.mocked(fetchStoreCatalogue).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     const store = useStoreCompareStore.getState()
     store.choose("dev")
     store.pair({ table: "policy", column: "state", was: "region" })
     useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 }))
-    await finish({ environment: "dev", checked_at: 1700000000000, tables: TABLES })
+    await finish({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: TABLES })
     expect(useStoreCompareStore.getState()).toMatchObject({ environment: null, environments: {}, renames: [] })
     store.pair({ table: "policy", column: "state", was: "region" })
     useWorkbenchFormStore.setState((state) => ({ reads: state.reads + 1 }))

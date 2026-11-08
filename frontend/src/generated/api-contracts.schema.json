@@ -28205,18 +28205,24 @@
           },
           "title": "Tables",
           "type": "array"
+        },
+        "target": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Target",
+          "type": "string"
         }
       },
       "required": [
         "environment",
         "tables",
-        "checked_at"
+        "checked_at",
+        "target"
       ],
       "title": "WorkbenchStoreCatalogueResponse",
       "type": "object"
     },
     "WorkbenchStoreChange": {
-      "description": "A readable operation from the same plan as the SQL, not an execution result.",
+      "description": "An addition from the exported SQL plan; compatibility details are separate.",
       "properties": {
         "column": {
           "anyOf": [
@@ -28236,8 +28242,7 @@
         "disposition": {
           "enum": [
             "sql",
-            "manual",
-            "retained"
+            "manual"
           ],
           "title": "Disposition",
           "type": "string"
@@ -28245,52 +28250,22 @@
         "kind": {
           "enum": [
             "create table",
-            "add column",
-            "rename table",
-            "rename column",
-            "keep table",
-            "keep column",
-            "retype column",
-            "reshape table"
+            "add column"
           ],
           "title": "Kind",
           "type": "string"
         },
-        "quotes": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Quotes"
-        },
         "table": {
           "title": "Table",
           "type": "string"
-        },
-        "was": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Was"
         }
       },
       "required": [
         "kind",
         "table",
         "column",
-        "was",
         "disposition",
-        "description",
-        "quotes"
+        "description"
       ],
       "title": "WorkbenchStoreChange",
       "type": "object"
@@ -28361,20 +28336,12 @@
           "title": "Matches",
           "type": "boolean"
         },
-        "provider": {
-          "title": "Provider",
-          "type": "string"
-        },
         "renames": {
           "items": {
             "$ref": "#/$defs/WorkbenchStoreRename"
           },
           "title": "Renames",
           "type": "array"
-        },
-        "requires_maintenance": {
-          "title": "Requires Maintenance",
-          "type": "boolean"
         },
         "sql": {
           "title": "Sql",
@@ -28387,11 +28354,9 @@
         "renames",
         "matches",
         "sql",
-        "provider",
         "changes",
         "manual",
-        "blocked",
-        "requires_maintenance"
+        "blocked"
       ],
       "title": "WorkbenchStoreCompareResponse",
       "type": "object"
@@ -28487,6 +28452,10 @@
           "default": null,
           "title": "Quotes"
         },
+        "retention": {
+          "title": "Retention",
+          "type": "string"
+        },
         "table": {
           "title": "Table",
           "type": "string"
@@ -28496,7 +28465,8 @@
         "table",
         "column",
         "form_table",
-        "quotes"
+        "quotes",
+        "retention"
       ],
       "title": "WorkbenchStoreExtra",
       "type": "object"

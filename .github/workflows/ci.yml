@@ -823,7 +823,7 @@ jobs:
           restore-keys: |
             playwright-${{ runner.os }}-
 
-      - run: ./node_modules/.bin/playwright install --with-deps chromium firefox
+      - run: ./node_modules/.bin/playwright install --with-deps chromium firefox webkit
       - run: npm run test:e2e -- --shard=${{ matrix.shard }}/2
         env:
           # A browser test that passes only on a retry fails a push to main;

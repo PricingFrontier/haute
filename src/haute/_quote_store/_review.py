@@ -17,7 +17,6 @@ from haute._quote_store._providers import Provider
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
 
 _TYPES = {"str": "Text", "int": "Integer", "float": "Decimal", "bool": "True/false", "date": "Date"}
-MAINTENANCE_KINDS = frozenset({"rename table", "rename column", "retype column", "reshape table"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +28,25 @@ class ReviewChange:
     disposition: Literal["sql", "manual", "retained"]
     description: str
     quotes: int | None
+
+
+def retention_description(form: FormSpec, table_name: str | None, plan: Plan) -> str:
+    """How unused values survive application writes, independently of exported additions."""
+    if table_name is None:
+        return (
+            "Retain this unused table. Only the database owner should drop it, "
+            "once nothing reads it."
+        )
+    if any(step.table == table_name and step.kind == "reshape table" for step in plan.steps):
+        return "Preserving these values is part of the table's manual migration."
+    table = next(table for table in form.data_schema.tables if table.name == table_name)
+    if table.name == QUOTE_DETAILS_NAME:
+        return "Retain this unused column; quote_details is updated in place, keeping its values."
+    if table.has_inputs:
+        return "Retain this unused column; supported values survive saves until the row is deleted."
+    return (
+        "Retain this unused column; this is an output-only table, so later saves clear its values."
+    )
 
 
 def _describe(
@@ -85,28 +103,10 @@ def _describe(
             )
         case "keep table":
             disposition = "retained"
-            description = (
-                "Retain this unused table. Only the database owner should drop it, "
-                "once nothing reads it."
-            )
+            description = retention_description(form, None, plan)
         case "keep column":
             disposition = "retained"
-            table = next(table for table in form.data_schema.tables if table.name == step.table_key)
-            if table.name == QUOTE_DETAILS_NAME:
-                description = (
-                    "Retain this unused column; quote_details is updated in place, "
-                    "keeping its values."
-                )
-            elif table.has_inputs:
-                description = (
-                    "Retain this unused column; supported values survive saves "
-                    "until the row is deleted."
-                )
-            else:
-                description = (
-                    "Retain this unused column; this is an output-only table, "
-                    "so later saves clear its values."
-                )
+            description = retention_description(form, step.table_key, plan)
     if additions_only and step.kind in (
         "create table",
         "add column",

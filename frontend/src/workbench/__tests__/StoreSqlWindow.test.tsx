@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/workbench", async (importOriginal) => ({
@@ -18,16 +18,19 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import StoreSqlWindow from "../StoreSqlWindow"
 import { sheetForm } from "./fixtures"
 
+const copied = vi.fn<(text: string) => void>()
+
 const LIVE: WorkbenchStoreCompareResponse = {
   differences: [{ table: "policy", column: "territory", kind: "renamed", message: "the database names it region" }],
-  extras: [], renames: [], matches: false, sql: "-- from the prod database", provider: "sqlserver",
-  changes: [{ kind: "rename column", table: "policy", column: "territory", was: "region", disposition: "sql", description: "Rename region to territory, keeping existing values.", quotes: 3 }],
-  manual: [], blocked: [], requires_maintenance: true,
+  extras: [], renames: [], matches: false, sql: "-- from the prod database",
+  changes: [{ kind: "add column", table: "policy", column: "territory", disposition: "sql", description: "Add territory as Text." }],
+  manual: [], blocked: [],
 }
 
 function live(answer = LIVE, renames = answer.renames, environment = "prod") {
+  vi.mocked(fetchStoreCompare).mockResolvedValue(answer)
   const form = useWorkbenchFormStore.getState().form!
-  const read: CatalogueRead = { status: "read", tables: [], checkedAt: Date.UTC(2026, 10, 6, 10, 42) }
+  const read: CatalogueRead = { status: "read", target: "a".repeat(64), tables: [], checkedAt: Date.UTC(2026, 10, 6, 10, 42) }
   useStoreCompareStore.setState({ environment, renames, environments: { [environment]: { read, compared: { status: "compared", form, renames, read, answer } } } })
 }
 
@@ -37,18 +40,55 @@ describe("StoreSqlWindow", () => {
     useWorkbenchStore.setState({ environments: ["test", "prod"] })
     useWorkbenchViewStore.setState({ mode: "build" })
     useStoreCompareStore.getState().reset()
-    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, checked_at: 1700000000000, tables: [] }))
+    vi.mocked(fetchStoreCatalogue).mockImplementation(async (environment) => ({ environment, target: "a".repeat(64), checked_at: 1700000000000, tables: [] }))
     vi.mocked(fetchStoreCompare).mockResolvedValue(LIVE)
     vi.mocked(downloadTextFile).mockReturnValue(true)
-    vi.mocked(writeClipboardText).mockResolvedValue(undefined)
+    vi.mocked(writeClipboardText).mockImplementation(async (text) => { copied(await text) })
   })
   afterEach(() => { cleanup(); vi.resetAllMocks(); useStoreCompareStore.getState().reset() })
 
-  it("shows just the selected query immediately with no selection, refresh or options", () => {
+  it("validates the connection before showing a reused query and copying it", async () => {
+    live()
+    let finish!: (answer: WorkbenchStoreCompareResponse) => void
+    vi.mocked(fetchStoreCompare).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    expect(screen.queryByTestId("store-sql")).toBeNull()
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    await act(async () => finish(LIVE))
+    expect(screen.getByTestId("store-sql")).toHaveTextContent(LIVE.sql)
+    vi.mocked(fetchStoreCompare).mockRejectedValueOnce(new Error("Connection changed. Use Refresh."))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
+    fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Connection changed. Use Refresh.")
+    expect(screen.queryByTestId("store-sql")).toBeNull()
+    expect(copied).not.toHaveBeenCalled()
+    expect(downloadTextFile).not.toHaveBeenCalled()
+    expect(fetchStoreCatalogue).not.toHaveBeenCalled()
+  })
+
+  it.each(["form", "environment", "preview", "stale"])("does not finish an export after %s changes during validation", async (change) => {
+    live()
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    await screen.findByTestId("store-sql")
+    let finish!: (answer: WorkbenchStoreCompareResponse) => void
+    vi.mocked(fetchStoreCompare).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled())
+    fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
+    act(() => {
+      if (change === "form") useWorkbenchFormStore.getState().change((form) => ({ ...form, name: "Changed" }))
+      if (change === "environment") useStoreCompareStore.getState().choose(null)
+      if (change === "preview") useWorkbenchViewStore.setState({ mode: "preview" })
+      if (change === "stale") useWorkbenchFormStore.setState({ stale: true })
+    })
+    await act(async () => finish(LIVE))
+    expect(downloadTextFile).not.toHaveBeenCalled()
+  })
+
+  it("shows just the selected query after validating its connection with no selection, refresh or options", async () => {
     live()
     render(<StoreSqlWindow onClose={vi.fn()} />)
     expect(screen.getByRole("heading", { name: "Export SQL" })).toBeInTheDocument()
-    expect(screen.getByTestId("store-sql")).toBeVisible()
+    expect(await screen.findByTestId("store-sql")).toBeVisible()
     expect(screen.getByTestId("store-sql")).toHaveTextContent(LIVE.sql)
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
     expect(screen.queryByText("SQL options")).not.toBeInTheDocument()
@@ -78,13 +118,41 @@ describe("StoreSqlWindow", () => {
   it("downloads and copies the reviewed SQL without marking the environment compatible", async () => {
     live()
     render(<StoreSqlWindow onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
-    expect(downloadTextFile).toHaveBeenCalledWith(LIVE.sql, "prod-database-schema.sql", "application/sql")
+    await waitFor(() => expect(downloadTextFile).toHaveBeenCalledWith(LIVE.sql, "prod-database-schema.sql", "application/sql"))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
-    expect(writeClipboardText).toHaveBeenCalledWith(LIVE.sql)
+    await waitFor(() => expect(copied).toHaveBeenCalledWith(LIVE.sql))
     expect(await screen.findByText("SQL copied.")).toBeInTheDocument()
     expect(screen.queryByText(/Compatible with this schema/)).not.toBeInTheDocument()
     expect(fetchStoreCatalogue).not.toHaveBeenCalled()
+  })
+
+  it.each(["Copy", "Download"])("reports %s success for the newly verified SQL", async (action) => {
+    live()
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole("button", { name: `${action} SQL` })).toBeEnabled())
+    const sql = "-- newly verified SQL with equivalent indexes in another order"
+    vi.mocked(fetchStoreCompare).mockResolvedValueOnce({ ...LIVE, sql })
+    fireEvent.click(screen.getByRole("button", { name: `${action} SQL` }))
+    expect(await screen.findByRole("status")).toHaveTextContent(action === "Copy" ? "SQL copied." : "SQL downloaded.")
+    expect(screen.getByTestId("store-sql")).toHaveTextContent(sql)
+    if (action === "Copy") expect(copied).toHaveBeenCalledWith(sql)
+    else expect(downloadTextFile).toHaveBeenCalledWith(sql, "prod-database-schema.sql", "application/sql")
+  })
+
+  it.each(["Copy", "Download"])("reports %s failure when verification changes the SQL", async (action) => {
+    live()
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole("button", { name: `${action} SQL` })).toBeEnabled())
+    let finish!: (answer: WorkbenchStoreCompareResponse) => void
+    vi.mocked(fetchStoreCompare).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    vi.mocked(writeClipboardText).mockRejectedValue(new Error("Clipboard permission denied"))
+    vi.mocked(downloadTextFile).mockReturnValue(false)
+    fireEvent.click(screen.getByRole("button", { name: `${action} SQL` }))
+    await act(async () => finish({ ...LIVE, sql: "-- newly verified SQL" }))
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(action === "Copy" ? "Clipboard permission denied" : "SQL download is unavailable"))
   })
 
   it("reports copy and download failures", async () => {
@@ -92,10 +160,12 @@ describe("StoreSqlWindow", () => {
     vi.mocked(writeClipboardText).mockRejectedValue(new Error("Clipboard permission denied"))
     vi.mocked(downloadTextFile).mockReturnValue(false)
     render(<StoreSqlWindow onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard permission denied")
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Clipboard permission denied"))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("SQL download is unavailable")
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("SQL download is unavailable"))
   })
 
   it("prevents export in Preview and when the form changed on disk", () => {
@@ -112,14 +182,15 @@ describe("StoreSqlWindow", () => {
     view.unmount()
   })
 
-  it("follows the database chosen on the pane without choosing or fetching one itself", () => {
+  it("follows the database chosen on the pane without choosing or fetching one itself", async () => {
     live()
     render(<StoreSqlWindow onClose={vi.fn()} />)
     expect(screen.getByText("· prod")).toBeInTheDocument()
     act(() => live({ ...LIVE, sql: "-- test query" }, [], "test"))
-    expect(screen.getByTestId("store-sql")).toHaveTextContent("-- test query")
+    expect(await screen.findByTestId("store-sql")).toHaveTextContent("-- test query")
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
-    expect(downloadTextFile).toHaveBeenCalledWith("-- test query", "test-database-schema.sql", "application/sql")
+    await waitFor(() => expect(downloadTextFile).toHaveBeenCalledWith("-- test query", "test-database-schema.sql", "application/sql"))
     expect(fetchStoreCatalogue).not.toHaveBeenCalled()
     expect(fetchStoreSql).not.toHaveBeenCalled()
   })
@@ -154,18 +225,20 @@ describe("StoreSqlWindow", () => {
     const sql = "ALTER TABLE policy ADD flood_zone TEXT;"
     live({ ...LIVE, sql, blocked: [blocker] })
     render(<StoreSqlWindow onClose={vi.fn()} />)
-    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
     expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.queryByText(/This SQL adds tables and columns only/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Run through your database owner/)).not.toBeInTheDocument()
     expect(screen.getByTestId("store-sql")).toHaveTextContent(sql)
     expect(screen.queryByTestId("store-plan-review")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy SQL" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Copy SQL" }))
-    expect(writeClipboardText).toHaveBeenCalledWith(sql)
+    await waitFor(() => expect(copied).toHaveBeenCalledWith(sql))
     expect(await screen.findByText("SQL copied.")).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
-    expect(downloadTextFile).toHaveBeenCalledWith(sql, "prod-database-schema.sql", "application/sql")
+    await waitFor(() => expect(downloadTextFile).toHaveBeenCalledWith(sql, "prod-database-schema.sql", "application/sql"))
     expect(useStoreCompareStore.getState().environments.prod.compared).toMatchObject({ answer: { matches: false, blocked: [blocker] } })
   })
 

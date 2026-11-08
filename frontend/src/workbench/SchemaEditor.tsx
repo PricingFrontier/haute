@@ -26,6 +26,7 @@ import { columnMatches, schemaColumns } from "./schema/schemaText"
 import { TableBlock } from "./schema/TableBlock"
 import { CompareControls } from "./StoreCompare"
 import { DatabaseChanges } from "./StorePlanReview"
+import DatabaseChecks from "./DatabaseChecks"
 
 /** The schema's pane's editor: the form's tables of named, typed columns. */
 export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean }) {
@@ -81,6 +82,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
       >
         <div className="flex max-w-[896px] flex-col gap-1.5 px-4 pt-1.5 pb-3 text-xs">
           <DatabaseChanges />
+          <DatabaseChecks />
           {tables.length === 0 && (
             <p className="px-1" style={{ color: "var(--text-muted)" }}>
               No tables yet. A table holds related columns, such as <code className="font-mono">policy_details</code>.

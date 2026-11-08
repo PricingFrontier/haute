@@ -15,7 +15,7 @@ export type CatalogueRead =
   | { status: "idle" }
   | { status: "reading" }
   | { status: "failed"; message: string }
-  | { status: "read"; tables: WorkbenchCatalogueTable[]; checkedAt: number }
+  | { status: "read"; tables: WorkbenchCatalogueTable[]; checkedAt: number; target: string }
 
 interface Basis {
   form: FormSpec
@@ -35,16 +35,15 @@ export interface EnvironmentComparison {
 }
 
 interface StoreCompareState {
-  contextVersion: number
   environment: string | null
   environments: Record<string, EnvironmentComparison>
   renames: WorkbenchStoreRename[]
   choose: (environment: string | null, read?: boolean) => void
   readAgain: () => void
-  checkAll: (environments: readonly string[]) => void
   pair: (rename: WorkbenchStoreRename) => void
   unpair: (table: string, column: string) => void
   compare: (form: FormSpec) => void
+  verify: () => Promise<WorkbenchStoreCompareResponse | null>
   reset: () => void
 }
 
@@ -60,12 +59,17 @@ export function currentComparison(state: StoreCompareState, form: FormSpec | nul
     ? compared.answer : null
 }
 
-export function comparisonStatus(state: StoreCompareState, form: FormSpec | null, name = state.environment): string {
+export function comparisonFailure(state: StoreCompareState, form: FormSpec | null, name = state.environment): string | null {
   const { read, compared } = environmentState(state, name)
+  return read.status === "failed" ? read.message
+    : compared.status === "failed" && compared.form === form && compared.renames === state.renames && compared.read === read ? compared.message : null
+}
+
+export function comparisonStatus(state: StoreCompareState, form: FormSpec | null, name = state.environment): string {
+  const { read } = environmentState(state, name)
   if (read.status === "idle") return "Not checked"
   if (read.status === "reading") return "Checking"
-  if (read.status === "failed") return "Check failed"
-  if (compared.status === "failed" && compared.form === form && compared.renames === state.renames) return "Check failed"
+  if (comparisonFailure(state, form, name) !== null) return "Check failed"
   const answer = currentComparison(state, form, name)
   if (answer === null) return "Comparing"
   if (answer.blocked.length > 0 || answer.manual.length > 0 || answer.changes.some((change) => change.disposition === "manual")) return "Needs attention"
@@ -82,7 +86,7 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
     void fetchStoreCatalogue(name, refresh).then((answer) => {
       if (answer.environment !== name) throw new Error("The database check answered for a different environment. Check again.")
       if (get().environments[name]?.read !== pending) return
-      update(name, { read: { status: "read", tables: answer.tables, checkedAt: answer.checked_at }, compared: { status: "none" } })
+      update(name, { read: { status: "read", tables: answer.tables, checkedAt: answer.checked_at, target: answer.target }, compared: { status: "none" } })
     }).catch((error: unknown) => {
       if (get().environments[name]?.read === pending) {
         update(name, { read: { status: "failed", message: apiErrorMessage(error) }, compared: { status: "none" } })
@@ -90,21 +94,33 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
     })
   }
 
+  const compareEnvironment = async (form: FormSpec, name: string, read: Extract<CatalogueRead, { status: "read" }>) => {
+    const { renames } = get()
+    const pending: Compared = { status: "comparing", form, renames, read }
+    update(name, { read, compared: pending })
+    const current = () => get().environments[name]?.compared === pending && get().renames === renames && useWorkbenchFormStore.getState().form === form
+    try {
+      const answer = await fetchStoreCompare(form, name, read.tables, renames, read.target)
+      if (!current()) return null
+      update(name, { read, compared: { ...pending, status: "compared", answer } })
+      return answer
+    } catch (error: unknown) {
+      if (current()) update(name, { read, compared: { ...pending, status: "failed", message: apiErrorMessage(error) } })
+      return null
+    }
+  }
+
   return {
-    contextVersion: 0,
     environment: null,
     environments: {},
     renames: [],
     choose: (environment, read = true) => {
       set({ environment })
-      if (read && environment !== null && environmentState(get(), environment).read.status === "idle") readDatabase(environment)
+      if (read && environment !== null) readDatabase(environment)
     },
     readAgain: () => {
       const name = get().environment
       if (name !== null) readDatabase(name, true)
-    },
-    checkAll: (environments) => {
-      for (const name of environments) readDatabase(name, true)
     },
     pair: (rename) => set((state) => ({
       renames: [...state.renames.filter((each) => !(each.table === rename.table && (each.column === rename.column || each.was === rename.was))), rename],
@@ -115,18 +131,18 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
       for (const [name, { read, compared }] of Object.entries(environments)) {
         if (read.status !== "read") continue
         if (compared.status !== "none" && compared.form === form && compared.renames === renames && compared.read === read) continue
-        const pending: Compared = { status: "comparing", form, renames, read }
-        update(name, { read, compared: pending })
-        void fetchStoreCompare(form, name, read.tables, renames).then((answer) => {
-          if (get().environments[name]?.compared !== pending || get().renames !== renames) return
-          update(name, { read, compared: { ...pending, status: "compared", answer } })
-        }).catch((error: unknown) => {
-          if (get().environments[name]?.compared !== pending || get().renames !== renames) return
-          update(name, { read, compared: { ...pending, status: "failed", message: apiErrorMessage(error) } })
-        })
+        void compareEnvironment(form, name, read)
       }
     },
-    reset: () => set((state) => ({ contextVersion: state.contextVersion + 1, environment: null, environments: {}, renames: [] })),
+    verify: async () => {
+      const name = get().environment
+      const form = useWorkbenchFormStore.getState().form
+      const { read } = environmentState(get())
+      if (name === null || form === null || read.status !== "read" || currentComparison(get(), form) === null) return null
+      const answer = await compareEnvironment(form, name, read)
+      return get().environment === name && currentComparison(get(), form) === answer ? answer : null
+    },
+    reset: () => set({ environment: null, environments: {}, renames: [] }),
   }
 })
 
@@ -139,5 +155,11 @@ useWorkbenchFormStore.subscribe((state, previous) => {
 useWorkbenchStore.subscribe((state, previous) => {
   if (state.formPath !== previous.formPath || state.environments.join("\n") !== previous.environments.join("\n")) useStoreCompareStore.getState().reset()
 })
+
+export function useDatabaseComparison() {
+  const state = useStoreCompareStore()
+  const form = useWorkbenchFormStore((s) => s.form)
+  return { state, form, answer: currentComparison(state, form) }
+}
 
 export default useStoreCompareStore

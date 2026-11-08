@@ -4,21 +4,19 @@ import { useState } from "react"
 import type { SchemaTable, WorkbenchStoreDifference } from "../api/types"
 import { FIELD_CLASS, INPUT_STYLE } from "../components/form"
 import { ToolbarButton } from "../haute-ui"
-import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
-import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import { comparisonFailure, comparisonStatus, useDatabaseComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { schemaColumns } from "./schema/schemaText"
 import StoreSqlWindow from "./StoreSqlWindow"
 
 export function CompareControls() {
   const environments = useWorkbenchStore((s) => s.environments)
-  const state = useStoreCompareStore()
-  const form = useWorkbenchFormStore((s) => s.form)
+  const { state, form } = useDatabaseComparison()
   const [sqlOpen, setSqlOpen] = useState(false)
-  const { read, compared } = environmentState(state)
+  const { read } = environmentState(state)
   const status = comparisonStatus(state, form)
   const busy = status === "Checking" || status === "Comparing"
-  const failure = status !== "Check failed" ? null : read.status === "failed" ? read.message : compared.status === "failed" ? compared.message : null
+  const failure = comparisonFailure(state, form)
   const colour = (name: string | null) => name === null ? "var(--text-primary)"
     : environmentState(state, name).read.status !== "read" ? "var(--danger-text)"
       : comparisonStatus(state, form, name) === "Compatible" ? "var(--success)" : "var(--caution)"
@@ -60,10 +58,9 @@ const MARKS: Record<WorkbenchStoreDifference["kind"], string> = {
 
 /** Table marks accompany their local database-details disclosure. */
 export function DatabaseMark({ table }: { table: SchemaTable }) {
-  const form = useWorkbenchFormStore((s) => s.form)
-  const state = useStoreCompareStore()
+  const { answer } = useDatabaseComparison()
   const visible = new Set(schemaColumns(table).map((column) => column.name))
-  const differences = currentComparison(state, form)?.differences.filter((each) => each.table === table.name && (each.column === null || !visible.has(each.column))) ?? []
+  const differences = answer?.differences.filter((each) => each.table === table.name && (each.column === null || !visible.has(each.column))) ?? []
   if (differences.length === 0) return null
   return <span data-testid={`database-mark-${table.name}`} className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium"
     style={{ color: "var(--warning)", background: "var(--bg-base)" }} title={differences.map((each) => each.message).join("\n")}>

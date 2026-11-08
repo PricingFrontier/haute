@@ -6015,6 +6015,7 @@ export interface WorkbenchStoreCatalogueResponse {
   checked_at: number;
   environment: string;
   tables: WorkbenchCatalogueTable[];
+  target: string;
 }
 /**
  * A table of the store's as an environment's database holds it: its columns, its primary
@@ -6060,30 +6061,18 @@ export interface WorkbenchStoreCompareResponse {
   extras: WorkbenchStoreExtra[];
   manual: string[];
   matches: boolean;
-  provider: string;
   renames: WorkbenchStoreRename[];
-  requires_maintenance: boolean;
   sql: string;
 }
 /**
- * A readable operation from the same plan as the SQL, not an execution result.
+ * An addition from the exported SQL plan; compatibility details are separate.
  */
 export interface WorkbenchStoreChange {
   column: string | null;
   description: string;
-  disposition: 'sql' | 'manual' | 'retained';
-  kind:
-    | 'create table'
-    | 'add column'
-    | 'rename table'
-    | 'rename column'
-    | 'keep table'
-    | 'keep column'
-    | 'retype column'
-    | 'reshape table';
-  quotes: number | null;
+  disposition: 'sql' | 'manual';
+  kind: 'create table' | 'add column';
   table: string;
-  was: string | null;
 }
 /**
  * A way the database differs from the form: the form's table and column by name (no table
@@ -6105,6 +6094,7 @@ export interface WorkbenchStoreExtra {
   column: string | null;
   form_table: string | null;
   quotes: number | null;
+  retention: string;
   table: string;
 }
 /**

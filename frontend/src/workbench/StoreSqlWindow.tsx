@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Copy, Download } from "lucide-react"
 import { apiErrorMessage } from "../api/errors"
@@ -7,30 +7,61 @@ import { ModalFormHeader } from "../components/ModalForm"
 import { QuietAction } from "../components/form"
 import { downloadTextFile, writeClipboardText } from "../panels/editors/shared/tableClipboard"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
-import useStoreSqlExport from "./useStoreSqlExport"
+import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import useWorkbenchStore from "../stores/useWorkbenchStore"
+import { comparisonFailure, useDatabaseComparison, environmentState } from "../stores/useStoreCompareStore"
 
 const QUIET_STYLE = { color: "var(--text-secondary)" } as const
 
 /** Query and export actions only; all database decisions belong to the schema pane. */
 export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
   const dirty = useWorkbenchFormStore((s) => s.dirty)
-  const { environment, comparison, reason } = useStoreSqlExport()
+  const stale = useWorkbenchFormStore((s) => s.stale)
+  const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
+  const configured = useWorkbenchStore((s) => s.environments)
+  const { state, form, answer: comparison } = useDatabaseComparison()
+  const { environment, verify } = state
+  const { read } = environmentState(state)
+  let reason = comparisonFailure(state, form)
+  if (previewing) reason = "Switch to Build to export SQL."
+  else if (stale) reason = "The schema changed on disk. Reload it before exporting SQL."
+  else if (configured.length === 0) reason = "Configure a database before exporting SQL."
+  else if (environment === null) reason = "Select a database on the schema pane to export SQL."
+  else if (reason === null && read.status === "idle") reason = "Refresh the database on the schema pane before exporting SQL."
+  else if (reason === null && comparison === null) reason = "Wait for the database comparison to finish."
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    void verify()
+    return () => { mounted.current = false }
+  }, [environment, verify])
   const sql = comparison?.sql
   const disabled = reason !== null || sql === undefined
   const [notice, setNotice] = useState<{ environment: string; sql: string; text: string; error: boolean } | null>(null)
-  const target = dirty ? "Working schema · Unsaved changes" : "Working schema · Saved"
+  const target = `Working schema · ${dirty ? "Unsaved changes" : "Saved"}`
 
   const exportSql = async (download: boolean) => {
     if (disabled || sql === undefined || environment === null) return
+    let exportedSql = sql
     try {
-      if (download) {
+      const pending = verify().then((verified) => {
+        if (verified === null || !mounted.current || useWorkbenchViewStore.getState().mode === "preview" || useWorkbenchFormStore.getState().stale) throw new Error("The database comparison changed. Try exporting again.")
+        exportedSql = verified.sql
+        return verified.sql
+      })
+      // clipboard.write must run within the click, while its item waits for validation.
+      const exporting = download ? pending.then((sql) => {
         if (!downloadTextFile(sql, `${environment}-database-schema.sql`, "application/sql")) {
           throw new Error("SQL download is unavailable in this browser. Use Copy SQL.")
         }
-      } else await writeClipboardText(sql)
-      setNotice({ environment, sql, error: false, text: download ? "SQL downloaded." : "SQL copied." })
+      }) : writeClipboardText(pending)
+      // Even an early clipboard refusal waits for verification so its notice is
+      // attached to the current query, whose equivalent statements may reorder.
+      const results = await Promise.allSettled([pending, exporting])
+      for (const result of results) if (result.status === "rejected") throw result.reason
+      setNotice({ environment, sql: exportedSql, error: false, text: download ? "SQL downloaded." : "SQL copied." })
     } catch (error: unknown) {
-      setNotice({ environment, sql, error: true, text: apiErrorMessage(error) })
+      setNotice({ environment, sql: exportedSql, error: true, text: apiErrorMessage(error) })
     }
   }
 

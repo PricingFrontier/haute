@@ -2,20 +2,17 @@
 import { Undo2 } from "lucide-react"
 import type { SchemaColumn, SchemaTable } from "../api/types"
 import { COMPACT_FIELD_CLASS, EditorLabel, INPUT_STYLE, QuietAction } from "../components/form"
-import useStoreCompareStore, { comparisonStatus, currentComparison, environmentState } from "../stores/useStoreCompareStore"
-import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
+import { comparisonFailure, comparisonStatus, useDatabaseComparison, environmentState } from "../stores/useStoreCompareStore"
 import { IDENTITY_NAMES } from "../utils/quoteIdentity"
-import DatabaseDisclosure from "./DatabaseDisclosure"
+import DatabaseDisclosure, { DatabaseExtras } from "./DatabaseDisclosure"
 import { fieldDatabaseIssues } from "./fieldDatabaseIssues"
 import { schemaColumns } from "./schema/schemaText"
 
 const QUIET = { color: "var(--text-muted)" } as const
 
 function useColumnDatabase(table: string, column: string) {
-  const state = useStoreCompareStore()
-  const form = useWorkbenchFormStore((s) => s.form)
-  const answer = currentComparison(state, form)
-  const { read, compared } = environmentState(state)
+  const { state, form, answer } = useDatabaseComparison()
+  const { read } = environmentState(state)
   const differences = answer?.differences.filter((each) => each.table === table &&
     (each.column === column || (each.column === null && each.kind === "missing"))) ?? []
   const changes = answer?.changes.filter((each) => each.table === table && each.column === column) ?? []
@@ -32,7 +29,7 @@ function useColumnDatabase(table: string, column: string) {
         : missing ? "New column"
           : differences.some((each) => each.kind === "type") ? "Type change"
             : differences.length > 0 ? "Needs attention" : "Matches"
-  const failure = label !== "Check failed" ? null : read.status === "failed" ? read.message : compared.status === "failed" ? compared.message : null
+  const failure = comparisonFailure(state, form)
   return { state, answer, differences, changes, missing, label, failure, pairing, invalidRename, stored }
 }
 
@@ -73,7 +70,7 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
           {invalidRename && <p role="alert" style={{ color: "var(--warning)" }}>This rename cannot be used in {state.environment}. Choose an available column or remove the rename choice.</p>}
           {(changes.length > 0 || differences.length > 0) && <DatabaseDisclosure title="SQL details" className="text-[var(--text-muted)]">
             <div className="flex flex-col gap-2 break-words">
-              {changes.map((change) => <p key={change.kind}>{change.description}{change.quotes !== null && change.quotes > 0 && ` ${change.quotes.toLocaleString()} ${change.quotes === 1 ? "quote has" : "quotes have"} values.`}</p>)}
+              {changes.map((change) => <p key={change.kind}>{change.description}</p>)}
               {differences.map((each) => <p key={each.message}>{each.message}</p>)}
             </div>
           </DatabaseDisclosure>}
@@ -97,26 +94,18 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
 }
 
 export function TableDatabaseDetails({ table }: { table: SchemaTable }) {
-  const state = useStoreCompareStore()
-  const form = useWorkbenchFormStore((s) => s.form)
-  const answer = currentComparison(state, form)
+  const { answer } = useDatabaseComparison()
   if (answer === null) return null
   const visible = new Set(schemaColumns(table).map((column) => column.name))
   const differences = answer.differences.filter((each) => each.table === table.name && (each.column === null || !visible.has(each.column)))
-  const retained = answer.changes.filter((each) => each.table === table.name && each.disposition === "retained")
-  const extras = answer.extras.filter((each) => each.form_table === table.name && each.column !== null && !retained.some((change) => change.column === each.column))
-  const reshape = answer.changes.some((each) => each.table === table.name && each.kind === "reshape table")
-  const count = retained.length + extras.length
+  const extras = answer.extras.filter((each) => each.form_table === table.name && each.column !== null)
+  const count = extras.length
   if (differences.length === 0 && count === 0) return null
   return <DatabaseDisclosure className="mt-1 px-1 text-[11px] text-[var(--text-muted)]"
-    title={`Database details${count > 0 ? ` · ${count} ${extras.length === 0 ? "retained" : "database-only"} ${count === 1 ? "field" : "fields"}` : ""}`}>
+    title={`Database details${count > 0 ? ` · ${count} database-only ${count === 1 ? "field" : "fields"}` : ""}`}>
     <div role="region" aria-label={`Database details for ${table.name}`} className="flex flex-col gap-2 pb-1 leading-relaxed">
       {differences.map((each) => <p key={each.message}>{each.message}</p>)}
-      {retained.map((each) => <div key={each.column}><code>{each.column}</code><p>{each.description}</p>{each.quotes !== null && each.quotes > 0 && <p>{each.quotes} quotes with values</p>}</div>)}
-      {extras.map((each) => <div key={each.column}><code>{each.column}</code>
-        <p>{reshape ? "Preserving these values is part of the table's manual migration." : "This database column is not used by the schema."}</p>
-        <p>{each.quotes === null ? "Quote count unavailable" : `${each.quotes} quotes with values`}</p>
-      </div>)}
+      <DatabaseExtras extras={extras} />
     </div>
   </DatabaseDisclosure>
 }

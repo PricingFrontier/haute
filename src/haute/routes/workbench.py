@@ -34,7 +34,7 @@ from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._workbench_app import ResolvedRelease, resolve_release
-from haute._workbench_config import WorkbenchConfig, read_workbench_config
+from haute._workbench_config import WorkbenchConfig, WorkbenchError, read_workbench_config
 from haute._workbench_folder import (
     FormFolderNameError,
     folder_files,
@@ -388,18 +388,26 @@ async def store_catalogue(body: WorkbenchStoreCatalogueRequest) -> WorkbenchStor
 def _store_compare(
     config: WorkbenchConfig, body: WorkbenchStoreCompareRequest
 ) -> WorkbenchStoreCompareResponse:
-    from dataclasses import asdict
-
-    from haute._quote_store import render_sql
+    from haute._connections import project_environ
+    from haute._quote_store import connected_store, render_sql
     from haute._quote_store._catalogue import Catalogue, CatalogueColumn, CatalogueTable
     from haute._quote_store._compare import Rename, additions_plan, compare
-    from haute._quote_store._environment import connection_of
     from haute._quote_store._migrate import PROVIDER_DIALECTS
-    from haute._quote_store._providers import PROVIDERS
-    from haute._quote_store._review import MAINTENANCE_KINDS, rename_problems, review_plan
+    from haute._quote_store._providers import provider_of
+    from haute._quote_store._review import (
+        rename_problems,
+        retention_description,
+        review_plan,
+    )
+    from haute._workbench_catalogue import catalogue_target
 
     spec = _checked_form(body.form)
-    connection = connection_of(config, body.environment)
+    location = connected_store(config, body.environment, project_environ(config.project_root))
+    if body.target != catalogue_target(location):
+        raise WorkbenchError(
+            f"The {body.environment} connection changed since this database schema was read. "
+            "Use Refresh on the schema pane before comparing or exporting SQL."
+        )
     catalogue = Catalogue(
         tables=tuple(
             CatalogueTable(
@@ -422,7 +430,7 @@ def _store_compare(
             for table in body.tables
         )
     )
-    provider = PROVIDERS[connection.provider]
+    provider = provider_of(location.url)
     renames = [Rename(each.table, each.column, each.was) for each in body.renames]
     comparison = compare(
         spec,
@@ -445,6 +453,7 @@ def _store_compare(
                 column=each.column,
                 form_table=each.form_table,
                 quotes=each.quotes,
+                retention=retention_description(spec, each.form_table, comparison.plan),
             )
             for each in comparison.extras
         ],
@@ -453,9 +462,8 @@ def _store_compare(
             for each in comparison.renames
         ],
         matches=comparison.matches,
-        provider=provider.name,
         changes=[
-            WorkbenchStoreChange(**asdict(each))
+            WorkbenchStoreChange.model_validate(each, from_attributes=True)
             for each in review_plan(additions, spec, provider, additions_only=True)
         ],
         manual=list(comparison.plan.notes),
@@ -463,13 +471,11 @@ def _store_compare(
             *comparison.plan.refusals,
             *unresolved,
         ],
-        requires_maintenance=bool(comparison.plan.notes)
-        or any(step.kind in MAINTENANCE_KINDS for step in comparison.plan.steps),
         sql=render_sql(
             additions,
             spec,
             PROVIDER_DIALECTS[provider.name],
-            sql_schema=connection.schema,
+            sql_schema=location.sql_schema,
             additions_only=True,
         ),
     )
