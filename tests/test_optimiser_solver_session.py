@@ -153,14 +153,19 @@ def signals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return directory
 
 
-@pytest.fixture()
-def process_mode(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    _process_mode(monkeypatch)
+@pytest.fixture(autouse=True)
+def _sessions_end_with_their_test() -> Iterator[None]:
+    """End every job's session: multiprocessing joins a live one when pytest exits."""
     yield
-    for job_id, job in _optimiser_service_store().list_jobs().items():
+    for job in _optimiser_service_store().list_jobs().values():
         session = job.get(SESSION_KEY)
         if isinstance(session, SolverSession):
             session.terminate("cancelled")
+
+
+@pytest.fixture()
+def process_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    _process_mode(monkeypatch)
 
 
 def _optimiser_service_store() -> Any:
@@ -293,6 +298,62 @@ class TestSessionSolve:
             for item in _walk(value):
                 assert type(item).__name__ not in native_types, key
             assert key not in ("solver", "quote_grid", "solve_result", "ratebook_factor_contexts")
+
+    def test_a_point_trace_is_read_from_the_session_solve_without_the_library(
+        self, client, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.routes import _optimiser_artifacts
+
+        def trace(job_id: str) -> dict[str, Any]:
+            response = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": 1, "include_history": True},
+            )
+            assert response.status_code == 200, response.text
+            return dict(response.json()["point_history"])
+
+        scored = _scored_parquet(project)
+        graph = _online_graph(scored, frontier_ranges={"volume": {"min": 0.5, "max": 2.0}})
+        monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
+        thread_job = _start(client, graph)
+        assert _poll(client, thread_job)["status"] == "completed"
+        thread_trace = trace(thread_job)
+        assert thread_trace["kind"] == "bisection"
+        # A trace artifact ends with its job.
+        thread_handles = _job(thread_job)["artifact_handles"]
+        thread_directory = Path(
+            thread_handles[_optimiser_artifacts.FRONTIER_HISTORY_HANDLE_KEY]["directory"]
+        )
+        assert thread_directory.is_dir()
+        _optimiser_service_store().delete_job(thread_job)
+        assert not thread_directory.exists()
+
+        _process_mode(monkeypatch)
+        _poison_server_price_contour(monkeypatch)
+        # The artifact root is shared with parallel test workers, so count what this test creates.
+        created: list[Path] = []
+        new_directory = _optimiser_artifacts.new_frontier_history_directory
+
+        def recording_new_directory() -> Path:
+            created.append(new_directory())
+            return created[-1]
+
+        monkeypatch.setattr(
+            _optimiser_artifacts, "new_frontier_history_directory", recording_new_directory
+        )
+        job_id = _start(client, graph)
+        assert _poll(client, job_id)["status"] == "completed"
+        assert trace(job_id) == thread_trace
+        handle = _job(job_id)["artifact_handles"][_optimiser_artifacts.FRONTIER_HISTORY_HANDLE_KEY]
+        # The session wrote into the one directory its parent created, which the job adopted.
+        assert created == [Path(handle["directory"])]
+
+        # A solve that sweeps nothing creates no trace directory.
+        no_sweep = _start(client, _online_graph(scored))
+        assert _poll(client, no_sweep)["status"] == "completed"
+        assert created == [Path(handle["directory"])]
+        no_sweep_handles = _job(no_sweep)["artifact_handles"]
+        assert _optimiser_artifacts.FRONTIER_HISTORY_HANDLE_KEY not in no_sweep_handles
 
     def test_session_solve_matches_the_thread_path(
         self, client, project: Path, monkeypatch: pytest.MonkeyPatch

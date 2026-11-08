@@ -28,6 +28,8 @@ In scope:
   estimation of viable efficient-frontier threshold ranges (`/frontier/auto-range/start`).
 - Computing an efficient frontier for a completed solve and letting a user select — or
   materialise, for ratebook — one of its points as the active result.
+- Keeping each frontier point's convergence trace with its job and answering one point's trace
+  on request, with no solver work.
 - Serving bounded, sortable and filterable pages of the per-quote chosen scenarios (the Quotes
   explorer) for online and ratebook results.
 - Persisting a solved result as a JSON artifact on disk, or logging it (plus a frontier CSV

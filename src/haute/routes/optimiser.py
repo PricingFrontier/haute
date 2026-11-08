@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import TypeAdapter
 
 from haute._execution_admission import (
     create_admitted_execution_context,
@@ -55,7 +56,7 @@ from haute._sandbox import contained_path
 from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_isolation import IsolatedWorkerHostError, resolve_worker_memory_enforcement
 from haute.errors import RequestRefusedError
-from haute.routes._frontier_point_summary import frontier_point_library_row
+from haute.routes._frontier_point_summary import constraint_kinds, frontier_point_library_row
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
@@ -64,7 +65,11 @@ from haute.routes._optimiser_adjustments import (
     adjustment_report,
     cache_point_report,
 )
-from haute.routes._optimiser_artifacts import scratch_directory
+from haute.routes._optimiser_artifacts import (
+    FRONTIER_HISTORY_HANDLE_KEY,
+    read_frontier_point_history,
+    scratch_directory,
+)
 from haute.routes._optimiser_frontier import (
     _CONSTRAINT_THRESHOLD_KEYS,
     OptimiserFrontierService,
@@ -89,7 +94,7 @@ from haute.routes._optimiser_outcomes import (
 from haute.routes._optimiser_quotes import QuoteQueries
 from haute.routes._optimiser_segments import SegmentQueries
 from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
-from haute.routes._optimiser_solver import _job_elapsed_seconds
+from haute.routes._optimiser_solver import _job_elapsed_seconds, frontier_point_history_payload
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
 from haute.routes._synchronous_analysis import run_until_disconnected
 from haute.routes.pipeline import (
@@ -108,6 +113,7 @@ from haute.schemas import (
     OptimiserFrontierAutoRangeRequest,
     OptimiserFrontierAutoRangeStartResponse,
     OptimiserFrontierAutoRangeStatusResponse,
+    OptimiserFrontierPointHistory,
     OptimiserFrontierResponse,
     OptimiserFrontierSelectRequest,
     OptimiserFrontierSelectResponse,
@@ -240,7 +246,9 @@ def _optimiser_input_metrics_in_worker(
 
 
 def _frontier_select_response(
-    result: dict[str, Any], adjustments: Mapping[str, Any] | None
+    result: dict[str, Any],
+    adjustments: Mapping[str, Any] | None,
+    point_history: OptimiserFrontierPointHistory | None = None,
 ) -> OptimiserFrontierSelectResponse:
     return OptimiserFrontierSelectResponse(
         status="ok",
@@ -261,6 +269,7 @@ def _frontier_select_response(
         adjustments=(
             None if adjustments is None else OptimiserAdjustmentReport.model_validate(adjustments)
         ),
+        point_history=point_history,
         clamp_rate=result.get("clamp_rate"),
         combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
         diagnostics_errors=result["diagnostics_errors"],
@@ -498,7 +507,30 @@ def _select_point(
         if body.include_adjustments
         else None
     )
-    return _frontier_select_response(result, adjustments)
+    history = _point_history(body.job_id, body.point_index) if body.include_history else None
+    return _frontier_select_response(result, adjustments, history)
+
+
+_POINT_HISTORY: TypeAdapter[OptimiserFrontierPointHistory] = TypeAdapter(
+    OptimiserFrontierPointHistory
+)
+
+
+def _point_history(job_id: str, point_index: int) -> OptimiserFrontierPointHistory:
+    """*point_index*'s convergence trace, read from the job's trace artifact; no solver work."""
+    job = _store.require_completed_job(job_id)
+    handle = (job.get("artifact_handles") or {}).get(FRONTIER_HISTORY_HANDLE_KEY)
+    if handle is None:
+        raise RuntimeError(f"Optimiser job {job_id} has a frontier but no point traces")
+    config = job["config"]
+    return _POINT_HISTORY.validate_python(
+        frontier_point_history_payload(
+            read_frontier_point_history(handle, point_index),
+            mode=str(config.get("mode", "online")),
+            constraint_names=list(constraint_kinds(config["constraints"])),
+            point_index=point_index,
+        )
+    )
 
 
 def _point_adjustments(

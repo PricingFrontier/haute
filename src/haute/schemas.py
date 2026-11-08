@@ -4886,6 +4886,80 @@ class OptimiserRatebookCdTrace(BaseModel):
         return names
 
 
+class OptimiserBisectionProbe(BaseModel):
+    """One fixed-λ apply a 1-D frontier point's bisection ran (price-contour's
+    ``point_history``), in the order it ran."""
+
+    model_config = _STRICT_ROW
+
+    step: int = Field(ge=0)
+    """0-based probe number within the point."""
+    phase: Literal["bracket", "bisect"]
+    """``bracket``: the λ=0 probe or a doubling before the target is bracketed;
+    ``bisect``: the midpoint of the established bracket."""
+    bracket_lo: float | None
+    bracket_hi: float | None
+    """The bracket a ``bisect`` probe halved; ``None`` for a ``bracket`` probe."""
+    lambdas: dict[str, float]
+    total_objective: float
+    total_constraints: dict[str, float]
+    all_constraints_satisfied: bool
+    """The probe met the target one-sidedly."""
+    accepted: bool
+    """The probe became the point's answer; the point's λ and totals are its last accepted
+    probe's."""
+
+    @model_validator(mode="after")
+    def _one_constraint_and_its_bracket(self) -> OptimiserBisectionProbe:
+        _require_same_constraint_names(
+            {"lambdas": self.lambdas, "total_constraints": self.total_constraints}
+        )
+        if len(self.lambdas) != 1:
+            raise ValueError("a bisection probe has exactly one constraint")
+        bracketed = self.bracket_lo is not None and self.bracket_hi is not None
+        if bracketed != (self.phase == "bisect") or (
+            not bracketed and (self.bracket_lo is not None or self.bracket_hi is not None)
+        ):
+            raise ValueError("a bisect probe has its bracket and a bracket probe has none")
+        return self
+
+
+class OptimiserBisectionPointHistory(BaseModel):
+    """A 1-D frontier point's bisection on λ, probe by probe."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["bisection"]
+    probes: list[OptimiserBisectionProbe] = Field(min_length=1)
+
+
+class OptimiserSubgradientPointHistory(BaseModel):
+    """A multi-constraint frontier point's subgradient iterations, as a solve records them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["subgradient"]
+    history: list[OptimiserHistoryEntry] = Field(min_length=1)
+
+
+class OptimiserRatebookPointHistory(BaseModel):
+    """A ratebook frontier point's coordinate-descent trace, shaped as a solve's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["ratebook"]
+    cd_trace: OptimiserRatebookCdTrace
+
+
+OptimiserFrontierPointHistory = Annotated[
+    OptimiserBisectionPointHistory
+    | OptimiserSubgradientPointHistory
+    | OptimiserRatebookPointHistory,
+    Field(discriminator="kind"),
+]
+"""How one frontier point was solved, step by step (OPT-PC04)."""
+
+
 class OptimiserAdjustmentBar(BaseModel):
     """One step of the scenario grid in an adjustment report, chosen or not."""
 
@@ -5404,6 +5478,8 @@ class OptimiserFrontierSelectRequest(BaseModel):
     include_ratebook_tables: bool = False
     # Also answer the point's adjustment report (OPT-V10), materialising its choices.
     include_adjustments: bool = False
+    # Also answer the point's convergence trace (OPT-PC04), read from the job; no solver work.
+    include_history: bool = False
 
 
 class OptimiserFrontierSelectResponse(BaseModel):
@@ -5426,6 +5502,8 @@ class OptimiserFrontierSelectResponse(BaseModel):
     # Without a point, the as-solved report; with one, its report when
     # ``include_adjustments`` was requested, else ``None``.
     adjustments: OptimiserAdjustmentReport | None = None
+    # A point's convergence trace when ``include_history`` was requested, else ``None``.
+    point_history: OptimiserFrontierPointHistory | None = None
     clamp_rate: float | None = None
     # Ratebook only: the solve's collar, shared by every frontier point.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None

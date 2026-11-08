@@ -44,7 +44,7 @@ Keep all of this unchanged. Haute's guard checks every name and keyword below, a
 ## Haute's side of the release
 
 **Before the release, against a local build.** Haute's guard refuses a version outside its pin, so do this on a Haute branch:
-1. If the release leaves `>=0.7.0,<0.8`, set the `price-contour` specifier in `pyproject.toml` and `REQUIRED_SPECIFIER` in `src/haute/_price_contour.py` to the new range; `tests/test_dependency_contracts.py` requires the two to be equal. Do not relock: the release is not on PyPI yet.
+1. If the release leaves `>=0.8.0,<0.9`, set the `price-contour` specifier in `pyproject.toml` and `REQUIRED_SPECIFIER` in `src/haute/_price_contour.py` to the new range; `tests/test_dependency_contracts.py` requires the two to be equal. Do not relock: the release is not on PyPI yet.
 2. In the price-contour checkout, build the wheel with `uv run maturin build --release`. It lands in `target/wheels/`.
 3. In the Haute checkout, install that wheel into Haute's environment: `uv pip install --python .venv/bin/python <wheel>` (`.venv\Scripts\python.exe` on Windows).
 4. Check that Haute's guard logs `price_contour_verified` with source `direct URL <wheel path>`. A container build refuses a direct-URL install by design; the tests of container builds opt into the `released_price_contour` fixture (`tests/conftest.py`), which presents the install as a released wheel.

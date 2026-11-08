@@ -80,6 +80,8 @@ class SessionSolveRequest:
     factor_level_order: dict[str, list[str]]
     # The parent-owned directory the as-solved apply artifact is written into.
     apply_artifact_dir: str
+    # The parent-owned directory the frontier traces are written into; None without a sweep.
+    frontier_history_dir: str | None
 
 
 @dataclass(frozen=True)
@@ -197,6 +199,7 @@ def build_and_solve(request: SessionSolveRequest) -> SessionSolveOutcome:
                 start_time=start_time,
                 report_stage=_report_stage,
                 apply_artifact_dir=request.apply_artifact_dir,
+                frontier_history_dir=request.frontier_history_dir,
             )
             if request.mode == "ratebook":
                 _solve_ratebook(

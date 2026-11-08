@@ -1882,6 +1882,8 @@ export function selectFrontierPoint(
     include_ratebook_tables?: boolean
     /** Also answer the point's adjustment report, materialising its choices (online). */
     include_adjustments?: boolean
+    /** Also answer the point's convergence trace, read from the job with no solver work. */
+    include_history?: boolean
   },
   options?: { signal?: AbortSignal },
 ): Promise<FrontierSelectResponse> {

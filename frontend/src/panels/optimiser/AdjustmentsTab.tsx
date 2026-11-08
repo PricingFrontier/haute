@@ -36,13 +36,12 @@ import {
   formatScenarioValue,
   formatShare,
   isOneStepGrid,
-  pointAdjustmentKey,
   rangeEdgeShare,
 } from "./adjustments"
 import RequestFailureNotice from "./RequestFailureNotice"
-import { useLatestRequest } from "./useLatestRequest"
+import { frontierPointKey, useLatestRequest } from "./useLatestRequest"
 
-/** Loaded frontier point reports, keyed by `pointAdjustmentKey`. */
+/** Loaded frontier point reports, keyed by `frontierPointKey`. */
 export type PointAdjustmentReports = Readonly<Record<string, OptimiserAdjustmentReport>>
 
 const QUOTES_WEIGHT = "quotes"
@@ -69,10 +68,10 @@ export default function AdjustmentsTab({
   onPointReport,
   width,
 }: AdjustmentsTabProps) {
-  const pointReport = pointIndex === null ? undefined : pointReports[pointAdjustmentKey(jobId, pointIndex)]
+  const pointReport = pointIndex === null ? undefined : pointReports[frontierPointKey(jobId, pointIndex)]
   const request = useLatestRequest(
     pointIndex !== null && pointReport === undefined
-      ? { key: pointAdjustmentKey(jobId, pointIndex), jobId, pointIndex }
+      ? { key: frontierPointKey(jobId, pointIndex), jobId, pointIndex }
       : null,
     (wanted, signal) => selectFrontierPoint(
       { job_id: wanted.jobId, point_index: wanted.pointIndex, include_adjustments: true },

@@ -127,6 +127,112 @@ class _OptimiserSolverExecutionError(Exception):
 _FRONTIER_FACTOR_TABLES_KEY = "frontier_factor_tables"
 
 
+def frontier_point_history_frame(
+    frontier_result: Any, *, mode: str, constraint_names: list[str], points_returned: int
+) -> Any:
+    """The returned points' convergence traces, in exactly the library's documented schema.
+
+    The sweep ran with ``record_history=True``, so a missing trace or a schema
+    other than ``frontier_point_history_schema(mode, constraint_names)`` is a
+    library contract failure.
+    """
+    import polars as pl
+
+    history = frontier_result.point_history
+    if not isinstance(history, pl.DataFrame):
+        raise RuntimeError(
+            "price_contour returned no point history for a frontier swept with record_history=True"
+        )
+    expected = pl.Schema(price_contour().frontier_point_history_schema(mode, constraint_names))
+    if history.schema != expected:
+        raise RuntimeError(
+            f"price_contour's frontier point history has columns {dict(history.schema)}, "
+            f"expected {dict(expected)}"
+        )
+    return history.filter(pl.col("point_index") < points_returned)
+
+
+@dataclass(frozen=True, slots=True)
+class _TraceRecord:
+    """One ratebook frontier point's inner solve, as ``ratebook_cd_trace`` reads it."""
+
+    cd_iteration: int
+    factor: str
+    factor_index: int
+    total_objective: float
+    total_constraints: dict[str, float]
+    lambdas: dict[str, float]
+
+
+def frontier_point_history_payload(
+    trace: Any, *, mode: str, constraint_names: Sequence[str], point_index: int
+) -> dict[str, Any]:
+    """One frontier point's ``point_history`` rows as its typed trace (OPT-PC04).
+
+    A ratebook point's rows are its ``per_factor_results``, shaped by
+    ``ratebook_cd_trace`` as a solve's are; an online point's are its bisection
+    probes or its subgradient iterations, never both. A point with no rows, or
+    with both kinds, breaks price-contour's contract.
+    """
+    rows = trace.sort("cd_iteration" if mode == "ratebook" else "step").to_dicts()
+    if not rows:
+        raise RuntimeError(f"frontier point {point_index} recorded no convergence trace")
+    if mode == "ratebook":
+        # Read in the server, which never calls price-contour, so the records are plain.
+        records = [
+            _TraceRecord(
+                cd_iteration=row["cd_iteration"],
+                factor=row["factor"],
+                factor_index=row["factor_index"],
+                total_objective=row["total_objective"],
+                total_constraints={name: row[f"total_{name}"] for name in constraint_names},
+                lambdas={name: row[f"lambda_{name}"] for name in constraint_names},
+            )
+            for row in rows
+        ]
+        return {"kind": "ratebook", "cd_trace": ratebook_cd_trace(records, constraint_names)}
+    phases = {row["phase"] for row in rows}
+
+    def maps(row: dict[str, Any]) -> dict[str, dict[str, float]]:
+        return {
+            "lambdas": {name: row[f"lambda_{name}"] for name in constraint_names},
+            "total_constraints": {name: row[f"total_{name}"] for name in constraint_names},
+        }
+
+    if phases == {"subgradient"}:
+        return {
+            "kind": "subgradient",
+            "history": [
+                {
+                    "iteration": row["step"],
+                    "total_objective": row["total_objective"],
+                    "max_lambda_change": row["max_lambda_change"],
+                    "all_constraints_satisfied": row["all_satisfied"],
+                    **maps(row),
+                }
+                for row in rows
+            ],
+        }
+    if phases <= {"bracket", "bisect"}:
+        return {
+            "kind": "bisection",
+            "probes": [
+                {
+                    "step": row["step"],
+                    "phase": row["phase"],
+                    "bracket_lo": row["bracket_lo"],
+                    "bracket_hi": row["bracket_hi"],
+                    "total_objective": row["total_objective"],
+                    "all_constraints_satisfied": row["all_satisfied"],
+                    "accepted": row["accepted"],
+                    **maps(row),
+                }
+                for row in rows
+            ],
+        }
+    raise RuntimeError(f"frontier point {point_index} mixes trace phases {sorted(phases)}")
+
+
 def frontier_point_factor_tables(
     frontier_result: Any, *, mode: str, points_returned: int
 ) -> list[dict[str, dict[str, float]]] | None:
@@ -327,6 +433,7 @@ def _compute_frontier(
         result = solver.frontier(
             quote_grid,
             ratebook_factors,
+            record_history=True,
             **frontier_kwargs,
         )
         if check_cancelled is not None:
@@ -338,7 +445,7 @@ def _compute_frontier(
     }
     if initial_lambdas is not None:
         frontier_kwargs["initial_lambdas"] = initial_lambdas
-    result = solver.frontier(quote_grid, **frontier_kwargs)
+    result = solver.frontier(quote_grid, record_history=True, **frontier_kwargs)
     if check_cancelled is not None:
         check_cancelled()
     return result
@@ -950,6 +1057,7 @@ def _finalize_solve_result(
     quote_analysis_handle: dict[str, Any] | None = None,
     report_stage: Callable[[str, float], None] | None = None,
     apply_artifact_dir: str | None = None,
+    frontier_history_dir: str | None = None,
 ) -> bool:
     """Build the result dict and update the job with the solve outcome.
 
@@ -1016,6 +1124,7 @@ def _finalize_solve_result(
     # ── Compute efficient frontier when explicitly requested (non-fatal) ────
     frontier_data = None
     frontier_factor_tables: list[dict[str, dict[str, float]]] | None = None
+    frontier_history: Any | None = None
     frontier_error = None
     config = job_snapshot.get("config", {})
     result_dict["input_summary"] = solve_input_summary(job_snapshot)
@@ -1082,6 +1191,12 @@ def _finalize_solve_result(
                 frontier_factor_tables = frontier_point_factor_tables(
                     frontier_result,
                     mode=mode,
+                    points_returned=frontier_data["points_returned"],
+                )
+                frontier_history = frontier_point_history_frame(
+                    frontier_result,
+                    mode=mode,
+                    constraint_names=list(kinds),
                     points_returned=frontier_data["points_returned"],
                 )
                 logger.info(
@@ -1154,6 +1269,17 @@ def _finalize_solve_result(
         if quote_analysis_handle is not None:
             artifact_handles[_optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY] = (
                 quote_analysis_handle
+            )
+        if frontier_history is not None:
+            # Each point's convergence trace, read one point at a time by frontier
+            # select (OPT-PC04); never part of the result or the status payload.
+            history_handle = _optimiser_artifacts.persist_frontier_history_artifact(
+                frontier_history,
+                artifact_dir=None if frontier_history_dir is None else Path(frontier_history_dir),
+            )
+            artifact_handles[_optimiser_artifacts.FRONTIER_HISTORY_HANDLE_KEY] = history_handle
+            uncommitted_handles.append(
+                (history_handle, "solve_completion_orphan_frontier_history_cleanup_failed")
             )
 
         completion_fields: dict[str, Any] = {
@@ -1276,6 +1402,7 @@ def _solve_online(
         quote_analysis_handle=quote_analysis_handle,
         report_stage=ctx.report_stage,
         apply_artifact_dir=ctx.apply_artifact_dir,
+        frontier_history_dir=ctx.frontier_history_dir,
     )
 
 
@@ -1298,6 +1425,8 @@ class SolveContext:
     # A parent-owned directory the as-solved apply artifact is written into (a
     # solver session); ``None`` creates one here.
     apply_artifact_dir: str | None = None
+    # Likewise for the frontier points' convergence traces, when the solve sweeps.
+    frontier_history_dir: str | None = None
 
 
 @require_solver_worker_context
@@ -1444,4 +1573,5 @@ def _solve_ratebook(
         quote_analysis_handle=quote_analysis_handle,
         report_stage=ctx.report_stage,
         apply_artifact_dir=ctx.apply_artifact_dir,
+        frontier_history_dir=ctx.frontier_history_dir,
     )

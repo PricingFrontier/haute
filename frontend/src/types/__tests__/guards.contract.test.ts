@@ -2708,6 +2708,7 @@ describe("API response guards", () => {
       ratebook_cd_trace: null,
       warning: null,
       adjustments: null,
+      point_history: null,
       clamp_rate: null,
       combined_factor_bounds: null,
       diagnostics_errors: [],

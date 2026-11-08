@@ -152,7 +152,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
     "docs",
     "engineering-quality",
-    "optimiser-validation",
     "polars-2",
     "polars-node-clarity",
     "readable-output",
