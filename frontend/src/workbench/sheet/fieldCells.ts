@@ -2,7 +2,8 @@
 import { type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import type { FormSchema } from "../../api/types"
 import { formatValue } from "../../utils/formatValue"
-import { formattedNumber } from "../../utils/sheetValues"
+import { isOutputColumn } from "../../utils/quoteIdentity"
+import { formattedNumber, isTyping } from "../../utils/sheetValues"
 import { columnKey, fieldKey, fieldShowWhen } from "../../utils/sheetVisibility"
 import {
   PLAIN_COLUMN_LOOK,
@@ -19,20 +20,23 @@ import {
 
 export type Found = ShownField["found"]
 
-/** A column of an input table that is still in the schema, other than its index. */
-export type Fillable = NonNullable<Found> & { table: { role: "input" } }
+/** An input of a table that is still in the schema, other than a numbered index or an index of values. */
+export type Fillable = NonNullable<Found>
 
-/** Whether an underwriter fills this field in. */
-export const fillable = (found: Found): found is Fillable => found !== null && found.table.role === "input" && !found.column.index
+/** Whether an underwriter fills this field in: an input, a typed index among them, never a numbered index or an index of values, whose values the sheets give. */
+export const fillable = (found: Found): boolean => found !== null && !isOutputColumn(found.table, found.column) && isTyping(found.column)
+
+/** Whether a field is an output, which the pricing engine fills. */
+export const isOutputField = (found: Found): boolean => found !== null && isOutputColumn(found.table, found.column)
 
 /**
  * Muted for an input, green for an output the pricing engine fills, or the component's font
  * colour for either; amber when it is gone, whatever the font.
  */
 export const labelColor = (found: Found, font: string | null): string =>
-  found === null ? "var(--warning)" : (font ?? (found.table.role === "output" ? "var(--success)" : "var(--text-muted)"))
+  found === null ? "var(--warning)" : (font ?? (isOutputField(found) ? "var(--success)" : "var(--text-muted)"))
 
-/** A field's label colour: its column's own, else the component's, else the theme's or its role's (`labelColor`); amber while it is gone. */
+/** A field's label colour: its column's own, else the component's, else the theme's or its block's (`labelColor`); amber while it is gone. */
 export const labelFont = (found: Found, look: ColumnLookOptions, options: Pick<SharedLook, "header_font_color">, font: string | null): string =>
   found === null ? labelColor(found, null) : (look.header_font_color ?? options.header_font_color ?? labelColor(found, font))
 

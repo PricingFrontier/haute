@@ -17,7 +17,7 @@ import pytest
 
 from haute._quote_store import PricedOutputs, QuoteBook, QuoteValuesError, open_book
 from haute._quote_store._rows import KEPT_KEY
-from haute._workbench_form import FormSpec
+from haute._workbench_form import FormSpec, OptionsSource
 from tests._store_servers import Target, backends, database
 from tests.test_quote_book import ANA, FORM, HAUTE, RELEASE, Clock, document, op, values
 
@@ -28,7 +28,12 @@ def _without(form: FormSpec, removed: dict[str, set[str]]) -> FormSpec:
     for table in form.data_schema.tables:
         drop = removed.get(table.name, set())
         tables.append(
-            table.model_copy(update={"columns": [c for c in table.columns if c.name not in drop]})
+            table.model_copy(
+                update={
+                    "inputs": [c for c in table.inputs if c.name not in drop],
+                    "outputs": [c for c in table.outputs if c.name not in drop],
+                }
+            )
         )
     schema = form.data_schema.model_copy(update={"tables": tables})
     return form.model_copy(update={"data_schema": schema})
@@ -108,7 +113,7 @@ def _save(book: QuoteBook, identity: tuple[str, int], rows: Any, *, priced: bool
 
 
 def _mileages(store: Target) -> list[tuple[Any, ...]]:
-    return store.read("SELECT reg, mileage FROM vehicles ORDER BY quote_row")
+    return store.read("SELECT reg, mileage FROM vehicles ORDER BY row_number")
 
 
 def test_an_opened_quote_carries_its_kept_values_and_a_save_keeps_them(
@@ -171,39 +176,61 @@ def test_a_row_left_holding_only_kept_values_stays_a_row(
     assert _mileages(store) == [("REG1", 100), (None, 200), ("REG3", 300)]
 
 
-def _preset(form: FormSpec, table: str, column: str, options: list[str]) -> FormSpec:
-    """*form* with *table*'s *column* giving the table a row for each of *options*."""
-    tables = [
-        each.model_copy(
-            update={
-                "columns": [
-                    c.model_copy(update={"options": options, "row_per_value": True})
-                    if c.name == column
-                    else c
-                    for c in each.columns
-                ]
-            }
-        )
-        if each.name == table
-        else each
-        for each in form.data_schema.tables
-    ]
+def _by_reg(form: FormSpec, options: list[str]) -> FormSpec:
+    """*form* with vehicles keyed by an index of values, reg, a row for each of *options*,
+    in place of its numbered index."""
+    tables = []
+    for each in form.data_schema.tables:
+        if each.name == "vehicles":
+            inputs = [
+                c.model_copy(
+                    update={
+                        "index": "values",
+                        "options": options,
+                        "options_source": OptionsSource(file="regs.csv", column="reg"),
+                    }
+                )
+                if c.name == "reg"
+                else c
+                for c in each.inputs
+                if c.index != "numbered"
+            ]
+            each = each.model_copy(update={"inputs": inputs})
+        tables.append(each)
     return form.model_copy(
         update={"data_schema": form.data_schema.model_copy(update={"tables": tables})}
     )
 
 
-def test_a_row_moved_to_its_preset_place_takes_its_kept_value_with_it(
-    store: Target, before: tuple[str, int]
-) -> None:
-    """A column giving the table a row for each of its values puts the rows in the values'
-    order; each row's kept value follows it, not the place it was opened in."""
-    reordered = _preset(NEW, "vehicles", "reg", ["REG2", "REG1", "REG3"])
+def test_a_row_moved_to_its_values_place_takes_its_kept_value_with_it(store: Target) -> None:
+    """An index of values puts the rows in the values' order; each row's kept value follows
+    it, not the place it was opened in."""
+    keyed = _by_reg(FORM, ["REG1", "REG2", "REG3"])
+    store.make(keyed)
+    with _open(store, keyed) as book:
+        quote = book.create(
+            operation=op(),
+            actor=ANA,
+            at=book.now(),
+            reference="K-2",
+            values=values(vehicles=_vehicles("100", "200", "300")),
+        ).quote
+    kept = _without(keyed, {"vehicles": {"mileage"}})
+    store.make(kept, base=keyed)
+    # The values reordered: a rule, not the tables' structure.
+    reordered = _by_reg(kept, ["REG2", "REG1", "REG3"])
+    identity = (quote.reference, quote.option)
     with _open(store, reordered) as book:
-        saved = _save(book, before, book.read(*before).values, priced=False)
-        _save(book, before, saved.values, priced=False)
+        opened = book.read(*identity).values
+        assert [row["reg"] for row in opened["vehicles"]] == ["REG2", "REG1", "REG3"]
+        saved = _save(book, identity, opened, priced=False)
+        _save(book, identity, saved.values, priced=False)
 
-    assert _mileages(store) == [("REG2", 200), ("REG1", 100), ("REG3", 300)]
+    assert store.read("SELECT reg, mileage FROM vehicles ORDER BY reg") == [
+        ("REG1", 100),
+        ("REG2", 200),
+        ("REG3", 300),
+    ]
 
 
 def test_a_replayed_save_answers_the_rows_with_their_kept_values(

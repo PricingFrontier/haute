@@ -1,5 +1,5 @@
 {
-  "about": "Whether a quote has anything typed to price or save: a value in a column the sheets show, or in any column of quote_details but those the quote store keeps alone (its stage, who it is with, whether it is archived, when and by whom it was last changed and its Haute version), which no request holds, as a request holds the rest of quote_details whatever the sheets hide, other than a column the app sets (locked), whose value decides what the sheets show as any value does, the index, the column giving a table its rows, and a one-row table's column holding the default a new quote starts it with. Each case gives the values (rows by table name, cells by column name), the locked columns as [table, column], and whether the quote is typed. The form spells each column with what it sets, the rest as a new column's. frontend/src/utils/__tests__/sheetVisibility.test.ts holds quoteEligible to every case, and tests/test_workbench_tables.py holds the server's rule to them, the locked columns' values left out first as the app's routes leave out the details they set: one rule in two languages.",
+  "about": "Whether a quote has anything typed to price or save: a value in a column the sheets show, or in any column of quote_details but those the quote store keeps alone (its stage, who it is with, whether it is archived, when and by whom it was last changed and its Haute version), which no request holds, as a request holds the rest of quote_details whatever the sheets hide, other than a column the app sets (locked), whose value decides what the sheets show as any value does, the index, the column giving a table its rows, and a one-row table's column holding the default a new quote starts it with. Each case gives the values (rows by table name, cells by column name), the locked columns as [table, column], and whether the quote is typed. The form spells each table's inputs and outputs, each column with what it sets, the rest as a new column's. frontend/src/utils/__tests__/sheetVisibility.test.ts holds quoteEligible to every case, and tests/test_workbench_tables.py holds the server's rule to them, the locked columns' values left out first as the app's routes leave out the details they set: one rule in two languages.",
   "form": {
     "version": 1,
     "name": "typed",
@@ -7,9 +7,8 @@
       "tables": [
         {
           "name": "quote_details",
-          "role": "input",
           "rows": "one",
-          "columns": [
+          "inputs": [
             { "name": "quote_reference" },
             { "name": "quote_option", "type": "int" },
             { "name": "quote_name" },
@@ -26,40 +25,65 @@
             { "name": "modified_date", "type": "date" },
             { "name": "modified_by" },
             { "name": "haute_version" }
-          ]
+          ],
+          "outputs": []
         },
         {
           "name": "policy",
-          "role": "input",
           "rows": "one",
-          "columns": [
+          "inputs": [
             { "name": "state" },
             { "name": "limit", "type": "int", "default_value": "1000" },
             { "name": "flood_cover", "type": "bool" },
             { "name": "reference" }
-          ]
+          ],
+          "outputs": []
         },
         {
           "name": "flood",
-          "role": "input",
           "rows": "one",
-          "columns": [{ "name": "flood_si", "type": "float" }]
+          "inputs": [{ "name": "flood_si", "type": "float" }],
+          "outputs": []
         },
         {
           "name": "perils",
-          "role": "input",
           "rows": "many",
-          "columns": [
-            { "name": "line", "type": "int", "index": true },
-            { "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true },
+          "inputs": [
+            { "name": "peril", "options": ["AOP", "EQ"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
             { "name": "peril_limit", "type": "float" }
-          ]
+          ],
+          "outputs": []
         },
         {
           "name": "pricing",
-          "role": "output",
           "rows": "one",
-          "columns": [{ "name": "premium", "type": "float" }]
+          "inputs": [],
+          "outputs": [{ "name": "premium", "type": "float" }]
+        },
+        {
+          "name": "equipment",
+          "rows": "many",
+          "inputs": [
+            { "name": "row_number", "type": "int", "index": "numbered" },
+            { "name": "item" },
+            { "name": "value", "type": "float" }
+          ],
+          "outputs": [{ "name": "premium", "type": "float" }]
+        },
+        {
+          "name": "sites",
+          "rows": "many",
+          "inputs": [
+            { "name": "site_name", "type": "str", "index": "typed" },
+            { "name": "site_value", "type": "float" }
+          ],
+          "outputs": []
+        },
+        {
+          "name": "extras",
+          "rows": "one",
+          "inputs": [{ "name": "on_inputs" }, { "name": "on_outputs" }, { "name": "on_both" }, { "name": "on_count" }],
+          "outputs": []
         }
       ]
     },
@@ -76,6 +100,7 @@
             "widgets": [
               {
                 "id": "w_policy",
+                "name": "w_policy",
                 "x": 0,
                 "y": 0,
                 "w": 720,
@@ -91,6 +116,7 @@
               },
               {
                 "id": "w_flood",
+                "name": "w_flood",
                 "x": 0,
                 "y": 160,
                 "w": 720,
@@ -107,6 +133,7 @@
               },
               {
                 "id": "w_perils",
+                "name": "w_perils",
                 "x": 0,
                 "y": 320,
                 "w": 720,
@@ -120,6 +147,7 @@
               },
               {
                 "id": "w_made",
+                "name": "w_made",
                 "x": 0,
                 "y": 540,
                 "w": 720,
@@ -129,6 +157,96 @@
                 "show_when": {
                   "match": "all",
                   "conditions": [{ "table": "quote_details", "column": "created_by", "op": "equals", "values": ["ana@example.com"], "field": null, "days": 0 }]
+                }
+              },
+              {
+                "id": "w_equipment",
+                "name": "w_equipment",
+                "x": 760,
+                "y": 0,
+                "w": 480,
+                "h": 80,
+                "type": "tableInput",
+                "fields": [{ "table": "equipment", "column": "item" }, { "table": "equipment", "column": "value" }, { "table": "equipment", "column": "premium" }]
+              },
+              {
+                "id": "w_sites_index",
+                "name": "w_sites_index",
+                "x": 760,
+                "y": 500,
+                "w": 480,
+                "h": 80,
+                "type": "tableInput",
+                "fields": [{ "table": "sites", "column": "site_name" }]
+              },
+              {
+                "id": "w_sites_value",
+                "name": "w_sites_value",
+                "x": 760,
+                "y": 560,
+                "w": 480,
+                "h": 80,
+                "type": "tableInput",
+                "fields": [{ "table": "sites", "column": "site_value" }],
+                "show_when": {
+                  "match": "all",
+                  "conditions": [{ "table": "policy", "column": "flood_cover", "op": "ticked", "values": [], "field": null, "days": 0 }]
+                }
+              },
+              {
+                "id": "w_on_inputs",
+                "name": "w_on_inputs",
+                "x": 760,
+                "y": 100,
+                "w": 480,
+                "h": 80,
+                "type": "collection",
+                "fields": [{ "table": "extras", "column": "on_inputs" }],
+                "show_when": {
+                  "match": "all",
+                  "conditions": [{ "table": "equipment", "rows": "any", "where": [{ "column": "value", "op": "above", "values": ["1000"], "field": null, "days": 0 }] }]
+                }
+              },
+              {
+                "id": "w_on_outputs",
+                "name": "w_on_outputs",
+                "x": 760,
+                "y": 200,
+                "w": 480,
+                "h": 80,
+                "type": "collection",
+                "fields": [{ "table": "extras", "column": "on_outputs" }],
+                "show_when": {
+                  "match": "all",
+                  "conditions": [{ "table": "equipment", "rows": "any", "where": [{ "column": "premium", "op": "above", "values": ["0"], "field": null, "days": 0 }] }]
+                }
+              },
+              {
+                "id": "w_on_both",
+                "name": "w_on_both",
+                "x": 760,
+                "y": 300,
+                "w": 480,
+                "h": 80,
+                "type": "collection",
+                "fields": [{ "table": "extras", "column": "on_both" }],
+                "show_when": {
+                  "match": "all",
+                  "conditions": [{ "table": "equipment", "rows": "any", "where": [{ "column": "value", "op": "above", "values": ["1000"], "field": null, "days": 0 }, { "column": "premium", "op": "above", "values": ["0"], "field": null, "days": 0 }] }]
+                }
+              },
+              {
+                "id": "w_on_count",
+                "name": "w_on_count",
+                "x": 760,
+                "y": 400,
+                "w": 480,
+                "h": 80,
+                "type": "collection",
+                "fields": [{ "table": "extras", "column": "on_count" }],
+                "show_when": {
+                  "match": "all",
+                  "conditions": [{ "table": "equipment", "where": [], "op": "at_least", "count": 1 }]
                 }
               }
             ]
@@ -158,6 +276,61 @@
     { "name": "a quote name, which a request holds whatever the sheets hide", "values": { "quote_details": [{ "quote_name": "Fleet" }] }, "locked": [], "typed": true },
     { "name": "a stage the sheets hide, set by the app", "values": { "quote_details": [{ "stage": "draft" }] }, "locked": [["quote_details", "stage"]], "typed": false },
     { "name": "a value shown by a detail the app sets", "values": { "quote_details": [{ "created_by": "ana@example.com" }], "flood": [{ "flood_si": "5000" }] }, "locked": [["quote_details", "created_by"]], "typed": true },
-    { "name": "a value a detail the app sets leaves hidden", "values": { "quote_details": [{ "created_by": "jo@example.com" }], "flood": [{ "flood_si": "5000" }] }, "locked": [["quote_details", "created_by"]], "typed": false }
+    { "name": "a value a detail the app sets leaves hidden", "values": { "quote_details": [{ "created_by": "jo@example.com" }], "flood": [{ "flood_si": "5000" }] }, "locked": [["quote_details", "created_by"]], "typed": false },
+    { "name": "a value typed into the inputs of a table of both blocks", "values": { "equipment": [{ "item": "Crane" }] }, "locked": [], "typed": true },
+    { "name": "a value under an output's name, which nothing types", "values": { "equipment": [{ "premium": "100" }] }, "locked": [], "typed": false },
+    { "name": "a value a condition on a table's inputs hides, nothing typed there", "values": { "extras": [{ "on_inputs": "x" }] }, "locked": [], "typed": false },
+    { "name": "a value a condition on a table's outputs leaves shown: the price never decides what is priced", "values": { "extras": [{ "on_outputs": "x" }] }, "locked": [], "typed": true },
+    { "name": "a value a condition naming inputs and outputs hides: it never holds", "values": { "extras": [{ "on_both": "x" }] }, "locked": [], "typed": false },
+    { "name": "a value a count without tests hides while its table has no typed row", "values": { "extras": [{ "on_count": "x" }] }, "locked": [], "typed": false },
+    {
+      "name": "a typed index alone while every ordinary input in its table is hidden",
+      "values": { "sites": [{ "site_name": "Leeds" }] },
+      "locked": [],
+      "typed": true,
+      "index_problems": []
+    },
+    {
+      "name": "duplicate typed indexes while every ordinary input in their table is hidden",
+      "values": { "policy": [{ "state": "NY" }], "sites": [{ "site_name": "Leeds" }, { "site_name": "Leeds" }] },
+      "locked": [],
+      "typed": true,
+      "index_problems": ["sites's rows 1 and 2 hold site_name \"Leeds\"; each row's site_name is its own"]
+    },
+    {
+      "name": "a blank typed index beside an ordinary input that is hidden",
+      "values": { "sites": [{ "site_value": "100" }] },
+      "locked": [],
+      "typed": false,
+      "index_problems": []
+    },
+    {
+      "name": "a typed index of 183 supplementary Unicode characters",
+      "values": {
+        "sites": [
+          {
+            "site_name": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+          }
+        ]
+      },
+      "locked": [],
+      "typed": true,
+      "index_problems": []
+    },
+    {
+      "name": "a typed index of 184 supplementary Unicode characters",
+      "values": {
+        "sites": [
+          {
+            "site_name": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+          }
+        ]
+      },
+      "locked": [],
+      "typed": true,
+      "index_problems": [
+        "sites's row 1 holds a site_name longer than 366 UTF-16 code units"
+      ]
+    }
   ]
 }

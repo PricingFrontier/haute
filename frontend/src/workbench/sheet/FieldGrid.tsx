@@ -1,6 +1,8 @@
 /** A Table on a sheet: its fields as a grid of rows, or on its side, with its groups, drawn as its look says (specs/workbench). */
 import { useState, type CSSProperties, type MouseEvent } from "react"
-import { cellKey, formattedNumber, presetColumn } from "../../utils/sheetValues"
+import { isOutputColumn, tableIndex } from "../../utils/quoteIdentity"
+import { inputRowLayout } from "../../utils/sheetRowAlignment"
+import { cellKey, formattedNumber, valuesIndex } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
 import {
   answeredOutputs,
@@ -69,10 +71,11 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * shows that table's one value on every row. While its input tables hold no rows it shows
  * `rows` empty ones, which the first value typed into it keeps; once they hold rows it
  * shows every one, so rows can be deleted below `rows`, deleting the last starting it
- * again. An output column shows what pricing gave the row keyed like each grid row,
- * through the first input table the grid shows that is keyed alike, dimmed while the price
- * is for other values. Showing output columns alone, it shows `rows` rows of dashes until
- * there is a price, then a row for each of the first output table's answer, the others'
+ * again. An output column shows what pricing gave the row keyed like each grid row, by key
+ * and never by place: an output of a table whose inputs it shows through that table's own
+ * rows, any other through the first input table the grid shows that is keyed alike, dimmed
+ * while the price is for other values. Showing output columns alone, it shows `rows` rows of
+ * dashes until there is a price, then a row for each of its first output field's table's answer, the others'
  * matched by its keys (`answeredOutputs`), as a Chart of them plots them, none added or
  * deleted. Its options say whether the rows are numbered, how tall they are,
  * which lines it draws, whether every other row is shaded, whether its header's labels are
@@ -124,38 +127,68 @@ export function FieldGrid({
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = gridInputTables(rowFields)
   const inputTables = inputs.map((table) => table.name)
-  // The rows a column gives each table that has them, a row for each value: a grid showing one
-  // shows every row its tables hold, none added or deleted.
+  // The rows an index of values gives each table that has one, a row for each value: a grid
+  // showing one shows every row its tables hold, none added or deleted.
   const givenRows = new Map(
     inputs.flatMap((table) => {
-      const column = presetColumn(table)
+      const column = valuesIndex(table)
       return column === null ? [] : [[table.name, column.options.length] as const]
     }),
   )
   const given = givenRows.size > 0
-  const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  // Each many-row output table of every field, whatever hides; showing no input table, their answer gives its rows once priced.
-  const outputs = rowFields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
+  const layout = inputRowLayout(inputs, held)
+  const holding = layout.count
+  const sourceAt = (table: string, row: number) => layout.rows.get(table)?.[row]
+  // Each many-row table of every output field, whatever hides; showing no input table, their answer gives its rows once priced.
+  const outputs = [
+    ...new Map(
+      rowFields.flatMap(({ found }) => (found !== null && isOutputColumn(found.table, found.column) && found.table.rows === "many" ? [[found.table.name, found.table] as const] : [])),
+    ).values(),
+  ]
   const answered = inputs.length === 0 ? answeredOutputs(outputs, price) : null
   const answer = outputs.length === 0 ? undefined : answered?.get(outputs[0].name)
   const count =
     answer !== undefined ? answer.length : given ? holding : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
   // A table a column gives its rows has no cells past them, beside a table whose rows differ.
-  const past = (found: NonNullable<Found>, row: number): boolean => row >= (givenRows.get(found.table.name) ?? Infinity)
+  const past = (found: NonNullable<Found>, row: number): boolean => givenRows.has(found.table.name) && sourceAt(found.table.name, row) === undefined
   // Each input table's rows as the grid shows them.
   const shownRows = (id: string) => padRows(held[id] ?? [], count)
   // Its rows as shown are written whole until its tables hold rows, and always while a column gives them.
   const setValue = (tableId: string, row: number, columnId: string, value: SampleValue) => {
-    if (!inputTables.includes(tableId) || (holding > 0 && !given)) setCell(tableId, row, columnId, value)
-    else setRows(Object.fromEntries(inputTables.map((id) => [id, id === tableId ? withCell(shownRows(id), row, columnId, value) : shownRows(id)])))
+    if (!inputTables.includes(tableId)) {
+      setCell(tableId, row, columnId, value)
+    } else if (holding === 0) {
+      setRows(Object.fromEntries(inputTables.map((id) => [id, id === tableId ? withCell(shownRows(id), row, columnId, value) : shownRows(id)])))
+    } else {
+      const source = sourceAt(tableId, row)
+      if (source !== undefined) {
+        if (givenRows.has(tableId)) setRows({ [tableId]: withCell(held[tableId] ?? [], source, columnId, value) })
+        else setCell(tableId, source, columnId, value)
+      } else {
+        const own = held[tableId] ?? []
+        const target = own.length + Math.max(0, row - holding)
+        const table = inputs.find((candidate) => candidate.name === tableId)!
+        const index = tableIndex(table)!
+        const key = layout.indexes.get(tableId)?.[row]
+        const seeded = key === undefined ? own : withCell(own, target, index.name, key)
+        setRows({ [tableId]: withCell(seeded, target, columnId, value) })
+      }
+    }
   }
   // Empty rows put in at `at` in every input table shown, as one edit.
-  const insertRows = (at: number, added: number) =>
-    setRows(Object.fromEntries(inputTables.map((id) => [id, [...shownRows(id).slice(0, at), ...padRows([], added), ...shownRows(id).slice(at)]])))
-  const deleteRow = (row: number) => setRows(Object.fromEntries(inputTables.map((id) => [id, shownRows(id).filter((_, i) => i !== row)])))
+  const insertRows = (at: number, added: number) => setRows(Object.fromEntries(inputTables.map((id) => {
+    const own = holding === 0 ? shownRows(id) : held[id] ?? []
+    const source = holding === 0 ? at : layout.rows.get(id)?.slice(at).find((row) => row !== undefined) ?? own.length
+    return [id, [...own.slice(0, source), ...padRows([], added), ...own.slice(source)]]
+  })))
+  const deleteRow = (row: number) => setRows(Object.fromEntries(inputTables.map((id) => {
+    const own = holding === 0 ? shownRows(id) : held[id] ?? []
+    const source = holding === 0 ? row : sourceAt(id, row)
+    return [id, own.filter((_, index) => index !== source)]
+  })))
   const stale = price !== null && price.basis !== basis
   // Each many-row output table's rows lined up with the grid's.
-  const matched = answered ?? linedUpOutputs(inputs, outputs, held, count, price, quoted)
+  const matched = answered ?? linedUpOutputs(inputs, outputs, held, count, price, quoted, layout.rows)
   const pricedAt = (found: NonNullable<Found>, row: number): unknown =>
     found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.name)?.[row]?.[found.column.name]
 
@@ -184,13 +217,13 @@ export function FieldGrid({
   // without gridlines, or at the grid's left edge.
   const ruleBefore = (found: Found, position: number): string | undefined => {
     if (gridlines === "none" || (position === 0 && !numbered)) return undefined
-    if (found?.table.role === "output") return outputLine
+    if (found !== null && isOutputColumn(found.table, found.column)) return outputLine
     return gridlines === "all" ? gridLine : undefined
   }
   // Transposed, the line above a field's line: an output's, but for the first, under the
   // header or at the grid's top edge; the lines between fields are the rows' as drawn.
   const ruleAbove = (found: Found, position: number): string | undefined =>
-    gridlines === "none" || position === 0 || found?.table.role !== "output" ? undefined : outputLine
+    gridlines === "none" || position === 0 || found === null || !isOutputColumn(found.table, found.column) ? undefined : outputLine
   // Transposed, the line before a row's column in a full grid, but for the first, after the labels.
   const columnLine = (row: number): string | undefined => (gridlines === "all" && row > 0 ? gridLine : undefined)
   const rowLine = gridlines === "none" ? undefined : gridLine
@@ -252,9 +285,10 @@ export function FieldGrid({
     const text = valueText(look)
     const menuHere = transposed ? menuOn(row) : undefined
     const fade = fadedOf(key) ? HIDDEN_OPACITY : 1
-    if (found !== null && presetColumn(found.table)?.name === found.column.name) {
-      // The column giving its table's rows shows each row's value, and takes no typing.
-      const value = held[found.table.name]?.[row]?.[found.column.name]
+    if (found !== null && valuesIndex(found.table)?.name === found.column.name) {
+      // An index of values shows each row's value, and takes no typing.
+      const source = sourceAt(found.table.name, row)
+      const value = source === undefined ? undefined : held[found.table.name]?.[source]?.[found.column.name]
       return (
         <td
           key={transposed ? row : key}
@@ -272,8 +306,8 @@ export function FieldGrid({
         </td>
       )
     }
-    if (fillable(found) && !past(found, row)) {
-      const at = oneRow(found) ? 0 : row
+    if (found !== null && fillable(found) && !past(found, row)) {
+      const at = oneRow(found) ? 0 : sourceAt(found.table.name, row)
       return (
         <td
           key={transposed ? row : key}
@@ -290,20 +324,20 @@ export function FieldGrid({
         >
           <Cell
             found={found}
-            value={held[found.table.name]?.[at]?.[found.column.name]}
-            onChange={(value) => setValue(found.table.name, at, found.column.name, value)}
+            value={at === undefined ? undefined : held[found.table.name]?.[at]?.[found.column.name]}
+            onChange={(value) => setValue(found.table.name, oneRow(found) ? 0 : row, found.column.name, value)}
             label={`${fieldLabel(found)} row ${row + 1}`}
             height={height}
             box={null}
             font={look.font_color ?? colours.font}
             textStyle={text}
-            problem={problems[cellKey(found.table.name, at, found.column.name)] ?? null}
+            problem={at === undefined ? null : problems[cellKey(found.table.name, at, found.column.name)] ?? null}
             disabled={readOnly || locked.has(columnKey(found.table.name, found.column.name))}
           />
         </td>
       )
     }
-    const output = found !== null && found.table.role === "output"
+    const output = found !== null && isOutputColumn(found.table, found.column)
     const priced = output ? pricedAt(found, row) : undefined
     return (
       <td
@@ -322,7 +356,8 @@ export function FieldGrid({
         }}
         onContextMenu={menuHere}
       >
-        {found?.column.index ? (past(found, row) ? null : row + 1) : output ? shown(priced, found) : null}
+        {/* A numbered index of an input table is the grid's row number; a table of outputs alone's index is its answer row's, as its other outputs are. */}
+        {output ? shown(priced, found) : found?.column.index === "numbered" ? (past(found, row) ? null : row + 1) : null}
       </td>
     )
   }

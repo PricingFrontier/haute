@@ -2514,7 +2514,7 @@ class TestFileWatcher:
             # Once for a batch, however many files the save wrote or deleted.
             (
                 "enabled = true",
-                ["workbench/schema/policy.json", "workbench/sheets/sheet_1.layout.json"],
+                ["workbench/schema/policy.json", "workbench/components/layers.json"],
                 ["workbench_form_changed"],
                 False,
             ),

@@ -16,6 +16,7 @@ import {
   fieldTitle,
   fillable,
   headerText,
+  isOutputField,
   labelFont,
   looksByKey,
   shown,
@@ -106,7 +107,7 @@ export function FieldBoxes({
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
       {fields.map(({ key, found }, index) => {
-        const priced = found !== null && found.table.role === "output" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : undefined
+        const priced = found !== null && isOutputField(found) ? price?.tables[found.table.name]?.[0]?.[found.column.name] : undefined
         const look = lookOf(key)
         const fill = look.header_color ?? options.header_color
         // Where its label and its value sit across them: as its own look says, else as the Collection's does.
@@ -150,7 +151,7 @@ export function FieldBoxes({
                 </span>
                 {mark !== undefined && <ShowWhenMark hidden={mark.hidden} title={mark.conditions} className="ml-1" />}
               </span>
-              {fillable(found) ? (
+              {found !== null && fillable(found) ? (
                 <div className="pointer-events-auto" style={boxPlace} onPointerDown={typeHere}>
                   <Cell
                     found={found}
@@ -180,7 +181,7 @@ export function FieldBoxes({
                     opacity: stale ? 0.5 : 1,
                   }}
                 >
-                  <span className="truncate">{found?.column.index ? "1" : shown(priced, found)}</span>
+                  <span className="truncate">{found?.column.index === "numbered" && !isOutputField(found) ? "1" : shown(priced, found)}</span>
                 </div>
               )}
             </div>

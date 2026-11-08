@@ -25,8 +25,9 @@ import type { FormSpec, WorkbenchAppQuoteActivityResponse, WorkbenchAppQuoteChan
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type QuotePricer } from "../../stores/useWorkbenchPricingStore"
-import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
+import { detailsTable, sectionedForm, sheetForm } from "../../workbench/__tests__/fixtures"
 import { basisOf } from "../../utils/sheetVisibility"
+import { setIndexKind } from "../../utils/workbenchForm"
 import { draftKey, readDraft, valuesKey, writeDraft, type PendingWrite } from "../quoteValues"
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore, { openDraftKey, readOnlyReason } from "../useOpenQuoteStore"
@@ -128,6 +129,28 @@ describe("useOpenQuoteStore", () => {
     expect(store().quote?.version).toBe(2)
   })
 
+  it("does not send a save while a typed index is duplicated, then saves the corrected values", async () => {
+    form = setIndexKind(form, "equipment", "typed")
+    useAppStore.setState({ form })
+    useWorkbenchFormStore.setState({ form })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2 }))
+    await store().openQuote("Q-000001", 1)
+    preview().setRows({ equipment: [{ row_number: "1", item: "Crane" }, { row_number: "1", item: "Truck" }] })
+
+    expect(await store().save()).toBeNull()
+    expect(saveAppQuote).not.toHaveBeenCalled()
+    expect(store().base).toBe(1)
+
+    preview().setCell("equipment", 1, "row_number", "2")
+    await store().save()
+    expect(saveAppQuote).toHaveBeenCalledOnce()
+    expect(vi.mocked(saveAppQuote).mock.calls[0][2].values.equipment).toEqual([
+      { row_number: "1", item: "Crane" }, { row_number: "2", item: "Truck" },
+    ])
+    expect(store().base).toBe(2)
+  })
+
   it("saves a quote unpriced when its price is for other values, and says when the server's price moved", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2, priced_release: null }, { moved: true }))
@@ -156,6 +179,25 @@ describe("useOpenQuoteStore", () => {
     expect(store().baseline).not.toBe(valuesKey(preview().quote))
     // What was typed during the save is kept in this browser over the version it saved.
     expect(readDraft(KEY)).toMatchObject({ values: typed("CA"), version: 2 })
+  })
+
+  it("keeps what was typed into what the sheets hide through a save, which the store keeps nothing of", async () => {
+    form = sectionedForm()
+    useAppStore.setState({ form })
+    useWorkbenchFormStore.setState({ form })
+    const equipment = [{ item: "Crane", value: "10" }, { item: "Truck", value: "20" }]
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ state: "NY", cover: true, year: "1990" }], equipment } }))
+    await store().openQuote("Q-000001", 1)
+
+    // Unticked, the cover hides the year and the equipment, which the store saves blank.
+    preview().setCell("policy", 0, "cover", "")
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2 }, { values: { policy: [{ state: "NY" }] } }))
+    await store().save()
+
+    expect(preview().quote).toEqual({ policy: [{ state: "NY", year: "1990" }], equipment })
+    expect(store().baseline).toBe(valuesKey(preview().quote))
+    preview().setCell("policy", 0, "cover", true)
+    expect(preview().quote).toEqual({ policy: [{ state: "NY", cover: true, year: "1990" }], equipment })
   })
 
   it("saves once the quote's pricing settles, keeping the price it settles on", async () => {

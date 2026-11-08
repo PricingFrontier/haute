@@ -38,6 +38,13 @@ export interface MovingSection {
 /** A Table's or a Collection's properties pane: the data it shows, or how it shows it. */
 export type WidgetPane = "config" | "display"
 
+/** The schema row's open configuration or database details, never both. */
+export interface SchemaDetails {
+  table: string
+  column: string
+  view: "config" | "database"
+}
+
 /** A component copied, as it was then, and the section it was in. */
 export interface Copied {
   widget: Widget
@@ -50,10 +57,10 @@ export const MIN_ZOOM = 0.25
 export const MAX_ZOOM = 2
 const DEFAULT_PANEL_WIDTH = 360
 /**
- * The schema's pane with its fields at full stretch: the schema editor's 640px beside a
+ * The schema's pane with its fields at full stretch: the schema editor's 896px beside a
  * 10px scrollbar and the pane's 4px drag handle. It opens at this width.
  */
-export const SCHEMA_FULL_WIDTH = 640 + 10 + 4
+export const SCHEMA_FULL_WIDTH = 896 + 10 + 4
 
 /** The sheet `pageId` names, or the first when it names none: none chosen yet, or one removed. */
 export function activePage(form: FormSpec, pageId: string | null): Page {
@@ -109,11 +116,11 @@ interface WorkbenchViewState {
   schemaWidth: number
   /**
    * The schema's pane as it was left, so it opens again as it was closed: the tables shown
-   * collapsed, by name, the column whose label and rules are open, how far it is scrolled and
+   * collapsed, by name, the column and detail view open, how far it is scrolled and
    * the text filtering its columns, "" for none.
    */
   schemaCollapsed: ReadonlySet<string>
-  schemaDetails: string | null
+  schemaDetails: SchemaDetails | null
   schemaScroll: number
   schemaSearch: string
   /** The pane each component's properties panel last showed, by component id; Config until another is chosen. */
@@ -150,7 +157,7 @@ interface WorkbenchViewState {
   setPanelWidth: (width: number) => void
   setSchemaWidth: (width: number) => void
   toggleSchemaCollapsed: (table: string) => void
-  setSchemaDetails: (column: string | null) => void
+  setSchemaDetails: (details: SchemaDetails | null) => void
   /** A table renamed (READ-23): whether it is collapsed, and its column whose details are open, follow it. */
   schemaTableRenamed: (from: string, to: string) => void
   /** A column of `table` renamed: its open details follow it. */
@@ -229,11 +236,12 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
       const schemaCollapsed = new Set(s.schemaCollapsed)
       if (schemaCollapsed.delete(from)) schemaCollapsed.add(to)
       const details = s.schemaDetails
-      const schemaDetails = details !== null && details.startsWith(`${from}:`) ? `${to}:${details.slice(from.length + 1)}` : details
+      const schemaDetails = details?.table === from ? { ...details, table: to } : details
       return { schemaCollapsed, schemaDetails }
     }),
   schemaColumnRenamed: (table, from, to) =>
-    set((s) => (s.schemaDetails === `${table}:${from}` ? { schemaDetails: `${table}:${to}` } : {})),
+    set(({ schemaDetails }) => (schemaDetails?.table === table && schemaDetails.column === from
+      ? { schemaDetails: { ...schemaDetails, column: to } } : {})),
   setSchemaScroll: (schemaScroll) => set({ schemaScroll }),
   setSchemaSearch: (schemaSearch) => set({ schemaSearch }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),

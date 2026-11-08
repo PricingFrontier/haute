@@ -63,5 +63,10 @@ export default defineConfig({
       grep: /@smoke/,
       use: { ...devices["Desktop Firefox"] },
     },
+    {
+      name: "webkit-schema",
+      grep: /opens schema SQL beside Refresh/,
+      use: { ...devices["Desktop Safari"] },
+    },
   ],
 })

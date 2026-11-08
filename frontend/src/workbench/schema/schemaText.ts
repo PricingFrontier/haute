@@ -1,8 +1,10 @@
 /** What the schema editor's parts share: their classes, the form as it is now, and how a column's rules and its uses are said (specs/workbench). */
 import { type FocusEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import { INPUT_STYLE } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { formattedNumber, presetColumn } from "../../utils/sheetValues"
+import { IDENTITY_NAMES, isOutputColumn, QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, tableColumns } from "../../utils/quoteIdentity"
+import { formattedNumber } from "../../utils/sheetValues"
 import { isNumeric } from "../columnTypes"
 
 /** A number format's name in a column's summary: as Format names it, a currency by its sign and code. */
@@ -16,6 +18,20 @@ const FORMAT_NAMES: Readonly<Record<SchemaColumn["number_format"], string>> = {
 }
 
 export const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
+
+/** A column's name box: a set width, its summary to its right, shrinking only as the pane narrows. */
+export const COLUMN_NAME_WIDTH = "w-96 min-w-0"
+
+/** A locked column's name box: a field's border, on a grey lighter than the pane's. */
+export const LOCKED_FIELD_STYLE = { ...INPUT_STYLE, background: "var(--bg-hover)" }
+
+/** Schema rows users need to build the form; managed quote metadata stays in storage. */
+export const schemaColumns = (table: SchemaTable): SchemaColumn[] => tableColumns(table).filter((column) =>
+  table.name !== QUOTE_DETAILS_NAME || !QUOTE_DETAILS_MANAGED.has(column.name) || IDENTITY_NAMES.has(column.name),
+)
+
+/** The box a column's type marker sits in. */
+export const MARKER_STYLE = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
 
 export const HOVER_ONLY = "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
 
@@ -36,11 +52,11 @@ const shown = (column: SchemaColumn, value: number | string): string => formatte
 
 /**
  * A number column's format in a few words: its name, its decimal places when chosen and
- * "no separators" when they are off; nothing for the index, a column of another type, or
- * General with automatic decimals, which shows numbers as typed.
+ * "no separators" when they are off; nothing for a numbered index, a column of another type,
+ * or General with automatic decimals, which shows numbers as typed.
  */
 export function formatSummary(column: SchemaColumn): string {
-  if (!isNumeric(column.type) || column.index) return ""
+  if (!isNumeric(column.type) || column.index === "numbered") return ""
   const { number_format: format, decimal_places: places } = column
   if (format === "general" && places === null) return ""
   const parts = [FORMAT_NAMES[format]]
@@ -52,7 +68,7 @@ export function formatSummary(column: SchemaColumn): string {
 
 /**
  * An input column's rules in a few words: required, its range and its default in its
- * format, its allowed values and whether it gives its table's rows.
+ * format, its allowed values and, for an index of values, that they give its table's rows.
  */
 function rulesParts(table: SchemaTable, column: SchemaColumn): string[] {
   const parts: string[] = []
@@ -70,17 +86,17 @@ function rulesParts(table: SchemaTable, column: SchemaColumn): string[] {
     const values = `${column.options.length} ${column.options.length === 1 ? "value" : "values"}`
     parts.push(column.options_source === null ? values : `${values} from ${column.options_source.file}`)
   }
-  if (presetColumn(table)?.name === column.name) parts.push("a row each")
+  if (column.index === "values") parts.push("a row each")
   return parts
 }
 
 /**
- * A column in a few words, shown under its name, "" when there is nothing to say: an input
- * column's rules, or whether an output column is required, then, in any table, a number
- * column's format.
+ * A column in a few words, shown under its name, "" when there is nothing to say: an input's
+ * rules, or whether an output is required, an index of values' values among a table of
+ * outputs alone's outputs too, then, for any column, a number column's format.
  */
 export function columnSummary(table: SchemaTable, column: SchemaColumn): string {
-  const parts = table.role === "input" ? rulesParts(table, column) : column.required ? ["required"] : []
+  const parts = isOutputColumn(table, column) && column.index === null ? (column.required ? ["required"] : []) : rulesParts(table, column)
   const format = formatSummary(column)
   if (format !== "") parts.push(format)
   return parts.join(" · ")

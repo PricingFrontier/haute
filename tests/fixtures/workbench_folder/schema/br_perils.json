@@ -1,8 +1,7 @@
 {
-  "role": "input",
   "rows": "many",
-  "columns": [
-    {"name": "peril", "type": "str", "key": true, "options": ["Fire", "Flood"], "row_per_value": true},
+  "inputs": [
+    {"name": "peril", "type": "str", "options_source": {"file": "perils.csv", "column": "peril"}, "index": "values"},
     {"name": "rate", "type": "float"}
   ]
 }

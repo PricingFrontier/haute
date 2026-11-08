@@ -14,6 +14,7 @@ import { columnMatches } from "../schema/schemaText"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { WIDGET_KINDS } from "../widgetKinds"
 import { CollectionLook } from "./CollectionLook"
+import { ComponentNameField } from "./ComponentNameField"
 import { FieldOrder } from "./FieldOrder"
 import { Section } from "./Section"
 import { TableFields } from "./TableFields"
@@ -74,6 +75,7 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
         aria-labelledby={paned ? `component-${pane}-tab` : undefined}
         className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs"
       >
+        {shows("config") && <ComponentNameField form={form} widget={widget} />}
         {shows("display") && (
           <Section title="Title">
             <CommittedTextField

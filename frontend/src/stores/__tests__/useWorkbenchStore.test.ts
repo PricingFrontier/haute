@@ -82,7 +82,10 @@ describe("useWorkbenchStore", () => {
 })
 
 describe("refreshTables", () => {
-  const tables = (name: string) => [{ name, rows: "one" as const, columns: [] }]
+  /** A table's side as the route answers it: its port is the table's name and its side. */
+  const sideOf = (name: string, side: "input" | "output", rows: "one" | "many" = "one", columns: { name: string; type: string }[] = []) =>
+    ({ name, side, port: `${name}_${side}`, rows, columns, key: null, null_key: null, index_kind: null, index_values: [] })
+  const tables = (name: string, side: "input" | "output" = "input") => [sideOf(name, side)]
 
   /** Answers each fetch when the test says so, in whatever order it says. */
   function heldResponses() {
@@ -170,14 +173,14 @@ describe("refreshTables", () => {
     const held = heldResponses()
     const store = useWorkbenchStore.getState
     const sample = { policy: { state: "NY" } }
-    const kept = { quote_details: [{ name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" }], t_items: [{ name: "quote_row", kind: "int" }] }
+    const kept = { quote_details: [{ name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" }] }
 
     const fetch = store().refreshTables()
-    held.answer(0, { tables: tables("policy"), sample, response_tables: tables("pricing_output"), store_columns: kept })
+    held.answer(0, { tables: tables("policy"), sample, response_tables: tables("pricing", "output"), store_columns: kept })
 
     await vi.waitFor(() => expect(store().tables?.fetch).toBe(fetch))
     expect(store().tables?.sample).toEqual(sample)
-    expect(store().tables?.responseTables).toEqual(tables("pricing_output"))
+    expect(store().tables?.responseTables).toEqual(tables("pricing", "output"))
     expect(store().storeColumns).toEqual(kept)
   })
 
@@ -192,20 +195,20 @@ describe("refreshTables", () => {
       await vi.waitFor(() => expect(store().tables?.fetch).toBe(fetch))
     }
     const columns = [{ name: "state", type: "str" }, { name: "exposure", type: "float" }]
-    await fetchedAs(0, { tables: [{ name: "policy", rows: "one", columns }], sample: {}, response_tables: [], store_columns: {} })
+    await fetchedAs(0, { tables: [sideOf("policy", "input", "one", columns)], sample: {}, response_tables: [], store_columns: {} })
     const first = epoch()
     const structural = structure()
 
     // The same, its keys written in another order.
-    await fetchedAs(1, { store_columns: {}, response_tables: [], sample: {}, tables: [{ columns, rows: "one", name: "policy" }] })
+    await fetchedAs(1, { store_columns: {}, response_tables: [], sample: {}, tables: [{ null_key: null, index_kind: null, index_values: [], key: null, columns, rows: "one", port: "policy_input", side: "input", name: "policy" }] })
     expect(epoch()).toBe(first)
     expect(structure()).toBe(structural)
 
-    await fetchedAs(2, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: [], store_columns: {} })
+    await fetchedAs(2, { tables: [sideOf("policy", "input", "one", columns)], sample: { policy: { state: "NY" } }, response_tables: [], store_columns: {} })
     expect(epoch()).toBe(first + 1)
-    await fetchedAs(3, { tables: [{ name: "policy", rows: "one", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums"), store_columns: {} })
+    await fetchedAs(3, { tables: [sideOf("policy", "input", "one", columns)], sample: { policy: { state: "NY" } }, response_tables: tables("premiums", "output"), store_columns: {} })
     expect(epoch()).toBe(first + 2)
-    await fetchedAs(4, { tables: [{ name: "policy", rows: "many", columns }], sample: { policy: { state: "NY" } }, response_tables: tables("premiums"), store_columns: {} })
+    await fetchedAs(4, { tables: [sideOf("policy", "input", "many", columns)], sample: { policy: { state: "NY" } }, response_tables: tables("premiums", "output"), store_columns: {} })
     expect(epoch()).toBe(first + 3)
     // Each change is the graph's structure as every preview, recorded column and job reads it.
     expect(structure()).toBe(structural + 3)

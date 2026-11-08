@@ -1,0 +1,348 @@
+{
+  "about": "Whether a pricing's answer fits the rows of a many-row output side's table: each case's table (a WorkbenchTable's output side, its key the index; a table with inputs carrying its index, a table of outputs alone saying how its index gets its values), the index value of each answer row (null for none), the index value of each of the request's rows (a table with inputs'), and the message, or null when the answer fits. frontend/src/utils/__tests__/workbenchTables.test.ts holds outputMisfit to every case and tests/test_workbench_tables.py holds output_misfit to them: one rule in two languages.",
+  "cases": [
+    {
+      "name": "fitting: every answer row holds a key of a row priced, once, in any order, a row answered nothing left out",
+      "table": {
+        "name": "ce_equipment",
+        "side": "output",
+        "port": "ce_equipment_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "item_number", "type": "int" },
+          { "name": "final_premium", "type": "float" }
+        ],
+        "key": "item_number",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": [3, 1],
+      "request": [1, 2, 3],
+      "message": null
+    },
+    {
+      "name": "rows with no key",
+      "table": {
+        "name": "ce_equipment",
+        "side": "output",
+        "port": "ce_equipment_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "item_number", "type": "int" },
+          { "name": "final_premium", "type": "float" }
+        ],
+        "key": "item_number",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": [1, null, 2, null],
+      "request": [1, 2],
+      "message": "ce_equipment_output does not fit ce_equipment's rows: 2 rows have no item_number."
+    },
+    {
+      "name": "one row with no key",
+      "table": {
+        "name": "ce_equipment",
+        "side": "output",
+        "port": "ce_equipment_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "item_number", "type": "int" },
+          { "name": "final_premium", "type": "float" }
+        ],
+        "key": "item_number",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": [null, 1],
+      "request": [1],
+      "message": "ce_equipment_output does not fit ce_equipment's rows: 1 row has no item_number."
+    },
+    {
+      "name": "a key given twice, named once however often it comes",
+      "table": {
+        "name": "ce_equipment",
+        "side": "output",
+        "port": "ce_equipment_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "item_number", "type": "int" },
+          { "name": "final_premium", "type": "float" }
+        ],
+        "key": "item_number",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": [1, 3, 3, 2, 3],
+      "request": [1, 2, 3],
+      "message": "ce_equipment_output does not fit ce_equipment's rows: item_number 3 is given twice."
+    },
+    {
+      "name": "keys on no row priced, in the answer's order, each named once, one of them given twice too",
+      "table": {
+        "name": "ce_equipment",
+        "side": "output",
+        "port": "ce_equipment_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "item_number", "type": "int" },
+          { "name": "final_premium", "type": "float" }
+        ],
+        "key": "item_number",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": [1, 7, 8, 7],
+      "request": [1, 2],
+      "message": "ce_equipment_output does not fit ce_equipment's rows: item_number 7 is given twice; item_number 7, 8 are on no row priced."
+    },
+    {
+      "name": "all three at once, in order",
+      "table": {
+        "name": "ce_equipment",
+        "side": "output",
+        "port": "ce_equipment_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "item_number", "type": "int" },
+          { "name": "final_premium", "type": "float" }
+        ],
+        "key": "item_number",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": [null, 3, 7, null, 3, 8],
+      "request": [1, 2, 3],
+      "message": "ce_equipment_output does not fit ce_equipment's rows: 2 rows have no item_number; item_number 3 is given twice; item_number 7, 8 are on no row priced."
+    },
+    {
+      "name": "more than ten values: the first ten, then how many more",
+      "table": {
+        "name": "ce_equipment",
+        "side": "output",
+        "port": "ce_equipment_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "item_number", "type": "int" },
+          { "name": "final_premium", "type": "float" }
+        ],
+        "key": "item_number",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": [1, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+      "request": [1],
+      "message": "ce_equipment_output does not fit ce_equipment's rows: item_number 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 and 2 more are on no row priced."
+    },
+    {
+      "name": "a text key, quoted",
+      "table": {
+        "name": "ce_perils",
+        "side": "output",
+        "port": "ce_perils_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "peril", "type": "str" },
+          { "name": "peril_premium", "type": "float" }
+        ],
+        "key": "peril",
+        "index_kind": null,
+        "index_values": []
+      },
+      "answer": ["AOP", "WD", "EQ"],
+      "request": ["AOP", "EQ", "NW"],
+      "message": "ce_perils_output does not fit ce_perils's rows: peril \"WD\" is on no row priced."
+    },
+    {
+      "name": "a numbered index of outputs alone always fits, the Workbench Output numbering it",
+      "table": {
+        "name": "product_premium",
+        "side": "output",
+        "port": "product_premium_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "row", "type": "int" },
+          { "name": "premium", "type": "float" }
+        ],
+        "key": "row",
+        "index_kind": "numbered",
+        "index_values": []
+      },
+      "answer": [1, 1, null],
+      "request": [],
+      "message": null
+    },
+    {
+      "name": "a typed index of outputs alone: each row holds its own value",
+      "table": {
+        "name": "product_premium",
+        "side": "output",
+        "port": "product_premium_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "product", "type": "str" },
+          { "name": "premium", "type": "float" }
+        ],
+        "key": "product",
+        "index_kind": "typed",
+        "index_values": []
+      },
+      "answer": ["Fire", "Flood"],
+      "request": [],
+      "message": null
+    },
+    {
+      "name": "a typed index of outputs alone: null and blank text, a value twice, a value too long",
+      "table": {
+        "name": "product_premium",
+        "side": "output",
+        "port": "product_premium_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "product", "type": "str" },
+          { "name": "premium", "type": "float" }
+        ],
+        "key": "product",
+        "index_kind": "typed",
+        "index_values": []
+      },
+      "answer": [null, "", "   ", "Fire", "Fire", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],
+      "request": [],
+      "message": "product_premium_output does not fit product_premium's rows: 3 rows have no product; product \"Fire\" is given twice; product \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" is longer than 255 characters."
+    },
+    {
+      "name": "an index of values of outputs alone: a value not answered is no row",
+      "table": {
+        "name": "product_premium",
+        "side": "output",
+        "port": "product_premium_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "product", "type": "str" },
+          { "name": "premium", "type": "float" }
+        ],
+        "key": "product",
+        "index_kind": "values",
+        "index_values": ["Fire", "Flood", "Hail"]
+      },
+      "answer": ["Hail", "Fire"],
+      "request": [],
+      "message": null
+    },
+    {
+      "name": "an index of values of outputs alone: a value twice and one none of its values",
+      "table": {
+        "name": "product_premium",
+        "side": "output",
+        "port": "product_premium_output",
+        "rows": "many",
+        "columns": [
+          { "name": "quote_reference", "type": "str" },
+          { "name": "quote_option", "type": "int" },
+          { "name": "product", "type": "str" },
+          { "name": "premium", "type": "float" }
+        ],
+        "key": "product",
+        "index_kind": "values",
+        "index_values": ["Fire", "Flood"]
+      },
+      "answer": ["Fire", "Fire", "Hail"],
+      "request": [],
+      "message": "product_premium_output does not fit product_premium's rows: product \"Fire\" is given twice; product \"Hail\" is none of its values."
+    },
+    {
+      "name": "a typed output index of 183 supplementary Unicode characters",
+      "table": {
+        "name": "product_premium",
+        "side": "output",
+        "port": "product_premium_output",
+        "rows": "many",
+        "columns": [
+          {
+            "name": "quote_reference",
+            "type": "str"
+          },
+          {
+            "name": "quote_option",
+            "type": "int"
+          },
+          {
+            "name": "product",
+            "type": "str"
+          },
+          {
+            "name": "premium",
+            "type": "float"
+          }
+        ],
+        "key": "product",
+        "index_kind": "typed",
+        "index_values": []
+      },
+      "answer": [
+        "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+      ],
+      "request": [],
+      "message": null
+    },
+    {
+      "name": "a typed output index of 184 supplementary Unicode characters",
+      "table": {
+        "name": "product_premium",
+        "side": "output",
+        "port": "product_premium_output",
+        "rows": "many",
+        "columns": [
+          {
+            "name": "quote_reference",
+            "type": "str"
+          },
+          {
+            "name": "quote_option",
+            "type": "int"
+          },
+          {
+            "name": "product",
+            "type": "str"
+          },
+          {
+            "name": "premium",
+            "type": "float"
+          }
+        ],
+        "key": "product",
+        "index_kind": "typed",
+        "index_values": []
+      },
+      "answer": [
+        "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+      ],
+      "request": [],
+      "message": "product_premium_output does not fit product_premium's rows: product \"𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀\" is longer than 366 UTF-16 code units."
+    }
+  ]
+}

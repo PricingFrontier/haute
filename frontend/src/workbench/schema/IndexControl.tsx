@@ -1,41 +1,51 @@
-/** A many-row table's index, added and removed (specs/workbench). */
-import type { FormSpec, SchemaTable } from "../../api/types"
-import { ConfigCheckbox } from "../../components/form"
-import { confirmed } from "../../stores/useQuestionStore"
+/**
+ * A many-row table's index as the schema editor offers it (specs/workbench): how it gets its
+ * values, chosen in its config panel. The operations give a table its index, numbered, move it between
+ * its blocks and take it away (`withIndexAsNeeded`); no key toggle is needed, every table's
+ * key being the quote's identity and a many-row table's its index too.
+ */
+import type { SchemaColumn } from "../../api/types"
+import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { identityCount } from "../../utils/quoteIdentity"
-import { addSchemaColumn, createIndexColumn, fieldUses, removeSchemaColumn } from "../../utils/workbenchForm"
-import { components, currentForm } from "./schemaText"
+import type { IndexKind } from "../../utils/quoteIdentity"
+import { setIndexKind } from "../../utils/workbenchForm"
+
+/** The ways an index gets its values, in the order the choice offers them. */
+const INDEX_KINDS: ReadonlyArray<{ value: IndexKind; label: string }> = [
+  { value: "numbered", label: "Numbered" },
+  { value: "typed", label: "Typed" },
+  { value: "values", label: "A row for each value" },
+]
 
 /**
- * A many-row table's index: ticked, a column first in the table after the quote's reference
- * and option, holding each row's number, from 1 (`row_number` until renamed in its row, where it can also be made the
- * key). Unticked, it goes, asking first when a widget shows it.
+ * How the index `column` of the table `tableId` gets its values: Numbered, Typed or A row
+ * for each value (`setIndexKind`), each choice one edit. The containing config fieldset
+ * disables it in Preview and shows the allowed values when the index takes its rows from them.
  */
-export function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaTable; onAdded: (name: string) => void }) {
+export function IndexKindSelect({
+  tableId,
+  column,
+}: {
+  tableId: string
+  column: SchemaColumn
+}) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const index = table.columns.find((column) => column.index)
-  const uses = index ? fieldUses(form, table.name, index.name).length : 0
-  // An index a sheet shows is removed once the question is answered yes.
-  const remove = async () => {
-    if (index === undefined) return
-    const text = `The index is shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
-    if (uses > 0 && !(await confirmed({ title: `Remove the index of ${table.name}?`, text, confirm: "Remove", danger: true }))) return
-    change((f) => removeSchemaColumn(f, table.name, index.name))
-  }
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-1">
-      <ConfigCheckbox
-        label={`Add index to ${table.name}`}
-        checked={index !== undefined}
-        onChange={(checked) => {
-          if (checked) {
-            const column = createIndexColumn(currentForm(), table.name)
-            change((f) => addSchemaColumn(f, table.name, column, identityCount(table)))
-            onAdded(column.name)
-          } else void remove()
-        }}
-      />
-    </div>
+    <select
+      aria-label={`How ${column.name} gets its values`}
+      value={column.index ?? undefined}
+      onChange={(e) => {
+        const kind = e.target.value as IndexKind
+        change((f) => setIndexKind(f, tableId, kind))
+      }}
+      className={`${COMPACT_FIELD_CLASS} w-full`}
+      style={INPUT_STYLE}
+    >
+      {INDEX_KINDS.map(({ value, label }) => (
+        <option key={value} value={value}>
+          {label}
+        </option>
+      ))}
+    </select>
   )
 }

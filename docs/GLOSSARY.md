@@ -64,13 +64,13 @@ Two naming notes:
 
 ## 4. Workbench
 
-- **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its schema, sheets and sample saved in the pipeline folder's `workbench/` folder, a file for each table and each sheet. In user-facing text say "the workbench" (lower case) and "the sheets" or the folder's path, never "the form".
+- **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its schema, sheets and sample saved in the pipeline folder's `workbench/` folder, a file for each table, each sheet and each component. In user-facing text say "the workbench" (lower case) and "the sheets" or the folder's path, never "the form".
 
-- **sheet** — one page of the workbench: a canvas of a set width, its sections stacked down it, the components laid out in them. A file of its own in `workbench/sheets/`, its layout in another beside it; `pages` in the form the editor and the release hold.
+- **sheet** — one page of the workbench: a canvas of a set width, its sections stacked down it, the components laid out in them. A file of its own in `workbench/sheets/`, holding its sections and where each component sits; `pages` in the form the editor and the release hold.
 
 - **section (of a sheet)** — a strip across a sheet's whole width, one of the sheet's stack, holding components placed freely in it, with a height and its own Show when; hidden, it closes up in Preview. `sections` in the file. Not the view's sections (the sheets, the schema, Preview).
 
-- **component** — a Table, a Collection, a Chart or a Heading in a sheet's section. `components` in a sheet's file, `widgets` in the form the editor and the release hold; say "component" in prose and in UI copy, never "widget".
+- **component** — a Table, a Collection, a Chart, a Heading, an Import or an Export in a sheet's section, known by its **Component name**, an identifier unique in the workbench. A file of its own in `workbench/components/`, placed by name in a sheet's file's `components`; `widgets` in the form the editor and the release hold; say "component" in prose and in UI copy, never "widget".
 
 - **Table (component)** — a grid of rows showing columns of the schema's many-row tables (`table` in a sheet's file, `tableInput` in the form the editor and the release hold). Not a schema table.
 
@@ -80,11 +80,11 @@ Two naming notes:
 
 - **Heading (component)** — text naming a section of a sheet, or the sheet itself, large, medium or small, with an optional description under it (`heading` in the file). It shows no schema columns and takes nothing typed. Not a column's label.
 
-- **schema table** — a table of the workbench's schema: a name, a role (input, sent to the pricing engine, or output, returned by it), one row per quote or many, and typed columns. The input tables are the Workbench Input's ports and the output tables the Workbench Output's.
+- **schema table** — a table of the workbench's schema: a name, one row per quote or many, and typed columns in two blocks, its inputs (sent to the pricing engine) and its outputs (returned by it), either or both. Its inputs are the Workbench Input's port `<table>_input` and its outputs the Workbench Output's `<table>_output`; the quote store keeps both in one table. A table is keyed by the quote's identity and, with many rows, by its index; no column is marked as a key.
 
-- **key** — a column of a many-row schema table that, with the table's other keys, says which row is which; how a Table's output rows are matched to its input rows.
+- **key** — what says which row of a schema table is which: the quote's identity, with the index in a many-row table; nothing else is a key, and no column is marked as one.
 
-- **index** — a many-row schema table's row-number column, `row_number` until renamed, an Integer numbering the rows from 1.
+- **index** — a many-row schema table's one key column, `table_index` until renamed, an Integer or Text that is numbered by Haute, typed by the underwriter, or gives the table a row for each value of a params file's column; also each row's key in the saved quotes.
 
 - **the sample** — the quote typed into the sheets in Preview: saved with the sheets, priced live, and what the Workbench Input's previews run on, read as a request is read.
 

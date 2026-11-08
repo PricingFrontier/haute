@@ -1,0 +1,8 @@
+{
+  "type": "table",
+  "title": "Perils",
+  "fields": [
+    "BR_Perils.peril",
+    "BR_Perils.rate"
+  ]
+}

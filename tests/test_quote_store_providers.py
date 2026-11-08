@@ -39,7 +39,7 @@ from haute._quote_store import (
     open_book,
     resolve_store,
 )
-from haute._quote_store._migrate import plan
+from haute._quote_store._migrate import offline_plan, plan
 from haute._quote_store._providers import (
     PROVIDERS,
     SQL_COPT_SS_ACCESS_TOKEN,
@@ -56,7 +56,7 @@ from haute._workbench_app_store import StoreGate
 from haute._workbench_config import StoreEnvironment
 from haute._workbench_form import FormSpec, with_quote_details
 from tests._project import use_project
-from tests._store_servers import Target, configured, database
+from tests._store_servers import Target, backends, configured, database
 from tests.test_workbench_app_quotes import Page, _write_release
 
 PROJECT = "motor"
@@ -89,7 +89,8 @@ def column(name: str, type_: str = "str") -> dict[str, Any]:
 
 
 def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
-    return {"name": name, "rows": rows, "columns": list(columns)}
+    """A schema table of inputs."""
+    return {"name": name, "rows": rows, "inputs": list(columns)}
 
 
 POLICY = table(
@@ -552,6 +553,164 @@ def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
         row = book.read("A-1", 1).values["policy"][0]
         assert row["code"] == "42"
         assert json.loads(row[KEPT_KEY])["region"] == "north"
+
+
+@pytest.fixture(params=backends())
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    """A database of the test's own on SQLite and on each server the run has."""
+    with database(request.param, tmp_path) as target:
+        yield target
+
+
+def _index(name: str) -> dict[str, Any]:
+    return {"name": name, "type": "int", "index": "numbered"}
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "values"),
+    [
+        pytest.param(
+            {"name": "vehicles", "rows": "many", "inputs": [_index("row_number"), column("reg")]},
+            {"name": "vehicles", "rows": "many", "inputs": [_index("vehicle_no"), column("reg")]},
+            ("reg", "'AB12'", "'CD34'"),
+            id="an input table's index",
+        ),
+        pytest.param(
+            {
+                "name": "vehicles",
+                "rows": "many",
+                "outputs": [_index("row_number"), column("premium", "float")],
+            },
+            {
+                "name": "vehicles",
+                "rows": "many",
+                "outputs": [_index("vehicle_no"), column("premium", "float")],
+            },
+            ("premium", "10.5", "20.5"),
+            id="a table of outputs alone's index",
+        ),
+    ],
+)
+def test_a_renamed_index_renames_its_column_keeping_its_values_and_the_tables_key(
+    store: Target, before: dict[str, Any], after: dict[str, Any], values: tuple[str, str, str]
+) -> None:
+    base, renamed = form(before), form(after)
+    store.script(store.sql(base))
+    other, first, second = values
+    _a_quote_holding(
+        store,
+        base,
+        f"(quote_reference, quote_option, row_number, {other}) "
+        f"VALUES ('A-1', 1, 1, {first}), ('A-1', 1, 2, {second})",
+    )
+
+    # Paired by what it is: renamed, never a column added beside the one keying the table.
+    assert [step.kind for step in offline_plan(base, renamed).steps] == ["rename column"]
+    store.script(store.sql(renamed, base))
+
+    # Its values kept under the new name, which keys the table: the app opens it as it is.
+    assert store.read("SELECT vehicle_no FROM vehicles ORDER BY vehicle_no") == [(1,), (2,)]
+    open_book(
+        store.url, renamed, environment=TEST, haute_version="1", sign_in=store.sign_in
+    ).close()
+
+
+def _a_quote_holding(store: Target, base: FormSpec, vehicles: str) -> None:
+    """Quote A-1 made through the app's own book, so its quote_details row is the app's on
+    every engine, then *vehicles*, its rows, written with plain SQL."""
+    with open_book(
+        store.url, base, environment=TEST, haute_version="1", sign_in=store.sign_in
+    ) as book:
+        book.create(
+            operation="operation-0001", actor="ana", values={}, at=book.now(), reference="A-1"
+        )
+    store.run(f"INSERT INTO vehicles {vehicles}")
+
+
+def _quote_with_two_vehicles(store: Target, base: FormSpec, index: str, other: str) -> None:
+    _a_quote_holding(
+        store,
+        base,
+        f"(quote_reference, quote_option, {index}, {other}) "
+        "VALUES ('A-1', 1, 1, 7), ('A-1', 1, 2, 8)",
+    )
+
+
+def test_an_index_renamed_its_old_name_given_a_new_column_is_a_rename_and_an_addition(
+    store: Target,
+) -> None:
+    base = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("row_number"), column("seats", "int")],
+        }
+    )
+    reused = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("vehicle_no"), column("seats", "int"), column("row_number")],
+        }
+    )
+    store.script(store.sql(base))
+    _quote_with_two_vehicles(store, base, "row_number", "seats")
+
+    # The index paired first: its old name is free for the new column, added after the rename.
+    plan = offline_plan(base, reused)
+    assert (plan.refusals, [step.kind for step in plan.steps]) == (
+        (),
+        ["rename column", "add column"],
+    )
+    store.script(store.sql(reused, base))
+
+    assert store.read("SELECT vehicle_no, seats, row_number FROM vehicles ORDER BY vehicle_no") == [
+        (1, 7, None),
+        (2, 8, None),
+    ]
+    open_book(store.url, reused, environment=TEST, haute_version="1", sign_in=store.sign_in).close()
+
+
+def test_an_index_renamed_onto_another_columns_name_is_refused_changing_nothing(
+    store: Target,
+) -> None:
+    base = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("row_number"), column("amount", "float")],
+        }
+    )
+    # The two names swapped, a Decimal's among them, and a column added beside: whose values
+    # each name should hold is not the SQL's to guess, and nothing of the table changes, so no
+    # column is retyped either.
+    swapped = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("amount"), column("row_number", "float"), column("seats", "int")],
+        }
+    )
+    store.script(store.sql(base))
+    _a_quote_holding(
+        store,
+        base,
+        "(quote_reference, quote_option, row_number, amount) "
+        "VALUES ('A-1', 1, 1, 7.25), ('A-1', 1, 2, 8.5)",
+    )
+
+    plan = offline_plan(base, swapped)
+    assert plan.steps == ()
+    assert plan.refusals == (
+        "the index of vehicles, row_number, renamed amount, takes the name of its column "
+        "amount: rename that column to a name of its own first, or drop it; nothing else of "
+        "the table changes until then",
+    )
+    store.script(store.sql(swapped, base))
+    assert store.read("SELECT row_number, amount FROM vehicles ORDER BY row_number") == [
+        (1, 7.25),
+        (2, 8.5),
+    ]
 
 
 def _columns_in_order(server: Target, owner: str, table_name: str) -> str:

@@ -169,14 +169,14 @@ def with_form_tables(
 
 def connection_errors(graph: PipelineGraph, form: str) -> list[str]:
     """Each connection of *graph*, its workbench nodes given their tables, out of a Workbench
-    Input or into a Workbench Output on a table *form*, the form folder's path, does not
+    Input or into a Workbench Output on a port *form*, the form folder's path, does not
     have: a pipeline file written by hand, or saved before the form dropped the table, can
     hold one."""
     ports: dict[str, set[str]] = {}
     for node in graph.nodes:
         if node.data.nodeType in WORKBENCH_NODE_TYPES:
             tables = node.data.config["tables"]
-            ports[node.id] = {table["name"] for table in tables if table["columns"]}
+            ports[node.id] = {table["port"] for table in tables if table["columns"]}
     errors: list[str] = []
     for edge in graph.edges:
         if edge.source in ports and edge.sourceHandle not in ports[edge.source]:

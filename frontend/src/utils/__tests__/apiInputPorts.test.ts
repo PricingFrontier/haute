@@ -854,8 +854,11 @@ describe("applyApiInputConfigChange", () => {
 
 describe("a Workbench Input's frames", () => {
   // The tables the workbench store fetched (specs/workbench), which its config does not hold.
-  const workbenchTable = (name: string, columns: { name: string; type: "int" | "str" | "float" }[] = [{ name: "c", type: "int" }]) =>
-    ({ name, rows: "one" as const, columns })
+  const workbenchTable = (
+    name: string,
+    columns: { name: string; type: "int" | "str" | "float" }[] = [{ name: "c", type: "int" }],
+    side: "input" | "output" = "input",
+  ) => ({ name, side, port: `${name}_${side}`, rows: "one" as const, columns, key: null, null_key: null, index_kind: null, index_values: [] })
   const workbench = {
     tables: [
       workbenchTable("policy"),
@@ -863,13 +866,13 @@ describe("a Workbench Input's frames", () => {
       workbenchTable("items", [{ name: "item_id", type: "str" }, { name: "value", type: "float" }]),
     ],
     sample: {},
-    responseTables: [workbenchTable("pricing_output")],
+    responseTables: [workbenchTable("pricing", undefined, "output")],
     fetch: 1,
   }
   const workbenchInput = { id: "wb_in", data: { nodeType: NODE_TYPES.WORKBENCH_INPUT, config: {}, _sourceHandleInputNames: {} } }
 
-  it("are its ports from the newest fetch, none before it lands, where a Quote Input's are its identities", () => {
-    expect(apiInputPorts.requestInputSourceHandles(workbenchInput, workbench)).toEqual(["policy", "items"])
+  it("are its ports from the newest fetch, each table's input side, none before it lands, where a Quote Input's are its identities", () => {
+    expect(apiInputPorts.requestInputSourceHandles(workbenchInput, workbench)).toEqual(["policy_input", "items_input"])
     expect(apiInputPorts.requestInputSourceHandles(workbenchInput, null)).toEqual([])
     const quoteInput = { id: "quote", data: { nodeType: NODE_TYPES.API_INPUT, config: {}, _sourceHandleInputNames: { quotes: "quotes" } } }
     expect(apiInputPorts.requestInputSourceHandles(quoteInput, workbench)).toEqual(["quotes"])
@@ -878,13 +881,15 @@ describe("a Workbench Input's frames", () => {
   it("carry their tables' columns, typed as declared", () => {
     const columns = (handle: string | null, fetched: typeof workbench | null = workbench) =>
       apiInputPorts.requestInputFrameColumns(NODE_TYPES.WORKBENCH_INPUT, {}, handle, fetched)
-    expect(columns("items")).toEqual([
+    expect(columns("items_input")).toEqual([
       { name: "item_id", dtype: "str" },
       { name: "value", dtype: "float" },
     ])
-    expect(columns("bare")).toEqual([])
+    expect(columns("bare_input")).toEqual([])
+    // A table is known by its port, never by its bare name.
+    expect(columns("items")).toEqual([])
     expect(columns(null)).toEqual([])
-    expect(columns("items", null)).toEqual([])
+    expect(columns("items_input", null)).toEqual([])
     // A Quote Input's come from its config, whatever the workbench holds.
     expect(apiInputPorts.requestInputFrameColumns(NODE_TYPES.API_INPUT, { tables: [table("quote", true)] }, "quote", workbench))
       .toEqual([{ name: "c", dtype: "" }])

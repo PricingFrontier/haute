@@ -4,8 +4,9 @@ Each table of the form's schema is a SQL table of the same name: ``quote_details
 input table and every output table, its columns the schema's under their names and in their
 types. Every column of the project's own is nullable, so a draft saves with any of them
 empty. Each row holds the quote's identity, ``quote_reference`` and ``quote_option``, and a
-row of a many-row table holds ``quote_row`` too, the store's number for it. The identity,
-with ``quote_row`` in a many-row table, is each table's primary key, and each table's
+row of a many-row table its index too, the form's column numbering its rows, under the
+project's name for it. The identity, with the index in a many-row table, is each table's
+primary key, and each table's
 identity refers to its quote's ``quote_details`` row. Beside the form's tables the store
 keeps ``haute_activity``, a row for each thing done to a quote; a database records nothing of
 its tables' shape. ``quote_details`` holds the store's own columns besides the form's
@@ -45,12 +46,13 @@ from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._workbench_form import (
     IDENTITY_NAMES,
+    INDEX_TEXT_LENGTH,
+    INDEX_TEXT_UTF16_LENGTH,
     QUOTE_DETAILS_NAME,
     ColumnType,
     FormSpec,
     SchemaTable,
 )
-from haute._workbench_tables import QUOTE_ROW
 
 #: Haute's own table: what was done to each quote.
 ACTIVITY_TABLE = "haute_activity"
@@ -154,6 +156,13 @@ def _reference() -> TypeEngine[Any]:
     return _exact(REFERENCE_LENGTH)
 
 
+def _index_text() -> TypeEngine[Any]:
+    """An exact Text index within both the character and complete SQL Server key budgets."""
+    return String(INDEX_TEXT_LENGTH).with_variant(
+        mssql.NVARCHAR(INDEX_TEXT_UTF16_LENGTH, collation=EXACT_COLLATION), "mssql"
+    )
+
+
 #: The store's own columns of quote_details, in order: each one's name, type and whether it
 #: may be null. None of them is the form's, and no request holds them.
 STORE_COLUMNS: tuple[tuple[str, Callable[[], TypeEngine[Any]], bool], ...] = (
@@ -195,6 +204,13 @@ class StoredTable:
     def many(self) -> bool:
         return self.form.rows == "many"
 
+    @property
+    def index(self) -> str | None:
+        """The name of a many-row table's index, the column after the identity in its
+        primary key; None for a one-row table."""
+        index = self.form.index
+        return None if index is None else index.name
+
 
 @dataclass(frozen=True, slots=True)
 class StoreSchema:
@@ -218,13 +234,11 @@ class StoreSchema:
                 return stored
         raise KeyError(name)
 
-    def of_role(self, role: str) -> tuple[StoredTable, ...]:
-        return tuple(stored for stored in self.tables if stored.form.role == role)
-
 
 def structure(form: FormSpec) -> dict[str, Any]:
-    """What of *form* decides the store's tables: each table's name, role and rows, and each
-    column's name, type and whether it is the index, as the SQL Haute writes plans from it,
+    """What of *form* decides the store's tables: each table's name and rows, and each
+    column's name, type and whether it is the index, whatever its block, as the SQL Haute
+    writes plans from it,
     each table and column under the ``key`` it is planned by, its name in the form (READ-23).
     Labels, rules and the sheets decide nothing there."""
     return {
@@ -232,14 +246,15 @@ def structure(form: FormSpec) -> dict[str, Any]:
             {
                 "key": table.name,
                 "name": table.name,
-                "role": table.role,
                 "rows": table.rows,
                 "columns": [
                     {
                         "key": column.name,
                         "name": column.name,
-                        "type": "int" if column.index else column.type,
-                        "index": column.index,
+                        "type": column.type,
+                        # Whether it is the index, not how it gets its values: the key
+                        # column and its SQL type are the same whichever way it does.
+                        "index": column.index is not None,
                     }
                     for column in table.columns
                 ],
@@ -258,14 +273,12 @@ def _kind(sql_type: TypeEngine[Any]) -> StoreColumnKind:
 def store_columns(form: FormSpec) -> dict[str, list[tuple[str, StoreColumnKind]]]:
     """The columns the store keeps in each of *form*'s tables that the form does not, by
     table name, each by its name and what it holds: ``quote_details``' own
-    (:data:`STORE_COLUMNS`), and a many-row table's ``quote_row``."""
-    kept: dict[str, list[tuple[str, StoreColumnKind]]] = {}
-    for table in form.data_schema.tables:
-        if table.name == QUOTE_DETAILS_NAME:
-            kept[table.name] = [(name, _kind(made())) for name, made, _ in STORE_COLUMNS]
-        elif table.rows == "many":
-            kept[table.name] = [(QUOTE_ROW, "int")]
-    return kept
+    (:data:`STORE_COLUMNS`); a many-row table's rows are numbered by its index, the form's."""
+    return {
+        table.name: [(name, _kind(made())) for name, made, _ in STORE_COLUMNS]
+        for table in form.data_schema.tables
+        if table.name == QUOTE_DETAILS_NAME
+    }
 
 
 def store_schema(form: FormSpec, *, sql_schema: str | None = None) -> StoreSchema:
@@ -296,12 +309,13 @@ def with_kept_columns(
 
     A column leaves the form but the SQL Haute writes keeps it, so a saved quote's values stay
     in it. A save deletes a quote's rows and writes them again, so its rows carry those values
-    back. ``quote_details`` is updated in place, and the output tables are written afresh by
-    each pricing, so neither carries any; nor does a column of a kind Haute never writes.
+    back, a former output's of an input table among them. ``quote_details`` is updated in
+    place, and a table of outputs alone is written afresh by each pricing, so neither carries
+    any; nor does a column of a kind Haute never writes.
     """
     kept: dict[str, tuple[tuple[str, str], ...]] = {}
     for stored in schema.tables:
-        if stored.form.role != "input" or stored.form.name == QUOTE_DETAILS_NAME:
+        if not stored.form.has_inputs or stored.form.name == QUOTE_DETAILS_NAME:
             continue
         carried = tuple(
             (name, kind)
@@ -325,17 +339,21 @@ def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
         elif details and column.name in _BOUNDED_DETAILS:
             sql_type = _BOUNDED_DETAILS[column.name]()
         else:
-            sql_type = _TYPES["int" if column.index else column.type]()
-        required = identity or (details and column.name in _SET_DETAILS)
+            sql_type = (
+                _index_text()
+                if column.index is not None and column.type == "str"
+                else _TYPES[column.type]()
+            )
+        # The index keys a many-row table's rows with the identity, so it is never null.
+        required = identity or column.index is not None or (details and column.name in _SET_DETAILS)
         columns.append(Column(column.name, sql_type, nullable=not required))
     keys = list(_IDENTITY)
     if details:
         columns.extend(
             Column(name, kind(), nullable=nullable) for name, kind, nullable in STORE_COLUMNS
         )
-    elif table.rows == "many":
-        columns.append(Column(QUOTE_ROW, BigInteger, nullable=False))
-        keys.append(QUOTE_ROW)
+    elif table.index is not None:
+        keys.append(table.index.name)
     constraints: list[Any] = [PrimaryKeyConstraint(*keys, name=_named("pk", table.name))]
     if details:
         constraints.extend(

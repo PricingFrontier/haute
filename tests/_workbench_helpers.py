@@ -4,6 +4,7 @@ writes them."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -103,16 +104,46 @@ def held_tables(graph: PipelineGraph) -> WorkbenchTables:
     )
 
 
+#: A column as :func:`form_table` takes it: its name and type, or the column itself.
+FormColumn = tuple[str, str] | dict[str, Any]
+
+#: The index Haute gives a many-row input table until it is renamed (specs/workbench).
+ROW_NUMBER = "row_number"
+
+
 def form_table(
-    name: str, role: str, *columns: tuple[str, str], many: bool = False
+    name: str,
+    *inputs: FormColumn,
+    outputs: Sequence[FormColumn] = (),
+    many: bool = False,
+    index: str | None = ROW_NUMBER,
 ) -> dict[str, Any]:
-    """A schema table of a form, known by its *name*, each column by its name in it."""
+    """A schema table of a form, known by its *name*: its *inputs*, which an underwriter
+    types, and its *outputs*, which pricing fills, each column by its name and type or as
+    the column itself. A many-row table leads with its index, *index*, an Integer numbering
+    its rows, as the editor gives it one: its outputs while it has outputs and no inputs,
+    else its inputs. None gives none, for columns holding their own."""
+    columns = [_form_column(column) for column in inputs]
+    produced = [_form_column(column) for column in outputs]
+    if many and index is not None:
+        numbered = {"name": index, "type": "int", "index": "numbered"}
+        if produced and not columns:
+            produced = [numbered, *produced]
+        else:
+            columns = [numbered, *columns]
     return {
         "name": name,
-        "role": role,
         "rows": "many" if many else "one",
-        "columns": [{"name": column, "type": kind} for column, kind in columns],
+        "inputs": columns,
+        "outputs": produced,
     }
+
+
+def _form_column(column: FormColumn) -> dict[str, Any]:
+    if isinstance(column, dict):
+        return dict(column)
+    name, kind = column
+    return {"name": name, "type": kind}
 
 
 def tables_form(

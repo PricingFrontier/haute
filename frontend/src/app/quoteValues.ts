@@ -12,8 +12,9 @@ import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
 import { operationKey } from "../utils/operationKey"
-import { formattedNumber } from "../utils/sheetValues"
-import { basisOf, columnKey } from "../utils/sheetVisibility"
+import { hasInputs } from "../utils/quoteIdentity"
+import { formattedNumber, withPresetRows } from "../utils/sheetValues"
+import { basisOf, columnKey, sheetVisibility } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
@@ -40,15 +41,15 @@ export function normalisedValues(values: Readonly<Record<string, readonly Sample
 export const valuesKey = (values: Readonly<Record<string, readonly SampleRow[]>>): string => canonicalJson(normalisedValues(values))
 
 /**
- * `values` on `form`'s sheets: the cells of its input tables' columns alone, by name, and each
+ * `values` on `form`'s sheets: the cells of its tables' inputs alone, by name, and each
  * row's kept field, as values typed into other sheets, a draft kept before a release, are put back.
  */
 export function onSheets(form: FormSpec, values: Values): Values {
   const kept: Values = {}
   for (const table of form.schema.tables) {
     const rows = values[table.name]
-    if (table.role !== "input" || rows === undefined) continue
-    const columns = new Set(table.columns.map((column) => column.name))
+    if (!hasInputs(table) || rows === undefined) continue
+    const columns = new Set(table.inputs.map((column) => column.name))
     kept[table.name] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => id === KEPT_KEY || columns.has(id))))
   }
   return kept
@@ -60,7 +61,7 @@ export function cellPlaces(form: FormSpec, values: Values): Record<string, strin
   for (const table of form.schema.tables) {
     for (const row of values[table.name] ?? []) {
       for (const columnId of Object.keys(row)) {
-        const column = table.columns.find((candidate) => candidate.name === columnId)
+        const column = table.inputs.find((candidate) => candidate.name === columnId)
         if (column !== undefined) places[columnKey(table.name, columnId)] = `${table.name}.${column.name}`
       }
     }
@@ -98,6 +99,35 @@ export function withAppDetails(values: Values, saved: Values): Values {
 
 /** `values` without the quote_details cells the app sets: a quote's, which a quote made from it does not take. */
 export const withoutAppDetails = (values: Values): Values => withAppDetails(values, {})
+
+/**
+ * `saved`, the values a save of `sent` answered, with the cells the sheets hid as it was
+ * written taken from `sent`: the store keeps nothing of a hidden cell, so what was typed into
+ * one stays on the sheets while the quote is open (specs/workbench). What hid is decided as
+ * the server decided it, on `sent` with the details the app set on the save, as who saved
+ * it, since those decide what shows as any value does. A many-row table's rows line up as
+ * the server numbers them, as `withPresetRows` reads them. `quote_details` is stored whole,
+ * so it is the answer's.
+ */
+export function withHiddenCells(form: FormSpec, saved: Values, sent: Values): Values {
+  const { hidden } = sheetVisibility(form, withAppDetails(sent, saved))
+  if (hidden.size === 0) return saved
+  const placed = withPresetRows(form.schema, sent)
+  const merged: Values = { ...saved }
+  for (const table of form.schema.tables) {
+    if (!hasInputs(table) || table.name === QUOTE_DETAILS_NAME) continue
+    const kept = new Set(table.inputs.filter((column) => hidden.has(columnKey(table.name, column.name))).map((column) => column.name))
+    if (kept.size === 0) continue
+    const answered = saved[table.name] ?? []
+    const typed = (placed[table.name] ?? []).slice(0, table.rows === "one" ? 1 : undefined)
+    const rows = Array.from({ length: Math.max(answered.length, typed.length) }, (_, place): SampleRow => ({
+      ...Object.fromEntries(Object.entries(answered[place] ?? {}).filter(([id]) => !kept.has(id))),
+      ...Object.fromEntries(Object.entries(typed[place] ?? {}).filter(([id]) => kept.has(id))),
+    }))
+    if (rows.length > 0) merged[table.name] = rows
+  }
+  return merged
+}
 
 /**
  * The quote_details cells the app sets, as the quote's `details` (its row by column name)
@@ -213,7 +243,7 @@ const LISTED = ["insured", "broker", "inception_date"] as const satisfies readon
 export function listColumns(form: FormSpec | null): ListColumn[] {
   const table = form?.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
   return LISTED.map((key) => {
-    const column = table?.columns.find((candidate) => candidate.name === key) ?? null
+    const column = table?.inputs.find((candidate) => candidate.name === key) ?? null
     return { key, label: column?.label || readableName(key), column }
   })
 }
@@ -462,7 +492,7 @@ export function activityText(entry: WorkbenchAppQuoteActivityEntry, source: Work
     case "created":
       return source === null ? "made it" : `made it as ${RELATION_TEXT[source.relation]} of ${source.label}`
     case "saved":
-      return entry.priced_release === null ? "saved it, unpriced" : "saved it, priced"
+      return "saved it"
     case "assigned":
       return entry.assignee === null ? "assigned it" : `assigned it to ${entry.assignee}`
     case "noted":

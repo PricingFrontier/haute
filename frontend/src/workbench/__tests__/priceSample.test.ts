@@ -1,7 +1,8 @@
 /**
  * A sample priced on the pipeline open in the editor (specs/workbench): the document sent
  * as it is with the form the view holds, whose tables and sample every workbench node of
- * the request takes, and the Workbench Output's tables previewed all at once, from one run.
+ * the request takes, and the Workbench Output's tables previewed all at once, from one run,
+ * each by its port (`<table>_output`) and answered under its table's name.
  */
 import { makePreviewResponse } from "../../test-utils/factories"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -19,10 +20,22 @@ import { priceSample } from "../priceSample"
 
 const preview = vi.mocked(previewNode)
 
-const policy: WorkbenchTable = { name: "policy_details", rows: "one", columns: [{ name: "exposure", type: "float" }] }
-const pricing: WorkbenchTable = { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] }
-const layers: WorkbenchTable = { name: "layer_premiums", rows: "many", columns: [{ name: "layer", type: "int" }] }
-const bare: WorkbenchTable = { name: "notes", rows: "one", columns: [] }
+/** A side of a schema table, its port `<name>_<side>`, keyed by nothing unless said. */
+const side = (name: string, which: WorkbenchTable["side"], rows: WorkbenchTable["rows"], columns: WorkbenchTable["columns"]): WorkbenchTable => ({
+  name,
+  side: which,
+  port: `${name}_${which}`,
+  rows,
+  columns,
+  key: null,
+  null_key: null,
+  index_kind: null,
+  index_values: [],
+})
+const policy = side("policy_details", "input", "one", [{ name: "exposure", type: "float" }])
+const pricing = side("pricing", "output", "one", [{ name: "premium", type: "float" }])
+const layers = side("layer_premiums", "output", "many", [{ name: "layer", type: "int" }])
+const bare = side("notes", "output", "one", [])
 const typed = { policy_details: { exposure: 100000 } }
 const workbench = (responseTables: WorkbenchTable[]): WorkbenchTablesResponse => ({
   tables: [policy],
@@ -74,20 +87,21 @@ afterEach(() => {
 })
 
 describe("priceSample", () => {
-  it("previews every one of the Workbench Output's response tables in one request, sending the document unchanged with the view's form", async () => {
-    preview.mockResolvedValue(ok({ pricing_output: [{ premium: 2000 }], layer_premiums: [{ layer: 1 }, { layer: 2 }] }))
+  it("previews every one of the Workbench Output's response tables in one request by its port, sending the document unchanged with the view's form", async () => {
+    preview.mockResolvedValue(ok({ pricing_output: [{ premium: 2000 }], layer_premiums_output: [{ layer: 1 }, { layer: 2 }] }))
     const document = graph()
     const before = structuredClone(document)
 
     const priced = await priceSample(document, form, workbench([pricing, bare, layers]), "live")
 
-    expect(priced).toEqual({ tables: { pricing_output: [{ premium: 2000 }], layer_premiums: [{ layer: 1 }, { layer: 2 }] } })
+    // Each table's rows read from its port's preview, kept under its table's name, as a response holds them.
+    expect(priced).toEqual({ tables: { pricing: [{ premium: 2000 }], layer_premiums: [{ layer: 1 }, { layer: 2 }] } })
     expect(preview).toHaveBeenCalledOnce()
     const [{ graph: sent, nodeId, source, portLabels, workbenchForm }] = preview.mock.calls[0]
     expect(nodeId).toBe("response")
     expect(source).toBe("live")
     // A table without a column is no port, so nothing to preview.
-    expect(portLabels).toEqual(["pricing_output", "layer_premiums"])
+    expect(portLabels).toEqual(["pricing_output", "layer_premiums_output"])
     expect(workbenchForm).toBe(form)
     expect(sent).toEqual(before)
     expect(document).toEqual(before)
@@ -108,7 +122,7 @@ describe("priceSample", () => {
     nested.submodels = { rating: definition("rating", [node("inner", "workbenchInput")]) }
 
     await expect(priceSample(nested, form, workbench([pricing]), "live")).resolves.toEqual({
-      tables: { pricing_output: [{ premium: 2000 }] },
+      tables: { pricing: [{ premium: 2000 }] },
     })
   })
 
@@ -133,7 +147,7 @@ describe("priceSample", () => {
     preview.mockResolvedValue(ok({ pricing_output: [{ premium: 2000 }] }))
 
     await expect(priceSample(graph(), form, workbench([pricing, layers]), "live")).rejects.toThrow(
-      "The Workbench Output's 'layer_premiums' table was not previewed.",
+      "The Workbench Output's 'layer_premiums_output' table was not previewed.",
     )
   })
 
@@ -156,10 +170,13 @@ describe("priceSample", () => {
     await expect(priceSample(graph(), form, workbench([pricing]), "live")).rejects.toThrow(reason)
   })
 
-  it("shows the rows it has of a table Preview cut short", async () => {
-    preview.mockResolvedValue(ok({ layer_premiums: [{ layer: 1 }] }, { layer_premiums: 12000 }))
+  it("refuses a table Preview cut short, naming its port, rather than pricing it from its first rows", async () => {
+    const shown = Array.from({ length: 3 }, (_, at) => ({ layer: at + 1 }))
+    preview.mockResolvedValue(ok({ pricing_output: [{ premium: 2000 }], layer_premiums_output: shown }, { layer_premiums_output: 12000 }))
 
-    await expect(priceSample(graph(), form, workbench([layers]), "live")).resolves.toEqual({ tables: { layer_premiums: [{ layer: 1 }] } })
+    await expect(priceSample(graph(), form, workbench([pricing, layers]), "live")).rejects.toThrow(
+      "layer_premiums_output answers more rows than Preview prices whole (3 shown): a quote's answer must fit.",
+    )
   })
 
   it("resolves to no tables for a Workbench Output without any", async () => {

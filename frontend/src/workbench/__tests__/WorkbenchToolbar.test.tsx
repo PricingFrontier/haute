@@ -48,9 +48,9 @@ const form: FormSpec = {
     tables: [
       {
         name: "policy",
-        role: "input",
         rows: "one",
-        columns: [{ name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], options_source: null, row_per_value: false, index: false, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
+        outputs: [],
+        inputs: [{ name: "limit", type: "str", label: "", required: false, min: null, max: null, options: [], options_source: null, index: null, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
       },
     ],
   },
@@ -170,7 +170,7 @@ describe("WorkbenchToolbar", () => {
 
   it("has Reset, disabled while building and on a new quote, starting the sample again in Preview at its defaults as one undo step", () => {
     const [policy] = form.schema.tables
-    const defaulted: FormSpec = { ...form, schema: { tables: [{ ...policy, columns: [{ ...policy.columns[0], default_value: "100000" }] }] } }
+    const defaulted: FormSpec = { ...form, schema: { tables: [{ ...policy, inputs: [{ ...policy.inputs[0], default_value: "100000" }] }] } }
     const typed = { ...defaulted, sample: { policy: [{ limit: "250000" }] } }
     useWorkbenchFormStore.setState({ form: typed })
     renderToolbar()

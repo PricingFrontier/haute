@@ -53,7 +53,8 @@ def column(name: str, type_: str = "str") -> dict[str, Any]:
 
 
 def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
-    return {"name": name, "rows": rows, "columns": list(columns)}
+    """A schema table of inputs."""
+    return {"name": name, "rows": rows, "inputs": list(columns)}
 
 
 RELEASED = form(table("policy", column("region"), column("drivers"), column("value", "float")))
@@ -128,6 +129,54 @@ def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:
     assert comparison.matches
     assert comparison.extras == ()
     assert "nothing to change" in sql(target, RELEASED, comparison)
+
+
+def test_review_distinguishes_generated_type_changes_from_manual_key_migrations(
+    target: Target,
+) -> None:
+    from haute._quote_store._review import review_plan
+
+    made_from_sql(target, RELEASED)
+    retyped = form(table("policy", column("region"), column("drivers"), column("value", "int")))
+    comparison = compared(target, retyped)
+    review = review_plan(comparison.plan, retyped, PROVIDERS[target.backend])
+    change = next(each for each in review if each.kind == "retype column")
+    assert change.table == "policy" and change.column == "value"
+    assert "Integer" in change.description
+    if target.backend == "sqlite":
+        assert change.disposition == "manual"
+        assert "this SQL does not perform it" in change.description
+        assert "ALTER TABLE" not in sql(target, retyped, comparison)
+    else:
+        assert change.disposition == "sql"
+        assert "Review value conversion" in change.description
+        assert "ALTER TABLE" in sql(target, retyped, comparison)
+
+    many = form(
+        table(
+            "policy",
+            column("region"),
+            column("drivers"),
+            column("value", "float"),
+            {**column("row_number", "int"), "index": "numbered"},
+            rows="many",
+        )
+    )
+    reshaped = compared(target, many)
+    changes = review_plan(reshaped.plan, many, PROVIDERS[target.backend])
+    assert len(changes) == 1
+    assert changes[0].kind == "reshape table" and changes[0].disposition == "manual"
+    assert "migrate its rows" in changes[0].description
+    assert "ALTER TABLE" not in sql(target, many, reshaped)
+
+
+def test_review_includes_every_table_for_an_empty_database() -> None:
+    from haute._quote_store._review import review_plan
+
+    comparison = compare(RELEASED, Catalogue(tables=()), provider=PROVIDERS["sqlite"])
+    changes = review_plan(comparison.plan, RELEASED, PROVIDERS["sqlite"])
+    assert {each.table for each in changes} == {"quote_details", "policy", "haute_activity"}
+    assert all(each.kind == "create table" and each.disposition == "sql" for each in changes)
 
 
 def _read_counting(target: Target) -> tuple[Catalogue, int]:
@@ -311,6 +360,121 @@ def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target
     assert target.read("SELECT zone FROM policy") == [("north",)]
 
 
+def _vehicles(index: str) -> dict[str, Any]:
+    """A many-row input table keyed by its index, named *index*."""
+    return table(
+        "vehicles", {"name": index, "type": "int", "index": "numbered"}, column("reg"), rows="many"
+    )
+
+
+def test_a_renamed_index_is_paired_with_the_databases_key_column_unasked(target: Target) -> None:
+    before = form(_vehicles("row_number"))
+    made_from_sql(target, before)
+    quote(target, before, "A-1")
+    target.run(
+        "INSERT INTO vehicles (quote_reference, quote_option, row_number, reg) "
+        "VALUES ('A-1', 1, 1, 'AB12'), ('A-1', 1, 2, 'CD34')"
+    )
+    renamed = form(_vehicles("vehicle_no"))
+
+    comparison = compared(target, renamed)
+
+    # Paired by what it is, marked renamed, and the key compared under the form's names: no
+    # key difference, no column missing, and no extra. The analyst paired nothing.
+    assert kinds(comparison) == {("vehicles", "vehicle_no", "renamed")}
+    assert comparison.extras == ()
+    assert comparison.renames == ()
+    assert [step.kind for step in comparison.plan.steps] == ["rename column"]
+    target.script(sql(target, renamed, comparison))
+    opens(target, renamed)
+    assert target.read("SELECT vehicle_no, reg FROM vehicles ORDER BY vehicle_no") == [
+        (1, "AB12"),
+        (2, "CD34"),
+    ]
+
+
+def _vehicles_of(index: str, other: str) -> dict[str, Any]:
+    """A many-row input table keyed by its index *index*, with an Integer *other*."""
+    return table(
+        "vehicles",
+        {"name": index, "type": "int", "index": "numbered"},
+        column(other, "int"),
+        rows="many",
+    )
+
+
+@pytest.mark.parametrize("index_name", ["row_number", "vehicle_name"])
+def test_live_comparison_renders_an_index_type_change_with_its_previous_column(
+    target: Target, index_name: str
+) -> None:
+    made_from_sql(target, form(_vehicles("row_number")))
+    changed = form(
+        table(
+            "vehicles",
+            {"name": index_name, "type": "str", "index": "typed"},
+            column("reg"),
+            rows="many",
+        )
+    )
+    comparison = compared(target, changed)
+
+    written = sql(target, changed, comparison)
+
+    assert f"vehicles has its index {index_name} change from an Integer to Text" in written
+    assert "make the table again as the form has it" in written
+    assert "ALTER COLUMN" not in written
+
+
+def test_an_index_paired_first_frees_its_old_name_for_a_new_column(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "seats"))
+    made_from_sql(target, before)
+    reused = form(
+        table(
+            "vehicles",
+            {"name": "vehicle_no", "type": "int", "index": "numbered"},
+            column("seats", "int"),
+            column("row_number"),
+            rows="many",
+        )
+    )
+
+    comparison = compared(target, reused)
+
+    # The database's key column is the index, whatever the form now names it: no column of
+    # the form takes it by name.
+    assert kinds(comparison) == {
+        ("vehicles", "vehicle_no", "renamed"),
+        ("vehicles", "row_number", "missing"),
+    }
+    assert comparison.plan.refusals == ()
+    target.script(sql(target, reused, comparison))
+    opens(target, reused)
+
+
+def test_an_index_renamed_onto_another_columns_name_is_refused(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "item_number"))
+    made_from_sql(target, before)
+    swapped = form(_vehicles_of("item_number", "row_number"))
+
+    comparison = compared(target, swapped)
+
+    # Paired by what it is, the index's rename onto a name the database's other column holds
+    # is refused, and so is a column added under the name the index keeps: the SQL changes
+    # nothing but keep the database's column the form no longer names, and runs.
+    assert ("vehicles", "item_number", "renamed") in kinds(comparison)
+    assert [step.kind for step in comparison.plan.steps] == ["keep column"]
+    assert len(comparison.plan.refusals) == 2
+    target.script(sql(target, swapped, comparison))
+    assert target.read("SELECT row_number, item_number FROM vehicles") == []
+
+
+def test_a_tables_rows_are_read_from_its_key(target: Target) -> None:
+    # Keyed by the identity alone, the database's table is one row a quote; by one more
+    # column, many, whatever that column is named.
+    made_from_sql(target, form(table("vehicles", column("reg"))))
+    assert ("vehicles", None, "rows") in kinds(compared(target, form(_vehicles("row_number"))))
+
+
 def test_a_pairing_the_database_no_longer_allows_is_not_taken(target: Target) -> None:
     made_from_sql(target, RELEASED)
     paired = form(table("policy", column("zone"), column("drivers")))
@@ -345,6 +509,29 @@ def test_what_no_statement_changes_is_marked_and_noted(tmp_path: Path) -> None:
     assert (
         "-- Not changed here: policy.audit is no column of the form's and takes no null" in written
     )
+
+
+@pytest.mark.parametrize("replacement", [None, "TEXT NOT NULL DEFAULT ''"])
+def test_internal_column_repairs_identify_the_field_and_keep_manual_sql_notes(
+    tmp_path: Path, replacement: str | None
+) -> None:
+    target = Target("sqlite", f"sqlite:///{(tmp_path / 'store.sqlite').as_posix()}")
+    made_from_sql(target, RELEASED)
+    assert compared(target, RELEASED).matches
+    target.run("ALTER TABLE quote_details DROP COLUMN note_at")
+    if replacement is not None:
+        target.run(f"ALTER TABLE quote_details ADD COLUMN note_at {replacement}")
+
+    comparison = compared(target, RELEASED)
+
+    assert not comparison.matches
+    assert len(comparison.differences) == (1 if replacement is None else 2)
+    assert kinds(comparison) == {("quote_details", "note_at", "store")}
+    assert not comparison.plan.steps
+    written = sql(target, RELEASED, comparison)
+    for difference in comparison.differences:
+        assert difference.message in comparison.plan.notes
+        assert f"-- Not changed here: {difference.message}" in written
 
 
 def test_a_database_whose_tables_cannot_be_read_is_said_naming_the_connection(

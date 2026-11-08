@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppQuoteActivityEntry } from "../../api/types"
-import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
+import { coverForm, detailsTable, fieldsWidget, sheetForm } from "../../workbench/__tests__/fixtures"
 import {
   activityText,
   appDetails,
@@ -31,6 +31,7 @@ import {
   sameQuote,
   savedPrice,
   valuesKey,
+  withHiddenCells,
   withoutAppDetails,
   writeDraft,
   writeSuperseded,
@@ -99,6 +100,22 @@ describe("a quote's identity and the details the app sets", () => {
     })
     expect(withoutAppDetails({ quote_details: [{ quote_reference: "ABC-1" }] })).toEqual({})
   })
+
+  it("keep what was typed into the cells a save hid as the server wrote it, with the details the app set on it", () => {
+    // The Cover sheet's year shows on a quote Ana saved last.
+    const form = coverForm()
+    form.schema.tables.unshift(detailsTable())
+    fieldsWidget(form, "w_boxes").fields.push({ table: "quote_details", column: "modified_by" })
+    form.pages[1].show_when = {
+      match: "all",
+      conditions: [{ table: "quote_details", column: "modified_by", op: "equals", values: ["ana@example.com"], field: null, days: 0 }],
+    }
+    const sent = { quote_details: [{ modified_by: "ana@example.com" }], policy: [{ state: "NY", year: "1990" }] }
+    // Jo's save hid the year, which the store keeps nothing of.
+    const answered = { quote_details: [{ modified_by: "jo@example.com" }], policy: [{ state: "NY" }] }
+
+    expect(withHiddenCells(form, answered, sent)).toEqual({ ...answered, policy: [{ state: "NY", year: "1990" }] })
+  })
 })
 
 describe("the quote store's refusals", () => {
@@ -153,7 +170,7 @@ describe("the Quotes page's columns", () => {
   })
 
   it("shows a value as its column formats it, a dash when blank and Yes or No for a tick", () => {
-    const column = { key: "k", label: "Premium", column: { ...sheetForm().schema.tables[0].columns[0], type: "float" as const, number_format: "currency_gbp" as const, decimal_places: 0 } }
+    const column = { key: "k", label: "Premium", column: { ...sheetForm().schema.tables[0].inputs[0], type: "float" as const, number_format: "currency_gbp" as const, decimal_places: 0 } }
     expect(listValue(column, 1234.4)).toBe("£1,234")
     expect(listValue(column, null)).toBe("—")
     expect(listValue({ ...column, column: null }, true)).toBe("Yes")
@@ -176,8 +193,8 @@ describe("activityText", () => {
 
   it.each([
     [entry("created"), "made it"],
-    [entry("saved", { priced_release: "rel-1" }), "saved it, priced"],
-    [entry("saved"), "saved it, unpriced"],
+    [entry("saved", { priced_release: "rel-1" }), "saved it"],
+    [entry("saved"), "saved it"],
     [entry("assigned", { assignee: "jo" }), "assigned it to jo"],
     [entry("noted", { note: "x", version: null }), "wrote the note"],
     [entry("noted", { note: "", version: null }), "cleared the note"],

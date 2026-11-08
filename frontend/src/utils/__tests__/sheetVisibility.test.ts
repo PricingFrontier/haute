@@ -18,10 +18,14 @@ import {
   neverShown,
   newCondition,
   newRowTest,
+  onPrice,
   quoteEligible,
+  quoteIndexProblems,
   quotedSchema,
   sheetVisibility,
   takesNothingTyped,
+  testableColumns,
+  testFields,
   testLabel,
   testsFor,
   totalColumns,
@@ -99,14 +103,12 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
   name,
   type: "str",
   label: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -123,9 +125,9 @@ const when = (...conditions: ShowWhen["conditions"]): ShowWhen => ({ match: "all
 
 const policy: SchemaTable = {
   name: "policy",
-  role: "input",
   rows: "one",
-  columns: [
+  outputs: [],
+  inputs: [
     column("bi", { type: "bool" }),
     column("motor", { type: "bool" }),
     column("class"),
@@ -134,15 +136,15 @@ const policy: SchemaTable = {
     column("start", { type: "date" }),
   ],
 }
-const items: SchemaTable = { name: "items", role: "input", rows: "many", columns: [column("item")] }
+const items: SchemaTable = { name: "items", rows: "many", outputs: [], inputs: [column("item")] }
 /** `items` with an index, which nothing is typed into, and a number column, which a total takes. */
 const valued: SchemaTable = {
   ...items,
-  columns: [column("row", { type: "int", index: true }), ...items.columns, column("value", { type: "float" })],
+  inputs: [column("row", { type: "int", index: "numbered" }), ...items.inputs, column("value", { type: "float" })],
 }
-const premium: SchemaTable = { name: "premium", role: "output", rows: "one", columns: [column("premium", { type: "float" })] }
+const premium: SchemaTable = { name: "premium", rows: "one", inputs: [], outputs: [column("premium", { type: "float" })] }
 
-const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({ number: null,
+const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({ name: id,
   id,
   type: "collection",
   title: id,
@@ -178,20 +180,20 @@ const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium])
 describe("withPrice", () => {
   const counts: SchemaTable = {
     name: "premium",
-    role: "output",
     rows: "one",
-    columns: [column("referral_count", { type: "int" }), column("rate_adequacy", { type: "float" })],
+    inputs: [],
+    outputs: [column("referral_count", { type: "int" }), column("rate_adequacy", { type: "float" })],
   }
-  const reasons: SchemaTable = { name: "reasons", role: "output", rows: "many", columns: [column("reason")] }
+  const reasons: SchemaTable = { name: "reasons", rows: "many", inputs: [], outputs: [column("reason")] }
   const on = (condition: Partial<Condition>): ShowWhen => ({
     match: "all",
     conditions: [{ table: "premium", column: "referral_count", op: "above", values: ["0"], field: null, days: 0, ...condition }],
   })
   const referred = on({})
   const rect = { x: 0, y: 0, w: 400, h: 120 }
-  const grid = (id: string, showWhen: ShowWhen = ALWAYS): Widget => ({ ...createWidget("tableInput", rect), id, fields: [{ table: "reasons", column: "reason" }], show_when: showWhen })
+  const grid = (id: string, showWhen: ShowWhen = ALWAYS): Widget => ({ ...createWidget("tableInput", rect, formOf([])), id, fields: [{ table: "reasons", column: "reason" }], show_when: showWhen })
   const anyReason: ShowWhen = { match: "all", conditions: [{ table: "reasons", rows: "any", where: [{ column: "reason", op: "filled", values: [], field: null, days: 0 }] }] }
-  const heading = (id: string, showWhen: ShowWhen): Widget => ({ ...createWidget("heading", { ...rect, h: 40 }), id, text: "Check the rate", show_when: showWhen })
+  const heading = (id: string, showWhen: ShowWhen): Widget => ({ ...createWidget("heading", { ...rect, h: 40 }, formOf([])), id, text: "Check the rate", show_when: showWhen })
   const summary: Widget = {
     ...(collection("w_summary", [["premium", "referral_count"], ["premium", "rate_adequacy"]]) as Extract<Widget, { type: "collection" }>),
     column_looks: [{ table: "premium", column: "rate_adequacy", ...PLAIN_COLUMN_LOOK, show_when: referred }],
@@ -268,8 +270,8 @@ describe("withPrice", () => {
     expect(takesNothingTyped(form, main)).toBe(false)
     expect(takesNothingTyped(form, inputs)).toBe(false)
     expect(takesNothingTyped(form, inputs.sections[0])).toBe(false)
-    expect(takesNothingTyped(form, { ...createWidget("chart", rect), fields: [{ table: "policy", column: "sum_insured" }] })).toBe(true)
-    expect(takesNothingTyped(form, { ...createWidget("export", rect) })).toBe(false)
+    expect(takesNothingTyped(form, { ...createWidget("chart", rect, form), fields: [{ table: "policy", column: "sum_insured" }] })).toBe(true)
+    expect(takesNothingTyped(form, { ...createWidget("export", rect, form) })).toBe(false)
   })
 })
 
@@ -281,7 +283,8 @@ describe("quoteEligible", () => {
     schema: {
       tables: typedQuotes.form.schema.tables.map((table) => ({
         ...table,
-        columns: table.columns.map(({ name, ...set }) => column(name, set as Partial<SchemaColumn>)),
+        inputs: table.inputs.map(({ name, ...set }) => column(name, set as Partial<SchemaColumn>)),
+        outputs: table.outputs.map(({ name, ...set }) => column(name, set as Partial<SchemaColumn>)),
       })) as SchemaTable[],
     },
     pages: typedQuotes.form.pages.map((sheet) =>
@@ -292,9 +295,13 @@ describe("quoteEligible", () => {
     ),
   }
 
-  it.each(typedQuotes.cases)("says whether $name is typed as the server does", ({ values, locked, typed }) => {
+  it.each(typedQuotes.cases)("says whether $name is typed as the server does", (testCase) => {
+    const { values, locked, typed } = testCase
     const appSet = new Set(locked.map(([table, columnName]) => columnKey(table, columnName)))
     expect(quoteEligible(form, values as RowsByTable, appSet)).toBe(typed)
+    if ("index_problems" in testCase) {
+      expect(quoteIndexProblems(form, values as RowsByTable).map((problem) => problem.message)).toEqual(testCase.index_problems)
+    }
   })
 })
 
@@ -324,7 +331,7 @@ describe("quotedSchema", () => {
   it("removes the hidden columns alone, and is the schema itself when nothing is hidden", () => {
     const schema = { tables: [policy, items] }
     const quoted = quotedSchema(schema, new Set([columnKey("policy", "class"), columnKey("policy", "start")]))
-    expect(quoted.tables[0]).toEqual({ ...policy, columns: [policy.columns[0], policy.columns[1], policy.columns[3], policy.columns[4]] })
+    expect(quoted.tables[0]).toEqual({ ...policy, inputs: [policy.inputs[0], policy.inputs[1], policy.inputs[3], policy.inputs[4]] })
     expect(quoted.tables[1]).toBe(items)
     expect(schema.tables[0]).toBe(policy)
     expect(quotedSchema(schema, new Set())).toBe(schema)
@@ -333,12 +340,12 @@ describe("quotedSchema", () => {
   it("keeps quote_details whole whatever the sheets hide, but for the columns the store keeps alone", () => {
     const details: SchemaTable = {
       name: "quote_details",
-      role: "input",
       rows: "one",
-      columns: [column("quote_name"), column("stage"), column("insured")],
+      outputs: [],
+      inputs: [column("quote_name"), column("stage"), column("insured")],
     }
     const quoted = quotedSchema({ tables: [details] }, new Set([columnKey("quote_details", "quote_name")]))
-    expect(quoted.tables[0].columns.map((each) => each.name)).toEqual(["quote_name", "insured"])
+    expect(quoted.tables[0].inputs.map((each) => each.name)).toEqual(["quote_name", "insured"])
   })
 })
 
@@ -395,7 +402,7 @@ describe("the tests each type takes", () => {
 })
 
 describe("valueFits", () => {
-  const [, , text, whole, decimal, day] = policy.columns
+  const [, , text, whole, decimal, day] = policy.inputs
 
   it("takes text other than blank, numbers as the server types them, whole for an Integer, and real days", () => {
     expect([valueFits(text, "Motor"), valueFits(text, "  "), valueFits(text, "")]).toEqual([true, false, false])
@@ -451,7 +458,7 @@ describe("conditionFault", () => {
     expect(fault({ ...against("class"), column: "class" })).toBeNull()
     expect(fault({ ...against("start"), column: "start", op: "above", days: -30 })).toBeNull()
     expect(fault(against("gone"))).toBe("tests class against a field that is no longer in the schema")
-    expect(fault(against("premium", "premium"))).toBe("tests class against premium, which is in an output table")
+    expect(fault(against("premium", "premium"))).toBe("tests class against premium, which is an output")
     expect(fault(against("item", "items"))).toBe("tests class against item, which is in a table with many rows")
     expect(fault({ ...against("class"), op: "filled" })).toBe('tests class with "is filled" against class, where it takes no value')
     expect(fault({ ...against("class"), op: "one_of" })).toBe('tests class with "is one of" against class, where it takes values typed')
@@ -501,6 +508,66 @@ describe("conditionFault", () => {
     expect(conditionFault(priced, { ...sum, column: "gone" })).toBe("totals a column that is no longer in the schema")
     expect(conditionFault(priced, { ...sum, value: " " })).toBe("needs a number to compare its total of value with")
     expect(conditionFault(priced, { ...sum, value: "lots" })).toBe('compares its total of value with "lots", which isn\'t a number')
+  })
+})
+
+describe("a table of both blocks", () => {
+  // An equipment schedule's items, typed, and each item's premium, priced: one table.
+  const equipment: SchemaTable = {
+    name: "equipment",
+    rows: "many",
+    inputs: [column("row_number", { type: "int", index: "numbered" }), column("item"), column("value", { type: "float" }), column("cap", { type: "float" })],
+    outputs: [column("premium", { type: "float" }), column("referral")],
+  }
+  const cover: SchemaTable = { name: "cover", rows: "one", inputs: [column("limit", { type: "float" })], outputs: [column("rate", { type: "float" })] }
+  const breakdown: SchemaTable = { name: "breakdown", rows: "many", inputs: [], outputs: [column("peril", { index: "typed" }), column("share", { type: "float" })] }
+  const form = formOf([page("p", [])], [cover, equipment, breakdown])
+  const test = (columnName: string, op: RowTest["op"] = "filled", values: string[] = []): RowTest => ({ column: columnName, op, values, field: null, days: 0 })
+
+  it("tests the price by block: an output, a table's rows whose tests or total name one, or the rows of a table of outputs alone", () => {
+    const on = (condition: Parameters<typeof onPrice>[1]) => onPrice(form, condition)
+    expect(on({ table: "cover", column: "rate", op: "filled", values: [], field: null, days: 0 })).toBe(true)
+    expect(on({ table: "cover", column: "limit", op: "filled", values: [], field: null, days: 0 })).toBe(false)
+    expect(on({ table: "equipment", rows: "any", where: [test("premium")] })).toBe(true)
+    expect(on({ table: "equipment", rows: "any", where: [test("item")] })).toBe(false)
+    expect(on({ table: "equipment", total: "sum", column: "premium", where: [], op: "above", value: "0" })).toBe(true)
+    // A count without tests of a table with inputs counts its typed rows; of a table of outputs alone, its priced rows.
+    expect(on({ table: "equipment", where: [], op: "at_least", count: 1 })).toBe(false)
+    expect(on({ table: "breakdown", where: [], op: "at_least", count: 1 })).toBe(true)
+  })
+
+  it("faults a condition on rows naming both blocks, and a test against an output", () => {
+    expect(conditionFault(form, { table: "equipment", rows: "any", where: [test("value", "above", ["1"]), test("premium", "above", ["0"])] })).toBe(
+      "tests both inputs and outputs of equipment: a condition on its rows tests one or the other",
+    )
+    expect(conditionFault(form, { table: "equipment", total: "sum", column: "premium", where: [test("item")], op: "above", value: "0" })).toBe(
+      "totals both inputs and outputs of equipment: a condition on its rows tests one or the other",
+    )
+    expect(conditionFault(form, { table: "equipment", rows: "any", where: [{ ...test("value", "above"), field: "cap" }] })).toBeNull()
+    expect(conditionFault(form, { table: "equipment", rows: "any", where: [{ ...test("value", "above"), field: "premium" }] })).toBe("tests value against premium, which is an output")
+    expect(conditionFault(form, { table: "cover", column: "limit", op: "above", values: [], field: { table: "cover", column: "rate" }, days: 0 })).toBe(
+      "tests limit against rate, which is an output",
+    )
+    expect(conditionFault(form, { table: "equipment", rows: "any", where: [test("premium", "above", ["0"]), test("referral")] })).toBeNull()
+  })
+
+  it("offers a test of an input the inputs of its block alone, and an output none", () => {
+    const [, , value] = equipment.inputs
+    expect(testFields(form.schema, "equipment", value).map(({ column: other }) => other.name)).toEqual(["cap"])
+    expect(testFields(form.schema, "equipment", equipment.outputs[0])).toEqual([])
+    expect(testFields(form.schema, "cover", cover.inputs[0])).toEqual([])
+    expect(testableColumns(equipment).map((each) => each.name)).toEqual(["item", "value", "cap", "premium", "referral"])
+  })
+
+  it("starts a new condition on the first table's inputs, never its outputs", () => {
+    expect(newCondition(formOf([page("p", [])], [breakdown, equipment]))).toEqual({ table: "equipment", rows: "any", where: [test("item", "equals")] })
+    expect(newCondition(formOf([page("p", [])], [cover]))).toEqual({ table: "cover", column: "limit", op: "equals", values: [], field: null, days: 0 })
+    expect(newCondition(formOf([page("p", [])], [breakdown]))).toBeNull()
+  })
+
+  it("leaves out of the quote an input the sheets hide, never an output", () => {
+    const shown = formOf([page("p", [collection("w", [["cover", "limit"], ["cover", "rate"]], when(ticked("cover", "gone")))])], [cover, equipment])
+    expect([...sheetVisibility(shown, {}).hidden]).toEqual([columnKey("cover", "limit")])
   })
 })
 
@@ -671,14 +738,14 @@ describe("the editor's steps", () => {
 
   it("starts a condition on the first one-row input table's first column, else in any row of a many-row one's, or none without one", () => {
     expect(newCondition(form)).toEqual({ table: "policy", column: "bi", op: "ticked", values: [], field: null, days: 0 })
-    expect(newCondition(formOf([page("p", [])], [items, premium, { ...policy, columns: [] }]))).toEqual({
+    expect(newCondition(formOf([page("p", [])], [items, premium, { ...policy, inputs: [] }]))).toEqual({
       table: "items",
       rows: "any",
       where: [{ column: "item", op: "equals", values: [], field: null, days: 0 }],
     })
     // A many-row table's index takes no typing, so it is never tested.
-    const numbered = { ...items, columns: [column("row", { type: "int", index: true })] }
-    expect(newCondition(formOf([page("p", [])], [numbered, premium, { ...policy, columns: [] }]))).toBeNull()
+    const numbered = { ...items, inputs: [column("row", { type: "int", index: "numbered" })] }
+    expect(newCondition(formOf([page("p", [])], [numbered, premium, { ...policy, inputs: [] }]))).toBeNull()
   })
 
   it("moves a condition to another column, its test and values kept while they fit", () => {
@@ -702,7 +769,7 @@ describe("the editor's steps", () => {
     expect(withConditionRowsOf(form, switched, "items")).toEqual({ table: "items", rows: "any", where: [{ column: "item", op: "filled", values: [], field: null, days: 0 }] })
     const every: RowsCondition = { table: "items", rows: "every", where: [{ column: "item", op: "filled", values: [], field: null, days: 0 }] }
     expect(withConditionRowsOf(form, every, "items")).toBe(every)
-    expect(() => withConditionRowsOf(formOf([page("p", [])], [policy, { ...items, columns: [] }]), years, "items")).toThrow(/items/)
+    expect(() => withConditionRowsOf(formOf([page("p", [])], [policy, { ...items, inputs: [] }]), years, "items")).toThrow(/items/)
 
     // Back to a one-row table's column, its test of that column kept, else its first test of a row's.
     expect(withConditionColumn(form, every, "policy", "class")).toEqual({ table: "policy", column: "class", op: "filled", values: [], field: null, days: 0 })
@@ -720,8 +787,8 @@ describe("the editor's steps", () => {
   })
 
   it("moves a test against another field to its table's rows and back, keeping the field while it is a column of the table", () => {
-    const cover: SchemaTable = { name: "cover", role: "input", rows: "one", columns: [column("from", { type: "date" })] }
-    const dated: SchemaTable = { ...policy, columns: [...policy.columns, column("end", { type: "date" })] }
+    const cover: SchemaTable = { name: "cover", rows: "one", outputs: [], inputs: [column("from", { type: "date" })] }
+    const dated: SchemaTable = { ...policy, inputs: [...policy.inputs, column("end", { type: "date" })] }
     const one = formOf([page("p", [])], [dated, cover, premium])
     // The table switched to many rows since the condition was made.
     const many = formOf([page("p", [])], [{ ...dated, rows: "many" }, cover, premium])
@@ -759,11 +826,11 @@ describe("the editor's steps", () => {
     })
     // Without a column to test, or a number column to total, there is none to start.
     expect(() => withListKind(form, any, "sum")).toThrow(/number column/)
-    const bare = formOf([page("p", [])], [policy, { ...items, columns: [] }])
+    const bare = formOf([page("p", [])], [policy, { ...items, inputs: [] }])
     expect(() => withListKind(bare, { table: "items", where: [], op: "equals", count: 0 }, "any")).toThrow(/items/)
     expect(totalColumns(valued).map((column) => column.name)).toEqual(["value"])
     expect(newRowTest(valued)).toEqual({ column: "item", op: "equals", values: [], field: null, days: 0 })
-    expect(newRowTest({ ...valued, columns: [valued.columns[0]] })).toBeNull()
+    expect(newRowTest({ ...valued, inputs: [valued.inputs[0]] })).toBeNull()
   })
 
   it("moves a test of a row to another column of its table, its test and values kept while they fit", () => {
@@ -775,7 +842,7 @@ describe("the editor's steps", () => {
 
   it("gives a condition another test, its values kept while their number and the column take them", () => {
     const oneOf: Condition = { table: "policy", column: "years", op: "one_of", values: ["2.5", "3", "4"], field: null, days: 0 }
-    const years = policy.columns.find((candidate) => candidate.name === "years")
+    const years = policy.inputs.find((candidate) => candidate.name === "years")
     expect(withConditionTest(years, oneOf, "filled").values).toEqual([])
     expect(withConditionTest(years, oneOf, "equals").values).toEqual([])
     expect(withConditionTest(years, { ...oneOf, values: ["3", "4"] }, "equals")).toEqual({ ...oneOf, op: "equals", values: ["3"], field: null, days: 0 })

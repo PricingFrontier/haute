@@ -5731,7 +5731,7 @@ class TestBriefBoundaries:
         from tests._workbench_helpers import form_table, workbench_project
 
         use_project(tmp_path)
-        workbench_project(tmp_path, [form_table("policy", "input", ("state", "str"))])
+        workbench_project(tmp_path, [form_table("policy", ("state", "str"))])
         briefed: list[list[str]] = []
 
         def ports(_graph, flat):
@@ -5747,8 +5747,8 @@ class TestBriefBoundaries:
         workbench_project(
             tmp_path,
             [
-                form_table("policy", "input", ("state", "str")),
-                form_table("items", "input", ("value", "float"), many=True),
+                form_table("policy", ("state", "str")),
+                form_table("items", ("value", "float"), many=True),
             ],
         )
         _tools._cached_brief_nodes(graph, "revision")

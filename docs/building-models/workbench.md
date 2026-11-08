@@ -52,7 +52,7 @@ when one of the workbench's files changed on disk since the workbench read them 
 by hand, or a branch switched outside Haute), and then the pipeline is not saved either;
 the banner's **Reload** reads them again, dropping your unsaved edits. When one of them
 changes on disk (an edit by hand, a pull, or a branch switched), the workbench follows
-it, unless you have unsaved edits, when the banner appears instead. A layout file that
+it, unless you have unsaved edits, when the banner appears instead. A sheet file that
 leaves a component below its section or past its sheet's edge, as a merge or an edit by
 hand can, opens with that section or sheet grown to hold it, nothing moved: a notice
 says what grew, and the next save keeps it.
@@ -62,18 +62,21 @@ Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 ## The workbench's files
 
 The workbench keeps what it holds in the pipeline folder's `workbench/` folder, a JSON
-file for each part, so a pull request shows each change in the file of the table or
-sheet it changed. A save writes only the files that changed.
+file for each part, so a pull request shows each change in the file of the table, sheet
+or component it changed. A save writes only the files that changed: moving or resizing
+components changes only their sheet's file, and changing what a component shows or how
+it looks changes only its own.
 
 | File | What it holds |
 |---|---|
 | `workbench/form.json` | The project's name, the sheets' colours set under **Display** in the toolbar, and the order of the tables and of the sheets |
-| `workbench/schema/<table>.json` | A table: its role, its rows and its columns with their settings. `quote_details.json` holds only what the project sets on Haute's own table |
-| `workbench/sheets/<sheet>.json` | A sheet: its sections, and their components with what they show and how they look |
-| `workbench/sheets/<sheet>.layout.json` | Where the sheet's components sit: the sheet's width, each section's height, and each component's place and size |
-| `workbench/sample/<table>.json` | The sample's rows for an input table, while it has any |
+| `workbench/schema/<table>.json` | A table: its rows, its inputs and its outputs, each column with its settings. `quote_details.json` holds only what the project sets on Haute's own table |
+| `workbench/sheets/<sheet>.json` | A sheet: its width and its sections, each with its height and, by name, the components in it and where each sits |
+| `workbench/components/<component>.json` | A component: what it shows and how it looks |
+| `workbench/sample/<table>.json` | The sample's rows for a table with inputs, while it has any |
 
-A table's files are named after the table in lower case, and a sheet's after its title
+A table's files are named after the table in lower case, a component's after its
+**Component name** in lower case, and a sheet's after its title
 (**BR Coverages** is `br_coverages.json`). Each file says only what is set: a setting left
 at its default is not written. A component names a column as `table.column`, or by the
 column's name alone where its table is already given. A table and a column are known by
@@ -100,34 +103,83 @@ not added or moved. Clear it, or press Escape in it, to see the whole schema aga
 sheet stays where it is under the pane, and the pane stays open as you switch sheets or go
 to Preview, where it shows the schema without letting you change it.
 
-The schema holds the tables the sheets work with, and the pipeline's tables. Each table has a name, a role —
-**Input**, sent to the pricing engine, or **Output**, returned by it — and its rows: **One
-row** per quote, such as policy details, or **Many rows**, such as an equipment schedule.
-Each column has a type (Text, Integer, Decimal, True/false or Date, drawn as the step editor
-draws a value of that kind and changed from its marker), a name and, in a many-row table,
-whether it is a **key**, part of what says which row is which. **Label, help, rules and
+The schema holds the tables the sheets work with, and the pipeline's tables. Each table has a
+name, its rows (**One row** per quote, such as policy details, or **Many rows**, such as an
+equipment schedule) and its columns under two headings: **Inputs**, which the underwriter
+types and the pricing engine is sent, and **Outputs**, which pricing returns. A table can
+have either or both: an equipment schedule's inputs are each item's details and its outputs
+each item's premium, so the sheets, the saved quotes and your reports keep an item and its
+price on one row. **Add table** starts with **Add inputs** and **Add outputs**, so you choose
+which side to create first. The automatic key fields remain visible without an Inputs
+heading until you choose. Either action adds the first column and focuses its name;
+that side then has its heading and **Add column**. The other side remains available
+through its Add action, which also accepts a column dragged from the other side.
+Removing or moving away a side's last ordinary column restores its Add action.
+Each populated heading has its own **Add column**, and a column dragged from one
+heading to the other moves there. Each column has a type (Text, Integer, Decimal, True/false
+or Date, drawn as the step editor draws a value of that kind and changed from its marker)
+and a name. **Label, help, rules and
 format** beside a column opens its details: its label; its **group**, a name you give the
 columns that belong together (type the same group on each; the table's groups are offered
 as you type), which a Table can show over its labels; its **help**, shown as a
 small mark beside the label on the sheets; for an Integer or a Decimal, its **format**
 (General, Number, Percentage or a currency), decimal places and thousands separators, as
-the Explore pivot offers them; and, in an input table, its **default**, its
+the Explore pivot offers them; and, for an input, its **default**, its
 **placeholder**, what an empty cell shows (any type but True/false and Date), and the
 rules an underwriter's value must meet: required, a range for a number, the allowed
 values. A number shows in its format wherever the sheets show it, and in its default, a
 percentage as the value times 100, so you type 0.125 for 12.5%; while you type into a cell
-or the default it shows as typed, and what is typed is what is saved and priced. Under
-each column's name, a line sums up what is set: required, its range and default, shown in
-its format, its allowed values, and a number's format and decimal places.
+or the default it shows as typed, and what is typed is what is saved and priced. To the
+right of each column's name, a line sums up what is set: required, its range and default,
+shown in its format, its allowed values, and a number's format and decimal places.
 
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
 **quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
 quotes are put together, in the app's saved quotes, in exports and in joins. They come
-first and are locked: they cannot be renamed, retyped, moved or removed, take no label,
+first, under Inputs, or under Outputs in a table with no inputs; in an empty table they
+show without a block heading above the Add choices. They are locked, their
+names on grey: they cannot be renamed, retyped, moved or removed, take no label,
 group, help, rules, default or format, and are not offered to the sheets, where
-`quote_details`' own stand for them. They are not a key: rows still line up by the table's
-own key. A table you add has them at once, and a project saved before them takes them on
-when it is opened.
+`quote_details`' own stand for them. They key every table: a one-row table's row is the
+quote's, and a many-row table's rows are told apart by its index. A table you add has them
+at once. A table with both headings shows them under Outputs too, on grey, with a
+many-row table's index after them, since every row the pricing returns carries them.
+The name cells of `quote_reference`, `quote_option` and the table's index have a light
+blue outline, including the copies under Outputs and the identity in `quote_details`.
+An index keeps that outline when renamed.
+
+After them, a many-row table has its **index**, `table_index` until you rename it. Haute
+adds it as the table switches to **Many rows**, and it is the only other key a table has,
+with no key toggle to set. In a table with inputs it is the first input; in a table of
+outputs alone it is the first output. It is also each row's key in the saved quotes (see
+[Reading quotes with SQL](#reading-quotes-with-sql)), so name it for what the rows are,
+such as `item_number`, `location_name` or `peril`; its label is what the sheets show. It is
+an **Integer** or **Text**, and gets its values one of three ways, chosen inside its
+config panel (open the sliders button beside the field):
+
+- **Numbered**, a new index's: Haute numbers the rows 1, 2, 3, as the sheets number them in
+  a table with inputs, and in the order pricing returns them in a table of outputs alone.
+  Nobody types it and the pipeline never fills it. A Text index holds the numbers as text,
+  still in number order.
+- **Typed**: the underwriter types it on each row, such as each location's name. Every row
+  holding anything needs one and no two rows of a quote can share one; the cell is marked
+  and the quote is neither priced nor saved until it is put right. In a table of outputs
+  alone the pricing returns it instead, a value on each row and no two the same.
+- **A row for each value**: its allowed values come from a params file's column (below),
+  and the table has exactly one row for each of them, in their order. In a table of outputs
+  alone the pricing returns a row for each value it prices, none twice and none outside
+  the list.
+
+A Text index's values are at most 255 Unicode characters and 366 UTF-16 code units.
+Supplementary Unicode characters use two units each; the combined limits keep the
+index and quote identity within SQL Server's key size. The index takes a label, a group, help,
+an Integer's number format and a typed one's placeholder, but no Required, range or
+default, and it can be renamed but not moved or removed.
+
+Each output belongs to the row holding the same index value, so the pipeline must carry the
+index through to the rows it returns: pricing fails, saying which table and values, when a
+row it returns has no index value, repeats one, or has one no row of the quote holds. A row
+the pricing returns nothing for shows dashes.
 
 A column's **allowed values** come from a CSV in the pipeline's params folder
 (`rating/files/params/`, **params** in the Pipeline files panel); they are never typed in.
@@ -142,49 +194,52 @@ values (gone, unreadable, with no values or more than 5,000) says why under them
 an older form may hold, show beside **Allowed** as typed in and are named among the
 schema's problems until they are read from a params file or taken away.
 
-In a many-row input table, **Rows** under a column's allowed values gives the table **a row
-for each** of them, in their order. A `coverage` table whose `peril` column takes its values
-from `perils.csv` (AOP, EQ, NW, WD, SCS, FLD) then has exactly six rows, one for each peril,
-and the underwriter types the other columns on each. The Tables that show it have those rows
-and no rows can be inserted or deleted; the peril cells show the peril and take no typing. A Table showing
-it beside another table whose rows differ shows every row of both and says their rows do
-not line up. Every row goes
-to the pipeline once the quote is priced, a peril with nothing else typed included, but the
-perils alone are not typing: a quote holding nothing else is not priced, marked or saved.
-The rows follow the params file: refresh the values, or build the app, and a new peril gets
-a row, while what was typed for a peril stays with it. Only one column in a table gives its
-rows, so ticking another unticks the first. Make the column the table's key if an output
-table keyed by peril should line up with the rows.
+An index that gives **a row for each value** takes its allowed values as any column does. A
+`coverage` table whose index, renamed `peril` and made Text, takes its values from
+`perils.csv` (AOP, EQ, NW, WD, SCS, FLD) has exactly six rows, one for each peril, and the
+underwriter types the other columns on each. The Tables that show it have those rows and no
+rows can be inserted or deleted; the peril cells show the peril and take no typing. A
+Table showing it beside another table whose rows differ shows every row of both and says
+their rows do not line up. Every row goes to the pipeline once the quote is priced, a peril
+with nothing else typed included, but the perils alone are not typing: a quote holding
+nothing else is not priced, marked or saved. The rows follow the params file: refresh the
+values, or build the app, and a new peril gets a row, while what was typed for a peril
+stays with it. Each output row pricing returns lines up with its peril's row.
 
 A column's **default** is the value a new quote starts with in it, as if the underwriter
 had typed it: ticked or not for a True/false, one of its allowed values when it has some,
-a date for a Date, or typed. Only a one-row input table's columns take one. Build shows a
+a date for a Date, or typed. Only a one-row table's inputs take one. Build shows a
 new quote with its defaults, and the underwriter app's **New quote** window starts with them; the
 sample you type in Preview, and a quote made from another quote, keep their own values. A
 quote holding nothing but its defaults is not priced, marked or saved until something is
 typed, and a value typed equal to its default counts as the default.
 
-- Enter in the last column's name adds the next column; in any other column's name it just
-  keeps what you typed. A column added, by Enter or **Add column**, takes the type of the
-  column above it: Text when it is the table's first or comes under the index.
-- Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
-  it within its table. Drag a table by the grip beside its name, or press Alt+Up and
-  Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.
-- **Add index** on a many-row table adds a column first in the table after
-  **quote_reference** and **quote_option**, `row_number` until renamed, that numbers the
-  rows from 1. It is an Integer and can be the table's key.
+- Enter in the last column's name under a populated heading adds the next column there; in any other
+  column's name it just keeps what you typed. A column added, by Enter or **Add column**,
+  takes the type of the column above it: Text when it is the first under its heading or
+  comes under the index.
+- Drag a column by the grip at its left to move it within its heading or to the other one,
+  or press Alt+Up and Alt+Down in its name to move it within its heading. A column moved to
+  Outputs loses its default, its allowed values and range and the values typed into it in
+  the sample, which only an input has. Drag a table by the grip beside its name, or press
+  Alt+Up and Alt+Down in its name, to move the table. A grip shows while the pointer is over
+  its row.
+- The index comes first under Inputs, or under Outputs in a table of outputs alone, after
+  **quote_reference** and **quote_option**, and moves between them as the table gains or
+  loses its inputs, keeping its name, type and how it gets its values. It goes when the
+  table switches to one row.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
-  held to the rules a Quote Input's labels follow (an identifier, no reserved name, unique
-  whatever its case), a column's name is an identifier that is not a Python keyword, unique
-  in its table, a many-row table needs a key, an input column's range must not be inverted
-  and its allowed values must be of its type and read from a params file, a True/false or
-  Date column can have none, a default must be a value the column takes (of its type,
-  in its range, one of its allowed values), and only one column in a table gives it a row
-  for each value. Changing a column's type drops the rules and
-  the format the new type cannot have, a row for each value going with the allowed values,
-  and the default when it becomes or stops being
-  True/false, or becomes a Date while it is not a date; switching a table to many rows
-  clears its defaults, and to one row its keys and its row for each value.
+  an identifier, unique whatever its case, and its pipeline names, the name with `_input`
+  and `_output`, are held to the rules a Quote Input's labels follow, a column's name is an
+  identifier that is not a Python keyword, unique in its table across both headings, an
+  input column's range must not be inverted and its allowed values must be of its type and
+  read from a params file, a True/false or Date column can have none, an index that gives a
+  row for each value needs allowed values, distinct in its type, and a default must be a
+  value the column takes (of its type, in its range, one of its allowed values). Changing a
+  column's type drops the rules and the format the new type cannot have, and the default
+  when it becomes or stops being True/false, or becomes a Date while it is not a date;
+  switching a table to many rows clears its defaults and gives it its index, and to one
+  row takes the index away.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 - A column of a table's own named **quote_reference** or **quote_option**, as a project saved before
   Haute kept those names may hold, keeps its place and its values, and the table goes
@@ -301,7 +356,13 @@ light grey, dark grey and black, then eight hues) or a colour of your own from t
 square, and the sheet shows a colour as you pick it. They apply wherever the
 sheets show, Preview and the underwriter app included.
 
-Select a component to open its properties on the right: its title, when it shows (see
+Select a component to open its properties on the right. Each starts with its **Component
+name**, which names the component's file in `workbench/components/`; underwriters never
+see it. A new component is named after its kind (`table_1`, `chart_1`) and a copy after
+its original (`layers_2`), so rename one to say what it holds. A name is letters, digits
+and `_`, not starting with a digit, and no other component's, whatever its case.
+
+The rest of a component's properties are its title, when it shows (see
 [Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)), its layout (the rows a
 Table starts with, whether they are **fixed**, with no rows inserted or deleted, and whether it is
 **transposed**, or a Collection's columns across), a Table's **look** (see
@@ -312,10 +373,11 @@ Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its k
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
 rows of many-row tables, or Row number), its **Legend**, and whether it is **Stacked**,
 **Horizontal** and shows **Data labels**; its fields come from any table, number columns
-other than an index. A grid holds one kind of row, so once a Table or a Chart shows a
-field, tables whose rows do not line up with it (keyed differently) are greyed out; an
-input table and an output table with the same key line up, so each row can show its
-premium. Output columns are shaded. A transposed Table turns its grid on its side: each
+other than a numbered index. A grid holds one kind of row, so once a Table or a Chart shows a
+field, tables whose rows do not line up with it are greyed out. A table's inputs and
+outputs always line up; a numbered index lines up with no other table, two typed indexes
+of the same name and type line up, and two indexes taking a row for each value of the same
+params file's column, of the same type, line up, so each row can show its premium. Output columns are shaded. A transposed Table turns its grid on its side: each
 field is a line, labelled at its left, and each row is a column, numbered along the top;
 its stripes and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
 in one schema group share a heading over their labels, as merged cells over a table's
@@ -342,8 +404,10 @@ though an Export keeps its file name, headers and values between CSV and Excel.
   **Parameters** for each `:name` in the query, where you choose the one-row input column
   whose value it takes. **Into** is the input table it fills. For a many-row table,
   **Rows** says whether the rows it brings **Replace** the table's rows, **Append** to
-  them, or **Update by key**, matching rows on the table's keys. **Columns** lists the
-  table's columns an underwriter types; a column is read from the column of the same name
+  them, or **Update by key**, matching rows on the table's index; a table with a row for
+  each value only takes Update by key, and leaves out a row whose value is not one of its
+  values. **Columns** lists the table's columns an underwriter types, a typed index
+  included; a column is read from the column of the same name
   or label, whatever its case, unless you type the name it has in the file or the query's
   answer.
 - An Export tick-lists the **Tables** it writes, inputs and outputs alike. To a **CSV**
@@ -369,7 +433,7 @@ selected so you can drag it into place; a column deleted from the schema since y
 it is left out of the copy. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
 Heading with no text, a column no longer in the schema, a table of the other kind, a
-Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
+Chart's field that is not a number or is a numbered index, tables whose rows do not line up, a pie
 of many rows with more than one field, an Import or an Export with no label or missing
 what its format needs — gets a dashed frame that names the problem. Tab,
 and a screen reader, go through the sheet section by section, each section's bar and then
@@ -619,7 +683,7 @@ starts with its rows, empty; the first value you type keeps them, and from then 
 rows are yours to insert and delete, fewer than it started with too, though a Table of fixed
 rows never shows fewer. Change a Table's rows while building and Preview shows it: empty
 rows after the last one you typed into go, or more are added. A Table showing a table that
-has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
+gives a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
 say. Each cell is the control its
 column calls for: a tick box, a dropdown of the allowed values, a date picker, or a text
 field. An empty cell is blank, or shows its column's placeholder, a number column's in
@@ -642,10 +706,13 @@ its columns' defaults and nothing else; **Undo** brings back what it cleared. Th
 sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
 column's rules (a required cell left empty, a number that is not one, a whole number that
 is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is
-outlined, naming the problem when you hover, and priced all the same. When pricing fails —
+outlined, naming the problem when you hover, and priced all the same. A typed index left
+blank on a row holding anything, repeated, or beyond either Text index length limit is outlined too,
+and stops the pricing until it is put right. When pricing fails —
 no Workbench Output on the pipeline, a value that does not fit its column — the toolbar
-says why. An output table with nothing connected, or an output column the pipeline doesn't
-fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
+says why, as it does when the pipeline returns output rows that do not fit their table's
+rows (an index value missing, repeated or on no row). A table's outputs with nothing connected, or an
+output the pipeline doesn't fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
 
 ### Test quotes
 
@@ -668,7 +735,7 @@ the panel saves the project first when it has unsaved changes.
 - **Run all**, or **Run** with quotes ticked, prices each one again, one at a time, and
   marks it **Unchanged**, **Moved**, **No longer compares** or **Failed**. Click a quote to
   see what moved: each field, with the value it was accepted at beside the new one. A
-  schedule's rows are matched by the columns you mark as its keys. **Stop** ends a run after
+  schedule's rows are matched by its index's value. **Stop** ends a run after
   the quote being priced.
 - **Accept** (the tick beside a quote), or **Accept all**, prices it again and keeps the new
   answer as the one it is compared with. A quote changed since the run, or a pipeline
@@ -764,7 +831,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   - for each output field both releases have, how many quotes it moved in, and its largest
     rise and fall;
   - each quote whose prices moved, with production's value, staging's and the change; a
-    schedule's rows are matched by the columns both releases mark as keys;
+    schedule's rows are matched by its index in each release, even renamed, and a schedule
+    whose index gets its values another way in the new release no longer compares;
   - the quotes that no longer compare, those the new release refuses, and those production
     could not price.
 
@@ -867,29 +935,29 @@ builder on screen. With a quote store it is where they manage their quotes too.
   its `database`, the file's path from the project root. A password or a connection string
   written into the file is refused, as is `managed-identity`, which is the hosted app's own.
   The hosted app never reads `connections.toml`.
-- Haute never changes an environment's tables, `dev` included: the people who own the
-  database make and change them in SQL, as they do any other table. To see how a database
-  differs from the schema you are building, open **Schema** and choose an environment in
-  **Compare**: Haute reads that database through its connection (and again when you press
-  the refresh beside it) and marks each table and column that differs, such as **missing**,
-  **renamed** or **type**, the mark's tooltip saying how and how many quotes hold values
-  there. Above the tables it lists what the database holds that your schema does not, with
-  its quotes; pick **Rename to…** beside such a column to pair it with a column of yours the
-  database lacks, so the SQL renames it rather than adding one and leaving the other, and
-  undo a pairing under **Renamed**. When nothing differs it says the database matches.
-- To change the tables, press **SQL** while building. For each environment you declare it
-  shows the SQL that brings that environment's tables to the schema you are building, in its
-  database's own SQL, starting from the tables the database holds (on the tab of the
-  environment Compare shows), from the schema your default branch holds, which is what
-  staging and prod run, or from nothing, for a new database. It adds tables and columns,
-  renames a column you paired in Compare rather than adding another, keeps a column or
-  table you renamed or removed, with its values, beside the one you added, changes a column's type in place (a value that does not convert stops it),
-  and leaves a table or column your schema does not have with its DROP commented out, since
-  the app does not need it gone. What it cannot write, such as a table changing between one
-  row and many rows per quote, or a column taking no null, it says in a comment, with the
-  quotes holding values there. The SQL is one transaction, so a statement that fails changes
-  nothing, and Haute keeps no record of it: copy it, have it reviewed and adapted, and run it
-  in each environment in turn.
+- Haute never changes an environment's tables, `dev` included. Open **Schema** and
+  choose an environment in **Database** to compare its tables with your working schema.
+  **Local** shows the schema without a database comparison. Previously fetched database
+  schemas are cached across sessions; press **Refresh** to fetch the current tables.
+  Field statuses open the corresponding database details. For a field the database lacks,
+  **Renamed from** names the database column that held its values under an old name, so
+  the comparison checks that column as the field's; it moves no data. **Database changes** lists
+  missing columns grouped by table and labels missing tables **New table**. Its heading
+  counts the additions. **No additions** means all schema names are present; existing
+  types, keys or other details can still differ. The fetch time is in **Refresh**'s tooltip.
+- **Export SQL**, beside **Refresh**, opens the query for the selected database and your
+  current working schema, including unsaved edits. Use **Copy SQL** or **Download SQL**.
+  The script creates new tables and columns only. A renamed field becomes a new, empty
+  column; the old column and its values stay intact, even if you chose it in
+  **Renamed from**. Existing column types and keys are unchanged. Data transfers, type/key
+  changes and removal of old names are manual work for the database owner.
+  The SQL adds missing columns even when existing keys or row structure differ. If a
+  name cannot be added, its specific reason appears in the list and SQL comments;
+  other valid additions can still be exported. Have the database owner review and run the script, then
+  press **Refresh** to compare the actual tables again. Coordinate manual structural
+  changes with the app release, since a running app may still use the old structure.
+  Copying SQL or saving the schema does not change the database or verify release
+  compatibility.
 - The app starts whatever its database holds. Until the tables fit its release it opens no
   quote, new or saved, and prices none, and the page says quotes are unavailable and why: a
   table or column missing or of another type, a permission the app's identity lacks, a
@@ -908,13 +976,28 @@ A page opened before a new release is refused when it prices or saves, and offer
 ### Reading quotes with SQL
 The app keeps each quote in your schema's own tables, so a report reads them with plain SQL.
 Each table of the schema is a table of the same name, `quote_details` included, with the
-schema's columns under their names: an Integer a 64-bit integer, a Decimal a
+schema's columns under their names, its inputs and then its outputs, so an item and its
+price are one row: an Integer a 64-bit integer, a Decimal a
 double-precision number, Text text, True/false a boolean and a Date a date. Every row holds
 the quote's **quote_reference** and **quote_option**, and a row of a many-row table its
-**quote_row** too: an input row's place on its sheet, blank rows counted, and an output
-row's place in the pricing. Join the tables on **quote_reference** and **quote_option**:
+index too, under the name you gave it: a numbered one's place on its sheet, blank rows
+counted, or in a table of outputs alone its place in the pricing; a typed one's value; or
+the value its row is for.
+
+A numbered input grid can have up to 10,000 empty gaps between its stored rows,
+independently of its populated row count. Saving or reopening more gaps is refused
+without changing the quote. If a typed business ID was switched to Numbered, restore
+Typed or migrate its stored keys to consecutive row numbers; large IDs are not expanded
+into enormous grids. Remove excessive empty rows from a new grid before saving it.
+
+Read an item and its price from one table, and join tables on **quote_reference** and
+**quote_option**:
 
 ```sql
+SELECT equipment_type, SUM(final_premium) AS premium
+FROM ce_equipment
+GROUP BY equipment_type;
+
 SELECT d.broker, SUM(p.total_premium) AS premium
 FROM quote_details AS d
 JOIN premium AS p ON p.quote_reference = d.quote_reference
@@ -924,7 +1007,7 @@ GROUP BY d.broker;
 ```
 
 A table holds each quote as it was last saved: a save replaces the quote's rows, and the
-output tables hold the price it was saved with, none when it was saved unpriced. A value a
+outputs hold the price it was saved with, none when it was saved unpriced. A value a
 Show when hid is saved blank, and an output that was not a number, such as infinity, is
 saved empty. `quote_details` also holds what the app keeps about each quote:
 **quote_version**, which every change moves on; **saved_at** and **saved_by**, the last
@@ -936,8 +1019,9 @@ when.
 
 Names reach the database as the schema writes them, so the schema refuses a name the
 database could not keep: two columns of a table whose names differ only in case, a name
-longer than 63 characters, a name starting `haute_`, a column named `quote_row` in a
-many-row table, and a table named starting `sqlite_`.
+longer than 63 characters, a name starting `haute_`, and a table named starting
+`sqlite_`. Renaming a column, the index included, renames the database's column; Compare's
+SQL carries the rename.
 
 ### The Quotes page
 The app opens on the Quotes page. On the left are **My work** (the quotes with you),
@@ -950,8 +1034,19 @@ letters are cased, the quote name, insured and broker, and `ABC-1/2` finds that 
 alone; in Team you can narrow the list to who a quote is with, and order it by when it was
 saved, by **Reference** (A to Z, each reference's options in order) or by its insured. The
 list, the search and the order are in the page's address, so a link or Back returns to the
-same list. A row opens its quote; Duplicate and Archive appear as you hover over it, and
-Archive can be undone from the message it shows. `/` jumps to the search.
+same list. A row opens its quote. Hover over it, or move to it with `Tab`, and its **⋯**
+menu holds what you do to the quote as a whole:
+
+- **Duplicate** and **Renew** open the New quote window over the list, filled from the
+  quote as it is saved, with the reference blank and, for a renewal, **is_renewal** ticked:
+  key the new reference and **Create**.
+- **Create alternative** makes a new option under the same reference at once
+  (`ABC-1/2` from `ABC-1/1`) and opens it.
+- **Archive** takes the quote out of the lists (it opens read only until restored), and can
+  be undone from the message it shows; in **Archived**, **Restore** brings it back.
+- **Copy link** copies the quote's address.
+
+A quote made from another is linked to it. `/` jumps to the search.
 
 **New quote** (or `N`) opens a window over the list asking for the quote's reference and
 the quote details your underwriters type: its name, insured, broker, inception and expiry
@@ -974,30 +1069,23 @@ A quote opens at its own address, under a bar holding its reference and option
 - **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again
   when it was saved unpriced or priced on an earlier release. **Save** waits for that
-  pricing and keeps the quote with its price, or unpriced when it could not be priced (the
-  button says **Save unpriced** then, and the bar says why); the app prices it again as it
-  saves, and says so if the price it keeps moved. A save replaces what the quote held, so
-  duplicate a quote first to keep an offer as it stood. A save is refused only when a value
-  is not of its column's type, naming each one; a required value left empty, or a value
-  outside its range, saves.
+  pricing and keeps the quote with its price, or without one when it could not be priced
+  (the bar says why); the app prices it again as it saves, and says so if the results it
+  keeps changed. The app never shows underwriters whether a quote is priced: what they
+  see is whether it is final. A save replaces what the quote held, so duplicate the quote
+  from the Quotes page first to keep an offer as it stood. A save is refused only when a
+  value is not of its column's type, naming each one; a required value left empty, or a
+  value outside its range, saves.
 - **Mark final** makes the quote the final quotation, once it is saved with a price of the
   running release and every column the analyst made required, input or output, holds a
   value; otherwise the app names each one that does not. A final quote cannot be saved until
   someone **amends** it, giving a reason, which takes it back to **Draft**: its next save
   replaces the final quotation.
-- **More**: **Duplicate**, **Renew** and **Create alternative** each make a new quote from
-  this one as it is saved, linked to it, and open it. **Duplicate** and **Renew** open the new
-  quote's window over the quote, filled from it with the reference blank, a renewal with
-  **is_renewal** ticked: key the new reference and **Create**; **Cancel** leaves the quote as
-  it was. With changes to the quote not yet saved, the new quote is made and the app asks
-  before leaving them; stay, and a message names the quote made. **Create alternative** makes the quote at once under the same reference as its
-  next option (`ABC-1/2` from `ABC-1/1`);
-  **Archive** takes it out of the lists (it opens read only until restored); **Copy link**.
 - **History**: the handover note, the quotes it came from or that were made from it, and
   what was done to the quote, by whom and when, with the reasons given for amending it.
 
-Beneath the bar are who saved it and when, the release that priced it, where the quote came
-from, and who it is with, which you can change. A quote opens on the release's sheets; a row
+Beneath the bar are who saved it and when, where the quote came from, and who it is with,
+which you can change. A quote opens on the release's sheets; a row
 whose value a later release no longer allows is named as no longer fitting. If a colleague
 saves a quote while you have it open, your save is refused naming who did it, with your
 values kept: open the newest, or save yours as a new quote, keying its reference in the

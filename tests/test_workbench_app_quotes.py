@@ -31,6 +31,7 @@ from haute._quote_store import (
     open_book,
     store_url,
 )
+from haute._quote_store._rows import cells
 from haute._types import PipelineGraph
 from haute._workbench_app import (
     EASY_AUTH_NAME,
@@ -366,14 +367,14 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
     release_dir: Path, tmp_path: Path
 ) -> None:
     # The policy shows on quotes Ana made, by a condition on the detail the app sets, which
-    # its own Collection shows. Each component is numbered in its section, as the editor
-    # numbers it there, which identifies it in the release (READ-24).
+    # its own Collection shows. Each component has its name, as the editor names it, which
+    # identifies it in the release (READ-24).
     spec = json.loads(json.dumps(FORM))
     spec["pages"][0]["sections"][0]["height"] = 240
     spec["pages"][0]["sections"][0]["widgets"] = [
         {
             "id": "w_made",
-            "number": 1,
+            "name": "made",
             "type": "collection",
             "x": 0,
             "y": 120,
@@ -383,7 +384,7 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
         },
         {
             "id": "w_policy",
-            "number": 2,
+            "name": "policy",
             "type": "collection",
             "x": 0,
             "y": 0,
@@ -423,6 +424,111 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
         refused = page.save(jos, headers=JO, values=claimed)
         assert refused.status_code == 422
         assert refused.json()["detail"] == "Type the quote first"
+
+
+def _cover_form(
+    *columns: dict[str, Any], fields: list[str], show_when: dict[str, Any]
+) -> dict[str, Any]:
+    """FORM with *columns* added to policy_details: its cover box on a Collection always
+    shown, and its *fields* on another shown *show_when*."""
+    spec = json.loads(json.dumps(FORM))
+    policy = next(t for t in spec["schema"]["tables"] if t["name"] == "policy_details")
+    policy["inputs"] += [{"name": "cover", "type": "bool"}, *columns]
+    spec["pages"][0]["sections"][0]["height"] = 240
+    spec["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_cover",
+            "name": "cover",
+            "type": "collection",
+            "x": 0,
+            "y": 0,
+            "w": 400,
+            "h": 100,
+            "fields": [{"table": "policy_details", "column": "cover"}],
+        },
+        {
+            "id": "w_limit",
+            "name": "limit",
+            "type": "collection",
+            "x": 0,
+            "y": 120,
+            "w": 400,
+            "h": 100,
+            "fields": [{"table": "policy_details", "column": column} for column in fields],
+            "show_when": show_when,
+        },
+    ]
+    return spec
+
+
+def _ticked(column: str) -> dict[str, Any]:
+    """A condition holding while policy_details' *column* is ticked."""
+    return {"table": "policy_details", "column": column, "op": "ticked"}
+
+
+def test_a_cell_the_sheets_hide_opens_at_its_default_whatever_was_typed(
+    release_dir: Path, tmp_path: Path
+) -> None:
+    # The limit shows once the cover is ticked, and a new quote starts it at its default.
+    spec = _cover_form(
+        {"name": "cover_limit", "type": "float", "default_value": "5000"},
+        fields=["cover_limit"],
+        show_when={"match": "all", "conditions": [_ticked("cover")]},
+    )
+    shown = _write_release(tmp_path / "shown", spec)
+    store = tmp_path / "shown.sqlite"
+
+    with TestClient(
+        create_app(shown, store=StoreLocation(TEST, _prepared(store, shown)))
+    ) as client:
+        page = Page(client)
+
+        def save(quote: dict[str, Any], typed: dict[str, Any]) -> dict[str, Any]:
+            saved = page.save(quote, values={"policy_details": [typed]}, shown=None)
+            assert saved.status_code == 200, saved.text
+            answer: dict[str, Any] = saved.json()
+            return answer
+
+        made = page.create(values={"policy_details": [{"cover_limit": "5000"}]})
+        assert made.status_code == 200, made.text
+        quote = made.json()["quote"]
+        # Made with the cover unticked, the limit was saved blank; it opens at its default,
+        # so ticking the cover shows it.
+        opened = client.get(address(quote), headers=ANA).json()
+        assert opened["values"]["policy_details"] == [{"cover_limit": "5000"}]
+
+        typed = save(quote, {"state": "NY", "cover": True, "cover_limit": "7500"})
+        assert typed["values"]["policy_details"] == [
+            {"state": "NY", "cover": True, "cover_limit": "7500"}
+        ]
+        # Unticked, what was typed is saved blank, and read back the limit is at its default.
+        hidden = save(typed["quote"], {"state": "NY", "cover_limit": "7500"})
+        assert sql(store, "SELECT cover_limit FROM policy_details") == [(None,)]
+        assert hidden["values"]["policy_details"] == [{"state": "NY", "cover_limit": "5000"}]
+        # A limit that shows and is cleared stays clear.
+        cleared = save(hidden["quote"], {"state": "NY", "cover": True})
+        assert cleared["values"]["policy_details"] == [{"state": "NY", "cover": True}]
+
+
+def test_a_hidden_cell_opens_at_its_default_only_where_that_changes_nothing_shown() -> None:
+    # The limits show while the cover or their own box is ticked, that box ticked by default;
+    # a box saved unticked is held false.
+    spec = FormSpec.model_validate(
+        _cover_form(
+            {"name": "own", "type": "bool", "default_value": True},
+            {"name": "cover_limit", "type": "float", "default_value": "5000"},
+            {"name": "unticked", "type": "bool", "default_value": True},
+            fields=["own", "cover_limit", "unticked"],
+            show_when={"match": "any", "conditions": [_ticked("cover"), _ticked("own")]},
+        )
+    )
+    held = {"state": "NY", "cover": None, "own": None, "cover_limit": None, "unticked": False}
+
+    values, _ = cells(spec, {"policy_details": [held]})
+
+    # Their own box ticked would show the limits it was saved hidden with, so it stays as
+    # saved; the limit opens at its default, and the box held unticked stays so.
+    assert values["policy_details"] == [{"state": "NY", "cover_limit": "5000"}]
 
 
 def test_a_detail_the_app_sets_sent_unreadable_is_overruled_not_read(page: Page) -> None:
@@ -513,7 +619,7 @@ def test_a_new_quote_leaving_a_required_detail_empty_is_made_and_saved(
 ) -> None:
     # Required marks what Mark final needs: a creation and a save take a quote without it.
     spec = json.loads(json.dumps(FORM))
-    for column in spec["schema"]["tables"][0]["columns"]:
+    for column in spec["schema"]["tables"][0]["inputs"]:
         if column["name"] == "insured":
             column["required"] = True
     required = _write_release(tmp_path / "required", spec)
@@ -832,7 +938,9 @@ def test_mark_final_needs_a_price_of_the_release_running(
     unpriced = page.change(page.create().json()["quote"], "final")
     assert unpriced.status_code == 409
     assert unpriced.json()["detail"]["error_code"] == "quote_not_ready"
-    assert "is not priced" in unpriced.json()["detail"]["message"]
+    assert unpriced.json()["detail"]["message"] == (
+        "Save Q-000001/1 without errors before marking it final."
+    )
 
     priced = page.priced()
     # The next release, on the same store, did not price it.
@@ -843,7 +951,7 @@ def test_mark_final_needs_a_price_of_the_release_running(
         )
     assert refused.status_code == 409
     assert (
-        f"was priced on release {page.release}, not this one"
+        f"was saved on release {page.release}, not this one"
         in (refused.json()["detail"]["message"])
     )
     assert page.change(priced, "final").json()["quote"]["stage"] == "final"

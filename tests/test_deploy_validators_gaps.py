@@ -15,6 +15,7 @@ Mirrors the helpers/style of tests.test_deploy_contract_integrity.
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -312,29 +313,29 @@ class TestValidateDeployGlobalConstants:
 _FORM_TABLES: list[dict[str, Any]] = [
     {
         "name": "policy",
-        "role": "input",
         "rows": "one",
-        "columns": [
+        "inputs": [
             {"name": "limit", "type": "float"},
             {"name": "region", "type": "str"},
         ],
     },
     {
         "name": "items",
-        "role": "input",
         "rows": "many",
-        "columns": [{"name": "value", "type": "float"}],
+        "inputs": [
+            {"name": "row_number", "type": "int", "index": "numbered"},
+            {"name": "value", "type": "float"},
+        ],
     },
     {
         "name": "pricing",
-        "role": "output",
         "rows": "one",
-        "columns": [{"name": "premium", "type": "float"}],
+        "outputs": [{"name": "premium", "type": "float"}],
     },
 ]
 
 
-def _workbench_project(root: Path) -> None:
+def _workbench_project(root: Path, tables: list[dict[str, Any]] | None = None) -> None:
     from tests._workbench_helpers import enable, write_form
 
     enable(root)
@@ -342,7 +343,7 @@ def _workbench_project(root: Path) -> None:
         root,
         {
             "name": "motor",
-            "schema": {"tables": _FORM_TABLES},
+            "schema": {"tables": _FORM_TABLES if tables is None else tables},
             "pages": [
                 {
                     "id": "p",
@@ -376,8 +377,8 @@ def _form_check_errors(root: Path, edges: list[GraphEdge] | None = None) -> list
                     id="e1",
                     source="quote",
                     target="priced",
-                    sourceHandle="policy",
-                    targetHandle="pricing",
+                    sourceHandle="policy_input",
+                    targetHandle="pricing_output",
                 )
             ],
         ),
@@ -415,7 +416,7 @@ class TestValidateDeployWorkbenchForm:
                     source="quote",
                     target="priced",
                     sourceHandle="gone",
-                    targetHandle="pricing",
+                    targetHandle="pricing_output",
                 ),
                 "'priced' takes table 'gone' of Workbench Input 'quote', which rating/workbench "
                 "does not have.",
@@ -425,7 +426,7 @@ class TestValidateDeployWorkbenchForm:
                     id="e",
                     source="quote",
                     target="priced",
-                    sourceHandle="policy",
+                    sourceHandle="policy_input",
                     targetHandle="gone",
                 ),
                 "'quote' fills table 'gone' of Workbench Output 'priced', which "
@@ -460,16 +461,42 @@ class TestValidateDeployWorkbenchForm:
     def test_a_table_whose_own_column_takes_an_identity_name_is_refused(
         self, tmp_path: Path
     ) -> None:
-        _FORM_TABLES[1]["columns"].append({"name": "quote_option", "type": "str"})
-        try:
-            _workbench_project(tmp_path)
-        finally:
-            _FORM_TABLES[1]["columns"].pop()
+        tables = copy.deepcopy(_FORM_TABLES)
+        tables[1]["inputs"].append({"name": "quote_option", "type": "str"})
+        _workbench_project(tmp_path, tables)
 
         assert _form_check_errors(tmp_path) == [
             "rating/workbench: items.quote_option has a name Haute keeps for the quote's "
             "identity in every table: rename it, and the table takes quote_reference and "
             "quote_option at the next save."
+        ]
+
+    def test_allowed_values_reading_as_one_key_value_are_refused(self, tmp_path: Path) -> None:
+        # A layer's row for each allowed value, two of which read as the Integer 1: neither
+        # row's premium could be put back on it.
+        layers = {
+            "name": "layers",
+            "rows": "many",
+            "inputs": [
+                {
+                    "name": "layer",
+                    "type": "int",
+                    "options": ["1", "01", "2"],
+                    "options_source": {"file": "layers.csv", "column": "layer"},
+                    "index": "values",
+                },
+                {"name": "limit", "type": "float"},
+            ],
+            "outputs": [{"name": "layer_premium", "type": "float"}],
+        }
+        _workbench_project(tmp_path, [*_FORM_TABLES, layers])
+        params = tmp_path / "rating" / "files" / "params"
+        params.mkdir(parents=True)
+        (params / "layers.csv").write_text("layer\n1\n01\n2\n", encoding="utf-8")
+
+        assert _form_check_errors(tmp_path) == [
+            "rating/workbench: layers.layer's allowed values 1 and 01 are one Integer, so they "
+            "cannot key its rows: correct the params file."
         ]
 
     def test_a_sheet_naming_a_column_the_schema_does_not_hold_is_refused(
@@ -479,25 +506,25 @@ class TestValidateDeployWorkbenchForm:
 
         _workbench_project(tmp_path)
         # A field on a column one branch dropped, which another's merge kept showing.
-        sheet = tmp_path / "rating" / "workbench" / "sheets" / "sheet_1.json"
-        layout = tmp_path / "rating" / "workbench" / "sheets" / "sheet_1.layout.json"
+        folder = tmp_path / "rating" / "workbench"
+        sheet = folder / "sheets" / "sheet_1.json"
         held = json.loads(sheet.read_bytes())
         held["sections"][0]["components"] = [
-            {
-                "number": 1,
-                "type": "collection",
-                "title": "Cover",
-                "fields": ["policy.gone"],
-            }
+            {"component": "cover", "x": 0, "y": 0, "w": 200, "h": 100}
         ]
         sheet.write_bytes((json.dumps(held) + "\n").encode())
-        placed = json.loads(layout.read_bytes())
-        placed["sections"]["s"]["components"] = {"1": {"x": 0, "y": 0, "w": 200, "h": 100}}
-        layout.write_bytes((json.dumps(placed) + "\n").encode())
+        (folder / "components").mkdir()
+        (folder / "components" / "cover.json").write_bytes(
+            (
+                json.dumps({"type": "collection", "title": "Cover", "fields": ["policy.gone"]})
+                + "\n"
+            ).encode()
+        )
 
+        # Named in the component's own file, whichever sheet places it.
         assert _form_check_errors(tmp_path) == [
-            'rating/workbench/sheets/sheet_1.json, the Collection "Cover" names policy.gone, '
-            "which the schema does not hold."
+            "rating/workbench/components/cover.json names policy.gone, which the schema does "
+            "not hold."
         ]
 
     def test_a_pipeline_without_a_workbench_node_reads_no_form(self, tmp_path: Path) -> None:

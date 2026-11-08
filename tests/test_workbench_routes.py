@@ -50,15 +50,13 @@ def section(id_: str, *widgets: dict[str, Any]) -> dict[str, Any]:
 
 POLICY = {
     "name": "policy_details",
-    "role": "input",
     "rows": "one",
-    "columns": [column("state", options=["CA", "NY"]), column("exposure", "float")],
+    "inputs": [column("state", options=["CA", "NY"]), column("exposure", "float")],
 }
 PRICING = {
     "name": "pricing_output",
-    "role": "output",
     "rows": "one",
-    "columns": [column("premium", "float")],
+    "outputs": [column("premium", "float")],
 }
 
 
@@ -66,12 +64,18 @@ PRICING = {
 #: quote_details as the Workbench Input takes it: without the columns the store keeps alone.
 DETAILS = {
     "name": "quote_details",
+    "side": "input",
+    "port": "quote_details_input",
     "rows": "one",
     "columns": [
         {"name": name, "type": type_}
         for name, type_ in QUOTE_DETAILS_COLUMNS
         if name not in QUOTE_DETAILS_STORE_ONLY
     ],
+    "key": None,
+    "null_key": None,
+    "index_kind": None,
+    "index_values": [],
 }
 
 
@@ -183,6 +187,8 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
         DETAILS,
         {
             "name": "policy_details",
+            "side": "input",
+            "port": "policy_details_input",
             "rows": "one",
             "columns": [
                 {"name": "quote_reference", "type": "str"},
@@ -190,6 +196,10 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
                 {"name": "state", "type": "str"},
                 {"name": "exposure", "type": "float"},
             ],
+            "key": None,
+            "null_key": None,
+            "index_kind": None,
+            "index_values": [],
         },
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
@@ -236,6 +246,43 @@ def test_a_missing_folder_answers_409_pointing_to_version_history(project: Path)
         )
 
 
+def test_tables_serve_large_integer_indexes_exactly_without_retyping_pipeline_keys(
+    project: Path,
+) -> None:
+    from haute._workbench_form import FormSpec
+    from haute._workbench_tables import output_misfit, workbench_tables
+
+    enable(project)
+    keys = [9007199254740992, 9007199254740993]
+    index = column(
+        "product",
+        "int",
+        index="values",
+        options=list(map(str, keys)),
+        options_source={"file": "products.csv", "column": "id"},
+    )
+    spec = form(
+        {"name": "inputs", "rows": "many", "inputs": [index, column("value")]},
+        {"name": "products", "rows": "many", "outputs": [index, column("premium", "float")]},
+        sample={
+            "inputs": [
+                {"product": str(keys[0]), "value": "a"},
+                {"product": str(keys[1]), "value": "b"},
+            ]
+        },
+    )
+    response = client().post("/api/workbench/tables", json={"form": spec})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["response_tables"][0]["index_values"] == list(map(str, keys))
+    assert next(t for t in body["tables"] if t["name"] == "inputs")["null_key"] == str(keys[0])
+    assert [r["product"] for r in body["sample"]["inputs"]] == list(map(str, keys))
+    internal = workbench_tables(FormSpec.model_validate(spec))
+    side = internal.response_tables[0]
+    assert side.index_values == keys
+    assert output_misfit(side, keys, []) is None
+
+
 def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path) -> None:
     enable(project)
     write_form(project, form(POLICY, PRICING))
@@ -245,19 +292,17 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     assert body["form"]["schema"]["tables"][0]["name"] == "quote_details"
     # A table and a column are known by their names: neither holds an id (READ-23).
     assert "id" not in body["form"]["schema"]["tables"][1]
-    assert body["form"]["schema"]["tables"][1]["columns"][3] == {
+    assert body["form"]["schema"]["tables"][1]["inputs"][3] == {
         "name": "exposure",
         "type": "float",
         "label": "",
         "group": "",
-        "key": False,
         "required": False,
         "min": None,
         "max": None,
         "options": [],
         "options_source": None,
-        "row_per_value": False,
-        "index": False,
+        "index": None,
         "help": "",
         "placeholder": "",
         "default_value": "",
@@ -359,6 +404,68 @@ def test_a_save_over_a_folder_holding_a_file_not_the_forms_deletes_nothing(
     assert files_of(project) == before
 
 
+def _heading(name: str) -> dict[str, Any]:
+    return {
+        "id": name,
+        "name": name,
+        "type": "heading",
+        "x": 0,
+        "y": 0,
+        "w": 200,
+        "h": 40,
+        "text": "Cover",
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "detail"),
+    [
+        pytest.param(
+            lambda folder: (folder / "sheets" / "sheet_1.json").unlink(),
+            "rating/workbench/form.json names sheets/sheet_1.json, but the folder does not hold "
+            "sheets/sheet_1.json",
+            id="a sheet file missing",
+        ),
+        pytest.param(
+            lambda folder: (folder / "sheets" / "sheet_1.json").rename(
+                folder / "sheets" / "Sheet_1.json"
+            ),
+            "rating/workbench/sheets/Sheet_1.json must be named in lower case: rename it "
+            "sheet_1.json",
+            id="a sheet file named in capitals",
+        ),
+        pytest.param(
+            lambda folder: (folder / "components" / "cover.json").rename(
+                folder / "components" / "Cover.json"
+            ),
+            "rating/workbench/components/Cover.json must be named in lower case: rename it "
+            "cover.json",
+            id="a component file named in capitals",
+        ),
+    ],
+)
+def test_a_save_over_a_folder_not_holding_a_named_file_as_named_changes_nothing(
+    project: Path, change: Any, detail: str
+) -> None:
+    # A save writes each file by its name in lower case and deletes those the form does not
+    # have: over a file named in capitals, on a disk that ignores case, it would delete the
+    # file it had written. Refused as a read refuses the folder, nothing is written.
+    enable(project)
+    placed = form(POLICY)
+    placed["pages"][0]["sections"][0]["widgets"] = [_heading("cover")]
+    write_form(project, placed)
+    body = served()
+    change(project / FORM)
+    before = files_of(project)
+
+    refused = save(body["form"], folder_revision(before))
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == detail
+    assert client().get("/api/workbench/form").json()["detail"] == detail
+    assert files_of(project) == before
+
+
 def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) -> None:
     """A section too short for a component in it, as a merge can leave it, is grown as the
     form is read and said; the files are as they were until a save writes the form as read."""
@@ -367,6 +474,7 @@ def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) 
     tall["pages"][0]["sections"][0]["widgets"] = [
         {
             "id": "heading_t1t1",
+            "name": "heading_1",
             "type": "heading",
             "x": 0,
             "y": 0,
@@ -380,10 +488,10 @@ def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) 
         }
     ]
     write_form(project, tall)
-    layout_path = project / FORM / "sheets" / "sheet_1.layout.json"
-    layout = json.loads(layout_path.read_bytes())
-    layout["sections"]["s"]["height"] = 40
-    layout_path.write_bytes((json.dumps(layout) + "\n").encode())
+    sheet_path = project / FORM / "sheets" / "sheet_1.json"
+    sheet = json.loads(sheet_path.read_bytes())
+    sheet["sections"][0]["height"] = 40
+    sheet_path.write_bytes((json.dumps(sheet) + "\n").encode())
 
     body = served()
 
@@ -491,10 +599,10 @@ def test_a_file_the_rollback_cannot_put_back_is_named_by_its_path_in_the_folder(
     monkeypatch.setattr(routes, "_stage_artifact_write_bytes", write_fails)
     monkeypatch.setattr(routes, "_rollback_artifacts", lambda touched: tried)
     policy = body["form"]["schema"]["tables"][1]
-    labelled = {**policy["columns"][2], "label": "State"}
+    labelled = {**policy["inputs"][2], "label": "State"}
     tables = [
         body["form"]["schema"]["tables"][0],
-        {**policy, "columns": [*policy["columns"][:2], labelled, *policy["columns"][3:]]},
+        {**policy, "inputs": [*policy["inputs"][:2], labelled, *policy["inputs"][3:]]},
     ]
     failed = save({**body["form"], "schema": {"tables": tables}}, body["revision"])
 
@@ -547,6 +655,7 @@ def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
     state = {"table": "policy_details", "column": "state"}
     looks = {
         "id": "collection_c1c1",
+        "name": "collection_1",
         "type": "collection",
         "x": 0,
         "y": 0,
@@ -568,7 +677,7 @@ def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
     detail = refused.json()["detail"]
     assert detail.startswith(
         "its files would not read back as a form: rating/workbench is not a workbench form: "
-        "sheets/sheet_1.json: "
+        "components/collection_1.json: "
     ), detail
     assert "two looks for policy_details.state" in detail, detail
     assert files_of(project) == before
@@ -709,7 +818,7 @@ def test_a_refused_form_is_answered_with_where_and_why_never_the_form_again(
     before = files_of(project)
     # The analyst names a table of their own quote_details: a table is known by its name
     # (READ-23), so it is taken for Haute's, whose structure it does not have.
-    theirs = {"name": "quote_details", "role": "output", "columns": [column("premium", "float")]}
+    theirs = {"name": "quote_details", "outputs": [column("premium", "float")]}
     sent = {**form(POLICY), "schema": {"tables": [POLICY, theirs]}}
 
     refused = save(sent, body["revision"])
@@ -851,15 +960,21 @@ def test_a_misshapen_file_and_a_bad_table_answer_409_naming_what_to_fix(project:
 
 def test_a_table_the_pipeline_cannot_take_answers_the_structured_422(project: Path) -> None:
     enable(project)
-    write_form(project, form({**POLICY, "name": "class"}))
+    write_form(project, form(POLICY))
+    # A save refuses every name the pipeline would; a hand edit of the folder can still give
+    # a table a column whose name the quote store keeps for its own.
+    path = project / FORM / "schema" / "policy_details.json"
+    written = json.loads(path.read_bytes())
+    written["inputs"].append({"name": "haute_x", "type": "int"})
+    path.write_bytes((json.dumps(written, indent=2) + "\n").encode("utf-8"))
 
     response = client().get("/api/workbench/tables")
 
     assert response.status_code == 422
     assert response.json()["detail"] == {
         "error_code": "workbench_tables_invalid",
-        "message": "The Workbench Input's table 'class' cannot be a port: a table's name is "
-        "letters, digits and underscores, not starting with a digit and not a Python keyword.",
+        "message": "The Workbench Input's table 'policy_details' has a column 'haute_x', and a "
+        "name starting haute_ is the quote store's own.",
     }
 
 
@@ -888,9 +1003,17 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
     project: Path,
 ) -> None:
     enable(project)
-    policy = {**POLICY, "columns": [*POLICY["columns"], column("bi_cover", "bool")]}
+    policy = {**POLICY, "inputs": [*POLICY["inputs"], column("bi_cover", "bool")]}
     # The second sheet shows only while the box on the first is ticked.
-    shown = {"id": "w_policy", "type": "collection", "x": 0, "y": 0, "w": 720, "h": 120}
+    shown = {
+        "id": "w_policy",
+        "name": "w_policy",
+        "type": "collection",
+        "x": 0,
+        "y": 0,
+        "w": 720,
+        "h": 120,
+    }
     typed = {"state": "CA", "exposure": "1,000", "bi_cover": False}
     unsaved = {
         **form(policy, sample={"policy_details": [typed]}),
@@ -927,6 +1050,7 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
                         {
                             **shown,
                             "id": "w_bi",
+                            "name": "w_bi",
                             "fields": [{"table": "policy_details", "column": "exposure"}],
                         },
                     )
@@ -948,12 +1072,12 @@ def test_an_unsaved_form_the_pipeline_cannot_take_answers_the_structured_422(
     enable(project)
 
     refused = client().post(
-        "/api/workbench/tables", json={"form": form({**POLICY, "name": "class"})}
+        "/api/workbench/tables", json={"form": form({**POLICY, "name": "haute_policy"})}
     )
     misshapen = client().post("/api/workbench/tables", json={"form": {**form(), "pages": []}})
 
     assert refused.status_code == 422
-    assert "table 'class' cannot be a port" in refused.json()["detail"]["message"]
+    assert "table 'haute_policy' starts haute_" in refused.json()["detail"]["message"]
     assert misshapen.status_code == 422
     assert not (project / FORM).exists()
 
@@ -1070,7 +1194,7 @@ def _store_sql(spec: dict[str, Any], start: str = "branch") -> Any:
 def _exposure_named(name: str) -> dict[str, Any]:
     """POLICY with its exposure column renamed *name*: to the quote store, a column removed
     and another added, as a column is known by its name (READ-23)."""
-    return {**POLICY, "columns": [POLICY["columns"][0], column(name, "float")]}
+    return {**POLICY, "inputs": [POLICY["inputs"][0], column(name, "float")]}
 
 
 def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: Path) -> None:
@@ -1101,7 +1225,8 @@ def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: P
     assert "ALTER TABLE policy_details ADD COLUMN value" in test
     assert "ALTER TABLE policy_details ADD value" in prod
     for sql in (test, prod):
-        assert "-- ALTER TABLE policy_details DROP COLUMN exposure" in sql
+        assert "Keep unused policy_details.exposure" in sql
+        assert "DROP " not in sql
     assert "RENAME" not in test and "sp_rename" not in prod
     assert "CREATE TABLE" not in test + prod
     assert "exposure_feature" not in test + prod
@@ -1134,9 +1259,7 @@ def test_the_tables_sql_starts_from_none_when_asked_or_when_the_branch_holds_no_
     # From the branch, a form it already holds has nothing to change.
     same = _store_sql(form(POLICY)).json()
     assert same["branch"] == "main"
-    assert same["environments"][0]["sql"] == (
-        "-- The tables already fit the form: nothing to change.\n"
-    )
+    assert same["environments"][0]["sql"] == "-- No missing tables or columns.\n"
 
 
 def test_the_tables_sql_with_no_environment_declared_is_none(project: Path) -> None:
@@ -1153,7 +1276,7 @@ def test_the_tables_sql_refuses_a_body_that_is_not_a_form_and_a_disabled_workben
     assert _store_sql({"schema": "no"}).status_code == 422
     assert client().post("/api/workbench/store-sql", json={"form": form(POLICY)}).status_code == 422
     # A name no table may hold is refused as the tables refuse it, never written into SQL.
-    hostile = {**POLICY, "columns": [column("a\nDELETE FROM policy_details;\n--", "float")]}
+    hostile = {**POLICY, "inputs": [column("a\nDELETE FROM policy_details;\n--", "float")]}
     refused = _store_sql(form(hostile))
     assert refused.status_code == 422, refused.text
     assert refused.json()["detail"]["error_code"] == "workbench_tables_invalid"
@@ -1187,13 +1310,25 @@ def _dev_database(project: Path, spec: dict[str, Any]) -> Path:
 
 
 def _catalogue(environment: str = "dev") -> Any:
-    return client().post("/api/workbench/store-catalogue", json={"environment": environment})
+    return client().post(
+        "/api/workbench/store-catalogue", json={"environment": environment, "refresh": True}
+    )
 
 
 def _compare(spec: dict[str, Any], tables: Any, renames: Any = ()) -> Any:
+    snapshot = client().post(
+        "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+    )
+    assert snapshot.status_code == 200, snapshot.text
     return client().post(
         "/api/workbench/store-compare",
-        json={"form": spec, "environment": "dev", "tables": tables, "renames": list(renames)},
+        json={
+            "form": spec,
+            "environment": "dev",
+            "tables": tables,
+            "renames": list(renames),
+            "target": snapshot.json()["target"],
+        },
     )
 
 
@@ -1221,6 +1356,257 @@ def test_the_catalogue_is_read_through_the_environment_s_connection_changing_not
     assert database.read_bytes() == before
 
 
+def test_a_catalogue_request_must_say_whether_to_refresh(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+
+    response = client().post("/api/workbench/store-catalogue", json={"environment": "dev"})
+
+    assert response.status_code == 422, response.text
+    assert "refresh" in response.text
+    assert not (project / ".haute_cache/workbench/catalogues/dev.json").exists()
+
+
+def test_catalogue_snapshots_persist_until_refreshed_and_follow_the_connection(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from haute._quote_store import _compare as compare_module
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    database = _dev_database(project, form(POLICY))
+    first = _catalogue().json()
+    assert first["checked_at"] > 0
+    cache = project / ".haute_cache/workbench/catalogues/dev.json"
+    saved = cache.read_bytes()
+    assert str(project).encode() not in saved
+    assert b"dev.sqlite" not in saved
+    with sqlite3.connect(database) as connection:
+        connection.execute("ALTER TABLE policy_details ADD COLUMN new_field TEXT")
+
+    # A new client reads the persisted snapshot without reaching the database.
+    with monkeypatch.context() as patch:
+
+        def unavailable(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("The cached request must not read the database")
+
+        patch.setattr(compare_module, "read_store_catalogue", unavailable)
+        cached = client().post(
+            "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+        )
+        assert cached.status_code == 200, cached.text
+        assert cached.json() == first
+    refreshed = _catalogue().json()
+    assert refreshed["checked_at"] >= first["checked_at"]
+    assert "new_field" in {
+        column["name"] for table in refreshed["tables"] for column in table["columns"]
+    }
+    assert cache.read_bytes() != saved
+
+    # A changed database under the same environment name must not reuse old metadata.
+    (project / "connections.toml").write_text(
+        '[dev]\nprovider = "sqlite"\ndatabase = "other.sqlite"\n'
+    )
+    missing = client().post(
+        "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+    )
+    assert missing.status_code == 409, missing.text
+    assert not (project / "other.sqlite").exists()
+
+
+def test_comparison_refuses_a_snapshot_from_a_previous_connection(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    snapshot = _catalogue().json()
+    (project / "connections.toml").write_text(
+        '[dev]\nprovider = "sqlite"\ndatabase = "other.sqlite"\n'
+    )
+
+    response = client().post(
+        "/api/workbench/store-compare",
+        json={
+            "form": form(POLICY),
+            "environment": "dev",
+            "tables": snapshot["tables"],
+            "target": snapshot["target"],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "connection changed" in response.text
+    assert "Refresh" in response.text
+    assert "other.sqlite" not in response.text
+    assert not (project / "other.sqlite").exists()
+
+
+@pytest.mark.parametrize("changed", ["schema", "username"])
+def test_comparison_checks_schema_and_sign_in_without_reading_the_database(
+    project: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    from haute._quote_store import _compare as compare_module
+    from haute._quote_store._catalogue import Catalogue
+
+    enable(
+        project,
+        '[workbench]\nenabled = true\n[workbench.store.dev]\nprovider = "postgresql"\n'
+        'auth = "password"\nusername_env = "DEV_USER"\npassword_env = "DEV_PASSWORD"\n',
+    )
+    write_form(project, form(POLICY))
+    connection = (
+        '[dev]\nprovider = "postgresql"\nserver = "hidden-host.invalid"\ndatabase = "quotes"\n'
+        'schema = "original"\nauth = "password"\nusername_env = "DEV_USER"\n'
+        'password_env = "DEV_PASSWORD"\n'
+    )
+    (project / "connections.toml").write_text(connection)
+    monkeypatch.setenv("DEV_USER", "hidden-user")
+    monkeypatch.setenv("DEV_PASSWORD", "hidden-password")
+    reads = []
+
+    def read_catalogue(location: Any) -> Catalogue:
+        reads.append(location)
+        return Catalogue(tables=())
+
+    monkeypatch.setattr(compare_module, "read_store_catalogue", read_catalogue)
+    snapshot = _catalogue().json()
+    body = {
+        "form": form(POLICY),
+        "environment": "dev",
+        "tables": snapshot["tables"],
+        "target": snapshot["target"],
+    }
+    assert client().post("/api/workbench/store-compare", json=body).status_code == 200
+    if changed == "schema":
+        (project / "connections.toml").write_text(
+            connection.replace('schema = "original"', 'schema = "replacement"')
+        )
+    else:
+        monkeypatch.setenv("DEV_USER", "replacement-user")
+    response = client().post("/api/workbench/store-compare", json=body)
+    assert response.status_code == 409, response.text
+    assert "connection changed" in response.text
+    assert "Refresh" in response.text
+    assert len(reads) == 1
+    assert "hidden" not in response.text and "replacement" not in response.text
+
+
+def test_store_review_keeps_retention_separate_from_additions(project: Path) -> None:
+    import sqlite3
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    old = form(
+        {**POLICY, "inputs": [*POLICY["inputs"], column("legacy")]},
+        {**PRICING, "outputs": [*PRICING["outputs"], column("old_premium", "float")]},
+        {
+            "name": "locations",
+            "rows": "many",
+            "inputs": [column("row_number", "int", index="numbered"), column("old_location")],
+        },
+    )
+    write_form(project, old)
+    database = _dev_database(project, old)
+    with sqlite3.connect(database) as raw:
+        raw.execute("ALTER TABLE haute_activity DROP COLUMN actor")
+        raw.execute("ALTER TABLE policy_details DROP COLUMN state")
+        raw.execute("ALTER TABLE policy_details ADD COLUMN state TEXT NOT NULL DEFAULT ''")
+    proposed = form(
+        {**POLICY, "inputs": [column("territory"), column("exposure", "float")]},
+        PRICING,
+        {"name": "locations", "rows": "one", "inputs": [column("new_location")]},
+    )
+    tables = _catalogue().json()["tables"]
+    renames = [{"table": "policy_details", "column": "territory", "was": "state"}]
+    response = _compare(proposed, tables, renames)
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    extras = {(each["table"], each["column"]): each for each in answer["extras"]}
+    assert "survive saves" in extras["policy_details", "legacy"]["retention"]
+    assert "later saves clear" in extras["pricing_output", "old_premium"]["retention"]
+    assert "manual migration" in extras["locations", "old_location"]["retention"]
+    assert all(each["kind"] in {"add column", "create table"} for each in answer["changes"])
+    assert any(
+        each["table"] is None and "haute_activity.actor" in each["message"]
+        for each in answer["differences"]
+    )
+    assert any(
+        each["column"] == "territory" and each["kind"] == "null" for each in answer["differences"]
+    )
+    from haute._workbench_form import FormSpec, with_quote_details
+
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/ui_contracts/workbench_store_review.json").read_text()
+    )
+    assert fixture == {
+        "form": with_quote_details(FormSpec.model_validate(proposed)).model_dump(
+            mode="json", by_alias=True
+        ),
+        "tables": tables,
+        "renames": renames,
+        "answer": answer,
+    }
+
+
+def test_catalogue_cache_errors_require_refresh_and_failed_refresh_keeps_the_snapshot(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _workbench_catalogue as catalogue_module
+    from haute._quote_store import _compare as compare_module
+    from haute._workbench_config import WorkbenchError
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    assert _catalogue().status_code == 200
+    cache = project / ".haute_cache/workbench/catalogues/dev.json"
+    saved = cache.read_bytes()
+    with monkeypatch.context() as patch:
+
+        def unavailable(*args: Any, **kwargs: Any) -> Any:
+            raise WorkbenchError("Database unavailable")
+
+        patch.setattr(compare_module, "read_store_catalogue", unavailable)
+        failed = _catalogue()
+        assert failed.status_code == 409
+        assert "Database unavailable" in failed.text
+        assert cache.read_bytes() == saved
+    with monkeypatch.context() as patch:
+
+        def unwritable(*args: Any, **kwargs: Any) -> None:
+            raise PermissionError("Read-only directory")
+
+        patch.setattr(catalogue_module, "atomic_write_text", unwritable)
+        failed = _catalogue()
+        assert failed.status_code == 409
+        assert "Check write access" in failed.text
+        assert cache.read_bytes() == saved
+    cache.write_text("broken json")
+    invalid = client().post(
+        "/api/workbench/store-catalogue", json={"environment": "dev", "refresh": False}
+    )
+    assert invalid.status_code == 409
+    assert "Refresh" in invalid.text
+    assert _catalogue().status_code == 200
+    assert json.loads(cache.read_text())["snapshot"]["environment"] == "dev"
+
+
+def test_catalogue_cache_cannot_follow_a_directory_link_outside_the_project(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    outside = project.parent / "outside-catalogue-cache"
+    outside.mkdir()
+    _link_directory(outside, project / ".haute_cache")
+    response = _catalogue()
+    assert response.status_code == 403, response.text
+    assert "outside the project root" in response.text
+    assert not list(outside.iterdir())
+
+
 def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_match(
     project: Path,
 ) -> None:
@@ -1241,6 +1627,9 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
         "column": "exposure",
         "form_table": "policy_details",
         "quotes": 0,
+        "retention": (
+            "Retain this unused column; supported values survive saves until the row is deleted."
+        ),
     } in (unpaired["extras"])
     assert not unpaired["matches"]
     assert "branch" not in unpaired
@@ -1251,7 +1640,11 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
     body = paired.json()
     assert body["renames"] == [pairing]
     assert body["extras"] == []
-    assert "RENAME COLUMN exposure TO haute_tmp_" in body["sql"]
+    assert "ADD COLUMN value DOUBLE" in body["sql"]
+    assert "RENAME" not in body["sql"] and "DROP " not in body["sql"]
+    change = next(each for each in body["changes"] if each["column"] == "value")
+    assert change["kind"] == "add column" and change["disposition"] == "sql"
+    assert "initially empty" in change["description"]
 
     import sqlite3
 
@@ -1262,7 +1655,185 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
         raw.close()
     again = _compare(renamed, _catalogue().json()["tables"]).json()
     assert again["matches"], again["differences"]
-    assert again["sql"] == "-- The tables already fit the form: nothing to change.\n"
+    assert "Keep unused" not in again["sql"]
+    assert "ADD COLUMN" not in again["sql"]
+
+
+def test_store_export_adds_new_names_without_moving_or_removing_old_values(
+    project: Path,
+) -> None:
+    import sqlite3
+
+    from haute._quote_store import open_book, store_url
+    from haute._workbench_form import FormSpec, with_quote_details
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    old = form(
+        {**POLICY, "inputs": [*POLICY["inputs"], column("legacy")]},
+        {**PRICING, "outputs": [*PRICING["outputs"], column("old_premium", "float")]},
+    )
+    write_form(project, old)
+    database = _dev_database(project, old)
+    with open_book(
+        store_url(database),
+        with_quote_details(FormSpec.model_validate(old)),
+        environment="dev",
+        haute_version="1",
+    ) as book:
+        book.create(
+            operation="review-quote",
+            actor="ana",
+            at=book.now(),
+            reference="Q1",
+            values={"policy_details": [{"state": "CA", "exposure": "125", "legacy": "kept"}]},
+        )
+    proposed = form(
+        {
+            **POLICY,
+            "inputs": [column("territory"), column("exposure", "float"), column("flood_zone")],
+        },
+        PRICING,
+    )
+    pairing = {"table": "policy_details", "column": "territory", "was": "state"}
+    before = database.read_bytes()
+
+    response = _compare(proposed, _catalogue().json()["tables"], [pairing])
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    assert review["blocked"] == []
+    assert review["manual"] == []
+    changes = {(each["table"], each["column"]): each for each in review["changes"]}
+    added = changes["policy_details", "flood_zone"]
+    assert added["kind"] == "add column" and added["disposition"] == "sql"
+    assert "initially empty" in added["description"]
+    renamed = changes["policy_details", "territory"]
+    assert renamed["kind"] == "add column" and "was" not in renamed
+    assert renamed["disposition"] == "sql"
+    assert set(changes) == {("policy_details", "flood_zone"), ("policy_details", "territory")}
+    assert {(extra["table"], extra["column"]) for extra in review["extras"]} >= {
+        ("policy_details", "legacy"),
+        ("pricing_output", "old_premium"),
+    }
+    assert not review["matches"]
+    assert database.read_bytes() == before
+
+    with sqlite3.connect(database) as raw:
+        raw.executescript(review["sql"])
+        assert raw.execute(
+            "SELECT state, territory, exposure, flood_zone, legacy FROM policy_details"
+        ).fetchone() == ("CA", None, 125.0, None, "kept")
+
+    # Comparing structure does not claim that values have been transferred.
+    verified = _compare(proposed, _catalogue().json()["tables"]).json()
+    assert verified["matches"]
+    assert verified["blocked"] == []
+    assert verified["changes"] == []
+
+
+def test_store_export_ignores_an_unresolved_rename_when_adding_missing_columns(
+    project: Path,
+) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    pairing = {"table": "policy_details", "column": "value", "was": "missing_source"}
+
+    response = _compare(form(_exposure_named("value")), _catalogue().json()["tables"], [pairing])
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    diagnostic = (
+        "Cannot rename policy_details.missing_source to value in this database. "
+        "Check the source and destination before transferring data manually."
+    )
+    assert diagnostic not in review["sql"]
+    assert "Cannot rename" not in review["sql"]
+    assert review["blocked"] == [diagnostic]
+    assert "ADD COLUMN value DOUBLE" in review["sql"]
+    assert "RENAME" not in review["sql"] and "DROP " not in review["sql"]
+
+
+@pytest.mark.parametrize("rows", ["one", "many"])
+def test_store_export_adds_columns_despite_existing_index_or_row_differences(
+    project: Path,
+    rows: str,
+) -> None:
+    import sqlite3
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    old = form(
+        {
+            "name": "perils",
+            "rows": rows,
+            "inputs": [
+                column("quote_row", "int", **({"index": "numbered"} if rows == "many" else {})),
+                column("peril", "int"),
+            ],
+        },
+        POLICY,
+    )
+    write_form(project, old)
+    database = _dev_database(project, old)
+    with sqlite3.connect(database) as raw:
+        raw.execute(
+            "INSERT INTO perils (quote_reference, quote_option, quote_row, peril) "
+            "VALUES ('Q1', 1, 1, 7)"
+        )
+        before_key = raw.execute("PRAGMA table_info(perils)").fetchall()
+    proposed = form(
+        {
+            "name": "perils",
+            "rows": "many",
+            "inputs": [
+                column("PERIL" if rows == "one" else "peril", "int", index="numbered"),
+                column("new_cover", "float"),
+            ],
+        },
+        {**POLICY, "inputs": [*POLICY["inputs"], column("flood_zone")]},
+        PRICING,
+    )
+
+    response = _compare(proposed, _catalogue().json()["tables"])
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    assert "ALTER TABLE perils ADD COLUMN new_cover DOUBLE" in review["sql"]
+    assert "renamed" not in review["sql"] and "Keep unused" not in review["sql"]
+    assert {change["kind"] for change in review["changes"]} <= {"create table", "add column"}
+    assert "ALTER TABLE policy_details ADD COLUMN flood_zone" in review["sql"]
+    assert "CREATE TABLE pricing_output" in review["sql"]
+    assert "RENAME" not in review["sql"] and "DROP " not in review["sql"]
+    assert not review["matches"]
+    with sqlite3.connect(database) as raw:
+        raw.executescript(review["sql"])
+        assert raw.execute("SELECT quote_row, peril FROM perils").fetchall() == [(1, 7)]
+        after = raw.execute("PRAGMA table_info(perils)").fetchall()
+        assert after[: len(before_key)] == before_key
+        assert after[-1][1] == "new_cover" and after[-1][5] == 0
+        assert raw.execute("SELECT new_cover FROM perils").fetchall() == [(None,)]
+        assert "flood_zone" in {row[1] for row in raw.execute("PRAGMA table_info(policy_details)")}
+
+    again = _compare(proposed, _catalogue().json()["tables"]).json()
+    assert again["changes"] == []
+    assert again["sql"] == "-- No missing tables or columns.\n"
+
+
+def test_store_review_requires_release_coordination_for_manual_key_repairs(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    tables = _catalogue().json()["tables"]
+    policy = next(table for table in tables if table["name"] == "policy_details")
+    policy["primary_key"] = []
+
+    response = _compare(form(POLICY), tables)
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    assert not review["matches"]
+    assert review["changes"] == []
+    assert any("is keyed by nothing" in note for note in review["manual"])
 
 
 def test_an_environment_the_editor_cannot_read_is_said_naming_what_to_set(

@@ -2159,7 +2159,7 @@ describe("NodePanel", () => {
       )
     })
 
-    it("names a Workbench Input's frame by its table, and marks one the newest fetch of the tables lacks unresolved", () => {
+    it("names a Workbench Input's frame by its table's port, and marks one the newest fetch of the tables lacks unresolved", () => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
@@ -2168,22 +2168,23 @@ describe("NodePanel", () => {
         id: "wb_in",
         data: { label: "Quote", description: "", nodeType: "workbenchInput", config: {} },
       })
-      const policy = { name: "policy", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }
+      const policy = { name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null, index_kind: null, index_values: [] }
       useWorkbenchStore.setState({ tables: { tables: [policy], sample: {}, responseTables: [], fetch: 1 } })
       try {
         renderPanel({
           node: target,
           allNodes: [workbenchInput, target],
           edges: [
-            { id: "edge_policy", source: workbenchInput.id, target: target.id, sourceHandle: "policy" },
-            { id: "edge_gone", source: workbenchInput.id, target: target.id, sourceHandle: "gone" },
+            { id: "edge_policy", source: workbenchInput.id, target: target.id, sourceHandle: "policy_input" },
+            // A table's bare name is no port.
+            { id: "edge_gone", source: workbenchInput.id, target: target.id, sourceHandle: "policy" },
           ],
         })
 
         const [current, gone] = latestTransformInputSources()
-        expect(current).toMatchObject({ edgeId: "edge_policy", name: "policy" })
+        expect(current).toMatchObject({ edgeId: "edge_policy", name: "policy_input" })
         expect(current.frameUnresolved).not.toBe(true)
-        expect(gone).toMatchObject({ edgeId: "edge_gone", name: "gone", frameUnresolved: true })
+        expect(gone).toMatchObject({ edgeId: "edge_gone", name: "policy", frameUnresolved: true })
       } finally {
         useWorkbenchStore.setState({ tables: null })
       }

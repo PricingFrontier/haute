@@ -1,8 +1,8 @@
 /**
  * A form for the sheet tests (specs/workbench): policy details (one row) shown by a
- * Collection, equipment (many rows, keyed by item) shown by a Table, and premiums (many
- * rows, keyed by item, an output), in the one section of one sheet, with a second sheet
- * whose one section is empty.
+ * Collection, equipment (many rows of inputs, keyed by its numbered index, row_number) shown
+ * by a Table, and premiums (many rows of outputs alone, keyed by its own numbered index), in
+ * the one section of one sheet, with a second sheet whose one section is empty.
  */
 import { vi } from "vitest"
 import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
@@ -66,14 +66,12 @@ export const column = (name: string, overrides: Partial<SchemaColumn> = {}): Sch
   name,
   type: "str",
   label: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -84,19 +82,22 @@ export const column = (name: string, overrides: Partial<SchemaColumn> = {}): Sch
   ...overrides,
 })
 
-/** A one-row input table known by `name` in the form (READ-23), holding no columns unless `overrides` says otherwise. */
+/** A one-row table known by `name` in the form (READ-23), holding no inputs or outputs unless `overrides` says otherwise. */
 export const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
   name,
-  role: "input",
   rows: "one",
-  columns: [],
+  inputs: [],
+  outputs: [],
   ...overrides,
 })
+
+/** A many-row table's index, `row_number` unless named otherwise, numbered unless said otherwise: each row's number, from 1. */
+export const indexColumn = (name = "row_number", kind: SchemaColumn["index"] = "numbered"): SchemaColumn => column(name, { type: "int", index: kind })
 
 /** Haute's quote_details table, as every form holds it, its columns labelled by name in `labels`. */
 export const detailsTable = (labels: Record<string, string> = {}): SchemaTable =>
   table(QUOTE_DETAILS_NAME, {
-    columns: QUOTE_DETAILS_COLUMNS.map(([name, type]) => column(name, { type, label: labels[name] ?? "" })),
+    inputs: QUOTE_DETAILS_COLUMNS.map(([name, type]) => column(name, { type, label: labels[name] ?? "" })),
   })
 
 export const sheetForm = (): FormSpec => ({
@@ -105,22 +106,21 @@ export const sheetForm = (): FormSpec => ({
   theme: { ...BLANK_THEME },
   schema: {
     tables: [
-      table("policy", { columns: [column("state", { options: ["CA", "NY"], required: true }), column("year", { type: "int" })] }),
+      table("policy", { inputs: [column("state", { options: ["CA", "NY"], required: true }), column("year", { type: "int" })] }),
       table("equipment", {
         rows: "many",
-        columns: [column("item", { key: true }), column("value", { type: "float" })],
+        inputs: [indexColumn(), column("item"), column("value", { type: "float" })],
       }),
       table("premiums", {
-        role: "output",
         rows: "many",
-        columns: [column("item", { key: true }), column("premium", { type: "float" })],
+        outputs: [indexColumn(), column("premium", { type: "float" })],
       }),
     ],
   },
   pages: [
     sheet("p1", "Sheet 1", [
-      { number: null, id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [], fields: [{ table: "policy", column: "state" }], show_when: { match: "all", conditions: [] } },
-      { number: null,
+      { name: "w_boxes", id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [], fields: [{ table: "policy", column: "state" }], show_when: { match: "all", conditions: [] } },
+      { name: "w_grid",
         id: "w_grid",
         type: "tableInput",
         x: 16,
@@ -141,22 +141,22 @@ export const sheetForm = (): FormSpec => ({
 })
 
 /**
- * `sheetForm` with a coverage table given a row for each of its perils, AOP and EQ, and two
- * Tables of it: its perils' shown only while the policy's year is 1900, so hidden, and its
- * limits' always shown.
+ * `sheetForm` with a coverage table whose index, peril, gives it a row for each of its perils,
+ * AOP and EQ, and two Tables of it: its perils' shown only while the policy's year is 1900, so
+ * hidden, and its limits' always shown.
  */
 export const hiddenPerilsForm = (): FormSpec => {
   const form = sheetForm()
   form.schema.tables.push(
     table("coverage", {
       rows: "many",
-      columns: [
-        column("peril", { key: true, options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }),
+      inputs: [
+        column("peril", { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, index: "values" }),
         column("limit", { type: "float" }),
       ],
     }),
   )
-  const grid = (id: string, shown: string, y: number, showWhen: ShowWhen): Widget => ({ number: null,
+  const grid = (id: string, shown: string, y: number, showWhen: ShowWhen): Widget => ({ name: id,
     id,
     type: "tableInput",
     x: 16,
@@ -179,7 +179,7 @@ export const hiddenPerilsForm = (): FormSpec => {
 /** A Chart plotting `fields`, with a new Chart's options unless `overrides` says otherwise, always shown. */
 export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<ChartWidget> = {}): ChartWidget => ({
   id,
-  number: null,
+  name: id,
   type: "chart",
   x: 16,
   y: 380,
@@ -195,7 +195,7 @@ export const chartWidget = (id: string, fields: FieldRef[], overrides: Partial<C
 /** A Heading of `text`, with no description and a new Heading's options unless `overrides` says otherwise, always shown. */
 export const headingWidget = (id: string, text: string, overrides: Partial<HeadingWidget> = {}): HeadingWidget => ({
   id,
-  number: null,
+  name: id,
   type: "heading",
   x: 16,
   y: 380,
@@ -214,13 +214,13 @@ export const headingWidget = (id: string, text: string, overrides: Partial<Headi
  */
 export const coverForm = (): FormSpec => {
   const form = sheetForm()
-  form.schema.tables[0].columns.push(column("cover", { type: "bool" }))
+  form.schema.tables[0].inputs.push(column("cover", { type: "bool" }))
   fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "cover" })
   form.pages[1] = sheet(
     "p2",
     "Cover",
     [
-      { number: null,
+      { name: "w_year",
         id: "w_year",
         type: "collection",
         x: 16,

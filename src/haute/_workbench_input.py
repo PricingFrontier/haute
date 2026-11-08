@@ -21,6 +21,7 @@ from typing import Any
 import polars as pl
 
 from haute._json_values import JsonValueError, json_value
+from haute._polars_utils import execution_collect
 from haute._workbench_form import QUOTE_DETAILS_NAME
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
@@ -31,6 +32,7 @@ from haute._workbench_tables import (
     parse_workbench_tables,
     port_tables,
     request_columns,
+    request_key_problem,
 )
 
 #: The quote's identity's names, in every table and in quote_details alike.
@@ -74,18 +76,20 @@ def workbench_input_tables(config: Mapping[str, Any]) -> tuple[WorkbenchTable, .
 
 
 def workbench_table_labels(config: Mapping[str, Any]) -> tuple[str, ...]:
-    """A Workbench Input's ports' labels: its tables' names, in schema order."""
-    return tuple(table.name for table in workbench_input_tables(config))
+    """A Workbench Input's ports' labels, ``<table>_input``, in schema order."""
+    return tuple(table.port for table in workbench_input_tables(config))
 
 
 def read_quote(
     tables: Sequence[WorkbenchTable], quote: object, *, what: str = "the quote"
 ) -> dict[str, pl.DataFrame]:
-    """Each of *tables* as the frame *quote* gives it, typed as declared.
+    """Each of *tables* as the frame *quote* gives it under the table's name, typed as
+    declared, by its port.
 
     A one-row table is its one row, of nulls when the quote does not hold it; a many-row
     table is the rows the quote holds, none when it does not. A part that is not of its
-    table's shape, or a value that is not of its column's type, raises
+    table's shape, a value that is not of its column's type, or a keyed table's rows
+    missing their key or holding one twice (:func:`request_key_problem`), raises
     :class:`WorkbenchInputError` naming it, with *what* naming the quote itself; a key the
     tables do not name is not read, and a column a row does not hold is null.
 
@@ -107,8 +111,24 @@ def read_quote(
                     f"{QUOTE_DETAILS_NAME}"
                 )
             rows = [_identified(table, row, index, identity) for index, row in enumerate(rows)]
-        frames[table.name] = _frame(table, rows)
+        frame = _frame(table, rows)
+        check_request_keys(table, frame)
+        frames[table.port] = frame
     return frames
+
+
+def check_request_keys(table: WorkbenchTable, frame: pl.DataFrame | pl.LazyFrame) -> None:
+    """Refuse a keyed input side's rows of *frame* when one holds no key or two hold one,
+    as :func:`request_key_problem` says: what a request read, or a frame ``Pipeline.score``
+    is given, never prices a row whose outputs could not be put back on it."""
+    if table.key is None:
+        return
+    held = (
+        execution_collect(frame.lazy().select(table.key), engine="streaming").to_series().to_list()
+    )
+    problem = request_key_problem(table, held)
+    if problem is not None:
+        raise WorkbenchInputError(problem)
 
 
 def _identity(
@@ -228,7 +248,8 @@ def _shown(value: object) -> str:
 
 def null_quote(tables: Sequence[WorkbenchTable]) -> dict[str, Any]:
     """One quote holding *tables* with nothing filled in: one row of nulls each, of the
-    columns a request gives it, and the stand-in identity in ``quote_details``.
+    columns a request gives it, but a keyed table's key, its ``null_key``, and the stand-in
+    identity in ``quote_details``.
 
     What the previews run on while the workbench has supplied no sample, and what deploy's
     dry run reads, so it checks the pipeline on those rows.
@@ -236,6 +257,9 @@ def null_quote(tables: Sequence[WorkbenchTable]) -> dict[str, Any]:
     quote: dict[str, Any] = {}
     for table in tables:
         row: dict[str, Any] = {column.name: None for column in request_columns(table)}
+        if table.key is not None:
+            # A many-row table's key says which row is which, so its one row holds one.
+            row[table.key] = table.null_key
         quote[table.name] = row if table.one_row else [row]
     return with_stand_in(tables, quote)
 
@@ -284,7 +308,7 @@ def workbench_table_frames(
             "Correct it in the workbench and save it."
         ) from exc
     return {
-        table.name: read[table.name].select(columns).lazy()
+        table.port: read[table.port].select(columns).lazy()
         for table, columns in _demanded(tables, port_columns)
     }
 
@@ -319,10 +343,10 @@ def _demanded(
     """The ports asked for, each with the columns it needs in schema order; all without a demand."""
     if port_columns is None:
         return [(table, [column.name for column in table.columns]) for table in tables]
-    by_name = {table.name: table for table in tables}
+    by_port = {table.port: table for table in tables}
     demanded: list[tuple[WorkbenchTable, list[str]]] = []
     for name, requested in port_columns.items():
-        table = by_name.get(name)
+        table = by_port.get(name)
         if table is None:
             raise ValueError(f"port_columns requests unknown port {name!r}")
         declared = [column.name for column in table.columns]

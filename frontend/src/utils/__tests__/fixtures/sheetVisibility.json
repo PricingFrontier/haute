@@ -9,22 +9,19 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -37,14 +34,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -57,14 +52,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -77,14 +70,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": ["Motor", "Fleet", "Property"],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -97,14 +88,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -117,14 +106,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -137,14 +124,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -157,14 +142,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -172,26 +155,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "business_interruption",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -204,14 +185,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -224,14 +203,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -244,14 +221,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -259,26 +234,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "extensions",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -291,14 +264,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -311,14 +282,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -326,26 +295,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "items",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -358,14 +325,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -378,14 +343,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": true,
+                "index": "numbered",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -398,14 +361,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": true,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -418,14 +379,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -433,26 +392,25 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "pricing",
-            "role": "output",
             "rows": "one",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -465,14 +423,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -485,14 +441,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -519,7 +473,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -558,7 +512,7 @@
                 },
                 {
                   "id": "w_premium",
-                  "number": 2,
+                  "name": "w_premium",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -592,7 +546,7 @@
                 },
                 {
                   "id": "w_chart",
-                  "number": 3,
+                  "name": "w_chart",
                   "x": 0,
                   "y": 320,
                   "w": 480,
@@ -610,7 +564,7 @@
                 },
                 {
                   "id": "w_heading",
-                  "number": 4,
+                  "name": "w_heading",
                   "x": 0,
                   "y": 616,
                   "w": 480,
@@ -643,7 +597,7 @@
               "widgets": [
                 {
                   "id": "w_bi",
-                  "number": 1,
+                  "name": "w_bi",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -696,7 +650,7 @@
               "widgets": [
                 {
                   "id": "w_ext",
-                  "number": 1,
+                  "name": "w_ext",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -746,7 +700,7 @@
               "widgets": [
                 {
                   "id": "w_items",
-                  "number": 1,
+                  "name": "w_items",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -789,7 +743,7 @@
                 },
                 {
                   "id": "w_fleet",
-                  "number": 2,
+                  "name": "w_fleet",
                   "x": 0,
                   "y": 240,
                   "w": 720,
@@ -839,22 +793,19 @@
         "tables": [
           {
             "name": "inputs",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -867,14 +818,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -887,14 +836,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -907,14 +854,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -927,14 +872,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": ["A", "B", "C"],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -947,14 +890,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -967,14 +908,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -987,14 +926,12 @@
                 "type": "date",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1002,26 +939,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "lines",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1034,14 +969,30 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": "numbered",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1054,14 +1005,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": true,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1074,14 +1023,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1089,26 +1036,25 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "outputs",
-            "role": "output",
             "rows": "one",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1121,14 +1067,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1141,14 +1085,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1160,22 +1102,19 @@
           },
           {
             "name": "target",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1188,14 +1127,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1208,14 +1145,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1223,7 +1158,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -1242,7 +1178,7 @@
               "widgets": [
                 {
                   "id": "w_in",
-                  "number": 1,
+                  "name": "w_in",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -1283,7 +1219,7 @@
                 },
                 {
                   "id": "w_many",
-                  "number": 2,
+                  "name": "w_many",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -1319,7 +1255,7 @@
                 },
                 {
                   "id": "w_out",
-                  "number": 3,
+                  "name": "w_out",
                   "x": 0,
                   "y": 400,
                   "w": 720,
@@ -1369,7 +1305,7 @@
               "widgets": [
                 {
                   "id": "w_target",
-                  "number": 1,
+                  "name": "w_target",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -1416,22 +1352,19 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1444,14 +1377,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1464,14 +1395,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1484,14 +1413,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1504,14 +1431,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1524,14 +1449,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1544,14 +1467,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1564,14 +1485,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1584,14 +1503,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1599,26 +1516,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "flood",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1631,14 +1546,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1651,14 +1564,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1671,14 +1582,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1686,26 +1595,25 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "out",
-            "role": "output",
             "rows": "one",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1718,14 +1626,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1738,14 +1644,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -1772,7 +1676,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -1811,7 +1715,7 @@
                 },
                 {
                   "id": "w_premium",
-                  "number": 2,
+                  "name": "w_premium",
                   "type": "collection",
                   "x": 0,
                   "y": 136,
@@ -1858,7 +1762,7 @@
               "widgets": [
                 {
                   "id": "w_flood_heading",
-                  "number": 1,
+                  "name": "w_flood_heading",
                   "type": "heading",
                   "x": 0,
                   "y": 0,
@@ -1872,7 +1776,7 @@
                 },
                 {
                   "id": "w_flood",
-                  "number": 2,
+                  "name": "w_flood",
                   "type": "collection",
                   "x": 0,
                   "y": 56,
@@ -1909,7 +1813,7 @@
                 },
                 {
                   "id": "w_flood_extra",
-                  "number": 3,
+                  "name": "w_flood_extra",
                   "type": "collection",
                   "x": 0,
                   "y": 192,
@@ -1968,7 +1872,7 @@
               "widgets": [
                 {
                   "id": "w_barrier",
-                  "number": 1,
+                  "name": "w_barrier",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -2018,7 +1922,7 @@
               "widgets": [
                 {
                   "id": "w_note",
-                  "number": 1,
+                  "name": "w_note",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -2073,7 +1977,7 @@
               "widgets": [
                 {
                   "id": "w_other",
-                  "number": 1,
+                  "name": "w_other",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -2127,22 +2031,19 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2155,14 +2056,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2175,14 +2074,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": ["Comprehensive", "Third party"],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2195,14 +2092,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2215,14 +2110,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2230,26 +2123,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "drivers",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2262,14 +2153,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2282,14 +2171,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": true,
+                "index": "numbered",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2302,14 +2189,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2322,14 +2207,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2342,14 +2225,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2357,26 +2238,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "perils",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2389,14 +2268,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2409,14 +2286,15 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
-                "options": ["Fire", "Flood"],
-                "options_source": null,
-                "row_per_value": true,
-                "index": false,
+                "options": [
+                  "Fire",
+                  "Flood"
+                ],
+                "options_source": {"file": "perils.csv", "column": "peril"},
+                "index": "values",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2429,14 +2307,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2444,26 +2320,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "claims",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2476,14 +2350,30 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": "numbered",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2496,14 +2386,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2511,26 +2399,25 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "quotes",
-            "role": "output",
             "rows": "many",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2543,14 +2430,30 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": "numbered",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2563,14 +2466,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2582,22 +2483,19 @@
           },
           {
             "name": "target",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2610,14 +2508,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2630,14 +2526,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2645,7 +2539,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -2664,7 +2559,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -2702,7 +2597,7 @@
                 },
                 {
                   "id": "w_drivers",
-                  "number": 2,
+                  "name": "w_drivers",
                   "x": 0,
                   "y": 120,
                   "w": 720,
@@ -2742,7 +2637,7 @@
                 },
                 {
                   "id": "w_perils",
-                  "number": 3,
+                  "name": "w_perils",
                   "x": 0,
                   "y": 280,
                   "w": 720,
@@ -2789,7 +2684,7 @@
               "widgets": [
                 {
                   "id": "w_occupations",
-                  "number": 1,
+                  "name": "w_occupations",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -2825,7 +2720,7 @@
                 },
                 {
                   "id": "w_claims",
-                  "number": 2,
+                  "name": "w_claims",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -2877,7 +2772,7 @@
               "widgets": [
                 {
                   "id": "w_target",
-                  "number": 1,
+                  "name": "w_target",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -2931,22 +2826,19 @@
         "tables": [
           {
             "name": "rating",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2959,14 +2851,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2979,14 +2869,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -2999,14 +2887,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3019,14 +2905,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3039,14 +2923,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3059,14 +2941,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3079,14 +2959,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3099,14 +2977,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3114,26 +2990,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "perils",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3146,14 +3020,30 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": "numbered",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3166,14 +3056,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3186,14 +3074,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3206,14 +3092,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3221,7 +3105,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -3240,7 +3125,7 @@
               "widgets": [
                 {
                   "id": "w_rating",
-                  "number": 1,
+                  "name": "w_rating",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3281,7 +3166,7 @@
                 },
                 {
                   "id": "w_perils",
-                  "number": 2,
+                  "name": "w_perils",
                   "x": 0,
                   "y": 140,
                   "w": 720,
@@ -3321,7 +3206,7 @@
                 },
                 {
                   "id": "w_summary",
-                  "number": 3,
+                  "name": "w_summary",
                   "x": 740,
                   "y": 0,
                   "w": 520,
@@ -3363,7 +3248,7 @@
               "widgets": [
                 {
                   "id": "w_note",
-                  "number": 1,
+                  "name": "w_note",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3417,22 +3302,19 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3445,14 +3327,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3465,14 +3345,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3485,14 +3363,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3505,14 +3381,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3525,14 +3399,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3545,14 +3417,12 @@
                 "type": "date",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3565,14 +3435,12 @@
                 "type": "date",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3585,14 +3453,12 @@
                 "type": "bool",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3600,26 +3466,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "items",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3632,14 +3496,30 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": "numbered",
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3652,14 +3532,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3672,14 +3550,12 @@
                 "type": "float",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3687,26 +3563,24 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "target",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3719,14 +3593,12 @@
                 "type": "int",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3739,14 +3611,12 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
                 "options": [],
                 "options_source": null,
-                "row_per_value": false,
-                "index": false,
+                "index": null,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3754,7 +3624,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -3773,7 +3644,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3815,7 +3686,7 @@
                 },
                 {
                   "id": "w_items",
-                  "number": 2,
+                  "name": "w_items",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -3867,7 +3738,7 @@
               "widgets": [
                 {
                   "id": "w_target",
-                  "number": 1,
+                  "name": "w_target",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3876,6 +3747,340 @@
                   "title": "",
                   "fields": [{"table": "target", "column": "x"}],
                   "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    },
+    "blocks": {
+      "version": 1,
+      "name": "blocks",
+      "theme": {
+        "sheet_color": null,
+        "background_color": null,
+        "border_color": null,
+        "font_color": null,
+        "input_cell_color": null,
+        "output_cell_color": null
+      },
+      "schema": {
+        "tables": [
+          {
+            "name": "equipment",
+            "rows": "many",
+            "inputs": [
+              {
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "quote_option",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": "numbered",
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "item",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "value",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ],
+            "outputs": [
+              {
+                "name": "premium",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "rows": "one",
+            "inputs": [
+              {
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "quote_option",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "x",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "index": null,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ],
+            "outputs": []
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "width": 1280,
+          "show_when": {
+            "match": "all",
+            "conditions": []
+          },
+          "sections": [
+            {
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 520,
+              "show_when": {
+                "match": "all",
+                "conditions": []
+              },
+              "widgets": [
+                {
+                  "id": "w_equipment",
+                  "name": "w_equipment",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 160,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [
+                    {
+                      "table": "equipment",
+                      "column": "item"
+                    },
+                    {
+                      "table": "equipment",
+                      "column": "value"
+                    },
+                    {
+                      "table": "equipment",
+                      "column": "premium"
+                    }
+                  ],
+                  "show_when": {
+                    "match": "all",
+                    "conditions": []
+                  },
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p_target",
+          "title": "Target",
+          "width": 1280,
+          "show_when": {
+            "match": "all",
+            "conditions": []
+          },
+          "sections": [
+            {
+              "id": "s_target",
+              "title": "Section 1",
+              "height": 160,
+              "show_when": {
+                "match": "all",
+                "conditions": []
+              },
+              "widgets": [
+                {
+                  "id": "w_target",
+                  "name": "w_target",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {
+                      "table": "target",
+                      "column": "x"
+                    }
+                  ],
+                  "show_when": {
+                    "match": "all",
+                    "conditions": []
+                  },
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
@@ -8083,6 +8288,264 @@
       "hidden_sections": ["s_extra", "s_target"],
       "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
       "hidden_columns": [["claims", "amount"], ["drivers", "occupation"], ["target", "x"]]
+    },
+    {
+      "name": "a condition on the inputs of a table of both blocks tests what is typed: none above",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "value",
+                  "op": "above",
+                  "values": [
+                    "1000"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane",
+            "value": "500"
+          }
+        ]
+      },
+      "hidden_pages": [
+        "p_target"
+      ],
+      "hidden_sections": [
+        "s_target"
+      ],
+      "hidden_widgets": [
+        "w_target"
+      ],
+      "hidden_columns": [
+        [
+          "target",
+          "x"
+        ]
+      ]
+    },
+    {
+      "name": "a condition on the inputs of a table of both blocks tests what is typed: one above",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "value",
+                  "op": "above",
+                  "values": [
+                    "1000"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane",
+            "value": "500"
+          },
+          {
+            "item": "Digger",
+            "value": "5000"
+          }
+        ]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on the outputs of a table of both blocks tests the price, which never decides what is priced",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "premium",
+                  "op": "above",
+                  "values": [
+                    "0"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane",
+            "value": "500"
+          }
+        ]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on rows naming both inputs and outputs never holds",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "value",
+                  "op": "above",
+                  "values": [
+                    "1000"
+                  ],
+                  "field": null,
+                  "days": 0
+                },
+                {
+                  "column": "premium",
+                  "op": "above",
+                  "values": [
+                    "0"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Digger",
+            "value": "5000"
+          }
+        ]
+      },
+      "hidden_pages": [
+        "p_target"
+      ],
+      "hidden_sections": [
+        "s_target"
+      ],
+      "hidden_widgets": [
+        "w_target"
+      ],
+      "hidden_columns": [
+        [
+          "target",
+          "x"
+        ]
+      ]
+    },
+    {
+      "name": "a count without tests of a table of both blocks counts its typed rows: too few",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "where": [],
+              "op": "at_least",
+              "count": 2
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane"
+          },
+          {}
+        ]
+      },
+      "hidden_pages": [
+        "p_target"
+      ],
+      "hidden_sections": [
+        "s_target"
+      ],
+      "hidden_widgets": [
+        "w_target"
+      ],
+      "hidden_columns": [
+        [
+          "target",
+          "x"
+        ]
+      ]
+    },
+    {
+      "name": "a count without tests of a table of both blocks counts its typed rows: enough",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "where": [],
+              "op": "at_least",
+              "count": 2
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane"
+          },
+          {
+            "value": "10"
+          }
+        ]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
     }
   ]
 }

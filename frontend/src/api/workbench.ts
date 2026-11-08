@@ -76,12 +76,13 @@ export async function fetchStoreSql(form: FormSpec, start: "branch" | "none"): P
 /**
  * The tables `environment`'s database holds, read through its connection in connections.toml
  * under the analyst's own sign-in, with the quotes holding values in each table and column.
+ * Reuses the project's saved snapshot unless refresh explicitly requests a new database read.
  */
-export async function fetchStoreCatalogue(environment: string): Promise<WorkbenchStoreCatalogueResponse> {
+export async function fetchStoreCatalogue(environment: string, refresh: boolean): Promise<WorkbenchStoreCatalogueResponse> {
   const data = await request<unknown>("/api/workbench/store-catalogue", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ environment }),
+    body: JSON.stringify({ environment, refresh }),
   })
   return expectGeneratedContract(
     "WorkbenchStoreCatalogueResponse",
@@ -99,11 +100,12 @@ export async function fetchStoreCompare(
   environment: string,
   tables: WorkbenchCatalogueTable[],
   renames: WorkbenchStoreRename[],
+  target: string,
 ): Promise<WorkbenchStoreCompareResponse> {
   const data = await request<unknown>("/api/workbench/store-compare", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ form, environment, tables, renames }),
+    body: JSON.stringify({ form, environment, tables, renames, target }),
   })
   return expectGeneratedContract(
     "WorkbenchStoreCompareResponse",

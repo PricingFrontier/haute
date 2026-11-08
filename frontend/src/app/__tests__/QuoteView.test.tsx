@@ -163,14 +163,14 @@ describe("QuoteView", () => {
     expect(window.location.pathname).toBe("/")
   })
 
-  it("shows who saved it and the release that priced it, and saves on Ctrl+S", async () => {
+  it("shows who saved it, saying nothing of a price, and saves on Ctrl+S", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2 }))
     await opened()
 
     const line = screen.getByTestId("quote-line")
     expect(line).toHaveTextContent("by ana@example.com")
-    expect(line).toHaveTextContent("Priced on this release")
+    expect(line).not.toHaveTextContent(/priced/i)
     expect(line).not.toHaveTextContent("Revision")
     expect(screen.getByTestId("stage-draft")).toBeInTheDocument()
     expect(screen.getByTestId("save-quote")).toBeDisabled()
@@ -320,13 +320,13 @@ describe("QuoteView", () => {
 
     const final = screen.getByRole("button", { name: "Mark final" })
     expect(final).toBeDisabled()
-    expect(final).toHaveAttribute("title", "Priced on an earlier release: save it again first")
-    expect(screen.getByTestId("quote-line")).toHaveTextContent("Priced on release rel-0")
+    expect(final).toHaveAttribute("title", "Saved on an earlier release: save it again first")
+    expect(screen.getByTestId("quote-line")).not.toHaveTextContent(/priced/i)
 
     view.unmount()
     await opened()
-    expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "Save the quote with its price first")
-    expect(screen.getByTestId("quote-line")).toHaveTextContent("Unpriced")
+    expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "Save the quote first")
+    expect(screen.getByTestId("quote-line")).not.toHaveTextContent(/priced/i)
   })
 
   it("offers to open the newest or save the values as a new quote, keyed in the window, when the quote moved on", async () => {
@@ -405,27 +405,6 @@ describe("QuoteView", () => {
     ])
   })
 
-  it("says a duplicate was made when leaving the quote's unsaved values for it is cancelled", async () => {
-    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({}, { values: { ...VALUES, quote_details: [{ insured: "Acme" }] } }))
-    vi.mocked(createAppQuote).mockResolvedValue(answer({ reference: "DEF-2", relation: "duplicate", priced_release: null }))
-    await opened()
-    type("CA")
-    fireEvent.click(screen.getByTestId("quote-more"))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }))
-    const window_ = await screen.findByRole("dialog", { name: "Duplicate Q-000001/1" })
-    await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
-    key("Quote reference", "DEF-2")
-    fireEvent.click(screen.getByTestId("new-quote-create"))
-
-    // Made, and leaving for it asks first: Cancel keeps the quote and its unsaved values.
-    expect(await screen.findByTestId("question")).toHaveTextContent("Leave without saving?")
-    confirmQuestion("Cancel")
-    expect(await screen.findByText("Made DEF-2/1")).toBeInTheDocument()
-    expect(window.location.pathname).toBe("/quotes/Q-000001/1")
-    expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
-    expect(createAppQuote).toHaveBeenCalledTimes(1)
-  })
-
   it("names the rows of the quote the sheets have no place for", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({}, { dropped: ["equipment row 2 (Crane)"] }))
     await opened()
@@ -436,48 +415,30 @@ describe("QuoteView", () => {
     expect(screen.queryByTestId("notice-dropped")).toBeNull()
   })
 
-  it("restores an archived quote from its notice, and archives one with Undo", async () => {
+  it("restores an archived quote from its notice", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", archived_by: "jo@example.com" }))
-    vi.mocked(changeAppQuote)
-      .mockResolvedValueOnce(changed({ version: 2 }))
-      .mockResolvedValueOnce(changed({ version: 3, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
-      .mockResolvedValueOnce(changed({ version: 4 }))
+    vi.mocked(changeAppQuote).mockResolvedValueOnce(changed({ version: 2 }))
     await opened()
     expect(screen.getByTestId("notice-archived")).toHaveTextContent("Archived by jo@example.com")
 
     fireEvent.click(screen.getByRole("button", { name: "Restore" }))
+
     await vi.waitFor(() => expect(screen.queryByTestId("notice-archived")).toBeNull())
-    fireEvent.click(screen.getByTestId("quote-more"))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Undo" }))
-
-    await vi.waitFor(() => expect(vi.mocked(changeAppQuote).mock.calls.map((call) => call.slice(2, 4))).toEqual([["restore", 1], ["archive", 2], ["restore", 3]]))
+    expect(vi.mocked(changeAppQuote).mock.calls.map((call) => call.slice(2, 4))).toEqual([["restore", 1]])
   })
 
-  it("undoes an archive on the quote it archived, though another is open by then", async () => {
-    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({ reference: "Q-000002", archived: true, archived_at: "2026-10-12T09:00:00+00:00" }))
-    vi.mocked(changeAppQuote).mockResolvedValue(changed({ version: 2, archived: true, archived_at: "2026-10-12T11:00:00+00:00" }))
-    const view = await opened()
-    fireEvent.click(screen.getByTestId("quote-more"))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }))
-    const undo = await screen.findByRole("button", { name: "Undo" })
+  it("keeps what is done to the quote as a whole off its bar, for the Quotes page", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    await opened()
 
-    view.rerender(
-      <>
-        <QuoteView route={{ page: "quote", reference: "Q-000002", option: 1 }} />
-        <NewQuoteWindow />
-        <QuestionDialog />
-        <ToastContainer />
-      </>,
-    )
-    await vi.waitFor(() => expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000002"))
-    fireEvent.click(undo)
-
-    await vi.waitFor(() => expect(changeAppQuote).toHaveBeenLastCalledWith("Q-000001", 1, "restore", 2, {}))
-    expect(useOpenQuoteStore.getState().quote?.reference).toBe("Q-000002")
+    const bar = screen.getByRole("toolbar", { name: "Quote toolbar" })
+    for (const name of ["More", "Duplicate", "Renew", "Create alternative", "Archive", "Copy link"]) {
+      expect(within(bar).queryByRole("button", { name })).toBeNull()
+    }
+    expect(within(bar).getByRole("button", { name: "History" })).toBeInTheDocument()
   })
 
-  it("offers to save a quote unpriced once its pricing failed, saying why", async () => {
+  it("offers Save once its pricing failed, saying why, never that it saves unpriced", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     await opened()
 
@@ -485,8 +446,8 @@ describe("QuoteView", () => {
     act(() => useWorkbenchPreviewStore.setState({ price: null, error: "Pricing failed: The pipeline refused it." }))
 
     const save = screen.getByTestId("save-quote")
-    expect(save).toHaveTextContent("Save unpriced")
-    expect(save).toHaveAttribute("title", "Save the quote unpriced: it could not be priced (Ctrl+S)")
+    expect(save).toHaveTextContent(/^Save$/)
+    expect(save).toHaveAttribute("title", "Save the quote (Ctrl+S)")
     expect(screen.getByTestId("app-pricing-error")).toHaveTextContent("Pricing failed: The pipeline refused it.")
   })
 
@@ -507,43 +468,6 @@ describe("QuoteView", () => {
     view.unmount()
     await opened()
     expect(screen.getByTestId("save-quote")).toBeEnabled()
-  })
-
-  it("starts a renewal from the menu in the window over the quote, filled from the quote, and Cancel leaves the quote as it was", async () => {
-    vi.mocked(openAppQuote).mockResolvedValueOnce(answer({ version: 2 })).mockResolvedValueOnce(answer({ version: 2 }, { values: { ...VALUES, quote_details: [{ insured: "Acme" }] } }))
-    await opened()
-    type("CA")
-
-    fireEvent.click(screen.getByTestId("quote-more"))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Renew" }))
-
-    const window_ = await screen.findByRole("dialog", { name: "Renew Q-000001/1" })
-    await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
-    expect(openAppQuote).toHaveBeenLastCalledWith("Q-000001", 1)
-    expect(within(window_).getByRole("checkbox", { name: "Is renewal" })).toBeChecked()
-    expect(within(window_).getByRole("textbox", { name: "Quote reference" })).toHaveValue("")
-    // Nothing is installed on the sheets while it is open, and the address stays the quote's.
-    expect(window.location.pathname).toBe("/quotes/Q-000001/1")
-    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ state: "CA" }])
-
-    fireEvent.click(within(window_).getByRole("button", { name: "Cancel" }))
-    expect(screen.queryByTestId("new-quote-window")).toBeNull()
-    expect(createAppQuote).not.toHaveBeenCalled()
-    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ state: "CA" }])
-    expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
-  })
-
-  it("copies the quote's link", async () => {
-    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1" }))
-    const writeText = vi.fn(async () => {})
-    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } })
-    await opened({ page: "quote", reference: "ABC 1", option: 1 })
-
-    fireEvent.click(screen.getByTestId("quote-more"))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Copy link" }))
-
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/quotes/ABC%201/1`))
-    expect(await screen.findByText("Link to ABC 1/1 copied")).toBeInTheDocument()
   })
 
   it("offers back values this browser kept", async () => {
@@ -631,7 +555,7 @@ describe("QuoteView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "History" }))
     const panel = await screen.findByTestId("quote-history")
-    expect(await within(panel).findByText("jo@example.com saved it, priced")).toBeInTheDocument()
+    expect(await within(panel).findByText("jo@example.com saved it")).toBeInTheDocument()
     expect(within(panel).getByText("ana@example.com made it as a renewal of Q-000000/1")).toBeInTheDocument()
     expect(within(panel).getByText("jo@example.com amended it: Broker asked")).toBeInTheDocument()
     expect(within(panel).getAllByTestId(/^activity-/).map((item) => item.dataset.testid)).toEqual(["activity-amended", "activity-saved", "activity-created"])
@@ -664,9 +588,5 @@ describe("QuoteView", () => {
     expect(screen.getByLabelText("Quote name")).toBeDisabled()
     expect(screen.getByLabelText("Assigned to")).toBeDisabled()
     expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
-    fireEvent.click(screen.getByTestId("quote-more"))
-    for (const item of ["Duplicate", "Renew", "Create alternative", "Archive"]) {
-      expect(screen.getByRole("menuitem", { name: item })).toBeDisabled()
-    }
   })
 })

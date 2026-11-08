@@ -17,8 +17,8 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore, { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore, { activePage } from "../stores/useWorkbenchViewStore"
-import { newQuoteValues, quoteProblems, withPresetRows, type RowsByTable } from "../utils/sheetValues"
-import { basisOf, quoteEligible, quotedSchema, sheetVisibility, withPrice, type SheetVisibility } from "../utils/sheetVisibility"
+import { indexProblemCells, newQuoteValues, quoteProblems, withPresetRows, type RowsByTable } from "../utils/sheetValues"
+import { basisOf, quoteEligible, quoteIndexProblems, quotedSchema, sheetVisibility, withPrice, type SheetVisibility } from "../utils/sheetVisibility"
 import { withSampleCell, withSampleRows, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 
 export interface SheetValues {
@@ -31,7 +31,7 @@ export interface SheetValues {
   price: SamplePrice | null
   /** What pricing the values depends on now; a price for another basis is out of date. */
   basis: string
-  /** The cells that break their column's rules, by `cellKey`; none while nothing is typed. */
+  /** The cells that break their column's rules, or a typed index's, by `cellKey`; none while nothing is typed. */
   problems: Readonly<Record<string, string>>
   /** The sheets and components these values show, and the columns they hide. */
   visibility: SheetVisibility
@@ -53,6 +53,16 @@ export function useSheetValues(): SheetValues {
 }
 
 const NO_PROBLEMS: Readonly<Record<string, string>> = {}
+
+/**
+ * The cells the values' quote marks, by `cellKey`: those breaking their column's rules
+ * (`quoteProblems`), and a typed index's blank, repeated or too long (`quoteIndexProblems`),
+ * which stops the quote's pricing and its save.
+ */
+const cellProblems = (form: FormSpec, quoted: FormSchema, rows: RowsByTable): Readonly<Record<string, string>> => ({
+  ...quoteProblems(quoted, rows),
+  ...indexProblemCells(quoteIndexProblems(form, rows)),
+})
 const NO_ROWS: RowsByTable = {}
 /**
  * Nothing shown and nothing hidden: the visibility of values not read yet, and of what draws
@@ -133,8 +143,8 @@ export function useNewQuoteValues(active = true): SheetValues {
 
 /**
  * The form's sample in Preview: typed there, each edit undone like any other, priced live,
- * whatever its cells hold, and checked against the columns' rules once anything is typed,
- * the marks never stopping its pricing.
+ * and checked against the columns' rules once anything is typed. Ordinary field problems
+ * are marked; a typed index's problems also stop pricing.
  */
 export function useSampleValues(active = true): SheetValues {
   const form = useWorkbenchFormStore((s) => (active ? s.form : null))
@@ -149,7 +159,7 @@ export function useSampleValues(active = true): SheetValues {
   const visibility = useSteadyVisibility(shown)
   const quoted = useQuoted(schema, visibility)
   const eligible = useMemo(() => form !== null && quoteEligible(form, form.sample), [form])
-  const problems = useMemo(() => (eligible ? quoteProblems(quoted, rows) : NO_PROBLEMS), [eligible, quoted, rows])
+  const problems = useMemo(() => (eligible && form !== null ? cellProblems(form, quoted, rows) : NO_PROBLEMS), [eligible, form, quoted, rows])
   const basis = useMemo(() => (form === null ? "" : previewBasis(form, context)), [form, context])
   return useMemo<SheetValues>(
     () => ({
@@ -188,7 +198,7 @@ export function useQuoteValues(active = true): SheetValues {
   const quoted = useQuoted(schema, visibility)
   // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
   const typed = useMemo(() => !readOnly && form !== null && quoteEligible(form, quote, locked), [readOnly, form, quote, locked])
-  const problems = useMemo(() => (typed ? quoteProblems(quoted, rows) : NO_PROBLEMS), [typed, quoted, rows])
+  const problems = useMemo(() => (typed && form !== null ? cellProblems(form, quoted, rows) : NO_PROBLEMS), [typed, form, quoted, rows])
   const basis = useMemo(() => (form === null ? "" : basisOf(form, quote, visibility.hidden)), [form, visibility, quote])
   return useMemo<SheetValues>(
     () => ({ rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked }),

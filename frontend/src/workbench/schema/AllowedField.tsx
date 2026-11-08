@@ -7,7 +7,9 @@ import { fetchParamFile } from "../../api/workbench"
 import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
 import { useParamsFiles } from "../../hooks/useParamsFiles"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { tableColumns } from "../../utils/quoteIdentity"
 import { latest } from "../../utils/latest"
+import { setIndexKind } from "../../utils/workbenchForm"
 import { IconButton } from "./IconButton"
 
 /** The Allowed choice standing for values typed in, as an older form holds them: never a CSV's name. */
@@ -16,12 +18,14 @@ const TYPED_IN = ":typed"
 /**
  * A column's allowed values: the distinct values of a column of a CSV in the pipeline's params
  * folder, its file chosen and then its column, copied in and read from the file again by
- * Refresh. The blank choice takes them away, with a row for each, values typed in as an
- * older form holds them included, which show as a choice of their own. A read answers only
- * while the column's source in the form is the one it began from, so one an undo overtakes
- * changes nothing. Why a file or a column cannot give values shows under them.
+ * Refresh. The blank choice takes them away, values typed in as an older form holds them
+ * included, which show as a choice of their own, and from an index of values its row for
+ * each, leaving it numbered (`setIndexKind`). A read answers only while the column's source
+ * in the form is the one it began from, so one an undo overtakes changes nothing. Why a file
+ * or a column cannot give values shows under them.
  */
 export function AllowedField({ tableId, column, set }: { tableId: string; column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
+  const change = useWorkbenchFormStore((s) => s.change)
   const source = column.options_source
   const typedIn = source === null && column.options.length > 0
   // A file chosen whose column is still to be picked: the form changes once it is.
@@ -44,11 +48,10 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
 
   // The column as the form holds it now, which an undo, a redo or a sync may have changed
   // while a read was under way.
-  const columnNow = () =>
-    useWorkbenchFormStore
-      .getState()
-      .form?.schema.tables.find((other) => other.name === tableId)
-      ?.columns.find((other) => other.name === column.name)
+  const columnNow = () => {
+    const table = useWorkbenchFormStore.getState().form?.schema.tables.find((other) => other.name === tableId)
+    return table === undefined ? undefined : tableColumns(table).find((other) => other.name === column.name)
+  }
   const sourceNow = () => JSON.stringify(columnNow()?.options_source ?? null)
   const readValues = (from: string, name: string, then: (values: string[]) => void) => {
     const ticket = reads.take()
@@ -74,7 +77,9 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
     else if (chosen !== "") setPendingFile(chosen === source?.file ? null : chosen)
     else {
       setPendingFile(null)
-      if (source !== null || column.options.length > 0) set({ options: [], options_source: null, row_per_value: false })
+      // An index whose values are taken away gives no row for each value: Haute numbers its rows.
+      if (column.index === "values") change((f) => setIndexKind(f, tableId, "numbered"))
+      else if (source !== null || column.options.length > 0) set({ options: [], options_source: null })
     }
   }
   const chooseColumn = (name: string) =>

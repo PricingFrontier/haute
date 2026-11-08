@@ -597,14 +597,17 @@ describe("PipelineNode", () => {
   })
 
   describe("a workbench node's ports, the tables the workbench store fetched", () => {
-    const table = (name: string, columns: { name: string; type: "int" | "float" | "str" }[] = [{ name: "x", type: "int" }]) =>
-      ({ name, rows: "one" as const, columns })
-    const fetched = (tables: ReturnType<typeof table>[], responseTables: ReturnType<typeof table>[]) =>
+    /** A table's side, as a fetch gives it: its port is the table's name and its side. */
+    const sideOf = (side: "input" | "output") => (name: string, columns: { name: string; type: "int" | "float" | "str" }[] = [{ name: "x", type: "int" }]) =>
+      ({ name, side, port: `${name}_${side}`, rows: "one" as const, columns, key: null, null_key: null, index_kind: null, index_values: [] })
+    const table = sideOf("input")
+    const response = sideOf("output")
+    const fetched = (tables: ReturnType<typeof table>[], responseTables: ReturnType<typeof response>[]) =>
       useWorkbenchStore.setState({ tables: { tables, sample: {}, responseTables, fetch: 1 } })
     afterEach(() => useWorkbenchStore.setState({ tables: null }))
 
-    it("gives a Workbench Input a source port per input table with a column, and follows each fetch", () => {
-      fetched([table("policy_details"), table("notes", []), table("equipment")], [table("pricing_output")])
+    it("gives a Workbench Input a source port per input table with a column, its input side, and follows each fetch", () => {
+      fetched([table("policy_details"), table("notes", []), table("equipment")], [response("pricing")])
       // The server sends no handle identities for a Workbench Input: its config holds no tables.
       const { container } = renderNode({
         label: "quote",
@@ -614,13 +617,13 @@ describe("PipelineNode", () => {
       })
 
       expect(sourceHandles(container).map((handle) => handle.getAttribute("data-handleid"))).toEqual([
-        "policy_details",
-        "equipment",
+        "policy_details_input",
+        "equipment_input",
       ])
       expect(container.querySelector(".react-flow__handle-left")).toBeNull()
 
       act(() => fetched([table("equipment")], []))
-      expect(sourceHandles(container).map((handle) => handle.getAttribute("data-handleid"))).toEqual(["equipment"])
+      expect(sourceHandles(container).map((handle) => handle.getAttribute("data-handleid"))).toEqual(["equipment_input"])
     })
 
     it("gives a Workbench Input no port before the first fetch lands", () => {
@@ -629,17 +632,17 @@ describe("PipelineNode", () => {
       expect(screen.getByText("No emitted frames")).toBeInTheDocument()
     })
 
-    it("gives a Workbench Output a target port per response table, and no other handle", () => {
+    it("gives a Workbench Output a target port per response table, its output side, and no other handle", () => {
       fetched([table("policy_details")], [
-        table("pricing_output", [{ name: "premium", type: "float" }]),
-        table("layers", [{ name: "layer", type: "int" }]),
+        response("pricing", [{ name: "premium", type: "float" }]),
+        response("layers", [{ name: "layer", type: "int" }]),
       ])
       const { container } = renderNode({ label: "response", nodeType: NODE_TYPES.WORKBENCH_OUTPUT, config: {} })
 
       const ports = [...container.querySelectorAll(".react-flow__handle-left")]
-      expect(ports.map((port) => port.getAttribute("data-handleid"))).toEqual(["pricing_output", "layers"])
-      expect(screen.getByTestId("input-connector[1]:response")).toHaveAttribute("data-handleid", "layers")
-      expect(screen.getByTestId("workbench-output-body-label-layers")).toHaveTextContent("layers")
+      expect(ports.map((port) => port.getAttribute("data-handleid"))).toEqual(["pricing_output", "layers_output"])
+      expect(screen.getByTestId("input-connector[1]:response")).toHaveAttribute("data-handleid", "layers_output")
+      expect(screen.getByTestId("workbench-output-body-label-layers_output")).toHaveTextContent("layers_output")
       expect(container.querySelector(".react-flow__handle-right")).toBeNull()
       expect(screen.queryByText("inputs")).not.toBeInTheDocument()
     })

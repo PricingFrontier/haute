@@ -1,12 +1,18 @@
 /**
  * The rules for a Workbench Input, whose tables and sample quote the project's workbench
  * supplies, and a Workbench Output, whose response tables it supplies (specs/workbench):
- * which tables of a fetch are a node's ports, which connections a fetch leaves without a
- * table, and how a frame's column fills a response column.
+ * which tables of a fetch are a node's ports, by `<table>_input` and `<table>_output`, which
+ * connections a fetch leaves without a table, how a frame's column fills a response column,
+ * a table's key, and whether a pricing's answer fits the rows it priced.
  */
 import type { Edge } from "@xyflow/react"
 import { describe, expect, it } from "vitest"
+import type { SchemaColumn, SchemaTable, WorkbenchColumn, WorkbenchTable } from "../../api/types"
+import { blankColumn, IDENTITY_COLUMNS, tableIndex } from "../quoteIdentity"
 import {
+  holdsOutput,
+  keyCollisions,
+  outputMisfit,
   workbenchDisconnections,
   workbenchNodePorts,
   workbenchNodeTables,
@@ -15,9 +21,20 @@ import {
   type WorkbenchTables,
 } from "../workbenchTables"
 
-const table = { name: "policy_details", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }
+import misfitCases from "./fixtures/outputMisfit.json"
+
+/** A side of a schema table, as a fetch gives it: its port the table's name and its side. */
+const side = (
+  name: string,
+  which: WorkbenchTable["side"],
+  rows: WorkbenchTable["rows"],
+  columns: WorkbenchColumn[],
+  key: string | null = null,
+): WorkbenchTable => ({ name, side: which, port: `${name}_${which}`, rows, columns, key, null_key: null, index_kind: null, index_values: [] })
+
+const table = side("policy_details", "input", "one", [{ name: "state", type: "str" }])
 const sample = { policy_details: { state: "NY" } }
-const responseTable = { name: "layers", rows: "many" as const, columns: [{ name: "layer", type: "int" as const }] }
+const responseTable = side("layers", "output", "many", [{ name: "layer", type: "int" }])
 const fetched: WorkbenchTables = {
   tables: [table],
   sample,
@@ -26,15 +43,15 @@ const fetched: WorkbenchTables = {
 }
 
 describe("workbenchTablePorts", () => {
-  it("makes each table with a column a port, by name, in order, once", () => {
+  it("makes each table with a column a port, by its port's name, in order, once", () => {
     const tables = [
       responseTable,
-      { name: "bare", rows: "one" as const, columns: [] },
+      side("bare", "output", "one", []),
       table,
-      { name: "layers", rows: "one" as const, columns: [{ name: "again", type: "int" as const }] },
+      side("layers", "output", "one", [{ name: "again", type: "int" }]),
     ]
 
-    expect(workbenchTablePorts(tables)).toEqual(["layers", "policy_details"])
+    expect(workbenchTablePorts(tables)).toEqual(["layers_output", "policy_details_input"])
     expect(workbenchTablePorts([])).toEqual([])
   })
 })
@@ -43,8 +60,8 @@ describe("a workbench node's tables", () => {
   it("are the input tables for a Workbench Input and the response tables for a Workbench Output, from the newest fetch", () => {
     expect(workbenchNodeTables("workbenchInput", fetched)).toBe(fetched.tables)
     expect(workbenchNodeTables("workbenchOutput", fetched)).toBe(fetched.responseTables)
-    expect(workbenchNodePorts("workbenchInput", fetched)).toEqual(["policy_details"])
-    expect(workbenchNodePorts("workbenchOutput", fetched)).toEqual(["layers"])
+    expect(workbenchNodePorts("workbenchInput", fetched)).toEqual(["policy_details_input"])
+    expect(workbenchNodePorts("workbenchOutput", fetched)).toEqual(["layers_output"])
   })
 
   it("are none before the first fetch lands, and none for any other node", () => {
@@ -56,9 +73,9 @@ describe("a workbench node's tables", () => {
 })
 
 describe("workbenchDisconnections", () => {
-  const port = (name: string) => ({ name, rows: "one" as const, columns: [{ name: "c", type: "int" as const }] })
+  const port = (which: WorkbenchTable["side"]) => (name: string) => side(name, which, "one", [{ name: "c", type: "int" }])
   const tablesOf = (inputs: string[], outputs: string[] = []): WorkbenchTables =>
-    ({ tables: inputs.map(port), sample: {}, responseTables: outputs.map(port), fetch: 1 })
+    ({ tables: inputs.map(port("input")), sample: {}, responseTables: outputs.map(port("output")), fetch: 1 })
   const node = (id: string, nodeType: string) => ({ id, data: { label: id, nodeType } })
   const nodes = [
     node("wb_in", "workbenchInput"),
@@ -68,14 +85,25 @@ describe("workbenchDisconnections", () => {
   ]
   const edge = (id: string, source: string, sourceHandle: string | null, target: string, targetHandle: string | null = null): Edge =>
     ({ id, source, sourceHandle, target, targetHandle })
-  const policy = edge("e_policy", "wb_in", "policy", "priced")
-  const account = edge("e_account", "wb_in", "account", "priced")
+  const policy = edge("e_policy", "wb_in", "policy_input", "priced")
+  const account = edge("e_account", "wb_in", "account_input", "priced")
   const filled = edge("e_filled", "priced", null, "wb_out", "pricing_output")
 
-  it("keeps every connection whose table's name the tables still have, however they were reordered", () => {
+  it("keeps every connection whose port the tables still have, however they were reordered", () => {
     const edges = [policy, account, filled]
 
-    expect(workbenchDisconnections({ nodes, edges }, tablesOf(["account", "policy"], ["pricing_output"]))).toBeNull()
+    expect(workbenchDisconnections({ nodes, edges }, tablesOf(["account", "policy"], ["pricing"]))).toBeNull()
+  })
+
+  it("removes a connection to a port that a table no longer has, by its name or its side", () => {
+    // pricing is an input table now, so it has no pricing_output port, and policy no policy_output.
+    const result = workbenchDisconnections(
+      { nodes, edges: [policy, filled, edge("e_wrong_side", "wb_in", "policy_output", "priced")] },
+      tablesOf(["policy", "pricing"], ["policy"]),
+    )
+
+    expect(result?.edges).toEqual([policy])
+    expect(result?.removed.map(({ node }) => node.id)).toEqual(["wb_in", "wb_out"])
   })
 
   it("removes a connection to a table whose name has gone, a renamed one's included, by the node that loses it", () => {
@@ -129,5 +157,86 @@ describe("dtypeFits", () => {
     ["int", "Null", true],
   ] as const)("judges whether a %s column takes a frame's %s column: %s", (declared, dtype, fits) => {
     expect(dtypeFits(declared, dtype)).toBe(fits)
+  })
+})
+
+describe("tableIndex", () => {
+  const column = (name: string, type: SchemaColumn["type"] = "str", set: Partial<SchemaColumn> = {}): SchemaColumn => ({ ...blankColumn(name, type), ...set })
+  const identity = IDENTITY_COLUMNS.map(([name, type]) => blankColumn(name, type))
+  const schemaTable = (rows: SchemaTable["rows"], inputs: SchemaColumn[], outputs: SchemaColumn[] = []): SchemaTable => ({
+    name: "ce_equipment",
+    rows,
+    inputs: inputs.length > 0 || outputs.length === 0 ? [...identity, ...inputs] : inputs,
+    outputs: inputs.length > 0 || outputs.length === 0 ? outputs : [...identity, ...outputs],
+  })
+  it("is none for a one-row table", () => {
+    expect(tableIndex(schemaTable("one", [column("limit", "int")], [column("premium", "float")]))).toBeNull()
+  })
+
+  it.each(["numbered", "typed", "values"] as const)("finds the %s index by its kind, in either block and whatever its name or place", (kind) => {
+    const index = column("item", "str", {
+      index: kind,
+      ...(kind === "values" ? { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" } } : {}),
+    })
+    expect(tableIndex(schemaTable("many", [column("limit", "int"), index], [column("premium", "float")]))).toBe(index)
+    expect(tableIndex(schemaTable("many", [], [column("premium", "float"), index]))).toBe(index)
+  })
+})
+
+describe("keyCollisions", () => {
+  const preset = (type: SchemaColumn["type"], options: string[]): SchemaTable => ({
+    name: "ce_layers",
+    rows: "many",
+    inputs: [
+      ...IDENTITY_COLUMNS.map(([name, kind]) => blankColumn(name, kind)),
+      { ...blankColumn("layer", type), options, options_source: { file: "layers.csv", column: "layer" }, index: "values" },
+      blankColumn("limit", "int"),
+    ],
+    outputs: [],
+  })
+
+  it("names the allowed values of the column giving the rows that read as one value in its type, as the server does", () => {
+    expect(keyCollisions(preset("int", ["1", "01", "2", "2.0", "3"]))).toEqual([
+      "ce_layers.layer's allowed values 1 and 01 are one Integer, so they cannot key its rows: correct the params file",
+      "ce_layers.layer's allowed values 2 and 2.0 are one Integer, so they cannot key its rows: correct the params file",
+    ])
+  })
+
+  it("names none for distinct values, for text, and for a table whose rows no column gives", () => {
+    expect(keyCollisions(preset("int", ["1", "2", "10"]))).toEqual([])
+    expect(keyCollisions(preset("str", ["a", "a ", "A"]))).toEqual([])
+    const numbered = preset("int", [])
+    numbered.inputs[2] = { ...blankColumn("layer", "int"), index: "numbered" }
+    expect(keyCollisions(numbered)).toEqual([])
+  })
+})
+
+describe("holdsOutput", () => {
+  it("holds a value the quote store keeps: a finite number, text, a tick or a date", () => {
+    for (const value of [0, -1.5, 1e300, "", "text", false, true, "2024-01-01"]) expect(holdsOutput(value)).toBe(true)
+  })
+
+  it("holds no null, nothing, and no number that is not finite, as JSON carries one", () => {
+    for (const value of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) expect(holdsOutput(value)).toBe(false)
+    for (const token of ["nan", "inf", "-inf"]) {
+      expect(holdsOutput({ __haute_type__: "non_finite_float", value: token })).toBe(false)
+    }
+  })
+})
+
+describe("outputMisfit", () => {
+  // The cases tests/test_workbench_tables.py holds output_misfit to: one rule in two languages.
+  it.each(misfitCases.cases.map((each) => [each.name, each] as const))("%s", (_, each) => {
+    expect(outputMisfit(each.table as WorkbenchTable, each.answer, each.request)).toBe(each.message)
+  })
+
+  it("is null for a side with no key: a one-row table's, or a table of outputs alone's", () => {
+    const outputs = side("premium", "output", "many", [{ name: "layer", type: "int" }])
+    expect(outputMisfit(outputs, [null, 1, 1], [])).toBeNull()
+  })
+
+  it("tells a key typed as text from one typed as a number", () => {
+    const keyed = side("ce_equipment", "output", "many", [{ name: "item_number", type: "int" }], "item_number")
+    expect(outputMisfit(keyed, ["1"], [1])).toBe('ce_equipment_output does not fit ce_equipment\'s rows: item_number 1 is on no row priced.')
   })
 })

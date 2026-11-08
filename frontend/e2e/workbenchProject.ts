@@ -17,19 +17,17 @@ export const FORM_FOLDER = resolve(e2eProjectRoot, "rating", "workbench")
  * policy table in, a pricing table out, and one blank sheet.
  */
 export const FORM_FILES: Record<string, unknown> = {
-  "form.json": { version: 1, name: "haute-e2e", schema: ["quote_details", "policy", "pricing"], sheets: ["sheet_1"] },
+  "form.json": { version: 3, name: "haute-e2e", schema: ["quote_details", "policy", "pricing"], sheets: ["sheet_1"] },
   "schema/quote_details.json": { columns: [] },
   "schema/policy.json": {
-    role: "input",
     rows: "one",
-    columns: [
+    inputs: [
       { name: "limit", type: "int", required: true },
       { name: "region", type: "str", options: ["north", "south"] },
     ],
   },
-  "schema/pricing.json": { role: "output", rows: "one", columns: [{ name: "premium", type: "float" }] },
-  "sheets/sheet_1.json": { title: "Sheet 1", sections: [{ title: "Section 1", components: [] }] },
-  "sheets/sheet_1.layout.json": { width: 1280, sections: { "Section 1": { height: 560, components: {} } } },
+  "schema/pricing.json": { rows: "one", outputs: [{ name: "premium", type: "float" }] },
+  "sheets/sheet_1.json": { title: "Sheet 1", width: 1280, sections: [{ title: "Section 1", height: 560, components: [] }] },
 }
 
 export const readFormFile = (path: string) => JSON.parse(readFileSync(resolve(FORM_FOLDER, path), "utf8"))
@@ -51,8 +49,8 @@ export function enableWorkbench(files: Record<string, unknown> = FORM_FILES): vo
 
 /**
  * Replace the scaffold's Quote Input and Quote Response with a workbench pipeline: a
- * Workbench Input whose policy table a Transform prices, filling a Workbench Output's
- * pricing table. Saved through the API, as a developer's own edits would be. Neither
+ * Workbench Input whose policy table's port, `policy_input`, a Transform prices, filling a
+ * Workbench Output's pricing table through its port, `pricing_output`. Saved through the API, as a developer's own edits would be. Neither
  * workbench node's config holds anything: both read their tables from the form folder.
  */
 export async function buildWorkbenchPipeline(page: Page): Promise<void> {
@@ -117,7 +115,7 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
             label: "premium",
             description: "",
             nodeType: "polars",
-            config: { code: "df = policy.with_columns(premium=pl.col('limit') * 0.1)" },
+            config: { code: "df = policy_input.with_columns(premium=pl.col('limit') * 0.1)" },
           },
         },
         {
@@ -128,8 +126,8 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
         },
       )
       edges.push(
-        { id: "e_workbench_input_premium", source: "workbench_input", target: "premium", sourceHandle: "policy", targetHandle: null },
-        { id: "e_premium_workbench_output", source: "premium", target: "workbench_output", sourceHandle: null, targetHandle: "pricing" },
+        { id: "e_workbench_input_premium", source: "workbench_input", target: "premium", sourceHandle: "policy_input", targetHandle: null },
+        { id: "e_premium_workbench_output", source: "premium", target: "workbench_output", sourceHandle: null, targetHandle: "pricing_output" },
       )
       const saved = await fetch("/api/pipeline/save", {
         method: "POST",

@@ -237,7 +237,24 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Readable output round 2 (READ-46, 4 November 2026): the fixed names of the request input
 // and response node in a new or pasted node, and the refusal of a rename or Edge Join that a
 // code step reads by name, bring it to 1,778.2 KiB (the initial bundle 290.4 KiB); 1,779 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1779
+// Tables of inputs and outputs (6 November 2026): a table's two blocks in the schema editor,
+// the key that puts each output row on its input row and Preview's twin of the pricing's
+// check of it, and the schema pane's layout bring it to 1,781.6 KiB (the initial bundle
+// 293.2 KiB); 1,783 KiB.
+// Numbered, typed and params-based indexes (6 November 2026): schema controls, validation,
+// and index-based row alignment in Tables and Charts bring the complete bundle to
+// 1,783.3 KiB, up 1.7 KiB from the table-block baseline above. 1,785 KiB restores about
+// 1.7 KiB headroom; the initial bundle is 293.7 KiB, within the unchanged 300 KiB cap,
+// and the separate single-chunk and chart-vendor caps stay unchanged.
+// Schema maintenance review (6 November 2026): the per-environment comparison state,
+// readable plan and SQL export UI in the lazy workbench, plus its response validator,
+// bring the complete bundle to 1,786.1 KiB (initial 293.9 KiB). 1,788 KiB restores
+// about 1.9 KiB headroom. Initial, single-chunk and chart-vendor limits stay unchanged.
+// Connection-bound schema checks, global/retention diagnostics and deferred clipboard
+// validation bring the measured editor bundle to 1,788.3 KiB after removing unused
+// comparison metadata and duplicated views. A 1 KiB increment restores 0.7 KiB
+// headroom; startup, single-chunk and vendor allowances are unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1789
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

@@ -11,7 +11,9 @@ import type { ChartThemeTokens } from "../panels/explore/chartOptions"
 import { formatChartNumber } from "./chartHelpers"
 import { formatValue } from "./formatValue"
 import { formattedNumber, parseTypedNumber, rowFilled, type PricedRows, type RowsByTable } from "./sheetValues"
+import { isOutputColumn, tableColumns } from "./quoteIdentity"
 import { columnKey } from "./sheetVisibility"
+import { inputRowLayout } from "./sheetRowAlignment"
 import {
   answeredOutputs,
   chartGrain,
@@ -87,9 +89,12 @@ function sharedFormat(columns: readonly SchemaColumn[]): SchemaColumn | null {
   return same ? first : null
 }
 
-/** The distinct tables of `found`, in order, that `keep` keeps. */
-const tablesOf = (found: readonly Found[], keep: (table: SchemaTable) => boolean): SchemaTable[] => [
-  ...new Map(found.filter(({ table }) => keep(table)).map(({ table }) => [table.name, table])).values(),
+/** Whether a field's column is an output, which pricing fills. */
+const isOutput = ({ table, column }: Found): boolean => isOutputColumn(table, column)
+
+/** The distinct many-row tables of `found`, in order, whose fields `keep` keeps. */
+const tablesOf = (found: readonly Found[], keep: (found: Found) => boolean): SchemaTable[] => [
+  ...new Map(found.filter((each) => each.table.rows === "many" && keep(each)).map(({ table }) => [table.name, table])).values(),
 ]
 
 /** What a Chart's fields hold on the sheet (specs/workbench, Charts). */
@@ -104,16 +109,16 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   const category = widget.category === null ? null : fieldColumn({ schema }, widget.category)
   const label = lined(category) ? category : null
   // A column the quote leaves out: the sheets hide it, so it was never typed.
-  const quotedColumns = new Set(quoted.tables.flatMap((table) => table.columns.map((column) => columnKey(table.name, column.name))))
+  const quotedColumns = new Set(quoted.tables.flatMap((table) => tableColumns(table).map((column) => columnKey(table.name, column.name))))
   const inQuote = ({ table, column }: Found): boolean => quotedColumns.has(columnKey(table.name, column.name))
   // Priced values plotted, or rows named by priced values, are for other values once the basis moves on.
-  const priced = plotted.some(({ table }) => table.role === "output") || label?.table.role === "output"
+  const priced = plotted.some(isOutput) || (label !== null && isOutput(label))
   const stale = price !== null && price.basis !== basis && priced
   const axis = sharedFormat(plotted.map(({ column }) => column))
 
   if (grain === "one") {
     const points = plotted.map((found) =>
-      found.table.role === "input"
+      !isOutput(found)
         ? inQuote(found)
           ? typedNumber(held[found.table.name]?.[0]?.[found.column.name])
           : null
@@ -136,30 +141,33 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   }
 
   const shown = label === null ? plotted : [...plotted, label]
-  const inputs = tablesOf(shown, (table) => table.role === "input" && table.rows === "many")
-  const outputs = tablesOf(shown, (table) => table.role === "output" && table.rows === "many")
+  const inputs = tablesOf(shown, (found) => !isOutput(found))
+  const outputs = tablesOf(shown, isOutput)
   /** Each row's value of a column: a number for a field, the row's name for its label. */
   let valueAt: (found: Found, row: number) => unknown
   let kept: number[]
   if (inputs.length > 0) {
-    // The rows typed into the input tables it shows, by position, as a Table's grid has them.
-    const count = Math.max(0, ...inputs.map((table) => held[table.name]?.length ?? 0))
+    const layout = inputRowLayout(inputs, held)
+    const sourceAt = (table: SchemaTable, row: number) => {
+      const source = layout.rows.get(table.name)?.[row]
+      return source === undefined ? undefined : held[table.name]?.[source]
+    }
     const read = new Map(quoted.tables.map((table) => [table.name, table]))
-    kept = Array.from({ length: count }, (_, row) => row).filter((row) =>
+    kept = Array.from({ length: layout.count }, (_, row) => row).filter((row) =>
       inputs.some((table) => {
         const quotedTable = read.get(table.name)
-        return quotedTable !== undefined && rowFilled(quotedTable, held[table.name]?.[row])
+        return quotedTable !== undefined && rowFilled(quotedTable, sourceAt(table, row))
       }),
     )
-    const matched = linedUpOutputs(inputs, outputs, held, count, price, quoted)
+    const matched = linedUpOutputs(inputs, outputs, held, layout.count, price, quoted, layout.rows)
     valueAt = (found, row) =>
-      found.table.role === "input"
+      !isOutput(found)
         ? inQuote(found)
-          ? held[found.table.name]?.[row]?.[found.column.name]
+          ? sourceAt(found.table, row)?.[found.column.name]
           : undefined
         : matched.get(found.table.name)?.[row]?.[found.column.name]
   } else {
-    // Output tables alone: the first one's answer, the others' rows matched by key.
+    // Outputs alone: the first one's table's answer, the others' rows matched by key.
     const answered = answeredOutputs(outputs, price)
     kept = (answered.get(outputs[0]?.name ?? "") ?? []).map((_, row) => row)
     valueAt = (found, row) => answered.get(found.table.name)?.[row]?.[found.column.name]
@@ -167,8 +175,8 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
 
   const nameOf = (row: number): string => {
     if (label === null) return String(row + 1)
-    if (label.table.role === "input") {
-      if (label.column.index) return String(row + 1)
+    if (!isOutput(label)) {
+      if (label.column.index === "numbered") return String(row + 1)
       const typed = valueAt(label, row)
       if (label.column.type === "bool") return typed === true ? "Yes" : "No"
       const text = typeof typed === "string" ? typed.trim() : ""
@@ -180,7 +188,7 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   const series = plotted.map((found) => {
     const points = kept.map((row) => {
       const value = valueAt(found, row)
-      return found.table.role === "input" ? typedNumber(value as SampleValue | undefined) : pricedNumber(value)
+      return !isOutput(found) ? typedNumber(value as SampleValue | undefined) : pricedNumber(value)
     })
     return {
       key: found.key,

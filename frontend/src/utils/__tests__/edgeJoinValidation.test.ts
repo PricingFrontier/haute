@@ -307,11 +307,11 @@ describe("edgeJoinValidation", () => {
       const join = edgeJoin({ how: "left", left_on: ["policy_id"], right_on: ["state"] })
       const nodes = [workbenchInput, stampedInput("lookup", ["state"]), join]
       const edges = [
-        edge("policy", "wb_in", "join", "base", "policy"),
+        edge("policy", "wb_in", "join", "base", "policy_input"),
         edge("e-lookup", "lookup", "join", "join"),
       ]
       const workbench = {
-        tables: [{ name: "policy", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }],
+        tables: [{ name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null, index_kind: null, index_values: [] }],
         sample: {},
         responseTables: [],
         fetch: 1,

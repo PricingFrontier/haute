@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { CollectionWidget, FormSchema, FormSpec, SchemaColumn, SchemaTable, ShowWhen } from "../../api/types"
 import { valuesBasis } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
-import { BLANK_THEME, COLLECTION_OPTIONS, type SampleRow } from "../../utils/workbenchForm"
-import { hiddenPerilsForm, section, sheet } from "../../workbench/__tests__/fixtures"
+import { BLANK_THEME, COLLECTION_OPTIONS, setIndexKind, type SampleRow } from "../../utils/workbenchForm"
+import { hiddenPerilsForm, section, sheet, sheetForm } from "../../workbench/__tests__/fixtures"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS, type PricedValues, type QuotePricer } from "../useWorkbenchPricingStore"
@@ -18,14 +18,12 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
   name,
   type: "str",
   label: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -37,11 +35,11 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
 })
 const policy: SchemaTable = {
   name: "policy_details",
-  role: "input",
   rows: "one",
-  columns: [column("exposure", { type: "float", required: true, min: 0 })],
+  inputs: [column("exposure", { type: "float", required: true, min: 0 })],
+  outputs: [],
 }
-const pricing: SchemaTable = { name: "pricing_output", role: "output", rows: "one", columns: [column("model_premium", { type: "float" })] }
+const pricing: SchemaTable = { name: "pricing_output", rows: "one", inputs: [], outputs: [column("model_premium", { type: "float" })] }
 const form: FormSpec = {
   version: 1,
   name: "t",
@@ -53,11 +51,11 @@ const form: FormSpec = {
 
 /** A Collection of the policy's columns, always shown. */
 const boxes = (id: string, columns: string[]): CollectionWidget => ({
-  id, number: null, type: "collection", x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, show_when: { match: "all", conditions: [] },
+  id, name: id, type: "collection", x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, show_when: { match: "all", conditions: [] },
   fields: columns.map((name) => ({ table: "policy_details", column: name })),
 })
 /** The schema with a box, cover, and a name beside the policy's required exposure. */
-const covered: FormSchema = { tables: [{ ...policy, columns: [...policy.columns, column("cover", { type: "bool" }), column("name")] }, pricing] }
+const covered: FormSchema = { tables: [{ ...policy, inputs: [...policy.inputs, column("cover", { type: "bool" }), column("name")] }, pricing] }
 /** Shown only while cover is ticked. */
 const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "policy_details", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
 
@@ -91,6 +89,25 @@ describe("useWorkbenchPreviewStore", () => {
     vi.clearAllMocks()
     vi.useRealTimers()
     useWorkbenchFormStore.setState({ form: null, status: "idle" })
+  })
+
+  it("blocks quote pricing for duplicate typed indexes and resumes after correction", async () => {
+    const indexed = setIndexKind(sheetForm(), "equipment", "typed")
+    useWorkbenchFormStore.setState({ form: indexed })
+    const quotePricer = vi.fn<QuotePricer>(() => Promise.resolve(answered(5000)))
+    useWorkbenchPricingStore.setState({ quotePricer })
+    store().setRows({ equipment: [{ row_number: "1", item: "Crane" }, { row_number: "1", item: "Truck" }] })
+
+    await store().priceNow()
+
+    expect(quotePricer).not.toHaveBeenCalled()
+    expect(store()).toMatchObject({ price: null, error: expect.stringContaining("equipment's rows 1 and 2") })
+
+    store().setCell("equipment", 1, "row_number", "2")
+    await store().priceNow()
+    expect(quotePricer).toHaveBeenCalledOnce()
+    expect(quotePricer.mock.calls[0][1].equipment[1].row_number).toBe("2")
+    expect(store()).toMatchObject({ error: null, price: { tables: answered(5000).tables } })
   })
 
   it("holds the quote apart from the sample: cells set and rows replaced, without history", () => {
@@ -160,7 +177,7 @@ describe("useWorkbenchPreviewStore", () => {
     const quotePricer = vi.fn<QuotePricer>(() => Promise.resolve(answered(1)))
     useWorkbenchPricingStore.setState({ quotePricer })
     const defaulted: FormSchema = {
-      tables: [{ ...covered.tables[0], columns: covered.tables[0].columns.map((c) => (c.name === "cover" ? { ...c, default_value: true } : c.name === "name" ? { ...c, default_value: "Acme" } : c)) }, pricing],
+      tables: [{ ...covered.tables[0], inputs: covered.tables[0].inputs.map((c) => (c.name === "cover" ? { ...c, default_value: true } : c.name === "name" ? { ...c, default_value: "Acme" } : c)) }, pricing],
     }
     useWorkbenchFormStore.setState({ form: { ...form, schema: defaulted } })
     store().open({ policy_details: [{ cover: true, name: "Acme" }] }, null, false)

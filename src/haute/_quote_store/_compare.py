@@ -37,7 +37,7 @@ from haute._quote_store._catalogue import (
     table_problems,
 )
 from haute._quote_store._environment import StoreLocation
-from haute._quote_store._migrate import UNCOUNTED, Key, Plan, held, plan
+from haute._quote_store._migrate import UNCOUNTED, Key, Plan, Step, held, plan
 from haute._quote_store._providers import Provider
 from haute._quote_store._schema import ACTIVITY_TABLE, StoreSchema, store_schema, structure
 from haute._quote_store._store import (
@@ -47,7 +47,6 @@ from haute._quote_store._store import (
     reaching,
 )
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
-from haute._workbench_tables import QUOTE_ROW
 
 #: Each catalogue kind a form's column type is held as.
 _FORM_TYPES: Mapping[str, str] = {
@@ -195,17 +194,22 @@ class _Matcher:
     ) -> None:
         """The columns of *expected* the store keeps that the form does not (its own, the
         identity of ``haute_activity``), each missing, of another kind or nullable otherwise
-        a note on the table."""
+        a note on its field (on the table for activity, which has no schema field)."""
         for column in expected.columns:
             if column.name in skip:
                 continue
             held = found.column(column.name)
             where = f"{expected.name}.{column.name}"
+            column_key = column.name if table_key is not None else None
             if held is None:
-                self.note(table_key, None, "store", f"{where}, the store's own column, is missing")
+                self.note(
+                    table_key, column_key, "store", f"{where}, the store's own column, is missing"
+                )
                 continue
             for _, said in column_problems(column, held, self.dialect):
-                self.note(table_key, None, "store", f"{where}, the store's own column, {said}")
+                self.note(
+                    table_key, column_key, "store", f"{where}, the store's own column, {said}"
+                )
 
     def not_null_extras(
         self, table_key: str | None, found: CatalogueTable, known: set[str]
@@ -261,6 +265,35 @@ def _dialect(name: str) -> Dialect:
     return dialect
 
 
+def additions_plan(form: FormSpec, catalogue: Catalogue) -> Plan:
+    """Missing schema names only, independent of migration pairings or compatibility repairs."""
+    wanted = structure(form)
+    steps: list[Step] = []
+    for table in wanted["tables"]:
+        found = catalogue.table(table["name"])
+        if found is None:
+            steps.append(Step("create table", table["name"], table["key"]))
+            continue
+        present = {column.name.casefold() for column in found.columns}
+        steps.extend(
+            Step("add column", table["name"], table["key"], column["name"], column["key"])
+            for column in table["columns"]
+            if column["name"].casefold() not in present
+        )
+    return Plan(
+        steps=tuple(steps),
+        refusals=(),
+        recorded=wanted,
+        before={
+            "tables": [
+                {"name": table.name, "columns": [{"name": column.name} for column in table.columns]}
+                for table in catalogue.tables
+            ]
+        },
+        activity=not any(table.name.casefold() == ACTIVITY_TABLE for table in catalogue.tables),
+    )
+
+
 def compare(
     form: FormSpec,
     catalogue: Catalogue,
@@ -294,9 +327,7 @@ def compare(
             continue
         key = f"{_THE_DATABASE_S}{found.name}"
         matcher.extras.append(Extra(found.name, None, None, found.quotes))
-        matcher.tables.append(
-            {"key": key, "name": found.name, "role": "", "rows": "one", "columns": []}
-        )
+        matcher.tables.append({"key": key, "name": found.name, "rows": "one", "columns": []})
         matcher.count((key, None), found.quotes)
     activity = catalogue.table(ACTIVITY_TABLE)
     if activity is None:
@@ -310,7 +341,8 @@ def compare(
     made = plan(wanted, {"tables": matcher.tables}, matcher.counts, provider=provider)
     made = replace(made, activity=activity is None, notes=tuple(matcher.notes))
     for step in made.steps:
-        if step.kind == "reshape table":
+        # A retyped index is marked with its column's type, as any column's is.
+        if step.kind == "reshape table" and step.column_key is None:
             rows = next(
                 table["rows"] for table in wanted["tables"] if table["key"] == step.table_key
             )
@@ -344,9 +376,23 @@ def _match_table(
     form_columns = {column["name"] for column in table["columns"]}
     claimed: set[str] = set()
     matched: dict[str, tuple[CatalogueColumn, str | None]] = {}
+    # A many-row table's index is the database's key column after the identity, whatever
+    # either is named: paired first, without the analyst, so renaming the index renames that
+    # column and never adds one beside it, and no other column of either takes it by name.
+    index = next((column for column in table["columns"] if column["index"]), None)
+    keyed = [name for name in found.primary_key if name not in IDENTITY]
+    key_column = found.column(keyed[0]) if index is not None and len(keyed) == 1 else None
+    if index is not None and key_column is not None:
+        renamed_from = None if key_column.name == index["name"] else key_column.name
+        matched[index["key"]] = (key_column, renamed_from)
+        claimed.add(key_column.name)
     for column in table["columns"]:
         found_column = found.column(column["name"])
-        if found_column is not None:
+        if (
+            column["key"] not in matched
+            and found_column is not None
+            and found_column.name not in claimed
+        ):
             matched[column["key"]] = (found_column, None)
             claimed.add(found_column.name)
     taken: list[Rename] = []
@@ -367,8 +413,8 @@ def _match_table(
         matched[column["key"]] = (found_column, held_as)
         claimed.add(held_as)
         taken.append(pairing)
-    # The store's own columns, quote_row among them whatever the table's rows, are no extras.
-    own = ({column.name for column in expected.columns} - form_columns) | {QUOTE_ROW}
+    # The store's own columns are no extras.
+    own = {column.name for column in expected.columns} - form_columns
     uncounted = not set(IDENTITY) <= {column.name for column in found.columns}
     live: list[dict[str, Any]] = []
     for column in table["columns"]:
@@ -400,7 +446,8 @@ def _match_table(
             f"{found.name}.{found_column.name}",
             quotes=quotes,
         )
-    many = found.column(QUOTE_ROW) is not None
+    # A table keyed by the identity alone is one row per quote, by one more column many.
+    many = len(keyed) > 0
     rows_differ = many != (table["rows"] == "many")
     for found_column in found.columns:
         if found_column.name in claimed or found_column.name in own:
@@ -411,18 +458,24 @@ def _match_table(
         )
         live.append(_live_column(found_column, key))
         matcher.count((table["key"], key), UNCOUNTED if uncounted else found_column.quotes)
-    matcher.own_columns(
-        table["key"], expected, found, form_columns | ({QUOTE_ROW} if rows_differ else set())
-    )
+    matcher.own_columns(table["key"], expected, found, form_columns)
     matcher.not_null_extras(table["key"], found, claimed | own)
-    for kind, said in table_problems(expected, found, refers=table["key"] != QUOTE_DETAILS_NAME):
+    # The key compared under the form's names: a column paired as renamed keys as its new name.
+    renamed = {
+        known_as: column["name"]
+        for column in table["columns"]
+        if column["key"] in matched and (known_as := matched[column["key"]][1]) is not None
+    }
+    as_named = replace(
+        found, primary_key=tuple(renamed.get(name, name) for name in found.primary_key)
+    )
+    for kind, said in table_problems(expected, as_named, refers=table["key"] != QUOTE_DETAILS_NAME):
         if not rows_differ:
             matcher.note(table["key"], None, kind, f"{found.name} {said}")
     matcher.tables.append(
         {
             "key": table["key"],
             "name": found.name,
-            "role": table["role"],
             "rows": "many" if many else "one",
             "columns": live,
         }

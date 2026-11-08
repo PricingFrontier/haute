@@ -51,6 +51,7 @@ from haute._quote_store._rows import (
     input_rows,
     output_rows,
     rendered_outputs,
+    with_outputs,
 )
 from haute._quote_store._schema import (
     NAME_LENGTH,
@@ -75,7 +76,6 @@ from haute._workbench_form import (
     QUOTE_DETAILS_NAME,
     FormSpec,
 )
-from haute._workbench_tables import QUOTE_ROW
 
 #: A quote's stage: draft, which takes saves, or final.
 Stage = Literal["draft", "final"]
@@ -532,8 +532,8 @@ class QuoteBook:
             query = select(table).where(
                 table.c.quote_reference == reference, table.c.quote_option == option
             )
-            if stored.many:
-                query = query.order_by(table.c[QUOTE_ROW])
+            if stored.index is not None:
+                query = query.order_by(table.c[stored.index])
             rows[stored.form.name] = [dict(row._mapping) for row in connection.execute(query)]
         return rows
 
@@ -935,12 +935,15 @@ class QuoteBook:
         current = self.get(reference, option)
         managed = self.managed(current, at=at, actor=actor)
         written = as_written(values, managed)
-        rows = {
-            **input_rows(self._form, written, (reference, option), self._schema.kept),
-            **output_rows(
-                self._form, None if priced is None else priced.document, (reference, option)
-            ),
-        }
+        document = None if priced is None else priced.document
+        rows = with_outputs(
+            self._form,
+            {
+                **input_rows(self._form, written, (reference, option), self._schema.kept),
+                **output_rows(self._form, document, (reference, option)),
+            },
+            document,
+        )
         details = rows.pop(QUOTE_DETAILS_NAME)[0]
         try:
             with writing(self._engine) as connection:
@@ -1183,14 +1186,12 @@ class QuoteBook:
             # A quote moved on, archived or final is refused by the swap below, saying which.
             if quote.version == version and not quote.archived and quote.stage == "draft":
                 if quote.priced_release != release:
-                    priced_on = (
-                        "is not priced"
-                        if quote.priced_release is None
-                        else f"was priced on release {quote.priced_release}, not this one, "
-                        f"{release}"
-                    )
+                    # Said as the underwriter knows it, by its saves: never priced or unpriced.
                     raise QuoteNotReadyError(
-                        f"{quote.label} {priced_on}: price it and save it before marking it final."
+                        f"Save {quote.label} without errors before marking it final."
+                        if quote.priced_release is None
+                        else f"{quote.label} was saved on release {quote.priced_release}, not "
+                        f"this one, {release}: save it again before marking it final."
                     )
                 missing = self._missing(self._rows(connection, reference, option))
                 if missing:
@@ -1224,8 +1225,8 @@ class QuoteBook:
                 for column in required:
                     if _blank(row.get(column.name)):
                         where = (
-                            f"{table.name} row {row[QUOTE_ROW]}"
-                            if table.rows == "many"
+                            f"{table.name} row {row[table.index.name]}"
+                            if table.index is not None
                             else table.name
                         )
                         missing.append(f"{where}.{column.label or column.name}")

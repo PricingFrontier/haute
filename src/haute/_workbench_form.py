@@ -44,6 +44,27 @@ from haute._workbench_config import WorkbenchError
 #: The column types of the Quote Input's tables (``haute._api_input_schema.ColumnType``).
 ColumnType = Literal["int", "float", "str", "bool", "date"]
 
+#: How a many-row table's index gets its values: Haute numbers the rows 1, 2, 3; the
+#: underwriter types them (in a table of outputs alone, the pricing gives them); or the table
+#: has a row for each of the index's allowed values, read from a params file's column.
+IndexKind = Literal["numbered", "typed", "values"]
+
+#: Portable Text index limits. SQL Server's complete primary key is at most 900 bytes:
+#: reserve 40 supplementary reference characters (160 bytes), and a BIGINT option (8).
+INDEX_TEXT_LENGTH = 255
+INDEX_TEXT_UTF16_LENGTH = 366
+
+
+def index_text_limit(value: str) -> str | None:
+    """The first Text index limit *value* exceeds, in the words used by validation."""
+    if len(value) > INDEX_TEXT_LENGTH:
+        return f"{INDEX_TEXT_LENGTH} characters"
+    units = sum(2 if ord(character) > 0xFFFF else 1 for character in value)
+    if units > INDEX_TEXT_UTF16_LENGTH:
+        return f"{INDEX_TEXT_UTF16_LENGTH} UTF-16 code units"
+    return None
+
+
 #: How a number column shows: the Explore pivot's number formats
 #: (``haute._explore_pivots.PIVOT_NUMBER_FORMATS``).
 ColumnFormat = Literal[
@@ -192,13 +213,14 @@ def sheet_name(title: str) -> str:
 
 
 class _Placed(_Strict):
-    """A widget's place in its section, in pixels from the section's top-left corner, and
-    its number in the section (READ-24): one more than the highest when it entered it, kept
-    in the sheet's file and keying its box in the layout file. The editor numbers a component
-    as it enters a section; one sent without a number, None, is numbered by the save."""
+    """A widget's name and its place in its section, in pixels from the section's top-left
+    corner. The name is the builder's, which the editor gives it as it adds or copies it and
+    changes in its panel: it names the component's file and places it in its sheet's file,
+    and the folder holds it to an identifier no other component has whatever its case
+    (``haute._workbench_folder.folder_name_problems``)."""
 
     id: str
-    number: int | None = Field(default=None, ge=1)
+    name: str
     x: int = Field(ge=0)
     y: int = Field(ge=0)
     w: int = Field(gt=0)
@@ -713,13 +735,6 @@ class Section(_Strict):
 
     @model_validator(mode="after")
     def _holds_its_widgets(self) -> Section:
-        numbers = [widget.number for widget in self.widgets if widget.number is not None]
-        twice = next((n for n in numbers if numbers.count(n) > 1), None)
-        if twice is not None:
-            raise ValueError(
-                f"section {self.title!r} holds two components numbered {twice}: give one of "
-                "them another number"
-            )
         for widget in self.widgets:
             if widget.y + widget.h > self.height:
                 raise ValueError(
@@ -767,8 +782,6 @@ class SchemaColumn(_Strict):
     label: str = ""
     #: The group it is in, a name it shares with the columns grouped with it; empty for none.
     group: str = ""
-    #: In a many-row table, part of what says which row is which.
-    key: bool = False
     # The rules an input column's value must meet; an output column takes `required` alone,
     # which marking a quote final checks, and ignores the rest.
     required: bool = False
@@ -779,12 +792,12 @@ class SchemaColumn(_Strict):
     #: in when picked or refreshed, and read again when the underwriter app is built. None
     #: while they are typed.
     options_source: OptionsSource | None = None
-    #: In a many-row input table, the table has a row for each of ``options``, in their
-    #: order, each holding its value here (``haute._workbench_tables.preset_rows``).
-    row_per_value: bool = False
-    #: The table's index: each row's number, from 1, as the rows stand. Nothing is typed
-    #: into it, and it is an Integer.
-    index: bool = False
+    #: How the table's index gets its values, which marks the column as its index; None for
+    #: any other column. The index is the key of a many-row table's rows after the quote's
+    #: identity, an Integer or Text. An index of ``values`` gives the table a row for each of
+    #: ``options``, in their order, each holding its value here
+    #: (``haute._workbench_tables.preset_rows``).
+    index: IndexKind | None = None
     #: Shown beside its label when the pointer rests on it; empty shows nothing.
     help: str = ""
     #: What an empty input cell shows, in place of the blank.
@@ -802,13 +815,136 @@ class SchemaColumn(_Strict):
 
 
 class SchemaTable(_Strict):
+    """A table of the schema: its inputs, which an underwriter types and the pricing engine
+    is sent, and its outputs, which pricing fills, either or both. An equipment schedule's
+    items and each item's premium are one table, its outputs filled on the rows typed."""
+
     #: What identifies it in the form, no two differing only in case (READ-23).
     name: str
-    #: Sent to the pricing engine, or returned by it.
-    role: Literal["input", "output"] = "input"
     #: One row per quote, such as policy details, or many, such as an equipment schedule.
     rows: Literal["one", "many"] = "one"
-    columns: list[SchemaColumn] = Field(default_factory=list)
+    inputs: list[SchemaColumn] = Field(default_factory=list)
+    outputs: list[SchemaColumn] = Field(default_factory=list)
+
+    @property
+    def columns(self) -> list[SchemaColumn]:
+        """Its inputs, then its outputs: what a reader of every column takes."""
+        return [*self.inputs, *self.outputs]
+
+    @property
+    def own_inputs(self) -> list[SchemaColumn]:
+        """Its inputs but the quote's identity Haute gives it."""
+        return _without_identity(self.name, self.inputs)
+
+    @property
+    def own_outputs(self) -> list[SchemaColumn]:
+        """Its outputs but the quote's identity Haute gives it."""
+        return _without_identity(self.name, self.outputs)
+
+    @property
+    def typed_inputs(self) -> list[SchemaColumn]:
+        """Its own inputs but the index: what an underwriter types into it beside the rows'
+        keys, which decides whether it is an input table, whatever the index's kind."""
+        return [column for column in self.own_inputs if not column.index]
+
+    @property
+    def priced_outputs(self) -> list[SchemaColumn]:
+        """Its own outputs but the index: what pricing fills."""
+        return [column for column in self.own_outputs if not column.index]
+
+    @property
+    def has_inputs(self) -> bool:
+        """Whether it is an input table: it holds an input an underwriter types."""
+        return bool(self.typed_inputs)
+
+    @property
+    def has_outputs(self) -> bool:
+        """Whether it is an output table: it holds an output pricing fills. The index of a
+        table of outputs alone makes no table an output table."""
+        return bool(self.priced_outputs)
+
+    @property
+    def outputs_alone(self) -> bool:
+        """Whether it is a table of outputs alone: it holds an output pricing fills and no
+        input an underwriter types, so its index is among its outputs."""
+        return self.has_outputs and not self.has_inputs
+
+    @property
+    def index(self) -> SchemaColumn | None:
+        """Its index, the column keying its rows within a quote, which every many-row table
+        has: among its outputs while it is a table of outputs alone, else among its inputs.
+        None for a one-row table."""
+        return next((column for column in self.columns if column.index), None)
+
+    def is_output(self, column: str) -> bool:
+        """Whether its column of that name is one of its outputs."""
+        return any(held.name == column for held in self.outputs)
+
+    @model_validator(mode="after")
+    def _check_keys(self) -> SchemaTable:
+        """A table's key is the quote's identity and, in a many-row table, its index: every
+        many-row table has exactly one, among its outputs while it is a table of outputs
+        alone and among its inputs otherwise, an Integer or Text that holds only what its
+        kind takes."""
+        indexes = [column for column in self.columns if column.index]
+        if self.rows == "one":
+            for column in indexes:
+                raise ValueError(
+                    f"{self.name}.{column.name} is an index, which only a many-row table has"
+                )
+        elif len(indexes) != 1:
+            raise ValueError(f"{self.name} has many rows, so it needs one index")
+        for column in indexes:
+            if self.is_output(column.name) and not self.outputs_alone:
+                raise ValueError(
+                    f"{self.name}.{column.name} is an index among the outputs, which only a "
+                    "table of outputs alone holds its index among"
+                )
+            if not self.is_output(column.name) and self.outputs_alone:
+                raise ValueError(
+                    f"{self.name}.{column.name} is an index among the inputs of a table of "
+                    "outputs alone, whose index is among its outputs"
+                )
+            _check_index(f"{self.name}.{column.name}", column)
+        return self
+
+
+def _check_index(where: str, column: SchemaColumn) -> None:
+    """Refuse an index that is not an Integer or Text, or that holds what its kind does not
+    take: it is always filled, so it takes no Required, range or default; only a typed one
+    shows a placeholder, and only one of values holds allowed values, which give its rows."""
+    if column.type not in ("int", "str"):
+        raise ValueError(f"{where} is the index, an Integer or Text")
+    held = [
+        name
+        for name, given in (
+            ("required", column.required),
+            ("a range", column.min is not None or column.max is not None),
+            ("a default", column.default_value not in ("", False)),
+        )
+        if given
+    ]
+    if held:
+        raise ValueError(f"{where} is the index, which takes no {', '.join(held)}")
+    if column.placeholder and column.index != "typed":
+        raise ValueError(f"{where} is an index nobody types, so it shows no placeholder")
+    if column.index != "values":
+        if column.options or column.options_source is not None:
+            raise ValueError(
+                f"{where} is an index without a row for each value, so it takes no allowed values"
+            )
+        return
+    if column.options_source is None or not column.options:
+        raise ValueError(
+            f"{where} gives a row for each value, so it needs allowed values from a params file"
+        )
+    if column.type == "str":
+        for value in column.options:
+            if limit := index_text_limit(value):
+                raise ValueError(
+                    f"{where}'s allowed value {value[:40]!r} is longer than {limit}, "
+                    "the longest a Text index holds: correct the params file"
+                )
 
 
 class FormSchema(_Strict):
@@ -852,8 +988,8 @@ class FormSpec(_Strict):
     @classmethod
     def _gives_each_part_an_id(cls, data: Any) -> Any:
         """A sheet, a section and a component read from a file or a release hold no id: each
-        is given one from what identifies it (READ-24), its sheet's file name, its section's
-        title and its number, so the editor can select and move it. An id a part holds, one
+        is given one from what identifies it, its sheet's file name, its section's title and
+        its name, so the editor can select and move it. An id a part holds, one
         the editor made, is kept. The caller's data is left as it was."""
         pages = data.get("pages") if isinstance(data, dict) else None
         if not isinstance(pages, list) or all(
@@ -873,7 +1009,7 @@ class FormSpec(_Strict):
                     continue
                 section_id = section.get("id") or f"{page_id}/{section.get('title', '')}"
                 widgets = [
-                    {**widget, "id": f"{section_id}/{widget.get('number')}"}
+                    {**widget, "id": f"{section_id}/{widget.get('name')}"}
                     if isinstance(widget, dict) and "id" not in widget
                     else widget
                     for widget in section.get("widgets") or []
@@ -899,7 +1035,7 @@ class FormSpec(_Strict):
         for index, table in enumerate(tables):
             if not isinstance(table, dict) or table.get("name") != QUOTE_DETAILS_NAME:
                 continue
-            columns = table.get("columns")
+            columns = table.get("inputs", [])
             if not isinstance(columns, list) or not all(
                 isinstance(column, dict) for column in columns
             ):
@@ -919,7 +1055,7 @@ class FormSpec(_Strict):
                 for name, column_type in QUOTE_DETAILS_COLUMNS
             ]
             others = [column for column in renamed if column.get("name") not in QUOTE_DETAILS_NAMES]
-            upgraded = {**table, "columns": [*known, *others]}
+            upgraded = {**table, "inputs": [*known, *others]}
             return {
                 **data,
                 "schema": {**schema, "tables": [*tables[:index], upgraded, *tables[index + 1 :]]},
@@ -929,28 +1065,42 @@ class FormSpec(_Strict):
     @model_validator(mode="before")
     @classmethod
     def _gives_every_table_the_quote_identity(cls, data: Any) -> Any:
-        """Every table but ``quote_details`` leads with the quote's identity
-        (``IDENTITY_COLUMNS``), added at its head when it has none, the caller's data left as
-        it was. A table with a column of its own under either name is left without it: the
-        clash is the project's to resolve (:func:`identity_clashes`)."""
+        """Every table but ``quote_details`` leads its first block with the quote's identity
+        (``IDENTITY_COLUMNS``): its inputs, or its outputs while its inputs hold none of its
+        own. The identity as Haute makes it at the head of either block is taken from there
+        and given at that head, so an edit that gave a table its first input or took its last
+        moves it. A table with a column of its own under either name is left without it: the
+        clash is the project's to resolve (:func:`identity_clashes`). The caller's data is
+        left as it was."""
         schema = data.get("schema") if isinstance(data, dict) else None
         if not isinstance(schema, dict) or not isinstance(schema.get("tables"), list):
             return data
         held: list[Any] = []
         for table in schema["tables"]:
-            columns = table.get("columns", []) if isinstance(table, dict) else None
+            blocks = (
+                (table.get("inputs", []), table.get("outputs", []))
+                if isinstance(table, dict)
+                else None
+            )
             if (
-                not isinstance(columns, list)
+                blocks is None
+                or not all(isinstance(block, list) for block in blocks)
                 or table.get("name") == QUOTE_DETAILS_NAME
-                or any(
-                    isinstance(column, dict) and column.get("name") in IDENTITY_NAMES
-                    for column in columns
-                )
             ):
                 held.append(table)
                 continue
+            inputs, outputs = (_without_raw_identity(block) for block in blocks)
+            if any(
+                isinstance(column, dict) and column.get("name") in IDENTITY_NAMES
+                for column in [*inputs, *outputs]
+            ):
+                held.append({**table, "inputs": inputs, "outputs": outputs})
+                continue
             identity = [{"name": name, "type": kind} for name, kind in IDENTITY_COLUMNS]
-            held.append({**table, "columns": [*identity, *columns]})
+            if inputs or not outputs:
+                held.append({**table, "inputs": [*identity, *inputs], "outputs": outputs})
+            else:
+                held.append({**table, "inputs": inputs, "outputs": [*identity, *outputs]})
         return {**data, "schema": {**schema, "tables": held}}
 
     @model_validator(mode="after")
@@ -1059,9 +1209,8 @@ def quote_details_table() -> SchemaTable:
     """Haute's table of a quote's details, as a form holds it when nothing of it is set."""
     return SchemaTable(
         name=QUOTE_DETAILS_NAME,
-        role="input",
         rows="one",
-        columns=[
+        inputs=[
             SchemaColumn(name=name, type=column_type) for name, column_type in QUOTE_DETAILS_COLUMNS
         ],
     )
@@ -1073,10 +1222,10 @@ def _check_quote_details(table: SchemaTable) -> None:
     defaults of the columns the app does not set."""
     shape = [(column.name, column.type) for column in table.columns]
     if (
-        table.role != "input"
+        table.outputs
         or table.rows != "one"
         or shape != list(QUOTE_DETAILS_COLUMNS)
-        or any(column.key or column.index or column.row_per_value for column in table.columns)
+        or any(column.index for column in table.columns)
     ):
         raise ValueError(
             f"{QUOTE_DETAILS_NAME} is Haute's: a one-row input table of the columns "
@@ -1105,13 +1254,47 @@ IDENTITY_SCHEMA_COLUMNS: tuple[SchemaColumn, ...] = tuple(
 
 
 def holds_identity(table: SchemaTable) -> bool:
-    """Whether *table* leads with the quote's identity as Haute makes it (READ-23): a column
-    of either name anywhere else, or changed, is the project's own, a clash
-    (:func:`identity_clashes`)."""
-    return (
-        table.name != QUOTE_DETAILS_NAME
-        and tuple(table.columns[: len(IDENTITY_SCHEMA_COLUMNS)]) == IDENTITY_SCHEMA_COLUMNS
+    """Whether *table*'s first block leads with the quote's identity as Haute makes it
+    (READ-23): a column of either name anywhere else, or changed, is the project's own, a
+    clash (:func:`identity_clashes`)."""
+    if table.name == QUOTE_DETAILS_NAME:
+        return False
+    return any(
+        tuple(block[: len(IDENTITY_SCHEMA_COLUMNS)]) == IDENTITY_SCHEMA_COLUMNS
+        for block in (table.inputs, table.outputs)
     )
+
+
+def _without_identity(table: str, block: list[SchemaColumn]) -> list[SchemaColumn]:
+    """*block* of the table named *table* without the quote's identity Haute leads it with."""
+    if (
+        table != QUOTE_DETAILS_NAME
+        and tuple(block[: len(IDENTITY_SCHEMA_COLUMNS)]) == IDENTITY_SCHEMA_COLUMNS
+    ):
+        return block[len(IDENTITY_SCHEMA_COLUMNS) :]
+    return block
+
+
+def _without_raw_identity(block: list[Any]) -> list[Any]:
+    """*block*, a table's columns as data, without the quote's identity as Haute makes it at
+    its head."""
+    count = len(IDENTITY_SCHEMA_COLUMNS)
+    head = block[:count]
+    if len(head) == count and all(
+        _is_identity_column(column, made)
+        for column, made in zip(head, IDENTITY_SCHEMA_COLUMNS, strict=True)
+    ):
+        return block[count:]
+    return block
+
+
+def _is_identity_column(column: Any, made: SchemaColumn) -> bool:
+    if not isinstance(column, dict) or column.get("name") != made.name:
+        return False
+    try:
+        return SchemaColumn.model_validate(column) == made
+    except ValueError:
+        return False
 
 
 def identity_clashes(spec: FormSpec) -> list[str]:
@@ -1164,7 +1347,7 @@ def render_form(spec: FormSpec) -> str:
     it: every field, defaults included, indented, ending in a newline."""
     # Non-ASCII text as typed, a label or an allowed value, as the node configs keep it. A
     # sheet's, a section's and a component's ids are the editor's, never the release's
-    # (READ-24): a release gives them from the sheet's name, the title and the number.
+    # (READ-24): a release gives them from the sheet's name, the title and the name.
     no_ids = {"__all__": {"id": True}}
     data = spec.model_dump(
         mode="json",

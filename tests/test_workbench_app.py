@@ -74,11 +74,15 @@ def _graph() -> PipelineGraph:
     """The policy priced: half its exposure, in the pricing table."""
     policy = {
         "name": "policy_details",
+        "side": "input",
+        "port": "policy_details_input",
         "rows": "one",
         "columns": [{"name": "state", "type": "str"}, {"name": "exposure", "type": "float"}],
     }
     pricing = {
         "name": "pricing_output",
+        "side": "output",
+        "port": "pricing_output_output",
         "rows": "one",
         "columns": [{"name": "premium", "type": "float"}],
     }
@@ -88,13 +92,17 @@ def _graph() -> PipelineGraph:
             _node(
                 "priced",
                 NodeType.POLARS,
-                {"code": "df = policy_details.select(premium=pl.col('exposure') / 2)"},
+                {"code": "df = policy_details_input.select(premium=pl.col('exposure') / 2)"},
             ),
             _node("response", NodeType.WORKBENCH_OUTPUT, {"tables": [pricing]}),
         ],
         edges=[
-            GraphEdge(id="e1", source="request", target="priced", sourceHandle="policy_details"),
-            GraphEdge(id="e2", source="priced", target="response", targetHandle="pricing_output"),
+            GraphEdge(
+                id="e1", source="request", target="priced", sourceHandle="policy_details_input"
+            ),
+            GraphEdge(
+                id="e2", source="priced", target="response", targetHandle="pricing_output_output"
+            ),
         ],
     )
 
@@ -622,22 +630,10 @@ def test_the_page_is_the_apps_own_built_page(release: Any, tmp_path: Path) -> No
 
 #: The sheets of the pipeline `tests/test_workbench_output.py` prices.
 PROJECT_TABLES = [
-    form_table("policy", "input", ("state", "str"), ("limit", "int")),
-    form_table("items", "input", ("item_id", "str"), ("value", "float"), many=True),
-    form_table(
-        "pricing",
-        "output",
-        ("premium", "float"),
-        ("limit", "float"),
-        ("referral", "str"),
-    ),
-    form_table(
-        "item_prices",
-        "output",
-        ("item_id", "str"),
-        ("premium", "float"),
-        many=True,
-    ),
+    form_table("policy", ("state", "str"), ("limit", "int")),
+    form_table("items", ("item_id", "str"), ("value", "float"), many=True),
+    form_table("pricing", outputs=[("premium", "float"), ("limit", "float"), ("referral", "str")]),
+    form_table("item_prices", outputs=[("item_id", "str"), ("premium", "float")], many=True),
 ]
 PROJECT_VALUES = {
     "policy": [{"state": "NY", "limit": "1,000"}],
@@ -691,8 +687,8 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     assert priced.json()["tables"] == {
         "pricing": [{**identity, "premium": 100.0, "limit": 1000.0, "referral": "none"}],
         "item_prices": [
-            {**identity, "item_id": "A", "premium": 20.0},
-            {**identity, "item_id": "B", "premium": 60.0},
+            {**identity, "row_number": 1, "item_id": "A", "premium": 20.0},
+            {**identity, "row_number": 2, "item_id": "B", "premium": 60.0},
         ],
     }
 
@@ -776,7 +772,8 @@ def test_the_app_prices_on_the_utility_code_the_release_carries(project: Path) -
     graph = _priced()
     graph.preamble = "from utility import RATE\n"
     graph.node_map["priced"].data.config["code"] = (
-        "df = policy.with_columns(premium=pl.col('limit') / 10 * RATE, referral=pl.lit('none'))"
+        "df = policy_input.with_columns("
+        "premium=pl.col('limit') / 10 * RATE, referral=pl.lit('none'))"
     )
     _write(graph, project, "main")
     (project / "utility.py").write_text("RATE = 1\n", encoding="utf-8")
@@ -829,7 +826,7 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
         "options": ["NY"],
         "options_source": {"file": "states.csv", "column": "state"},
     }
-    policy = {**PROJECT_TABLES[0], "columns": [state, PROJECT_TABLES[0]["columns"][1]]}
+    policy = {**PROJECT_TABLES[0], "inputs": [state, PROJECT_TABLES[0]["inputs"][1]]}
     write_sheets(project, [policy, *PROJECT_TABLES[1:]])
 
     build_release(project, project / "build" / "app")
@@ -870,8 +867,8 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     with pytest.raises(DeployError) as unconnectable:
         build_release(project, project / "build" / "app")
     assert unconnectable.value.message == (
-        "'item_premiums' fills table 'item_prices' of Workbench Output 'workbench_output', "
-        "which workbench does not have."
+        "'item_premiums' fills table 'item_prices_output' of Workbench Output "
+        "'workbench_output', which workbench does not have."
     )
     write_sheets(project, PROJECT_TABLES)
 
@@ -884,6 +881,47 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
 
     (project / "haute.toml").write_text("[workbench]\nenabled = false\n", encoding="utf-8")
     assert "has no workbench" in refused()
+
+
+def test_a_release_refuses_index_values_that_read_as_one_integer(project: Path) -> None:
+    # Allowed values giving a table its rows that read as one Integer cannot key them: a
+    # layer's premium could not be put back on its row.
+    layers = form_table(
+        "layers",
+        {
+            "name": "layer",
+            "type": "int",
+            "options": ["1", "01", "2"],
+            "options_source": {"file": "layers.csv", "column": "layer"},
+            "index": "values",
+        },
+        ("limit", "float"),
+        outputs=[("layer_premium", "float")],
+        many=True,
+        index=None,
+    )
+    write_sheets(project, [*PROJECT_TABLES, layers])
+    # A params source belongs to a pipeline in its own folder.
+    rating = project / "rating"
+    rating.mkdir()
+    for name in ("main.py", "workbench", "config"):
+        (project / name).rename(rating / name)
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            'pipeline = "main.py"', 'pipeline = "rating/main.py"'
+        ),
+        encoding="utf-8",
+    )
+    params = rating / "files" / "params"
+    params.mkdir(parents=True)
+    (params / "layers.csv").write_text("layer\n1\n01\n2\n", encoding="utf-8")
+    with pytest.raises(WorkbenchAppError) as refused:
+        build_release(project, project / "build" / "app")
+    assert str(refused.value) == (
+        "The pipeline did not validate:\n  - rating/workbench: layers.layer's allowed values "
+        "1 and 01 are one Integer, so they cannot key its rows: correct the params file."
+    )
 
 
 def test_a_build_replaces_only_a_release_it_made(project: Path) -> None:

@@ -8,16 +8,16 @@ The form lives in the pipeline folder's ``workbench/``:
 - ``schema/<table>.json`` per table, named by the table's name in lower case: its id, role,
   rows and columns. ``schema/quote_details.json`` holds only what the project sets on
   Haute's own table, and the quote's identity columns are written in no table;
-- ``sheets/<sheet>.json`` per sheet, named by its title made a name: its sections and their
-  components, what they show and how they look; ``sheets/<sheet>.layout.json`` beside it,
-  where they sit;
+- ``sheets/<sheet>.json`` per sheet, named by its title made a name: its width and its
+  sections, each with its height and, by name, the components in it and where each sits;
+- ``components/<component>.json`` per component, named by its name in lower case: what it
+  shows and how it looks;
 - ``sample/<table>.json`` per input table the sample has rows in.
 
 Files name things by name: a column is ``table.column``, or its bare name where its table is
-said. A table and a column keep the id written beside their name for life, which the form
-and the quote store key values by. Only what is set is written, beside the keys that say what
-a thing is. A name the schema does not hold reads as an unresolved id, ``?`` and the name,
-which binds to nothing and is written back as it was.
+said, and a component is placed by its name. Only what is set is written, beside the keys
+that say what a thing is. A name the schema does not hold is kept as written, binds to
+nothing and is written back as it was.
 
 A read takes every file's bytes once under the form folder's lock, which a save holds while it
 writes, in any process, and reads again when a writer that takes no lock changed the folder
@@ -56,22 +56,23 @@ from haute._workbench_config import WorkbenchConfig
 if TYPE_CHECKING:
     from haute._workbench_params import ParamValues
 from haute._workbench_folder_files import (
+    COMPONENT,
+    COMPONENT_FILES,
     DETAILS_ANY,
     DETAILS_TYPED,
+    INDEX_VALUES_SETTINGS,
     INPUT_ONLY,
     NAME_PATTERN,
-    PLACEMENT,
+    NOT_IN_COMPONENT_FILE,
     SAMPLE,
     IndexFile,
-    LayoutFile,
+    PlacementFile,
     QuoteDetailsFile,
-    RectFile,
     SheetFile,
     ShowWhenFile,
     TableFile,
 )
 from haute._workbench_form import (
-    IDENTITY_COLUMNS,
     QUOTE_DETAILS_NAME,
     ExportWidget,
     FormDocument,
@@ -82,10 +83,8 @@ from haute._workbench_form import (
     SqlExport,
     SqlImport,
     WorkbenchFormError,
-    _component_named,
     _condition_kind,
     _grown_to_hold,
-    holds_identity,
     quote_details_table,
     sheet_name,
     with_quote_details,
@@ -96,10 +95,12 @@ from haute._workbench_tables import store_name_problems
 INDEX_FILE = "form.json"
 SCHEMA_DIR = "schema"
 SHEETS_DIR = "sheets"
+COMPONENTS_DIR = "components"
 SAMPLE_DIR = "sample"
-LAYOUT_SUFFIX = ".layout.json"
-#: The folder format: what each file holds and each setting's default.
-FOLDER_VERSION = 1
+#: The folder format: what each file holds and each setting's default. Version 1 kept each
+#: sheet's components in its file, by their numbers in their sections, and where they sat in
+#: a layout file beside it.
+FOLDER_VERSION = 3
 #: The longest full path a file of the folder may have.
 PATH_MAX = 240
 
@@ -130,8 +131,12 @@ def _sample_file(name: str) -> str:
     return f"{SAMPLE_DIR}/{name.lower()}.json"
 
 
-def _sheet_files(name: str) -> tuple[str, str]:
-    return f"{SHEETS_DIR}/{name}.json", f"{SHEETS_DIR}/{name}{LAYOUT_SUFFIX}"
+def _sheet_path(name: str) -> str:
+    return f"{SHEETS_DIR}/{name}.json"
+
+
+def _component_path(name: str) -> str:
+    return f"{COMPONENTS_DIR}/{name.lower()}.json"
 
 
 def _ref(dotted: str) -> dict[str, str]:
@@ -163,9 +168,7 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
             names.add(column.name)
         # Each table is a table of its name in the quote store too, which also refuses two
         # columns whose names differ only in case: a column is known by its name (READ-23).
-        problems.extend(
-            store_name_problems(table.name, table.rows, [column.name for column in table.columns])
-        )
+        problems.extend(store_name_problems(table.name, [column.name for column in table.columns]))
     sheets: dict[str, str] = {}
     for page in spec.pages:
         name = sheet_name(page.title)
@@ -179,11 +182,11 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
         elif name in sheets:
             problems.append(
                 f"the sheets {sheets[name]!r} and {page.title!r} would both be saved as "
-                f"{SHEETS_DIR}/{name}.json: give one another title"
+                f"{_sheet_path(name)}: give one another title"
             )
         else:
             sheets[name] = page.title
-        # A section is known by its title on its sheet (READ-24), which keys its layout.
+        # A section is known by its title on its sheet (READ-24).
         titles = [section.title for section in page.sections]
         twice = next((title for title in titles if titles.count(title) > 1), None)
         if twice is not None:
@@ -191,9 +194,11 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
                 f"the sheet {page.title!r} holds two sections titled {twice!r}: a section is "
                 "known by its title, so give each its own"
             )
+    components = _component_name_problems(spec, problems)
     longest = max(
         [_table_file(table.name) for table in spec.data_schema.tables]
-        + [_sheet_files(name)[1] for name in sheets],
+        + [_sheet_path(name) for name in sheets]
+        + [_component_path(name) for name in components],
         key=len,
     )
     if len(str(folder / longest)) > PATH_MAX:
@@ -204,6 +209,34 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
     return problems
 
 
+def _component_name_problems(spec: FormSpec, problems: list[str]) -> list[str]:
+    """Add to *problems* each component name that cannot name its file: one that is not an
+    identifier, one Windows keeps, or another component's whatever its case, since the name
+    is the file's in lower case. Answer the names the folder can hold, each once."""
+    held: dict[str, str] = {}
+    for page in spec.pages:
+        for section in page.sections:
+            for widget in section.widgets:
+                name = widget.name
+                if not re.fullmatch(NAME_PATTERN, name):
+                    problems.append(f"the component name {name!r} is not an identifier")
+                    continue
+                if is_windows_reserved_filename(name):
+                    problems.append(f"the component name {name!r} is one Windows keeps for itself")
+                    continue
+                folded = name.casefold()
+                if folded in held:
+                    named = (
+                        f"two components are named {name!r}"
+                        if held[folded] == name
+                        else f"the components {held[folded]!r} and {name!r} share a name"
+                    )
+                    problems.append(f"{named}: each component needs a name of its own")
+                    continue
+                held[folded] = name
+    return list(held.values())
+
+
 # -- Writing -----------------------------------------------------------------------------
 
 
@@ -212,8 +245,22 @@ def _a_condition(path: JsonPath) -> bool:
     return len(path) >= 2 and path[-2] == "conditions" and isinstance(path[-1], int)
 
 
-#: A schema file's columns, one a line.
-_SCHEMA_ONE_LINE = at(("columns", ANY))
+#: A schema file's columns, one a line: quote_details' columns and each block's.
+_schema_columns = at(("columns", ANY))
+_schema_inputs = at(("inputs", ANY))
+_schema_outputs = at(("outputs", ANY))
+
+
+def _schema_one_line(path: JsonPath) -> bool:
+    return _schema_columns(path) or _schema_inputs(path) or _schema_outputs(path)
+
+
+#: A sheet file's placements, one a line.
+_a_placement = at(("sections", ANY, "components", ANY))
+
+
+def _a_condition_or_placement(path: JsonPath) -> bool:
+    return _a_condition(path) or _a_placement(path)
 
 
 def _never(_path: JsonPath) -> bool:
@@ -222,18 +269,20 @@ def _never(_path: JsonPath) -> bool:
 
 def render_folder_file(value: BaseModel | list[Any]) -> bytes:
     """A file's bytes: a model with each setting at its default left out, or a list, written
-    by the one printer (:mod:`haute._json_files`): a schema file's columns and a sheet's
-    show-when conditions, and a layout box or any other run of numbers alone, on one line
-    each, whoever writes the file."""
+    by the one printer (:mod:`haute._json_files`): a schema file's columns, a sheet's
+    placements, the show-when conditions of a sheet or a component, and any run of numbers
+    alone, on one line each, whoever writes the file."""
     data = (
         value.model_dump(mode="json", exclude_defaults=True, by_alias=True)
         if isinstance(value, BaseModel)
         else value
     )
     one_line = (
-        _a_condition
+        _a_condition_or_placement
         if isinstance(value, SheetFile)
-        else _SCHEMA_ONE_LINE
+        else _a_condition
+        if isinstance(value, COMPONENT_FILES)
+        else _schema_one_line
         if isinstance(value, TableFile | QuoteDetailsFile)
         else _never
     )
@@ -295,8 +344,10 @@ def _entry_file(entry: Any) -> dict[str, Any]:
     }
 
 
-def _component_file(widget: Any) -> dict[str, Any]:
-    data: dict[str, Any] = widget.model_dump(mode="json", exclude=PLACEMENT | {"id"})
+def _component_file(widget: Any) -> BaseModel:
+    """*widget*'s file: what it shows and how it looks, without its id, its name, which is
+    its file's, or where it sits, which is its sheet's."""
+    data: dict[str, Any] = widget.model_dump(mode="json", exclude=NOT_IN_COMPONENT_FILE)
     data["show_when"] = _show_when_file(widget.show_when)
     if widget.type == "tableInput":
         data["type"] = "table"
@@ -326,7 +377,8 @@ def _component_file(widget: Any) -> dict[str, Any]:
             data["target"]["table_names"] = [
                 {"table": named.table, "name": named.name} for named in widget.target.table_names
             ]
-    return data
+    model: BaseModel = COMPONENT.validate_python(data)
+    return model
 
 
 def _fields_file(widget: Any) -> list[Any]:
@@ -358,84 +410,69 @@ def _fields_file(widget: Any) -> list[Any]:
     return placed
 
 
-def _numbers(section: Any) -> list[int]:
-    """Each of *section*'s components' numbers (READ-24): its own, or, for one sent without,
-    one more than the highest in the section, in the section's order."""
-    highest = max((widget.number for widget in section.widgets if widget.number), default=0)
-    numbers: list[int] = []
-    for widget in section.widgets:
-        if widget.number is None:
-            highest += 1
-            numbers.append(highest)
-        else:
-            numbers.append(widget.number)
-    return numbers
-
-
-def _sheet_and_layout(page: Any) -> tuple[SheetFile, LayoutFile]:
-    """A sheet's file and its layout file, neither holding an id (READ-24): a section is known
-    by its title and a component by its number in its section, which key their boxes."""
-    numbered = [(section, _numbers(section)) for section in page.sections]
-    sections = [
-        {
-            "title": section.title,
-            "show_when": _show_when_file(section.show_when),
-            "components": [
-                {**_component_file(widget), "number": number}
-                for widget, number in zip(section.widgets, numbers, strict=True)
-            ],
-        }
-        for section, numbers in numbered
-    ]
-    sheet = SheetFile.model_validate(
+def _sheet_file(page: Any) -> SheetFile:
+    """A sheet's file, holding no id (READ-24): its width and its sections, each known by its
+    title, with its height and its components placed by name in the order they are drawn."""
+    return SheetFile.model_validate(
         {
             "title": page.title,
-            "show_when": _show_when_file(page.show_when),
-            "sections": sections,
-        }
-    )
-    layout = LayoutFile.model_validate(
-        {
             "width": page.width,
-            "sections": {
-                section.title: {
+            "show_when": _show_when_file(page.show_when),
+            "sections": [
+                {
+                    "title": section.title,
                     "height": section.height,
-                    "components": {
-                        str(number): {"x": widget.x, "y": widget.y, "w": widget.w, "h": widget.h}
-                        for widget, number in zip(section.widgets, numbers, strict=True)
-                    },
+                    "show_when": _show_when_file(section.show_when),
+                    "components": [
+                        {
+                            "component": widget.name,
+                            "x": widget.x,
+                            "y": widget.y,
+                            "w": widget.w,
+                            "h": widget.h,
+                        }
+                        for widget in section.widgets
+                    ],
                 }
-                for section, numbers in numbered
-            },
+                for section in page.sections
+            ],
         }
     )
-    return sheet, layout
 
 
 def _table_file_model(table: SchemaTable, problems: list[str]) -> TableFile:
-    """*table*'s file but its name. The quote's identity at its head is Haute's and not
-    written; a column of either name elsewhere is the project's own and is. An output's
-    columns are written without the rules only an input column takes, which they hold only
-    at their defaults; one set is a problem."""
-    columns: list[dict[str, Any]] = []
-    held = len(IDENTITY_COLUMNS) if holds_identity(table) else 0
-    for column in table.columns[held:]:
+    """*table*'s file but its name. The quote's identity at its first block's head is
+    Haute's and not written; a column of either name elsewhere is the project's own and is.
+    An output is written without what only an input takes, which it holds only at its
+    defaults; one set is a problem."""
+    inputs: list[dict[str, Any]] = []
+    for column in table.own_inputs:
         data = column.model_dump(mode="json")
-        if table.role == "input" and column.options_source is not None:
+        if column.options_source is not None:
             # Its values are its params file's, read with the form (READ-25): only the
             # reference is written.
             data["options"] = []
-        if table.role == "output":
-            for key in INPUT_ONLY:
-                if data.pop(key) != SchemaColumn.model_fields[key].get_default(
-                    call_default_factory=True
-                ):
-                    problems.append(
-                        f"output column {table.name}.{column.name} holds {key}, which only an "
-                        "input column takes"
-                    )
-        columns.append(data)
-    return TableFile.model_validate({"role": table.role, "rows": table.rows, "columns": columns})
+        inputs.append(data)
+    outputs: list[dict[str, Any]] = []
+    for column in table.own_outputs:
+        data = column.model_dump(mode="json")
+        # A table of outputs alone's index of values holds its allowed values as an input
+        # does, written as its params file's reference alone.
+        held = INDEX_VALUES_SETTINGS if column.index == "values" else ()
+        if column.index == "values":
+            data["options"] = []
+        for key in INPUT_ONLY:
+            if key in held:
+                continue
+            if data.pop(key) != SchemaColumn.model_fields[key].get_default(
+                call_default_factory=True
+            ):
+                problems.append(
+                    f"{table.name}.{column.name} is an output and holds {key}, which only an "
+                    "input takes"
+                )
+        outputs.append(data)
+    return TableFile.model_validate({"rows": table.rows, "inputs": inputs, "outputs": outputs})
 
 
 def _quote_details_file(table: SchemaTable) -> QuoteDetailsFile:
@@ -457,7 +494,7 @@ def _quote_details_file(table: SchemaTable) -> QuoteDetailsFile:
 def _sample_rows(table: SchemaTable, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*rows* by column name in the table's column order, any name the table does not hold
     after them, kept as written."""
-    order = [column.name for column in table.columns]
+    order = [column.name for column in table.inputs]
     return [
         {
             **{name: row[name] for name in order if name in row},
@@ -500,11 +537,11 @@ def folder_files(spec: FormSpec, folder: Path) -> dict[str, bytes]:
         )
         files[_table_file(table.name)] = render_folder_file(model)
     for page in spec.pages:
-        sheet, layout = _sheet_and_layout(page)
-        sheet_path, layout_path = _sheet_files(sheet_name(page.title))
-        files[sheet_path] = render_folder_file(sheet)
-        files[layout_path] = render_folder_file(layout)
-    inputs = {table.name: table for table in tables if table.role == "input"}
+        files[_sheet_path(sheet_name(page.title))] = render_folder_file(_sheet_file(page))
+        for section in page.sections:
+            for widget in section.widgets:
+                files[_component_path(widget.name)] = render_folder_file(_component_file(widget))
+    inputs = {table.name: table for table in tables if table.has_inputs}
     for table_name, rows in spec.sample.items():
         if not rows:
             continue
@@ -648,7 +685,11 @@ def _parse(config: WorkbenchConfig, files: Mapping[str, bytes], path: str, model
         return model.model_validate(parsed)
     except ValidationError as exc:
         first = exc.errors()[0]
-        place = ".".join(str(part) for part in first["loc"]) or "the file"
+        loc = list(first["loc"])
+        if model is COMPONENT and loc:
+            # A component's kind, which tells the file models apart, is not a place in it.
+            loc = loc[1:]
+        place = ".".join(str(part) for part in loc) or "the file"
         raise WorkbenchFormError(f"{where}: {place}: {first['msg']}", path=where) from exc
 
 
@@ -699,9 +740,11 @@ def _show_when(show_when: ShowWhenFile) -> dict[str, Any]:
     }
 
 
-def _component(component: Any, rect: RectFile) -> dict[str, Any]:
+def _component(component: Any, placed: PlacementFile) -> dict[str, Any]:
+    """A component's file as the form holds the component, given its name and its place by
+    the sheet that places it."""
     data: dict[str, Any] = component.model_dump(mode="json")
-    data.update(x=rect.x, y=rect.y, w=rect.w, h=rect.h)
+    data.update(name=placed.component, x=placed.x, y=placed.y, w=placed.w, h=placed.h)
     data["show_when"] = _show_when(component.show_when)
     kind = component.type
     if kind == "table":
@@ -755,75 +798,93 @@ def _component(component: Any, rect: RectFile) -> dict[str, Any]:
 
 
 def _page(
-    config: WorkbenchConfig, name: str, sheet: SheetFile, layout: LayoutFile
+    config: WorkbenchConfig, name: str, sheet: SheetFile, files: Mapping[str, bytes]
 ) -> dict[str, Any]:
-    """A sheet's file and its layout file as one sheet of the form, each section and
-    component placed."""
-    where = f"{config.form}/{_sheet_files(name)[1]}"
-    sections: list[dict[str, Any]] = []
+    """A sheet's file as one sheet of the form, each placement's component read from its own
+    file and given its name and its place."""
+    where = f"{config.form}/{_sheet_path(name)}"
     titles = [section.title for section in sheet.sections]
     twice = next((title for title in titles if titles.count(title) > 1), None)
     if twice is not None:
         raise WorkbenchFormError(
-            f"{config.form}/{_sheet_files(name)[0]} holds two sections titled {twice!r}: a "
-            "section is known by its title, so give each its own",
+            f"{where} holds two sections titled {twice!r}: a section is known by its title, "
+            "so give each its own",
             path=where,
-        )
-    for section in sheet.sections:
-        placed = layout.sections.get(section.title)
-        if placed is None:
-            raise WorkbenchFormError(
-                f"{where} leaves out the section {section.title!r}", path=where
-            )
-        numbers = [component.number for component in section.components]
-        doubled = next((number for number in numbers if numbers.count(number) > 1), None)
-        if doubled is not None:
-            raise WorkbenchFormError(
-                f"{config.form}/{_sheet_files(name)[0]}: the section {section.title!r} holds two "
-                f"components numbered {doubled}; give one of them the next free number",
-                path=where,
-            )
-        extras = sorted(set(placed.components) - {str(number) for number in numbers})
-        if extras:
-            raise WorkbenchFormError(
-                f"{where} places component {extras[0]}, which the section {section.title!r} "
-                "does not hold",
-                path=where,
-            )
-        components: list[dict[str, Any]] = []
-        for component in section.components:
-            rect = placed.components.get(str(component.number))
-            if rect is None:
-                kind = "tableInput" if component.type == "table" else component.type
-                named = _component_named({**component.model_dump(), "type": kind})
-                raise WorkbenchFormError(
-                    f"{where} leaves out {named} (number {component.number})", path=where
-                )
-            components.append(_component(component, rect))
-        sections.append(
-            {
-                "title": section.title,
-                "height": placed.height,
-                "show_when": _show_when(section.show_when),
-                "widgets": components,
-            }
-        )
-    extra_sections = sorted(set(layout.sections) - set(titles))
-    if extra_sections:
-        raise WorkbenchFormError(
-            f"{where} places a section {extra_sections[0]} the sheet does not hold", path=where
         )
     return {
         "title": sheet.title,
-        "width": layout.width,
+        "width": sheet.width,
         "show_when": _show_when(sheet.show_when),
-        "sections": sections,
+        "sections": [
+            {
+                "title": section.title,
+                "height": section.height,
+                "show_when": _show_when(section.show_when),
+                "widgets": [
+                    _component(
+                        _parse(config, files, _component_path(placed.component), COMPONENT),
+                        placed,
+                    )
+                    for placed in section.components
+                ],
+            }
+            for section in sheet.sections
+        ],
     }
 
 
-def _check_inventory(config: WorkbenchConfig, files: Mapping[str, bytes], index: IndexFile) -> None:
-    """Refuse the folder unless it holds exactly the files its index names, each named in
-    lower case, and samples only of tables it names."""
+@dataclass(frozen=True, slots=True)
+class FolderIndex:
+    """The folder's index and each sheet's file, by the sheet's name in the index's order, as
+    a read takes them once the folder is known to hold exactly the form's files."""
+
+    index: IndexFile
+    sheets: dict[str, SheetFile]
+
+
+def _check_version(config: WorkbenchConfig, files: Mapping[str, bytes]) -> None:
+    """Refuse an index of another folder format before reading its shape, naming the format
+    this Haute reads; an index that is not JSON is left for its own read to name."""
+    try:
+        parsed = json.loads(files[INDEX_FILE].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return
+    version = parsed.get("version") if isinstance(parsed, dict) else None
+    if type(version) is not int or version == FOLDER_VERSION:
+        return
+    where = f"{config.form}/{INDEX_FILE}"
+    said = (
+        f"which keeps each component in {COMPONENTS_DIR}/ and gives each table its inputs and "
+        "outputs"
+        if version < FOLDER_VERSION - 1
+        else "which gives each table its inputs and outputs"
+        if version < FOLDER_VERSION
+        else "and a later Haute wrote this one"
+    )
+    raise WorkbenchFormError(
+        f"{where} is version {version}: this Haute reads version {FOLDER_VERSION}, {said}",
+        path=where,
+    )
+
+
+def _refuse_missing(
+    config: WorkbenchConfig, files: Mapping[str, bytes], path: str, named: str
+) -> None:
+    """Refuse the folder for not holding *path*, which *named* says what names: as a file to
+    rename when it holds it under another case, else as missing."""
+    spelled = next((held for held in sorted(files) if held.lower() == path), None)
+    if spelled is not None:
+        raise WorkbenchFormError(
+            f"{config.form}/{spelled} must be named in lower case: rename it "
+            f"{path.rsplit('/', 1)[-1]}"
+        )
+    raise WorkbenchFormError(f"{named}, but the folder does not hold {path}")
+
+
+def _check_listed(config: WorkbenchConfig, files: Mapping[str, bytes], index: IndexFile) -> None:
+    """Refuse a name the index gives twice, a schema that does not start with quote_details,
+    and a schema or sheet file the index names that the folder does not hold as named, before
+    any of them is read."""
     for things, listed in (
         ("table", [name.casefold() for name in index.tables]),
         ("sheet", index.sheets),
@@ -840,9 +901,66 @@ def _check_inventory(config: WorkbenchConfig, files: Mapping[str, bytes], index:
             f"{config.form}/{INDEX_FILE}'s schema must start with {QUOTE_DETAILS_NAME}, "
             "Haute's own table"
         )
-    expected = {INDEX_FILE, *(_table_file(name) for name in index.tables)}
-    for name in index.sheets:
-        expected.update(_sheet_files(name))
+    for path in [
+        *(_table_file(name) for name in index.tables),
+        *(_sheet_path(name) for name in index.sheets),
+    ]:
+        if path not in files:
+            _refuse_missing(config, files, path, f"{config.form}/{INDEX_FILE} names {path}")
+
+
+#: A component placed: its name as placed, its sheet's file and its section's title.
+_Placement = tuple[str, str, str]
+
+
+def _placed_twice(
+    config: WorkbenchConfig, first: _Placement, then: _Placement
+) -> WorkbenchFormError:
+    (name, sheet, section), (again, other_sheet, other_section) = first, then
+    where = f"{config.form}/{sheet}, section {section!r}"
+    elsewhere = f"{config.form}/{other_sheet}, section {other_section!r}"
+    if name != again:
+        said = (
+            f"{name} is placed in {where}, and {again} in {elsewhere}: names that differ only "
+            f"in case name one file, {_component_path(name)}, so give each its own"
+        )
+    elif where == elsewhere:
+        said = f"{name} is placed twice in {where}: a component sits in one place"
+    else:
+        said = f"{name} is placed in {where}, and in {elsewhere}: a component sits in one place"
+    return WorkbenchFormError(said, path=f"{config.form}/{other_sheet}")
+
+
+def _check_inventory(
+    config: WorkbenchConfig,
+    files: Mapping[str, bytes],
+    index: IndexFile,
+    sheets: Mapping[str, SheetFile],
+) -> None:
+    """Refuse the folder unless it holds exactly the files its index and its sheets name,
+    each named in lower case: each component placed once and its file there, no component
+    file no sheet places, and samples only of tables the index names."""
+    placed: dict[str, _Placement] = {}
+    for name, sheet in sheets.items():
+        for section in sheet.sections:
+            for placement in section.components:
+                here = (placement.component, _sheet_path(name), section.title)
+                first = placed.get(placement.component.casefold())
+                if first is not None:
+                    raise _placed_twice(config, first, here)
+                placed[placement.component.casefold()] = here
+    components = set()
+    for component, sheet_path, _section in placed.values():
+        path = _component_path(component)
+        if path not in files:
+            _refuse_missing(config, files, path, f"{config.form}/{sheet_path} places {component}")
+        components.add(path)
+    expected = {
+        INDEX_FILE,
+        *(_table_file(name) for name in index.tables),
+        *(_sheet_path(name) for name in index.sheets),
+        *components,
+    }
     samples = {_sample_file(name) for name in index.tables}
     for path in sorted(files):
         if path in expected or path in samples:
@@ -858,24 +976,30 @@ def _check_inventory(config: WorkbenchConfig, files: Mapping[str, bytes], index:
                 f"{config.form}/{path} is the sample of no input table: rename it after its "
                 "table or remove it"
             )
+        if path.startswith(f"{COMPONENTS_DIR}/"):
+            raise WorkbenchFormError(
+                f"{config.form}/{path} is placed on no sheet: place it in a sheet's section or "
+                "remove it"
+            )
         raise WorkbenchFormError(
             f"{config.form}/{path} is not part of the form: list it in {INDEX_FILE} or remove it"
         )
-    missing = sorted(expected - set(files))
-    if missing:
-        raise WorkbenchFormError(
-            f"{config.form}/{INDEX_FILE} names {missing[0]}, but the folder does not hold it"
-        )
 
 
-def folder_index(config: WorkbenchConfig, files: Mapping[str, bytes]) -> IndexFile:
-    """The index of the folder *files* make, refusing a folder that is not exactly the files
-    the index names: every read takes it so, and a save before it deletes any of them."""
+def folder_index(config: WorkbenchConfig, files: Mapping[str, bytes]) -> FolderIndex:
+    """The index and the sheets of the folder *files* make, refusing a folder that is not
+    exactly the files the index and the sheets name: every read takes it so, and a save
+    before it deletes any of them."""
     if INDEX_FILE not in files:
         raise WorkbenchFormError(f"{config.form} has no {INDEX_FILE}: the folder is not a form")
+    _check_version(config, files)
     index: IndexFile = _parse(config, files, INDEX_FILE, IndexFile)
-    _check_inventory(config, files, index)
-    return index
+    _check_listed(config, files, index)
+    sheets: dict[str, SheetFile] = {
+        name: _parse(config, files, _sheet_path(name), SheetFile) for name in index.sheets
+    }
+    _check_inventory(config, files, index, sheets)
+    return FolderIndex(index, sheets)
 
 
 def form_from_files(
@@ -889,7 +1013,8 @@ def form_from_files(
     files at the form's own revision, the working tree's unless it says otherwise (READ-25)."""
     from haute._workbench_params import fill_sourced_options, working_tree_param_values
 
-    index = folder_index(config, files)
+    folder = folder_index(config, files)
+    index = folder.index
 
     details: QuoteDetailsFile = _parse(
         config, files, _table_file(QUOTE_DETAILS_NAME), QuoteDetailsFile
@@ -899,7 +1024,7 @@ def form_from_files(
         column.name: column.model_dump(mode="json", exclude_unset=True)
         for column in details.columns
     }
-    for column in quote_details["columns"]:
+    for column in quote_details["inputs"]:
         column.update(given.get(column["name"], {}))
     tables: list[dict[str, Any]] = [quote_details]
     parsed_tables: list[tuple[str, TableFile]] = []
@@ -909,28 +1034,25 @@ def form_from_files(
         tables.append(
             {
                 "name": name,
-                "role": table.role,
                 "rows": table.rows,
-                "columns": [column.model_dump(mode="json") for column in table.columns],
+                "inputs": [column.model_dump(mode="json") for column in table.inputs],
+                "outputs": [column.model_dump(mode="json") for column in table.outputs],
             }
         )
 
     fill_sourced_options(tables, read_params or working_tree_param_values(config.project_root))
 
-    pages: list[dict[str, Any]] = []
-    for name in index.sheets:
-        sheet_path, layout_path = _sheet_files(name)
-        sheet: SheetFile = _parse(config, files, sheet_path, SheetFile)
-        layout: LayoutFile = _parse(config, files, layout_path, LayoutFile)
-        pages.append(_page(config, name, sheet, layout))
+    pages = [_page(config, name, sheet, files) for name, sheet in folder.sheets.items()]
 
-    roles = {name: table.role for name, table in parsed_tables}
+    typed = {
+        name for name, table in parsed_tables if any(not column.index for column in table.inputs)
+    }
     sample: dict[str, list[dict[str, Any]]] = {}
     for name in index.tables:
         path = _sample_file(name)
         if path not in files:
             continue
-        if name == QUOTE_DETAILS_NAME or roles.get(name) == "input":
+        if name == QUOTE_DETAILS_NAME or name in typed:
             sample[name] = [dict(row) for row in _parse(config, files, path, SAMPLE)]
         else:
             raise WorkbenchFormError(
@@ -951,24 +1073,51 @@ def form_from_files(
         spec = FormSpec.model_validate(document)
     except ValidationError as exc:
         first = exc.errors()[0]
+        place = _place(first["loc"], folder)
         raise WorkbenchFormError(
-            f"{config.form} is not a workbench form: {_place(first['loc'], index)}: {first['msg']}",
+            f"{config.form} is not a workbench form: {place}: {first['msg']}",
             path=str(config.form_folder),
         ) from exc
     return spec, tuple(repairs)
 
 
-def _place(loc: tuple[Any, ...], index: IndexFile) -> str:
+#: The kinds of component, as ``FormSpec`` tells them apart in an error's place.
+_WIDGET_KINDS = frozenset({"tableInput", "collection", "chart", "heading", "import", "export"})
+
+
+def _place_in_sheet(name: str, sheet: SheetFile, rest: list[Any]) -> str:
+    """An error in a sheet of the form as the folder spells its place: one in a component in
+    its component file, anything else in the sheet's file. A component's name and place,
+    which its sheet's file holds, are held there to all ``FormSpec`` asks of them
+    (``PlacementFile``), so an error in a component is in its settings."""
+    if (
+        len(rest) >= 4
+        and rest[0] == "sections"
+        and rest[2] == "widgets"
+        and isinstance(rest[1], int)
+        and isinstance(rest[3], int)
+        and rest[1] < len(sheet.sections)
+        and rest[3] < len(sheet.sections[rest[1]].components)
+    ):
+        path = _component_path(sheet.sections[rest[1]].components[rest[3]].component)
+        tail = [str(part) for part in rest[4:]]
+        if tail[:1] and tail[0] in _WIDGET_KINDS:
+            tail = tail[1:]
+        return f"{path}: {'.'.join(tail)}" if tail else path
+    return f"{_sheet_path(name)}: " + ".".join(
+        "components" if part == "widgets" else str(part) for part in rest
+    )
+
+
+def _place(loc: tuple[Any, ...], folder: FolderIndex) -> str:
     """A ``FormSpec`` error's place as the folder spells it: the file, then the place in it."""
     parts = list(loc)
-    if (
-        parts[:1] == ["pages"]
-        and len(parts) > 1
-        and isinstance(parts[1], int)
-        and parts[1] < len(index.sheets)
-    ):
-        rest = ["components" if part == "widgets" else str(part) for part in parts[2:]]
-        return f"{_sheet_files(index.sheets[parts[1]])[0]}: " + ".".join(rest)
+    names = list(folder.sheets)
+    if parts[:1] == ["pages"] and len(parts) > 1 and isinstance(parts[1], int):
+        if parts[1] < len(names):
+            name = names[parts[1]]
+            return _place_in_sheet(name, folder.sheets[name], parts[2:])
+    index = folder.index
     if parts[:2] == ["schema", "tables"] and len(parts) > 2 and isinstance(parts[2], int):
         position = parts[2]
         if position < len(index.tables):
@@ -1053,9 +1202,9 @@ def _show_when_refs(show_when: Any) -> list[_Ref]:
 
 
 def unresolved_references(spec: FormSpec) -> list[str]:
-    """Each place *spec*'s sheets name a table or column its schema does not hold, by sheet
-    file and component, as ``haute app build`` and deploy refuse them: a table by its name,
-    a column as ``table.column``, as the files spell them."""
+    """Each place *spec*'s sheets and components name a table or column its schema does not
+    hold, by sheet file and section or by component file, as ``haute app build`` and deploy
+    refuse them: a table by its name, a column as ``table.column``, as the files spell them."""
     held = {
         table.name: {column.name for column in table.columns} for table in spec.data_schema.tables
     }
@@ -1072,7 +1221,7 @@ def unresolved_references(spec: FormSpec) -> list[str]:
         found.extend(f"{where} names {name}, which the schema does not hold" for name in missing)
 
     for page in spec.pages:
-        sheet = f"{SHEETS_DIR}/{sheet_name(page.title)}.json"
+        sheet = _sheet_path(sheet_name(page.title))
         report(f"{sheet} (its Show when)", _show_when_refs(page.show_when))
         for section in page.sections:
             report(f"{sheet}, section {section.title!r}", _show_when_refs(section.show_when))
@@ -1093,5 +1242,5 @@ def unresolved_references(spec: FormSpec) -> list[str]:
                     refs += [(table_id, None) for table_id in widget.tables]
                     if isinstance(widget.target, SqlExport):
                         refs += [(named.table, None) for named in widget.target.table_names]
-                report(f"{sheet}, {_component_named(widget.model_dump())}", refs)
+                report(_component_path(widget.name), refs)
     return found

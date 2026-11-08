@@ -20,17 +20,16 @@ import { buildWorkbenchPipeline, enableWorkbench, FORM_FILES, readFormFile, writ
 const SHEET_FILES: Record<string, unknown> = {
   "sheets/sheet_1.json": {
     title: "Sheet 1",
+    width: 1280,
     sections: [
       {
         title: "Section 1",
-        components: [{ number: 1, type: "collection", fields: ["policy.limit", "policy.region", "pricing.premium"] }],
+        height: 560,
+        components: [{ component: "policy", x: 184, y: 112, w: 720, h: 120 }],
       },
     ],
   },
-  "sheets/sheet_1.layout.json": {
-    width: 1280,
-    sections: { "Section 1": { height: 560, components: { "1": { x: 184, y: 112, w: 720, h: 120 } } } },
-  },
+  "components/policy.json": { type: "collection", fields: ["policy.limit", "policy.region", "pricing.premium"] },
 }
 
 /**
@@ -134,7 +133,8 @@ test.describe("the underwriter app's quotes", () => {
       await expect(unsaved).toBeVisible()
       await page.getByTestId("save-quote").click()
       await expect(unsaved).toHaveCount(0)
-      await expect(page.getByTestId("quote-line")).toContainText("Priced on this release")
+      // Saved with a price of this release, which the page never calls priced: Mark final is offered.
+      await expect(page.getByRole("button", { name: "Mark final" })).toBeEnabled()
     })
 
     await test.step("its rows read from dev's database: the values typed and the price, under its reference and option", async () => {
@@ -184,7 +184,7 @@ test.describe("the underwriter app's quotes", () => {
 
     const restarted = await test.step("a column added to the form closes dev's quotes as the app starts again, its table left as it was", async () => {
       const policy = readFormFile("schema/policy.json")
-      writeFormFiles({ "schema/policy.json": { ...policy, columns: [...policy.columns, { name: "excess", type: "int" }] } })
+      writeFormFiles({ "schema/policy.json": { ...policy, inputs: [...policy.inputs, { name: "excess", type: "int" }] } })
       await app.stop()
       const again = await serve(staticDir)
 
@@ -199,15 +199,48 @@ test.describe("the underwriter app's quotes", () => {
       await page.goto("/")
       await page.getByTestId("view-switcher-workbench").click()
       await page.getByRole("button", { name: "Schema" }).click()
-      await page.getByRole("combobox", { name: "Compare with" }).selectOption("dev")
-      await expect(page.getByTestId("database-mark-policy-excess")).toHaveText("missing")
+      await page.getByRole("combobox", { name: "Database", exact: true }).selectOption("dev")
+      const fieldStatus = page.getByTestId("database-mark-policy-excess")
+      await expect(fieldStatus).toContainText("New column")
+      await fieldStatus.click()
+      await expect(page.getByRole("region", { name: "Database details for policy.excess", exact: true })).toContainText("initially empty")
+      await expect(page.getByRole("textbox", { name: "Label of excess" })).toHaveCount(0)
+      await page.getByTestId("schema-column-excess").scrollIntoViewIfNeeded()
+      await page.screenshot({ path: testInfo.outputPath("schema-field-details.png") })
+      const viewport = page.viewportSize()!
+      await page.setViewportSize({ width: 500, height: 844 })
+      await page.getByTestId("schema-pane").screenshot({ path: testInfo.outputPath("schema-search-database-narrow.png") })
+      await page.setViewportSize(viewport)
 
-      await page.getByRole("button", { name: "SQL" }).click()
+      await page.getByText(/^Database changes/).click()
+      await expect(page.getByRole("region", { name: "Additions for policy" })).toContainText("excess")
+      await page.screenshot({ path: testInfo.outputPath("schema-sql-options.png") })
+      await page.getByText(/^Database changes/).click()
+      await page.getByRole("button", { name: "Export SQL", exact: true }).click()
       const window = page.getByTestId("store-sql-window")
-      await expect(window.getByRole("combobox")).toHaveValue("database")
+      await expect(window.getByRole("combobox")).toHaveCount(0)
+      await expect(window.getByRole("button", { name: /Refresh|Check/ })).toHaveCount(0)
       const sql = window.getByTestId("store-sql")
+      await expect(sql).toBeVisible()
       await expect(sql).toContainText("ADD COLUMN excess")
+      await page.screenshot({ path: testInfo.outputPath("schema-review.png") })
+      await page.setViewportSize({ width: 390, height: 844 })
+      await page.screenshot({ path: testInfo.outputPath("schema-review-narrow.png") })
+      await page.setViewportSize(viewport)
+      await page.setViewportSize({ width: 800, height: 480 })
+      await page.screenshot({ path: testInfo.outputPath("schema-review-short.png") })
+      await page.setViewportSize(viewport)
+      const downloaded = page.waitForEvent("download")
+      await window.getByRole("button", { name: "Download SQL" }).click()
+      expect((await downloaded).suggestedFilename()).toBe("dev-database-schema.sql")
+      await expect(window.getByText(/Compatible with this schema/)).toHaveCount(0)
       runOnStore(await sql.innerText())
+      await window.getByRole("button", { name: "Close", exact: true }).click()
+      await page.getByRole("button", { name: "Refresh", exact: true }).click()
+      await expect(fieldStatus).toContainText("Matches")
+      await expect(page.getByRole("option", { name: "dev", exact: true })).toHaveAttribute("aria-description", "Compatible")
+      await page.getByText("Database changes · No additions", { exact: true }).click()
+      await expect(page.getByText("No missing tables or columns.", { exact: true })).toBeVisible()
 
       const { columns } = readStore({ columns: { sql: "SELECT name FROM pragma_table_info('policy')" } })
       expect(columns.map((column) => column.name)).toContain("excess")

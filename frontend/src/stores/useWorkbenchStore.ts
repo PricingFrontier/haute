@@ -52,7 +52,7 @@ interface WorkbenchState {
   tables: WorkbenchTables | null
   /**
    * The columns the quote store keeps in each of the form's tables that the form does not,
-   * by table name, from the same fetch: quote_details' own, and a many-row table's `quote_row`.
+   * by table name, from the same fetch: quote_details' own, a many-row table's rows being numbered by its index.
    * They are no node's ports.
    */
   storeColumns: Readonly<Record<string, readonly WorkbenchStoreColumn[]>>

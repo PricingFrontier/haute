@@ -52,10 +52,13 @@ from haute._workbench_form import (
     _condition_kind,
 )
 
-#: A table's or a column's name: an ASCII identifier.
+#: A table's, a column's or a component's name: an ASCII identifier.
 NAME_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
-#: Where a component sits, which its sheet's layout file holds, not its sheet's file.
+#: Where a component sits, which its sheet's file holds, not its own.
 PLACEMENT = frozenset({"x", "y", "w", "h"})
+#: What a component's file never holds: its id, the editor's; its name, its file's; and
+#: where it sits, its sheet's.
+NOT_IN_COMPONENT_FILE = PLACEMENT | {"id", "name"}
 #: The settings an output column cannot have: the rules of what is typed into it. Required
 #: is not among them: marking a quote final needs a value in an output column as in an input.
 INPUT_ONLY = (
@@ -63,9 +66,11 @@ INPUT_ONLY = (
     "max",
     "options",
     "options_source",
-    "row_per_value",
     "default_value",
 )
+#: What of ``INPUT_ONLY`` an output takes while it is a table of outputs alone's index of
+#: values: the allowed values that give its rows.
+INDEX_VALUES_SETTINGS = ("options", "options_source")
 #: The settings ``quote_details`` takes on any column, and on those the underwriter types.
 DETAILS_ANY = (
     "label",
@@ -266,8 +271,7 @@ else:
     TableComponentFile = _derived(
         "TableComponentFile",
         TableInputWidget,
-        drop=PLACEMENT | {"id", "column_looks"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE | {"column_looks"},
         replace={
             "type": (Literal["table"], ...),
             "fields": (list[Dotted | FieldLookFile], Field(default_factory=list)),
@@ -277,8 +281,7 @@ else:
     CollectionComponentFile = _derived(
         "CollectionComponentFile",
         CollectionWidget,
-        drop=PLACEMENT | {"id", "column_looks", "spacers"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE | {"column_looks", "spacers"},
         replace={
             "fields": (list[Dotted | FieldLookFile | None], Field(default_factory=list)),
             "show_when": _SHOW_WHEN,
@@ -287,8 +290,7 @@ else:
     ChartComponentFile = _derived(
         "ChartComponentFile",
         ChartWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={
             "fields": (list[Dotted], Field(default_factory=list)),
             "show_when": _SHOW_WHEN,
@@ -298,8 +300,7 @@ else:
     HeadingComponentFile = _derived(
         "HeadingComponentFile",
         HeadingWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={"show_when": _SHOW_WHEN},
     )
     SqlImportFile = _derived(
@@ -309,8 +310,7 @@ else:
     ImportComponentFile = _derived(
         "ImportComponentFile",
         ImportWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={
             "show_when": _SHOW_WHEN,
             "source": (
@@ -328,8 +328,7 @@ else:
     ExportComponentFile = _derived(
         "ExportComponentFile",
         ExportWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={
             "show_when": _SHOW_WHEN,
             "target": (
@@ -355,68 +354,74 @@ else:
     QuoteDetailsColumnFile = _derived(
         "QuoteDetailsColumnFile",
         SchemaColumn,
-        drop=frozenset({"id", "type", "key", "row_per_value", "index"}),
+        drop=frozenset({"id", "type", "index"}),
         replace={"name": (Literal[DETAILS_NAMES], ...)},
     )
 
 
-class SectionFile(_File):
-    """A section, known by its title on its sheet (READ-24)."""
-
-    title: str
-    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
-    components: list[ComponentFile]
-
-
-class SheetFile(_File):
-    """A sheet, known by its file's name (READ-24)."""
-
-    title: str
-    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
-    sections: list[SectionFile] = Field(min_length=1)
-
+#: A component's file: one of the kinds, told apart by ``type``.
+COMPONENT: TypeAdapter[Any] = TypeAdapter(ComponentFile)
+#: The models a component's file is read as, one a kind.
+COMPONENT_FILES: tuple[type[BaseModel], ...] = (
+    TableComponentFile,
+    CollectionComponentFile,
+    ChartComponentFile,
+    HeadingComponentFile,
+    ImportComponentFile,
+    ExportComponentFile,
+)
 
 _Whole = Annotated[int, Strict()]
 
 
-class RectFile(_File):
-    """Where a component sits in its section, in pixels from its top-left corner."""
+class PlacementFile(_File):
+    """A component placed in a section: by its name, which names its file, and where it
+    sits, in pixels from the section's top-left corner."""
 
+    component: Name
     x: Annotated[_Whole, Field(ge=0)]
     y: Annotated[_Whole, Field(ge=0)]
     w: Annotated[_Whole, Field(gt=0)]
     h: Annotated[_Whole, Field(gt=0)]
 
 
-class LayoutSectionFile(_File):
+class SectionFile(_File):
+    """A section, known by its title on its sheet (READ-24), and its components in the
+    order they are drawn in where two overlap."""
+
+    title: str
     height: Annotated[_Whole, Field(gt=0)]
-    #: Each component's box, by its number in the section (READ-24).
-    components: dict[str, RectFile]
+    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
+    components: list[PlacementFile]
 
 
-class LayoutFile(_File):
+class SheetFile(_File):
+    """A sheet, known by its file's name (READ-24)."""
+
+    title: str
     width: Annotated[_Whole, Field(gt=0)]
-    #: Each section's height and boxes, by its title (READ-24).
-    sections: dict[str, LayoutSectionFile]
+    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
+    sections: list[SectionFile] = Field(min_length=1)
 
 
 class TableFile(_File):
-    """A table but its name, which is its index entry: each column named once whatever its
-    case, and an output's columns holding no rule. The quote's identity, which Haute gives
-    every table, is written in none; a column of either name is the project's own, a clash
-    the schema's problems name (``haute._workbench_form.identity_clashes``)."""
+    """A table but its name, which is its index entry: its inputs and its outputs, each
+    column named once whatever its case across both, and an output holding no rule but
+    Required and no index. The quote's identity, which Haute gives every table, is written in
+    none; a column of either name is the project's own, a clash the schema's problems name
+    (``haute._workbench_form.identity_clashes``)."""
 
-    role: Literal["input", "output"]
     rows: Literal["one", "many"]
-    columns: list[ColumnFile]
+    inputs: list[ColumnFile] = Field(default_factory=list)
+    outputs: list[ColumnFile] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _holds_its_own_columns(self) -> TableFile:
         # A column is known by its name (READ-23): two of one name whatever their case, as a
         # merge can leave them, would give the sheets one of them and not the other, and a
-        # database that ignores case one column for both.
+        # database that ignores case one column for both, whichever blocks hold them.
         names: dict[str, str] = {}
-        for column in self.columns:
+        for column in [*self.inputs, *self.outputs]:
             folded = column.name.casefold()
             if folded in names:
                 raise ValueError(
@@ -424,13 +429,16 @@ class TableFile(_File):
                     "a table needs a name of its own, whatever its case"
                 )
             names[folded] = column.name
-            if self.role == "output":
-                rules = [key for key in INPUT_ONLY if key in column.model_fields_set]
-                if rules:
-                    raise ValueError(
-                        f"output column {column.name} holds {', '.join(rules)}, which only "
-                        "an input column takes"
-                    )
+        for column in self.outputs:
+            held = INDEX_VALUES_SETTINGS if column.index == "values" else ()
+            rules = [
+                key for key in INPUT_ONLY if key in column.model_fields_set and key not in held
+            ]
+            if rules:
+                raise ValueError(
+                    f"{column.name} is an output and holds {', '.join(rules)}, which only an "
+                    "input takes"
+                )
         return self
 
 
@@ -461,7 +469,7 @@ class QuoteDetailsFile(_File):
 class IndexFile(_File):
     model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
 
-    version: Literal[1]
+    version: Literal[3]
     name: str
     theme: Theme = Field(default_factory=Theme)
     #: ``schema`` in the file; ``BaseModel`` already has a ``schema`` attribute.

@@ -37,10 +37,9 @@ function sectionOf(id: string): Section {
   return found.section
 }
 
-/** `sheetForm` with a row-number index on equipment and a Chart, w_chart, plotting `fields`. */
+/** `sheetForm`, its equipment numbered by its index, with a Chart, w_chart, plotting `fields`. */
 function chartForm(fields: FieldRef[]): FormSpec {
   const form = sheetForm()
-  form.schema.tables[1].columns.unshift(column("row", { type: "int", index: true }))
   addTo(form, chartWidget("w_chart", fields))
   return form
 }
@@ -108,13 +107,13 @@ describe("PropertiesPanel", () => {
     const pane = () => screen.getByRole("tabpanel")
     const regions = () => within(pane()).getAllByRole("region").map((region) => region.getAttribute("aria-label"))
 
-    // Config first, in the component's colour: its order and its fields.
+    // Config first, in the component's colour: its name, its order and its fields.
     expect(within(screen.getByRole("tablist", { name: "Table panes" })).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Config", "Display"])
     const config = screen.getByRole("tab", { name: "Config" })
     expect(config).toHaveAttribute("aria-selected", "true")
     expect(config).toHaveStyle({ color: COMPONENT_COLOR })
     expect(pane()).toHaveAttribute("aria-labelledby", "component-config-tab")
-    expect(regions()).toEqual(["Order", "Fields"])
+    expect(regions()).toEqual(["Component name", "Order", "Fields"])
     // Display: its title, when it shows, its layout and its look: its header, its lines,
     // its frame and its columns' own looks.
     showPane("Display")
@@ -132,6 +131,50 @@ describe("PropertiesPanel", () => {
     expect(screen.getByRole("tab", { name: "Display" })).toHaveAttribute("aria-selected", "true")
     // The pane is the view's, not the form's: nothing to undo.
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+  })
+
+  it("starts every component's panel with its Component name, at the top of its Config pane or its one list", () => {
+    const form = sheetForm()
+    addTo(form, chartWidget("w_chart", []))
+    addTo(form, headingWidget("w_head", "Cover"))
+    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_in" })
+    addTo(form, { ...createWidget("export", { x: 192, y: 380, w: 160, h: 40 }, form), id: "w_out" })
+    loadForm(form)
+    const { rerender } = render(<PropertiesPanel />)
+    const firstRegion = () => within(screen.getByTestId("workbench-properties")).getAllByRole("region")[0].getAttribute("aria-label")
+    for (const [id, name] of [["w_grid", "w_grid"], ["w_boxes", "w_boxes"], ["w_chart", "w_chart"], ["w_head", "w_head"], ["w_in", "import_1"], ["w_out", "export_1"]]) {
+      select(id)
+      rerender(<PropertiesPanel />)
+      expect(firstRegion()).toBe("Component name")
+      expect(screen.getByTestId("component-name")).toHaveValue(name)
+    }
+  })
+
+  it("renames a component on Enter or blur as one undo step, and refuses a name that is no identifier or another's", () => {
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const field = () => screen.getByTestId("component-name")
+    const name = () => findWidget(currentForm(), "w_grid")!.widget.name
+    const undo = () => useWorkbenchFormStore.getState().undoStack
+
+    fireEvent.change(field(), { target: { value: "equipment" } })
+    fireEvent.keyDown(field(), { key: "Enter" })
+    expect(name()).toBe("equipment")
+    expect(undo()).toHaveLength(1)
+    fireEvent.change(field(), { target: { value: "Equipment_rows" } })
+    fireEvent.blur(field())
+    expect(name()).toBe("Equipment_rows")
+    expect(undo()).toHaveLength(2)
+
+    // Refused at the field, saying why: the component keeps its name and nothing is recorded.
+    fireEvent.change(field(), { target: { value: "2nd" } })
+    fireEvent.blur(field())
+    expect(screen.getByTestId("component-name-error")).toHaveTextContent("Use letters, digits and _, not starting with a digit")
+    fireEvent.change(field(), { target: { value: "W_BOXES" } })
+    fireEvent.keyDown(field(), { key: "Enter" })
+    expect(screen.getByTestId("component-name-error")).toHaveTextContent("Another component is named w_boxes")
+    expect(name()).toBe("Equipment_rows")
+    expect(undo()).toHaveLength(2)
   })
 
   it("starts a Table's grid in the sample again at the rows it is given, keeping every value typed, each one undo step", () => {
@@ -555,11 +598,11 @@ describe("PropertiesPanel", () => {
     const settings = screen.getByRole("region", { name: "Chart" })
     const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
 
-    // Rows: numbered, or labelled by a column of a table lined up with it, other than an index.
+    // Numbered rows belong to equipment alone; its index is not a label choice.
     const rows = within(settings).getByRole("combobox", { name: "Label rows by" })
     expect(rows).toHaveValue("")
-    expect(within(rows).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["equipment", "premiums"])
-    expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value", "Item", "Premium"])
+    expect(within(rows).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["equipment"])
+    expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value"])
     fireEvent.change(rows, { target: { value: JSON.stringify(["equipment", "item"]) } })
     expect(chart()).toMatchObject({ category: { table: "equipment", column: "item" } })
     expect(undoSteps()).toBe(1)
@@ -602,7 +645,7 @@ describe("PropertiesPanel", () => {
     const state = within(fields).getByRole("checkbox", { name: "Show policy state" })
     expect(state).toBeDisabled()
     expect(state.closest("label")).toHaveAttribute("title", cannotPlot)
-    const index = within(fields).getByRole("checkbox", { name: "Show equipment row" })
+    const index = within(fields).getByRole("checkbox", { name: "Show equipment row_number" })
     expect(index).toBeDisabled()
     expect(index.closest("label")).toHaveAttribute("title", cannotPlot)
     expect(within(fields).getByRole("checkbox", { name: "Show premiums premium" })).toBeEnabled()
@@ -626,7 +669,7 @@ describe("PropertiesPanel", () => {
 
     // A Table shows many-row tables: equipment and premiums, not policy.
     expect(within(fields).queryByTestId("fields-table-policy")).not.toBeInTheDocument()
-    expect(within(fields).getByText("2/2")).toBeInTheDocument()
+    expect(within(fields).getByText("2/3")).toBeInTheDocument()
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show premiums premium" }))
     expect(grid().fields.map((field) => field.column)).toEqual(["item", "value", "premium"])
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show equipment item" }))
@@ -637,7 +680,7 @@ describe("PropertiesPanel", () => {
   it("never offers the quote's reference and option among a component's fields", () => {
     const form = sheetForm()
     const [equipment] = form.schema.tables.filter((candidate) => candidate.name === "equipment")
-    equipment.columns.unshift(column("quote_reference"), column("quote_option", { type: "int" }))
+    equipment.inputs.unshift(column("quote_reference"), column("quote_option", { type: "int" }))
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -646,14 +689,15 @@ describe("PropertiesPanel", () => {
     expect(within(fields).queryByRole("checkbox", { name: "Show equipment quote_reference" })).toBeNull()
     expect(within(fields).queryByRole("checkbox", { name: "Show equipment quote_option" })).toBeNull()
     // Counted out of what can be shown, and not found by a search.
-    expect(within(screen.getByTestId("fields-table-equipment")).getByText("2/2")).toBeInTheDocument()
+    expect(within(screen.getByTestId("fields-table-equipment")).getByText("2/3")).toBeInTheDocument()
     fireEvent.change(within(fields).getByRole("textbox", { name: "Search fields" }), { target: { value: "option" } })
     expect(within(fields).getByText("No fields match")).toBeInTheDocument()
   })
 
   it("greys out a table whose rows do not line up with the fields already chosen", () => {
     const form = sheetForm()
-    form.schema.tables.push(table("claims", { rows: "many", columns: [column("id", { key: true })] }))
+    // Outputs alone keyed by id: not by equipment's row_number, so out of line.
+    form.schema.tables.push(table("claims", { rows: "many", outputs: [column("id", { index: "typed" }), column("paid", { type: "float" })] }))
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -662,13 +706,14 @@ describe("PropertiesPanel", () => {
     expect(claims).toHaveStyle({ opacity: "0.5" })
     expect(claims).toHaveAttribute("title", "Its rows don't line up with the fields already chosen")
     expect(within(claims).getByRole("checkbox", { name: "Show claims id" })).toBeDisabled()
-    expect(screen.getByTestId("fields-table-premiums")).toHaveStyle({ opacity: "1" })
+    expect(screen.getByTestId("fields-table-premiums")).toHaveStyle({ opacity: "0.5" })
+    expect(within(screen.getByTestId("fields-table-premiums")).getByRole("checkbox", { name: "Show premiums premium" })).toBeDisabled()
   })
 
   it("searches the fields as the schema is searched: only the columns matching, by name, label or readable name, each table open, kept as the panes change", () => {
     const form = sheetForm()
-    form.schema.tables[1].columns.push(column("sum_insured", { type: "float", label: "" }))
-    form.schema.tables[2].columns[1].label = "Annual cost"
+    form.schema.tables[1].inputs.push(column("sum_insured", { type: "float", label: "" }))
+    form.schema.tables[2].outputs[1].label = "Annual cost"
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -678,9 +723,9 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(fields).getByRole("button", { name: "Collapse equipment" }))
     expect(within(fields).queryByRole("checkbox", { name: "Show equipment item" })).not.toBeInTheDocument()
 
-    // A name, whatever its case: both tables hold an item, the collapsed one shown open.
-    fireEvent.change(search, { target: { value: "ITEM" } })
-    expect(checkboxes()).toEqual(["Show equipment item", "Show premiums item"])
+    // A name, whatever its case: both tables hold a row_number, the collapsed one shown open.
+    fireEvent.change(search, { target: { value: "ROW_NUMBER" } })
+    expect(checkboxes()).toEqual(["Show equipment row_number", "Show premiums row_number"])
     const toggle = within(screen.getByTestId("fields-table-equipment")).getByRole("button", { name: "Collapse equipment" })
     expect(toggle).toBeDisabled()
     expect(toggle).toHaveAttribute("aria-expanded", "true")
@@ -706,7 +751,7 @@ describe("PropertiesPanel", () => {
     fireEvent.keyDown(again, { key: "Escape" })
     expect(again).toHaveValue("")
     expect(within(screen.getByRole("region", { name: "Fields" })).getByRole("button", { name: "Expand equipment" })).toBeEnabled()
-    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show premiums item", "Show premiums premium"])
+    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show premiums row_number", "Show premiums premium"])
   })
 
   it("orders the fields: Alt+Down moves one, and a cross stops showing it", () => {
@@ -1175,7 +1220,7 @@ describe("PropertiesPanel", () => {
 
   it("sets an Import's format and its settings, the table it fills and where its columns are read from, and its label in Display", () => {
     const form = sheetForm()
-    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }), id: "w_in" })
+    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_in" })
     loadForm(form)
     select("w_in")
     render(<PropertiesPanel />)
@@ -1246,7 +1291,7 @@ describe("PropertiesPanel", () => {
 
   it("sets an Export's format, its file's settings or a database's, and the tables it exports", () => {
     const form = sheetForm()
-    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }), id: "w_out" })
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
     loadForm(form)
     select("w_out")
     render(<PropertiesPanel />)

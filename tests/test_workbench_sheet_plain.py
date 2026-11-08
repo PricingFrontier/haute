@@ -1,8 +1,8 @@
-"""A sheet's gaps, conditions and appearance are written plainly (READ-31).
+"""A sheet's and a component's gaps, conditions and appearance are written plainly (READ-31).
 
-Spec: specs/workbench/low-level.md, the form folder's sheet files. A gap is ``null`` in
-``fields`` at its place, a number of conditions is ``at_least``, and a field with a look of
-its own is an object holding the field and its settings, in its place.
+Spec: specs/workbench/low-level.md, the form folder's sheet and component files. A gap is
+``null`` in ``fields`` at its place, a number of conditions is ``at_least``, and a field with
+a look of its own is an object holding the field and its settings, in its place.
 """
 
 from __future__ import annotations
@@ -15,43 +15,36 @@ from typing import Any
 import pytest
 
 from haute._workbench_folder import read_form_document
-from tests._workbench_helpers import enable, form_folder
+from tests._workbench_helpers import form_folder
 from tests.test_workbench_folder import (
     FORM,
     POLICY_BOXES,
     config,
     files_of,
+    folder_project,
     put,
     spec_of,
     widget_of,
 )
 
 SHEET = "sheets/br_coverages.json"
+#: The Collection of the policy's fields, in its own file.
+COLLECTION = "components/policy.json"
 
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    """A project whose workbench is enabled, its form folder ``rating/workbench``."""
-    root = tmp_path / "p"
-    enable(root)
-    return root
+    return folder_project(tmp_path / "p")
 
 
-def _round_trip(project: Path, form: dict[str, Any]) -> dict[str, Any]:
+def _round_trip(project: Path, form: dict[str, Any], path: str) -> dict[str, Any]:
+    """*form* written and read back the same, and its file at *path* as written."""
     files = files_of(form, project)
     put(form_folder(project), files)
     document = read_form_document(config(project))
     assert document.spec.model_dump(mode="json") == spec_of(form).model_dump(mode="json")
-    return json.loads(files[SHEET])
-
-
-def _collection(sheet: dict[str, Any]) -> dict[str, Any]:
-    return next(
-        component
-        for section in sheet["sections"]
-        for component in section["components"]
-        if component["type"] == "collection"
-    )
+    written: dict[str, Any] = json.loads(files[path])
+    return written
 
 
 @pytest.mark.parametrize(
@@ -71,19 +64,20 @@ def test_a_gap_is_null_at_its_place_in_fields(
     collection["spacers"] = spacers
     collection["column_looks"] = []
 
-    sheet = _round_trip(project, form)
+    collection = _round_trip(project, form, COLLECTION)
 
-    assert _collection(sheet)["fields"] == shape
-    assert "spacers" not in _collection(sheet)
+    assert collection["type"] == "collection"
+    assert collection["fields"] == shape
+    assert "spacers" not in collection
 
 
 def test_a_field_with_a_look_of_its_own_is_an_object_in_its_place(project: Path) -> None:
-    sheet = _round_trip(project, copy.deepcopy(FORM))
+    collection = _round_trip(project, copy.deepcopy(FORM), COLLECTION)
 
-    fields = _collection(sheet)["fields"]
+    fields = collection["fields"]
     assert fields[0]["field"] == "policy.state" and fields[0]["bold"] is True
     assert fields[2] == "policy.exposure"
-    assert "column_looks" not in _collection(sheet)
+    assert "column_looks" not in collection
 
 
 @pytest.mark.parametrize("match", ["all", "any", 2])
@@ -100,7 +94,7 @@ def test_match_is_all_any_or_at_least_on_a_show_when_and_a_group(
     section["show_when"]["match"] = match
     section["show_when"]["conditions"][0]["match"] = match
 
-    sheet = _round_trip(project, form)
+    sheet = _round_trip(project, form, SHEET)
 
     rule = next(s for s in sheet["sections"] if s["title"] == "Perils")["show_when"]
     group = rule["conditions"][0]

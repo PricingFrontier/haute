@@ -5,7 +5,7 @@ id, and the SQL that carries it out.
 A plan (:func:`plan`) is made from what the database holds, as an earlier form's structure
 (:func:`offline_plan`) or as its own catalogue read into one (:mod:`._compare`), or from none,
 for a database that holds no store yet. It keeps what the form removed, which its SQL drops
-only in a comment, makes each change of a type, rows or role a step its SQL notes, and refuses
+only in a comment, makes each change of a type or rows a step its SQL notes, and refuses
 a table or column taking a removed one's name. Given the quotes holding values in each table
 and column (from a database's catalogue), each note on one says how many. :func:`render_sql`
 writes it for an engine, one transaction holding nothing of Haute's beyond the tables, for the
@@ -76,7 +76,7 @@ class Step:
     """One change a plan makes, or one thing it keeps: its kind, the table and column it
     concerns by their names after it and by the keys they are planned by (the form's name, or
     ``database:`` and the database's for one the form does not have), the name each had
-    before when renamed,
+    before when renamed or when an index's type changes,
     and how many quotes hold values in what it concerns (None when not counted)."""
 
     kind: StepKind
@@ -124,7 +124,7 @@ def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
 
 def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[Key]:
     """The tables and columns of *recorded* a plan to *form* says the quotes of: those the
-    form removed, and those whose type, rows or role it changed."""
+    form removed or renamed, and those whose type or rows it changed."""
     new = _by_key(form["tables"])
     wanted: set[Key] = set()
     for table in recorded["tables"]:
@@ -133,12 +133,19 @@ def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[K
             # A table removed is counted whole.
             wanted.add((table["key"], None))
             continue
-        if (table["rows"], table["role"]) != (after["rows"], after["role"]):
+        if table["rows"] != after["rows"] or table["name"] != after["name"]:
             wanted.add((table["key"], None))
         columns = _by_key(after["columns"])
+        index = next((column for column in after["columns"] if column.get("index")), None)
         for column in table["columns"]:
-            changed = columns.get(column["key"])
-            if changed is None or changed["type"] != column["type"]:
+            changed = (
+                index if column.get("index") and index is not None else columns.get(column["key"])
+            )
+            if (
+                changed is None
+                or changed["type"] != column["type"]
+                or changed["name"] != column["name"]
+            ):
                 wanted.add((table["key"], column["key"]))
     return wanted
 
@@ -199,11 +206,11 @@ def _plan(
             steps.append(Step("create table", table["name"], table["key"]))
             recorded_after.append(table)
             continue
-        if (before["rows"], before["role"]) != (table["rows"], table["role"]):
-            # A table of other rows or another role: a step the SQL notes, whatever it holds.
+        if before["rows"] != table["rows"]:
+            # A table of other rows: a step the SQL notes, whatever it holds.
             quotes = _count(counts, (table["key"], None))
             if table["key"] == QUOTE_DETAILS_NAME:
-                refusals.append("quote_details takes no change of its rows or role")
+                refusals.append("quote_details takes no change of its rows")
                 recorded_after.append(before)
             else:
                 steps.append(
@@ -226,7 +233,15 @@ def _plan(
             recorded_after.append(before)
             continue
         if before["name"] != table["name"]:
-            steps.append(Step("rename table", table["name"], table["key"], was=before["name"]))
+            steps.append(
+                Step(
+                    "rename table",
+                    table["name"],
+                    table["key"],
+                    was=before["name"],
+                    quotes=_count(counts, (table["key"], None)),
+                )
+            )
         columns_after = _plan_columns(table, before, counts, steps, refusals)
         recorded_after.append({**table, "columns": columns_after})
 
@@ -254,21 +269,65 @@ def _plan_columns(
     after them."""
     old = _by_key(before["columns"])
     new = _by_key(table["columns"])
+    # A many-row table's index is paired by what it is, before any column is matched by its
+    # name: renamed, it is the earlier index under its new name, a rename keeping its values
+    # and the table's key, never a column added beside the one that keys the table, and the
+    # earlier index's name is free for a column of the form's own. Its new name taken by
+    # another of the earlier columns, as a swap of two names makes it, is refused with every
+    # change of the table: whose values each name should hold is not the SQL's to guess, and
+    # matching the rest by name would retype the columns the swap moved.
+    index = next((column for column in table["columns"] if column.get("index")), None)
+    earlier = next((column for column in before["columns"] if column.get("index")), None)
+    if index is not None and earlier is not None and index["key"] != earlier["key"]:
+        taken = old.get(index["key"])
+        if taken is not None:
+            refusals.append(
+                f"the index of {table['name']}, {earlier['name']}, renamed {index['name']}, takes "
+                f"the name of its column {taken['name']}: rename that column to a name of its "
+                "own first, or drop it; nothing else of the table changes until then"
+            )
+            return list(before["columns"])
+        paired = {**earlier, "key": index["key"]}
+        old = {key: column for key, column in old.items() if column is not earlier}
+        old[index["key"]] = paired
+        before = {
+            **before,
+            "columns": [paired if column is earlier else column for column in before["columns"]],
+        }
     # The names this table's removed columns still hold, since the SQL drops none: no column of
     # the form may take one, added or renamed.
     removed_names = {
         column["name"].casefold() for column in before["columns"] if column["key"] not in new
     }
+    # The names columns keep when their rename is refused, which no column may be added
+    # under either.
+    staying = {
+        old[column["key"]]["name"].casefold()
+        for column in table["columns"]
+        if column["key"] in old
+        and old[column["key"]]["name"] != column["name"]
+        and column["name"].casefold() in removed_names
+    }
     after: list[dict[str, Any]] = []
     name = table["name"]
     for column in table["columns"]:
         was = old.get(column["key"])
-        key: Key = (table["key"], column["key"])
+        # Index pairing changes its plan key, but counts still describe the earlier structure.
+        key: Key = (
+            table["key"],
+            earlier["key"] if column is index and earlier is not None else column["key"],
+        )
         if was is None:
             if column["name"].casefold() in removed_names:
                 refusals.append(
                     f"the new column {name}.{column['name']} takes the name of a column the form "
                     "removes, which the SQL keeps: rename one, or drop the removed column first"
+                )
+                continue
+            if column["name"].casefold() in staying:
+                refusals.append(
+                    f"the new column {name}.{column['name']} takes the name of a column whose "
+                    "rename is refused, which keeps it: resolve that rename first"
                 )
                 continue
             steps.append(Step("add column", name, table["key"], column["name"], column["key"]))
@@ -291,12 +350,27 @@ def _plan_columns(
                     column["name"],
                     column["key"],
                     was=was["name"],
+                    quotes=_count(counts, key),
                 )
             )
         if was["type"] != column["type"]:
             quotes = _count(counts, key)
             if table["key"] == QUOTE_DETAILS_NAME:
                 refusals.append(f"quote_details.{column['name']} takes no change of its type")
+            elif column.get("index"):
+                # The index keys the table's rows with the quote's identity: retyping it
+                # changes that key, which the SQL notes rather than altering in place.
+                steps.append(
+                    Step(
+                        "reshape table",
+                        name,
+                        table["key"],
+                        column["name"],
+                        column["key"],
+                        was=was["name"],
+                        quotes=quotes,
+                    )
+                )
             else:
                 steps.append(
                     Step(
@@ -319,19 +393,64 @@ def _plan_columns(
     return after
 
 
-def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
+def addition_problem(plan: Plan, step: Step, provider: Provider) -> str | None:
+    """An invalid or already occupied destination cannot be added to the unchanged database."""
+    names = [step.table]
+    if step.column is not None:
+        names.append(step.column)
+    else:
+        wanted = next(table for table in plan.recorded["tables"] if table["key"] == step.table_key)
+        names.extend(column["name"] for column in wanted["columns"])
+    problems = name_problems(provider, names)
+    if problems:
+        return f"Not added: {step.table}: {'; '.join(problems)}."
+    table = next(
+        (
+            table
+            for table in (plan.before or {}).get("tables", [])
+            if table["name"].casefold() == step.table.casefold()
+        ),
+        None,
+    )
+    if table is None:
+        return None
+    if step.column is not None and not any(
+        column["name"].casefold() == step.column.casefold() for column in table["columns"]
+    ):
+        return None
+    name = step.table if step.column is None else f"{step.table}.{step.column}"
+    return f"Not added: {name} already exists. Resolve the name change manually."
+
+
+def _emit(
+    operations: Operations,
+    plan: Plan,
+    schema: StoreSchema,
+    provider: Provider,
+    *,
+    additions_only: bool = False,
+) -> None:
     """The DDL of *plan* through *operations*, as offline SQL: every rename in two phases
     through temporary names (tables, then columns), then what is made, each in the store's
     SQL schema; the notes and the DROPs it keeps commented out written where their steps
-    fall."""
+    fall. In additions-only exports, renames become creations and all other alterations
+    become manual-work notes."""
     steps = plan.steps
     owner = schema.metadata.schema
-    renames = [step for step in steps if step.kind == "rename table" and step.was != step.table]
+    renames = [
+        step
+        for step in steps
+        if not additions_only and step.kind == "rename table" and step.was != step.table
+    ]
     for step in renames:
         operations.rename_table(str(step.was), _named(step.table_key), schema=owner)
     for step in renames:
         operations.rename_table(_named(step.table_key), step.table, schema=owner)
-    columns = [step for step in steps if step.kind == "rename column" and step.was != step.column]
+    columns = [
+        step
+        for step in steps
+        if not additions_only and step.kind == "rename column" and step.was != step.column
+    ]
     for step in columns:
         operations.alter_column(
             step.table,
@@ -346,17 +465,41 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
             new_column_name=step.column,
             schema=owner,
         )
+    new_tables = {step.table_key for step in steps if step.kind == "rename table"}
     for step in steps:
+        if additions_only:
+            # Creating the destination table includes all its columns. Its old table stays.
+            if step.table_key in new_tables and step.kind != "rename table":
+                continue
+            if step.kind in ("create table", "add column", "rename table", "rename column"):
+                problem = addition_problem(plan, step, provider)
+                if problem is not None:
+                    _note(operations, problem)
+                    continue
+            if step.kind in ("rename table", "rename column"):
+                source = step.was if step.column is None else f"{step.table}.{step.was}"
+                _note(
+                    operations,
+                    f"Keep {source}{held(step.quotes)} unchanged. The new name starts empty.\n"
+                    "Transfer values and remove the old name manually when ready.\n"
+                    "Any existing keys and references are unchanged; "
+                    "update them manually if needed.",
+                )
+                if step.kind == "rename table":
+                    operations.impl.create_table(schema.by_name(step.table_key).table)
+                else:
+                    operations.add_column(step.table, _column(schema, step), schema=owner)
+                continue
         if step.kind == "create table":
             operations.impl.create_table(schema.by_name(step.table_key).table)
         elif step.kind == "add column":
             operations.add_column(step.table, _column(schema, step), schema=owner)
         elif step.kind == "retype column":
-            _retype_in_place(operations, plan, schema, step)
+            _retype_in_place(operations, plan, schema, step, additions_only=additions_only)
         elif step.kind == "reshape table":
             _reshape_note(operations, plan, step)
         elif step.kind in ("keep table", "keep column"):
-            _removed_note(operations, step, owner)
+            _removed_note(operations, step, owner, additions_only=additions_only)
     if plan.activity:
         # A database holding none of the store takes Haute's activity with the form's tables.
         operations.impl.create_table(schema.activity)
@@ -409,7 +552,14 @@ def _structure_column(structure: Mapping[str, Any] | None, step: Step) -> dict[s
     raise KeyError((step.table_key, step.column_key))
 
 
-def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, step: Step) -> None:
+def _retype_in_place(
+    operations: Operations,
+    plan: Plan,
+    schema: StoreSchema,
+    step: Step,
+    *,
+    additions_only: bool = False,
+) -> None:
     """A change of *step*'s column to the store's type for it, in place, the engine converting
     each value the column holds, PostgreSQL through a USING cast, after a note that a value
     which does not convert stops the script; on SQLite, which cannot change a column's type,
@@ -422,6 +572,14 @@ def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, st
     old = str(before["sql_type"]) if was is None else str(was.compile(dialect=dialect))
     new = fresh.type.compile(dialect=dialect)
     where = f"{step.table}.{step.column}"
+    if additions_only:
+        _note(
+            operations,
+            f"{where}{held(step.quotes)} needs {new} instead of {old}.\n"
+            "Existing column types and values are unchanged. Review and convert the data\n"
+            "manually before changing its type; this SQL does not perform the conversion.",
+        )
+        return
     if dialect.name == "sqlite":
         _note(
             operations,
@@ -450,24 +608,53 @@ def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, st
 
 
 def _reshape_note(operations: Operations, plan: Plan, step: Step) -> None:
-    """A script's note on a table whose rows or role the form changed, which no statement
-    changes: what the table was and is, and what it needs."""
+    """A script's note on a table whose rows the form changed, or whose index it retyped,
+    which no statement changes: what the table was and is, and what it needs."""
+    if step.column_key is not None:
+        before = next(
+            column
+            for column in _structure_table(plan.before, step.table_key)["columns"]
+            if column["name"] == step.was
+        )
+        after = _structure_column(plan.recorded, step)
+        _note(
+            operations,
+            f"{step.table}{held(step.quotes, 'rows')} has its index {step.column} change from "
+            f"{_INDEX_TYPES.get(str(before['type']), before['type'])} to "
+            f"{_INDEX_TYPES.get(str(after['type']), after['type'])},\n"
+            "which changes the key its rows are held by and which no statement here makes:\n"
+            "make the table again as the form has it and move its rows into it.",
+        )
+        return
     was = _structure_table(plan.before, step.table_key)
     now = _structure_table(plan.recorded, step.table_key)
     _note(
         operations,
-        f"{step.table}{held(step.quotes, 'rows')} changes from an {was['role']} table of "
-        f"{_ROWS[was['rows']]} to an "
-        f"{now['role']} table of {_ROWS[now['rows']]},\n"
+        f"{step.table}{held(step.quotes, 'rows')} changes from a table of "
+        f"{_ROWS[was['rows']]} to a table of {_ROWS[now['rows']]},\n"
         "which no statement here makes: make the table again as the form has it and move its\n"
         "rows into it.",
     )
 
 
-def _removed_note(operations: Operations, step: Step, owner: str | None) -> None:
+#: An index's types as a note names them.
+_INDEX_TYPES = {"int": "an Integer", "str": "Text"}
+
+
+def _removed_note(
+    operations: Operations, step: Step, owner: str | None, *, additions_only: bool = False
+) -> None:
     """A script's note on a table or column the form removed, with its DROP commented out: the
     app's check passes a column or table it no longer uses, so dropping it is the owners' call.
     The DROP names the table as the script leaves it: a removed column's by its new name."""
+    if additions_only:
+        name = step.table if step.column is None else f"{step.table}.{step.column}"
+        _note(
+            operations,
+            f"Keep unused {name}{held(step.quotes)} unchanged. "
+            "Any data transfer or removal is manual work for the database owner.",
+        )
+        return
     preparer = operations.impl.dialect.identifier_preparer
     table = preparer.format_table(Table(step.table, MetaData(schema=owner)))
     if step.kind == "keep table":
@@ -501,14 +688,23 @@ def offline_plan(
 # ── Writing a script ────────────────────────────────────────────────────
 
 
-def render_sql(plan: Plan, form: FormSpec, dialect: str, *, sql_schema: str | None = None) -> str:
+def render_sql(
+    plan: Plan,
+    form: FormSpec,
+    dialect: str,
+    *,
+    sql_schema: str | None = None,
+    additions_only: bool = False,
+) -> str:
     """*plan*, to *form*'s tables, as the SQL the people who own a database read, change and
     run: Alembic's offline rendering for *dialect*, every value written in, each name in the
     SQL schema *sql_schema* when one is named, the whole of it one transaction, so a
     statement that fails leaves nothing changed. Each refusal and each of the plan's notes
-    heads it, and each change of a type, rows or role and each table or column the form does
+    heads it, and each change of a type or rows and each table or column the form does
     not have is noted where it falls, the latter's DROP commented out. Nothing of Haute's is in
-    it beyond the tables, and nothing reads it back."""
+    it beyond the tables, and nothing reads it back. Workbench exports use *additions_only*:
+    newly named columns/tables are added empty; conversion, transfer, keys and cleanup
+    remain manual, with no rename, drop or type-conversion statements."""
     buffer = io.StringIO()
     for refusal in plan.refusals:
         buffer.write(_commented(f"Not written: {refusal}.") + "\n")
@@ -516,7 +712,11 @@ def render_sql(plan: Plan, form: FormSpec, dialect: str, *, sql_schema: str | No
         buffer.write(_commented(f"Not changed here: {note}.") + "\n")
     if not plan.steps and not plan.activity:
         if not plan.refusals and not plan.notes:
-            buffer.write("-- The tables already fit the form: nothing to change.\n")
+            buffer.write(
+                "-- No missing tables or columns.\n"
+                if additions_only
+                else "-- The tables already fit the form: nothing to change.\n"
+            )
         return buffer.getvalue()
     if plan.refusals or plan.notes:
         buffer.write("\n")
@@ -529,6 +729,7 @@ def render_sql(plan: Plan, form: FormSpec, dialect: str, *, sql_schema: str | No
     schema = store_schema(form, sql_schema=sql_schema)
     begin, commit = _SCRIPT_TRANSACTIONS[dialect]
     buffer.write(begin)
-    _emit(operations, plan, schema)
+    provider = next(each for each in PROVIDERS.values() if each.dialect == dialect)
+    _emit(operations, plan, schema, provider, additions_only=additions_only)
     buffer.write(commit)
     return buffer.getvalue()

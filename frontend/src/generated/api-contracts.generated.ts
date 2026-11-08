@@ -5464,12 +5464,19 @@ export interface WorkbenchTablesResponse {
   tables: WorkbenchTable[];
 }
 /**
- * A table: a port of the node, one row per quote or many, and its columns.
+ * A side of a schema table: its inputs or its outputs, a port of the node, one row per
+ * quote or many, its columns, and, for a many-row table, its index, which keys its rows.
  */
 export interface WorkbenchTable {
   columns: WorkbenchColumn[];
+  index_kind: 'numbered' | 'typed' | 'values' | null;
+  index_values: (string | number)[];
+  key: string | null;
   name: string;
+  null_key: string | number | null;
+  port: string;
   rows: 'one' | 'many';
+  side: 'input' | 'output';
 }
 /**
  * A column of a table: its name in the frame and its type.
@@ -5687,7 +5694,7 @@ export interface TableInputWidget {
   header_orientation: 'horizontal' | 'up' | 'down' | 'stacked';
   header_wrap: boolean;
   id: string;
-  number: number | null;
+  name: string;
   row_numbers: boolean;
   rows: number;
   show_when: ShowWhen;
@@ -5752,7 +5759,7 @@ export interface CollectionWidget {
   id: string;
   label_width: number | null;
   labels: 'above' | 'beside';
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   spacers: number[];
   title: string;
@@ -5773,7 +5780,7 @@ export interface ChartWidget {
   h: number;
   id: string;
   legend: 'bottom' | 'top' | 'left' | 'right' | 'none';
-  number: number | null;
+  name: string;
   orientation: 'vertical' | 'horizontal';
   show_when: ShowWhen;
   stacked: boolean;
@@ -5792,7 +5799,7 @@ export interface HeadingWidget {
   description: string;
   h: number;
   id: string;
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   size: 'large' | 'medium' | 'small';
   text: string;
@@ -5812,7 +5819,7 @@ export interface ImportWidget {
   id: string;
   label: string;
   mode: 'replace' | 'append' | 'update';
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   source: CsvImport | ExcelImport | SqlImport;
   table: string | null;
@@ -5873,7 +5880,7 @@ export interface ExportWidget {
   h: number;
   id: string;
   label: string;
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   tables: string[];
   target: CsvExport | ExcelExport | SqlExport;
@@ -5924,10 +5931,15 @@ export interface TableName {
 export interface FormSchema {
   tables: SchemaTable[];
 }
+/**
+ * A table of the schema: its inputs, which an underwriter types and the pricing engine
+ * is sent, and its outputs, which pricing fills, either or both. An equipment schedule's
+ * items and each item's premium are one table, its outputs filled on the rows typed.
+ */
 export interface SchemaTable {
-  columns: SchemaColumn[];
+  inputs: SchemaColumn[];
   name: string;
-  role: 'input' | 'output';
+  outputs: SchemaColumn[];
   rows: 'one' | 'many';
 }
 export interface SchemaColumn {
@@ -5935,8 +5947,7 @@ export interface SchemaColumn {
   default_value: string | boolean;
   group: string;
   help: string;
-  index: boolean;
-  key: boolean;
+  index: 'numbered' | 'typed' | 'values' | null;
   label: string;
   max: number | null;
   min: number | null;
@@ -5946,7 +5957,6 @@ export interface SchemaColumn {
   options_source: OptionsSource | null;
   placeholder: string;
   required: boolean;
-  row_per_value: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
   use_grouping: boolean;
 }
@@ -6010,8 +6020,10 @@ export interface WorkbenchStoreSqlEnvironment {
  * alone, never a value, a location or a sign-in.
  */
 export interface WorkbenchStoreCatalogueResponse {
+  checked_at: number;
   environment: string;
   tables: WorkbenchCatalogueTable[];
+  target: string;
 }
 /**
  * A table of the store's as an environment's database holds it: its columns, its primary
@@ -6051,11 +6063,24 @@ export interface WorkbenchCatalogueColumn {
  * to the form, from what they hold.
  */
 export interface WorkbenchStoreCompareResponse {
+  blocked: string[];
+  changes: WorkbenchStoreChange[];
   differences: WorkbenchStoreDifference[];
   extras: WorkbenchStoreExtra[];
+  manual: string[];
   matches: boolean;
   renames: WorkbenchStoreRename[];
   sql: string;
+}
+/**
+ * An addition from the exported SQL plan; compatibility details are separate.
+ */
+export interface WorkbenchStoreChange {
+  column: string | null;
+  description: string;
+  disposition: 'sql' | 'manual';
+  kind: 'create table' | 'add column';
+  table: string;
 }
 /**
  * A way the database differs from the form: the form's table and column by name (no table
@@ -6077,6 +6102,7 @@ export interface WorkbenchStoreExtra {
   column: string | null;
   form_table: string | null;
   quotes: number | null;
+  retention: string;
   table: string;
 }
 /**

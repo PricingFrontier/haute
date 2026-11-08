@@ -3265,7 +3265,7 @@ def _declared_workbench_port_columns(node: GraphNode) -> dict[str, frozenset[str
         tables = workbench_input_tables(node.data.config)
     except WorkbenchTablesError:
         return None
-    return {table.name: frozenset(column.name for column in table.columns) for table in tables}
+    return {table.port: frozenset(column.name for column in table.columns) for table in tables}
 
 
 def api_input_port_columns_by_node(

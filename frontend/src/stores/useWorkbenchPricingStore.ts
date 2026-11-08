@@ -11,9 +11,10 @@ import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
-import { quoteEligible } from "../utils/sheetVisibility"
+import { quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
-import type { PricedSample } from "../utils/workbenchTables"
+import { IDENTITY_COLUMNS } from "../utils/quoteIdentity"
+import { carriesIdentity, holdsOutput, outputMisfit, type PricedSample } from "../utils/workbenchTables"
 import useDataEpochStore from "./useDataEpochStore"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
@@ -103,14 +104,38 @@ export interface SamplePrice extends PricedValues {
 }
 
 /**
+ * An answer's rows of each keyed response table held to the typed sample's rows of its
+ * table, as the server's `workbench_response` holds a quote's: a misfit (a row with no key,
+ * a key given twice, a key on no row priced) refused with its message (`outputMisfit`), then
+ * each input table's row holding no output value (`holdsOutput`) left out, the identity
+ * and the key aside. Output-only tables keep every valid row, as the backend does.
+ */
+function fitAnswer(workbench: WorkbenchTablesResponse, tables: PricedSample["tables"]): PricedSample["tables"] {
+  const fitted = { ...tables }
+  for (const table of workbench.response_tables) {
+    const key = table.key
+    const answer = tables[table.name]
+    if (key === null || answer === undefined) continue
+    const typed = workbench.sample[table.name]
+    const request = Array.isArray(typed) ? typed.map((row) => (row as Record<string, unknown>)[key]) : []
+    const misfit = outputMisfit(table, answer.map((row) => row[key]), request)
+    if (misfit !== null) throw new Error(misfit)
+    if (table.index_kind !== null) continue
+    const outputs = table.columns.slice(carriesIdentity(table) ? IDENTITY_COLUMNS.length : 0).filter((column) => column.name !== key)
+    fitted[table.name] = answer.filter((row) => outputs.some((column) => holdsOutput(row[column.name])))
+  }
+  return fitted
+}
+
+/**
  * Price a form's values on the pipeline: the tables, sample and response tables the
  * server takes from the form (`POST /api/workbench/tables`), then the pricer on the form
- * and them.
+ * and them, the answer held to the rows priced (`fitAnswer`).
  */
 async function priceForm(form: FormSpec, pricer: Pricer): Promise<PricedValues> {
   const workbench = await fetchWorkbenchFormTables(form)
   const { tables } = await pricer(form, workbench)
-  return { tables, sample: workbench.sample }
+  return { tables: fitAnswer(workbench, tables), sample: workbench.sample }
 }
 
 /** How long the form stays unchanged before its sample is priced: a pause in typing. */
@@ -137,9 +162,10 @@ interface WorkbenchPricingState {
   cancel: () => void
   /**
    * Price the sample as the form has it now, or, with nothing typed in the cells the sheets
-   * show, have no price and nothing to say: a deployed request never holds a blank quote.
-   * One pricing runs at a time: asked again meanwhile, it prices once more when it
-   * finishes, on the form as it is then.
+   * show, have no price and nothing to say: a deployed request never holds a blank quote;
+   * while a typed index has a problem (`quoteIndexProblems`), have no price and its first
+   * message as the error. One pricing runs at a time: asked again meanwhile, it prices once
+   * more when it finishes, on the form as it is then.
    */
   priceNow: () => Promise<void>
 }
@@ -152,6 +178,12 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => {
     if (pricer === null || form === null || status !== "ready") return
     if (!quoteEligible(form, form.sample)) {
       set({ price: null, error: null })
+      return
+    }
+    // A typed index blank, repeated or too long keys no row: the server refuses the sample.
+    const [unkeyed] = quoteIndexProblems(form, form.sample)
+    if (unkeyed !== undefined) {
+      set({ price: null, error: unkeyed.message })
       return
     }
     // Stamped with the context it is priced in: an answer for one moved on since is shown

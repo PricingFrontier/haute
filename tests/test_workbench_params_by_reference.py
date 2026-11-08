@@ -28,6 +28,8 @@ def project(tmp_path: Path) -> Path:
     root = tmp_path / "p"
     enable(root)
     (root / PARAMS).mkdir(parents=True, exist_ok=True)
+    # The form's perils give a row for each value of their params file.
+    (root / PARAMS / "perils.csv").write_bytes(b"peril\nFire\nFlood\n")
     return root
 
 
@@ -55,7 +57,7 @@ def test_a_schema_file_holds_the_reference_and_reading_fills_the_values(project:
     files = _write(project, _sourced({"file": "states.csv", "column": "code"}))
 
     schema = json.loads(files["schema/policy.json"])
-    state = next(c for c in schema["columns"] if c["name"] == "state")
+    state = next(c for c in schema["inputs"] if c["name"] == "state")
     assert state["options_source"] == {"file": "states.csv", "column": "code"}
     assert "options" not in state
     assert _state_options(project) == ["CA", "NY"]
@@ -72,14 +74,16 @@ def test_a_loaded_forms_values_are_written_as_their_reference_alone(
     form = copy.deepcopy(FORM)
     sourced = {"options": ["CA", "NY"], "options_source": {"file": "states.csv", "column": "code"}}
     if table == "quote_details":
-        table_of(form, table)["columns"].append({"name": name, "type": "str", **sourced})
+        table_of(form, table)["inputs"].append({"name": name, "type": "str", **sourced})
     else:
         column_of(form, table, name).update(sourced)
 
     files = _write(project, form)
 
     written = json.loads(files[f"schema/{table}.json"])
-    entry = next(c for c in written["columns"] if c["name"] == name)
+    # quote_details' file lists its columns; any other table's its inputs.
+    block = "columns" if table == "quote_details" else "inputs"
+    entry = next(c for c in written[block] if c["name"] == name)
     assert entry["options_source"] == {"file": "states.csv", "column": "code"}
     assert "options" not in entry
     spec = read_form_document(config(project)).spec
@@ -132,4 +136,57 @@ def test_a_params_file_that_cannot_give_the_values_is_refused(
         states.write_bytes(csv)
 
     with pytest.raises(ParamFileError, match=named):
+        read_form_document(config(project))
+
+
+def test_a_table_of_outputs_alones_index_of_values_is_written_by_reference_and_read_from_its_file(
+    project: Path,
+) -> None:
+    (project / PARAMS / "products.csv").write_bytes(b"product\nFire\nFlood\n")
+    form = copy.deepcopy(FORM)
+    source = {"file": "products.csv", "column": "product"}
+    form["schema"]["tables"].append(
+        {
+            "name": "products",
+            "rows": "many",
+            "outputs": [
+                {
+                    "name": "product",
+                    "type": "str",
+                    "options": ["Fire"],
+                    "options_source": source,
+                    "index": "values",
+                },
+                {"name": "premium", "type": "float"},
+            ],
+        }
+    )
+
+    files = _write(project, form)
+
+    written = json.loads(files["schema/products.json"])
+    assert written["outputs"][0] == {
+        "name": "product",
+        "type": "str",
+        "options_source": source,
+        "index": "values",
+    }
+    spec = read_form_document(config(project)).spec
+    products = next(t for t in spec.data_schema.tables if t.name == "products")
+    assert products.index is not None and products.index.options == ["Fire", "Flood"]
+
+
+@pytest.mark.parametrize(
+    ("value", "limit"),
+    [("x" * 256, "255 characters"), ("\U00020000" * 184, "366 UTF-16 code units")],
+)
+def test_a_text_index_of_values_longer_than_a_key_is_refused_as_its_file_is_read(
+    project: Path,
+    value: str,
+    limit: str,
+) -> None:
+    _write(project, copy.deepcopy(FORM))
+    (project / PARAMS / "perils.csv").write_text(f"peril\nFire\n{value}\n", encoding="utf-8")
+
+    with pytest.raises(ParamFileError, match=f"longer than the {limit} a Text index holds"):
         read_form_document(config(project))

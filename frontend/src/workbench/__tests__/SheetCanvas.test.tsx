@@ -226,7 +226,7 @@ describe("SheetCanvas", () => {
   })
 
   it("marks a component that shows nothing or a column that is gone, naming the problem", () => {
-    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, ...COLLECTION_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
+    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ name: "w", id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, ...COLLECTION_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
 
     expect(screen.getByTitle("A Collection shows no fields")).toBeInTheDocument()
@@ -1232,7 +1232,7 @@ describe("SheetCanvas", () => {
   })
 
   it("fits the sheet's width to the viewport when it first shows, and draws the sheet at its width whatever the zoom from the viewport's top-left corner, the viewport scrolling across one wider than it", () => {
-    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
+    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ name: "w", id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
     const sheetElement = screen.getByTestId("sheet")
 
@@ -1252,7 +1252,7 @@ describe("SheetCanvas", () => {
   })
 
   it("fits a very wide sheet at the zoom's minimum, never at nothing", () => {
-    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 100_000, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
+    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ name: "w", id: "w", type: "tableInput", x: 0, y: 0, w: 100_000, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
 
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.25)
@@ -1260,7 +1260,7 @@ describe("SheetCanvas", () => {
   })
 
   it("keeps a zoom chosen since the sheets were fitted when they show again, until the form is read anew", () => {
-    const wide = { ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] }
+    const wide = { ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ name: "w", id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] }
     loadForm(wide)
     const first = render(<SheetCanvas />)
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
@@ -1498,7 +1498,7 @@ describe("SheetCanvas", () => {
   it("in Preview keeps the section holding the focus in place on the screen as a section opens above it", () => {
     const form = sectionedForm()
     // The policy's year in Notes, under its Heading.
-    addTo(form, { number: null, id: "w_year", type: "collection", x: 16, y: 72, w: 400, h: 120, title: "Year", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "year" }], show_when: { match: "all", conditions: [] } }, 0, 2)
+    addTo(form, { name: "w_year", id: "w_year", type: "collection", x: 16, y: 72, w: 400, h: 120, title: "Year", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "year" }], show_when: { match: "all", conditions: [] } }, 0, 2)
     loadForm(form)
     useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)

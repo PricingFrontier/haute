@@ -187,7 +187,7 @@ export function requestInputFrameColumns(
 ): ApiInputFrameColumn[] {
   if (nodeType !== NODE_TYPES.WORKBENCH_INPUT) return apiInputFrameColumns(config, sourceHandle)
   const table = workbenchNodeTables(nodeType, workbench).find(
-    (candidate) => candidate.name === sourceHandle && candidate.columns.length > 0,
+    (candidate) => candidate.port === sourceHandle && candidate.columns.length > 0,
   )
   return table === undefined ? [] : table.columns.map((column) => ({ name: column.name, dtype: column.type }))
 }

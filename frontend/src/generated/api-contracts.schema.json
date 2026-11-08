@@ -2363,18 +2363,9 @@
           "title": "Legend",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "orientation": {
           "default": "vertical",
@@ -2421,7 +2412,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -2683,18 +2674,9 @@
           "title": "Labels",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -2735,7 +2717,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -9955,18 +9937,9 @@
           "title": "Label",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -10015,7 +9988,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -12403,18 +12376,9 @@
           "title": "Id",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -12457,7 +12421,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -12505,18 +12469,9 @@
           "title": "Mode",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -12569,7 +12524,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -22652,14 +22607,21 @@
           "type": "string"
         },
         "index": {
-          "default": false,
-          "title": "Index",
-          "type": "boolean"
-        },
-        "key": {
-          "default": false,
-          "title": "Key",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "enum": [
+                "numbered",
+                "typed",
+                "values"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Index"
         },
         "label": {
           "default": "",
@@ -22735,11 +22697,6 @@
           "title": "Required",
           "type": "boolean"
         },
-        "row_per_value": {
-          "default": false,
-          "title": "Row Per Value",
-          "type": "boolean"
-        },
         "type": {
           "default": "str",
           "enum": [
@@ -22763,13 +22720,11 @@
         "type",
         "label",
         "group",
-        "key",
         "required",
         "min",
         "max",
         "options",
         "options_source",
-        "row_per_value",
         "index",
         "help",
         "placeholder",
@@ -22912,26 +22867,25 @@
     },
     "SchemaTable": {
       "additionalProperties": false,
+      "description": "A table of the schema: its inputs, which an underwriter types and the pricing engine\nis sent, and its outputs, which pricing fills, either or both. An equipment schedule's\nitems and each item's premium are one table, its outputs filled on the rows typed.",
       "properties": {
-        "columns": {
+        "inputs": {
           "items": {
             "$ref": "#/$defs/SchemaColumn"
           },
-          "title": "Columns",
+          "title": "Inputs",
           "type": "array"
         },
         "name": {
           "title": "Name",
           "type": "string"
         },
-        "role": {
-          "default": "input",
-          "enum": [
-            "input",
-            "output"
-          ],
-          "title": "Role",
-          "type": "string"
+        "outputs": {
+          "items": {
+            "$ref": "#/$defs/SchemaColumn"
+          },
+          "title": "Outputs",
+          "type": "array"
         },
         "rows": {
           "default": "one",
@@ -22945,9 +22899,9 @@
       },
       "required": [
         "name",
-        "role",
         "rows",
-        "columns"
+        "inputs",
+        "outputs"
       ],
       "title": "SchemaTable",
       "type": "object"
@@ -23952,18 +23906,9 @@
           "title": "Id",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "row_numbers": {
           "default": true,
@@ -24018,7 +23963,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -28356,6 +28301,11 @@
     "WorkbenchStoreCatalogueResponse": {
       "description": "The tables an environment's database holds, read through its connection: each table\nholding the quote's identity, ``haute_activity`` among them. Names, kinds and counts\nalone, never a value, a location or a sign-in.",
       "properties": {
+        "checked_at": {
+          "exclusiveMinimum": 0,
+          "title": "Checked At",
+          "type": "integer"
+        },
         "environment": {
           "title": "Environment",
           "type": "string"
@@ -28366,13 +28316,69 @@
           },
           "title": "Tables",
           "type": "array"
+        },
+        "target": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Target",
+          "type": "string"
         }
       },
       "required": [
         "environment",
-        "tables"
+        "tables",
+        "checked_at",
+        "target"
       ],
       "title": "WorkbenchStoreCatalogueResponse",
+      "type": "object"
+    },
+    "WorkbenchStoreChange": {
+      "description": "An addition from the exported SQL plan; compatibility details are separate.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "sql",
+            "manual"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "create table",
+            "add column"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "column",
+        "disposition",
+        "description"
+      ],
+      "title": "WorkbenchStoreChange",
       "type": "object"
     },
     "WorkbenchStoreColumn": {
@@ -28402,6 +28408,20 @@
     "WorkbenchStoreCompareResponse": {
       "description": "The form compared with an environment's tables: each difference, each extra, the\npairings taken, whether the database matches the form, and the SQL that brings its tables\nto the form, from what they hold.",
       "properties": {
+        "blocked": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocked",
+          "type": "array"
+        },
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreChange"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
         "differences": {
           "items": {
             "$ref": "#/$defs/WorkbenchStoreDifference"
@@ -28414,6 +28434,13 @@
             "$ref": "#/$defs/WorkbenchStoreExtra"
           },
           "title": "Extras",
+          "type": "array"
+        },
+        "manual": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Manual",
           "type": "array"
         },
         "matches": {
@@ -28437,7 +28464,10 @@
         "extras",
         "renames",
         "matches",
-        "sql"
+        "sql",
+        "changes",
+        "manual",
+        "blocked"
       ],
       "title": "WorkbenchStoreCompareResponse",
       "type": "object"
@@ -28533,6 +28563,10 @@
           "default": null,
           "title": "Quotes"
         },
+        "retention": {
+          "title": "Retention",
+          "type": "string"
+        },
         "table": {
           "title": "Table",
           "type": "string"
@@ -28542,7 +28576,8 @@
         "table",
         "column",
         "form_table",
-        "quotes"
+        "quotes",
+        "retention"
       ],
       "title": "WorkbenchStoreExtra",
       "type": "object"
@@ -28629,7 +28664,7 @@
     },
     "WorkbenchTable": {
       "additionalProperties": false,
-      "description": "A table: a port of the node, one row per quote or many, and its columns.",
+      "description": "A side of a schema table: its inputs or its outputs, a port of the node, one row per\nquote or many, its columns, and, for a many-row table, its index, which keys its rows.",
       "properties": {
         "columns": {
           "items": {
@@ -28638,8 +28673,70 @@
           "title": "Columns",
           "type": "array"
         },
+        "index_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "numbered",
+                "typed",
+                "values"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Index Kind"
+        },
+        "index_values": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "title": "Index Values",
+          "type": "array"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
         "name": {
           "title": "Name",
+          "type": "string"
+        },
+        "null_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Null Key"
+        },
+        "port": {
+          "title": "Port",
           "type": "string"
         },
         "rows": {
@@ -28649,12 +28746,26 @@
           ],
           "title": "Rows",
           "type": "string"
+        },
+        "side": {
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Side",
+          "type": "string"
         }
       },
       "required": [
         "name",
+        "side",
+        "port",
         "rows",
-        "columns"
+        "columns",
+        "key",
+        "null_key",
+        "index_kind",
+        "index_values"
       ],
       "title": "WorkbenchTable",
       "type": "object"

@@ -45,7 +45,8 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 
 
 def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
-    return {"name": name, "rows": rows, "columns": list(columns)}
+    """A schema table of inputs."""
+    return {"name": name, "rows": rows, "inputs": list(columns)}
 
 
 POLICY = table("policy", column("region"), column("value", "float"))
@@ -108,6 +109,51 @@ def script(base: FormSpec | None, release: FormSpec, dialect: str = "sqlite") ->
 # ── The plan ────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("renamed", ["table", "column"])
+def test_requested_counts_cover_table_and_column_renames(renamed: str) -> None:
+    after = structure(form(POLICY))
+    before = json.loads(json.dumps(after))
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    if renamed == "table":
+        policy["name"] = "previous_policy"
+    else:
+        region = next(column for column in policy["columns"] if column["name"] == "region")
+        region["name"] = "previous_region"
+
+    counts = dict.fromkeys(_migrate.wanted_counts(after, before), 7)
+    made = _migrate.plan(after, before, counts)
+
+    assert len(made.steps) == 1
+    assert made.steps[0].kind == f"rename {renamed}"
+    assert made.steps[0].quotes == 7
+    assert counts == {("policy", None if renamed == "table" else "region"): 7}
+
+
+@pytest.mark.parametrize("reuse_name", [False, True])
+def test_a_renamed_index_uses_its_original_count_key(reuse_name: bool) -> None:
+    before = structure(form(table("sites", column("site", "int", index="numbered"), rows="many")))
+    after = structure(
+        form(
+            table(
+                "sites",
+                column("location_name", "int", index="numbered"),
+                *([column("site", "int")] if reuse_name else []),
+                rows="many",
+            )
+        )
+    )
+
+    counts = dict.fromkeys(_migrate.wanted_counts(after, before), 7)
+    made = _migrate.plan(after, before, counts)
+
+    assert counts == {("sites", "site"): 7}
+    renamed = next(step for step in made.steps if step.kind == "rename column")
+    assert (renamed.was, renamed.column, renamed.quotes) == ("site", "location_name", 7)
+    assert [step.column for step in made.steps if step.kind == "add column"] == (
+        ["site"] if reuse_name else []
+    )
+
+
 def test_a_plan_names_each_step_by_name_a_rename_one_kept_and_one_made() -> None:
     before = structure(form(POLICY, table("extras", column("notes"))))
     # region renamed area and seats added in policy, extras renamed additions, drivers new.
@@ -148,7 +194,10 @@ def test_a_plan_names_each_step_by_name_a_rename_one_kept_and_one_made() -> None
 
 
 def test_the_sql_from_none_makes_every_table_and_the_activity(url: str) -> None:
-    release = form(POLICY, table("vehicles", column("reg"), rows="many"))
+    release = form(
+        POLICY,
+        table("vehicles", column("vehicle", "int", index="numbered"), column("reg"), rows="many"),
+    )
 
     written = script(None, release)
 
@@ -205,6 +254,152 @@ def test_a_retype_is_the_engines_alter_in_place_with_its_note() -> None:
     assert "ALTER COLUMN" not in sqlite
 
 
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
+def test_additions_only_sql_keeps_old_columns_types_and_keys(dialect: str) -> None:
+    base = form(
+        table("policy", column("region"), column("value", "float"), column("legacy")),
+        table("sites", column("site", "int", index="numbered"), rows="many"),
+    )
+    proposed = form(
+        table("policy", column("area"), column("value", "int"), column("extra")),
+        table("sites", column("location", "int", index="numbered"), rows="many"),
+    )
+    # Explicitly paired ordinary rename, alongside the index's role-based pairing.
+    before = structure(base)
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    next(column for column in policy["columns"] if column["name"] == "region")["key"] = "area"
+    planned = _migrate.plan(structure(proposed), before)
+
+    written = render_sql(planned, proposed, dialect, additions_only=True)
+
+    assert "RENAME" not in written and "sp_rename" not in written
+    assert "DROP " not in written and "ALTER COLUMN" not in written
+    assert "UPDATE " not in written and "INSERT " not in written
+    assert "policy" in written and "area" in written and "extra" in written
+    assert "sites" in written and "location" in written
+    assert "manually" in written and "value" in written
+    from haute._quote_store._providers import PROVIDERS
+    from haute._quote_store._review import review_plan
+
+    provider = PROVIDERS["sqlserver" if dialect == "mssql" else dialect]
+    review = review_plan(planned, proposed, provider, additions_only=True)
+    manual = {change.column for change in review if change.disposition == "manual"}
+    assert manual == {"area", "value", "location"}
+    if dialect == "sqlite":
+        with sqlite3.connect(":memory:") as raw:
+            raw.executescript(script(None, base))
+            raw.execute("INSERT INTO policy VALUES ('Q1', 1, 'CA', 12.5, 'keep')")
+            raw.execute("INSERT INTO sites VALUES ('Q1', 1, 7)")
+            raw.commit()
+            raw.executescript(written)
+            assert raw.execute(
+                "SELECT region, area, value, legacy, extra FROM policy"
+            ).fetchone() == ("CA", None, 12.5, "keep", None)
+            assert raw.execute("SELECT site, location FROM sites").fetchone() == (7, None)
+            columns = {row[1]: row for row in raw.execute("PRAGMA table_info(sites)")}
+            assert columns["site"][5] == 3 and columns["location"][5] == 0
+
+
+@pytest.mark.parametrize("provider_name", ["postgresql", "sqlserver"])
+def test_additions_only_sql_omits_invalid_names_but_keeps_valid_additions(
+    provider_name: str,
+) -> None:
+    from haute._quote_store._providers import PROVIDERS
+    from haute._quote_store._review import review_plan
+
+    provider = PROVIDERS[provider_name]
+    long_name = "field_" + "x" * 128
+    base = form(POLICY)
+    proposed = form(
+        table("policy", *POLICY["inputs"], column(long_name), column("valid_addition")),
+        table(long_name, column("value")),
+        table("invalid_table", column(long_name)),
+        table("valid_table", column("value")),
+    )
+    planned = _migrate.plan(structure(proposed), structure(base), provider=provider)
+
+    written = render_sql(planned, proposed, provider.dialect, additions_only=True)
+
+    executable = "\n".join(line for line in written.splitlines() if not line.startswith("--"))
+    assert long_name not in executable
+    assert "invalid_table" not in executable
+    addition = "ADD COLUMN" if provider_name == "postgresql" else "ADD"
+    assert f"ALTER TABLE policy {addition} valid_addition" in executable
+    assert "CREATE TABLE valid_table" in executable
+    assert any(long_name in line for line in written.splitlines() if line.startswith("--"))
+    review = review_plan(planned, proposed, provider, additions_only=True)
+    assert {(change.table, change.column) for change in review if change.disposition == "sql"} == {
+        ("policy", "valid_addition"),
+        ("valid_table", None),
+    }
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
+def test_additions_only_sql_leaves_case_only_names_manual(dialect: str) -> None:
+    base = form(table("policy", column("region")))
+    proposed = form(table("policy", column("Region")))
+    before = structure(base)
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    next(column for column in policy["columns"] if column["name"] == "region")["key"] = "Region"
+    planned = _migrate.plan(structure(proposed), before)
+
+    written = render_sql(planned, proposed, dialect, additions_only=True)
+
+    assert "Not added: policy.Region already exists" in written
+    assert "ALTER TABLE" not in written and "sp_rename" not in written
+    assert "CREATE TABLE" not in written
+
+
+def test_additions_only_sql_creates_a_renamed_table_once_and_keeps_the_old(url: str) -> None:
+    base = form(table("policy", column("region")))
+    proposed = form(table("cover", column("region"), column("added")))
+    before = structure(base)
+    next(table for table in before["tables"] if table["name"] == "policy")["key"] = "cover"
+    planned = _migrate.plan(structure(proposed), before)
+    script_run(url, script(None, base))
+    quote(url, region="CA")
+
+    written = render_sql(planned, proposed, "sqlite", additions_only=True)
+    script_run(url, written)
+
+    assert sql(url, "SELECT region FROM policy") == [("CA",)]
+    assert sql(url, "SELECT region, added FROM cover") == []
+    assert written.count("CREATE TABLE cover") == 1
+    assert "ALTER TABLE" not in written and "RENAME" not in written
+
+
+@pytest.mark.parametrize("index_name", ["site", "location_name"])
+def test_an_index_retyped_is_a_note_and_a_change_of_its_kind_no_step(index_name: str) -> None:
+    numbered = form(
+        table(
+            "sites", column("site", "int", index="numbered"), column("value", "float"), rows="many"
+        )
+    )
+    # Retyped, the index changes the key its rows are held by: a note, never an ALTER.
+    retyped = form(
+        table(
+            "sites",
+            column(index_name, "str", index="numbered"),
+            column("value", "float"),
+            rows="many",
+        )
+    )
+    for dialect in ("postgresql", "mssql", "sqlite"):
+        written = script(numbered, retyped, dialect)
+        assert (
+            f"-- sites has its index {index_name} change from an Integer to Text,\n"
+            "-- which changes the key its rows are held by" in written
+        )
+        assert "ALTER COLUMN" not in written
+        if index_name != "site":
+            assert "location_name" in written and "haute_tmp_" in written
+    # Typed instead of numbered: the key column and its SQL type stay, so nothing to write.
+    typed = form(
+        table("sites", column("site", "int", index="typed"), column("value", "float"), rows="many")
+    )
+    assert offline_plan(numbered, typed).steps == ()
+
+
 def test_a_removed_table_or_column_is_a_drop_left_commented_out() -> None:
     base = form(POLICY, table("extras", column("notes")))
 
@@ -232,7 +427,10 @@ def test_a_refusal_naming_a_name_of_many_lines_stays_a_comment() -> None:
 
 
 def test_what_the_sql_cannot_make_is_a_note() -> None:
-    base = form(POLICY, table("vehicles", column("reg"), rows="many"))
+    base = form(
+        POLICY,
+        table("vehicles", column("vehicle", "int", index="numbered"), column("reg"), rows="many"),
+    )
 
     # A table whose rows change is noted, never made again; a new column taking the name of
     # one the form removes, whatever its case, is not written, its refusal noted.
@@ -246,8 +444,8 @@ def test_what_the_sql_cannot_make_is_a_note() -> None:
         "-- Not written: the new column policy.Value takes the name of a column the form removes"
     )
     assert (
-        "-- vehicles changes from an input table of many rows per quote to an input table of "
-        in written
+        "-- vehicles changes from a table of many rows per quote to a table of one row per "
+        "quote,\n" in written
     )
     assert "CREATE TABLE vehicles" not in written
 
