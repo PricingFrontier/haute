@@ -260,6 +260,9 @@ describe("Compare", () => {
     expect(within(row).queryByRole("textbox", { name: "Label of state" })).not.toBeInTheDocument()
     const source = within(row).getByRole("combobox", { name: "Database column for policy.state" })
     expect(source).toHaveValue("")
+    const choice = source.closest("label")!
+    expect(within(choice).getByText("Renamed from")).toBeInTheDocument()
+    expect(choice).not.toHaveTextContent("Moving data")
     vi.mocked(fetchStoreCompare).mockImplementation(async (_form, _environment, _tables, renames) => ({ ...COMPARED, renames }))
     fireEvent.change(source, { target: { value: "region" } })
     await waitFor(() => expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, [{ table: "policy", column: "state", was: "region" }], "a".repeat(64)))
