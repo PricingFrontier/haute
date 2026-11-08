@@ -309,7 +309,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   per-partition row counts), `_TrainModelResult` (fitted model, algo instance,
   `FitResult`, resolved fit params), `_MetricsResult` (everything that becomes the
   diagnostic portion of `TrainResult`). Each is produced by one pipeline stage and
-  consumed by the next inside `TrainingJob.run()`.
+  consumed by the next inside `TrainingJob.run()`. The split stage writes its Parquet file a
+  slice at a time (`_chunked_writes.write_file_with_column`), each slice of the frame with
+  the matching slice of the mask, so it never holds the frame; a frame that cannot be
+  sliced, such as one still filtering null targets, is sunk natively.
 - **`ModelDiagnostics` / `ModelCardMetadata`** (`_result_types.py`) — shared bundling
   dataclasses consumed by both `_model_card.generate_model_card` and
   `_mlflow_log.log_experiment`, avoiding 25+ positional parameters at either call site. Both

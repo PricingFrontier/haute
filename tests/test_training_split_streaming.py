@@ -35,7 +35,30 @@ def _partition_counts(path: str) -> dict[int, int]:
     return {int(row["_partition"]): int(row["len"]) for row in counts}
 
 
-def test_random_split_write_sinks_without_collecting_full_split_plan(
+def _recorded_collects(
+    monkeypatch: pytest.MonkeyPatch, *, slice_rows: int
+) -> list[tuple[list[str], int]]:
+    """Force *slice_rows*-row slices, and record each frame the split writer collects."""
+    from haute import _chunked_writes
+
+    monkeypatch.setattr(_chunked_writes, "SINGLE_FILE_ROW_GROUP_SIZE", slice_rows)
+    collected: list[tuple[list[str], int]] = []
+    original = _chunked_writes.execution_collect
+
+    def recording(lf: pl.LazyFrame, **kwargs: Any) -> pl.DataFrame:
+        frame = original(lf, **kwargs)
+        collected.append((frame.columns, frame.height))
+        return frame
+
+    monkeypatch.setattr(_chunked_writes, "execution_collect", recording)
+    return collected
+
+
+def _slice_heights(collected: list[tuple[list[str], int]]) -> list[int]:
+    return [height for columns, height in collected if "_partition" in columns]
+
+
+def test_random_split_is_written_a_slice_at_a_time(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -54,20 +77,12 @@ def test_random_split_write_sinks_without_collecting_full_split_plan(
         split={"strategy": "random", "validation_size": 0.25, "holdout_size": 0.2, "seed": 17},
     )
 
-    sink_schemas: list[list[str]] = []
-    sink_kwargs: list[dict[str, Any]] = []
-
-    def recording_bounded_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
-        sink_schemas.append(lf.collect_schema().names())
-        sink_kwargs.append(dict(kwargs))
-        lf.sink_parquet(path)
-
-    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
+    collected = _recorded_collects(monkeypatch, slice_rows=6)
 
     split = job._split_data(_prepared(data_path, len(df)), lambda _msg, _frac: None)
     try:
-        assert sink_schemas == [["feature", "target", "unused_wide", "_partition"]]
-        assert sink_kwargs == [{"fast_checkpoint": True}]
+        # The whole split plan is never held: every frame is one slice of it.
+        assert _slice_heights(collected) == [6, 6, 6, 2]
         # The counts, not the positions, are compared: any order gives them.
         expected_mask = split_mask(len(df), job.split_config, row_order=np.arange(len(df)))
         assert split.n_train == int((expected_mask == 0).sum())
@@ -88,7 +103,7 @@ def test_random_split_write_sinks_without_collecting_full_split_plan(
         os.unlink(split.split_path)
 
 
-def test_group_split_only_collects_group_column_before_sink_write(
+def test_group_split_collects_only_its_group_column_before_the_slices(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -115,32 +130,23 @@ def test_group_split_only_collects_group_column_before_sink_write(
     )
     original_collect = pl.LazyFrame.collect
     collected_schemas: list[list[str]] = []
-    sink_schemas: list[list[str]] = []
-    sink_kwargs: list[dict[str, Any]] = []
+    collected = _recorded_collects(monkeypatch, slice_rows=5)
 
     def guarded_collect(self: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
         columns = self.collect_schema().names()
         collected_schemas.append(columns)
-        if columns in (["group"], []):
+        if columns in (["group"], [], ["len"]) or "_partition" in columns:
             return original_collect(self, *args, **kwargs)
         raise AssertionError(
-            f"split writer should sink the full split plan instead of collecting columns {columns}"
+            f"split writer should read only the group column and slices, not {columns}"
         )
 
-    def recording_bounded_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
-        sink_schemas.append(lf.collect_schema().names())
-        sink_kwargs.append(dict(kwargs))
-        lf.sink_parquet(path)
-
     monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
-    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
 
     split = job._split_data(_prepared(data_path, len(df)), lambda _msg, _frac: None)
     try:
         assert collected_schemas[0] == ["group"]
-        assert all(columns in (["group"], []) for columns in collected_schemas), collected_schemas
-        assert sink_schemas == [["feature", "target", "group", "unused_wide", "_partition"]]
-        assert sink_kwargs == [{"fast_checkpoint": True}]
+        assert _slice_heights(collected) == [5, 5, 2]
         monkeypatch.setattr(pl.LazyFrame, "collect", original_collect)
         split_df = pl.read_parquet(split.split_path)
         assert set(split_df.columns) == {"feature", "target", "group", "unused_wide", "_partition"}

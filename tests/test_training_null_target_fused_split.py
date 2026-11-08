@@ -52,7 +52,8 @@ def test_null_target_filter_is_fused_into_split_sink_for_parquet_input(
         )
         lf.sink_parquet(path)
 
-    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
+    # A filtered split cannot be sliced, so the writer sinks it natively.
+    monkeypatch.setattr("haute._chunked_writes.bounded_sink", recording_bounded_sink)
 
     prepared = job._prepare_data(lambda _msg, _frac: None)
     assert prepared.data_path == str(data_path)
@@ -120,15 +121,15 @@ def test_owned_temp_null_target_source_is_cleaned_after_fused_split(
 
     split = job._split_data(prepared, lambda _msg, _frac: None)
     try:
-        assert len(sink_calls) == 2
+        # The cleaned source is sunk once; the split of it is written in slices.
+        assert len(sink_calls) == 1
         assert "haute_clean_" in sink_calls[0]["path"]
         assert sink_calls[0]["schema"] == ["feature", "target"]
         assert sink_calls[0]["kwargs"] == {"fast_checkpoint": True}
-        assert "haute_split_" in sink_calls[1]["path"]
-        assert sink_calls[1]["schema"] == ["feature", "target", "_partition"]
-        assert sink_calls[1]["kwargs"] == {"fast_checkpoint": True}
+        assert "haute_split_" in split.split_path
         assert source_path.exists() is False
         split_df = pl.read_parquet(split.split_path)
+        assert split_df.columns == ["feature", "target", "_partition"]
         assert len(split_df) == 3
         assert split_df["target"].null_count() == 0
     finally:
