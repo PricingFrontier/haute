@@ -286,7 +286,7 @@ describe("OptimiserPreview store integration", () => {
 
     // Leaving for a pane that does not plot the rates aborts the request;
     // returning retries it.
-    fireEvent.click(screen.getByText("Convergence"))
+    fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
     fireEvent.click(screen.getByText("Rates"))
 
     expect(await screen.findAllByText("North")).not.toHaveLength(0)
@@ -588,7 +588,7 @@ describe("OptimiserPreview store integration", () => {
       openQuotes()
       expect(await screen.findByText("Q001")).toBeInTheDocument()
 
-      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
       openQuotes()
 
       expect(screen.getByText("Q001")).toBeInTheDocument()
