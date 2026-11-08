@@ -9,6 +9,14 @@ on:
 permissions:
   contents: read
 
+# uv downloads each Python the runner image lacks (3.11, 3.13 and 3.14 here) from
+# python-build-standalone's GitHub release assets by default. Those returned 502/504
+# for hours on 8 November 2026, failing every job that needed one. Astral's mirror
+# serves the same files from the host setup-uv already fetches uv from, and uv checks
+# each download against the SHA-256 it ships with.
+env:
+  UV_PYTHON_INSTALL_MIRROR: https://releases.astral.sh/github/python-build-standalone/releases/download
+
 # Push twice to a branch and, without this, both runs go to completion — the first
 # validating a commit nobody will merge. Measured over a 300-run sample: 17 CI runs
 # were superseded before finishing, at roughly 53 runner-minutes each.
