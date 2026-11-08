@@ -55,6 +55,7 @@ from haute.execution import (
     execute_lazy_graph,
 )
 from haute.graph_utils import NodeType
+from haute.modelling._algorithm_base import FitMode
 from haute.modelling._glm_terms import (
     bounded_names,
     glm_model_columns,
@@ -186,6 +187,53 @@ def _clamp_row_limit(
         if clamped > 0:
             return min(current_limit, clamped) if current_limit else clamped
     return current_limit
+
+
+@dataclass(frozen=True)
+class TrainingRowPlan:
+    """How a training run treats its rows, decided once from the memory estimate.
+
+    ``ram_limit_binds`` is true when the estimate's RAM row limit, not the user's
+    own ``row_limit``, decides the rows. A GLM then fits out of core on every row
+    instead of being sampled, so ``row_limit`` is only the user's.
+    """
+
+    fit_mode: FitMode
+    row_limit: int | None
+    ram_limit_binds: bool
+
+    @property
+    def ram_downsamples(self) -> bool:
+        """Whether the RAM row limit samples the rows this run trains on."""
+        return self.fit_mode == "in_memory" and self.ram_limit_binds
+
+
+def training_row_plan(config: Mapping[str, Any], estimate: RamEstimate) -> TrainingRowPlan:
+    """The fit mode and row limit a run of *config* uses under *estimate*.
+
+    The estimate route and the training run share it, so the estimate states
+    what the run will do.
+    """
+    user_limit = config.get("row_limit")
+    row_limit = _clamp_row_limit(estimate.safe_row_limit, user_limit)
+    # The user's own limit is their choice, never a RAM downsample.
+    ram_limit_binds = estimate.safe_row_limit is not None and not (
+        user_limit
+        and isinstance(user_limit, (int, float))
+        and int(user_limit) > 0
+        and row_limit == int(user_limit)
+    )
+    if ram_limit_binds and is_glm_config(config):
+        return TrainingRowPlan(
+            fit_mode="out_of_core",
+            row_limit=_clamp_row_limit(None, user_limit),
+            ram_limit_binds=True,
+        )
+    return TrainingRowPlan(
+        fit_mode="in_memory",
+        row_limit=row_limit,
+        ram_limit_binds=ram_limit_binds,
+    )
 
 
 def _training_rows(total_rows: int | None, row_limit: int | None) -> int:

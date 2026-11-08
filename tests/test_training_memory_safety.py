@@ -368,7 +368,7 @@ def test_catboost_releases_raw_training_allocations_before_loading_validation(
     ]
 
 
-def test_glm_keeps_training_and_validation_frames_for_its_fit_interface(
+def test_glm_fits_on_the_training_frame_without_loading_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -391,8 +391,8 @@ def test_glm_keeps_training_and_validation_frames_for_its_fit_interface(
             **_kwargs: Any,
         ) -> SimpleNamespace:
             received["train"] = train
-            assert eval_df is not None
-            received["validation"] = eval_df
+            # A GLM has no early stopping: the validation rows stay on disk (MOD-M01).
+            assert eval_df is None
             return SimpleNamespace(model=object(), best_iteration=None, loss_history=[])
 
     monkeypatch.setitem(training_job.ALGORITHM_REGISTRY, "glm", FakeGlmAlgorithm)
@@ -411,7 +411,6 @@ def test_glm_keeps_training_and_validation_frames_for_its_fit_interface(
     )
 
     assert received["train"]["target"].to_list() == [1.0]
-    assert received["validation"]["target"].to_list() == [0.0]
 
 
 def test_catboost_without_validation_does_not_read_validation_partition(
@@ -543,6 +542,7 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
             str(tmp_parquet),
             None,
             None,
+            fit_mode="in_memory",
             execution_context=admitted,
         )
         assert thread is not None
@@ -604,6 +604,7 @@ def test_launch_background_reconstructs_child_context_from_admitted_budget(
             str(tmp_parquet),
             None,
             None,
+            fit_mode="in_memory",
             execution_context=admitted,
         )
         assert thread is not None
@@ -659,6 +660,7 @@ def test_launch_background_releases_admission_after_thread_completes(
             str(tmp_parquet),
             None,
             None,
+            fit_mode="in_memory",
             execution_context=admitted,
         )
 
@@ -714,6 +716,7 @@ def test_launch_background_releases_admission_on_thread_start_failure(
             str(tmp_parquet),
             None,
             None,
+            fit_mode="in_memory",
             execution_context=admitted,
         )
 

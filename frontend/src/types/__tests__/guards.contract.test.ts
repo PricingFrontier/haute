@@ -1489,6 +1489,7 @@ describe("API response guards", () => {
         term_update_steps: null,
         stopping_reason: "validation",
         device: null,
+        mode: null, max_iter: null, tol: null, max_half_steps: null, passes: null, encode_rows: null, max_bytes: null,
       },
     }
     expect(parseTrainResponse(fixture).fit_evidence).toEqual({
@@ -1498,6 +1499,7 @@ describe("API response guards", () => {
       term_update_steps: null,
       stopping_reason: "validation",
       device: null,
+      mode: null, max_iter: null, tol: null, max_half_steps: null, passes: null, encode_rows: null, max_bytes: null,
     })
     expect(() =>
       parseTrainResponse({
@@ -1518,6 +1520,7 @@ describe("API response guards", () => {
   it("keeps the device an XGBoost GPU fit trained on (MOD-F06)", () => {
     const evidence = {
       threads: 4, rounds_configured: 100, rounds_fitted: 100, term_update_steps: null, stopping_reason: "none", device: "cuda:0",
+      mode: null, max_iter: null, tol: null, max_half_steps: null, passes: null, encode_rows: null, max_bytes: null,
     }
     const gpu = parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: evidence })
     expect(gpu.fit_evidence?.device).toBe("cuda:0")
@@ -1527,14 +1530,24 @@ describe("API response guards", () => {
   })
 
   it("requires fit evidence to carry its null fields (MOD-F04)", () => {
-    // The server sends every evidence field; a GLM's is its thread allotment and nulls.
+    // The server sends every evidence field; a GLM's is its thread allotment, fit mode and
+    // solver caps, with nulls for the rounds it has none of.
     const glmEvidence = {
       threads: 4, rounds_configured: null, rounds_fitted: null, term_update_steps: null, stopping_reason: null, device: null,
+      mode: "in_memory", max_iter: 25, tol: 1e-8, max_half_steps: 25, passes: null, encode_rows: null, max_bytes: null,
     }
     expect(parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: glmEvidence }).fit_evidence).toEqual(glmEvidence)
+    const chunked = { ...glmEvidence, mode: "out_of_core", passes: 9, encode_rows: 4096, max_bytes: 1_073_741_824 }
+    expect(parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: chunked }).fit_evidence).toEqual(chunked)
+    expect(() =>
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { ...glmEvidence, mode: "streamed" } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/mode: enum")
     const ebm = parseTrainResponse({
       ...tunedTrainResponseFixture(),
-      fit_evidence: { ...glmEvidence, threads: 1, rounds_configured: 200, stopping_reason: "none", term_update_steps: [400, 200] },
+      fit_evidence: {
+        ...glmEvidence, mode: null, max_iter: null, tol: null, max_half_steps: null,
+        threads: 1, rounds_configured: 200, stopping_reason: "none", term_update_steps: [400, 200],
+      },
     })
     expect(ebm.fit_evidence?.term_update_steps).toEqual([400, 200])
     expect(() =>
@@ -2223,7 +2236,7 @@ describe("API response guards", () => {
     const estimate = parseTrainEstimateResponse({
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null, gpu_vram_rows: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
@@ -2298,7 +2311,7 @@ describe("API response guards", () => {
     const estimate = {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null, gpu_vram_rows: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
     }
     expect(() => parseTrainEstimateResponse({

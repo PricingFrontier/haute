@@ -38,6 +38,7 @@ from haute._worker_protocol import (
     build_artifact_manifest,
 )
 from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
+from haute.modelling._rustystats import GLMMemoryPlanError
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
@@ -427,6 +428,15 @@ def _known_training_worker_failure(
         # wording; a dependency's plain ValueError falls through to the
         # entrypoint's _friendly_error fallback (a plain "error") instead.
         return _worker_failure_payload(exc, terminal_reason="contract_error", user_facing=True)
+    if isinstance(exc, GLMMemoryPlanError):
+        # Haute-authored: the curated message carries RustyStats' planned peak.
+        return _worker_failure_payload(
+            exc,
+            terminal_reason="memory_limited",
+            message=str(exc),
+            fields={"error": str(exc), "error_code": "memory_limit"},
+            user_facing=True,
+        )
     if isinstance(exc, MemoryError):
         # str(MemoryError) is raw third-party text (usually empty) — keep the
         # typed wrapper surface; error_code drives the UI's memory handling.
@@ -604,6 +614,9 @@ def _run_training_process_job(
         staged_output = runtime.staged_path("output")
         staged_output.mkdir()
         job_kwargs["output_dir"] = str(staged_output)
+        # An out-of-core fit's files live under the job's artifact root, so a
+        # killed worker's scratch goes when the job's artifacts do.
+        job_kwargs["scratch_dir"] = str(runtime.staged_path("scratch"))
 
         from haute.modelling import TrainingJob
         from haute.modelling._training_job import model_contract_filename
@@ -848,6 +861,9 @@ def _run_dispersion_process_job(
             weight=weight,
             offset=offset,
             on_fit=on_fit,
+            # The fit seed the training job would use, so a target-encoded design is
+            # the same at every candidate.
+            seed=job._fit_seed,
         )
         return WorkerResultManifest(
             metadata={

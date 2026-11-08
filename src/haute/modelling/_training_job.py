@@ -31,6 +31,7 @@ from haute._polars_utils import (
     streaming_collect,
 )
 from haute.errors import HauteError, HauteValidationError
+from haute.modelling._algorithm_base import FitMode
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
     TWEEDIE_LOSS_NEEDS_POWER,
@@ -587,6 +588,13 @@ class TrainingJob:
         MLflow tracking destination key ("databricks" | "server"; "" = the local folder).
     output_dir : str
         Directory to save the model file.
+    fit_mode : str
+        ``"in_memory"`` (default) or ``"out_of_core"``: a GLM fitted out of core
+        reads its training rows in passes from disk and never holds them whole,
+        giving the in-memory model bit for bit. Training decides it from the
+        memory estimate; the fit never chooses it.
+    scratch_dir : str | None
+        Where an out-of-core fit keeps its files; a temporary directory when unset.
     """
 
     def __init__(
@@ -621,6 +629,8 @@ class TrainingJob:
         plan_source_sha256: str | None = None,
         positive_class: bool | int | str | None = None,
         device: str = "cpu",
+        fit_mode: FitMode = "in_memory",
+        scratch_dir: str | None = None,
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | pl.LazyFrame | None = data
@@ -667,6 +677,17 @@ class TrainingJob:
             )
         #: ``gpu`` asks a GPU-capable family to train on its device (XGBoost CUDA).
         self.device = device
+        if fit_mode not in ("in_memory", "out_of_core"):
+            raise HauteValidationError(
+                f'fit_mode must be "in_memory" or "out_of_core", got {fit_mode!r}'
+            )
+        if fit_mode == "out_of_core" and algorithm != "glm":
+            raise HauteValidationError(
+                f"{algorithm_descriptor(algorithm).label} trains in memory only; "
+                'fit_mode="out_of_core" applies to a GLM.'
+            )
+        self.fit_mode: FitMode = fit_mode
+        self.scratch_dir = scratch_dir
         #: ``(negative, positive)`` once a classification split resolves them.
         self._class_labels: tuple[bool | int | str, bool | int | str] | None = None
         self.offset = offset
@@ -940,6 +961,7 @@ class TrainingJob:
                 prepared.cat_features,
                 rounds,
                 _report,
+                check_cancelled=check_cancelled,
                 execution_context=execution_context,
             )
             if rounds is not None:
@@ -1014,6 +1036,7 @@ class TrainingJob:
             term_update_steps = getattr(fit_result, "term_update_steps", None)
             if term_update_steps is not None:
                 result.fit_evidence["term_update_steps"] = list(term_update_steps)
+            result.fit_evidence.update(fit_result.evidence)
             if (
                 algorithm_descriptor(self.algorithm).refit_policy == "validation_weighted_rounds"
                 and isinstance(fit_result.rounds_fitted, int)
@@ -1145,6 +1168,8 @@ class TrainingJob:
             plan_source_sha256=source_sha256,
             positive_class=self.positive_class,
             device=self.device,
+            fit_mode=self.fit_mode,
+            scratch_dir=self.scratch_dir,
         )
         child._live_rounds = self._live_rounds
         return child
@@ -1453,6 +1478,7 @@ class TrainingJob:
                 prepared.cat_features,
                 rounds,
                 report,
+                check_cancelled=check_cancelled,
                 execution_context=execution_context,
             )
             if rounds is not None:
@@ -2447,6 +2473,7 @@ class TrainingJob:
         on_iteration: IterationCallback | None,
         _report: Callable[[str, float], None],
         *,
+        check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> _TrainModelResult:
         """Build train/eval pools (or DataFrames for GLM), fit the model."""
@@ -2475,6 +2502,25 @@ class TrainingJob:
                 fit_params["loss_function"] = loss_function
             fit_params["random_seed"] = self._fit_seed
 
+        if is_glm and self.fit_mode == "out_of_core":
+            fit_result = self._fit_glm_out_of_core(
+                algo,
+                data_path,
+                features,
+                cat_features,
+                fit_params,
+                on_iteration,
+                _report,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+            )
+            return _TrainModelResult(
+                model=fit_result.model,
+                algo=algo,
+                fit_result=fit_result,
+                fit_params=fit_params,
+            )
+
         # Read train partition
         _report("Loading training data", 0.2)
         train_df = _training_streaming_collect(
@@ -2501,10 +2547,12 @@ class TrainingJob:
 
         if frame_based:
             # GLM and the new-family adapters take DataFrames and build their
-            # own native data (no CatBoost Pool).
-            eval_df = load_validation() if has_validation else None
+            # own native data (no CatBoost Pool). A GLM has no early stopping, so
+            # it never reads the validation rows at fit time.
+            eval_df = load_validation() if has_validation and not is_glm else None
             _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
-            adapter_kwargs: dict[str, Any] = {}
+            # Every family fits with the job's seed; a GLM's keys target encoding.
+            adapter_kwargs: dict[str, Any] = {"seed": self._fit_seed}
             if not is_glm:
                 adapter_kwargs = {
                     "loss": self._haute_loss(),
@@ -2637,6 +2685,79 @@ class TrainingJob:
             fit_result=fit_result,
             fit_params=fit_params,
         )
+
+    def _fit_glm_out_of_core(
+        self,
+        algo: Any,
+        data_path: str,
+        features: list[str],
+        cat_features: list[str],
+        fit_params: dict[str, Any],
+        on_iteration: IterationCallback | None,
+        _report: Callable[[str, float], None],
+        *,
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> Any:
+        """Fit the GLM in passes over the train partition, never holding its rows.
+
+        The partition is written once, projected to the GLM's columns, into a
+        scratch directory that is removed whatever the outcome.
+        """
+        from haute._polars_utils import bounded_sink
+        from haute.modelling._rustystats import glm_batch_source, glm_out_of_core_options
+
+        if self.scratch_dir is not None:
+            Path(self.scratch_dir).mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="haute-glm-", dir=self.scratch_dir) as tmp:
+            scratch = Path(tmp)
+            train_path = scratch / "glm-train.parquet"
+            _report("Writing training rows for a chunked fit", 0.2)
+            _training_checkpoint(execution_context, label="before_training_glm_partition_write")
+            with _training_stage(execution_context, "training_glm_partition_write"):
+                bounded_sink(
+                    self._scan_with_columns(data_path, features)
+                    .filter(pl.col("_partition") == PARTITION_TRAIN)
+                    .drop("_partition"),
+                    str(train_path),
+                    fast_checkpoint=True,
+                )
+            _training_checkpoint(execution_context, label="after_training_glm_partition_write")
+            spill = scratch / "rustystats"
+            spill.mkdir()
+            reported_passes: set[int] = set()
+
+            def on_batch(progress: Any) -> None:
+                # Cancellation is checked at every batch, not only when a pass starts.
+                if check_cancelled is not None:
+                    check_cancelled()
+                if progress.pass_index not in reported_passes:
+                    reported_passes.add(progress.pass_index)
+                    _report(f"Fitting GLM in chunks: pass {progress.pass_index + 1}", 0.3)
+                _training_checkpoint(execution_context, label="training_glm_pass")
+
+            options = glm_out_of_core_options(
+                execution_context=execution_context,
+                scratch_dir=spill,
+                on_batch=on_batch,
+            )
+            _report(f"Fitting {algorithm_descriptor(self.algorithm).label} in chunks", 0.3)
+            with _training_stage(execution_context, "training_algorithm_fit"):
+                fit_result = algo.fit(
+                    None,
+                    features,
+                    cat_features,
+                    self.target,
+                    self.weight,
+                    fit_params,
+                    self.task,
+                    on_iteration=on_iteration,
+                    offset=self.offset,
+                    source=glm_batch_source(train_path, execution_context=execution_context),
+                    out_of_core=options,
+                    seed=self._fit_seed,
+                )
+        return fit_result
 
     def _glm_select_columns(self, features: list[str]) -> list[str] | None:
         """Column subset needed for GLM parquet reads, or ``None`` for CatBoost.

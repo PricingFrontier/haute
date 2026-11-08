@@ -254,9 +254,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // validation bring the measured editor bundle to 1,788.3 KiB after removing unused
 // comparison metadata and duplicated views. A 1 KiB increment restores 0.7 KiB
 // headroom; startup, single-chunk and vendor allowances are unchanged.
+// Chunked GLM fitting (8 November 2026): the training contracts' fit plan and evidence
+// and the Train pane's chunked verdict bring the complete bundle to 1,789.1 KiB (initial
+// 293.9 KiB). 1,790 KiB restores 0.9 KiB headroom; the other limits are unchanged.
 // A selected frontier point's convergence trace (OPT-PC04), its bisection view and
-// response validators, bring the total to 1,790.1 KiB (initial 293.9 KiB); 1,792 KiB
-// restores about 1.9 KiB headroom.
+// response validators, bring the total to 1,790.7 KiB (initial 293.9 KiB); 1,792 KiB
+// restores about 1.3 KiB headroom.
 const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1792
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205

@@ -199,7 +199,11 @@ compatibility facade and route own no duplicate state or worker implementation.
   worst case rather than a count: the estimate names those joins and gives no downsampling
   verdict or warning, and the Train pane presents the total as an upper bound. Training
   decides whether it downsampled from the rows its prepared input actually holds, and
-  records the downsampling warning on the job only when the RAM row limit removed rows. An exception
+  records the downsampling warning on the job only when the RAM row limit removed rows.
+  A GLM is never downsampled by the RAM row limit: where the estimate would downsample,
+  the GLM trains on every row in chunks read from disk (`fit_mode="out_of_core"`), giving
+  the model the in-memory fit would have produced bit for bit; the estimate reports the
+  planned `fit_mode`, and the result, model card and candidate run record it. An exception
   raised while estimating is not an unavailable estimate. It propagates as an error
   response and is logged as a failure, never answered with an empty estimate.
   Once the relevant modelling and evaluation fields

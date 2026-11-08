@@ -14,6 +14,9 @@ resident memory, wall time, predictions and the per-iteration training objective
 the first decision input the MOD-M02 roadmap entry names.
 
 Both tests assert only that every probe completes: the figures are evidence.
+
+The third test is MOD-M01's acceptance gate, so the pull-request perf lane runs it: the
+canonical GLM job out of core finishes within a memory budget the in-memory job exceeds.
 ``HAUTE_POLARS_PERF_SCALE`` picks the row counts; ``ci`` keeps the run short and
 ``1m`` is the decision scale.
 """
@@ -50,7 +53,7 @@ from tests.performance._training_family_memory_probe import (
     write_training_parquet,
 )
 
-pytestmark = [pytest.mark.perf, pytest.mark.perf_evidence]
+pytestmark = pytest.mark.perf
 
 _PROBE = Path(__file__).with_name("_training_family_memory_probe.py")
 _FAMILY_ROWS_BY_SCALE = {
@@ -58,6 +61,10 @@ _FAMILY_ROWS_BY_SCALE = {
     "1m": (100_000, 400_000, 1_600_000),
     "10m": (100_000, 400_000, 1_600_000),
 }
+#: Rows for the chunked GLM acceptance: where the in-memory fit's design dominates.
+_GLM_CHUNKED_ROWS_BY_SCALE = {"ci": 300_000, "1m": 1_600_000, "10m": 6_400_000}
+#: The out-of-core job's growth budget, as a share of the in-memory job's growth.
+_GLM_CHUNKED_BUDGET_SHARE = 3 / 4
 _XGBOOST_ROWS_BY_SCALE = {
     "ci": (80_000,),
     "1m": (1_600_000, 6_400_000),
@@ -84,11 +91,12 @@ def _scale() -> str:
 
 def _engine_versions() -> dict[str, str]:
     distributions = packages_distributions()
-    modules = ("polars", "numpy", "catboost", "xgboost", "lightgbm")
-    return {
-        module: version(distributions[module][0])
-        for module in (*modules, "interpret", "t_boost", "rustystats")
-    }
+    modules = ("polars", "numpy", "catboost", "xgboost", "lightgbm", "interpret", "t_boost")
+    versions = {module: version(distributions[module][0]) for module in modules}
+    # By distribution name: an editable RustyStats build has no top-level module
+    # record for packages_distributions to map.
+    versions["rustystats"] = version("rustystats")
+    return versions
 
 
 def _record(request: pytest.FixtureRequest, **evidence: object) -> None:
@@ -203,6 +211,7 @@ def _linear_fit(xs: list[float], ys: list[float]) -> dict[str, float] | None:
     return {"fixed_bytes": float(fixed), "slope": float(slope)}
 
 
+@pytest.mark.perf_evidence
 @pytest.mark.parametrize("family", FAMILIES)
 def test_training_family_peak_memory_is_measured(
     family: str,
@@ -298,6 +307,7 @@ def _agreement(candidate: dict[str, Any], reference: dict[str, Any]) -> dict[str
     }
 
 
+@pytest.mark.perf_evidence
 def test_xgboost_external_memory_is_measured_against_the_in_memory_fit(
     training_source: Callable[[int], dict[str, Any]],
     tmp_path: Path,
@@ -365,3 +375,66 @@ def test_xgboost_external_memory_is_measured_against_the_in_memory_fit(
         artifact_paths=["src/haute/modelling/_xgboost.py:XGBoostAlgorithm.fit"],
         measurements=measurements,
     )
+
+
+def test_glm_out_of_core_fits_within_a_budget_the_in_memory_fit_exceeds(
+    training_source: Callable[[int], dict[str, Any]],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """MOD-M01's end-to-end acceptance on the canonical GLM job.
+
+    The in-memory job runs unbudgeted; the out-of-core job runs the whole training
+    job (planning, split, fit, evaluation and diagnostics) under a growth budget
+    below the in-memory job's growth, enforced at every checkpoint, and must finish
+    within it with the same model.
+    """
+    rows = _GLM_CHUNKED_ROWS_BY_SCALE[_scale()]
+    source = training_source(rows)
+    in_memory = _run_probe(
+        ["--mode", "family", "--family", "glm"], source["path"], tmp_path / "in_memory"
+    )
+    in_memory_growth = in_memory["peak_rss_bytes"] - in_memory["baseline_rss_bytes"]
+    budget = int(in_memory_growth * _GLM_CHUNKED_BUDGET_SHARE)
+    chunked = _run_probe(
+        [
+            "--mode",
+            "family",
+            "--family",
+            "glm",
+            "--fit-mode",
+            "out_of_core",
+            "--memory-limit-bytes",
+            str(budget),
+        ],
+        source["path"],
+        tmp_path / "out_of_core",
+    )
+    chunked_growth = chunked["peak_rss_bytes"] - chunked["baseline_rss_bytes"]
+
+    _record(
+        request,
+        scenario="glm_out_of_core_memory",
+        rows=rows,
+        frame_bytes=source["frame_bytes"],
+        budget_bytes=budget,
+        artifact_paths=[
+            "src/haute/modelling/_training_job.py:TrainingJob._fit_glm_out_of_core",
+            "src/haute/modelling/_rustystats.py:glm_out_of_core_options",
+        ],
+        measurements=[
+            {
+                "fit_mode": mode,
+                "peak_rss_bytes": run["peak_rss_bytes"],
+                "growth_bytes": run["peak_rss_bytes"] - run["baseline_rss_bytes"],
+                "peak_stage": run["peak_stage"],
+                "peak_rises": _peak_rises(run["stages"], run["baseline_peak_rss_bytes"]),
+                "wall_seconds": run["wall_seconds"],
+                "fit_evidence": run["fit_evidence"],
+            }
+            for mode, run in (("in_memory", in_memory), ("out_of_core", chunked))
+        ],
+    )
+    assert chunked["fit_evidence"]["mode"] == "out_of_core"
+    assert chunked["train_rows"] == in_memory["train_rows"]
+    assert chunked_growth <= budget < in_memory_growth

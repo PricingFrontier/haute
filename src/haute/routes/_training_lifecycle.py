@@ -71,6 +71,7 @@ from haute.execution import (
     AllExceptColumns,
     execute_lazy_graph,
 )
+from haute.modelling._algorithm_base import FitMode
 from haute.modelling._algorithms import ALGORITHM_REGISTRY
 from haute.modelling._candidate_run import capture_provenance
 from haute.modelling._descriptors import algorithm_descriptor
@@ -147,6 +148,7 @@ from haute.routes._training_preparation import (
     preparation_failure_outcome,
     prepare_training_data_worker,
     resolve_training_input_schema,
+    training_row_plan,
     training_seed_plan_request,
 )
 from haute.routes._training_worker import (
@@ -605,15 +607,8 @@ class TrainService:
             )
             cancellation_token.throw_if_cancelled("training_memory_estimate", job_id=job_id)
             total_source_rows = ram_est.total_rows
-            user_limit = config.get("row_limit")
-            row_limit = _clamp_row_limit(ram_est.safe_row_limit, user_limit)
-            # The user's own limit is their choice, never a RAM downsample.
-            ram_limit_binds = ram_est.safe_row_limit is not None and not (
-                user_limit
-                and isinstance(user_limit, (int, float))
-                and int(user_limit) > 0
-                and row_limit == int(user_limit)
-            )
+            row_plan = training_row_plan(config, ram_est)
+            row_limit = row_plan.row_limit
             train_params = build_train_params(config)
             self._check_gpu_vram_before_launch(
                 train_params,
@@ -648,7 +643,7 @@ class TrainService:
             execution_context.checkpoint(label="training_preparation_complete")
             ram_warning = (
                 _downsampling_warning(body.graph, ram_est, _parquet_rows(tmp_parquet))
-                if ram_limit_binds
+                if row_plan.ram_downsamples
                 else None
             )
             stored_job = self._store.require_job(job_id)
@@ -669,6 +664,7 @@ class TrainService:
                 tmp_parquet,
                 warning,
                 total_source_rows,
+                fit_mode=row_plan.fit_mode,
                 feature_selection=feature_selection,
                 execution_context=execution_context,
             )
@@ -1767,6 +1763,7 @@ class TrainService:
         warning: str | None,
         total_source_rows: int | None,
         *,
+        fit_mode: FitMode,
         execution_context: ExecutionContext,
         feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
     ) -> IsolatedSupervisorThread | None:
@@ -1792,6 +1789,7 @@ class TrainService:
                 default_name=_sanitize_func_name(stored_job["node_label"]),
             )
             job_kwargs["params"] = train_params
+            job_kwargs["fit_mode"] = fit_mode
             job_kwargs["mlflow_experiment"] = (
                 None  # GUI logging is manual: the post-training button logs.
             )
@@ -2148,6 +2146,7 @@ class TrainService:
         warning: str | None,
         total_source_rows: int | None,
         *,
+        fit_mode: FitMode,
         execution_context: ExecutionContext,
         feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
     ) -> IsolatedSupervisorThread | None:
@@ -2160,6 +2159,7 @@ class TrainService:
             tmp_parquet,
             warning,
             total_source_rows,
+            fit_mode=fit_mode,
             execution_context=execution_context,
             feature_selection=feature_selection,
         )

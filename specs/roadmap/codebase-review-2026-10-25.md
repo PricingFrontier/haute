@@ -210,7 +210,7 @@ the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
-(`MOD-M01`, `MOD-M02`); the assistant
+(`MOD-M02`); the assistant
 catalog's whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`

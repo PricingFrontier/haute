@@ -579,6 +579,12 @@ export function parseTrainEstimateResponse(value: unknown): TrainEstimate {
   if (estimate.unbounded_join_node_ids.length > 0 && (estimate.was_downsampled || estimate.warning !== null)) {
     throw new Error("parseTrainEstimateResponse: a worst-case row bound has no downsampling verdict or warning")
   }
+  if (
+    estimate.fit_mode === "out_of_core"
+    && (estimate.unavailable !== null || estimate.was_downsampled || estimate.warning !== null)
+  ) {
+    throw new Error("parseTrainEstimateResponse: an out-of-core fit plan rests on an available estimate and downsamples nothing")
+  }
   if ((estimate.gpu_vram_rows === null) !== (estimate.gpu_vram_estimated_mb === null)) {
     throw new Error("parseTrainEstimateResponse: a GPU VRAM figure states the rows it is sized at")
   }
