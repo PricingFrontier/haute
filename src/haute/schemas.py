@@ -317,7 +317,7 @@ class WorkbenchStoreCompareRequest(BaseModel):
     form: FormSpec
     environment: BoundedName
     tables: list[WorkbenchCatalogueTable] = Field(max_length=MAX_REQUEST_ITEMS)
-    target: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target: str = Field(max_length=64, pattern=r"^[0-9a-f]{64}$")
     renames: list[WorkbenchStoreRename] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
 
 
