@@ -11,6 +11,7 @@ import pytest
 
 import haute._model_scorer as model_scorer
 import haute.modelling._training_job as training_job
+from haute import _chunked_writes
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import _cleanup_registered_temp_files
 from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
@@ -173,7 +174,7 @@ def test_batch_scoring_prediction_prep_width_stays_feature_bounded(
     assert result["prediction"].to_list() == [1.0] * 4 + [2.0] * 4 + [3.0] * 2
 
 
-def test_group_split_write_sinks_wide_plan_without_full_collect(
+def test_group_split_writes_a_wide_plan_a_slice_at_a_time(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -201,25 +202,26 @@ def test_group_split_write_sinks_wide_plan_without_full_collect(
     )
     original_collect = pl.LazyFrame.collect
     collected_schemas: list[list[str]] = []
-    sink_schemas: list[list[str]] = []
-    sink_kwargs: list[dict[str, Any]] = []
+    frames: list[tuple[list[str], int]] = []
+    monkeypatch.setattr(_chunked_writes, "SINGLE_FILE_ROW_GROUP_SIZE", 20)
+    original_execution_collect = _chunked_writes.execution_collect
+
+    def recording_execution_collect(lf: pl.LazyFrame, **kwargs: Any) -> pl.DataFrame:
+        frame = original_execution_collect(lf, **kwargs)
+        frames.append((frame.columns, frame.height))
+        return frame
 
     def guarded_collect(self: pl.LazyFrame, *args: Any, **kwargs: Any) -> pl.DataFrame:
         if "optimizations" in kwargs:
             return original_collect(self, *args, **kwargs)
         columns = self.collect_schema().names()
         collected_schemas.append(columns)
-        if columns not in (["group"], []):
+        if columns not in (["group"], [], ["len"]) and "_partition" not in columns:
             raise AssertionError(f"split pre-scan collected wide columns: {columns[:8]}")
         return original_collect(self, *args, **kwargs)
 
-    def recording_bounded_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
-        sink_schemas.append(lf.collect_schema().names())
-        sink_kwargs.append(dict(kwargs))
-        lf.sink_parquet(path)
-
+    monkeypatch.setattr(_chunked_writes, "execution_collect", recording_execution_collect)
     monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
-    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
 
     split = job._split_data(
         _prepared_split_input(str(data_path), rows, ["feature"]),
@@ -227,11 +229,11 @@ def test_group_split_write_sinks_wide_plan_without_full_collect(
     )
     try:
         assert collected_schemas[0] == ["group"]
-        assert all(columns in (["group"], []) for columns in collected_schemas)
-        assert sink_kwargs == [{"fast_checkpoint": True}]
-        assert len(sink_schemas) == 1
-        assert len(sink_schemas[0]) == 4 + _N_UNUSED_TRAINING_COLUMNS
-        assert sink_schemas[0][-1] == "_partition"
+        slices = [(columns, height) for columns, height in frames if "_partition" in columns]
+        assert [height for _columns, height in slices] == [20, 20, 8]
+        for columns, _height in slices:
+            assert len(columns) == 4 + _N_UNUSED_TRAINING_COLUMNS
+            assert columns[-1] == "_partition"
 
         monkeypatch.setattr(pl.LazyFrame, "collect", original_collect)
         split_df = pl.read_parquet(split.split_path)

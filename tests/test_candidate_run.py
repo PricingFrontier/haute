@@ -358,3 +358,9 @@ class TestProvenance:
         dirty = capture()
         assert (clean.git_commit, clean.git_dirty) == (head, False)
         assert (dirty.git_commit, dirty.git_dirty) == (head, True)
+
+
+def test_an_external_memory_fit_is_recorded_on_the_candidate_run(tmp_path: Path) -> None:
+    run = _build(tmp_path, fit_evidence={"threads": 2, "mode": "out_of_core"})
+
+    assert run.params["fit_mode"] == "out_of_core"

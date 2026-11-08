@@ -7,7 +7,7 @@ import hashlib
 import os
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -589,9 +589,9 @@ class TrainingJob:
     output_dir : str
         Directory to save the model file.
     fit_mode : str
-        ``"in_memory"`` (default) or ``"out_of_core"``: a GLM fitted out of core
-        reads its training rows in passes from disk and never holds them whole,
-        giving the in-memory model bit for bit. Training decides it from the
+        ``"in_memory"`` (default) or ``"out_of_core"``: a GLM, or XGBoost on the CPU,
+        fitted out of core reads its training rows from disk and never holds them
+        whole, giving the in-memory model bit for bit. Training decides it from the
         memory estimate; the fit never chooses it.
     scratch_dir : str | None
         Where an out-of-core fit keeps its files; a temporary directory when unset.
@@ -681,10 +681,14 @@ class TrainingJob:
             raise HauteValidationError(
                 f'fit_mode must be "in_memory" or "out_of_core", got {fit_mode!r}'
             )
-        if fit_mode == "out_of_core" and algorithm != "glm":
+        if fit_mode == "out_of_core" and algorithm not in ("glm", "xgboost"):
             raise HauteValidationError(
                 f"{algorithm_descriptor(algorithm).label} trains in memory only; "
-                'fit_mode="out_of_core" applies to a GLM.'
+                'fit_mode="out_of_core" applies to a GLM or XGBoost.'
+            )
+        if fit_mode == "out_of_core" and device == "gpu":
+            raise HauteValidationError(
+                'fit_mode="out_of_core" trains on the CPU; remove the GPU device setting.'
             )
         self.fit_mode: FitMode = fit_mode
         self.scratch_dir = scratch_dir
@@ -2058,12 +2062,12 @@ class TrainingJob:
             else:
                 assert selected_result is not None
                 result = selected_result
-            result.development_rows = len(plan.development_positions)
-            result.final_test_rows = len(plan.test_positions)
-            result.final_test_metrics = dict(result.holdout_metrics) if plan.test_positions else {}
+            result.development_rows = plan.development_rows
+            result.final_test_rows = plan.test_rows
+            result.final_test_metrics = dict(result.holdout_metrics) if plan.test_rows else {}
             result.diagnostics_set = (
                 "final_test"
-                if plan.test_positions
+                if plan.test_rows
                 else "development"
                 if self.refit_on_development
                 else "validation"
@@ -2075,8 +2079,8 @@ class TrainingJob:
                 "validation_fit_count": selection_fit_count,
                 "fit_count": total,
                 "refit_on_development": self.refit_on_development,
-                "development_rows": len(plan.development_positions),
-                "final_test_rows": len(plan.test_positions),
+                "development_rows": plan.development_rows,
+                "final_test_rows": plan.test_rows,
                 "selection_fits": [fit.to_plain_data() for fit in results.fits],
                 "selection_metrics": {
                     metric: dict(values) for metric, values in aggregate.metrics.items()
@@ -2419,16 +2423,14 @@ class TrainingJob:
             f"split mask (train={n_train:,} val={n_validation:,} holdout={n_holdout:,})"
         )
 
-        # Write split parquet: original data + _partition column.
-        # Prefer Polars' streaming sink so wide split files do not have to
-        # materialize as one full eager DataFrame before writing.
+        # Write split parquet: original data + _partition column, a slice at a time.
         with tempfile.NamedTemporaryFile(
             suffix=".parquet",
             prefix="haute_split_",
             delete=False,
         ) as f:
             split_path = f.name
-        from haute._polars_utils import bounded_sink
+        from haute._chunked_writes import write_file_with_column
 
         try:
             _training_checkpoint(
@@ -2436,10 +2438,11 @@ class TrainingJob:
                 label="before_training_split_parquet_write",
             )
             with _training_stage(execution_context, "training_split_parquet_write"):
-                bounded_sink(
-                    split_lf.with_columns(mask),
+                write_file_with_column(
                     split_path,
-                    fast_checkpoint=True,
+                    split_lf,
+                    mask,
+                    execution_context=execution_context,
                 )
             _training_checkpoint(
                 execution_context,
@@ -2521,6 +2524,26 @@ class TrainingJob:
                 fit_params=fit_params,
             )
 
+        if self.algorithm == "xgboost" and self.fit_mode == "out_of_core":
+            fit_result = self._fit_xgboost_external_memory(
+                algo,
+                data_path,
+                features,
+                cat_features,
+                fit_params,
+                on_iteration,
+                _report,
+                has_validation=has_validation,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+            )
+            return _TrainModelResult(
+                model=fit_result.model,
+                algo=algo,
+                fit_result=fit_result,
+                fit_params=fit_params,
+            )
+
         # Read train partition
         _report("Loading training data", 0.2)
         train_df = _training_streaming_collect(
@@ -2552,17 +2575,9 @@ class TrainingJob:
             eval_df = load_validation() if has_validation and not is_glm else None
             _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
             # Every family fits with the job's seed; a GLM's keys target encoding.
-            adapter_kwargs: dict[str, Any] = {"seed": self._fit_seed}
-            if not is_glm:
-                adapter_kwargs = {
-                    "loss": self._haute_loss(),
-                    "variance_power": self.variance_power,
-                    "threads": self.threads,
-                    "class_labels": self._class_labels,
-                    "seed": self._fit_seed,
-                    "device": self.device,
-                    "groups": self._plan_group_column(),
-                }
+            adapter_kwargs: dict[str, Any] = (
+                {"seed": self._fit_seed} if is_glm else self._native_adapter_kwargs()
+            )
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
                     train_df,
@@ -2685,6 +2700,99 @@ class TrainingJob:
             fit_result=fit_result,
             fit_params=fit_params,
         )
+
+    def _native_adapter_kwargs(self) -> dict[str, Any]:
+        """What a native-family adapter takes beyond the shared fit arguments."""
+        return {
+            "loss": self._haute_loss(),
+            "variance_power": self.variance_power,
+            "threads": self.threads,
+            "class_labels": self._class_labels,
+            "seed": self._fit_seed,
+            "device": self.device,
+            "groups": self._plan_group_column(),
+        }
+
+    def _fit_xgboost_external_memory(
+        self,
+        algo: Any,
+        data_path: str,
+        features: list[str],
+        cat_features: list[str],
+        fit_params: dict[str, Any],
+        on_iteration: IterationCallback | None,
+        _report: Callable[[str, float], None],
+        *,
+        has_validation: bool,
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> Any:
+        """Fit XGBoost through external memory, never holding a partition's rows.
+
+        Each partition is read from the split file a batch at a time. XGBoost keeps its
+        binned pages in a scratch directory that is removed whatever the outcome.
+        """
+        from haute._chunked_writes import SINGLE_FILE_ROW_GROUP_SIZE
+        from haute._file_ops import ensure_disk_headroom
+        from haute._polars_utils import bounded_collect_batches
+        from haute.modelling._native_encoding import fit_categorical_levels
+        from haute.modelling._xgboost import XGBoostExternalMemory
+
+        if self.scratch_dir is not None:
+            Path(self.scratch_dir).mkdir(parents=True, exist_ok=True)
+        scan = self._scan_with_columns(data_path, features)
+
+        def batches(partition: int) -> Callable[[], Iterator[pl.DataFrame]]:
+            def read() -> Iterator[pl.DataFrame]:
+                for batch in bounded_collect_batches(
+                    scan,
+                    chunk_size=SINGLE_FILE_ROW_GROUP_SIZE,
+                    execution_context=execution_context,
+                    stage_name="training_xgboost_batch",
+                ):
+                    if check_cancelled is not None:
+                        check_cancelled()
+                    _training_checkpoint(execution_context, label="training_xgboost_batch")
+                    rows = batch.filter(pl.col("_partition") == partition).drop("_partition")
+                    if rows.height:
+                        yield rows
+
+            return read
+
+        levels: dict[str, list[str | None]] = {}
+        train_rows = scan.filter(pl.col("_partition") == PARTITION_TRAIN)
+        for column in cat_features:
+            distinct = _training_streaming_collect(
+                train_rows.select(pl.col(column).cast(pl.String)).unique(),
+                stage_name="training_xgboost_levels",
+                execution_context=execution_context,
+            )
+            levels.update(fit_categorical_levels(distinct, [column]))
+        _report(f"Fitting {algorithm_descriptor(self.algorithm).label} in chunks", 0.3)
+        with tempfile.TemporaryDirectory(prefix="haute-xgboost-", dir=self.scratch_dir) as tmp:
+            cache_dir = Path(tmp)
+            ensure_disk_headroom(cache_dir)
+            with _training_stage(execution_context, "training_algorithm_fit"):
+                return algo.fit(
+                    None,
+                    features,
+                    cat_features,
+                    self.target,
+                    self.weight,
+                    fit_params,
+                    self.task,
+                    on_iteration=on_iteration,
+                    offset=self.offset,
+                    monotone_constraints=self.monotone_constraints,
+                    feature_weights=self.feature_weights,
+                    external_memory=XGBoostExternalMemory(
+                        train=batches(PARTITION_TRAIN),
+                        validation=batches(PARTITION_VALIDATION) if has_validation else None,
+                        categorical_levels=levels,
+                        cache_dir=cache_dir,
+                    ),
+                    **self._native_adapter_kwargs(),
+                )
 
     def _fit_glm_out_of_core(
         self,

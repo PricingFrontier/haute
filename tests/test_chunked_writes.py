@@ -26,6 +26,7 @@ from haute._chunked_writes import (
     scan_parts,
     sliceable,
     write_file,
+    write_file_with_column,
     write_parts,
 )
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -239,6 +240,61 @@ def test_sliced_write_equals_native_write_and_splits_into_parts(tmp_path: Path) 
 
     for p in parts:
         assert pl.read_parquet(p).schema == frame.collect_schema()
+
+
+def _column_for(height: int) -> pl.Series:
+    return pl.Series("_partition", [row % 3 for row in range(height)], dtype=pl.Int8)
+
+
+def test_a_column_is_written_with_its_frame_a_slice_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(haute._chunked_writes, "SINGLE_FILE_ROW_GROUP_SIZE", 3)
+    df = _sample_df()
+    source = tmp_path / "base.parquet"
+    df.write_parquet(source)
+    frame = pl.scan_parquet(source).with_columns(c=pl.col("a") * 2)
+    column = _column_for(df.height)
+    assert sliceable(frame)
+
+    target = tmp_path / "out.parquet"
+    write_file_with_column(target, frame, column)
+
+    written = pl.read_parquet(target)
+    assert written.equals(frame.with_columns(column).collect())
+    assert written.schema == frame.with_columns(column).collect_schema()
+    assert pq.ParquetFile(target).metadata.num_row_groups > 1
+
+
+def test_a_frame_that_cannot_be_sliced_gets_the_same_file_natively(tmp_path: Path) -> None:
+    df = _sample_df()
+    source = tmp_path / "base.parquet"
+    df.write_parquet(source)
+    frame = pl.scan_parquet(source).filter(pl.col("a") > pl.col("a").min())
+    assert not sliceable(frame)
+    column = _column_for(frame.select(pl.len()).collect().item())
+
+    target = tmp_path / "out.parquet"
+    write_file_with_column(target, frame, column)
+
+    assert pl.read_parquet(target).equals(frame.with_columns(column).collect())
+
+
+@pytest.mark.parametrize("height_difference", [-1, 1])
+def test_a_column_of_another_length_writes_nothing(tmp_path: Path, height_difference: int) -> None:
+    df = _sample_df()
+    source = tmp_path / "base.parquet"
+    df.write_parquet(source)
+
+    target = tmp_path / "out.parquet"
+    with pytest.raises(ValueError, match="_partition"):
+        write_file_with_column(
+            target,
+            pl.scan_parquet(source),
+            _column_for(df.height + height_difference),
+        )
+
+    assert not target.exists()
 
 
 def test_empty_result_writes_one_schema_part(tmp_path: Path) -> None:

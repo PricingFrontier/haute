@@ -21,6 +21,7 @@ equivalent.
 
 from __future__ import annotations
 
+import itertools
 import math
 import shutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -869,6 +870,49 @@ def write_file(
         native_reason="not_sliceable",
         node_id=node_id,
     )
+
+
+def write_file_with_column(
+    destination: str | Path,
+    frame: pl.LazyFrame,
+    column: pl.Series,
+    *,
+    execution_context: ExecutionContext | None = None,
+) -> None:
+    """Write ``frame`` with the row-aligned ``column`` added, as one parquet file.
+
+    A slice of each goes through one Parquet writer together, so the peak is one
+    slice; a native sink of the same plan holds about one and a half times the frame.
+    A frame that cannot be sliced is sunk natively.
+    """
+    dest = Path(destination)
+    context = execution_context or current_execution_context()
+    frame_schema = frame.collect_schema()
+    refuse_wide_integers(frame_schema)
+    total = row_count(frame, execution_context=context)
+    if column.len() != total:
+        raise ValueError(f"column {column.name!r} has {column.len()} rows; the frame has {total}")
+    if not sliceable(frame):
+        bounded_sink(frame.with_columns(column), dest, fast_checkpoint=True)
+        return
+    rows, _, _ = _budgeted_rows(SINGLE_FILE_ROW_GROUP_SIZE, (frame,), execution_context=context)
+    # The writer applies this once per slice, in order.
+    offsets = itertools.count(0, rows)
+
+    def with_column(slice_lf: pl.LazyFrame) -> pl.LazyFrame:
+        return slice_lf.with_columns(column.slice(next(offsets), rows))
+
+    _sink_slices(
+        dest,
+        source=frame,
+        schema=pl.Schema({**frame_schema, column.name: column.dtype}),
+        rows=rows,
+        apply=with_column,
+        execution_context=context,
+        node_id=None,
+    )
+    if context is not None:
+        context.record_bytes_written(dest.stat().st_size)
 
 
 def scan_parts(paths: Sequence[Path]) -> pl.LazyFrame:

@@ -1,4 +1,4 @@
-"""Fresh-process evidence for training memory per model family (MOD-M02).
+"""Fresh-process evidence for training memory per model family.
 
 ``_estimate_peak_bytes`` (``src/haute/_ram_estimate.py``) multiplies rows by the
 source row width and one overhead multiplier for every family. Each family here
@@ -10,13 +10,18 @@ prediction for the same source decide whether the multiplier becomes per family.
 
 The second test compares XGBoost's external-memory ``ExtMemQuantileDMatrix`` with
 the in-memory ``QuantileDMatrix`` on the same data, seed and ``max_bin``: peak
-resident memory, wall time, predictions and the per-iteration training objective,
-the first decision input the MOD-M02 roadmap entry names.
+resident memory, wall time, predictions and the per-iteration training objective.
 
 Both tests assert only that every probe completes: the figures are evidence.
 
 The third test is MOD-M01's acceptance gate, so the pull-request perf lane runs it: the
 canonical GLM job out of core finishes within a memory budget the in-memory job exceeds.
+
+The fifth records the canonical XGBoost job end to end in both fit modes, the evidence
+that external memory lowers the whole job's peak.
+
+The fourth holds a five-fold job's evaluation planning and split to a share of what they
+raised the peak by when a plan held Python integers and the split was one streaming sink.
 ``HAUTE_POLARS_PERF_SCALE`` picks the row counts; ``ci`` keeps the run short and
 ``1m`` is the decision scale.
 """
@@ -63,13 +68,25 @@ _FAMILY_ROWS_BY_SCALE = {
 }
 #: Rows for the chunked GLM acceptance: where the in-memory fit's design dominates.
 _GLM_CHUNKED_ROWS_BY_SCALE = {"ci": 300_000, "1m": 1_600_000, "10m": 6_400_000}
-#: The out-of-core job's growth budget, as a share of the in-memory job's growth.
-_GLM_CHUNKED_BUDGET_SHARE = 3 / 4
+#: The out-of-core job's growth budget, as a share of the in-memory job's growth. Lean
+#: planning and a sliced split took about a tenth off the in-memory job at the ``ci`` scale,
+#: where 3/4 of it is now below the fit's fixed state.
+_GLM_CHUNKED_BUDGET_SHARE = 7 / 8
 _XGBOOST_ROWS_BY_SCALE = {
     "ci": (80_000,),
     "1m": (1_600_000, 6_400_000),
     "10m": (1_600_000, 6_400_000),
 }
+#: Rows, and the peak rise a five-fold job's planning and split once took at them
+#: (measured on the position-tuple plan, 8 November 2026), per scale.
+_PLANNING_BEFORE_BY_SCALE = {
+    "ci": (300_000, 320 * 1024**2),
+    "1m": (1_600_000, 1_302 * 1024**2),
+    "10m": (1_600_000, 1_302 * 1024**2),
+}
+#: The share of that rise allowed. Thread pools and buffers that do not grow with the
+#: rows are a large part of it at the smaller scale.
+_PLANNING_SHARE_BY_SCALE = {"ci": 3 / 4, "1m": 1 / 4, "10m": 1 / 4}
 #: Every engine and the Polars engine get the same thread cap.
 _THREAD_ENVIRONMENT = {
     "HAUTE_TRAINING_THREADS": str(TRAINING_THREADS),
@@ -438,3 +455,80 @@ def test_glm_out_of_core_fits_within_a_budget_the_in_memory_fit_exceeds(
     assert chunked["fit_evidence"]["mode"] == "out_of_core"
     assert chunked["train_rows"] == in_memory["train_rows"]
     assert chunked_growth <= budget < in_memory_growth
+
+
+def test_evaluation_planning_and_split_stay_within_their_share_of_the_old_rise(
+    training_source: Callable[[int], dict[str, Any]],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Planning holds row labels and the split writes in slices: the peak stays low."""
+    rows, before = _PLANNING_BEFORE_BY_SCALE[_scale()]
+    allowed = int(before * _PLANNING_SHARE_BY_SCALE[_scale()])
+    source = training_source(rows)
+    run = _run_probe(["--mode", "planning", "--folds", "5"], source["path"], tmp_path / "planning")
+
+    _record(
+        request,
+        scenario="evaluation_planning_memory",
+        rows=rows,
+        folds=5,
+        frame_bytes=source["frame_bytes"],
+        artifact_paths=[
+            "src/haute/modelling/_evaluation.py:generate_evaluation_plan",
+            "src/haute/modelling/_training_job.py:TrainingJob._split_data",
+        ],
+        measurements=[
+            {
+                "planning_rise_bytes": run["planning_rise_bytes"],
+                "allowed_rise_bytes": allowed,
+                "rise_before_bytes": before,
+                "peak_rises": _peak_rises(run["stages"], run["baseline_peak_rss_bytes"]),
+                "wall_seconds": run["wall_seconds"],
+            }
+        ],
+    )
+    assert run["planning_rise_bytes"] < allowed
+
+
+@pytest.mark.perf_evidence
+def test_the_xgboost_job_is_measured_end_to_end_in_both_fit_modes(
+    training_source: Callable[[int], dict[str, Any]],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    measurements = []
+    for rows in _XGBOOST_ROWS_BY_SCALE[_scale()]:
+        source = training_source(rows)
+        runs = {
+            mode: _run_probe(
+                ["--mode", "family", "--family", "xgboost", "--fit-mode", mode],
+                source["path"],
+                tmp_path / f"{mode}-{rows}",
+            )
+            for mode in ("in_memory", "out_of_core")
+        }
+        assert runs["out_of_core"]["train_rows"] == runs["in_memory"]["train_rows"]
+        assert runs["out_of_core"]["fit_evidence"]["mode"] == "out_of_core"
+        measurements.extend(
+            {
+                "rows": rows,
+                "fit_mode": mode,
+                "frame_bytes": source["frame_bytes"],
+                "peak_rss_bytes": run["peak_rss_bytes"],
+                "growth_bytes": run["peak_rss_bytes"] - run["baseline_rss_bytes"],
+                "peak_stage": run["peak_stage"],
+                "peak_rises": _peak_rises(run["stages"], run["baseline_peak_rss_bytes"]),
+                "wall_seconds": run["wall_seconds"],
+            }
+            for mode, run in runs.items()
+        )
+    _record(
+        request,
+        scenario="xgboost_job_memory",
+        artifact_paths=[
+            "src/haute/modelling/_training_job.py:TrainingJob._fit_xgboost_external_memory",
+            "src/haute/modelling/_xgboost.py:XGBoostAlgorithm.fit",
+        ],
+        measurements=measurements,
+    )

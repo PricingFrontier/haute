@@ -14,6 +14,7 @@ after early stopping — is handled here, per the MOD-F00 engine probes.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -43,6 +44,8 @@ _META_ATTRIBUTE = "haute"
 OFFSET_STAMP = "haute_offset"
 _DEFAULT_ROUNDS = 1000
 _DEFAULT_EARLY_STOPPING = 50
+#: XGBoost's own default; an external-memory matrix must be told the bins up front.
+_DEFAULT_MAX_BIN = 256
 
 
 @dataclass(kw_only=True)
@@ -73,19 +76,30 @@ class XGBoostModel(NativeModel):
         """A ``DMatrix`` with contract-order category codes and the offset margin."""
         import xgboost as xgb
 
-        encoded = restore_native_categories(
-            encode_frame(frame, self.features, self.categorical_levels, unseen="missing"),
-            self.native_levels,
-        )
         return xgb.DMatrix(
-            encoded,
-            label=label,
-            weight=weight,
-            base_margin=self.baseline(frame),
+            **self.matrix_inputs(frame, label=label, weight=weight),
             feature_types=self.feature_types,
             enable_categorical=True,
             nthread=self.threads or -1,
         )
+
+    def matrix_inputs(
+        self,
+        frame: pl.DataFrame,
+        *,
+        label: np.ndarray | None = None,
+        weight: np.ndarray | None = None,
+    ) -> dict[str, Any]:
+        """What any matrix takes for *frame*: encoded data, labels, weights and margin."""
+        return {
+            "data": restore_native_categories(
+                encode_frame(frame, self.features, self.categorical_levels, unseen="missing"),
+                self.native_levels,
+            ),
+            "label": label,
+            "weight": weight,
+            "base_margin": self.baseline(frame),
+        }
 
     def predict_margin(self, frame: pl.DataFrame) -> np.ndarray:
         """Raw scores including the offset (log / log-odds scale for those links)."""
@@ -229,6 +243,58 @@ class _XGBoostProgress:
         self.callback = Callback()
 
 
+@dataclass(frozen=True)
+class XGBoostExternalMemory:
+    """An external-memory fit's inputs: re-openable partition batches and its page cache."""
+
+    train: Callable[[], Iterator[pl.DataFrame]]
+    validation: Callable[[], Iterator[pl.DataFrame]] | None
+    categorical_levels: dict[str, list[str | None]]
+    cache_dir: Path
+
+
+def _external_memory_matrix(
+    batches: Callable[[], Iterator[pl.DataFrame]],
+    inputs: Callable[[pl.DataFrame], dict[str, Any]],
+    *,
+    cache_prefix: Path,
+    max_bin: int,
+    threads: int | None,
+    ref: Any = None,
+) -> Any:
+    """An ``ExtMemQuantileDMatrix`` over *batches*, its pages cached under *cache_prefix*.
+
+    An exception raised while reading a batch leaves XGBoost and reaches the caller
+    unchanged.
+    """
+    import xgboost as xgb
+
+    class Batches(xgb.DataIter):
+        def __init__(self) -> None:
+            self._batches: Iterator[pl.DataFrame] | None = None
+            super().__init__(cache_prefix=str(cache_prefix), release_data=True, on_host=False)
+
+        def reset(self) -> None:
+            self._batches = None
+
+        def next(self, input_data: Callable[..., None]) -> bool:
+            if self._batches is None:
+                self._batches = batches()
+            frame = next(self._batches, None)
+            if frame is None:
+                return False
+            input_data(**{key: value for key, value in inputs(frame).items() if value is not None})
+            return True
+
+    return xgb.ExtMemQuantileDMatrix(
+        Batches(),
+        max_bin=max_bin,
+        nthread=threads or -1,
+        enable_categorical=True,
+        ref=ref,
+    )
+
+
 class XGBoostAlgorithm(BaseAlgorithm):
     """XGBoost ``hist`` boosting behind Haute's descriptor, loss and offset contract."""
 
@@ -252,7 +318,8 @@ class XGBoostAlgorithm(BaseAlgorithm):
 
         from haute.modelling._descriptors import XGBOOST, round_ceiling
 
-        if train_df is None:
+        external: XGBoostExternalMemory | None = kwargs.get("external_memory")
+        if train_df is None and external is None:
             raise HauteValidationError("XGBoost needs the training frame")
         if feature_weights:
             raise HauteValidationError("XGBoost does not support feature weights")
@@ -265,10 +332,15 @@ class XGBoostAlgorithm(BaseAlgorithm):
                 "XGBoost classification does not support an offset; remove the offset column."
             )
         threads = kwargs.get("threads")
+        if external is not None:
+            levels = external.categorical_levels
+        else:
+            assert train_df is not None
+            levels = fit_categorical_levels(train_df, cat_features)
         model = XGBoostModel(
             booster=None,
             features=list(features),
-            categorical_levels=fit_categorical_levels(train_df, cat_features),
+            categorical_levels=levels,
             task=task,
             link=native.link,
             offset_column=offset,
@@ -277,15 +349,46 @@ class XGBoostAlgorithm(BaseAlgorithm):
             threads=threads,
         )
 
-        def matrix(frame: pl.DataFrame) -> Any:
+        def labelled(frame: pl.DataFrame) -> dict[str, Any]:
             label = frame.get_column(target).cast(pl.Float64).to_numpy()
             weights = frame.get_column(weight).cast(pl.Float64).to_numpy() if weight else None
-            return model.matrix(frame, label=label, weight=weights)
+            return {"label": label, "weight": weights}
 
-        dtrain = matrix(train_df)
-        evals = [(dtrain, "train")]
-        if eval_df is not None:
-            evals.append((matrix(eval_df), "validation"))
+        if external is not None:
+            max_bin = int(params.get("max_bin", _DEFAULT_MAX_BIN))
+
+            def inputs(frame: pl.DataFrame) -> dict[str, Any]:
+                return model.matrix_inputs(frame, **labelled(frame))
+
+            dtrain = _external_memory_matrix(
+                external.train,
+                inputs,
+                cache_prefix=external.cache_dir / "train",
+                max_bin=max_bin,
+                threads=threads,
+            )
+            evals = [(dtrain, "train")]
+            if external.validation is not None:
+                evals.append(
+                    (
+                        _external_memory_matrix(
+                            external.validation,
+                            inputs,
+                            cache_prefix=external.cache_dir / "validation",
+                            max_bin=max_bin,
+                            threads=threads,
+                            ref=dtrain,
+                        ),
+                        "validation",
+                    )
+                )
+        else:
+            assert train_df is not None
+            dtrain = model.matrix(train_df, **labelled(train_df))
+            evals = [(dtrain, "train")]
+            if eval_df is not None:
+                evals.append((model.matrix(eval_df, **labelled(eval_df)), "validation"))
+        has_validation = len(evals) > 1
 
         configured = int(round_ceiling(XGBOOST, params, _DEFAULT_ROUNDS))
         booster_params = {
@@ -308,7 +411,7 @@ class XGBoostAlgorithm(BaseAlgorithm):
             )
         early_stopping = (
             max(0, int(params.get("early_stopping_rounds", _DEFAULT_EARLY_STOPPING)))
-            if eval_df is not None
+            if has_validation
             else None
         )
         gpu = kwargs.get("device") == "gpu"
@@ -338,14 +441,14 @@ class XGBoostAlgorithm(BaseAlgorithm):
         # a CPU-only deployment scores it.
         booster.set_param({"device": "cpu"})
         best_iteration: int | None = None
-        if eval_df is not None and early_stopping:
+        if has_validation and early_stopping:
             # best_iteration is zero-based; the booster keeps the rounds after
             # it, so trim before saving (MOD-F00 probe).
             best_iteration = int(booster.best_iteration)
             booster = booster[: best_iteration + 1]
         model.booster = booster
         rounds_fitted = int(booster.num_boosted_rounds())
-        if eval_df is not None and best_iteration is None:
+        if has_validation and best_iteration is None:
             # A validation fit without early stopping selects every fitted
             # round, so the refit still has a round count to reuse.
             best_iteration = rounds_fitted - 1
@@ -357,6 +460,7 @@ class XGBoostAlgorithm(BaseAlgorithm):
             rounds_fitted=rounds_fitted,
             stopping_reason="validation" if rounds_fitted < configured else "none",
             device=trained_device,
+            evidence={"mode": "out_of_core"} if external is not None else {},
         )
 
     def predict(

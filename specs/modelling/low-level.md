@@ -155,8 +155,14 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   version-1 evaluation contract and its persisted evidence. Parsing rejects unknown
   keys and inexact or non-finite values. Planning assigns final-test positions first,
   derives every validation fit only from development positions, and records exact
-  source positions plus bounded random/group/temporal summaries. Artifact readers
-  validate membership, ordering, counts and SHA-256 links before aggregation.
+  source positions plus bounded random/group/temporal summaries. In memory a plan holds
+  one development-group label per source row (one byte a row, the plan file's encoding;
+  the final test is its own label) and each validation fit's groups. Partition masks and
+  row counts come from the labels; a position tuple is built only when one is asked for,
+  which no training path does. Generation selects rows with NumPy arrays, over the
+  canonical order and the seeded streams, and never holds a Python integer per row, so
+  the plan and its file depend only on the seed, the order and the values. Artifact
+  readers validate membership, ordering, counts and SHA-256 links before aggregation.
 - **`TuningConfig` / `TuningTrialResult` / `TuningPlanArtifact` /
   `TuningTrialsArtifact` / `TuningReportArtifact`** (`_tuning.py`, frozen dataclasses)
   — the optional version-1 CatBoost tuning contract. It owns the 5–50 trial,
@@ -303,7 +309,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   per-partition row counts), `_TrainModelResult` (fitted model, algo instance,
   `FitResult`, resolved fit params), `_MetricsResult` (everything that becomes the
   diagnostic portion of `TrainResult`). Each is produced by one pipeline stage and
-  consumed by the next inside `TrainingJob.run()`.
+  consumed by the next inside `TrainingJob.run()`. The split stage writes its Parquet file a
+  slice at a time (`_chunked_writes.write_file_with_column`), each slice of the frame with
+  the matching slice of the mask, so it never holds the frame; a frame that cannot be
+  sliced, such as one still filtering null targets, is sunk natively.
 - **`ModelDiagnostics` / `ModelCardMetadata`** (`_result_types.py`) — shared bundling
   dataclasses consumed by both `_model_card.generate_model_card` and
   `_mlflow_log.log_experiment`, avoiding 25+ positional parameters at either call site. Both
@@ -1751,8 +1760,8 @@ rows/features) and retry.
   (CatBoost, XGBoost, LightGBM, EBM, t-boost, GLM) in fresh processes at three row counts,
   against what the training RAM estimate predicts for the same source, and XGBoost's
   iterator-fed and external-memory matrices against its in-memory fit (peak memory, time,
-  predictions and objective history). It asserts none of its figures; the MOD-M02 and
-  PL2-17 roadmap entries record the results.
+  predictions and objective history). It asserts none of its figures; the PL2-17 roadmap
+  entry records the results.
 - `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
@@ -2542,9 +2551,10 @@ estimate)` returns `TrainingRowPlan(fit_mode, row_limit, ram_limit_binds)`. Both
 the estimate states what the run will do.
 - `ram_limit_binds` keeps today's rule. The estimate's RAM row limit is set, and it is not
   the user's own `row_limit` deciding the rows.
-- `fit_mode` is `"out_of_core"` exactly when the node is a GLM (`is_glm_config`) and
-  `ram_limit_binds`. That includes a worst-case bound from a join without a key contract.
-  Otherwise it is `"in_memory"`.
+- `fit_mode` is `"out_of_core"` exactly when `ram_limit_binds` and the node can train out
+  of core (`fits_out_of_core`): a GLM, or XGBoost on the CPU (External-memory XGBoost
+  fitting). That includes a worst-case bound from a join without a key contract. Otherwise
+  it is `"in_memory"`, and a node on another family or on a GPU downsamples as before.
 - Out of core, `row_limit` is the user's own `row_limit` or `None`, so the RAM row limit
   samples no rows and no downsampling warning is recorded. In memory, `row_limit` is today's
   clamp of the two limits.
@@ -2554,8 +2564,9 @@ the estimate states what the run will do.
 
 The mode reaches the worker as `TrainingJob(fit_mode=...)` in the job kwargs; the fit
 never chooses it. A scripted `TrainingJob` fits in memory unless its caller passes
-`fit_mode="out_of_core"`, and `fit_mode="out_of_core"` with any algorithm but `glm` raises
-`HauteValidationError`. `TrainingJob._new_evaluation_job` passes `fit_mode` and
+`fit_mode="out_of_core"`, and `fit_mode="out_of_core"` with any algorithm but `glm` or
+`xgboost`, or with `device="gpu"`, raises `HauteValidationError`.
+`TrainingJob._new_evaluation_job` passes `fit_mode` and
 `scratch_dir` to every evaluation selection fit, tuning trial and deployable final fit.
 
 **Training rows.** `TrainingJob._train_model` writes the train partition of the split
@@ -2651,7 +2662,6 @@ at a time.
 
 These are not bounded:
 - preparation's pipeline execution, which already streams under its own cap;
-- the split's evaluation memberships (`MOD-R11`);
 - the evaluation stage's reads, which take its diagnostics partition (holdout, else
   validation, else train) and the validation-metrics partition into memory.
 
@@ -2725,3 +2735,59 @@ which happens before any fit, so fitting in chunks does not cover it.
    - with an unproven join bound, it adds "Fit: In chunks".
    The estimate route's `fit_mode`, `safe_row_limit` and evaluation-preview rows match the
    run's (`tests/test_training_row_plan.py`).
+
+## External-memory XGBoost fitting
+
+An XGBoost job on the CPU whose up-front estimate would downsample trains on every row
+through XGBoost's external memory instead. The model is the one the in-memory fit would have
+produced: predictions and the objective history are bit-identical, for every parameter
+Haute allows XGBoost and whatever the batch size. It engages as the chunked GLM does
+(Chunked GLM fitting, Engagement); a GPU fit keeps the in-memory path.
+
+**Rows.** The fit reads each partition from the split Parquet file with
+`bounded_collect_batches`, 100,000 rows of the file at a time under stage
+`training_xgboost_batch`, and filters each batch to its partition. No partition file is
+written. Every batch runs the job's cancellation check and a checkpoint, so cancelling stops
+at the next batch and an overrun ends `memory_limited`.
+
+**Matrix.** `XGBoostAlgorithm.fit(train_df=None, external_memory=XGBoostExternalMemory(...))`
+builds an `ExtMemQuantileDMatrix` from a `DataIter` over the batches, with
+`release_data=True`, the configured `max_bin` (XGBoost's default of 256 when unset) and
+`enable_categorical=True`. Each batch goes through `XGBoostModel.matrix_inputs`, the one
+place the in-memory matrix also gets its codes, offset margin, labels and weights from. The
+validation partition, when there is one, is a second external-memory matrix binned against
+the training matrix (`ref=`). Categorical levels are the training partition's, collected
+one column at a time with the streaming engine.
+
+**Cache.** The pages live in a directory the fit owns,
+`tempfile.TemporaryDirectory(prefix="haute-xgboost-", dir=scratch_dir)`, removed when the fit
+leaves, after success, failure or cancellation. Its filesystem must pass
+`ensure_disk_headroom` before the fit starts. When the worker dies, the parent's cleanup
+removes the whole artifact root, as for a GLM. The cache takes about 83 bytes a row on disk.
+
+**Evidence.** `fit_evidence.mode` is `"out_of_core"`, with no solver caps, passes or memory
+plan, which are a GLM's. The candidate run publishes it as `fit_mode`, which the model card's
+parameter table lists. An in-memory XGBoost fit reports no mode, as before.
+
+**What it bounds.** The fit never holds a partition's rows: a batch at a time goes into the
+page cache. Resident memory still grows by about 40 bytes a row, for the labels, weights,
+margins and tree-building state XGBoost keeps, so the mode lowers the peak without bounding
+it. The evaluation stage's reads are not bounded, as for a GLM.
+
+**Failures.** An exception raised while reading a batch, including a cancellation or a
+checkpoint overrun, leaves XGBoost's iterator and reaches the job unchanged, so it keeps its
+taxonomy.
+
+**Testing scenarios** (`tests/test_xgboost_family.py`, `tests/test_training_row_plan.py`).
+1. Equality: `TrainingJob` fitted with `fit_mode="out_of_core"`, then `"in_memory"`, on the
+   same source, for regression and classification, with weights, an offset and early
+   stopping: identical predictions, loss history and fitted rounds.
+2. Engagement: XGBoost on the CPU with a binding estimate plans `out_of_core`; on a GPU it
+   downsamples. `TrainingJob(algorithm="xgboost", device="gpu", fit_mode="out_of_core")` and
+   any other family out of core raise `HauteValidationError`.
+3. Evidence: an out-of-core result states `mode`, the candidate run has `fit_mode` and the
+   model card lists it; an in-memory fit states no mode.
+4. Cache: no `haute-xgboost-` directory remains after success, a failed batch, or
+   cancellation; a cancellation raised in a batch reaches the caller as itself.
+5. Memory: the family memory probe records the end-to-end peak of both modes at a size the
+   in-memory job exceeds (`tests/performance/test_training_family_memory_perf.py`).

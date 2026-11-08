@@ -57,9 +57,14 @@ def canonical_row_order(
                 f"column {column!r} has {values.len()} rows; the canonical order sorts {height}"
             )
         values = values.gather(order).alias("value")
+        # While every row is one run the run is no key at all, and leaving it out
+        # spares the sort from encoding two columns into rows.
+        keys = [values] if run[-1] == 0 else [run.alias("run"), values]
         step = (
-            pl.DataFrame([run.alias("run"), values])
-            .select(pl.arg_sort_by(["run", "value"], maintain_order=True, nulls_last=True))
+            pl.DataFrame(keys)
+            .select(
+                pl.arg_sort_by([key.name for key in keys], maintain_order=True, nulls_last=True)
+            )
             .to_series()
         )
         order = order.gather(step)

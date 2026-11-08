@@ -7,6 +7,9 @@ way the training worker does: the node config goes through
 cancellation callbacks. The job therefore includes the evaluation plan, the
 validation fit and the refit, metrics and diagnostics.
 
+``--mode planning`` runs a cross-validated job from preparing its source to its first
+fit, so the memory Haute's own evaluation planning and split take stands alone.
+
 ``--mode xgboost`` trains one native XGBoost booster on the same parquet through
 one data structure: an in-memory ``QuantileDMatrix`` built from the whole frame,
 a ``QuantileDMatrix`` fed by a ``DataIter`` over the parquet's row groups, or an
@@ -369,6 +372,82 @@ def _run_family(
     }
 
 
+class _FirstFitReachedError(Exception):
+    """Ends a planning run at its first fit: everything before it has run."""
+
+
+def _run_planning(data: Path, work: Path, *, folds: int) -> dict[str, Any]:
+    """A cross-validated job's high-water marks from preparing its source to its first fit.
+
+    The plan build and the split each get a stage of their own, so a rise can be put
+    down to one or the other; no fit runs, so no engine's memory shows.
+    """
+    from haute._execution_context import ExecutionContext, ExecutionProfile
+    from haute.modelling import TrainingJob
+    from haute.modelling._train_config import build_training_job_kwargs
+
+    baseline = _baseline_rss()
+    baseline_peak = _peak_rss()
+    config = node_config("xgboost")
+    config["evaluation"] = {
+        **EVALUATION,
+        "validation": {"method": "cross_validation", "fold_count": folds},
+    }
+    job_kwargs = build_training_job_kwargs(config, data=str(data))
+    job_kwargs["output_dir"] = str(work / "output")
+    context = ExecutionContext(
+        operation="training_job",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id="training-planning-memory-probe",
+        memory_baseline_bytes=baseline,
+    )
+    started = time.perf_counter()
+    stages = _StageLog(started)
+    source_prepared_peak: int | None = None
+
+    def staged(method: Callable[..., Any], name: str) -> Callable[..., Any]:
+        def run(*args: Any, **kwargs: Any) -> Any:
+            nonlocal source_prepared_peak
+            if source_prepared_peak is None:
+                source_prepared_peak = _peak_rss()
+            stages.mark(name)
+            result = method(*args, **kwargs)
+            stages.mark(f"after {name}")
+            return result
+
+        return run
+
+    def progress(message: str, _fraction: float) -> None:
+        context.checkpoint(label="training_progress")
+        stages.mark(message)
+        if "Loading training data" in message:
+            raise _FirstFitReachedError
+
+    TrainingJob._build_evaluation_plan = staged(  # type: ignore[method-assign]
+        TrainingJob._build_evaluation_plan, "build evaluation plan"
+    )
+    TrainingJob._split_data = staged(  # type: ignore[method-assign]
+        TrainingJob._split_data, "split data"
+    )
+    try:
+        TrainingJob(**job_kwargs).run(progress, execution_context=context)
+    except _FirstFitReachedError:
+        pass
+    else:
+        raise AssertionError("the job finished without reaching a fit")
+    peak = _peak_rss()
+    assert source_prepared_peak is not None
+    return {
+        "baseline_rss_bytes": baseline,
+        "baseline_peak_rss_bytes": baseline_peak,
+        "source_prepared_peak_rss_bytes": source_prepared_peak,
+        "peak_rss_bytes": peak,
+        "planning_rise_bytes": peak - source_prepared_peak,
+        "stages": stages.entries,
+        "wall_seconds": time.perf_counter() - started,
+    }
+
+
 def _xgboost_inputs(frame: Any) -> tuple[Any, Any, Any]:
     """A pandas frame of float32 numerics and fixed-category codes, label and weight."""
     import numpy as np
@@ -507,8 +586,9 @@ def _run_xgboost(variant: str, data: Path, work: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("family", "xgboost"), required=True)
+    parser.add_argument("--mode", choices=("family", "planning", "xgboost"), required=True)
     parser.add_argument("--family", choices=FAMILIES)
+    parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--variant", choices=XGBOOST_VARIANTS)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
@@ -527,6 +607,8 @@ def main() -> int:
             fit_mode=args.fit_mode,
             memory_limit_bytes=args.memory_limit_bytes,
         )
+    elif args.mode == "planning":
+        payload = _run_planning(args.data, args.work, folds=args.folds)
     else:
         payload = _run_xgboost(args.variant, args.data, args.work)
     # ``--output`` is supplied from pytest's tmp_path by the parent harness.

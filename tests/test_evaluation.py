@@ -227,7 +227,7 @@ _GOLDEN_STRATIFIED_3_FOLDS_SEED_42 = [[6, 8, 5, 3], [4, 2, 9, 7], [10, 0, 1, 11]
 
 
 def test_stratified_fold_assignment_golden_vector_pins_numpy_generator_stream() -> None:
-    folds = _stratified_parts(list(range(12)), ["a", "b"] * 6, 3, 42)
+    folds = [part.tolist() for part in _stratified_parts(list(range(12)), ["a", "b"] * 6, 3, 42)]
 
     assert folds == _GOLDEN_STRATIFIED_3_FOLDS_SEED_42, (
         "NumPy Generator stream changed: stratified fold assignment no longer matches "
@@ -766,3 +766,170 @@ def test_holdout_report_counts_the_final_refit_only_when_it_runs(
     )
 
     assert report.fit_count == fit_count
+
+
+# Plan files as the position-tuple implementation wrote them: holding a plan as row
+# labels must not change one byte of what a plan selects or how it is saved.
+_GOLDEN_PLAN_FILES = {
+    "random_cross_validation": (
+        {
+            "strategy": "random",
+            "seed": 42,
+            "test": {"size": 0.25},
+            "validation": {"method": "cross_validation", "fold_count": 3},
+        },
+        {"row_count": 12, "task": "regression", "row_order": list(range(12))},
+        "T01211TT0202",
+        [("01", "2"), ("02", "1"), ("12", "0")],
+    ),
+    "random_holdout": (
+        {"strategy": "random", "seed": 7, "validation": {"method": "single", "size": 0.25}},
+        {"row_count": 12, "task": "regression", "row_order": list(range(12))},
+        "000010100010",
+        [("0", "1")],
+    ),
+    "stratified": (
+        {
+            "strategy": "random",
+            "seed": 3,
+            "test": {"size": 0.25},
+            "validation": {"method": "cross_validation", "fold_count": 2},
+        },
+        {
+            "row_count": 12,
+            "task": "classification",
+            "row_order": list(range(12)),
+            "target_values": ["a", "b"] * 6,
+        },
+        "1110T00T011T",
+        [("0", "1"), ("1", "0")],
+    ),
+    "group": (
+        {
+            "strategy": "group",
+            "seed": 5,
+            "group_column": "g",
+            "test": {"size": 0.2},
+            "validation": {"method": "cross_validation", "fold_count": 2},
+        },
+        {"row_count": 12, "task": "regression", "group_values": [*"ppqqrrssttuu"]},
+        "11TT11000011",
+        [("0", "1"), ("1", "0")],
+    ),
+    "temporal_expanding": (
+        {
+            "strategy": "temporal",
+            "date_column": "d",
+            "test": {"start": "2020-01-07"},
+            "validation": {"method": "cross_validation", "fold_count": 2, "window": "expanding"},
+        },
+        {
+            "row_count": 8,
+            "task": "regression",
+            "date_values": [f"2020-01-0{day}" for day in range(1, 9)],
+        },
+        "112200TT",
+        [("1", "2"), ("12", "0")],
+    ),
+    "temporal_holdout": (
+        {
+            "strategy": "temporal",
+            "date_column": "d",
+            "validation": {"method": "single", "start": "2020-01-05"},
+        },
+        {
+            "row_count": 8,
+            "task": "regression",
+            "date_values": [f"2020-01-0{day}" for day in range(1, 9)],
+        },
+        "00001111",
+        [("0", "1")],
+    ),
+}
+
+
+def _golden_plan(name: str) -> tuple[EvaluationPlan, str, list[tuple[str, str]]]:
+    config, inputs, memberships, fits = _GOLDEN_PLAN_FILES[name]
+    plan = generate_evaluation_plan(
+        EvaluationConfig.from_plain_data({"schema_version": 1, **config}),
+        source_sha256="a" * 64,
+        **inputs,
+    )
+    return plan, memberships, fits
+
+
+@pytest.mark.parametrize("name", sorted(_GOLDEN_PLAN_FILES))
+def test_a_plan_file_keeps_its_golden_encoding_and_round_trips(name: str) -> None:
+    plan, memberships, fits = _golden_plan(name)
+
+    plain = plan.to_plain_data()
+    assert plain["memberships"] == memberships
+    assert [(fit["train"], fit["validation"]) for fit in plain["validation_fits"]] == fits
+    assert EvaluationPlan.from_plain_data(plain) == plan
+
+
+@pytest.mark.parametrize("name", sorted(_GOLDEN_PLAN_FILES))
+def test_a_plan_holds_one_byte_a_row_and_counts_and_masks_agree_with_its_positions(
+    name: str,
+) -> None:
+    plan, _, _ = _golden_plan(name)
+
+    assert plan.row_groups.nbytes == plan.row_count
+    assert not plan.row_groups.flags.writeable
+    assert plan.development_rows == len(plan.development_positions)
+    assert plan.test_rows == len(plan.test_positions)
+    final = plan.final_mask()
+    assert np.flatnonzero(final == 0).tolist() == list(plan.development_positions)
+    assert np.flatnonzero(final == 2).tolist() == list(plan.test_positions)
+    for index, fit in enumerate(plan.validation_fits):
+        assert fit.row_groups is plan.row_groups
+        assert fit.train_rows == len(fit.train_positions)
+        assert fit.validation_rows == len(fit.validation_positions)
+        selection = plan.selection_mask(index)
+        assert np.flatnonzero(selection == 0).tolist() == list(fit.train_positions)
+        assert np.flatnonzero(selection == 1).tolist() == list(fit.validation_positions)
+        assert not (selection == 2).any()
+        saved = plan.saved_selection_mask(index)
+        assert np.flatnonzero(saved == 2).tolist() == list(plan.test_positions)
+        assert np.flatnonzero(saved == 0).tolist() == list(fit.train_positions)
+
+
+def test_a_temporal_fit_leaves_later_rows_unused() -> None:
+    plan, _, _ = _golden_plan("temporal_expanding")
+
+    # Memberships "112200TT": the first fit trains on the group labelled 1, validates on
+    # the group labelled 2, and leaves the third block and the final test unused.
+    assert plan.selection_mask(0).tolist() == [0, 0, 1, 1, 3, 3, 3, 3]
+
+
+def test_plans_differing_in_any_membership_are_not_equal() -> None:
+    config = EvaluationConfig.from_plain_data(
+        {
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 1,
+            "validation": {"method": "single", "size": 0.25},
+        }
+    )
+    first, second = (
+        generate_evaluation_plan(
+            config,
+            source_sha256="a" * 64,
+            row_count=40,
+            task="regression",
+            row_order=order,
+        )
+        for order in (list(range(40)), list(range(39, -1, -1)))
+    )
+
+    assert first != second
+    assert first.validation_fits[0] != second.validation_fits[0]
+
+
+def test_file_sha256_hashes_the_whole_file(tmp_path: Path) -> None:
+    path = tmp_path / "source.bin"
+    # Longer than the streaming read's buffer, so the file arrives in several reads.
+    payload = bytes(range(256)) * 4096
+    path.write_bytes(payload)
+
+    assert file_sha256(path) == hashlib.sha256(payload).hexdigest()

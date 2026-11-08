@@ -44,8 +44,8 @@ LightGBM 4.3, XGBoost 4.2 and EBM 3.6, with a fixed per-job cost of 223 MB (GLM)
 width, and CatBoost's figure carries five categoricals (the existing comment's 10M x 101
 numeric calibration implies about 3), so a per-family multiplier needs a numeric-only
 CatBoost run and a design-width GLM basis before its values are fixed. The estimate keeps
-its single multiplier until then (decided 2 November 2026); `MOD-M02` engages XGBoost's
-external memory from this estimate, so calibrating it moves that point too.
+its single multiplier until then (decided 2 November 2026); XGBoost's external memory and
+the GLM's chunked fit engage from this estimate, so calibrating it moves that point too.
 
 **Plan:** Measure the RAM estimator's overhead multiplier and width-calibration
 seeds against Polars 2's `estimated_size`, and run the operator certification

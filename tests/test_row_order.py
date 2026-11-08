@@ -475,16 +475,39 @@ def test_a_training_run_plans_the_same_rows_from_a_permuted_source(
 
 def test_groups_get_the_same_partition_whatever_order_they_appear_in() -> None:
     # Equal-sized groups: the seeded shuffle alone decides their place.
-    groups = {f"g{index:02d}": [index * 3, index * 3 + 1, index * 3 + 2] for index in range(12)}
+    groups = {f"g{index:02d}": 3 for index in range(12)}
     reversed_groups = dict(reversed(list(groups.items())))
 
-    def assignment(parts: list[list[int]]) -> list[frozenset[int]]:
+    def assignment(parts: list[list[str]]) -> list[frozenset[str]]:
         return sorted((frozenset(part) for part in parts), key=min)
 
     assert assignment(_balanced_groups(groups, 3, 7)) == assignment(
         _balanced_groups(reversed_groups, 3, 7)
     )
     assert set(_groups_near_target(groups, 9, 7)) == set(_groups_near_target(reversed_groups, 9, 7))
+
+
+def test_a_first_column_that_ties_every_row_leaves_the_order_to_the_next() -> None:
+    frame = pl.DataFrame(
+        {
+            "same": [1, 1, 1, 1, 1, 1],
+            "b": [None, 3, 1, 3, None, 2],
+            "c": ["x", "b", "z", "a", "y", "q"],
+        }
+    )
+    expected = (
+        frame.with_row_index("position")
+        .sort(["same", "b", "c"], nulls_last=True, maintain_order=True)
+        .get_column("position")
+    )
+
+    assert frame_row_order(frame).tolist() == expected.to_list()
+
+
+def test_rows_equal_in_every_column_keep_their_arrival_order() -> None:
+    frame = pl.DataFrame({"a": [2, 1, 2, 1, None, None]})
+
+    assert frame_row_order(frame).tolist() == [1, 3, 0, 2, 4, 5]
 
 
 # ---------------------------------------------------------------------------
