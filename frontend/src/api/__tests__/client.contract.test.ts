@@ -132,11 +132,11 @@ describe("client runtime contracts", () => {
       method: "POST", body: JSON.stringify({ form, environment: "dev", tables, renames, target }),
     }))
   })
-  it("loads saved database snapshots by default and explicitly requests refresh", async () => {
+  it("sends whether to reuse the saved database snapshot or refresh it", async () => {
     const snapshot = { environment: "dev", tables: [], target: "a".repeat(64), checked_at: 1700000000000 }
     mockFetch.mockImplementation(() => jsonResponse(snapshot))
 
-    expect(await fetchStoreCatalogue("dev")).toEqual(snapshot)
+    expect(await fetchStoreCatalogue("dev", false)).toEqual(snapshot)
     expect(mockFetch).toHaveBeenLastCalledWith("/api/workbench/store-catalogue", expect.objectContaining({
       method: "POST", body: JSON.stringify({ environment: "dev", refresh: false }),
     }))
@@ -146,7 +146,7 @@ describe("client runtime contracts", () => {
     }))
 
     mockFetch.mockReturnValue(jsonResponse({ environment: "dev", tables: [] }))
-    await expect(fetchStoreCatalogue("dev")).rejects.toThrow("WorkbenchStoreCatalogueResponse: invalid contract at /checked_at: required")
+    await expect(fetchStoreCatalogue("dev", false)).rejects.toThrow("WorkbenchStoreCatalogueResponse: invalid contract at /checked_at: required")
   })
 
   it("savePipeline rejects malformed 200 payloads", async () => {

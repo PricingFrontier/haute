@@ -78,7 +78,7 @@ export async function fetchStoreSql(form: FormSpec, start: "branch" | "none"): P
  * under the analyst's own sign-in, with the quotes holding values in each table and column.
  * Reuses the project's saved snapshot unless refresh explicitly requests a new database read.
  */
-export async function fetchStoreCatalogue(environment: string, refresh = false): Promise<WorkbenchStoreCatalogueResponse> {
+export async function fetchStoreCatalogue(environment: string, refresh: boolean): Promise<WorkbenchStoreCatalogueResponse> {
   const data = await request<unknown>("/api/workbench/store-catalogue", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

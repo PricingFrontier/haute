@@ -80,7 +80,7 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
   const update = (name: string, value: EnvironmentComparison) =>
     set((state) => ({ environments: { ...state.environments, [name]: value } }))
 
-  const readDatabase = (name: string, refresh = false) => {
+  const readDatabase = (name: string, refresh: boolean) => {
     const pending: CatalogueRead = { status: "reading" }
     update(name, { read: pending, compared: { status: "none" } })
     void fetchStoreCatalogue(name, refresh).then((answer) => {
@@ -116,7 +116,7 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
     renames: [],
     choose: (environment, read = true) => {
       set({ environment })
-      if (read && environment !== null) readDatabase(environment)
+      if (read && environment !== null) readDatabase(environment, false)
     },
     readAgain: () => {
       const name = get().environment

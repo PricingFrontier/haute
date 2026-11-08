@@ -939,15 +939,17 @@ builder on screen. With a quote store it is where they manage their quotes too.
   choose an environment in **Database** to compare its tables with your working schema.
   **Local** shows the schema without a database comparison. Previously fetched database
   schemas are cached across sessions; press **Refresh** to fetch the current tables.
-  Field statuses open the corresponding database details. **Database changes** lists
+  Field statuses open the corresponding database details. For a field the database lacks,
+  **Renamed from** names the database column that held its values under an old name, so
+  the comparison checks that column as the field's; it moves no data. **Database changes** lists
   missing columns grouped by table and labels missing tables **New table**. Its heading
   counts the additions. **No additions** means all schema names are present; existing
   types, keys or other details can still differ. The fetch time is in **Refresh**'s tooltip.
 - **Export SQL**, beside **Refresh**, opens the query for the selected database and your
   current working schema, including unsaved edits. Use **Copy SQL** or **Download SQL**.
   The script creates new tables and columns only. A renamed field becomes a new, empty
-  column; the old column and its values stay intact, even if you paired the names in the
-  schema pane. Existing column types and keys are unchanged. Data transfers, type/key
+  column; the old column and its values stay intact, even if you chose it in
+  **Renamed from**. Existing column types and keys are unchanged. Data transfers, type/key
   changes and removal of old names are manual work for the database owner.
   The SQL adds missing columns even when existing keys or row structure differ. If a
   name cannot be added, its specific reason appears in the list and SQL comments;

@@ -76,7 +76,7 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
           </DatabaseDisclosure>}
         </>}
     {canPair && <label className="flex min-w-0 flex-col gap-1">
-      <span style={QUIET}>Use database values from</span>
+      <span style={QUIET}>Renamed from</span>
       <select aria-label={`Database column for ${table.name}.${column.name}`} value={pairing?.was ?? ""}
         disabled={readOnly || answer === null} className={`${COMPACT_FIELD_CLASS} w-full`} style={INPUT_STYLE}
         onChange={(event) => event.target.value
@@ -86,7 +86,6 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
         {pairing !== undefined && !candidates.some((each) => each.column === pairing.was) && <option value={pairing.was}>{pairing.was} → {column.name}</option>}
         {candidates.map((each) => <option key={each.column} value={each.column!}>{each.column} → {column.name}{each.quotes === null ? " · count unavailable" : ` · ${each.quotes} quotes`}</option>)}
       </select>
-      <span style={QUIET}>This records which column holds the old values. Moving data is a manual step.</span>
     </label>}
     {!ordinary && pairing !== undefined && <QuietAction icon={Undo2} disabled={readOnly || answer === null}
       className="self-start" onClick={() => state.unpair(table.name, column.name)}>Remove rename choice</QuietAction>}
