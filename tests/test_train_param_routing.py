@@ -266,6 +266,10 @@ class TestCatBoostParamRouting:
         kwargs = capturing_job.captured[0]["kwargs"]
         data_path = kwargs.pop("data")
         assert data_path.endswith(".parquet")
+        # The worker's scratch lives under the job's own artifact root (MOD-M01).
+        scratch_dir = Path(kwargs.pop("scratch_dir"))
+        assert scratch_dir.name == "scratch"
+        assert Path(kwargs["output_dir"]).parent == scratch_dir.parent
         # Pin the COMPLETE TrainingJob kwargs a clean CatBoost config produces —
         # any drift in the shared builder shows up here.
         assert kwargs == {
@@ -287,6 +291,7 @@ class TestCatBoostParamRouting:
             "metrics": ["rmse"],
             "mlflow_experiment": None,
             "mlflow_destination": "",
+            "fit_mode": "in_memory",
             "output_dir": kwargs["output_dir"],
             "loss_function": "RMSE",
             "variance_power": None,

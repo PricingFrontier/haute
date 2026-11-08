@@ -39,7 +39,6 @@ from haute.routes._train_service import (
     TrainService,
     _assert_json_finite,
     _check_gpu_vram,
-    _clamp_row_limit,
     _default_train_timeout,
     _find_modelling_node,
     _training_rows,
@@ -49,7 +48,7 @@ from haute.routes._training_artifacts import (
     hold_training_artifacts,
     require_training_artifacts,
 )
-from haute.routes._training_preparation import estimate_training_memory
+from haute.routes._training_preparation import estimate_training_memory, training_row_plan
 from haute.routes.pipeline import _prepare_runtime_graph
 from haute.schemas import (
     DispersionEstimateRequest,
@@ -270,22 +269,12 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         source=body.source,
     )
 
-    # Apply user row limit to the estimate
-    user_limit = node.data.config.get("row_limit")
-    safe_limit = _clamp_row_limit(ram_est.safe_row_limit, user_limit)
-
-    # If user's row_limit is the binding constraint, suppress the RAM warning
-    warning = ram_est.warning
-    was_downsampled = ram_est.was_downsampled
-    if (
-        warning
-        and user_limit
-        and isinstance(user_limit, (int, float))
-        and int(user_limit) > 0
-        and (safe_limit is not None and safe_limit == int(user_limit))
-    ):
-        warning = None
-        was_downsampled = False
+    # The run's own plan: the user's limit suppresses the RAM verdict, and a GLM
+    # the RAM limit binds on trains on every row out of core instead.
+    row_plan = training_row_plan(node.data.config, ram_est)
+    safe_limit = row_plan.row_limit
+    warning = ram_est.warning if row_plan.ram_downsamples else None
+    was_downsampled = ram_est.was_downsampled if row_plan.ram_downsamples else False
 
     # GPU VRAM estimation — sized at the rows training will use (the user's and
     # the RAM-safe limit applied) and the feature count (not total columns),
@@ -347,6 +336,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         ),
         unavailable=unavailable,
         unbounded_join_node_ids=list(ram_est.unbounded_join_node_ids),
+        fit_mode=row_plan.fit_mode,
         was_downsampled=was_downsampled,
         warning=warning,
         gpu_vram_estimated_mb=vram_check.estimated_mb,

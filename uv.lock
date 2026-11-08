@@ -1371,7 +1371,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5,<3" },
     { name = "python-dotenv", specifier = ">=1.2.2,<2" },
     { name = "python-multipart", specifier = ">=0.0.31,<0.1" },
-    { name = "rustystats", specifier = ">=0.9.0,<0.10" },
+    { name = "rustystats", specifier = ">=0.10.0,<0.11" },
     { name = "scipy", specifier = ">=1.16.0,<2" },
     { name = "sqlalchemy", specifier = ">=2.0.46,<3" },
     { name = "sqlalchemy", marker = "extra == 'sqlserver'", specifier = ">=2.1.0,<3" },
@@ -2723,11 +2723,11 @@ wheels = [
 
 [[package]]
 name = "oauthlib"
-version = "4.0.0"
+version = "4.0.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7a/d8/a1bcc8ba112a627f8ffbdc212a78ce18d3ac07e91a5ca65d27918eee25a1/oauthlib-4.0.0.tar.gz", hash = "sha256:efb274799819440f95b4ab3b818869f1ce9ae26c5beacba0201d1a1b76b54f86", size = 187232, upload-time = "2026-09-28T06:01:18.77Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/17/2bb072de0b990303c985f26869fd47bb179024a051f47e7f9d208eb92f8e/oauthlib-4.0.1.tar.gz", hash = "sha256:3d73febdb6faa00f277c81fb04be7b7586fb96fc3b7f0b9c772dada69a25ede7", size = 191219, upload-time = "2026-10-31T09:52:58.008Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/f4/78229a1066068ca14fc60fb26cf7381cabe4382261392b90e5f9552722d4/oauthlib-4.0.0-py3-none-any.whl", hash = "sha256:624c28c13a0a59cabf9747dfa52af63be3e512a7f2714df16e91b5b3a145e6cd", size = 159715, upload-time = "2026-09-28T06:01:17.008Z" },
+    { url = "https://files.pythonhosted.org/packages/df/ef/3b8adde1b32a6f540758bff734d3442c621734c83708e5f02b0ba2f43b84/oauthlib-4.0.1-py3-none-any.whl", hash = "sha256:498a298876e996301950a5b053d12c31628bb7b895db03666430c69ce182eb61", size = 161934, upload-time = "2026-10-31T09:52:56.206Z" },
 ]
 
 [[package]]
@@ -3923,29 +3923,29 @@ wheels = [
 
 [[package]]
 name = "rustystats"
-version = "0.9.0"
+version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "polars" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/aa/ce727db5e854aac1ca8f5a3f6e10abab666e9275df3f90b909cb0b95754d/rustystats-0.9.0.tar.gz", hash = "sha256:c603752028dc0d52fea93a1fd5e515a6b8630ff30d137ee444cb96e3289822d2", size = 744332, upload-time = "2026-07-16T19:11:19.431Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/79/0c69991b3cf25c8bfebafd0aa2bcbeb7a84e68d9edf1f8c8e13e00c51f35/rustystats-0.10.0.tar.gz", hash = "sha256:0cd4deac5635b77f0b8e250586202eaeac3300bcdc35756d555dbdd82234ac5d", size = 892342, upload-time = "2026-11-08T15:22:44.407Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/52/493b8ebc74e40d5c4bee5bfb2ed2be6f3ba44315218dca430ced62bae55d/rustystats-0.9.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:a09f40f8b5b406bd10cf7efe4ee33162bf48e5ccc1b63da5221a580181637a58", size = 1750047, upload-time = "2026-07-16T19:10:51.893Z" },
-    { url = "https://files.pythonhosted.org/packages/bd/d8/0df8784b776ecef8fe4552e661b0b4f61ef82e3238cb2af497ae7add13eb/rustystats-0.9.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:9a4f3983b8d558de3d870c9fb17eb23c0611c96125df19c7d83dde2af31e977d", size = 1622446, upload-time = "2026-07-16T19:10:53.575Z" },
-    { url = "https://files.pythonhosted.org/packages/83/b4/7b66320c2fa94fd0de17343e0faabec8fa107424ae52e0146676cee7e238/rustystats-0.9.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b5888add98c10c472496a1efa4d0ff06cfb1e23c1aab412ba7fdda280e32acf8", size = 1673499, upload-time = "2026-07-16T19:10:55.332Z" },
-    { url = "https://files.pythonhosted.org/packages/35/38/721516403f1ae8167a7ffefd5e591bb85f5aa921879061a0804924abb387/rustystats-0.9.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e1b8cb6f2fc014f60159ea832b96800d04cdd43421e5108f1de685b7fe82bdc7", size = 1794738, upload-time = "2026-07-16T19:10:57.541Z" },
-    { url = "https://files.pythonhosted.org/packages/09/dd/9cb634508217593379177e1d8b5688f3332f6303d38bc2ea313a9391d52d/rustystats-0.9.0-cp311-cp311-win_amd64.whl", hash = "sha256:85203910ec88a8eb94b8d248c1ab80b2432e426a3085a153d510144b25698739", size = 1715925, upload-time = "2026-07-16T19:10:59.212Z" },
-    { url = "https://files.pythonhosted.org/packages/6b/f2/c1825ff09c275709481e66b3a6f3f9c12b7bf39dfae0af52c398b824ee1f/rustystats-0.9.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:cf2864eecd5df66a3290fae93bf73379de437aee192553ef4ac5062d42cce2f6", size = 1748889, upload-time = "2026-07-16T19:11:01.068Z" },
-    { url = "https://files.pythonhosted.org/packages/be/6b/37b47cf691e4346151a9bb2ff4fd3b1692f00f33a8b983792cfd87e6462e/rustystats-0.9.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:e3317788d93b34d785652b215c824cf691cdebf3932917bbe1c37dd4e1464391", size = 1623550, upload-time = "2026-07-16T19:11:02.655Z" },
-    { url = "https://files.pythonhosted.org/packages/dd/37/20bada6d960584c6dbd5b23de6ed3b29ce15bf5276b1e5829508a934ce78/rustystats-0.9.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:87b00364700e99349cc1054d4d4d79d2823e8d4e2badf1c0c37ccbece59fab78", size = 1674788, upload-time = "2026-07-16T19:11:04.326Z" },
-    { url = "https://files.pythonhosted.org/packages/32/b2/56b14a6da975d95f5b32b6bc85a379d8354667ff49ecb1ba6f336b5e0150/rustystats-0.9.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aea2c60e5f95582a7cf9740e8ac047b929ad8c69e60fa0699800c685b27e9dbf", size = 1797341, upload-time = "2026-07-16T19:11:06.045Z" },
-    { url = "https://files.pythonhosted.org/packages/cc/b5/ad82024be0e3e30b3b21c33b8f9841ea8f239834ebbd373f58a4e6f8a0ad/rustystats-0.9.0-cp312-cp312-win_amd64.whl", hash = "sha256:57279ba19e8e48109df0750edb9d5fd6fe4f75c8290decdc72f7fc231fd11504", size = 1715369, upload-time = "2026-07-16T19:11:08.197Z" },
-    { url = "https://files.pythonhosted.org/packages/44/16/b44d3915ccd832b6c43211beb9089dc73efa2546ba7bed2c1c21a98f3dbd/rustystats-0.9.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:0e03f970faebe3e8b8950323496270f954ff1e0b5e4bf6be4871bcc2c1f38849", size = 1748754, upload-time = "2026-07-16T19:11:09.957Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/2d/fa0d20473c21384a55bf0f536d9c24c947d77ef3759b98db9949fc2a9cb4/rustystats-0.9.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:119dcfac31c097140db4d2f66eda9e702b60a38b643df3473a35d7dcbe9d346d", size = 1623317, upload-time = "2026-07-16T19:11:11.633Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/03/78ea2fde2e0141a9476cf6bfbe8a2b06e8aa86ee9cacf05de46bbba321d6/rustystats-0.9.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:95f1c2a7f6b8cfa9890a44bd764b4ade79b14aa471998dff0402b51365c856c4", size = 1674690, upload-time = "2026-07-16T19:11:13.72Z" },
-    { url = "https://files.pythonhosted.org/packages/d4/b5/f56e420bec2a9348a4ddb1efe97aacb787d3374a01af3872c845cd0006ad/rustystats-0.9.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:564da80c6b5785fff7f120557ed53f096883f3d95568eb8a677a2e2b3f04ed3d", size = 1797261, upload-time = "2026-07-16T19:11:15.48Z" },
-    { url = "https://files.pythonhosted.org/packages/d1/56/fad3a0582e698b088d9df26243802f541ebf6cbb7cab9adb114474f37c99/rustystats-0.9.0-cp313-cp313-win_amd64.whl", hash = "sha256:e2a46bb42293caffd25b1b3c0b5f849250e04712f9f65a08840aaf9f905fcfdc", size = 1715255, upload-time = "2026-07-16T19:11:17.52Z" },
+    { url = "https://files.pythonhosted.org/packages/38/c6/59eb81e72dec63c86ab755f0174874d268721e346bbfb5d2dee7545788ac/rustystats-0.10.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:a3874822abcdf9f6396f66a182b66be47563b63fa6298be54c874cf190e07396", size = 2139062, upload-time = "2026-11-08T15:22:16.887Z" },
+    { url = "https://files.pythonhosted.org/packages/04/6f/f77edcc844434c9a956c268b35e721589322f739892e82cea20be02263fe/rustystats-0.10.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:ebf5b1590bcd51c35442867b4211774aca2444ae6f8e8d62675152901bd4662f", size = 1986308, upload-time = "2026-11-08T15:22:18.794Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/f8/1663666fbb53d20bfc4617067a7c449e063aeaf960d6995965667c85b9e6/rustystats-0.10.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:fd2dfd24d92bf6c58ee236bca30b4233390deae8669f648a1652d5783b023ef5", size = 2045019, upload-time = "2026-11-08T15:22:20.977Z" },
+    { url = "https://files.pythonhosted.org/packages/49/d0/feb7e948d685551eebdffebf31c4f1b36ddc2b9b4c5f80e4b281ef599305/rustystats-0.10.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:fa297f1ca7e5c820f7402caab94e1d6019b18b9be96222d11c7015e1fa9897bd", size = 2193531, upload-time = "2026-11-08T15:22:22.642Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/54/791ac0fa4d56e440aae33eddc4b5241de90ad7b67d5e65e43da1a035295f/rustystats-0.10.0-cp311-cp311-win_amd64.whl", hash = "sha256:693c3cb8f264534a98536fc34dba21b5151ee086d82d2cdd9e6b52005bbbe841", size = 2131680, upload-time = "2026-11-08T15:22:24.39Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/f8/f7aaec202f2285822bf2eb00f169dd23a1cf74ac935037a543a3bdb61ee0/rustystats-0.10.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:9f025ca7906f7b58b85a4a59864277ad2a14b664c71b92057d651788c907f9b1", size = 2136521, upload-time = "2026-11-08T15:22:26.215Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/95/9c676ee5a76b29414412022b8d4bdde33421ea077ec24421d84f99785c25/rustystats-0.10.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d5612b00bfb458890d826de095c7f107fa2090f00f397685736f0b6e43380562", size = 1981439, upload-time = "2026-11-08T15:22:27.826Z" },
+    { url = "https://files.pythonhosted.org/packages/03/bc/2ef7ab198a1abf211cbdf8db0a508cc2459203cb1249a88af11d76dbf55c/rustystats-0.10.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e40e01765359a2ae7f48258b0101f91375ff2419050a2686980f41415b7495f3", size = 2046488, upload-time = "2026-11-08T15:22:29.706Z" },
+    { url = "https://files.pythonhosted.org/packages/53/07/f28ec69bd7b2e0e57c69b72b74d296e7ef8aa0957a3688fb5c6ec76aa65b/rustystats-0.10.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:00710a7dab0e3f377e167a50d0555b97ca38e1c5fee1f40290c94537a29d8b05", size = 2197532, upload-time = "2026-11-08T15:22:31.584Z" },
+    { url = "https://files.pythonhosted.org/packages/76/9e/d2e1367b98f85464e2d254f2acbc9e8bd75719c21ca20be47c9889f13787/rustystats-0.10.0-cp312-cp312-win_amd64.whl", hash = "sha256:7d2facb858e2b31182c133e3e518391195d4242e959658551e3101ced9365c82", size = 2131367, upload-time = "2026-11-08T15:22:33.24Z" },
+    { url = "https://files.pythonhosted.org/packages/38/61/a6d3a18b40763a4db9bb63b057105da78995c806524302022481030ef627/rustystats-0.10.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:56debaa50e81020ce652cc76e31280f9a1fe17bc2076d86c741831c4d17693f1", size = 2136337, upload-time = "2026-11-08T15:22:34.912Z" },
+    { url = "https://files.pythonhosted.org/packages/54/b0/5f1d36502ddb129015c52ba05a76fbdb3af8baab510e714efeccabb6310e/rustystats-0.10.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:d6c29a94eaef2ec235baae892c7ef1ffaa40c47e3384ac6f41b4b5d3e21daa9c", size = 1981155, upload-time = "2026-11-08T15:22:36.595Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/80/86965032e4b75478517c7e505fcd7f42342c1c81662b7aa5559b8b03bcd5/rustystats-0.10.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:dc8f49673e36c8c2d9af464e4f034e3754e42eca560c5347293f7f5d56c946d6", size = 2046396, upload-time = "2026-11-08T15:22:38.284Z" },
+    { url = "https://files.pythonhosted.org/packages/45/43/2b79e67302896effab9e1f01d3b61522903f5d93b30f94ad05e16c40e9f7/rustystats-0.10.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1c2754c12f615b52bb7bbc542f2511975832cad1835be1cc3deac4c784429efe", size = 2197267, upload-time = "2026-11-08T15:22:40.66Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/30/dab6afc462d84e9b73b97d8d20157c0e4644e88013aacaf43ae74ede4e47/rustystats-0.10.0-cp313-cp313-win_amd64.whl", hash = "sha256:6663a80a444b5bc63254a5420f1ddff5a01fada2df9a3a636d501828df4b4160", size = 2131660, upload-time = "2026-11-08T15:22:42.591Z" },
 ]
 
 [[package]]

@@ -307,6 +307,52 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.getByText("Will downsample")).toBeInTheDocument()
   })
 
+  it("says a GLM the RAM limit binds on trains every row in chunks (MOD-M01)", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimate: makeTrainEstimate({
+        total_rows: 100_000,
+        bytes_per_row: 1_048_576,
+        safe_row_limit: null,
+        fit_mode: "out_of_core",
+      }),
+    })} />)
+    expect(screen.getByText("Will train in chunks")).toBeInTheDocument()
+    expect(screen.queryByText("Will downsample")).toBeNull()
+    expect(screen.queryByText("Training rows")).toBeNull()
+    expect(screen.getByText("Est. in-memory RAM")).toBeInTheDocument()
+    expect(screen.getByText("97.7 GB")).toBeInTheDocument()
+  })
+
+  it("trains a chunked GLM on the user's own row limit", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      rowLimit: 60_000,
+      ramEstimate: makeTrainEstimate({
+        total_rows: 100_000,
+        safe_row_limit: 60_000,
+        fit_mode: "out_of_core",
+      }),
+    })} />)
+    expect(screen.getByText("Will train in chunks")).toBeInTheDocument()
+    expect(screen.getByText("Training rows").nextElementSibling).toHaveTextContent("60,000")
+  })
+
+  it("adds the chunked fit to an unproven row bound", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      nodeLabel: (nodeId: string) => nodeId,
+      ramEstimate: makeTrainEstimate({
+        total_rows: 10_000_000_000,
+        safe_row_limit: null,
+        bytes_per_row: 5_000,
+        unbounded_join_node_ids: ["competitor_join"],
+        fit_mode: "out_of_core",
+      }),
+    })} />)
+    const box = screen.getByRole("status")
+    expect(box).toHaveTextContent("Row count not proven")
+    expect(box).toHaveTextContent("FitIn chunks")
+    expect(box).not.toHaveTextContent("Training row limit")
+  })
+
   it("shows RAM estimate error when present", () => {
     render(<TrainingActionsAndResults {...makeProps({
       ramEstimateError: "Connection failed",

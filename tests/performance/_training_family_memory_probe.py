@@ -296,7 +296,14 @@ class _StageLog:
         return self._stage
 
 
-def _run_family(family: str, data: Path, work: Path) -> dict[str, Any]:
+def _run_family(
+    family: str,
+    data: Path,
+    work: Path,
+    *,
+    fit_mode: str = "in_memory",
+    memory_limit_bytes: int | None = None,
+) -> dict[str, Any]:
     import importlib
 
     from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -310,11 +317,15 @@ def _run_family(family: str, data: Path, work: Path) -> dict[str, Any]:
 
     job_kwargs = build_training_job_kwargs(node_config(family), data=str(data))
     job_kwargs["output_dir"] = str(work / "output")
-    # The worker's context: the training-prep profile, no memory limit given.
+    job_kwargs["fit_mode"] = fit_mode
+    job_kwargs["scratch_dir"] = str(work / "scratch")
+    # The worker's context: the training-prep profile, with the growth budget given
+    # (none by default), enforced at every checkpoint as the worker's is.
     context = ExecutionContext(
         operation="training_job",
         profile=ExecutionProfile.TRAINING_PREP,
         job_id="training-family-memory-probe",
+        memory_limit_bytes=memory_limit_bytes,
         memory_baseline_bytes=baseline,
     )
     started = time.perf_counter()
@@ -502,12 +513,20 @@ def main() -> int:
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fit-mode", choices=("in_memory", "out_of_core"), default="in_memory")
+    parser.add_argument("--memory-limit-bytes", type=int)
     args = parser.parse_args()
 
     import polars  # noqa: F401  - imported before the baseline, as the worker has it
 
     if args.mode == "family":
-        payload = _run_family(args.family, args.data, args.work)
+        payload = _run_family(
+            args.family,
+            args.data,
+            args.work,
+            fit_mode=args.fit_mode,
+            memory_limit_bytes=args.memory_limit_bytes,
+        )
     else:
         payload = _run_xgboost(args.variant, args.data, args.work)
     # ``--output`` is supplied from pytest's tmp_path by the parent harness.

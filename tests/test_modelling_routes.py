@@ -725,6 +725,7 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                fit_mode="in_memory",
                 execution_context=_admitted_training_context_for_launch(job_id),
             )
 
@@ -827,6 +828,7 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                fit_mode="in_memory",
                 execution_context=_admitted_training_context_for_launch(job_id),
             )
             assert thread is not None

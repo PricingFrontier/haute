@@ -12,5 +12,6 @@
   "gpu_vram_available_mb": null,
   "gpu_warning": null,
   "unbounded_join_node_ids": [],
+  "fit_mode": "in_memory",
   "unavailable": null
 }

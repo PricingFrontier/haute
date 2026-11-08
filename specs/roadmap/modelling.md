@@ -10,16 +10,17 @@ memory machinery in
 six trained families (CatBoost, GLM through RustyStats, XGBoost, LightGBM,
 EBM and t-boost) are in scope only for what each backend exposes to a caller
 that must bound memory; their losses, tuning and evaluation are out of scope.
-The GLM distributions that `MOD-M01` names in its acceptance are the subject
-of that package, not a tuning choice. `MOD-R11` comes from the family memory
-measurement and covers the memory Haute's own evaluation planning takes.
+`MOD-R11` comes from the family memory measurement and covers the memory Haute's
+own evaluation planning takes.
 
-Today a training fit that exceeds its memory budget terminates: bounded
+A GLM job whose up-front estimate would downsample trains on every row in chunks
+(the modelling low-level specification, Chunked GLM fitting). Otherwise a training
+fit that exceeds its memory budget terminates: bounded
 streaming mode is refused outright (`BoundedMemoryUnsupportedError`, shown as
 "Training cannot run in bounded streaming mode"), and a budget overrun
-surfaces `memory_limited` with reduce-your-data guidance. `MOD-M01` and
-`MOD-M02` add a degrade-gracefully path. Both were decided on 2 November 2026: `MOD-M01`
-waits on RustyStats, and `MOD-M02` is XGBoost's exact external memory, engaging the same way.
+surfaces `memory_limited` with reduce-your-data guidance. `MOD-M02` adds a
+degrade-gracefully path, decided on 2 November 2026: XGBoost's exact external memory,
+engaging the way the GLM's chunked fit does.
 The remaining design decisions belong to each implementation cycle, not to this page. Where this page names
 a tolerance, a bound or a cap, the decision sets its value and the modelling
 low-level specification records it before implementation starts.
@@ -51,97 +52,15 @@ the up-front estimate, never as a restart.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MOD-M01 | Deferred | P3 | Exact chunked GLM fitting under a memory budget, once RustyStats fits out of core. |
 | MOD-M02 | Planned | P3 | An XGBoost job too large for memory trains on every row through XGBoost's external memory, giving the same model. |
 | MOD-R11 | Planned | P2 | Evaluation planning and the split hold their memberships as row labels, not as Python integers for every position. |
 
 ## Planned improvements
 
-`MOD-M02` builds the batch reading and result-metadata surfaces itself, since
-`MOD-M01` waits on RustyStats; `MOD-M01`'s Haute half reuses them later. `MOD-R11`
-comes first: until planning stops costing twice the frame, a low-memory fit saves
-nothing a job can use.
-
-### MOD-M01 — Adaptive GLM fitting (exact, chunked)
-**Why:** GLM fitting by iteratively reweighted least squares (IRLS) is
-chunkable in its data term. Each iteration's normal-equation terms, X′WX and
-X′Wz, are sums over rows, so accumulating them chunk by chunk from the
-training parquet evaluates the same estimating equations as the in-memory
-fit without subsampling any row. What is bounded is the row-dependent memory;
-the p×p accumulator and the solver workspace are fixed costs that must be
-admitted against the budget separately, and a wide one-hot design can exceed
-the budget at any chunk size. With the same preprocessing, encoding, starting
-values, regularisation, rank handling, solver and stopping rules, the result
-is numerically equivalent to the in-memory fit, not bitwise identical:
-cross-chunk accumulation sums in a different order, and an ill-conditioned
-design is where that difference shows.
-
-The cost is measured in passes over the rows. One pass evaluates the deviance
-at a candidate coefficient vector and, if that candidate is accepted,
-accumulates the next normal equations in the same pass; so an iteration whose
-first candidate is accepted costs one pass, and each rejected candidate under
-step-halving costs one more. A fitter that does not fuse evaluation and
-accumulation pays twice per iteration. Binomial or Poisson non-existence
-(separation) and a poor start can make rejected candidates frequent, and
-step-halving does not cure separation, so a finite pass budget exists only
-once the iteration and halving caps are set. Under those caps this turns a
-memory-limited GLM fit from a terminal failure into a slower exact fit.
-
-**Decision (2 November 2026):** the chunk-accumulated IRLS belongs in
-RustyStats, not in Haute. RustyStats builds the design (splines, target and
-frequency encoding, interactions) and runs the solver (ridge, lasso and
-elastic net, monotone constraints, automatic smoothing), so only the same code
-can credibly reproduce the in-memory fit; a second solver in Haute would have
-to be kept equivalent to it. The package is deferred until RustyStats offers an
-out-of-core fit: a design frozen from a first pass over the data (knots,
-levels, encodings) and a fused evaluate-and-accumulate IRLS over row batches.
-Once it does, chunked fitting engages automatically when the up-front estimate
-says the in-memory GLM fit will not fit, and is stamped in the result metadata;
-an in-memory fit that overruns at a checkpoint, or a worker that dies, still
-ends `memory_limited`, with no restart. A Tweedie or Negative Binomial fit
-takes its configured dispersion parameter (Haute already requires one, set by
-the user or by the explicit profile-likelihood estimate on a bounded sample),
-so the chunked path never searches it. The iteration and halving caps and the
-coefficient tolerance are set with the RustyStats implementation and recorded
-in the modelling low-level specification then.
-
-**Plan:** Once RustyStats fits out of core,
-stream the sunk training parquet into it in batches,
-reusing the existing chunk-sizing primitives (`src/haute/chunking.py`,
-`src/haute/_ram_estimate.py`). The convergence statistic and the deviance
-come from the candidate pass that accepted the final coefficients; the
-dispersion estimate and the evaluation plan run over one further pass at
-those coefficients unless that pass can be fused too. The refusal branch for
-bounded streaming mode is retired for GLM only when the chunked path covers
-it.
-
-**Acceptance:** Chunked and in-memory fits agree on coefficients within the
-relative tolerance the decision fixes, which is no looser than the in-memory
-solver's own convergence tolerance, on representative
-gaussian/poisson/gamma/tweedie/binomial jobs with weights and offset. The
-representative set includes an ill-conditioned design, because summation
-order is where the two paths diverge, and a job on which step-halving
-rejects at least one candidate. The dispersion estimates agree to the same
-tolerance: coefficients are invariant to the dispersion, so a
-coefficients-only comparison would pass over a wrong dispersion while every
-standard error and interval derived from it was skewed. Peak RSS stays within
-the execution budget on a fit the in-memory path exceeds it on, pinned with
-the existing memory-metrics machinery. A fit whose fixed p×p state or
-minimum chunk still exceeds the budget terminates `memory_limited` with the
-curated message. The chosen engagement mode and caps are specified in the
-modelling low-level specification and visible in the training result
-metadata.
-
-**Dependencies:** An out-of-core fit in RustyStats (its own roadmap); the
-recoverable-checkpoint contract (execution-engine, delivered:
-`ExecutionContext.checkpoint` raising `ExecutionMemoryLimitExceededError`); the
-existing chunk planning and admission budgets.
-
-**Evidence:** `src/haute/modelling/_rustystats.py`;
-`src/haute/modelling/_training_job.py`; `src/haute/_ram_estimate.py`;
-`src/haute/_execution_context.py`; `src/haute/chunking.py`; the bounded
-streaming refusal in `src/haute/routes/_training_preparation.py` and its
-message in `src/haute/routes/_training_worker.py`.
+`MOD-M02` reuses the GLM chunked fit's engagement (`training_row_plan`), its job scratch
+directory and its fit-mode evidence. `MOD-R11` bounds what either low-memory mode saves
+end to end: until planning stops costing twice the frame, a job whose planning alone
+exceeds the budget gains nothing from a low-memory fit.
 
 ### MOD-M02 — XGBoost trains through external memory when it will not fit
 **Why:** An exact chunked boosted fit is not ruled out by the mathematics.
@@ -194,7 +113,7 @@ XGBoost's peak about fourfold without changing the model, but does not bound it.
 
 **Decision (2 November 2026):** XGBoost's external memory is the low-memory path, and
 the only one this package delivers: it is exact, so a model trained through it is the
-model the in-memory fit would have produced. It takes `MOD-M01`'s engagement: an XGBoost
+model the in-memory fit would have produced. It takes the GLM chunked fit's engagement: an XGBoost
 job whose up-front estimate says the in-memory fit will not fit trains on every row
 through `ExtMemQuantileDMatrix` instead of being downsampled, the result, model card and
 MLflow run record that it did, and a checkpoint overrun or a dead worker still ends
@@ -204,9 +123,8 @@ approximate variants (chunk-sequential continuation, bagged partition ensembles,
 downsampling beyond the automatic downsample) for CatBoost, LightGBM, EBM and t-boost are
 not pursued.
 
-**Plan:** Build the batch reading this needs rather than waiting for `MOD-M01`'s Haute
-half, which will reuse it: a `DataIter` over the sunk training parquet's row groups for
-the training partition (and the validation partition when early stopping runs), with the
+**Plan:** Build the batch reading this needs: a `DataIter` over the sunk training parquet's
+row groups for the training partition (and the validation partition when early stopping runs), with the
 same encoding, categorical levels, weights and offset margin the in-memory `matrix`
 applies, and the cache under the job's artifact directory, removed with it. Settle in the
 low-level specification the batch size, `max_bin` (the in-memory default), the cache
@@ -242,8 +160,8 @@ memory probe measured. The in-memory `EvaluationPlan` holds the development and 
 positions and every validation fit's train and validation positions as tuples of Python
 integers, about 36 bytes per row per membership, and `generate_evaluation_plan` builds,
 shuffles and filters Python lists of every position; the plan file is compact since
-`MOD-R03`, but the plan in memory is not. A low-memory fit (`MOD-M01`, `MOD-M02`) saves
-nothing a job can use while planning alone costs twice the frame.
+`MOD-R03`, but the plan in memory is not. A low-memory fit (the GLM's chunked fit,
+`MOD-M02`) saves nothing a job can use while planning alone costs twice the frame.
 
 **Plan:** First measure how much of the rise is the plan and how much the split's row
 order and partition masks, from the probe's per-stage peaks. Then hold the plan in memory

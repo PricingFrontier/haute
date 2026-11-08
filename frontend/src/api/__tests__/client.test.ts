@@ -317,6 +317,7 @@ function makeTrainEstimateResponse(overrides: Record<string, unknown> = {}) {
     bytes_per_row: 256,
     was_downsampled: false,
     unbounded_join_node_ids: [],
+    fit_mode: "in_memory",
     warning: null,
     gpu_vram_estimated_mb: null, gpu_vram_rows: null,
     gpu_vram_available_mb: null,

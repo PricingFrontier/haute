@@ -59,7 +59,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus the facts its file records, and the term report) and `EBMAlgorithm`. |
 | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
-| `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
+| `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats, in memory or out of core (see Chunked GLM fitting), with `glm_batch_source()` over the job's train-partition Parquet file, `glm_out_of_core_options()` from the execution budget, `glm_fit_evidence()`, and `GLMMemoryPlanError`; `prepare_glm_design()` (schema-dtype validation, reference-level translation from the labels RustyStats observes, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, fit-time robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
 | `src/haute/modelling/_tuning.py` | Strict bounded tuning config/search-space validation for families whose descriptor supports tuning (every family but the GLM), with orchestration-owned keys taken from the descriptor, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
@@ -383,7 +383,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    job_id=...)` before long-running work begins.
 3. The preparation thread first verifies that the job is still running, then
    `_compile_preamble`; `_estimate_ram` (records the equivalent HTTP 422 detail on
-   failure); clamp the estimated row limit against any user-supplied `row_limit`;
+   failure); `training_row_plan` decides the fit mode and the row limit (a GLM whose RAM
+   row limit binds fits out of core on every row; otherwise the estimated row limit is
+   clamped against any user-supplied `row_limit`; see Chunked GLM fitting), and the job
+   kwargs carry `fit_mode`;
    `build_train_params` (the same builder export uses); `_check_gpu_vram_before_launch` (VRAM
    feasibility check — see Edge cases);
    both `_estimate_ram` and `POST /estimate` obtain their RAM evidence through
@@ -2513,3 +2516,212 @@ used for staged input.
   before fitting; the capability fixture carries it to the frontend's `monotone-loss` readiness
   issue on the Features pane.
 
+
+## Chunked GLM fitting
+
+A GLM job whose up-front training memory estimate does not fit trains on every row out of
+core instead of being downsampled. RustyStats reads the job's training rows in passes from
+disk and never holds them, the design, or any per-row array whole. The model is bitwise
+identical to the in-memory fit of the same rows (decision 2 of RustyStats' out-of-core
+fitting specification). That covers coefficients, deviance, dispersion, standard errors, smoothing
+parameters, the cross-validated penalty and every prediction. So the agreement tolerance
+between the two modes is zero.
+
+**Prerequisite.** This needs RustyStats 0.10, the first release with out-of-core fitting.
+Haute relies on three things from it:
+- the result metadata of its out-of-core spec §4.5: `fit_mode`, `passes` per pass kind, and
+  `solver_settings` with the keys `max_iter`, `tol` and `max_half_steps` among others;
+- the learned-state cap of §6.4, which bounds category keys, counts and knots by what
+  `max_bytes` leaves even when `max_learned_state_bytes` is unset;
+- `LearnedStateTooLargeError` before any learned state outgrows that cap.
+Haute pins that release; the adapter reads these attributes and expects them present.
+
+**Engagement.** `src/haute/routes/_training_preparation.py::training_row_plan(config,
+estimate)` returns `TrainingRowPlan(fit_mode, row_limit, ram_limit_binds)`. Both
+`POST /api/modelling/estimate` and `TrainService._prepare_and_launch_training` call it, so
+the estimate states what the run will do.
+- `ram_limit_binds` keeps today's rule. The estimate's RAM row limit is set, and it is not
+  the user's own `row_limit` deciding the rows.
+- `fit_mode` is `"out_of_core"` exactly when the node is a GLM (`is_glm_config`) and
+  `ram_limit_binds`. That includes a worst-case bound from a join without a key contract.
+  Otherwise it is `"in_memory"`.
+- Out of core, `row_limit` is the user's own `row_limit` or `None`, so the RAM row limit
+  samples no rows and no downsampling warning is recorded. In memory, `row_limit` is today's
+  clamp of the two limits.
+- The estimate is used as it stands. Its per-family calibration is `PL2-17`'s and moves
+  where this engages. Nothing restarts a fit in the other mode: an in-memory fit that
+  overruns at a checkpoint, or a worker that dies, still ends `memory_limited`.
+
+The mode reaches the worker as `TrainingJob(fit_mode=...)` in the job kwargs; the fit
+never chooses it. A scripted `TrainingJob` fits in memory unless its caller passes
+`fit_mode="out_of_core"`, and `fit_mode="out_of_core"` with any algorithm but `glm` raises
+`HauteValidationError`. `TrainingJob._new_evaluation_job` passes `fit_mode` and
+`scratch_dir` to every evaluation selection fit, tuning trial and deployable final fit.
+
+**Training rows.** `TrainingJob._train_model` writes the train partition of the split
+Parquet file once. It is projected to the GLM's columns (`_glm_select_columns`) and written
+to `glm-train.parquet` in the fit's scratch directory with `bounded_sink`, under stage
+`training_glm_partition_write`. The source is `rustystats.BatchSource(open, schema)`:
+- `schema` is that file's Parquet schema.
+- `open(columns)` is `bounded_collect_batches(pl.scan_parquet(path).select(columns),
+  chunk_size=262_144, execution_context=..., stage_name="training_glm_batch")`. Every pass
+  gets the same rows in file order. Each batch is sized from the headroom left when that
+  pass starts, and a checkpoint follows each batch.
+
+A GLM never reads the validation partition at fit time, because it has no early stopping.
+So neither mode loads it there.
+
+**Scratch directory.** `TrainingJob(scratch_dir=...)` sets the directory each
+out-of-core fit makes its own files under.
+- Each fit owns one directory: `tempfile.TemporaryDirectory(prefix="haute-glm-",
+  dir=scratch_dir)`, created when the fit starts and removed when it leaves, after success,
+  failure or cancellation. A job's selection, tuning and final fits run one after another,
+  each in its own directory under the same `scratch_dir`.
+- The training worker passes `runtime.staged_path("scratch")`, under the job's artifact
+  root. When the worker dies, the parent's cleanup removes the whole artifact root, and
+  with it any fit directory left behind. A scripted job without a `scratch_dir` uses the
+  system temporary directory.
+- The fit's directory holds `glm-train.parquet` and RustyStats' spill files
+  (target-encoding sort runs) under `rustystats/`.
+
+**Options.** `glm_out_of_core_options(execution_context, scratch, on_batch)` builds
+`rustystats.OutOfCoreOptions`:
+- `max_bytes` is half the context's remaining headroom (`remaining_memory_bytes() // 2`),
+  sampled when the fit starts, or `None` for a context without a budget. The source reader
+  sizes its batches from the other half.
+- `scratch_dir` is the fit directory's `rustystats/`.
+- `on_batch` runs at every source batch. It runs the job's cancellation check
+  (`check_cancelled`, which `TrainingJob._train_model` passes down), reports progress as
+  "Fitting GLM in chunks: pass N" when a pass starts, then calls
+  `execution_context.checkpoint(label="training_glm_pass")`. An exception raised there stops the pass at the batch
+  boundary, and RustyStats re-raises it unchanged at the fit's boundary. Cancellation and
+  `memory_limited` therefore keep their taxonomy.
+- `threads`, `encode_rows`, `max_learned_state_bytes` and `max_design_columns` take
+  RustyStats' defaults. The learned state is then capped by what `max_bytes` leaves (see
+  Prerequisite). So the labels pass and the freeze pass stay within `max_bytes` too.
+
+**Design and fit kwargs.** Both modes resolve the design the same way.
+- `prepare_glm_design(params, data, out_of_core=None)` takes dtypes from the data's
+  schema, for a frame or a `BatchSource`.
+- Categorical labels come from `rustystats.observed_category_labels`: over the frame in
+  memory, or over the source out of core (one `labels` pass). This replaces Haute's own
+  `_observed_category_labels`.
+- `glm_fit_kwargs` passes `robust=[robust_standard_errors]` instead of
+  `store_design_matrix=True`. Robust covariance is computed at fit time in both modes, and
+  the in-memory model no longer keeps its n × p design.
+- `rs.glm_dict` receives `seed=`, the job's fit seed (`TrainingJob._fit_seed`: the
+  evaluation's seed, else 0), so target encoding's keyed order is the same in both modes
+  and on every rerun. `estimate_glm_dispersion` passes the same seed to every candidate
+  fit.
+- Tweedie and Negative Binomial fits use the configured `var_power` or `theta`. The fit
+  never searches dispersion.
+
+**Caps and tolerance.** Both modes use the same caps, and Haute overrides none of
+RustyStats' defaults. `max_iter` is the configured value, else RustyStats' own default:
+2,000 for a fit with a monotone penalised spline and 25 for any other. `tol` is the
+configured value, else 1e-8. Each IRLS iteration evaluates
+at most 25 step-halving candidates (RustyStats `IRLS_MAX_HALF_STEPS`); out of core they are
+all evaluated in one pass. As stated above, the agreement tolerance between modes is zero.
+
+**Evidence.** `fit_evidence` (`FitEvidencePayload`) records the fit from the RustyStats
+result (out-of-core spec §4.5):
+- every GLM fit records `mode` (the result's `fit_mode`), and `max_iter`, `tol` and
+  `max_half_steps` from its `solver_settings`, which are the caps the solver actually
+  used;
+- an out-of-core fit also records `passes` (the total of the result's `passes` per pass
+  kind), `encode_rows`, and `max_bytes` (the memory plan's limit, null without a budget).
+The candidate run publishes them as `fit_*` parameters, which the model card's parameter
+table lists. `TrainEstimateResponse.fit_mode` reports the planned mode, with
+`was_downsampled` false and no downsampling warning when it is `"out_of_core"`. In that
+case:
+- `safe_row_limit` is the plan's `row_limit`, the user's own limit or null, so the RAM
+  limit is not shown as a training row limit;
+- the evaluation preview is drawn at that row limit, the rows the run trains on;
+- `estimated_mb` and `training_mb` keep their meaning: the estimate of training those
+  rows in memory, which is why the fit is chunked.
+
+Train's verdict reads "Will train in chunks", in the success style, in place of "Will
+downsample". Its "Training rows" figure is that row limit, and the RAM figure's label
+reads "Est. in-memory RAM" instead of "Est. training RAM". The "Row count not proven"
+display adds a "Fit: In chunks" row.
+
+**What it bounds.** RustyStats admits each phase's planned peak against `max_bytes`: learned
+state, normal equations, solver workspaces and encoded blocks. Haute holds one source batch
+at a time.
+
+These are not bounded:
+- preparation's pipeline execution, which already streams under its own cap;
+- the split's evaluation memberships (`MOD-R11`);
+- the evaluation stage's reads, which take its diagnostics partition (holdout, else
+  validation, else train) and the validation-metrics partition into memory.
+
+They run under their checkpoints as before, and an overrun ends `memory_limited`.
+
+The bounded-streaming refusal ("Training cannot run in bounded streaming mode") stays for
+every algorithm. It refuses a pipeline that cannot stream into the training Parquet file,
+which happens before any fit, so fitting in chunks does not cover it.
+
+**Failures.**
+- RustyStats `MemoryPlanExceededError`, `DesignTooWideError` or `LearnedStateTooLargeError`
+  means a phase's fixed state, the learned state, or the smallest encoded block does not
+  fit `max_bytes`. Each can arise in the labels pass (`prepare_glm_design`) or in the fit. The adapter raises
+  `src/haute/modelling/_rustystats.py::GLMMemoryPlanError`, a `MemoryError` that carries RustyStats'
+  detail. The worker maps it to `memory_limited` with `error_code="memory_limit"` and the
+  curated message: "Training could not fit the GLM within its memory budget:
+  <detail>. Use fewer design columns (fewer categorical levels, interactions or spline
+  degrees of freedom), or run on a server with more memory."
+- A checkpoint overrun during a pass is `ExecutionMemoryLimitExceededError`, which ends
+  `memory_limited` as today. A cancellation is `cancelled`.
+- `BatchSourceChangedError` and `SpillError` mean the scratch file changed between passes
+  or a spill failed. They are defects, mapped to `error`.
+
+**Testing scenarios.**
+1. Engagement (`tests/test_training_row_plan.py`):
+   - a GLM with a binding estimate plans `out_of_core` with the user's limit, or none;
+   - a user limit smaller than the RAM limit plans `in_memory` with that limit;
+   - a non-binding or unavailable estimate plans `in_memory`;
+   - CatBoost with a binding estimate still downsamples;
+   - an unproven join bound with a GLM plans `out_of_core`;
+   - the estimate route and the started job report the same mode, and an out-of-core run
+     samples no rows and records no warning.
+2. Equality (`tests/test_glm_chunked_fit.py`):
+   - setup: `TrainingJob` fitted with `fit_mode="out_of_core"`, then `"in_memory"`, on the
+     same prepared Parquet file, with a budget that forces several batches;
+   - jobs: Gaussian, Poisson with exposure, Gamma, Tweedie, Binomial and Negative
+     Binomial, each weighted, with a categorical, a spline and an interaction; a ridge
+     penalty chosen by cross-validation; robust standard errors; an ill-conditioned design;
+     a target-encoded term (also equal on a rerun); and a job whose fit rejects at least
+     one step-halving candidate;
+   - expected: identical `glm_coefficients`, `glm_fit_statistics` (dispersion included),
+     `glm_inference`, `glm_smooth_terms`, `glm_regularization`, metrics and diagnostic
+     predictions.
+3. Memory, end to end: the family memory probe
+   (`tests/performance/test_training_family_memory_perf.py`) runs its canonical GLM job
+   through the whole training job, evaluation and diagnostics included. Its budget is set
+   between the job's out-of-core peak and its in-memory peak. The out-of-core job's peak
+   RSS stays within the budget, the in-memory job's exceeds it, and the probe records both
+   peaks as performance artifacts.
+4. Failures:
+   - a budget below the fixed p × p state ends `memory_limited` with the curated message;
+   - a learned-state overflow (a high-cardinality categorical) ends `memory_limited` with
+     the curated message, both when raised in the labels pass and when raised in the
+     freeze pass;
+   - cancelling during a pass ends `cancelled` at the next source batch, not at the
+     next pass;
+   - a canonical evaluation run (selection fits and the final fit) leaves no fit directory
+     after success, failure and cancellation;
+   - a killed training worker's fit directory is gone once the parent's cleanup has run.
+5. Evidence: `TrainResponse.fit_evidence` and the candidate run's `fit_mode`, `fit_passes`,
+   `fit_max_iter`, `fit_tol` and `fit_max_half_steps` parameters match the fit. An
+   in-memory GLM records `mode`, `max_iter`, `tol` and `max_half_steps` only. A
+   monotone-spline job without `max_iter` records 2,000, and any other job without it
+   records 25.
+6. Scripted misuse: `TrainingJob(algorithm="catboost", fit_mode="out_of_core")` raises
+   `HauteValidationError`.
+7. Train pane (`TrainingActionsAndResults` test):
+   - an `out_of_core` estimate shows "Will train in chunks", not "Will downsample";
+   - it shows training rows equal to the source rows, or the user's limit;
+   - its RAM figure is labelled "Est. in-memory RAM";
+   - with an unproven join bound, it adds "Fit: In chunks".
+   The estimate route's `fit_mode`, `safe_row_limit` and evaluation-preview rows match the
+   run's (`tests/test_training_row_plan.py`).

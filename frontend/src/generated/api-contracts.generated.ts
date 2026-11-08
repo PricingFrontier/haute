@@ -2124,6 +2124,7 @@ export interface TrainEstimateResponse {
   bytes_per_row: number | null;
   estimated_mb: number | null;
   evaluation_preview?: EvaluationPreviewPayload;
+  fit_mode: 'in_memory' | 'out_of_core';
   gpu_vram_available_mb: number | null;
   gpu_vram_estimated_mb: number | null;
   gpu_vram_rows: number | null;
@@ -5233,11 +5234,18 @@ export interface TrainingFeatureNameCollectionPayload {
  */
 export interface FitEvidencePayload {
   device: string | null;
+  encode_rows: number | null;
+  max_bytes: number | null;
+  max_half_steps: number | null;
+  max_iter: number | null;
+  mode: 'in_memory' | 'out_of_core' | null;
+  passes: number | null;
   rounds_configured: number | null;
   rounds_fitted: number | null;
   stopping_reason: 'none' | 'validation' | 'native_exhaustion' | null;
   term_update_steps: number[] | null;
   threads: number;
+  tol: number | null;
 }
 /**
  * One feature's beeswarm row: each plotted row's SHAP value, feature value and rank.
