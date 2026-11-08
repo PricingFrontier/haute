@@ -56,6 +56,8 @@ class ProjectKnowledgeView:
     items: tuple[KnowledgeItem, ...]
     source_manifest: MappingProxyType[str, str]
     excluded_by_policy: tuple[str, ...]
+    #: Documents over the size limit or past the document limit, not read.
+    omitted_documents: int
     cache_hit: bool
 
 
@@ -151,10 +153,12 @@ def _toml_fact(project_root: Path) -> KnowledgeItem | None:
     )
 
 
-def _document_items(project_root: Path) -> list[KnowledgeItem]:
+def _document_items(project_root: Path) -> tuple[list[KnowledgeItem], int]:
+    """The project documents read, and how many were too large or too many to read."""
+
     docs = project_root / "docs"
     if not docs.is_dir():
-        return []
+        return [], 0
     if docs.is_symlink() or not is_contained(project_root, docs.resolve()):
         raise ValueError("project documentation must stay inside the project root")
     items: list[KnowledgeItem] = []
@@ -170,9 +174,11 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
         ),
         key=lambda path: path.relative_to(project_root).as_posix(),
     )
+    omitted = max(0, len(candidates) - _MAX_DOCUMENTS)
     for path in candidates[:_MAX_DOCUMENTS]:
         data = path.read_bytes()
         if len(data) > _MAX_DOCUMENT_BYTES:
+            omitted += 1
             continue
         try:
             text = data.decode("utf-8")
@@ -190,7 +196,7 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
                 content=text,
             )
         )
-    return items
+    return items, omitted
 
 
 def _cache_payload(items: list[KnowledgeItem]) -> dict[str, object]:
@@ -240,7 +246,8 @@ def build_project_knowledge(
     all_items = [_graph_fact(root, source_file)]
     if (toml_item := _toml_fact(root)) is not None:
         all_items.append(toml_item)
-    all_items.extend(_document_items(root))
+    documents, omitted_documents = _document_items(root)
+    all_items.extend(documents)
     all_items.sort(key=lambda item: item.source)
     cache_hit = _write_cache(root, _cache_payload(all_items))
     included = tuple(item for item in all_items if _within_policy(item, policy))
@@ -250,6 +257,7 @@ def build_project_knowledge(
         items=included,
         source_manifest=manifest,
         excluded_by_policy=excluded,
+        omitted_documents=omitted_documents,
         cache_hit=cache_hit,
     )
 

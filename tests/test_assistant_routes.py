@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 
 from haute.assistant._providers import TextDelta, TurnStop
 from haute.assistant._session import SessionStore
-from haute.schemas import AssistantChangeRecord
+from haute.schemas import ASSISTANT_MESSAGE_CHAR_LIMIT, AssistantChangeRecord
 from tests._project import project_app, use_project
 
 pytestmark = pytest.mark.usefixtures("project_root")
@@ -242,23 +242,22 @@ class TestSessionList:
         response = client.get("/api/assistant/sessions")
         assert response.status_code == 422
 
-    def test_reads_the_store_on_its_event_loop_thread(
-        self,
-        client: TestClient,
-        store: SessionStore,
-        monkeypatch: pytest.MonkeyPatch,
+    @pytest.mark.parametrize(
+        "message",
+        [
+            pytest.param("", id="empty"),
+            pytest.param(" \n\t", id="blank"),
+            pytest.param("x" * (ASSISTANT_MESSAGE_CHAR_LIMIT + 1), id="over-long"),
+        ],
+    )
+    def test_a_message_out_of_bounds_is_refused_before_any_stream(
+        self, client: TestClient, store: SessionStore, message: str
     ):
-        original = store.list_sessions
+        session = store.create("main.py")
 
-        def list_sessions(source_file: str):
-            asyncio.get_running_loop()
-            return original(source_file)
+        response = client.post("/api/assistant/message", json=_message(session.id, message))
 
-        monkeypatch.setattr(store, "list_sessions", list_sessions)
-
-        response = client.get("/api/assistant/sessions", params=_CANVAS)
-
-        assert response.status_code == 200, response.text
+        assert response.status_code == 422
 
     def test_unknown_source_file_is_404(self, client: TestClient, store: SessionStore):
         response = client.get("/api/assistant/sessions", params={"source_file": "nope.py"})
@@ -454,7 +453,6 @@ class TestMessageTurn:
         configured: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        import asyncio
 
         session_id = self._session(client)
         session = store.lookup(session_id)
@@ -731,7 +729,6 @@ class TestTurnReservation:
     async def test_concurrent_sends_get_exactly_one_stream_and_one_409(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        import asyncio
         import threading
         import time as time_module
 

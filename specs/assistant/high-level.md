@@ -1446,7 +1446,8 @@ through the schema-only operation, whose exact schema digest participates in
 the revision of a plan that uses it.
 Every item carries source identity and digest, extraction version, sensitivity,
 and evidence class. Unknown sensitivity is `restricted`; natural-language
-content remains untrusted evidence. The private `.haute/assistant/knowledge`
+content remains untrusted evidence. A document over 64 KB, or past the fiftieth
+in path order, is not read, and the tool result counts how many were left out. The private `.haute/assistant/knowledge`
 cache contains only content-addressed derived index metadata, is excluded from
 the project revision, invalidates changed or removed sources, and is safe to
 delete and rebuild. Retrieved source digests that affect a plan are included

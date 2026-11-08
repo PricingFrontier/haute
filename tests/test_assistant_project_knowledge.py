@@ -81,6 +81,36 @@ def test_undecodable_document_fails_with_the_project_relative_source(tmp_path: P
         build_project_knowledge(tmp_path, "main.py", policy=policy)
 
 
+def test_a_document_too_large_or_past_the_limit_is_counted(tmp_path: Path):
+    from haute.assistant._config import EgressPolicy
+    from haute.assistant._project_knowledge import (
+        _MAX_DOCUMENT_BYTES,
+        _MAX_DOCUMENTS,
+        build_project_knowledge,
+    )
+
+    _project(tmp_path)
+    docs = tmp_path / "docs"
+    (docs / "terms.md").unlink()
+    (docs / "unknown.md").unlink()
+    for index in range(_MAX_DOCUMENTS + 2):
+        (docs / f"note-{index:03d}.md").write_text("Sensitivity: public\n", encoding="utf-8")
+    (docs / "note-000.md").write_text("x" * (_MAX_DOCUMENT_BYTES + 1), encoding="utf-8")
+    policy = EgressPolicy(
+        trust="organization",
+        max_sensitivity="restricted",
+        allow_project_knowledge=True,
+        allow_executable_source=False,
+        allow_row_samples=False,
+        allow_aggregate_statistics=False,
+    )
+
+    view = build_project_knowledge(tmp_path, "main.py", policy=policy)
+
+    # Two past the limit, and one of those within it too large to read.
+    assert view.omitted_documents == 3
+
+
 def test_changed_and_removed_sources_invalidate_metadata_cache(tmp_path: Path):
     from haute.assistant._config import EgressPolicy
     from haute.assistant._project_knowledge import build_project_knowledge

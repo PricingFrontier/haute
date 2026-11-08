@@ -991,27 +991,38 @@ class SessionStore:
             message_count=session.stored_message_count,
         )
 
-    def list_sessions(self, source_file: str | os.PathLike[str]) -> tuple[SessionSummary, ...]:
+    def _persisted_summaries(self, source: str) -> dict[str, SessionSummary]:
+        """Summaries of this source's persisted files; reads no live record."""
+
+        if self._storage_dir is None:
+            return {}
+        try:
+            paths = sorted(self._storage_dir().glob("*.json"))
+        except OSError:
+            logger.warning("assistant_session_list_failed", exc_info=True)
+            return {}
+        summaries: dict[str, SessionSummary] = {}
+        for path in paths:
+            summary = self._persisted_summary(path)
+            if summary is not None and summary[0] == source:
+                summaries[summary[1].session_id] = summary[1]
+        return summaries
+
+    async def list_sessions(
+        self, source_file: str | os.PathLike[str]
+    ) -> tuple[SessionSummary, ...]:
         """Return this pipeline's conversations, most recently used first.
 
-        A session with no messages is omitted: `create` persists immediately,
-        so an abandoned "new chat" would otherwise sit in the list as an
-        untitled empty row. Live sessions take precedence over their persisted
-        copy, which can lag by one turn.
+        The persisted files are read and parsed on a worker thread, so a long
+        list blocks no other request; the merge with the event-loop-owned live
+        records runs back on the loop. A session with no messages is omitted:
+        `create` persists immediately, so an abandoned "new chat" would
+        otherwise sit in the list as an untitled empty row. Live sessions take
+        precedence over their persisted copy, which can lag by one turn.
         """
 
         source = self._source_file_text(source_file)
-        summaries: dict[str, SessionSummary] = {}
-        if self._storage_dir is not None:
-            try:
-                paths = sorted(self._storage_dir().glob("*.json"))
-            except OSError:
-                logger.warning("assistant_session_list_failed", exc_info=True)
-                paths = []
-            for path in paths:
-                summary = self._persisted_summary(path)
-                if summary is not None and summary[0] == source:
-                    summaries[summary[1].session_id] = summary[1]
+        summaries = await asyncio.to_thread(self._persisted_summaries, source)
         for session_id in self._sessions:
             session = self._sessions.peek(session_id)
             if session is None or session.source_file != source:

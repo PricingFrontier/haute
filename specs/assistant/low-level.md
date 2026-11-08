@@ -800,9 +800,10 @@ conversation bound to that source file, carrying id, title, created/last-used ti
 and message count, most recently used first. The title is the opening user message,
 whitespace-collapsed and bounded to 80 characters. Summaries are read directly from the
 persisted files rather than through `_revive`: listing must not pull every stored
-conversation into the retained LRU, where it would evict live sessions. Like every other
-store operation, the merge with live records runs synchronously on the asyncio event-loop
-thread; moving that call to a worker would race the event-loop-owned mapping. A live
+conversation into the retained LRU, where it would evict live sessions. The files are read
+and parsed on a worker thread, so a long list blocks no other request; like every other
+store operation, the merge with live records runs on the asyncio event-loop thread, because
+moving it to a worker would race the event-loop-owned mapping. A live
 session takes precedence over its persisted copy, which can lag by one
 turn; an unreadable or malformed file is a logged warning treated as absent, matching the
 store's existing degradation posture. A conversation with no messages is omitted, because
@@ -860,6 +861,9 @@ the turn that follows.
 
 **Message turn** (`POST /api/assistant/message` → SSE stream from `_loop.run_turn`):
 
+0. A message must hold non-whitespace text and at most `ASSISTANT_MESSAGE_CHAR_LIMIT`
+   (256 KiB) characters, or the request is answered 422 before any stream opens: it would
+   otherwise be sent to the provider in every round and persisted on every append.
 1. Readiness is checked before session lookup (400 before the stream opens if
    unconfigured). This ordering means an unconfigured request reports the configuration
    problem even when its session id is also unknown. The request's `source_file` is then
@@ -1541,7 +1545,12 @@ the turn that follows.
    streaming and before each tool dispatch, and passed to the provider: the loop runs each
    step of a provider stream (`anext`) inside `turn_deadline(deadline)` and never across a
    `yield`, so the context variable is set and reset in one context and any stream the
-   provider wraps sees it, and an adapter's pre-stream retry never waits past it; and a
+   provider wraps sees it, and an adapter's pre-stream retry never waits past it. The
+   deadline bounds each awaited step on its own (`_step_limit`) and is checked before each
+   stream step: a timeout held across a `yield` would cancel the task reading the stream
+   rather than the turn, leaving no terminal event. No tool is dispatched once the deadline
+   has passed, counting the time a slow reader took at its started event; the recorded call
+   gets a `tool_interrupted` result. The second limit is a
    per-turn tool-call cap
    (`HAUTE_ASSISTANT_MAX_TOOL_CALLS`). Hitting either aborts the provider stream and emits
    `failed` naming the limit. A non-mutating tool still running at the deadline is cancelled

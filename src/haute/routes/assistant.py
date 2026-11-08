@@ -227,7 +227,7 @@ async def list_assistant_sessions(
     """
 
     bound_source = await _bound_source_file(source_file)
-    summaries = session_store.list_sessions(bound_source)
+    summaries = await session_store.list_sessions(bound_source)
     return AssistantSessionListResponse(
         source_file=bound_source,
         sessions=[

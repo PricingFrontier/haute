@@ -2408,6 +2408,7 @@ def get_project_knowledge(
         return {
             "items": list(items),
             "excluded_by_policy_count": len(view.excluded_by_policy),
+            "omitted_document_count": view.omitted_documents,
             "cache_hit": view.cache_hit,
             "policy_hash": policy.policy_hash,
             "trust": policy.trust,

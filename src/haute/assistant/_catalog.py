@@ -709,6 +709,7 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "get_project_knowledge": (
             "items",
             "excluded_by_policy_count",
+            "omitted_document_count",
             "cache_hit",
             "policy_hash",
             "trust",

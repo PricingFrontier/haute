@@ -39,7 +39,6 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
-| ASSIST-55 | Planned | P2 | A message is bounded, the turn deadline ends every stream with a terminal event, the chat list is read off the event loop, and an oversized document is counted, not dropped. |
 | ASSIST-56 | Planned | P3 | The assistant core carries no test-only methods, one one-line helper, one readiness resolution per message, and names that mean one thing. |
 | ASSIST-57 | Planned | P2 | A tool never stalls the server: `inspect_node` profiles outside the save lock, the capability manifest is built once per installed set, an example is loaded once, and the egress policy is resolved once per call. |
 | ASSIST-58 | Planned | P2 | What the model is told is true: a join's execution failure is kept unless the validation raised it, the brief's columns follow the data, Load File's summary names the three file types, and no rule is stated that the product does not enforce. |
@@ -141,39 +140,6 @@ per configuration with run identifiers.
 **Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-55 — Bounded requests and a terminal event on every stream
-**Why:** `AssistantMessageRequest.message` has no length bounds and the server no
-body limit, so an empty message starts a turn that fails only after the stream
-opens and an arbitrarily large one is sent to the provider in every round and
-persisted on every append. The turn's wall clock is an `asyncio.timeout` around
-an async generator that yields to the response task, so a deadline that fires
-while the generator is suspended at a yield cancels the consumer, not the turn:
-no `failed` event is produced and the client sees a closed connection, against
-the one-terminal-event invariant (the ordinary path is covered by explicit
-deadline checks). Listing a pipeline's chats reads, parses and revalidates every
-persisted session file synchronously on the event-loop thread, blocking every
-other request while the chat list opens; a test pins the loop-thread call. A
-documentation file over 64 KB, and the 51st document, are dropped from project
-knowledge silently while an undecodable one fails loudly.
-
-**Plan:** `min_length` and `max_length` on `message` and a `max_length` on
-`session_id`; replace the outer timeout with per-step `asyncio.timeout_at`
-on each awaited step and convert its error to the existing turn-limit path, with
-a test whose consumer sleeps past the deadline between events; read and parse
-the session files on a worker thread (or keep a small summary beside each file)
-and merge on the loop; count omitted documents in the view and the tool result.
-
-**Acceptance:** An empty or over-long message is answered 422; a deadline during
-a slow consumer ends the stream with a `failed` event; the chat list blocks the
-loop for no file read; the project-knowledge result reports the omitted count.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/schemas.py::AssistantMessageRequest`;
-`src/haute/assistant/_loop.py::run_turn`; `src/haute/routes/assistant.py`;
-`src/haute/assistant/_session.py::list_sessions`;
-`src/haute/assistant/_project_knowledge.py`.
 
 ### ASSIST-56 — Core hygiene
 **Why:** `AssistantTurn.as_dict`, `AssistantSession.as_dict` and

@@ -2157,6 +2157,71 @@ class TestLimits:
         assert terminal.type == "failed"
         assert "time" in terminal.message.lower()
 
+    async def test_a_deadline_during_a_slow_consumer_ends_with_a_failed_event(
+        self, store, session_id
+    ):
+        """The deadline must end the turn, never cancel the task reading its stream."""
+        from haute.assistant._loop import run_turn
+
+        provider = ScriptedProvider(
+            [[TextDelta(text="first"), TextDelta(text="second"), TurnStop("end", _usage())]]
+        )
+        stream = run_turn(
+            store,
+            session_id,
+            "slow reader",
+            provider=provider,
+            tools=[],
+            execute_tool=None,
+            system_prompt="system prompt under test",
+            turn_timeout=0.05,
+            max_tool_calls=8,
+        )
+
+        events = [await anext(stream)]
+        await asyncio.sleep(0.1)
+        events.extend([event async for event in stream])
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "failed"
+        assert "time" in terminal.message.lower()
+
+    async def test_a_deadline_at_a_tools_started_event_never_runs_the_tool(self, store, session_id):
+        """A shielded apply must not begin a save after the turn's time is up."""
+        from haute.assistant._loop import run_turn
+
+        provider = ScriptedProvider(
+            [[ToolCallRequest("t1", "apply_graph_plan", {}), TurnStop("tool_use", _usage())]]
+        )
+        executed: list[str] = []
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            executed.append(name)
+            return {"ok": True}
+
+        events = []
+        async for event in run_turn(
+            store,
+            session_id,
+            "slow reader",
+            provider=provider,
+            tools=[],
+            execute_tool=execute_tool,
+            system_prompt="system prompt under test",
+            turn_timeout=0.05,
+            max_tool_calls=8,
+        ):
+            events.append(event)
+            if event.type == "tool_started":
+                await asyncio.sleep(0.1)
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "failed"
+        assert "time" in terminal.message.lower()
+        assert executed == []
+        stored = store.lookup(session_id).history[-1].messages
+        assert [message.tool_call_id for message in stored if message.role == "tool"] == ["t1"]
+
     async def test_a_provider_stream_runs_under_the_turns_deadline(self, store, session_id):
         """A provider's pre-stream retry waits only within the turn: each step of
         its stream, and of any stream it wraps, sees the turn's deadline, and

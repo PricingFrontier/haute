@@ -860,6 +860,7 @@ class AssistantTurnOutcome(BaseModel):
 #: The longest plan summary or assumption a dry-run accepts, in characters: room
 #: for one or two sentences. The receipt is presentation, never authority.
 ASSISTANT_RECEIPT_TEXT_LIMIT = 400
+ASSISTANT_MESSAGE_CHAR_LIMIT = 256 * 1024
 #: The most assumptions one dry-run records.
 ASSISTANT_MAX_ASSUMPTIONS = 5
 
@@ -1135,7 +1136,8 @@ class AssistantMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: BoundedName
-    message: BoundedText
+    # Sent to the provider in every round and persisted on every append.
+    message: Annotated[str, Field(max_length=ASSISTANT_MESSAGE_CHAR_LIMIT, pattern=r"\S")]
     # The canvas document's source file; one other than the session's is refused.
     source_file: BoundedPath = Field(min_length=1)
     context: AssistantMessageContext | None = None
