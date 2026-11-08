@@ -245,6 +245,8 @@ describe("OptimiserPreview store integration", () => {
           reject(new DOMException("Aborted", "AbortError"))
         })
       }))
+      // Convergence, opened in between, asks for the point's trace; leaving abandons it.
+      .mockImplementationOnce(() => new Promise(() => {}))
       .mockResolvedValueOnce({
         status: "ok",
         point_index: 0,
@@ -286,11 +288,11 @@ describe("OptimiserPreview store integration", () => {
 
     // Leaving for a pane that does not plot the rates aborts the request;
     // returning retries it.
-    fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+    fireEvent.click(screen.getByText("Convergence"))
     fireEvent.click(screen.getByText("Rates"))
 
     expect(await screen.findAllByText("North")).not.toHaveLength(0)
-    expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+    expect(mockSelectFrontierPoint.mock.calls.filter(([payload]) => !payload.include_history)).toHaveLength(2)
   })
 
   it("shows a clear message if selected point materialisation returns no rate tables", async () => {
@@ -588,7 +590,7 @@ describe("OptimiserPreview store integration", () => {
       openQuotes()
       expect(await screen.findByText("Q001")).toBeInTheDocument()
 
-      fireEvent.click(screen.getByRole("tab", { name: "Summary" }))
+      fireEvent.click(screen.getByRole("tab", { name: "Frontier" }))
       openQuotes()
 
       expect(screen.getByText("Q001")).toBeInTheDocument()
