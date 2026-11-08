@@ -20,6 +20,7 @@ from haute.modelling._feature_contract import load_contract
 from haute.modelling._tboost import TBoostAlgorithm, TBoostModel
 from haute.modelling._train_config import TrainingConfigError, build_training_job_kwargs
 from haute.modelling._training_job import TrainingJob, model_contract_filename
+from haute.routes._training_worker import _training_response_payload
 from tests._project import use_project
 
 EVALUATION = {
@@ -602,6 +603,35 @@ def _cell(axis: dict[str, Any], value: Any) -> int:
         return 0
     cuts = axis["cuts"]
     return 1 + sum(value > cut for cut in cuts)
+
+
+def test_a_relativity_that_overflows_costs_only_the_table_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    native_tables = TBoostRegressor.tables
+
+    def tables_with_an_extreme_age_score(self: TBoostRegressor, frame: Any) -> str:
+        export = json.loads(native_tables(self, frame))
+        table = next(t for t in export["tables"] if t["feature_names"] == ["age"])
+        table["values"] = [710.0] * len(table["values"])
+        return json.dumps(export)
+
+    monkeypatch.setattr(TBoostRegressor, "tables", tables_with_an_extreme_age_score)
+    _job, result = train(tmp_path, target="claims", loss="Poisson", offset="exposure")
+
+    assert result.tboost_tables is None
+    [error] = result.diagnostics_errors
+    assert (error["diagnostic"], error["error_type"]) == ("tboost_tables", "ValueError")
+    assert error["error"].endswith("in: age.")
+    assert TBoostModel.load(result.model_path).objective() == "poisson"
+    response = _training_response_payload(
+        result,
+        job_id="job",
+        model_path=result.model_path,
+        evaluation=result.evaluation,
+        tuning=None,
+    )
+    assert response["diagnostics_errors"] == [error]
 
 
 def test_the_table_report_reads_back_every_rows_contribution() -> None:

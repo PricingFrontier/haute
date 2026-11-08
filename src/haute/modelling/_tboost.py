@@ -140,6 +140,10 @@ def _report_table(table: dict[str, Any], link: str) -> dict[str, Any]:
     index = np.ix_(*kept)
     scores = np.asarray(table["values"], dtype=np.float64).reshape(shape)[index]
     support = np.asarray(table["support"], dtype=np.float64).reshape(shape)[index]
+    # This runs inside the fit, where a raise would lose the model: an overflow stays
+    # ``inf`` for ``TBoostAlgorithm.tboost_tables`` to refuse as a failed diagnostic.
+    with np.errstate(over="ignore"):
+        relativities = np.exp(scores).tolist() if link == "log" else None
     return {
         "term": " × ".join(features),
         "features": features,
@@ -147,7 +151,7 @@ def _report_table(table: dict[str, Any], link: str) -> dict[str, Any]:
         "importance": float(table["sobol"]),
         "axes": list(axes),
         "scores": scores.tolist(),
-        "relativities": np.exp(scores).tolist() if link == "log" else None,
+        "relativities": relativities,
         "support": support.tolist(),
     }
 
@@ -655,6 +659,16 @@ class TBoostAlgorithm(BaseAlgorithm):
         """The table report computed on the fit's own rows."""
         if model.fit_tables is None:
             raise HauteValidationError("This t-boost model has no table report from its fit.")
+        non_finite = [
+            table["term"]
+            for table in model.fit_tables["tables"]
+            if table["relativities"] is not None and not np.isfinite(table["relativities"]).all()
+        ]
+        if non_finite:
+            raise ValueError(
+                "t-boost relativities are not finite (a log-link score above about 709.78 "
+                f"overflows a float) in: {', '.join(non_finite)}."
+            )
         return dict(model.fit_tables)
 
     def save(self, model: Any, path: Path) -> None:
