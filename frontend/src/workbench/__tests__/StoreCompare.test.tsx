@@ -405,7 +405,7 @@ describe("Compare", () => {
     expect(within(details).getByText("Haute: year (Integer). Database: year (Text).")).toBeVisible()
     expect(within(details).getByText(/Change the type in Haute to match/)).toHaveTextContent("Export SQL does not convert existing columns")
     expect(within(details).getByText("Different blank-value rules")).toBeVisible()
-    expect(within(details).getByText(/allow NULL in this column/)).toBeVisible()
+    expect(within(details).getByText(/Allow NULL in this column/)).toBeVisible()
     expect(within(details).getByText(repair)).not.toBeVisible()
     fireEvent.click(within(details).getByText("SQL details"))
     expect(within(details).getByText(repair)).toBeVisible()
@@ -430,7 +430,7 @@ describe("Compare", () => {
     for (const name of names) {
       fireEvent.click(table.getByRole("button", { name: `Database status of ${name}` }))
       const details = within(screen.getByRole("region", { name: `Database details for quote_details.${name}` }))
-      expect(details.getByText(/convert this database column to Text/)).toHaveTextContent("fixed type")
+      expect(details.getByText(/Convert this database column to Text/)).toHaveTextContent("fixed type")
       expect(details.queryByText(/Change the type in Haute/)).not.toBeInTheDocument()
     }
   })
@@ -447,7 +447,7 @@ describe("Compare", () => {
     const details = within(screen.getByRole("region", { name: "Database details for policy.state" }))
     expect(details.getByText("Different text comparison")).toBeVisible()
     expect(details.getByText(/exact text matching/)).toBeVisible()
-    expect(details.getByText(/apply the collation in SQL details/)).toHaveTextContent("Export SQL does not change existing columns")
+    expect(details.getByText(/Apply the collation in SQL details/)).toHaveTextContent("Export SQL does not change existing columns")
     expect(details.getByText(message)).not.toBeVisible()
   })
 

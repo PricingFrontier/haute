@@ -72,34 +72,34 @@ export function fieldDatabaseIssues(
       case "type":
         issues.push({ title: "Different data type", description: sides(),
           action: IDENTITY_NAMES.has(column.name) || table.name === QUOTE_DETAILS_NAME
-            ? `Ask your database owner to convert this database column to ${expectedType} after checking its existing values. This Haute field has a fixed type; Export SQL does not convert existing columns.`
-            : "Change the type in Haute to match, or ask your database owner to convert the database column after checking its existing values. Export SQL does not convert existing columns." })
+            ? `Convert this database column to ${expectedType} after checking its existing values. This Haute field has a fixed type; Export SQL does not convert existing columns.`
+            : "Change the type in Haute to match, or convert the database column after checking its existing values. Export SQL does not convert existing columns." })
         break
       case "collation":
         issues.push({ title: "Different text comparison", description: "This field needs exact text matching, including upper- and lower-case letters.",
-          action: "Ask your database owner to apply the collation in SQL details. Export SQL does not change existing columns." })
+          action: "Apply the collation in SQL details. Export SQL does not change existing columns." })
         break
       case "null":
         issues.push({ title: "Different blank-value rules",
           description: key ? "This key needs a value in every row." : "Haute allows this field to be blank, but the database requires a value.",
           action: key ? "Fill any missing values, then make the database column required (NOT NULL)."
-            : "Ask your database owner to allow NULL in this column so blank values can be saved." })
+            : "Allow NULL in this column so blank values can be saved." })
         break
       case "key":
         issues.push({ title: "Different row identifier", description: "The database uses a different primary key to identify rows.",
-          action: "Ask your database owner to update the primary key to match Haute after checking existing rows. Export SQL does not update keys." })
+          action: "Update the primary key to match Haute after checking existing rows. Export SQL does not update keys." })
         break
       case "rows":
         issues.push({ title: "Different row layout", description: "Haute and the database use different numbers of rows per quote.",
-          action: "Match the Rows setting in Haute, or have your database owner migrate the table's existing rows and key." })
+          action: "Match the Rows setting in Haute, or migrate the table's existing rows and key." })
         break
       case "refers":
         issues.push({ title: "Missing quote link", description: "This table is not linked to quote_details as Haute expects.",
-          action: "Ask your database owner to add the foreign key shown in SQL details after checking the existing quotes." })
+          action: "Add the foreign key shown in SQL details after checking the existing quotes." })
         break
       case "store":
         issues.push({ title: "Internal database field needs repair", description: "A field managed by Haute is missing or has a different definition.",
-          action: "Ask your database owner to repair the field using the expected definition in SQL details." })
+          action: "Repair the field using the expected definition in SQL details." })
         break
     }
   }

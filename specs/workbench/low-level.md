@@ -94,7 +94,7 @@ Stored forms, including existing labels and sheet references, are never changed 
 filtering or opening this view. Grey backgrounds and fixed structure remain unchanged.
 
 The schema review UI stays in the lazy workbench, with its response validation in the
-workbench validator module. Its measured production bundle is 1,788.0 KiB gzip, with
+workbench validator module. Its measured production bundle is 1,787.9 KiB gzip, with
 293.9 KiB initially loaded. The aggregate allowance is 1,788 KiB; the initial 300 KiB,
 single-chunk 650 KiB and chart-vendor 205 KiB limits stay unchanged.
 
