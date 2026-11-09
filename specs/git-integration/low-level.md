@@ -924,7 +924,7 @@ process failures, and precise ref-movement races deterministic.
   Git facade explicit, the domain-module import graph acyclic, subprocess
   execution in `_git_core.py`, and the shared repository lock on every
   serialized mutator.
-- **`tests/test_git_engine.py`** — the primary unit suite for the Git facade and domain
+- **`tests/test_git_ledger.py`**, **`tests/test_git_working_branches.py`**, **`tests/test_git_working_tree.py`**, **`tests/test_git_remotes.py`** and **`tests/test_git_core_commands.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
   focused test classes covering: branch-category naming, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves, a
@@ -1023,7 +1023,7 @@ process failures, and precise ref-movement races deterministic.
   adopting an existing pair, deleting the only active pair, partial fast-forward,
   archive state replacement, archive restore, undelete, and explicit incomplete-
   compensation failures.
-- **`tests/test_git_rollback_coverage.py`** — crash-safety-net tests specifically for the
+- **`tests/test_git_rollback.py`** — crash-safety-net tests specifically for the
   partial-failure rollback paths: the fork's and the branch-away's compensation, branch-away
   guard conditions, and that unreachable-remote push preflight and fast-forward failures
   correctly raise rather than swallow.
@@ -1035,7 +1035,7 @@ process failures, and precise ref-movement races deterministic.
   topology, fork-attachment claiming order, the "merge parents mean saves" semantics,
   entry metadata, window truncation, and that the whole path is read-only (no HEAD/ref
   mutation observed across calls).
-- **`tests/test_git_state_coverage.py`** — malformed-input fallback behaviour for every
+- **`tests/test_git_state.py`** — malformed-input fallback behaviour for every
   `_git_state.py` reader: corrupt JSON, wrong top-level type, missing file — each must
   degrade to the documented empty/default value rather than raising; deterministic thread
   coordination additionally pins lossless concurrent pushed-tip updates and atomic

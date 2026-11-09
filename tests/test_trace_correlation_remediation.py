@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -7,15 +8,20 @@ import polars as pl
 import pytest
 
 from haute._json_safe import non_finite_float_sentinel, row_to_json_safe
+from haute._python_syntax import method_call_sites
 from haute._trace_correlation import (
     _CandidateIndicesState,
+    _child_transform_may_reorder,
+    _correlate_rows_posthoc,
     _find_matching_row,
     _jsonify_row,
     _match_rows_vectorized,
     _RowMatchStatus,
+    _trace_values_match,
 )
 from haute.errors import TraceCorrelationUnsupportedError
 from haute.trace import _find_target_row_index
+from tests.conftest import head_frame_resolver
 
 
 @pytest.mark.parametrize(
@@ -284,3 +290,241 @@ def test_trace_row_serialization_is_the_preview_json_safe_boundary() -> None:
 
     assert _jsonify_row is row_to_json_safe
     assert _jsonify_row(row) == row_to_json_safe(row)
+
+
+def _node(node_id: str, node_type: str = "generic", config: dict | None = None):
+    return types.SimpleNamespace(
+        id=node_id,
+        data=types.SimpleNamespace(nodeType=node_type, config=config or {}),
+    )
+
+
+# ---------------------------------------------------------------------------
+# F041 / F694 — positional fast-path must never attach a wrong parent row
+# ---------------------------------------------------------------------------
+
+
+class TestPositionalFastPath:
+    def test_method_call_sites_report_exact_spans_in_source_order(self):
+        sites = method_call_sites('left = df.join(other)\nright = df.sort("x")\n')
+
+        assert [
+            (
+                site.name,
+                site.start_line,
+                site.start_column,
+                site.end_line,
+                site.end_column,
+            )
+            for site in sites
+        ] == [
+            ("join", 1, 7, 1, 21),
+            ("sort", 2, 8, 2, 20),
+        ]
+
+    def test_reorder_classifier_ignores_comments_strings_and_longer_attributes(self):
+        node = _node(
+            "c",
+            "polars",
+            {
+                "code": (
+                    "note = '.sort( and .join('\n"
+                    "# df = df.group_by('region').agg(pl.len())\n"
+                    "method = df.sort\n"
+                    "df = df.sorting_hat('label')\n"
+                )
+            },
+        )
+
+        assert _child_transform_may_reorder(node) is False
+
+    def test_reorder_classifier_detects_exact_structured_calls(self):
+        for method in (
+            "sort",
+            "sort_by",
+            "reverse",
+            "gather",
+            "take",
+            "sample",
+            "shuffle",
+            "join",
+            "group_by",
+            "groupby",
+            "unique",
+            "top_k",
+            "bottom_k",
+            "explode",
+            "pivot",
+            "cross_join",
+        ):
+            node = _node("c", "polars", {"code": f"df = df.{method}()"})
+            assert _child_transform_may_reorder(node) is True, method
+
+    def test_reorder_classifier_treats_invalid_source_as_unknown(self):
+        node = _node("c", "polars", {"code": "df = ("})
+
+        assert _child_transform_may_reorder(node) is True
+
+    def test_reorder_with_no_shared_columns_marks_unresolved(self):
+        """A rename that also reorders rows shares no column name with its
+        parent; the old positional fast-path returned the wrong parent row.
+        A reordering transform with nothing to verify against must be
+        unresolved, not guessed."""
+        eager = {
+            "p": pl.DataFrame({"a": [10, 30]}),
+            # b is a reordered rename of a: child row 0 (b=30) truly came
+            # from parent row 1 (a=30), not parent row 0 (a=10).
+            "c": pl.DataFrame({"b": [30, 10]}),
+        }
+        node_map = {
+            "p": _node("p", "source"),
+            "c": _node(
+                "c",
+                "polars",
+                {"code": "df = df.select(pl.col('a').alias('b')).sort('b', descending=True)"},
+            ),
+        }
+
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            0,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
+
+        assert result["c"] == {"b": 30}
+        # Must NOT be the positionally-aligned {'a': 10}.
+        assert result["p"] is None
+
+    def test_full_rename_preserving_order_resolves_positionally(self):
+        """A pure rename/select (no reordering op) with no shared columns
+        provably preserves row order, so the positional match is correct
+        and the step must still resolve."""
+        eager = {
+            "p": pl.DataFrame({"old": [10, 20, 30]}),
+            "c": pl.DataFrame({"new": [10, 20, 30]}),
+        }
+        node_map = {
+            "p": _node("p", "source"),
+            "c": _node("c", "polars", {"code": "df = df.rename({'old': 'new'})"}),
+        }
+
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            2,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
+
+        assert result["p"] == {"old": 30}
+
+    def test_single_parent_row_resolves_even_without_shared_columns(self):
+        eager = {
+            "p": pl.DataFrame({"a": [42]}),
+            "c": pl.DataFrame({"b": [42]}),
+        }
+        # No code at all → conservatively "may reorder", but a single row
+        # is unambiguous.
+        node_map = {"p": _node("p", "dataInput"), "c": _node("c", "constant")}
+
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            0,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
+
+        assert result["p"] == {"a": 42}
+
+    def test_nonunique_carried_key_falls_through_to_ambiguity(self):
+        """When the carried shared key is not unique among parent rows a
+        reorder could have swapped a different matching row into position;
+        the fast path must fall through and report ambiguity, not guess."""
+        eager = {
+            "p": pl.DataFrame({"k": [1, 1], "extra": [5, 6]}),
+            "c": pl.DataFrame({"k": [1, 1], "other": [9, 9]}),
+        }
+        node_map = {"p": _node("p", "dataInput"), "c": _node("c", "constant")}
+        diagnostics: list[dict] = []
+
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            0,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+            diagnostics=diagnostics,
+        )
+
+        assert result["p"] is None
+        assert any(d["code"] == "ambiguous_row_match" for d in diagnostics)
+
+    def test_nonunique_carried_key_resolves_for_order_preserving_child(self):
+        """Order-preserving transforms do not need a whole-frame uniqueness scan."""
+        eager = {
+            "p": pl.DataFrame({"k": [1, 1], "extra": [5, 6]}),
+            "c": pl.DataFrame({"k": [1, 1], "extra": [5, 6], "other": [9, 9]}),
+        }
+        node_map = {
+            "p": _node("p", "source"),
+            "c": _node("c", "polars", {"code": "df = df.with_columns(other=pl.lit(9))"}),
+        }
+
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            1,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
+
+        assert result["p"] == {"k": 1, "extra": 6}
+
+    def test_unique_shared_key_still_accepts_positional_row(self):
+        """The happy path is preserved: a unique carried key that matches
+        the positional row is accepted."""
+        eager = {
+            "p": pl.DataFrame({"k": [1, 2], "extra": [5, 6]}),
+            "c": pl.DataFrame({"k": [1, 2], "other": [9, 8]}),
+        }
+        node_map = {"p": _node("p", "dataInput"), "c": _node("c", "constant")}
+
+        result = _correlate_rows_posthoc(
+            eager,
+            ["p", "c"],
+            {"c": ["p"]},
+            "c",
+            1,
+            node_map=node_map,
+            row_scope=head_frame_resolver(eager, {"c": ["p"]}, "c", node_map),
+        )
+
+        assert result["p"] == {"k": 2, "extra": 6}
+
+
+# ---------------------------------------------------------------------------
+# F695 — near-zero float must be able to match exactly 0.0
+# ---------------------------------------------------------------------------
+
+
+class TestTraceValuesMatchNearZero:
+    def test_tiny_value_matches_zero(self):
+        assert _trace_values_match(1e-15, 0.0) is True
+        assert _trace_values_match(0.0, 1e-15) is True
+
+    def test_distinct_small_values_do_not_match(self):
+        assert _trace_values_match(1.0, 0.0) is False
+        assert _trace_values_match(0.5, 0.4) is False

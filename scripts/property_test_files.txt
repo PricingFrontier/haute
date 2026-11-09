@@ -16,7 +16,7 @@ tests/test_parser_roundtrip.py
 tests/test_path_resolution_properties.py
 tests/test_polars_steps_lift.py
 tests/test_property.py
-tests/test_rating_step_config_coverage.py
+tests/test_rating_step.py
 tests/test_save_precondition_properties.py
 tests/test_scoring_metamorphic_properties.py
 tests/test_submodel_endpoint_properties.py

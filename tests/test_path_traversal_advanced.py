@@ -1,4 +1,4 @@
-"""Advanced path traversal tests covering gaps beyond test_path_traversal_fixes.py.
+"""Advanced path traversal tests covering gaps beyond test_route_path_traversal.py.
 
 Each test class targets a specific module or attack vector:
 
@@ -616,7 +616,7 @@ class TestVeryLongPaths:
 
 class TestValidateProjectPathEdgeCases:
     """Additional edge cases for _sandbox.validate_project_path beyond
-    what test_path_traversal_fixes.py covers.
+    what test_route_path_traversal.py covers.
     """
 
     def test_empty_path_resolves_to_cwd(self, tmp_path: Path):

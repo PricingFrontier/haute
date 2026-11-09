@@ -38,9 +38,19 @@
 # unlocked-resolve lanes install price-contour away from the lockfile, and the
 # guard's own tests (plus the session-wide verification in conftest) prove the
 # resolved build satisfies the pinned range and exposes every symbol haute calls.
-tests/test_git_engine.py
+tests/test_git_ledger.py
+tests/test_git_working_branches.py
+tests/test_git_working_tree.py
+tests/test_git_remotes.py
+tests/test_git_core_commands.py
 tests/test_model_scorer.py
-tests/test_optimiser_routes.py
+tests/test_optimiser_solve_routes.py
+tests/test_optimiser_estimate_routes.py
+tests/test_optimiser_ratebook_solve.py
+tests/test_optimiser_pipeline_execution.py
+tests/test_optimiser_frontier_routes.py
+tests/test_optimiser_publish_routes.py
+tests/test_optimiser_solver_service.py
 tests/test_codegen.py
 tests/test_executor.py
 tests/test_api_contracts.py

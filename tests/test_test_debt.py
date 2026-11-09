@@ -48,8 +48,8 @@ _EXPECTED_DEBT_IDS = {
     "d60cb6e25d9d0a46",
     # A file held open with open() blocks its replacement only on Windows, where
     # the git tree fence's real case lives; other platforms run the same fence
-    # through a faked half-swap (tests/test_git_engine.py::TestTreeFence).
-    "4fc6a9bab5654bdf",
+    # through a faked half-swap (tests/test_git_working_tree.py::TestTreeFence).
+    "b8387c82cbbedb60",
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
     # legs, catboost for the boosted / numeric-only legs), matching the
@@ -118,7 +118,7 @@ _EXPECTED_DEBT_IDS = {
     # Deploy containment has the same platform prerequisite for local artifact
     # and pipeline-file escape tests. Linux CI and symlink-capable Windows
     # environments run both assertions.
-    "6fb8a1d2d768c835",
+    "de7596ed55652986",
     "a7c21a9dc1f1aada",
     # MSC-03 — a Model Scoring sibling contract that escapes the project through
     # a symlink is refused by scoring and bundling; same platform prerequisite.
@@ -185,7 +185,7 @@ _EXPECTED_DEBT_IDS = {
     "4ae118442dafce1e",
     "8a0f7160d9044069",
     "a78fb6a12665d489",
-    "44ff20785c028602",
+    "7f0862e589b36ce6",
     "707535b7903ffedc",
     "9b58538ec2c90223",
     "6881417aa251afb7",
@@ -196,8 +196,8 @@ _EXPECTED_DEBT_IDS = {
     "bfd8943e3c6770ee",
     "6a71d9434ec9cee0",
     "f68efc20cf708633",
-    "68865fbae69e1d1c",
-    "24327ebd107b8ae0",
+    "ad643ba2aef65736",
+    "ccba5bfb3985c5e7",
     "2a634b625baa4350",
     "aec15b8d084c0f9f",
     "36389904372edffb",
@@ -267,9 +267,9 @@ _EXPECTED_DEBT_IDS = {
     # but symlink creation needs a privilege Windows withholds by default
     # (WinError 1314). Skipped when symlink creation raises, mirroring the
     # other symlink-guard tests (e.g. test_files_routes, test_security_gaps).
-    # See tests/test_config_io_gaps.py::TestConfigPathEscapeGuard
+    # See tests/test_config_io.py::TestConfigPathEscapeGuard
     # ::test_escape_guard_triggers_on_resolved_outside.
-    "1e4116d06849b611",
+    "278a3f348cd0f191",
     # Windows symlink privilege — the MLflow settings write-containment guard
     # test symlinks haute.toml at an external victim file to prove a save
     # refuses to follow it, but symlink creation needs a privilege Windows
@@ -415,7 +415,7 @@ _EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {
         "that switches branches over a held file (Excel's lock, and a "
         "read-sharing one) has nothing to exercise on the Linux CI lane and "
         "runs on Windows machines. The fence itself is unit-tested everywhere "
-        "in tests/test_git_engine.py::TestTreeFence."
+        "in tests/test_git_working_tree.py::TestTreeFence."
     ),
 }
 

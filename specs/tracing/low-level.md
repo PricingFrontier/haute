@@ -1034,7 +1034,10 @@ integration/regression suites:
   `SchemaDiff`/`TraceResult`/`TraceStep`, and `_find_matching_row` directly
   against `haute._trace_correlation`; includes the fail-loud duplicate-match
   regression for `_find_target_row_index` (ambiguous relocation raises
-  `ValueError` rather than returning the first matching index).
+  `ValueError` rather than returning the first matching index). It also pins
+  row JSON serialisation edge cases, schema diffs, column carrying,
+  `trace_result_to_dict`, column tracing, trace caching, trace edge cases, and
+  the waterfall's integration with the trace and its dataclasses.
 - **`tests/test_trace_value_lineage.py`** — the value lineage end to end on a
   demo-shaped pricing pipeline (joined-in data off the lineage, a join-side
   premium, a competitor price two steps above the constraint it feeds, a cost, a
@@ -1108,7 +1111,8 @@ integration/regression suites:
   node-type-specific enrichment (rating step, banding, model score, scenario
   expansion, live switch, data-source metadata) and row-lineage-type detection,
   exercised both via TDD stubs and through `execute_trace` on real data-flow
-  patterns.
+  patterns, plus interval rules matched in the column's own dtype and edge-join
+  row lineage.
 - **`tests/test_trace_calculation_hero.py`** and
   **`tests/test_trace_hero_tdd.py`** — the expression/calculation
   ("Calculation Hero") feature: conditional-branch indication, waterfall data
@@ -1127,7 +1131,9 @@ integration/regression suites:
 - **`tests/test_trace_waterfall.py`** — the C8 arithmetic-contract
   regression suite, driving flagship multiplicative/additive scenarios through
   `execute_trace` end-to-end (not hand-fed factors) so a regression in
-  value-derivation cannot hide behind a synthetic unit test.
+  value-derivation cannot hide behind a synthetic unit test, plus builder-level
+  checks that an identity contributor is never omitted, a zero base never yields a
+  multiply factor, and a sign change is classified correctly.
 - **`tests/test_trace_edge_join.py`** — the W1.7 edge-join provenance
   remediation: correlation path and per-step row values for both the base and
   JOIN-role parents of an `edgeJoin` node, including suffix collision cases.
@@ -1148,7 +1154,10 @@ integration/regression suites:
   its JOIN parent without treating the base bundle as a DataFrame.
 - **`tests/test_trace_correlation_remediation.py`** — the typed vectorised
   matcher matrix, candidate bounds, ambiguity/unsupported diagnostics, and
-  public unsupported target error contract.
+  public unsupported target error contract, plus correlation soundness: the
+  positional fast path fails loud or marks a step unresolved rather than
+  attaching a wrong parent row, and near-zero value matching agrees with actual
+  engine behaviour.
 - **`tests/test_trace_evidence_contract.py`** — diagnostic-linked omissions,
   conservative relevance fallback when the assigning step is unresolved, and
   evidence retention.
@@ -1163,9 +1172,7 @@ integration/regression suites:
   explainability enrichment, and correlation of an online apply's parent to the
   scenario row it chose through each kept identity column (scenario value, step,
   or a non-string quote id), with the quote id alone left ambiguous.
-- **`tests/test_trace_w4_fixes.py`** — W4-audit correlation-soundness
-  regressions: fail-loud/unresolved behaviour over wrong-row attribution, and
-  numeric-comparison agreement with actual engine behaviour. It, the identical-row,
+- The correlation-soundness tests in `tests/test_trace_correlation_remediation.py`, the identical-row,
   multi-frame and evidence suites and the performance corpus call
   `_correlate_rows_posthoc` over materialised frames through
   `tests/conftest.py::head_frame_resolver`, a resolver whose every edge is aligned and
@@ -1180,9 +1187,6 @@ integration/regression suites:
   diamonds, fan-out), row-correlation edge cases (filter/sort/join/positional
   fallback), expression-parser integration, calculation accuracy, serialisation,
   and cache/concurrency edge cases.
-- **`tests/test_trace_coverage.py`** — coverage-directed tests
-  targeting paths in `trace.py` and `_trace_waterfall.py` identified by coverage
-  analysis rather than by feature.
 - **`tests/test_trace_cache_byte_awareness.py`** — the byte-aware
   trace-cache eviction remediation: bounded by bytes AND entry count, LRU
   eviction, deterministic reject-at-store for an oversized single entry. Twin

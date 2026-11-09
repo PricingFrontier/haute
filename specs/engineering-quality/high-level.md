@@ -272,6 +272,16 @@ Out of scope:
   both-direction allowlist ratchet, and an autouse runtime guard that runs
   strict for converted modules and observe-and-census elsewhere. The low-level
   specification states the modes, the known interception gaps, and the ratchet.
+- Tests are organised by component and behaviour. A backend module is
+  `tests/test_<component>[_<behaviour>].py` and covers one component's
+  behaviour; a frontend file sits beside what it tests as
+  `<Module>[.<behaviour>].test.ts(x)`. Helpers and fixtures several modules
+  share live in private modules (`tests/_<component>_helpers.py`), never copied.
+  No module is named after the coverage campaign or fix wave that produced it,
+  and none exceeds 5,000 lines; a module that grows past that is split by
+  behaviour. `tests/test_test_layout.py` holds both rules over the backend and
+  frontend test trees, with the few names that read as campaign words but name
+  behaviour listed with their reason.
 
 ## Design rationale
 

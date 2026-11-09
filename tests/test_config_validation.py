@@ -536,3 +536,65 @@ class TestOptimiserAnalysisConfig:
             validate_optimiser_input_selectors(
                 NodeType.OPTIMISER, config, ["scored", "other"], node_label="opt"
             )
+
+
+# ===========================================================================
+# _config_validation.py — remaining edge cases
+# ===========================================================================
+
+
+class TestConfigValidationEdgeCases:
+    """Edge cases not covered by test_config_validation.py."""
+
+    def test_underscore_prefixed_keys_are_undeclared_like_any_other(self):
+        """Editor state travels beside the config, so an underscore key is undeclared."""
+        from haute._config_validation import unrecognized_config_keys
+        from haute._types import NodeType
+
+        bad = unrecognized_config_keys(
+            NodeType.POLARS,
+            {"code": "x", "_internal_marker": True, "_debug": 99},
+        )
+        assert bad == ["_debug", "_internal_marker"]
+
+    def test_submodel_port_declares_only_the_universal_keys(self):
+        """A submodel port has no settings of its own: any other key is undeclared."""
+        from haute._config_validation import VALID_KEYS, unrecognized_config_keys
+        from haute._node_config_models import NodeConfigBase
+        from haute._types import NodeType
+
+        assert VALID_KEYS[NodeType.SUBMODEL_PORT] == frozenset(NodeConfigBase.__annotations__)
+
+        bad = unrecognized_config_keys(
+            NodeType.SUBMODEL_PORT,
+            {"anything": 42, "goes": True},
+        )
+        assert bad == ["anything", "goes"]
+
+    def test_every_node_type_has_valid_keys(self):
+        """Every node type has a config model, so none goes unvalidated."""
+        from haute._config_validation import VALID_KEYS
+        from haute._types import NodeType
+
+        assert set(VALID_KEYS) == set(NodeType)
+
+    def test_valid_keys_include_universal_keys(self):
+        """Every node type's keys include the universal keys of NodeConfigBase."""
+        from haute._config_validation import VALID_KEYS
+        from haute._node_config_models import NodeConfigBase
+
+        universal = frozenset(NodeConfigBase.__annotations__)
+        assert universal == {"input_mapping", "contract", "selected_columns", "column_renames"}
+        for node_type, keys in VALID_KEYS.items():
+            assert universal <= keys, node_type
+
+    def test_column_renames_universal_key(self):
+        """column_renames should be accepted for any node type."""
+        from haute._config_validation import unrecognized_config_keys
+        from haute._types import NodeType
+
+        bad = unrecognized_config_keys(
+            NodeType.POLARS,
+            {"code": "x", "column_renames": {"old": "new"}},
+        )
+        assert bad == []

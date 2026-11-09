@@ -649,7 +649,7 @@ is only warranted for a concrete thread callable that can honour such a signal.
   stop reason for the previous job). Direct `SingleFlightCoordinator` tests cover
   same-owner idempotence, concurrent conflicting acquire with exactly one winner,
   and stale-release protection.
-- `tests/test_execution_context.py` (background-jobs-relevant subset) — confirms
+- `tests/test_execution_context_lifecycle.py` (background-jobs-relevant subset) — confirms
   `CancellableJobRegistry.register_latest` actually cancels the *previous* job's
   `ExecutionContext` checkpoint (raises `ExecutionCancelledError`) and that a
   caller-supplied `ExecutionCancellationToken` is used as-is rather than replaced.
@@ -686,6 +686,6 @@ is only warranted for a concrete thread callable that can honour such a signal.
   and zero-convergence occupancy contract are direct assertions. The cross-component
   cancellation/limiter certificate lives in
   `tests/performance/test_external_scaling_perf.py`.
-- Indirect coverage: `tests/test_optimiser_routes.py` exercises
+- Indirect coverage: `tests/test_optimiser_solve_routes.py` and `tests/test_optimiser_estimate_routes.py` exercise
   `BackgroundJobStoppedError` with the registry/lifecycle combination; modelling
   process-worker behavior is covered through the protocol-specific suites.

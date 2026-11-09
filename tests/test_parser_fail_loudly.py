@@ -1,24 +1,18 @@
-"""Tests for Phase 1 Package 1A — Parser / codegen fail-loudly sweep.
+"""The parser and codegen fail loudly instead of recovering silently.
 
-TDD: these tests are written BEFORE the implementation lands.  They pin the
-contract for items #18-#22 from ``docs/CODEBASE_REVIEW.md`` / ``CODEBASE_REVIEW_PLAN.md``.
+Pinned contracts:
 
-Covered items:
-
-    #18 — Silent config-path recovery on Windows
-          ``src/haute/_config_builder.py``
-
-    #20 — Submodel cross-boundary edge resolution unvalidated
-          ``src/haute/codegen.py:1180-1189`` + ``src/haute/_parser_submodels.py:125-133``
-
-    #21 — Graph fingerprint cache extend-path retains stale data
-          ``src/haute/executor.py:391-449``
-
-    #22 — Polars codegen empty-code fragile edge case
-          ``src/haute/_codegen_builders.py::_gen_transform``
-
-Also covered: the declaration and hook shapes the parser enforces on every
-configured node (``src/haute/_config_builder.py::_validate_node_function``).
+* config paths are never silently recovered (``src/haute/_config_builder.py``),
+  and a pipeline whose node config is missing or unreadable raises
+  ``ConfigError`` when parsed;
+* submodel cross-boundary edges are validated
+  (``src/haute/codegen.py`` + ``src/haute/_parser_submodels.py``);
+* the graph fingerprint cache's extend path never retains stale data
+  (``src/haute/executor.py``);
+* Polars codegen handles empty code explicitly
+  (``src/haute/_codegen_builders.py::_gen_transform``);
+* the declaration and hook shapes the parser enforces on every configured node
+  (``src/haute/_config_builder.py::_validate_node_function``).
 
 Project principle (from ``CLAUDE.md``): code must fail loudly with a typed
 ``haute.errors.*`` exception carrying structured context, instead of
@@ -51,6 +45,7 @@ from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_source
+from tests._project import use_project
 from tests.conftest import (
     make_edge as _edge,
 )
@@ -69,6 +64,7 @@ from tests.conftest import (
 from tests.conftest import write_node_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
 
 # ===========================================================================
 # Item #18 — A missing config fails loudly
@@ -1218,3 +1214,80 @@ class TestGlobalConstantsDeclarationAndReservedName:
         parse_submodel_source(constructor + "global_constants = submodel.global_constants\n")
         with pytest.raises(ParseError, match="'global_constants' is reserved"):
             parse_submodel_source(constructor + "global_constants = pipeline.global_constants\n")
+
+
+# ---------------------------------------------------------------------------
+# Parser warning for config load errors
+# ---------------------------------------------------------------------------
+
+
+class TestParserConfigLoadWarning:
+    """Verify the parser surfaces config load errors via graph.warning."""
+
+    def test_raises_when_config_missing(self, tmp_path, monkeypatch):
+        """Parsing a pipeline with a missing config file raises ``ConfigError``
+        (post Item #18 fail-loudly contract)."""
+        use_project(tmp_path)
+        pipeline_dir = tmp_path / "rating"
+        pipeline_dir.mkdir()
+        (pipeline_dir / "main.py").write_text(
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("test")\n\n'
+            '@pipeline.data_input(config="config/data_input/missing.json")\n'
+            "def missing(): ...\n"
+        )
+
+        from haute.errors import ConfigError
+        from haute.parser import parse_pipeline_file
+
+        with pytest.raises(ConfigError):
+            parse_pipeline_file(pipeline_dir / "main.py")
+
+    def test_no_warning_when_config_exists(self, tmp_path, monkeypatch):
+        """Parsing a pipeline with a valid config file should not set graph.warning."""
+        use_project(tmp_path)
+        pipeline_dir = tmp_path / "rating"
+        pipeline_dir.mkdir()
+        config_dir = pipeline_dir / "config" / "data_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "src.json").write_text(
+            '{"input_type":"file","format":"parquet","mode":"scan",'
+            '"path":"d.parquet","arguments":{}}'
+        )
+        (pipeline_dir / "main.py").write_text(
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("test")\n\n'
+            '@pipeline.data_input(config="config/data_input/src.json")\n'
+            "def src(): ...\n"
+        )
+
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(pipeline_dir / "main.py")
+        assert graph.warning is None
+
+    def test_a_config_that_is_not_utf8_fails_the_parse(self, tmp_path, monkeypatch):
+        """A config file with a Windows-1252 en-dash (0x96) is refused naming the file and
+        the byte, never read with a replacement character the next save would write."""
+        use_project(tmp_path)
+        pipeline_dir = tmp_path / "rating"
+        pipeline_dir.mkdir()
+        config_dir = pipeline_dir / "config" / "banding"
+        config_dir.mkdir(parents=True)
+        (config_dir / "bands.json").write_bytes(
+            b'{"factors": [{"banding": "categorical", "column": "age", '
+            b'"output_column": "age_band", "rules": [{"value": "young", '
+            b'"assignment": "20\x9627"}], "default": "other"}]}'
+        )
+        (pipeline_dir / "main.py").write_text(
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("test")\n\n'
+            '@pipeline.banding(config="config/banding/bands.json")\n'
+            "def bands(df): ...\n"
+        )
+
+        from haute.errors import ConfigError
+        from haute.parser import parse_pipeline_file
+
+        with pytest.raises(ConfigError, match=r"bands\.json is not valid UTF-8: byte 0x96"):
+            parse_pipeline_file(pipeline_dir / "main.py")

@@ -2,15 +2,15 @@
 
 Covers:
   1. Rating step simulation (join-based rate table lookups)
-  2. Banding simulation (when/then conditional patterns)
+  2. Banding simulation (when/then conditional patterns), including interval
+     rules matched with the column's own dtype
   3. Model score simulation (prediction column addition)
   4. Scenario expansion (cross join patterns)
   5. Live switch (branch selection)
   6. Data source metadata (source node trace)
-  7. Row lineage type detection (passthrough, created, filtered, etc.)
+  7. Row lineage type detection (passthrough, created, filtered, joins, etc.)
 
-The enrichment functions imported from ``haute._trace_enrichment`` are TDD
-stubs -- they do not exist yet.  The remaining tests exercise the *existing*
+The tests exercise ``haute._trace_enrichment`` directly and the
 ``execute_trace`` infrastructure on the data-flow patterns that each node
 type produces.
 """
@@ -23,6 +23,10 @@ import polars as pl
 import pytest
 
 from haute._native_memory_limit import native_memory_backend_scope
+from haute._trace_enrichment import (
+    _match_interval_rule,
+    detect_row_lineage_type,
+)
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.trace import (
     TraceResult,
@@ -34,6 +38,8 @@ from tests.conftest import make_graph as _g
 from tests.conftest import make_ready_file_input_config
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
+
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
 @pytest.fixture(autouse=True)
@@ -48,8 +54,6 @@ def _hard_capped_native_memory():
     with native_memory_backend_scope("rlimit"):
         yield
 
-
-pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3849,3 +3853,39 @@ class TestDetectRowLineageTypeExtended:
 
         result = detect_row_lineage_type(node_type="polars", operation_type="with_columns")
         assert result == "passthrough"
+
+
+# ---------------------------------------------------------------------------
+# F693 — interval re-matching must be dtype-faithful (Float32)
+# ---------------------------------------------------------------------------
+
+
+class TestIntervalRuleDtypeFaithful:
+    def test_float32_banded_value_matches_its_closed_boundary(self):
+        widened = float(pl.Series([0.1], dtype=pl.Float32).item())
+        # The first interval of a right-closed breakpoint at 0.1.
+        rule = {"op1": "<=", "val1": 0.1}
+
+        # Widened float64 comparison fails (the self-contradiction bug)...
+        assert _match_interval_rule(widened, rule) is False
+        # ...but comparing in the source Float32 domain reproduces the
+        # engine's own match.
+        assert _match_interval_rule(widened, rule, pl.Float32) is True
+
+    def test_dtype_faithful_range_rule_still_matches(self):
+        widened = float(pl.Series([5.5], dtype=pl.Float32).item())
+        rule = {"op1": ">=", "val1": 5.5}
+        assert _match_interval_rule(widened, rule, pl.Float32) is True
+
+    def test_none_dtype_uses_native_value_comparison(self):
+        assert _match_interval_rule(10, {"op1": "<=", "val1": 10}) is True
+
+
+# ---------------------------------------------------------------------------
+# F080 — edge-join nodes are classified as joined whatever their cardinality
+# ---------------------------------------------------------------------------
+
+
+class TestRowLineageEdgeJoin:
+    def test_edge_join_is_joined_without_reading_row_counts(self):
+        assert detect_row_lineage_type(node_type="edgeJoin") == "joined"

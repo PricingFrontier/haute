@@ -1,11 +1,10 @@
 """Error contracts of schema inference, and inferred schemas building cleanly.
 
-Regression coverage for the multi-frame review findings:
-
-- a scalar array used to crash the strict build with an opaque 500; an
-  inferred schema must now build its table snapshots cleanly.
+- a scalar array must build its table snapshots cleanly from an inferred schema;
 - a nested array must surface a structured 422 naming the field — never an
-  opaque 500.
+  opaque 500;
+- ``POST /api/json-cache/infer`` answers a missing, corrupt or unreadable file
+  with a 4xx/5xx the frontend can show.
 """
 
 from __future__ import annotations
@@ -13,7 +12,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import orjson
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
@@ -150,3 +151,38 @@ def test_inferred_string_widening_builds_mixed_json_scalars(
     frames = _built_frames(data_path, {"tables": tables})
     assert dict(frames["quote_info"].schema) == {"code": pl.String}
     assert frames["quote_info"]["code"].to_list() == ["100", "A1", "true"]
+
+
+@pytest.fixture()
+def project(tmp_path: Path) -> Path:
+    """A fresh tmp dir as the project the route anchors paths to."""
+    use_project(tmp_path)
+    return tmp_path
+
+
+class TestInferExceptions:
+    def test_infer_data_file_not_found_returns_404(self, client: TestClient) -> None:
+        resp = client.post("/api/json-cache/infer", json={"path": "data/nope.json"})
+        assert resp.status_code == 404
+        assert "Data file not found" in resp.json()["detail"]
+
+    def test_infer_malformed_json_returns_422(self, client: TestClient, project: Path) -> None:
+        data_dir = project / "data"
+        data_dir.mkdir()
+        (data_dir / "broken.json").write_bytes(b"{ broken")
+        resp = client.post("/api/json-cache/infer", json={"path": "data/broken.json"})
+        assert resp.status_code == 422
+        assert "Invalid JSON in data file" in resp.json()["detail"]
+
+    def test_infer_generic_exception_returns_500(self, client: TestClient, project: Path) -> None:
+        """Unexpected internal error during inference → 500 with opaque detail."""
+        data_dir = project / "data"
+        data_dir.mkdir()
+        (data_dir / "ok.json").write_bytes(orjson.dumps([{"x": 1}]))
+        with patch(
+            "haute._json_shred._inference.infer_v2_schema_from_data",
+            side_effect=RuntimeError("infer boom"),
+        ):
+            resp = client.post("/api/json-cache/infer", json={"path": "data/ok.json"})
+        assert resp.status_code == 500
+        assert "infer boom" not in resp.text

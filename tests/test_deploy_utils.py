@@ -1,4 +1,8 @@
-"""Tests for haute.deploy._utils — get_user, get_haute_version, build_manifest."""
+"""Tests for haute.deploy._utils — get_user, get_haute_version, build_manifest.
+
+Also pins that the container and MLflow deploy targets use these helpers
+directly rather than through module-local wrappers.
+"""
 
 from __future__ import annotations
 
@@ -377,3 +381,133 @@ class TestBuildManifest:
         assert inner_node["data"]["config"] == {"tables": tables}
         assert PipelineGraph.model_validate(shipped).nodes[0].data.config == {"tables": tables}
         assert graph.nodes[0].data.config["sample"] == {"policy": {"limit": 5}}
+
+
+# ===========================================================================
+# deploy/_utils.py — remaining paths
+# ===========================================================================
+
+
+class TestGetUserEdgeCases:
+    """Extra coverage for get_user."""
+
+    def test_returns_nonempty_string(self):
+        """get_user should always return a non-empty string."""
+        from haute.deploy._utils import get_user
+
+        result = get_user()
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_actual_username_matches_getpass(self):
+        """Normal path: get_user returns the same value as getpass.getuser."""
+        import getpass
+
+        from haute.deploy._utils import get_user
+
+        expected = getpass.getuser()
+        assert get_user() == expected
+
+
+class TestGetHauteVersionEdgeCases:
+    """Extra coverage for get_haute_version."""
+
+    def test_returns_version_string_format(self):
+        """Version string should contain at least one dot (semantic versioning)."""
+        from haute.deploy._utils import get_haute_version
+
+        version = get_haute_version()
+        # Either a real version like "0.3.1" or fallback "0.0.0-dev"
+        assert "." in version
+
+
+class TestBuildManifestEdgeCases:
+    """Extra coverage for build_manifest field values."""
+
+    def test_manifest_includes_created_by(self):
+        """build_manifest always includes created_by field."""
+        from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
+
+        resolved = make_resolved_deploy()
+        manifest = build_manifest(resolved)
+        assert "created_by" in manifest
+        assert isinstance(manifest["created_by"], str)
+        assert len(manifest["created_by"]) > 0
+
+    def test_manifest_includes_haute_version(self):
+        """build_manifest always includes haute_version field."""
+        from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
+
+        resolved = make_resolved_deploy()
+        manifest = build_manifest(resolved)
+        assert "haute_version" in manifest
+        assert isinstance(manifest["haute_version"], str)
+
+    def test_manifest_nodes_deployed_matches_graph(self):
+        """nodes_deployed count matches the actual number of nodes in pruned_graph."""
+        from haute._types import GraphNode, NodeData, PipelineGraph
+        from haute.deploy._utils import build_manifest
+        from tests._deploy_helpers import make_resolved_deploy
+
+        nodes = [
+            GraphNode(
+                id=f"n{i}",
+                data=NodeData(label=f"node_{i}", nodeType="polars", config={}),
+            )
+            for i in range(7)
+        ]
+        graph = PipelineGraph(nodes=nodes, edges=[])
+        resolved = make_resolved_deploy(pruned_graph=graph)
+        manifest = build_manifest(resolved)
+        assert manifest["nodes_deployed"] == 7
+
+
+# ── D15: Dead code removed ─────────────────────────────────────────
+
+
+class TestDeadCodeRemoved:
+    """Verify wrapper functions and dead code have been removed."""
+
+    def test_container_no_build_manifest_wrapper(self) -> None:
+        from haute.deploy import _container
+
+        assert not hasattr(_container, "_build_manifest"), (
+            "_build_manifest wrapper should have been removed from _container.py"
+        )
+
+    def test_container_no_get_haute_version(self) -> None:
+        from haute.deploy import _container
+
+        assert not hasattr(_container, "_get_haute_version"), (
+            "_get_haute_version should have been removed from _container.py"
+        )
+
+    def test_container_no_safe_user(self) -> None:
+        from haute.deploy import _container
+
+        assert not hasattr(_container, "_safe_user"), (
+            "_safe_user should have been removed from _container.py"
+        )
+
+    def test_mlflow_no_build_manifest_wrapper(self) -> None:
+        from haute.deploy import _mlflow
+
+        assert not hasattr(_mlflow, "_build_manifest"), (
+            "_build_manifest wrapper should have been removed from _mlflow.py"
+        )
+
+    def test_mlflow_no_get_user_wrapper(self) -> None:
+        from haute.deploy import _mlflow
+
+        assert not hasattr(_mlflow, "_get_user"), (
+            "_get_user wrapper should have been removed from _mlflow.py"
+        )
+
+    def test_build_manifest_imported_directly(self) -> None:
+        """Both modules should import build_manifest from _utils."""
+        from haute.deploy import _container, _mlflow
+
+        assert hasattr(_container, "build_manifest")
+        assert hasattr(_mlflow, "build_manifest")

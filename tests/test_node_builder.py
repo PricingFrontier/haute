@@ -161,3 +161,51 @@ class TestNodeFnName:
         result = node_fn_name(node)
         assert "@" not in result
         assert "!" not in result
+
+
+# ===========================================================================
+# _node_builder.py — additional coverage for wrap_builder
+# ===========================================================================
+
+
+class TestWrapBuilderAdditional:
+    """Additional edge cases for wrap_builder."""
+
+    def test_hook_receives_correct_source_names_list(self):
+        """When source_names is a populated list, the hook gets that list."""
+        from haute._node_builder import NodeBuildHooks, wrap_builder
+
+        received = []
+
+        def capture(node, names, source_ids):
+            received.append(list(names))
+            return None
+
+        def base(node, source_names=None, **kw):
+            return (node.data.label, lambda df: df, False)
+
+        hooks = NodeBuildHooks(before_build=capture)
+        wrapped = wrap_builder(base, hooks)
+        node = make_node({"id": "t", "data": {"label": "t", "nodeType": "polars", "config": {}}})
+        wrapped(node, source_names=["src_a", "src_b", "src_c"])
+        assert received == [["src_a", "src_b", "src_c"]]
+
+    def test_hook_override_skips_base_completely(self):
+        """When hook returns a result, base is never invoked."""
+        from haute._node_builder import NodeBuildHooks, wrap_builder
+
+        base_called = []
+
+        def base(node, source_names=None, **kw):
+            base_called.append(True)
+            return ("base", lambda: None, False)
+
+        override_fn = lambda df: df  # noqa: E731
+        hooks = NodeBuildHooks(before_build=lambda n, s, ids: ("override", override_fn, True))
+        wrapped = wrap_builder(base, hooks)
+        node = make_node({"id": "t", "data": {"label": "t", "nodeType": "polars", "config": {}}})
+        name, fn, is_source = wrapped(node, source_names=["a"])
+        assert name == "override"
+        assert fn is override_fn
+        assert is_source is True
+        assert base_called == []

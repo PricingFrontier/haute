@@ -941,7 +941,7 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   or explicitly sampled source must stay serial. Parallel inference hands its
   workers ranges that tile the file from the prefix pass's offset to its end,
   and a multi-range file shorter than the prefix starts no worker pool.
-- `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:
+- `tests/test_json_shred_conservation.py` — fail-loud/accounting regressions:
   reserved-key rejection, `$value`/sibling-column rejection, empty-array type
   non-poisoning.
 - `tests/test_json_shred_mut_*.py` (`parser`, `shred`, `validity`, `records`,
@@ -990,7 +990,7 @@ Shred / inference / table snapshots (the `_json_shred/` package):
   corrupt table, worker and cap-unavailable paths).
 - `tests/test_json_direct_spill.py` — standalone JSON/JSONL direct-spill streaming, validation, disk-budget, and cleanup regressions.
 - `tests/test_json_runtime_storage.py` — owned runtime-storage orphan recovery, symlink/reparse preservation, hard-link accounting, and budget-integrity safeguards.
-- `tests/test_json_cache_coverage_uplift.py`,
+- `tests/test_json_cache_corrupt_and_errors.py`,
   `tests/test_json_cache_corrupt_and_errors.py`, and
   `tests/test_json_cache_mut_witnesses.py` — the inference route's path
   confinement, error arms, and inferred schemas building cleanly;

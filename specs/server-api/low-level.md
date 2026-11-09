@@ -1249,6 +1249,10 @@ entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
 
+- `tests/test_worker_failure_http.py` covers the one HTTP answer for a worker
+  failure: each failure class's status, the route's timeout detail, the cap a
+  memory outcome reports, a one-shot worker's memory error against a remote
+  that names another module, and a route's own remote answer.
 - `tests/test_project_write.py` covers `project_write`: writes taking turns, a failure passing
   the turn on, and a write holding the repository's lock a branch switch takes.
 - `tests/test_project_files_routes.py` covers `/api/project-files`: the pipeline place
@@ -1323,7 +1327,7 @@ entirely and leave every touched file in whatever state it happened to be in."
 - `tests/test_error_response_shape.py` verifies standard error envelopes, structured `{line, message}` utility syntax details, sanitized internal errors, and prohibition of arbitrary dict route details.
 - `tests/test_pipeline_index_cache.py` verifies startup population, cache hits, watcher rebuilds, no manual invalidation, and race-free concurrent reads.
 - `tests/test_pipeline_read_json_route.py` verifies object JSON reads plus missing/non-JSON/invalid/non-object/traversal rejection.
-- `tests/test_polars_steps.py::test_render_endpoint_reports_invalid_step_as_data` verifies the step render endpoint's rendered, invalid-step (data, not 4xx) and malformed-request (422) outcomes, and `test_render_endpoint_returns_free_code_line_ranges_and_errors` that rendering a free-code step runs no authored code. `test_free_code_columns_endpoint_resolves_the_columns_after_each_free_code_step`, `test_free_code_columns_endpoint_says_why_columns_are_unknown`, `test_free_code_columns_endpoint_resolves_free_code_on_a_frame_surface` and `test_free_code_columns_endpoint_runs_nothing_without_free_code` verify `POST /api/pipeline/polars-steps/free-code-columns`: a free-code step's created columns (a `Datetime` type carried through) at each free-code step, a one-line reason for an input with no known columns, a Polars or Python failure, a non-frame `df` and an unreadable dtype, a frame-mode `df` resolved from `frame_columns` or reported unknown without them, `frame_columns` refused in `input` mode and `input_columns` outside `input_names` refused, no entries for a list without free code, and a list that does not render as a 422. `test_a_free_code_timeout_in_thread_mode_is_every_steps_note` verifies that in thread mode the deadline answers every free-code step with the timeout note while the admission is held until the thread ends, and `test_a_newer_free_code_request_for_the_node_stops_the_older` that a newer request for the same node stops the running worker through `stop_reason` (409 for the older) on the node's affinity key. `tests/test_interactive_route_isolation.py::test_a_free_code_step_that_never_finishes_is_stopped_with_its_worker` runs a `while True` snippet through the real spawn worker under a tiny deadline: the request answers with the timeout note, the worker that ran it is dead and replaced, and the next resolution returns columns.
+- `tests/test_polars_steps_routes.py::test_render_endpoint_reports_invalid_step_as_data` verifies the step render endpoint's rendered, invalid-step (data, not 4xx) and malformed-request (422) outcomes, and `test_render_endpoint_returns_free_code_line_ranges_and_errors` that rendering a free-code step runs no authored code. `test_free_code_columns_endpoint_resolves_the_columns_after_each_free_code_step`, `test_free_code_columns_endpoint_says_why_columns_are_unknown`, `test_free_code_columns_endpoint_resolves_free_code_on_a_frame_surface` and `test_free_code_columns_endpoint_runs_nothing_without_free_code` verify `POST /api/pipeline/polars-steps/free-code-columns`: a free-code step's created columns (a `Datetime` type carried through) at each free-code step, a one-line reason for an input with no known columns, a Polars or Python failure, a non-frame `df` and an unreadable dtype, a frame-mode `df` resolved from `frame_columns` or reported unknown without them, `frame_columns` refused in `input` mode and `input_columns` outside `input_names` refused, no entries for a list without free code, and a list that does not render as a 422. `test_a_free_code_timeout_in_thread_mode_is_every_steps_note` verifies that in thread mode the deadline answers every free-code step with the timeout note while the admission is held until the thread ends, and `test_a_newer_free_code_request_for_the_node_stops_the_older` that a newer request for the same node stops the running worker through `stop_reason` (409 for the older) on the node's affinity key. `tests/test_interactive_route_isolation.py::test_a_free_code_step_that_never_finishes_is_stopped_with_its_worker` runs a `while True` snippet through the real spawn worker under a tiny deadline: the request answers with the timeout note, the worker that ran it is dead and replaced, and the next resolution returns columns.
 - `tests/test_serialization_invariants.py` verifies non-finite values serialize as sentinels in schema-preview and preview responses.
 - `tests/test_preview_snapshot_seeding.py` covers preview seed-plan responses: a repeat preview
   reporting its generations as seeded (`test_a_repeat_preview_announces_its_generations_as_seeded`),
@@ -1342,7 +1346,7 @@ Tests live under `tests/`, one file per module or per feature slice, using FastA
 `TestClient` against a temporary project directory (a `haute.toml` + pipeline `.py` fixture)
 for route-level tests, and direct unit tests for the pure-function modules.
 
-- **`test_server.py`** — the broadest integration suite: app lifecycle,
+- **`test_server_pipeline_routes.py`**, **`test_server_websocket.py`**, **`test_server_file_watcher.py`**, **`test_server_submodels.py`** and **`test_server_infrastructure.py`** — the broadest integration suite: app lifecycle,
   middleware behaviour, static SPA serving (including the partial-build fail-fast case), the
   `/ws/sync` protocol (resync requests, fingerprint short-circuit, rejection reasons), a
   preview of several frames its own request for supersession, and
@@ -1357,7 +1361,7 @@ for route-level tests, and direct unit tests for the pure-function modules.
 - **`test_pipeline_recovery.py`** — editor-document DTO separation, degraded/source-only
   recovery, authored-structure conservation, bounded diagnostics, raw-artifact revision safety,
   mutation fences, and server-owned ready-closure preview admission.
-- **`test_security_gaps.py`** — local-session token generation/override/disable behaviour,
+- **`test_security_hardening.py`** — local-session token generation/override/disable behaviour,
   HTTP and WebSocket Origin/token rejection, trusted hosts (including bracketed IPv6), and
   malformed authority cases.
 - **`test_local_security.py`** — exact bootstrap authority checks, cookie/API/WebSocket success,
@@ -1426,7 +1430,7 @@ for route-level tests, and direct unit tests for the pure-function modules.
   only their HTTP consumption and error mapping.
 - **`test_errors.py`** — the `HauteError` hierarchy's `**context` rendering and `repr`/`str`
   behaviour.
-- **`test_event_bus_gaps.py`** — targeted edge-branch coverage for `EventBus` (idempotent
+- **`test_event_bus.py`** — targeted edge-branch coverage for `EventBus` (idempotent
   unsubscribe, handler-exception isolation, empty-registry publish no-op).
 - **`test_logging.py`** — `configure_logging()` preserves processor-list identity once
   Haute's stdlib bridge is installed (so `capture_logs` and cached bound loggers keep

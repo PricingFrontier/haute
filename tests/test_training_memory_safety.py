@@ -733,7 +733,7 @@ def test_start_releases_admission_when_prep_fails_before_launch(
 ) -> None:
     """When prep raises before launch, the admitted context must be released."""
     from haute.schemas import TrainRequest
-    from tests.test_modelling_routes import _make_modelling_graph
+    from tests._modelling_route_helpers import _make_modelling_graph
 
     data_path = tmp_path / "training.parquet"
     pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)
@@ -779,7 +779,7 @@ def test_start_keeps_admission_held_after_successful_launch(
     in its finally — ownership transfers to the background worker.
     """
     from haute.schemas import TrainRequest
-    from tests.test_modelling_routes import _make_modelling_graph
+    from tests._modelling_route_helpers import _make_modelling_graph
 
     data_path = tmp_path / "training.parquet"
     pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)
@@ -834,7 +834,7 @@ def test_catboost_gpu_vram_limit_refuses_before_launch(
     client,
     haute_scratch: Path,
 ) -> None:
-    from tests.test_modelling_routes import (
+    from tests._modelling_route_helpers import (
         _fast_training_params,
         _make_modelling_graph,
         _poll_until_done,
@@ -876,7 +876,7 @@ def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
     tmp_path: Path,
 ) -> None:
     from haute.schemas import TrainRequest
-    from tests.test_modelling_routes import _make_modelling_graph
+    from tests._modelling_route_helpers import _make_modelling_graph
 
     data_path = tmp_path / "training.parquet"
     pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)

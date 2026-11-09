@@ -1277,7 +1277,7 @@ array-only payload or omitted-edge compatibility branch is supported.
   in-place mutation by React Flow or editor code.
 - **`useGraph()` distinguishes "no provider" (throws) from "provider with an
   empty graph" (returns cleanly)** — both are explicit test cases in
-  `panels/__tests__/useGraph.gaps.test.ts`.
+  `frontend/src/panels/__tests__/useGraph.test.ts`.
 - **`GraphProvider` memoises on input identity**, so a parent re-render that
   doesn't change `{allNodes, edges, submodels, preamble}` by reference does
   not cascade into every descendant `useGraph()` consumer.
@@ -1563,7 +1563,7 @@ again through the editor and save paths.
     the entry to its original stack for retry; VC entries interleaved with
     graph snapshots undo/redo in the correct order.
 - **Context — `frontend/src/panels/__tests__/`:**
-  - `frontend/src/panels/__tests__/useGraph.gaps.test.ts` — throws a clear `GraphProvider`-naming error
+  - `frontend/src/panels/__tests__/useGraph.test.ts` — throws a clear `GraphProvider`-naming error
     outside a provider; returns the exact supplied value inside one; an
     empty-graph provider is distinct from no provider; the context sentinel
     is a real, usable `React.Context`.
@@ -1680,7 +1680,7 @@ again through the editor and save paths.
     instance resolving to a validated original rather than chaining, including
     explicit refusal of malformed ordinary-instance identity; duplicate and
     auto-layout behavior.
-  - `frontend/src/hooks/__tests__/useNodeHandlers.gaps.test.ts` — `handleRenameNode` (opens dialog with
+  - `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` — `handleRenameNode` (opens dialog with
     correct id/label, no-ops for a missing node, coerces a non-string
     label); `lastSelectedNodeRef` clearing scoped to the deleted node only;
     `renameDialog`/`submodelDialog` cleared only when they reference the
@@ -1743,7 +1743,7 @@ again through the editor and save paths.
     fence for Duplicate and the drops (a drag or selection change applies, a new
     node refuses), `frontend/src/utils/__tests__/edgeJoinGraph.test.ts` the Edge Join rebase onto a live graph
     whose positions, selection and other nodes changed, and
-    `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` a lost save sent
+    `frontend/src/hooks/__tests__/usePipelineAPI.previewAndSaveRequests.test.ts` a lost save sent
     again under its operation, acknowledged from the repeat's answer, refused as
     stale with the banner, and reported failed when the repeat's answer is lost too. On the real graph store, a copied, deleted and
     pasted two-frame Quote Input keeps its two parallel connections under
@@ -1778,7 +1778,7 @@ again through the editor and save paths.
     capping for wide cached schemas; client-side preview timeout surfaced
     in panel and toast; `nodeIdCounter` seeded from max numeric suffix
     (not `nodes.length`).
-  - `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` — preview error/abort/supersession
+  - `frontend/src/hooks/__tests__/usePipelineAPI.previewAndSaveRequests.test.ts` — preview error/abort/supersession
     distinctions (a supersession known by its code with the server's message reworded, and a
     409 that only mentions supersession shown as an error); concurrent saves complete independently (no dedup) and a
     second save's failure doesn't corrupt the first's saved snapshot;
@@ -1811,7 +1811,7 @@ again through the editor and save paths.
     `frontend/src/hooks/__tests__/usePipelineAPI.nodeDataEpoch.test.ts` covers
     the hook's announcement cases.
     The cache-identity fixtures in
-    `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` record the
+    `frontend/src/hooks/__tests__/usePipelineAPI.previewAndSaveRequests.test.ts` record the
     current epoch, so each varies only the dimension it tests.
   - `frontend/src/hooks/__tests__/usePipelineAPI.previewLifecycle.test.ts` (W0) — a preview response or
     failure arriving after a mid-flight structuralVersion bump still
@@ -1846,7 +1846,7 @@ again through the editor and save paths.
 - **WebSocket sync — both `frontend/src/__tests__/hooks/` and
   `frontend/src/hooks/__tests__/`:**
   - `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
-    `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` cover
+    `frontend/src/__tests__/hooks/useWebSocketSync.messageHandling.test.ts` cover
     connection (including the `idle` → `connecting` → `connected` status
     sequence, and `reconnecting` only after a first attempt fails or an
     open connection drops — at once, with the close's session probe held
@@ -1884,7 +1884,7 @@ again through the editor and save paths.
     create/dissolve responses; canonical request stripping; shared-definition
     messaging; projection/layout failure;
     breadcrumb restore; and graph/ref error no-ops.
-  - `frontend/src/hooks/__tests__/useSubmodelNavigation.gaps.test.ts`,
+  - `frontend/src/hooks/__tests__/useSubmodelNavigation.boundaryPorts.test.ts`,
     `frontend/src/utils/__tests__/submodelViewGraph.test.ts`, and
     `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — canonical
     structured-port projection; per-occurrence collision-safe boundary ids;
@@ -2085,7 +2085,7 @@ again through the editor and save paths.
   first drag and opens its own context menu on the first right-click; without
   the reset, React Flow 12.10's rectangle left the node doing neither until
   the canvas was clicked.
-- **Initial-load document fingerprint.** `tests/test_server.py` pins that both load
+- **Initial-load document fingerprint.** `tests/test_server_pipeline_routes.py` and `tests/test_server_websocket.py` pin that both load
   routes name `pipeline_document_fingerprint` of the returned document and that a first
   resync carrying the loaded header produces no frame. `frontend/src/api/__tests__/client.test.ts`
   pins `loadPipeline` returning the header's fingerprint and rejecting, without retrying,

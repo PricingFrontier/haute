@@ -1068,7 +1068,7 @@ same Vitest config.
   `frontend/e2e/save-conflict.spec.ts` runs the two-page conflict against real routes: the
   stale save is rejected, the local edit survives until an explicit reload, and a fresh save
   succeeds afterwards.
-- **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
+- **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.refsAndNesting.test.tsx`,
   `frontend/src/hooks/__tests__/useDebouncedCallback.test.ts` (latest arguments and callback,
   per-call delay, flush result, cancel, stable object, drop or flush on unmount),
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
@@ -1077,10 +1077,10 @@ same Vitest config.
   mechanics, progress-aware backoff: at most 1s while the key advances, 5s
   while it holds, today's ramp without a key; and `waitForJob`: terminal
   resolution, abort in flight, deadline, poll errors, `onStatus` retirement),
-  `frontend/src/__tests__/hooks/useBackgroundJobs.test.ts` + `frontend/src/__tests__/hooks/useBackgroundJobs.gaps.test.ts` (root-level, orchestration
+  `frontend/src/__tests__/hooks/useBackgroundJobs.test.ts` (root-level, orchestration
   wiring, including an advancing training polled about once a second beside an
   optimiser that keeps its backoff), `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
-  `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` (root-level — note
+  `frontend/src/__tests__/hooks/useWebSocketSync.messageHandling.test.ts` (root-level — note
   `useWebSocketSync` itself is a graph-canvas hook, but its session-expiry
   interaction with `frontend/src/api/client.ts`'s
   `HAUTE_SESSION_EXPIRED_EVENT` is

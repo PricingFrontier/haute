@@ -1,4 +1,9 @@
-"""Central cache-fingerprint completeness contracts."""
+"""Cache-fingerprint completeness contracts, and graph fingerprint determinism.
+
+The base graph fingerprint is independent of node and edge order, changes with
+any config change, tolerates values JSON cannot encode, and folds extra keys in
+order.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ from haute._cache import (
     graph_fingerprint,
 )
 from haute._config_validation import VALID_KEYS
+from haute._hashing import content_hash_bytes
 from haute._project_context import current_project
 from haute._types import (
     GraphEdge,
@@ -650,3 +656,139 @@ def test_input_snapshot_identity_routes_through_the_checked_contract(monkeypatch
         "descriptor": {"query": "SELECT * FROM quotes"},
     }
     assert seen == [CacheConsumer.INPUT_SNAPSHOT, CacheConsumer.INPUT_SNAPSHOT]
+
+
+# ===========================================================================
+# _cache.py — _graph_base_fingerprint and graph_fingerprint details
+# ===========================================================================
+
+
+class TestGraphBaseFingerprint:
+    """Direct tests for _graph_base_fingerprint."""
+
+    def test_deterministic_across_calls(self):
+        """Same graph always produces the same base fingerprint."""
+        from haute._cache import _graph_base_fingerprint
+        from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+
+        nodes = [
+            GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"k": 1})),
+            GraphNode(id="n2", data=NodeData(label="B", nodeType="output", config={})),
+        ]
+        edges = [GraphEdge(id="e1", source="n1", target="n2")]
+        g = PipelineGraph(nodes=nodes, edges=edges)
+
+        fp1 = _graph_base_fingerprint(g)
+        fp2 = _graph_base_fingerprint(g)
+        assert fp1 == fp2
+        # Non-empty lowercase hex digest; the exact algorithm (xxh64) is
+        # an implementation detail of ``_cache.py``.
+        assert fp1
+        assert all(c in "0123456789abcdef" for c in fp1)
+
+    def test_node_order_does_not_matter(self):
+        """Nodes are sorted by ID, so insertion order is irrelevant."""
+        from haute._cache import _graph_base_fingerprint
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        n1 = GraphNode(id="a", data=NodeData(label="A", nodeType="polars", config={}))
+        n2 = GraphNode(id="b", data=NodeData(label="B", nodeType="polars", config={}))
+
+        g1 = PipelineGraph(nodes=[n1, n2], edges=[])
+        g2 = PipelineGraph(nodes=[n2, n1], edges=[])  # reversed order
+
+        assert _graph_base_fingerprint(g1) == _graph_base_fingerprint(g2)
+
+    def test_edge_order_does_not_matter(self):
+        """Edges are sorted by (source, target), so insertion order is irrelevant."""
+        from haute._cache import _graph_base_fingerprint
+        from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+
+        n1 = GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={}))
+        n2 = GraphNode(id="n2", data=NodeData(label="B", nodeType="polars", config={}))
+        e1 = GraphEdge(id="e1", source="n1", target="n2")
+        e2 = GraphEdge(id="e2", source="n2", target="n1")
+
+        g1 = PipelineGraph(nodes=[n1, n2], edges=[e1, e2])
+        g2 = PipelineGraph(nodes=[n1, n2], edges=[e2, e1])  # reversed
+
+        assert _graph_base_fingerprint(g1) == _graph_base_fingerprint(g2)
+
+    def test_config_with_non_json_serializable_value(self):
+        """Non-JSON-serializable config values use repr() as fallback."""
+        from haute._cache import _graph_base_fingerprint
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        # sets are not JSON-serializable; the code uses default=repr
+        n = GraphNode(
+            id="n1",
+            data=NodeData(label="A", nodeType="polars", config={"vals": {1, 2, 3}}),
+        )
+        g = PipelineGraph(nodes=[n], edges=[])
+
+        # Should not raise — repr() is used as JSON default
+        fp = _graph_base_fingerprint(g)
+        assert isinstance(fp, str)
+        assert fp
+        assert all(c in "0123456789abcdef" for c in fp)
+
+    def test_different_config_different_fingerprint(self):
+        """Changing a config value produces a different fingerprint."""
+        from haute._cache import _graph_base_fingerprint
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        g1 = PipelineGraph(
+            nodes=[
+                GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"x": 1}))
+            ],
+        )
+        g2 = PipelineGraph(
+            nodes=[
+                GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={"x": 2}))
+            ],
+        )
+        assert _graph_base_fingerprint(g1) != _graph_base_fingerprint(g2)
+
+    def test_empty_graph_fingerprint(self):
+        """Empty graph produces a valid content hash of the empty payload."""
+        from haute._cache import (
+            CacheConsumer,
+            _graph_base_fingerprint,
+            checked_cache_inputs,
+        )
+        from haute._types import PipelineGraph
+
+        g = PipelineGraph()
+        fp = _graph_base_fingerprint(g)
+        expected = checked_cache_inputs(
+            CacheConsumer.GRAPH_STRUCTURE,
+            {"nodes": [], "edges": []},
+        )
+        assert fp == content_hash_bytes(expected.canonical_bytes)
+
+
+class TestGraphFingerprintWithExtraKeys:
+    """Test graph_fingerprint with extra_keys combinations."""
+
+    def test_multiple_extra_keys(self):
+        """Multiple extra keys are incorporated into the fingerprint."""
+        from haute._cache import graph_fingerprint
+        from haute._types import PipelineGraph
+
+        g = PipelineGraph()
+        fp_a = graph_fingerprint(g, "key1")
+        fp_ab = graph_fingerprint(g, "key1", "key2")
+        fp_ba = graph_fingerprint(g, "key2", "key1")
+
+        assert fp_a != fp_ab
+        # Order matters for extra keys
+        assert fp_ab != fp_ba
+
+    def test_extra_key_order_matters(self):
+        """Different ordering of extra keys produces different fingerprints."""
+        from haute._cache import graph_fingerprint
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        n = GraphNode(id="n1", data=NodeData(label="A", nodeType="polars", config={}))
+        g = PipelineGraph(nodes=[n])
+        assert graph_fingerprint(g, "a", "b") != graph_fingerprint(g, "b", "a")

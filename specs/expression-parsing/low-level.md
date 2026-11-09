@@ -458,7 +458,7 @@ Tests live under `tests/`, split by concern:
 - **`test_parser_fail_loudly.py`** — a fail-loud sweep pinning config-path failures,
   submodel cross-boundary handle validation, extend-path staleness, and empty
   Polars code to *raise* rather than silently degrade.
-- **`test_expression_parser.py`** (~1480 lines) — the primary TDD suite: arithmetic/unary
+- **`test_expression_parser.py`** (~4080 lines) — the primary TDD suite: arithmetic/unary
   operator precedence, `when`/`then`/`otherwise`, horizontal functions, `cast`/`fill_null`/
   `fill_nan`, numeric/string/datetime/list/struct namespace methods, window functions, method
   chaining, alias handling, multi-expression code blocks, opaque-pattern detection, syntax
@@ -470,23 +470,29 @@ Tests live under `tests/`, split by concern:
   and on one line), a binding keeping the preamble name it read when it ran, an augmented
   rebinding reported as `unresolved_name` rather than guessed, unary grouping (`-(x + z)`,
   nested, `-x ** 2`, `(-x) ** 2`, `~(a & b)`), a literal spelled like a column left unsubstituted,
-  and a method named like a column keeping its name.
+  and a method named like a column keeping its name. It also exercises individual converter
+  methods directly (AST node dispatch, namespace methods, `pl.col` dynamic resolution, `pl.lit`
+  variants, chained `when`/`then`, reassignment chains, symbol-table internals, name
+  substitution) and pins renderer parenthesisation, quote escaping, f-string aliases, slices,
+  self-referential assignments, control-flow-reassigned names and chain dependencies. With
+  `test_expression_evaluator.py` it is the suite most likely to need touching whenever an
+  internal helper's signature or dispatch shape changes.
 - **`test_expression_parser_advanced.py`** (~1100 lines) — real-world actuarial rating-formula
   scenarios (loss ratio, burn cost, frequency-severity, earned premium, NCD discount, IPT,
   reinsurance, age-band pricing, multi-line pricing, etc.), broader Polars method coverage
   (`is_between`/`is_in`/`is_null`/`replace`/`cut`/`qcut`/`rank`/`sample`/aggregations/
   `map_batches`/`concat_str`/`format`/`coalesce`), variable-chain and walrus/match-case/starred-
   expression handling, malformed/statically-unparseable code, and cross-node composition.
-- **`test_expression_parser_coverage.py`** (~3150 lines, the largest file) — line/branch-coverage-
-  driven unit tests that exercise individual converter/evaluator methods directly (namespace
-  methods, `pl.col` dynamic resolution, `pl.lit` variants, chained `when`/`then`, reassignment
-  chains, branch tracking, symbol-table internals). This is the file most likely to need touching
-  whenever an internal helper's signature or dispatch shape changes.
+- **`test_expression_evaluator.py`** — unit tests that exercise individual evaluator methods
+  directly (`evaluate_expression` paths, binary/unary/compare/bool operations, names and
+  literals, `pl.col`/`pl.lit`/`pl.when`, horizontal functions, `replace`, `is_in`/`is_between`,
+  branch tracking through nested `when`s, conditional-branch evaluation, result computation),
+  plus results pinned to a one-row Polars oracle: Kleene logic, division and modulo by zero,
+  powers, integer overflow, `clip`, `log`/`sqrt` domains, horizontal NaN handling,
+  `concat_str`, `replace_strict`, nested `when` branches and single-pass value substitution.
 - **`test_expression_parser_chain.py`** — `parse_expression_chain` dependency-walk scenarios plus
   division-by-zero/NaN/infinity/`None`-operator edge cases and window/nested-`when`/unicode-column
   evaluation.
-- **`test_expression_parser_w3_fixes.py`** — regression tests pinning specific historical bug
-  fixes from a past remediation pass.
 - **`test_expression_parity_properties.py`** — the generated outcome property (ENG-T11): a bounded
   grammar (depth at most three) of documented, well-formed single-row forms — arithmetic,
   `abs`/`round`/`clip`/`fill_null`/`sqrt`/`log`, comparisons, `is_null`/`is_not_null`,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -162,3 +163,88 @@ class TestFindFrontendDir:
 # directory → ``<dir>/main.py``, missing path → ``FileNotFoundError``.  The
 # new contract is pinned by tests/test_cli_architecture.py.
 # ---------------------------------------------------------------------------
+
+
+# ── D14: resolve_transport helper ──────────────────────────────────
+
+
+class TestResolveTransport:
+    """Tests for cli._helpers.resolve_transport()."""
+
+    def _make_config(
+        self,
+        target: str = "databricks",
+        staging_url: str = "",
+        prod_url: str = "",
+    ) -> MagicMock:
+        config = MagicMock()
+        config.target = target
+        config.ci.staging_endpoint_url = staging_url
+        config.ci.production_endpoint_url = prod_url
+        return config
+
+    def test_databricks_target(self) -> None:
+        from haute.cli._helpers import resolve_transport
+
+        config = self._make_config(target="databricks")
+        info = resolve_transport(config)
+        assert info.kind == "databricks"
+        assert info.staging_url == ""
+        assert info.prod_url == ""
+
+    def test_container_target_with_staging_url(self) -> None:
+        from haute.cli._helpers import resolve_transport
+
+        config = self._make_config(
+            target="container",
+            staging_url="http://staging:8080/quote",
+            prod_url="http://prod:8080/quote",
+        )
+        info = resolve_transport(config)
+        assert info.kind == "http"
+        assert info.staging_url == "http://staging:8080/quote"
+        assert info.prod_url == "http://prod:8080/quote"
+
+    def test_azure_container_apps_target(self) -> None:
+        from haute.cli._helpers import resolve_transport
+
+        config = self._make_config(
+            target="azure-container-apps",
+            staging_url="http://staging:8080/quote",
+        )
+        info = resolve_transport(config)
+        assert info.kind == "http"
+
+    def test_aws_ecs_target(self) -> None:
+        from haute.cli._helpers import resolve_transport
+
+        config = self._make_config(
+            target="aws-ecs",
+            staging_url="http://staging:8080/quote",
+        )
+        info = resolve_transport(config)
+        assert info.kind == "http"
+
+    def test_gcp_run_target(self) -> None:
+        from haute.cli._helpers import resolve_transport
+
+        config = self._make_config(
+            target="gcp-run",
+            staging_url="http://staging:8080/quote",
+        )
+        info = resolve_transport(config)
+        assert info.kind == "http"
+
+    def test_container_target_missing_staging_url_exits(self) -> None:
+        from haute.cli._helpers import resolve_transport
+
+        config = self._make_config(target="container", staging_url="")
+        with pytest.raises(click.ClickException, match="Set \\[ci.staging\\] endpoint_url"):
+            resolve_transport(config)
+
+    def test_unsupported_target(self) -> None:
+        from haute.cli._helpers import resolve_transport
+
+        config = self._make_config(target="sagemaker")
+        info = resolve_transport(config)
+        assert info.kind == "unsupported"

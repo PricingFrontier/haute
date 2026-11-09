@@ -422,11 +422,15 @@ jobs:
         run: >
           uv run pytest
           tests/test_interactive_route_isolation.py
-          tests/test_server.py
+          tests/test_server_pipeline_routes.py
+          tests/test_server_submodels.py
+          tests/test_server_websocket.py
+          tests/test_server_file_watcher.py
+          tests/test_server_infrastructure.py
           tests/test_trace_api.py
           tests/test_trace_multi_frame.py
           tests/test_adversarial_inputs.py
-          tests/test_security_gaps.py
+          tests/test_security_hardening.py
           -q -n 4 --timeout=120 --timeout-method=signal
 
   # Forward-looking, NON-BLOCKING probe: does haute install + its core test

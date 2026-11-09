@@ -1709,7 +1709,7 @@ rows/features) and retry.
   preparation alongside the child's seeds and captures; and a training job run to completion
   through the routes keeps preparation's captures and seeds. A failed fit
   (`tests/test_training_worker_protocol.py::test_failed_fit_keeps_the_jobs_preparation_evidence`)
-  and a failed or completed dispersion estimate (`tests/test_modelling_routes.py`) keep them
+  and a failed or completed dispersion estimate (`tests/test_modelling_dispersion_routes.py`) keep them
   too. The single `write_file` training write is covered across its strategies: a modelling node
   directly off a data input writes `sliced` with rows, order and schema equal to the native
   result; a modelling node over a chunk-local filter parent writes its prepared parquet
@@ -1742,9 +1742,9 @@ rows/features) and retry.
   job's `error_detail`, and `TestPreparationTempPathOwnership` proves a setup failure before
   launch (an invalid `HAUTE_WORKER_MEMORY_ENFORCEMENT`) ends the job `error` with no
   `haute_train_*.parquet` left behind.
-  `tests/test_modelling_routes.py::TestTrainStatusEndpoint` also proves a job whose worker
+  `tests/test_modelling_train_routes.py::TestTrainStatusEndpoint` also proves a job whose worker
   raised returns its `worker_remote_traceback` on `/train/status` (and `None` for a job
-  without one), and the dispersion status does the same. `tests/test_modelling_routes.py::TestTrainingProjection` covers the child
+  without one), and the dispersion status does the same. `tests/test_modelling_training_projection.py::TestTrainingProjection` covers the child
   core directly (projection forwarding, bounded-sink and target/task-gate contract
   failures, memory failures) with `execute_lazy_graph` patched at
   `haute.routes._training_preparation.execute_lazy_graph`.
@@ -1774,7 +1774,7 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 
 - `tests/test_modelling.py` — the broad unit-test base for `TrainingJob`, algorithms,
   metrics, and internal partition execution.
-- `tests/test_modelling_routes.py` — HTTP-level integration tests for every route
+- `tests/test_modelling_train_routes.py`, `tests/test_modelling_artifact_routes.py`, `tests/test_modelling_estimate_routes.py`, `tests/test_modelling_dispersion_routes.py` and `tests/test_modelling_config_validation.py` — HTTP-level integration tests for every route
   in `src/haute/routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
   status polling, completion payload) and `TestDispersionErrorPaths` (every 400
   validation branch, worker-side failure mapping, cancellation). `TestValidateConfig`
@@ -1826,8 +1826,8 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   the `on_fit` cancellation hook, and the unknown-parameter/family-mismatch rejections;
   `TestBuildInteractionsEmptySlots` pins the unfilled-interaction-row fix described
   above.
-- `test_train_service_coverage.py` and
-  `test_train_service_helpers_coverage.py` — `TrainService` error/cleanup
+- `test_train_service.py` and
+  `test_train_service.py` — `TrainService` error/cleanup
   branches and its pure column-demand helper functions.
 - `tests/test_row_order.py` — the canonical order equals one stable sort over every
   column (identity columns first, nulls last, a categorical by its labels, an Enum by its
@@ -1888,7 +1888,7 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   t-boost as well; and `load`, through a project file and through an MLflow run, refuses
   each malformed record field, a multiclass classifier, a record whose task, link, features or
   categorical set disagree with the native model, and an offset under a non-log link.
-- `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
+- `test_modelling.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
 - `test_target_task_gate.py` — `training_target_task_issue` unit coverage (discrete
@@ -2060,7 +2060,7 @@ Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
 `tests/test_training_response_evaluation.py`, `tests/test_tuning.py`, and
 `tests/test_training_tuning.py`, with worker/route/export/publication integration in
-`tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
+`tests/test_training_worker_protocol.py`, `tests/test_modelling_train_routes.py`, `tests/test_modelling_artifact_routes.py`, and
 `tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
 suites prove the same canonical vocabulary and bounded lifecycle end to end.
 

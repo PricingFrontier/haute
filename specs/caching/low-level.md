@@ -795,7 +795,7 @@ cache lifecycle changes.
   the capped worker build and its refresh, stale tables after a source change, clearing
   (and its refusal while building), the per-table building probe, worker failure, and
   config validation; `tests/test_json_cache_corrupt_and_errors.py`,
-  `tests/test_json_cache_coverage_uplift.py`, and `tests/test_json_cache_mut_witnesses.py`
+  `tests/test_json_cache_corrupt_and_errors.py`, and `tests/test_json_cache_mut_witnesses.py`
   cover the inference route's errors and path confinement.
 - `tests/performance/test_cache_identity_perf.py` records bounded LRU/stat-gate and lineage
   key performance evidence.

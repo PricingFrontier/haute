@@ -1,4 +1,8 @@
-"""Focused contracts for codegen builder edge cases not covered elsewhere."""
+"""Codegen builder contracts.
+
+Covers builder edge cases, dispatch-table parity between codegen and the
+executor, and the shared ``compile_node_code`` test helper.
+"""
 
 from __future__ import annotations
 
@@ -200,3 +204,86 @@ def test_model_score_registered_source_is_read_from_the_sidecar(tmp_path: Path) 
     assert load_model.call_args.kwargs["source_type"] == "registered"
     assert load_model.call_args.kwargs["registered_model"] == "catalog.schema.pricing_model"
     assert load_model.call_args.kwargs["version"] == "7"
+
+
+# ── A13: Dispatch table parity ─────────────────────────────────────
+
+
+class TestDispatchTableParity:
+    """Codegen and executor dispatch tables must cover the same node types.
+
+    SUBMODEL and SUBMODEL_PORT are executor-only (runtime constructs used
+    for inline submodel expansion); codegen never generates code for them
+    since the parser expands them into the parent file.
+    """
+
+    # Types that are legitimately present in only one table.
+    # Post-unification (Package 4B) every NodeType has both an exec and a
+    # codegen builder — submodel/submodelPort register a loud-error codegen
+    # placeholder so dispatch cannot silently fall through.  The exemption
+    # set is kept for parity with the pre-unification specification.
+    _EXECUTOR_ONLY: frozenset[str] = frozenset({"submodel", "submodelPort"})
+
+    def test_codegen_covers_all_executor_types(self) -> None:
+        from haute._registry import NODE_REGISTRY
+
+        executor_types = {nt for nt, e in NODE_REGISTRY.items() if e.exec is not None}
+        codegen_types = {nt for nt, e in NODE_REGISTRY.items() if e.codegen is not None}
+
+        missing_from_codegen = executor_types - codegen_types - self._EXECUTOR_ONLY
+        assert missing_from_codegen == set(), (
+            f"Executor has builders for {missing_from_codegen} "
+            f"but codegen does not. Add a codegen builder or add to _EXECUTOR_ONLY."
+        )
+
+    def test_executor_covers_all_codegen_types(self) -> None:
+        from haute._registry import NODE_REGISTRY
+
+        executor_types = {nt for nt, e in NODE_REGISTRY.items() if e.exec is not None}
+        codegen_types = {nt for nt, e in NODE_REGISTRY.items() if e.codegen is not None}
+
+        missing_from_executor = codegen_types - executor_types
+        assert missing_from_executor == set(), (
+            f"Codegen has builders for {missing_from_executor} "
+            f"but executor does not. Add an executor builder."
+        )
+
+    def test_executor_only_types_are_documented(self) -> None:
+        """Verify the executor-only types are the ones we expect."""
+        from haute._registry import NODE_REGISTRY
+        from haute.graph_utils import NodeType
+
+        for t in self._EXECUTOR_ONLY:
+            nt = NodeType(t)
+            entry = NODE_REGISTRY.get(nt)
+            assert entry is not None and entry.exec is not None, (
+                f"Claimed executor-only type {t!r} has no exec entry in NODE_REGISTRY"
+            )
+
+
+# ── D19: compile_node_code shared helper ───────────────────────────
+
+
+class TestCompileNodeCodeShared:
+    """Verify compile_node_code is accessible from conftest and works."""
+
+    def test_compile_node_code_available(self) -> None:
+        from tests.conftest import compile_node_code
+
+        assert callable(compile_node_code)
+
+    def test_compile_node_code_valid_code(self) -> None:
+        from tests.conftest import compile_node_code
+
+        # Should not raise
+        compile_node_code(
+            "@pipeline.data_input(path='data.parquet')\n"
+            "def load_data() -> pl.LazyFrame:\n"
+            "    return pl.scan_parquet('data.parquet')\n"
+        )
+
+    def test_compile_node_code_invalid_code_raises(self) -> None:
+        from tests.conftest import compile_node_code
+
+        with pytest.raises(SyntaxError):
+            compile_node_code("def broken(:\n")

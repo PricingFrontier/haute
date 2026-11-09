@@ -2369,7 +2369,7 @@ fixture for route tests). The implemented coverage is:
   on an `input` start, and every step carrying a non-empty id and a kind in
   `STEP_KINDS`; the `guide` reference's `step_grammar` equals the renderer's step
   fields.
-- **`tests/test_assistant_tools.py`** — through the executor: the dry-run refuses
+- **`tests/test_assistant_node_schema.py`**, **`tests/test_assistant_tool_executor.py`**, **`tests/test_assistant_authoring_tools.py`**, **`tests/test_assistant_tool_errors.py`** and **`tests/test_assistant_turn_context.py`** — through the executor: the dry-run refuses
   retyping a saved step list as a located, retryable `config_withheld` under an
   `internal` policy and `config_unread` under `restricted`; under `restricted` it allows
   the rewrite once that executor's turn read the node's config or added the node, and

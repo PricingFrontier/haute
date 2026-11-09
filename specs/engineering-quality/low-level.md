@@ -212,9 +212,11 @@
   whole run, with one warm worker per test process, shut down after each test
   so each test starts it with its own environment. The `backend-process-mode`
   CI lane runs the route slice that way: `tests/test_interactive_route_isolation.py`,
-  `tests/test_server.py`, `tests/test_trace_api.py`,
+  the five `tests/test_server_*.py` modules (`tests/test_server_pipeline_routes.py`,
+  `tests/test_server_submodels.py`, `tests/test_server_websocket.py`,
+  `tests/test_server_file_watcher.py`, `tests/test_server_infrastructure.py`), `tests/test_trace_api.py`,
   `tests/test_trace_multi_frame.py`, `tests/test_adversarial_inputs.py` and
-  `tests/test_security_gaps.py`. A test marked `in_process` patches a seam and
+  `tests/test_security_hardening.py`. A test marked `in_process` patches a seam and
   stays in threads even there. Every worker request carries the submitting
   call's project and the worker installs it for that request, so a test's
   project reaches a worker whatever the worker's working directory.
@@ -606,7 +608,6 @@
 - `tests/test_api_contract_generation.py` — deterministic Pydantic-to-schema generation, stale-check, schema-ownership, browser-safe-bound, and pinned-tooling contracts.
 - `frontend/scripts/generate-api-contracts.test.mjs` — isolated schema-to-browser generation, standalone-validator import, per-artifact stale rejection, read-only check-mode contracts, and an untyped schema declared `unknown`, nested in a list, an array's items or a union.
 - `tests/test_bug_regressions.py` — named deep-review bug regressions (streaming restoration, source/pipeline path handling, preview source files, and Polars/parser safety).
-- `tests/test_bugfixes.py` — regression contracts for streaming chunk restoration, source/pipeline path resolution, preview source files, and parser/config safety.
 - `tests/test_ci_shards.py` — `--shard` parsing and durations-file validation
   failures, each lane reading its own table and a lane without one refused,
   deterministic longest-first assignment with ties and CRC-32 placement of
@@ -621,14 +622,25 @@
   each sharded backend lane balances on a table the file records, the coverage
   gate combines exactly those shards' data files, and the refresh recipe
   downloads the JUnit artifacts the coverage and compatibility shards upload.
-- `tests/test_coverage_gaps.py` — targeted edge coverage for config/fingerprint/builders/artifacts/model helpers, schemas, and node discovery.
+- Component contracts kept with the modules they cover:
+  - `tests/test_cache_identity_contract.py` — the base graph fingerprint ignores node and edge order, changes with any config change, tolerates values JSON cannot encode, and folds extra keys in order.
+  - `tests/test_cli_helpers.py` — transport resolution.
+  - `tests/test_codegen_builders_contracts.py` — codegen/executor dispatch-table parity and the shared `compile_node_code` helper.
+  - `tests/test_config_validation.py` — underscore-prefixed and universal config keys, and the keys every node type declares.
+  - `tests/test_deploy.py` — the served-model wrapper, `_find_node`, and input/output schema inference.
+  - `tests/test_deploy_utils.py` — user, version and manifest helpers, which the container and MLflow targets use directly rather than through wrappers.
+  - `tests/test_errors.py` — every Haute-specific exception inherits from `HauteError`.
+  - `tests/test_node_builder.py` — `wrap_builder` source names and hook overrides.
+  - `tests/test_optimiser_contracts.py` — solve finalisation across online/ratebook/frontier paths.
+  - `tests/test_optimiser_io.py` — deep-copy isolation of cached optimiser artifacts.
+  - `tests/test_route_helpers.py` — typed-node lookup and the services that use it.
+  - `tests/test_schemas.py` — response models sharing fields through a common base (preview node results, MLflow log responses).
 - `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
-- `tests/test_dry_fixes.py` — DRY response/model inheritance and optimiser finalize contracts across online/ratebook/frontier paths.
-- `tests/test_dry_refactors.py` — shared exception hierarchy, dispatch-table parity, transport resolution, dead-code removal, typed-node lookup, and shared code compilation.
 - `tests/test_frontend_e2e_server.py` — browser-harness contracts for augmenting the blank scaffold with a complete, executable fixture graph, and its process stop: the whole tree on Windows, `terminate()` elsewhere.
 - `tests/test_meta_marker_coverage.py` — every test that scans the repository's files (walks it through `source_files`, or runs a full-corpus debt or write-sandbox scan, itself or through a helper in its module) carries the `meta` marker, so the compatibility lanes leave it to the coverage lane; a test that builds the tree it walks is not a scan, and `BEHAVIOURAL_WALKS` names each walk that belongs to the behaviour under test, an unneeded entry failing.
 - `tests/test_package_smoke_check.py` — the package smoke's engine ranges come from the installed wheel's requirements: the installed engines are inside them, and a version past a cap or an undeclared distribution is refused.
 - `tests/test_performance_docs.py` — documentation contracts for Python/Polars/frontend/memory performance workflows and links.
+- `tests/test_pipeline_source_file.py` — a graph's source file filled from `haute.toml`, preamble utility imports resolved against the pipeline directory, the pipeline directory derived from the source file, and the preview route filling in the source file; the data input's config-path handling is in `tests/test_executor_builders.py` and the parser's refusal of a missing or unreadable node config in `tests/test_parser_fail_loudly.py`.
 - `tests/test_property.py` — Hypothesis properties for sanitisation, topology, path resolution, banding/rating, codegen/parser round-trips, fingerprints, config, validation, and cache invariants.
 - `tests/test_repository_hygiene.py` — repository artifact/path (no tracked `node_modules/` directory or tool cache anywhere in the tree), dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.
 - `tests/test_small_module_contracts.py` — JSON-safe serialization, shared contracts, and package-init module contracts.
@@ -742,6 +754,13 @@
   unused acceptances, the invariant that an accepted parent meta-finding cannot
   waive a child's concrete GHSA, malformed fail-closed reports, and live-command
   return-code orchestration without contacting advisory services.
+- `tests/test_check_dead_code.py` covers the backend dead-code gate: an
+  unreferenced function is reported with its file and line, an allowlisted one
+  passes, and an allowlist entry nothing reports any more fails as stale.
+- `tests/test_test_layout.py` holds the test tree's organisation: no backend or
+  frontend test module is named after a coverage campaign or fix wave (beyond
+  the listed behaviour names, each of which must still exist), none exceeds
+  5,000 lines, and the naming rule reads sample names as intended.
 - `tests/test_lint_pins.py` covers the published floor/cap rule and its
   rejection of exact pins, prefix matching, compatible-release and direct
   references; tooling exactness as one `==` with a concrete version, and the
@@ -834,7 +853,10 @@ lint; layer 3 owns those.
   stores the harness keeps for the test outside its `tmp_path`, which a test
   may list, are inside the sandbox too: its source-proof records, the session's
   source cache and local MLflow store (both moved off the repository root), and
-  the widened-root fixture's cache.
+  the widened-root fixture's cache. So is Hypothesis's own storage, its example
+  database and the character-map cache a text strategy writes once: the refusal
+  is a `PermissionError`, which `tempfile.mkstemp` on Windows retries without end,
+  so refusing it would hang a strict test that draws text.
 - **observe** — the same interception with no working-directory or environment
   changes; out-of-sandbox writes are *recorded*, not failed, and a terminal
   summary prints the census by path. With

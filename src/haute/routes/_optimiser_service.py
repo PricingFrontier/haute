@@ -310,7 +310,7 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
 # an immediate loud failure: only the background job runners enter
 # ``solver_worker_context()``, and every guarded entrypoint refuses to run
 # outside it. Pinned by
-# ``tests/test_optimiser_routes.py::TestSolverWorkerContextGuard``.
+# ``tests/test_optimiser_solver_service.py::TestSolverWorkerContextGuard``.
 # ---------------------------------------------------------------------------
 
 

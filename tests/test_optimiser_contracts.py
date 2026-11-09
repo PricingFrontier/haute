@@ -1,4 +1,8 @@
-"""Contract-heavy tests for optimiser node data boundaries."""
+"""Contract-heavy tests for optimiser node data boundaries.
+
+Includes how a finished online, ratebook or frontier solve is finalised into
+the job record.
+"""
 
 from __future__ import annotations
 
@@ -6,16 +10,31 @@ import ast
 import threading
 import time
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# OPT-V04: strict result rows, input provenance, diagnostics_errors, finite JSON
+# ---------------------------------------------------------------------------
+from typing import Any  # noqa: E402
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
+from pydantic import ValidationError  # noqa: E402
 
 from haute.codegen import graph_to_code
 from haute.errors import ConfigError, NodeConfigError, RequestRefusedError
 from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
+from haute.schemas import (  # noqa: E402
+    OptimiserFactorTableRow,
+    OptimiserFrontierPointSummary,
+    OptimiserFrontierResponse,
+    OptimiserFrontierSelectResponse,
+    OptimiserOnlineFrontierPoint,
+    OptimiserRatebookFrontierPoint,
+    OptimiserSolveResult,
+)
 from tests.conftest import (
     make_edge,
     make_graph,
@@ -23,6 +42,18 @@ from tests.conftest import (
     make_ready_file_input_config,
 )
 from tests.job_store_support import seed_job
+from tests.optimiser_fixtures import (  # noqa: E402
+    SOLVE_SCENARIO_GRID,
+    library_frontier_frame,
+    make_completed_job,
+    make_frontier_data,
+    make_frontier_point,
+    make_input_summary,
+    make_ratebook_quote_results,
+    make_scenario_grid,
+    make_solved_result,
+    setup_grid_stub,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1205,34 +1236,6 @@ def test_real_solve_apply_totals_match_selected_rows(
     assert applied["constraints"]["volume"] == pytest.approx(selected_source["volume"].sum())
 
 
-# ---------------------------------------------------------------------------
-# OPT-V04: strict result rows, input provenance, diagnostics_errors, finite JSON
-# ---------------------------------------------------------------------------
-
-from typing import Any  # noqa: E402
-
-from pydantic import ValidationError  # noqa: E402
-
-from haute.schemas import (  # noqa: E402
-    OptimiserFactorTableRow,
-    OptimiserFrontierPointSummary,
-    OptimiserFrontierResponse,
-    OptimiserFrontierSelectResponse,
-    OptimiserOnlineFrontierPoint,
-    OptimiserRatebookFrontierPoint,
-    OptimiserSolveResult,
-)
-from tests.optimiser_fixtures import (  # noqa: E402
-    SOLVE_SCENARIO_GRID,
-    make_completed_job,
-    make_frontier_data,
-    make_frontier_point,
-    make_input_summary,
-    make_scenario_grid,
-    make_solved_result,
-    setup_grid_stub,
-)
-
 _PROVENANCE = {
     "node_id": "opt",
     "data_source": "batch",
@@ -1813,3 +1816,568 @@ def test_a_summary_with_many_non_finite_values_names_five_and_counts_them() -> N
     assert "lambdas.c4" in caught.value.detail
     assert "lambdas.c5" not in caught.value.detail
     assert "(6 in total)" in caught.value.detail
+
+
+# ──────────────────────────────────────────────────────────────────────
+# D6: _finalize_solve_result
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _FakeSolveResult:
+    """Minimal duck-type of SolveResultLike for testing _finalize_solve_result."""
+
+    def __init__(
+        self,
+        *,
+        converged: bool = True,
+        total_objective: float = 100.0,
+        baseline_objective: float = 95.0,
+        total_constraints: dict[str, float] | None = None,
+        baseline_constraints: dict[str, float] | None = None,
+        lambdas: dict[str, float] | None = None,
+        constraint_bounds: dict[str, float] | None = None,
+    ) -> None:
+        self.converged = converged
+        self.total_objective = total_objective
+        self.baseline_objective = baseline_objective
+        self.total_constraints = total_constraints or {"loss": 1.0}
+        self.baseline_constraints = baseline_constraints or {"loss": 0.9}
+        self.lambdas = lambdas or {"loss": 0.5}
+        # The absolute bound of the configured ``{"loss": {"max": 1.05}}``.
+        self.constraint_bounds = {"loss": 1.05} if constraint_bounds is None else constraint_bounds
+        # Every online result carries its per-quote frame, and every ratebook
+        # result its canonical per-quote evaluation.
+        self.dataframe = pl.DataFrame({"optimal_scenario_value": [1.0]})
+        self.quote_results = make_ratebook_quote_results(list(self.total_constraints))
+
+
+# A running solve job; its config names the constraint the fake result reports.
+# Recorded on every solve job when it is created.
+_FINALIZE_PROVENANCE = {
+    "node_id": "opt",
+    "data_source": "batch",
+    "source_file": None,
+    "graph_fingerprint": "fp",
+}
+
+
+_RUNNING_JOB = {
+    "status": "running",
+    "config": {"constraints": {"loss": {"max": 1.05}}},
+    "input_provenance": _FINALIZE_PROVENANCE,
+    "scenario_grid": SOLVE_SCENARIO_GRID,
+}
+
+
+class TestFinalizeOnline:
+    """D6: _finalize_solve_result for online mode."""
+
+    def test_shared_keys_present(self) -> None:
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(converged=True)
+        store = JobStore()
+        job_id = store.create_job(_RUNNING_JOB)
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver="fake_solver",
+            quote_grid="fake_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=1.23,
+        )
+        job = store.get_job(job_id)
+        rd = job["result"]
+        assert rd["mode"] == "online"
+        assert rd["total_objective"] == 100.0
+        assert rd["baseline_objective"] == 95.0
+        assert rd["constraints"] == {"loss": 1.0}
+        assert rd["baseline_constraints"] == {"loss": 0.9}
+        assert rd["lambdas"] == {"loss": 0.5}
+        assert rd["converged"] is True
+        assert "warning" not in rd
+
+    def test_extra_fields_merged(self) -> None:
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult()
+        store = JobStore()
+        job_id = store.create_job(_RUNNING_JOB)
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver="s",
+            quote_grid="g",
+            store=store,
+            job_id=job_id,
+            elapsed=0.5,
+            extra_fields={"iterations": 42, "n_quotes": 100},
+        )
+        job = store.get_job(job_id)
+        rd = job["result"]
+        assert rd["iterations"] == 42
+        assert rd["n_quotes"] == 100
+
+    def test_non_converged_adds_warning(self) -> None:
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(converged=False)
+        store = JobStore()
+        job_id = store.create_job(_RUNNING_JOB)
+        _finalize_solve_result(
+            result,
+            mode="ratebook",
+            solver="s",
+            quote_grid="g",
+            store=store,
+            job_id=job_id,
+            elapsed=2.0,
+        )
+        job = store.get_job(job_id)
+        rd = job["result"]
+        assert rd["converged"] is False
+        assert "warning" in rd
+        assert "not converge" in rd["warning"]
+
+    def test_job_status_fields(self) -> None:
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult()
+        store = JobStore()
+        job_id = store.create_job(_RUNNING_JOB)
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver="my_solver",
+            quote_grid="my_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=3.14,
+        )
+        job = store.get_job(job_id)
+        assert job["status"] == "completed"
+        assert job["progress"] == 1.0
+        assert job["message"] == "Completed"
+        assert job["elapsed_seconds"] == 3.14
+        # Keep runtime state so post-solve frontier selection / MLflow flows
+        # can continue to use the completed job.
+        assert job["solver"] == "my_solver"
+        assert job["quote_grid"] == "my_grid"
+        assert job["solve_result"] is result
+
+    def test_adjustment_report_built_from_the_per_quote_frame(self) -> None:
+        """An online result's per-quote frame gives the as-solved adjustment report."""
+
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        class ResultWithDF(_FakeSolveResult):
+            def __init__(self, **kw: Any) -> None:
+                super().__init__(**kw)
+                steps = [0, 1, 1, 2]
+                self.dataframe = pl.DataFrame(
+                    {
+                        "quote_id": ["a", "b", "c", "d"],
+                        "optimal_step": pl.Series(steps, dtype=pl.Int32),
+                        "optimal_scenario_value": pl.Series([0.9, 1.0, 1.0, 1.1], dtype=pl.Float32),
+                        "optimal_objective": pl.Series([1.0, 2.0, 3.0, 4.0], dtype=pl.Float32),
+                        "optimal_loss": pl.Series([0.5] * 4, dtype=pl.Float32),
+                    }
+                )
+
+        result = ResultWithDF()
+        store = JobStore()
+        job_id = store.create_job(_RUNNING_JOB)
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver="s",
+            quote_grid="g",
+            store=store,
+            job_id=job_id,
+            elapsed=0.1,
+        )
+        report = store.get_job(job_id)["result"]["adjustments"]
+        assert [bar["quotes"] for bar in report["bars"]] == [1, 2, 1]
+        assert report["weightings"][0]["share_unadjusted"] == 0.5
+
+    def test_no_extra_fields_when_none(self) -> None:
+        """extra_fields=None should not add any extra keys."""
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult()
+        store = JobStore()
+        job_id = store.create_job(_RUNNING_JOB)
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver="s",
+            quote_grid="g",
+            store=store,
+            job_id=job_id,
+            elapsed=0.1,
+            extra_fields=None,
+        )
+        job = store.get_job(job_id)
+        rd = job["result"]
+        # Should not have mode-specific keys like iterations or cd_iterations
+        assert "iterations" not in rd
+        assert "cd_iterations" not in rd
+
+
+class TestFinalizeRatebook:
+    """D6: _finalize_solve_result for ratebook mode."""
+
+    def test_ratebook_extra_fields(self) -> None:
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(converged=True)
+        store = JobStore()
+        job_id = store.create_job(_RUNNING_JOB)
+        _finalize_solve_result(
+            result,
+            mode="ratebook",
+            solver="rb_solver",
+            quote_grid="rb_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=5.0,
+            extra_fields={
+                "cd_iterations": 7,
+                "factor_tables": {
+                    "age": [{"__factor_group__": "young", "optimal_scenario_value": 1.1}]
+                },
+                "combined_factor_bounds": {"min": 0.1, "max": 10.0},
+                "factor_dtypes": {"age": [{"column": "age", "dtype": {"kind": "String"}}]},
+                "clamp_rate": 0.05,
+                "history": None,
+            },
+        )
+        job = store.get_job(job_id)
+        rd = job["result"]
+        assert rd["mode"] == "ratebook"
+        assert rd["cd_iterations"] == 7
+        assert rd["factor_tables"]["age"][0]["__factor_group__"] == "young"
+        assert rd["factor_dtypes"] == {"age": [{"column": "age", "dtype": {"kind": "String"}}]}
+        assert rd["clamp_rate"] == 0.05
+        assert rd["history"] is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# T2: _finalize_solve_result — frontier computation
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def _in_solver_worker_context():
+    """The heavy solver entrypoints are guarded against inline execution."""
+    from haute.routes._optimiser_solver import solver_worker_context
+
+    with solver_worker_context():
+        yield
+
+
+@pytest.mark.usefixtures("_in_solver_worker_context")
+class TestFinalizeFrontier:
+    """T2: Frontier computation within _finalize_solve_result."""
+
+    def test_computes_frontier_when_online_with_constraints(self) -> None:
+        """Online mode + constraints + frontier_ranges → frontier_data populated."""
+        from unittest.mock import MagicMock
+
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(
+            converged=True,
+            baseline_constraints={"loss": 0.9},
+        )
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "input_provenance": _FINALIZE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "config": {
+                    "mode": "online",
+                    "constraints": {"loss": {"max": 1.05}},
+                    # The absolute-range design requires frontier_ranges.
+                    "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
+                },
+            }
+        )
+
+        # Mock solver with a frontier() method that returns a FrontierResult
+        mock_solver = MagicMock()
+        mock_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_loss": 0.92,
+                    "lambda_loss": 0.01,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 105.0,
+                    "total_loss": 0.95,
+                    "lambda_loss": 0.02,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+            ],
+            constraint_names=["loss"],
+        )
+        mock_frontier_result = MagicMock()
+        mock_frontier_result.points = mock_points
+        mock_solver.frontier.return_value = mock_frontier_result
+
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid="fake_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.get_job(job_id)
+        assert job["frontier_data"] is not None
+        assert job["frontier_data"]["status"] == "ok"
+        assert job["frontier_data"]["n_points"] == 2
+        assert len(job["frontier_data"]["points"]) == 2
+        assert "loss" in job["frontier_data"]["constraint_names"]
+        # Also stored in result dict for the frontend
+        assert job["result"]["frontier"] is not None
+
+    def test_computes_frontier_when_ratebook_with_factors(self) -> None:
+        """Ratebook mode + factors + enabled frontier -> frontier_data is populated."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(converged=True, baseline_constraints={"loss": 0.9})
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "input_provenance": _FINALIZE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "config": {
+                    "mode": "ratebook",
+                    "constraints": {"loss": {"max": 1.05}},
+                    "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
+                    "frontier_steps": 3,
+                },
+            }
+        )
+        factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
+        mock_solver = MagicMock()
+        mock_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_loss": 0.92,
+                    "lambda_loss": 0.01,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+                {
+                    "total_objective": 105.0,
+                    "total_loss": 0.95,
+                    "lambda_loss": 0.02,
+                    "bound_loss": 1.05,
+                    "converged": True,
+                },
+            ],
+            constraint_names=["loss"],
+            mode="ratebook",
+        )
+        mock_frontier_result = MagicMock()
+        mock_frontier_result.points = mock_points
+        mock_solver.frontier.return_value = mock_frontier_result
+
+        _finalize_solve_result(
+            result,
+            mode="ratebook",
+            solver=mock_solver,
+            quote_grid="fake_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+            ratebook_factor_contexts=factor_contexts,
+            factor_columns=[["region"]],
+            extra_fields={
+                "factor_tables": {
+                    "region": [
+                        {
+                            "__factor_group__": "North",
+                            "optimal_scenario_value": 1.0,
+                            "quote_count": 1,
+                        }
+                    ]
+                }
+            },
+        )
+
+        job = store.get_job(job_id)
+        assert [key["key"] for key in job["result"]["segment_keys"]] == ["region"]
+        assert job["frontier_data"] is not None
+        assert job["frontier_data"]["status"] == "ok"
+        assert job["frontier_data"]["n_points"] == 2
+        assert job["result"]["frontier"] is not None
+        mock_solver.frontier.assert_called_once()
+        assert mock_solver.frontier.call_args.args == ("fake_grid", factor_contexts)
+        assert mock_solver.frontier.call_args.kwargs["threshold_ranges"]["loss"] == (
+            0.8,
+            1.1,
+        )
+        assert mock_solver.frontier.call_args.kwargs["n_points_per_dim"] == 3
+        assert mock_solver.frontier.call_args.kwargs["factor_columns"] == [["region"]]
+
+    def test_frontier_skipped_no_constraints(self) -> None:
+        """Online mode + empty constraints → frontier_data is None."""
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(converged=True, constraint_bounds={})
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "input_provenance": _FINALIZE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "config": {
+                    "mode": "online",
+                    "constraints": {},
+                },
+            }
+        )
+
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver="fake_solver",
+            quote_grid="fake_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.get_job(job_id)
+        assert job["frontier_data"] is None
+
+    def test_frontier_exception_non_fatal(self) -> None:
+        """solver.frontier() raising does not fail the solve — status is still completed."""
+        from unittest.mock import MagicMock
+
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(
+            converged=True,
+            baseline_constraints={"loss": 0.9},
+        )
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "input_provenance": _FINALIZE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "config": {
+                    "mode": "online",
+                    "constraints": {"loss": {"max": 1.05}},
+                },
+            }
+        )
+
+        mock_solver = MagicMock()
+        mock_solver.frontier.side_effect = RuntimeError("Frontier blew up")
+
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid="fake_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        job = store.get_job(job_id)
+        assert job["status"] == "completed"
+        assert job["frontier_data"] is None
+        assert job["result"]["frontier"] is None
+
+    def test_frontier_includes_zero_baseline_constraint(self) -> None:
+        """Absolute frontier ranges do not depend on baseline constraint values."""
+        from unittest.mock import MagicMock
+
+        from haute.routes._optimiser_solver import _finalize_solve_result
+
+        result = _FakeSolveResult(
+            converged=True,
+            baseline_constraints={"loss": 0.9, "zero_cstr": 0.0},
+            constraint_bounds={"loss": 1.05, "zero_cstr": 1.0},
+        )
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "input_provenance": _FINALIZE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "config": {
+                    "mode": "online",
+                    "constraints": {
+                        "loss": {"max": 1.05},
+                        "zero_cstr": {"max": 1.0},
+                    },
+                    # Explicit absolute ranges — proves the result does not
+                    # depend on baseline values (zero_cstr's baseline is 0).
+                    "frontier_ranges": {
+                        "loss": {"min": 0.8, "max": 1.1},
+                        "zero_cstr": {"min": 0.8, "max": 1.1},
+                    },
+                },
+            }
+        )
+
+        mock_solver = MagicMock()
+        mock_points = library_frontier_frame(
+            [
+                {
+                    "total_objective": 100.0,
+                    "total_loss": 0.92,
+                    "lambda_loss": 0.01,
+                    "bound_loss": 1.05,
+                    "total_zero_cstr": 0.95,
+                    "lambda_zero_cstr": 0.0,
+                    "bound_zero_cstr": 1.0,
+                    "converged": True,
+                },
+            ],
+            constraint_names=["loss", "zero_cstr"],
+        )
+        mock_frontier_result = MagicMock()
+        mock_frontier_result.points = mock_points
+        mock_solver.frontier.return_value = mock_frontier_result
+
+        _finalize_solve_result(
+            result,
+            mode="online",
+            solver=mock_solver,
+            quote_grid="fake_grid",
+            store=store,
+            job_id=job_id,
+            elapsed=1.0,
+        )
+
+        # The frontier was called with absolute config ranges for both constraints.
+        call_kwargs = mock_solver.frontier.call_args
+        ranges = call_kwargs[1]["threshold_ranges"] if call_kwargs[1] else call_kwargs[0][1]
+        assert ranges["loss"] == (0.8, 1.1)
+        assert ranges["zero_cstr"] == (0.8, 1.1)
+
+        job = store.get_job(job_id)
+        assert job["frontier_data"] is not None
+        assert "loss" in job["frontier_data"]["constraint_names"]
+        assert "zero_cstr" in job["frontier_data"]["constraint_names"]

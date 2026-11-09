@@ -1,35 +1,29 @@
-"""Waterfall arithmetic tests — CODE_REVIEW.md C8 (Wave 3a.2).
-
-Pre-fix, ``_trace_waterfall.build_waterfall_from_steps`` fed each modified
-step's POST-STEP CUMULATIVE column value in as the multiply/add factor
-(``new_cumulative = cumulative * value`` with ``value`` = 120, the new
-premium, not the 1.2 factor — so 100 x 120 = 12,000), and classified
-``premium * (1 - discount)`` as additive because the text contains a "-".
-The regulator-facing waterfall showed "x120.0" steps and totals orders of
-magnitude away from the traced output value displayed beside it.
+"""Waterfall arithmetic: each step's contribution matches what the engine did.
 
 These tests drive the flagship scenarios through ``execute_trace`` on real
-pipeline graphs. Required behavior:
+pipeline graphs, and call the waterfall builder directly. Required behavior:
 
   * each step's contribution is derived from CONSECUTIVE OUTPUT VALUES
-    along the traced path: ``delta = value_after - value_before``;
+    along the traced path: ``delta = value_after - value_before`` — never
+    the post-step cumulative value used as a factor;
   * multiplicative display shows the implied factor
     ``value_after / value_before``;
   * ``value_before == 0`` (or an overflowing implied factor) is guarded:
     the step is displayed delta-only — never an Inf factor;
   * the op classifier is labeling-only and conservative — it can never
-    corrupt the arithmetic;
+    corrupt the arithmetic (``premium * (1 - discount)`` is not additive),
+    and an identity contributor or a sign change is still shown;
   * MANDATORY invariant: the final cumulative reconciles exactly (float
     tolerance) with the traced output value, asserted in the builder
     (``WaterfallReconciliationError`` -> structured error payload) and here.
 
-Fixture rules: small int/string fixtures, no values anywhere near 2**53
-(Int64 JSON semantics change in Wave 7).
+Fixture rules: small int/string fixtures, no values anywhere near 2**53.
 """
 
 from __future__ import annotations
 
 import math
+import types
 from collections.abc import Sequence
 
 import polars as pl
@@ -38,12 +32,16 @@ import structlog.testing
 
 from haute._trace_waterfall import (
     WaterfallReconciliationError,
+    _check_display_consistency,
+    _classify_contribution,
     _step_targets_column,
     build_waterfall,
     build_waterfall_from_steps,
 )
 from haute.trace import SchemaDiff, TraceStep, execute_trace
 from tests.conftest import make_edge, make_graph, make_node, make_source_node, make_transform_node
+
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
 @pytest.mark.parametrize(
@@ -90,8 +88,6 @@ def test_step_target_membership_uses_python_syntax(
 
     assert _step_targets_column(step, "premium", node_map) is expected
 
-
-pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 # ---------------------------------------------------------------------------
 # Graph helpers
@@ -832,3 +828,162 @@ class TestInvariantSurfacesThroughExecuteTrace:
         result = execute_trace(graph, row_index=0, target_node_id=target, column="premium")
         assert isinstance(result.waterfall, dict)
         assert result.waterfall["error_type"] == "WaterfallReconciliationError"
+
+
+def _node(node_id: str, node_type: str = "generic", config: dict | None = None):
+    return types.SimpleNamespace(
+        id=node_id,
+        data=types.SimpleNamespace(nodeType=node_type, config=config or {}),
+    )
+
+
+def _step(
+    node_id: str,
+    *,
+    name: str | None = None,
+    node_type: str = "polars",
+    added: list[str] | None = None,
+    modified: list[str] | None = None,
+    passed: list[str] | None = None,
+    output: dict | None = None,
+    input_values: dict | None = None,
+    expression: dict | None = None,
+) -> TraceStep:
+    return TraceStep(
+        node_id=node_id,
+        node_name=name or node_id,
+        node_type=node_type,
+        schema_diff=SchemaDiff(
+            columns_added=added or [],
+            columns_removed=[],
+            columns_modified=modified or [],
+            columns_passed=passed or [],
+        ),
+        input_values=input_values or {},
+        output_values=output or {},
+        expression=expression,
+    )
+
+
+# ---------------------------------------------------------------------------
+# F045 — an identity (×1.0) contributor must not vanish from the waterfall
+# ---------------------------------------------------------------------------
+
+
+class TestIdentityContributorNotOmitted:
+    def test_no_op_factor_step_appears_as_identity_entry(self):
+        steps = [
+            _step("base", added=["premium"], output={"premium": 100.0}),
+            # region_relativity is 1.0 for this row → cell unchanged, so
+            # the schema diff records premium as *passed*, not *modified*.
+            _step(
+                "region",
+                passed=["premium"],
+                output={"premium": 100.0},
+                input_values={"premium": 100.0},
+            ),
+            _step("uplift", modified=["premium"], output={"premium": 110.0}),
+        ]
+        node_map = {
+            "base": _node("base", "polars", {"code": "df.with_columns(premium=pl.col('base'))"}),
+            "region": _node(
+                "region",
+                "polars",
+                {"code": "df.with_columns(premium=pl.col('premium') * pl.col('region_rel'))"},
+            ),
+            "uplift": _node(
+                "uplift", "polars", {"code": "df.with_columns(premium=pl.col('premium') * 1.1)"}
+            ),
+        }
+
+        result = build_waterfall_from_steps(
+            steps,
+            "premium",
+            target_node_id="uplift",
+            final_output_value=110.0,
+            node_map=node_map,
+        )
+
+        assert isinstance(result, list)
+        labels = [e["label"] for e in result]
+        assert labels == ["base", "region", "uplift"]
+        region_entry = result[1]
+        assert region_entry["value"] == pytest.approx(1.0)
+        assert region_entry["delta"] == pytest.approx(0.0)
+        assert region_entry["cumulative"] == pytest.approx(100.0)
+
+    def test_unrelated_passthrough_step_still_omitted(self):
+        steps = [
+            _step("base", added=["premium"], output={"premium": 100.0}),
+            # A passthrough that does NOT target premium must stay omitted.
+            _step(
+                "other",
+                passed=["premium"],
+                added=["misc"],
+                output={"premium": 100.0, "misc": 1.0},
+            ),
+            _step("age", modified=["premium"], output={"premium": 120.0}),
+            _step("region", modified=["premium"], output={"premium": 108.0}),
+        ]
+        node_map = {
+            "base": _node("base", "polars", {"code": "df.with_columns(premium=pl.col('base'))"}),
+            "other": _node("other", "polars", {"code": "df.with_columns(misc=pl.col('x') + 1.0)"}),
+            "age": _node(
+                "age", "polars", {"code": "df.with_columns(premium=pl.col('premium') * 1.2)"}
+            ),
+            "region": _node(
+                "region", "polars", {"code": "df.with_columns(premium=pl.col('premium') * 0.9)"}
+            ),
+        }
+
+        result = build_waterfall_from_steps(
+            steps,
+            "premium",
+            target_node_id="region",
+            final_output_value=108.0,
+            node_map=node_map,
+        )
+
+        assert isinstance(result, list)
+        assert [e["label"] for e in result] == ["base", "age", "region"]
+
+
+# ---------------------------------------------------------------------------
+# F287 — C8 guard must reject an unverifiable factor from a zero base
+# ---------------------------------------------------------------------------
+
+
+class TestZeroBaseMultiplyGuard:
+    def test_nonidentity_factor_from_zero_base_raises(self):
+        with pytest.raises(WaterfallReconciliationError):
+            _check_display_consistency("multiply", 0.0, 1.5, 0.0, "step")
+
+    def test_identity_factor_from_zero_base_is_accepted(self):
+        _check_display_consistency("multiply", 0.0, 1.0, 0.0, "step")
+
+
+# ---------------------------------------------------------------------------
+# F696 — a sign change must not render as a negative multiplicative factor
+# ---------------------------------------------------------------------------
+
+
+class TestSignChangeContribution:
+    def test_positive_to_negative_is_additive(self):
+        step = _step("s", output={"premium": -50.0})
+        with structlog.testing.capture_logs() as captured:
+            operation, value = _classify_contribution(step, "premium", 100.0, -50.0, "t")
+        assert operation == "add"
+        assert value == pytest.approx(-150.0)
+        assert any(e.get("event") == "waterfall_sign_change" for e in captured)
+
+    def test_negative_base_is_additive(self):
+        step = _step("s", output={"premium": -50.0})
+        operation, value = _classify_contribution(step, "premium", -100.0, -50.0, "t")
+        assert operation == "add"
+        assert value == pytest.approx(50.0)
+
+    def test_positive_to_positive_stays_multiplicative(self):
+        step = _step("s", output={"premium": 120.0})
+        operation, value = _classify_contribution(step, "premium", 100.0, 120.0, "t")
+        assert operation == "multiply"
+        assert value == pytest.approx(1.2)

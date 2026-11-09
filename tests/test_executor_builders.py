@@ -1,8 +1,8 @@
 """Tests for executor builder functions — the _build_* dispatch table.
 
 Covers the simpler node builders: constant, banding, scenario_expander,
-api_input, and output.  Uses the same helpers from conftest.py as the
-existing test_executor.py.
+api_input, output, and the data input's config path handling.  Uses the same
+helpers from conftest.py as test_executor.py.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from haute._builders import NodeBuildContext, _build_node_fn
 from haute._execute_lazy import _apply_selected_columns
 from haute._execution_context import ExecutionProfile
 from haute._output_assembler import OutputMappingSchemaError
+from haute._types import NodeType
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
@@ -23,6 +24,10 @@ from haute.errors import (
     NodeConfigError,
 )
 from haute.graph_utils import GraphNode, NodeData
+from tests.conftest import (
+    make_file_input_config,
+    make_ready_file_input_config,
+)
 from tests.conftest import make_node as _n
 
 # ---------------------------------------------------------------------------
@@ -1315,3 +1320,111 @@ class TestBuildLiveSwitch:
 
         assert exc_info.value.scenario == "unknown_scenario"
         assert exc_info.value.available_mappings == ("live", "test")
+
+
+# ---------------------------------------------------------------------------
+# Data Input config — empty path produces empty frame
+# ---------------------------------------------------------------------------
+
+
+class TestDataInputConfigPath:
+    """Verify that _build_node_fn for data sources uses config.path correctly."""
+
+    def test_a_source_without_a_provider_is_refused_when_built(self):
+        """A Data Input names its provider (the palette gives ``input_type``): a config
+        without one is refused when the node is built, naming the setting."""
+        from haute.errors import NodeConfigError
+        from haute.executor import _build_node_fn
+
+        node = GraphNode(
+            id="src",
+            data=NodeData(
+                label="src",
+                nodeType=NodeType.DATA_INPUT,
+                config={"path": ""},
+            ),
+        )
+        with pytest.raises(
+            NodeConfigError, match="Node 'src' \\(dataInput\\) setting 'input_type'"
+        ):
+            _build_node_fn(node, source_names=[])
+
+    def test_valid_config_path_loads_data(self, tmp_path):
+        """A data source with a valid parquet path should load data."""
+        from haute.executor import _build_node_fn
+
+        path = tmp_path / "test.parquet"
+        pl.DataFrame({"quote_id": ["q1", "q2"], "value": [10, 20]}).write_parquet(path)
+
+        node = GraphNode(
+            id="src",
+            data=NodeData(
+                label="src",
+                nodeType=NodeType.DATA_INPUT,
+                config=make_ready_file_input_config(path),
+            ),
+        )
+        _, fn, is_source = _build_node_fn(node, source_names=[])
+        assert is_source is True
+
+        result = fn()
+        df = result.collect()
+        assert "quote_id" in df.columns
+        assert df.shape == (2, 2)
+
+    def test_empty_config_breaks_downstream_join(self):
+        """Demonstrates the exact failure mode: empty data source joined
+        on quote_id fails with 'unable to find column'."""
+        empty_lf = pl.LazyFrame()  # zero columns
+        main_lf = pl.DataFrame({"quote_id": ["q1"], "val": [1]}).lazy()
+
+        with pytest.raises(Exception, match="quote_id"):
+            main_lf.join(empty_lf, on="quote_id", how="left").collect()
+
+    def test_selected_columns_preserved_in_config(self, tmp_path):
+        """Config's selected_columns should be preserved on the node — the
+        builder layer uses this to filter columns before downstream joins,
+        preventing column collisions (e.g. inception_premium vs premium)."""
+        node = GraphNode(
+            id="src",
+            data=NodeData(
+                label="src",
+                nodeType=NodeType.DATA_INPUT,
+                config=make_file_input_config(
+                    tmp_path / "dummy.parquet",
+                    selected_columns=["policy_id", "quote_id"],
+                ),
+            ),
+        )
+        config = node.data.config
+        assert config["selected_columns"] == ["policy_id", "quote_id"]
+
+    def test_manual_column_selection_prevents_collision(self, tmp_path):
+        """Demonstrates why selected_columns matters: without filtering,
+        extra columns from a data source can collide with pipeline columns."""
+        # Simulate policy_data with extra columns
+        policy_all = pl.DataFrame(
+            {
+                "policy_id": ["p1"],
+                "quote_id": ["q1"],
+                "inception_premium": [500.0],
+            }
+        ).lazy()
+
+        # Simulate pipeline with its own premium column
+        pipeline = pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "premium": [400.0],
+            }
+        ).lazy()
+
+        # Join without column filtering — both inception_premium and premium present
+        joined_all = pipeline.join(policy_all, on="quote_id", how="left").collect()
+        assert "inception_premium" in joined_all.columns  # unwanted column
+
+        # Join with column filtering — only policy_id and quote_id
+        policy_filtered = policy_all.select(["policy_id", "quote_id"])
+        joined_filtered = pipeline.join(policy_filtered, on="quote_id", how="left").collect()
+        assert "inception_premium" not in joined_filtered.columns
+        assert "policy_id" in joined_filtered.columns

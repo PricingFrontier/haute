@@ -2444,7 +2444,7 @@ no longer has; and `InputSource` in
   covers the response giving every row the quote's identity though the pipeline dropped or
   replaced it, the Workbench Output's own tables holding it blank, `run()` under the
   stand-in and `score()` without quote_details answering it blank;
-  `tests/test_deploy_validators_gaps.py` covers a clash refused by deploy's form check;
+  `tests/test_deploy_validators.py` covers a clash refused by deploy's form check;
   `tests/test_quote_book.py` covers alternatives made at once taking two options, and a
   creation repeated with its key making one quote and an alternative one option;
   `tests/test_workbench_app_quotes.py`, on a pipeline reading `quote_details`, covers an
@@ -3862,11 +3862,11 @@ no longer has; and `InputSource` in
   connection on a table the form dropped and a sidecar holding copies each refused.
   `tests/test_config_io.py` refuses `tables` and `sample`
   written to or read from a workbench node's config file, naming them, and reads an empty one
-  back as `{}`; `tests/test_deploy_validators_gaps.py` names a connection to a table the form
-  does not have (`connection_errors`); `tests/test_assistant_tools.py` resolves the brief
+  back as `{}`; `tests/test_deploy_validators.py` names a connection to a table the form
+  does not have (`connection_errors`); `tests/test_assistant_turn_context.py` resolves the brief
   again when the form's tables change under the same project revision.
   `tests/test_deploy_batch_scoring.py` keeps a null sample's types in the hard-capped worker,
-  for a one-row and a many-row table; `tests/test_deploy_internals.py` builds the nested
+  for a one-row and a many-row table; `tests/test_deploy_mlflow_packaging.py` builds the nested
   MLflow signature and refuses a `Decimal` inside a table;
   `tests/test_deploy_expected_output_validation.py` walks an expected output into a Workbench
   Output's tables with the tolerance and lets a quote leave a table out of the pre-check. `tests/test_assistant_ops.py` covers the

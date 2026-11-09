@@ -864,7 +864,7 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `tests/test_api_contracts.py` — an editor identity request naming an
   instance's outputs after it, and refusing a `submodel` node whose
   `instance_of` or handles differ from its naming context.
-- `tests/test_assistant_tools.py` — an instance-fed consumer's schema inputs and
+- `tests/test_assistant_node_schema.py` — an instance-fed consumer's schema inputs and
   the assistant's context summary use the instance's output names, counting an
   added unconnected output when qualifying every public output name.
 - `tests/test_pipeline_repair_actions.py` — resetting a consumer with uncached

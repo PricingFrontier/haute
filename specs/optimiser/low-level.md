@@ -264,7 +264,7 @@ started via `threading.Thread` only if the thread explicitly re-enters the conte
 inherited automatically the way they are across `asyncio` tasks), `_solve_background` and the
 session's `build_and_solve` wrap their body in `with solver_worker_context():` themselves
 — the guard is a call-site check, not a mechanism that follows the thread implicitly. Pinned by
-`tests/test_optimiser_routes.py::TestSolverWorkerContextGuard` (a direct call to any guarded
+`tests/test_optimiser_solver_service.py::TestSolverWorkerContextGuard` (a direct call to any guarded
 entrypoint outside the context raises; a call inside `solver_worker_context()` succeeds; the
 contextvar resets to `False` after the context exits, including via `finally`).
 
@@ -1446,8 +1446,8 @@ share fixtures from `tests/optimiser_fixtures.py`. No dedicated property-based t
 for this component; coverage is unit + integration + golden-fixture + real-library contract
 tests.
 
-- **`tests/test_optimiser_routes.py`** — by far the largest file (dozens of test
-  classes) covering the full route surface end-to-end against the FastAPI test client: node
+- **`tests/test_optimiser_solve_routes.py`**, **`tests/test_optimiser_estimate_routes.py`**, **`tests/test_optimiser_ratebook_solve.py`**, **`tests/test_optimiser_pipeline_execution.py`**, **`tests/test_optimiser_frontier_routes.py`**, **`tests/test_optimiser_publish_routes.py`** and **`tests/test_optimiser_solver_service.py`** — together
+  cover the full route surface end-to-end against the FastAPI test client: node
   registration/codegen/executor passthrough, solve/status/estimate/apply/save/
   frontier-select/mlflow-log routes, ratebook solve, solve-with-history, the as-solved adjustment report,
   column validation, non-convergence warnings, background-thread error classification, job-state
@@ -1480,7 +1480,7 @@ tests.
   `/estimate`); the frontier-touching tests in these classes all go through
   `run_frontier_and_wait` and assert on the polled `result` payload rather than an immediate
   response body.
-- **`tests/test_optimiser_service_coverage.py`** — apply-result and ratebook-factor artifact
+- **`tests/test_optimiser_apply_artifacts.py`** — apply-result and ratebook-factor artifact
   handles: validation of kind, version, format, filename, directory containment and null bytes;
   persistence returning `None` for non-dataframe inputs and cleaning its directory when a write
   or lazy sink fails; loading and scanning that report a missing artifact and reject a corrupt

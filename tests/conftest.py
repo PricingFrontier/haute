@@ -1127,10 +1127,7 @@ def clean_job_store():
     The store is cleared through its public cleanup operation on both sides
     of the test, so timers and owned artifacts cannot leak between cases.
 
-    Single source of truth for the optimiser job-store fixture; previously
-    each optimiser test file (``test_optimiser_routes.py``,
-    ``test_optimiser_routes_critical_edges.py``,
-    ``test_optimiser_frontier_materialisation.py``) defined its own copy.
+    Every optimiser test module uses this one fixture rather than its own copy.
     """
     from haute.routes.optimiser import _store
 
@@ -1189,11 +1186,16 @@ def _haute_write_sandbox(
         # The stores the harness keeps for the test outside its tmp_path, which
         # a test may list: its source-proof records and the session's source
         # cache and MLflow store. The widened-root fixture adds its own.
+        # Hypothesis's own storage (its example database and the character-map
+        # cache a text strategy writes once) is harness infrastructure too: a
+        # refused write there is a PermissionError, which tempfile.mkstemp on
+        # Windows retries without end, so a strict test drawing text would hang.
         allowed = (
             os.path.realpath(str(tmp_path)),
             os.path.realpath(str(source_proof_records)),
             os.path.realpath(str(_isolate_repository_source_cache)),
             os.path.realpath(str(_isolate_repository_mlflow_store)),
+            os.path.realpath(str(_WS_REPO_ROOT / ".hypothesis")),
         )
     else:
         allowed = (

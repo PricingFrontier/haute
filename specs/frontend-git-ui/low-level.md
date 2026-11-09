@@ -496,7 +496,7 @@ Library component/unit tests (no e2e for this surface).
   current version and while peeking, the row button and menu item requesting a restore of
   that row; and a failed history read shown with its reason and a Retry in place of the
   empty history, its toast kept, and Retry reading the history again.
-- **`frontend/src/panels/__tests__/GitPanel.gaps.test.tsx`** — targeted gap-fill: fork-with-switch page reload, fork
+- **`frontend/src/panels/__tests__/GitPanel.forkAndView.test.tsx`** — fork-with-switch page reload, fork
   failure toast, fork-with-move submission, the view affordance opening a comparison,
   peeking's menu contents (a second angle on the same invariant as the main suite).
 - **`frontend/src/panels/__tests__/GitPanel.cache.test.tsx`** — the session-cache contract end to end: unchanged-payload
@@ -550,7 +550,7 @@ Library component/unit tests (no e2e for this surface).
   the delete dialog's wording: the branch goes to Deleted and can be restored from there
   (with its saves not yet in a milestone when it has some), never "Permanently", and on the
   current branch with changes since the last save, those named as lost.
-- **`frontend/src/components/__tests__/BranchManager.gaps.test.tsx`** — the `reloadOnDone` matrix:
+- **`frontend/src/components/__tests__/BranchManager.test.tsx`** — the `reloadOnDone` matrix:
   which mutations reload the page and which don't, keyed on `switched`/`is_current`, plus
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
@@ -634,7 +634,7 @@ Library component/unit tests (no e2e for this surface).
   on its stack and reports nothing; Discard switches and drops the canvas's and the form's
   edits; Save first saves and then switches, asking again after a save that fails; with no
   save there is no Save first; and a clean project switches without asking.
-- **`frontend/src/components/__tests__/RemotePushControl.gaps.test.tsx`** — error-message fidelity for
+- **`frontend/src/components/__tests__/RemotePushControl.test.tsx`** — error-message fidelity for
   catch-up and branch-away failures (`Error` vs. non-`Error` rejection), unparseable-409
   fallback to a plain toast (raw structured JSON is not rendered, while a human-readable
   detail is retained), remote-list failure distinct from an empty configuration, and
@@ -655,7 +655,7 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
   each of the three resolution choices, and stay-here's disabled state when the current
   branch isn't eligible.
-- **`frontend/src/components/__tests__/DivergenceModal.gaps.test.tsx`** — error-toast surfacing on a
+- **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — error-toast surfacing on a
   rejected `setWorkingBranch` (both `Error` and non-`Error`), the busy/"Working…" disabled
   state, double-submit guarding, and null-status placeholder rendering.
 - **`frontend/src/components/__tests__/ModalForm.test.tsx`** — the shared heading, the identity

@@ -1151,7 +1151,7 @@ what they cover:
   fallback: a real spawn (nothing patched across the boundary) asserting exactly one
   `haute-deploy-batch` worker ran and the aggregated column's dtype came back, a provable
   graph spawning nothing, and both failure mappings (`WorkerMemoryLimitUnsupportedError`
-  and a child `BatchScoreError`) surfacing as `DeployError`. `tests/test_deploy_internals.py` adds the two `resolve_config`
+  and a child `BatchScoreError`) surfacing as `DeployError`. `tests/test_deploy_resolve_config.py` adds the two `resolve_config`
   cache-miss regressions (container target bundles the warning, Databricks refuses).
 - **`test_deploy_data_location.py`** — a project with its pipeline in `rating/`: a Parquet or
   CSV the quote output reads from the project's `data/` is refused naming the node, the
@@ -1235,14 +1235,14 @@ what they cover:
   the cache atomically under the project and nowhere else, the deliberate
   `modelScore`-passthrough-rejection behaviour, artefact threading through
   `score_test_quotes`.
-- **`test_deploy_internals.py`** (also large) — `HauteModel.load_context`/`predict`,
+- **`test_deploy_model_schema.py`**, **`test_deploy_score_graph.py`**, **`test_deploy_score_graph_artifacts.py`**, **`test_deploy_resolve_config.py`**, **`test_deploy_mlflow_packaging.py`**, **`test_deploy_impact_report.py`** and **`test_deploy_validation.py`** — `HauteModel.load_context`/`predict`,
   `infer_input_schema`/`infer_output_schema` (including cache hit/miss), `score_graph`
   live-input injection, `output_fields` narrowing, static-data-source/external-file/
   optimiser-apply/model-score artefact remapping (each as its own large test class,
   `TestScoreGraphModelScoreRemap` being the biggest), missing-output and bad-input
   error paths, temp-file cleanup, `.env` loading, `resolve_config` edge cases,
   `get_deploy_status`, MLflow signature/conda-env building, Databricks connectivity
-  checks, and (also in this file) the full `src/haute/deploy/_impact.py` surface — batched scoring,
+  checks, and, in `test_deploy_impact_report.py`, the full `src/haute/deploy/_impact.py` surface — batched scoring,
   `ColumnStats`/`SegmentRow`/report building, terminal/Markdown formatting — plus the
   `TestBugB4PrunerUsesOriginalEdges` and `TestBugB10LexicographicVersionComparison`
   regression classes.
@@ -1252,11 +1252,11 @@ what they cover:
   typed endpoint errors naming the address, quotes priced from zero counted and left out of the
   percent figures, a segment's mean and a total, and both reports printing them, segment selection, and
   terminal/Markdown report formatting.
-- **`test_deploy_mlflow_gaps.py`**, **`test_deploy_validators_gaps.py`** — targeted
+- **`test_deploy.py`**, **`test_deploy_validators.py`** — targeted
   gap-filling for branches not hit by the main suites (progress callbacks, artefact copy,
   version selection, the MLflow deploy's own build directory removed on failure and after
   shipping unless kept; unparseable test-quote files,
-  guard clauses in `score_test_quotes`); `test_deploy_validators_gaps.py` also holds the
+  guard clauses in `score_test_quotes`); `test_deploy_validators.py` also holds the
   workbench form check: a form that fits the pipeline passes, a connection out of a
   Workbench Input or into a Workbench Output on a table the form does not have is named
   (`connection_errors`), a table whose own column takes an identity name and a form naming
@@ -1273,7 +1273,7 @@ what they cover:
   alias: the bundle records the alias's version and run, and resolution ships the graph
   naming the downloaded file while the parsed graph keeps the pipeline file's config, the
   shipped graph scoring the bundled model.
-- **`test_deploy_scorer_coverage.py`** — canonical dtype mapping, runtime-vs-training
+- **`test_deploy_scorer.py`** — canonical dtype mapping, runtime-vs-training
   contract matching (`_assert_runtime_contract_matches`), contract-only (no model
   artefact) scoring rejection, static-data-source remap edge cases.
 - **`test_deploy_utils.py`** — `get_user`/`get_haute_version` fallback behaviour,
