@@ -2160,8 +2160,8 @@ the turn that follows.
   snapshot then includes `sources()`, so a current entry that is missing or changed fails
   it naming the file and the refreshing call, and a carried entry that still holds binds
   the plan. An apply checks its plan's own source manifest and never reads the ledger. The
-  ledger is live state on `AssistantSession`, omitted from `as_persisted_dict` and
-  `as_persisted_dict`, so a revived session starts with an empty one.
+  ledger is live state on `AssistantSession`, omitted from `as_persisted_dict`, so a
+  revived session starts with an empty one.
 - **Build plan**: `update_build_plan {items?, complete?}` first passes its closed input
   schema (`items`: one to twelve `{id, title}` objects, `id` matching
   `^[a-z][a-z0-9_]{0,31}$` and `title` one to 80 characters; `complete`: an item id). A
