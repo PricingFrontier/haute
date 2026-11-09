@@ -11,6 +11,7 @@ saved pipeline.
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import re
 from functools import cache
@@ -870,6 +871,19 @@ def _unknown_example_error(name: str) -> dict[str, object]:
     }
 
 
+@cache
+def _loaded_example(name: str) -> dict[str, object]:
+    """One packaged bundle's rendering, validated and materialised once per process."""
+
+    bundle = _bundle_root(name)
+    assert bundle is not None, "load_example caches only a bundle that exists"
+    manifest = _read_bundle_manifest(bundle)
+    if manifest["teaching"] is not True:
+        return _unknown_example_error(name)
+    _validate_bundle(bundle, manifest)
+    return _load_bundle(bundle, manifest)
+
+
 def load_example(name: str) -> dict[str, object]:
     """Return a teaching bundle's notes and parser-produced graph rendering.
 
@@ -877,17 +891,12 @@ def load_example(name: str) -> dict[str, object]:
 
     Bundle sources are parsed, never imported. The bundle's resource tree is
     materialised together so parser-relative config sidecars work for both
-    filesystem and zip-backed package importers.
+    filesystem and zip-backed package importers. Each caller gets its own copy.
     """
 
-    bundle = _bundle_root(name)
-    if bundle is None:
+    if _bundle_root(name) is None:
         return _unknown_example_error(name)
-    manifest = _read_bundle_manifest(bundle)
-    if manifest["teaching"] is not True:
-        return _unknown_example_error(name)
-    _validate_bundle(bundle, manifest)
-    return _load_bundle(bundle, manifest)
+    return copy.deepcopy(_loaded_example(name))
 
 
 __all__ = [

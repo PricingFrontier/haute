@@ -33,6 +33,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
@@ -349,9 +350,12 @@ def join_profile_project(profile_project: Path) -> Path:
 
 
 def _profile(source_file: str, node: str, input_name: str | None = None) -> dict[str, object]:
-    from haute.assistant._tools import column_profiles
+    from haute.assistant._tools import _prepare_column_profile, column_profiles
 
-    return asyncio.run(column_profiles(source_file, node, input_name, session_id="test"))
+    prepared = _prepare_column_profile(source_file, node, input_name)
+    if isinstance(prepared, dict):
+        return prepared
+    return asyncio.run(column_profiles(*prepared, session_id="test"))
 
 
 def _profiles_by_name(result: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -479,28 +483,84 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         assert "error" not in result, result
         json.dumps(result, allow_nan=False)
 
-    async def test_executor_holds_the_save_lock_while_profiling(
+    async def test_a_save_during_a_profile_waits_for_no_collection(
         self,
         profile_project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
         import haute.assistant._tools as tools_module
 
-        async def observe_lock(*_args: object, **_kwargs: object) -> dict[str, object]:
-            return {
-                "node": "totals",
-                "save_lock_held": tools_module.save_lock.locked(),
-                "project_revision": "r",
-            }
+        async def collect_while_saving(*_args: object, **_kwargs: object) -> dict[str, object]:
+            async with asyncio.timeout(5), tools_module.save_lock:
+                return {"node": "totals", "saved_during_collection": True, "project_revision": "r"}
 
-        # `inspect_node` takes the save lock itself around its parts' reads.
-        monkeypatch.setattr(tools_module, "column_profiles", observe_lock)
+        monkeypatch.setattr(tools_module, "column_profiles", collect_while_saving)
 
         result = await tools_module.build_tool_executor("main.py")(
             "inspect_node", {"node": "totals", "parts": ["profile"], "input": "claims"}
         )
 
-        assert result["profile"]["save_lock_held"] is True
+        assert result["profile"]["saved_during_collection"] is True
+
+    def test_the_profile_worker_uses_the_calls_policy_without_reading_it_again(
+        self,
+        profile_project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        policy = EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=False,
+            allow_executable_source=False,
+            allow_row_samples=True,
+            allow_aggregate_statistics=False,
+        )
+
+        def refuse(_root: Path) -> EgressPolicy:
+            raise AssertionError("a spawned worker must not read the configuration")
+
+        monkeypatch.setattr(tools_module, "resolve_egress_policy", refuse)
+        monkeypatch.setattr(
+            tools_module, "create_isolated_execution_context", lambda _budget: MagicMock()
+        )
+        seen: list[object] = []
+
+        def collect(_request: object, _context: object) -> dict[str, object]:
+            seen.append(tools_module._egress_policy())
+            return {}
+
+        monkeypatch.setattr(tools_module, "_collect_column_profile", collect)
+        request = tools_module._ColumnProfileRequest(MagicMock(), "totals", None, policy)
+
+        tools_module._run_column_profile_worker(request, MagicMock())
+
+        assert seen == [policy]
+
+    async def test_a_tool_call_resolves_the_egress_policy_once(
+        self,
+        profile_project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.assistant._tools as tools_module
+
+        original = tools_module.resolve_egress_policy
+        resolved: list[object] = []
+
+        def counting(root: Path):
+            resolved.append(root)
+            return original(root)
+
+        monkeypatch.setattr(tools_module, "resolve_egress_policy", counting)
+
+        result = await tools_module.build_tool_executor("main.py")(
+            "inspect_node", {"node": "totals", "parts": ["schema", "config", "profile"]}
+        )
+
+        assert "error" not in result, result
+        assert len(resolved) == 1
 
     def test_frames_downstream_of_a_join_and_an_aggregation_profile_in_the_preview_worker(
         self, join_profile_project: Path, monkeypatch: pytest.MonkeyPatch

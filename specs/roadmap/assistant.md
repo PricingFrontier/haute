@@ -39,7 +39,6 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
-| ASSIST-57 | Planned | P2 | A tool never stalls the server: `inspect_node` profiles outside the save lock, the capability manifest is built once per installed set, an example is loaded once, and the egress policy is resolved once per call. |
 | ASSIST-58 | Planned | P2 | What the model is told is true: a join's execution failure is kept unless the validation raised it, the brief's columns follow the data, Load File's summary names the three file types, and no rule is stated that the product does not enforce. |
 | ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
 | ASSIST-60 | Planned | P3 | The chat panel recognises the server's "still finishing" answer by a code, shows the server's detail for every other failure, never throws from a click, and keeps a draft the store refused to send. |
@@ -139,42 +138,6 @@ per configuration with run identifiers.
 **Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-57 — Tools that never stall the server
-**Why:** `inspect_node` holds the process-wide, cross-process `save_lock` while
-its profile part collects up to a million rows in the preview worker, bounded
-only by the pipeline time limit (30 minutes by default), so every GUI save,
-Files-panel write, submodel operation, assistant read, dry run, apply and undo,
-and any other server process on the project, blocks for the profile's duration;
-only the parse needs the lock, the data part already collects outside it, and a
-wiring test pins the lock as held. `capability_manifest()` rebuilds every node
-and operation descriptor, the operation union, the canonical JSON and the
-SHA-256 on every call and only then consults a cache keyed by the digest it just
-computed (probed: about 47 ms per warm call), paid at least once per tool result
-on the event-loop thread, per project revision, per `read_reference` id and per
-system prompt. Every `read_reference` of an example re-hashes and re-copies the
-whole bundle into a fresh temporary directory. The egress policy is resolved
-from `haute.toml` at eight sites, several within one call.
-
-**Plan:** Prepare the profile under the lock and collect outside it, amending
-the specification's exemption and replacing the lock-held test with one that
-asserts the lock is free during collection; key the manifest cache on
-`(haute_version, digest of the installed capabilities)` and build on a miss
-only, with a test that a warm call constructs no descriptor; cache
-`load_example` per name; resolve the policy once in `_dispatch_tool` and thread
-it down.
-
-**Acceptance:** A save during a profile waits for no collection; a warm
-`capability_manifest()` call is under a millisecond; an example read twice
-hashes once; one policy resolution per tool call.
-
-**Dependencies:** None. The policy is resolved from the current project's root.
-
-**Evidence:** `src/haute/assistant/_tools.py::inspect_node`;
-`src/haute/assistant/_tools.py::_prepare_column_profile`;
-`src/haute/assistant/_catalog.py::capability_manifest`;
-`src/haute/assistant/_assets.py::load_example`;
-`src/haute/assistant/_tools.py::_dispatch_tool`; `tests/test_assistant_tools.py`.
 
 ### ASSIST-58 — Facts the model can trust
 **Why:** A data check suppresses an Edge Join's `execution_failed` finding

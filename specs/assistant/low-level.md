@@ -1223,8 +1223,11 @@ the turn that follows.
    `get_project_knowledge`) hold the
    process-wide `save_lock` across their worker-thread operation, so a concurrent save cannot
    interleave graph parsing with schema or value resolution; `inspect_node` takes the lock
-   itself around its parts' reads, so that its data part's check, which may wait up to its
-   deadline, runs after the lock is released. The schema part
+   itself around its parts' reads, so that the profile part's collection, bounded only by
+   the pipeline time limit, and the data part's check, which may wait up to its deadline,
+   run after the lock is released: only the parse and the request built from it need the
+   lock, and each part keeps the revision it read under it. One tool call resolves the
+   egress policy once. The schema part
    (`node_schema`) parses the
    saved pipeline, then proceeds in this order:
    1. **Validate the target id against the original hierarchical graph** — a submodel

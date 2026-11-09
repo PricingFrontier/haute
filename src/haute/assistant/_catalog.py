@@ -12,10 +12,12 @@ config keys, decorators, sidecar folders, or singleton rules.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType, UnionType
 from typing import Annotated, Literal, Required, Union, cast, get_args, get_origin, get_type_hints
@@ -375,6 +377,7 @@ def _installed_capabilities() -> dict[str, object]:
     return {"io": registry_capabilities()}
 
 
+@cache
 def _haute_version() -> str:
     try:
         return version("haute")
@@ -1351,7 +1354,15 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
 
 
 def capability_manifest() -> CapabilityManifest:
+    """The capability manifest, built once per Haute version and installed set."""
+
     installed = _installed_capabilities()
+    haute_version = _haute_version()
+    # Only this process compares it, so the key need not be the canonical encoding.
+    key = (haute_version, json.dumps(installed, sort_keys=True))
+    cached = _MANIFEST_CACHE.get(key)
+    if cached is not None:
+        return cached
     nodes = tuple(_node_descriptor(node_type) for node_type in NodeType)
     recipes = recipe_manifest()
     operations = tuple(_operation_descriptor(name) for name in OPERATION_IDS)
@@ -1361,7 +1372,6 @@ def capability_manifest() -> CapabilityManifest:
         "revision_safe_plans": True,
         "recipes": True,
     }
-    haute_version = _haute_version()
     material: dict[str, object] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "haute_version": haute_version,
@@ -1371,20 +1381,18 @@ def capability_manifest() -> CapabilityManifest:
         "operations": [operation.as_dict() for operation in operations],
         "recipes": [_thaw(recipe) for recipe in recipes],
     }
-    digest = hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
-    key = (haute_version, digest)
-    if key not in _MANIFEST_CACHE:
-        _MANIFEST_CACHE[key] = CapabilityManifest(
-            schema_version=MANIFEST_SCHEMA_VERSION,
-            haute_version=haute_version,
-            capability_hash=digest,
-            installed_capabilities=cast(Mapping[str, object], _freeze(installed)),
-            feature_flags=MappingProxyType(feature_flags),
-            nodes=nodes,
-            operations=operations,
-            recipes=recipes,
-        )
-    return _MANIFEST_CACHE[key]
+    manifest = CapabilityManifest(
+        schema_version=MANIFEST_SCHEMA_VERSION,
+        haute_version=haute_version,
+        capability_hash=hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest(),
+        installed_capabilities=cast(Mapping[str, object], _freeze(installed)),
+        feature_flags=MappingProxyType(feature_flags),
+        nodes=nodes,
+        operations=operations,
+        recipes=recipes,
+    )
+    _MANIFEST_CACHE[key] = manifest
+    return manifest
 
 
 def _clear_manifest_cache() -> None:

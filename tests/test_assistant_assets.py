@@ -40,6 +40,29 @@ class TestAuthoringGuide:
         finally:
             authoring_guide.cache_clear()
 
+    def test_an_example_read_twice_is_validated_once_and_copied(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        name = example_index()[0][0]
+        _assets._loaded_example.cache_clear()
+        original = _assets._validate_bundle
+        validated: list[object] = []
+
+        def counting(*args: object) -> None:
+            validated.append(args)
+            original(*args)
+
+        monkeypatch.setattr(_assets, "_validate_bundle", counting)
+        try:
+            first = load_example(name)
+            first["narrative"] = "changed by a caller"
+            second = load_example(name)
+        finally:
+            _assets._loaded_example.cache_clear()
+
+        assert len(validated) == 1
+        assert second["narrative"] != "changed by a caller"
+
     def test_empty_guide_raises_loudly(self, monkeypatch: pytest.MonkeyPatch):
         authoring_guide.cache_clear()
         try:

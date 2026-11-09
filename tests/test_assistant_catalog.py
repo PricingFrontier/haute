@@ -174,6 +174,17 @@ class TestCapabilityManifest:
         assert changed is not first
         assert changed.capability_hash != first.capability_hash
 
+    def test_a_warm_manifest_builds_no_descriptor(self, monkeypatch: pytest.MonkeyPatch):
+        capability_manifest()
+
+        def refuse(*_args: object) -> None:
+            raise AssertionError("a warm call must not build a descriptor")
+
+        monkeypatch.setattr(_catalog, "_node_descriptor", refuse)
+        monkeypatch.setattr(_catalog, "_operation_descriptor", refuse)
+
+        capability_manifest()
+
     def test_cached_manifest_material_is_immutable(self):
         manifest = capability_manifest()
 
