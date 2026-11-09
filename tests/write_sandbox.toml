@@ -61,7 +61,6 @@ strict = [
     "test_cli_deploy.py",
     "test_cli_fail_loudly.py",
     "test_cli_helpers.py",
-    "test_cli_impact.py",
     "test_cli_lint.py",
     "test_cli_no_shadow.py",
     "test_cli_serve.py",

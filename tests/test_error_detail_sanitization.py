@@ -883,7 +883,8 @@ class TestInternalErrorDetailConstant:
         "module_path",
         [
             "haute.server",
-            "haute.routes.pipeline",
+            # Every route answers an unclassified worker failure through it.
+            "haute.routes._worker_failure_http",
             # The frontier service records it as a failed sweep's message.
             "haute.routes._optimiser_frontier",
             "haute.routes.git",

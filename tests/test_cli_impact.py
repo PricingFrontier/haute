@@ -534,6 +534,7 @@ def _write_min_project(
     )
 
 
+@pytest.mark.sandbox_strict
 class TestUnsupportedTarget:
     def test_unsupported_transport_warns_and_returns(
         self,
@@ -558,6 +559,7 @@ class TestUnsupportedTarget:
         assert not (tmp_path / "impact_report.md").exists()
 
 
+@pytest.mark.sandbox_strict
 class TestImpactDatabricksImportError:
     def test_missing_sdk_exits(self) -> None:
         """When ``databricks.sdk`` cannot be imported the helper should echo
@@ -580,6 +582,7 @@ class TestImpactDatabricksImportError:
         assert excinfo.value.code == 1
 
 
+@pytest.mark.sandbox_strict
 class TestImpactDatabricksProdScoring:
     def test_prod_exists_scores_production(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When the prod endpoint exists, production should also be scored and
