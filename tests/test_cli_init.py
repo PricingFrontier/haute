@@ -1872,6 +1872,35 @@ class TestInitCiRunsTheProjectsPython:
             assert {next(v for v in pin if v) for pin in pins} == {expected}, relative
 
 
+class TestANewProjectPassesItsOwnLintJob:
+    """The files ``haute init`` writes pass the ``ruff check .`` and ``ruff format --check .``
+    its generated CI runs on the first pull request, under the project's own ruff settings
+    (ruff's defaults: the project has no ``[tool.ruff]``). The pre-commit hook formats only
+    what a milestone records, so a starter file left as it is reaches CI as written."""
+
+    @pytest.mark.parametrize(
+        "args", [["init"], ["init", "--workbench", "--store", "postgresql", "--sign-in", "entra"]]
+    )
+    def test_ruff_finds_nothing_to_fix(
+        self, runner: CliRunner, tmp_path: Path, args: list[str]
+    ) -> None:
+        use_project(tmp_path)
+        result = runner.invoke(cli, args, catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert not tomllib.loads((tmp_path / "pyproject.toml").read_text(encoding="utf-8"))[
+            "tool"
+        ].get("ruff")
+
+        for check in (["check", "."], ["format", "--check", "."]):
+            ruff = subprocess.run(
+                [sys.executable, "-m", "ruff", *check, "--no-cache"],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+            )
+            assert ruff.returncode == 0, ruff.stdout + ruff.stderr
+
+
 class TestPreCommitHookFormatsWhatIsStaged:
     """The generated pre-commit hook, run by git with the real ruff, formats and checks the
     staged content only, and a problem ruff cannot fix stops the commit."""

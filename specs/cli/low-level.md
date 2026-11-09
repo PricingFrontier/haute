@@ -167,7 +167,11 @@ workflow `_prune_stale_ci_files` removed (it returns them); says `rating/` and
 `tests/` were left as they are; and, when the kind of project changed, names the input and
 output nodes the pipeline still has, to replace. A root `main.py` is deleted and reported only when `_is_uv_init_placeholder` holds: its text, CRLF line endings read as LF, is the one `uv init` writes (`def main()` printing `Hello from <name>!`, run under `__main__`) for any project name. Any other is kept and the summary says it is not the placeholder. The generated pipeline declares only
 `haute.Pipeline(name)` and therefore parses with zero nodes; its starter test checks that parse and
-name contract without requiring execution data. Init creates neither `prompts/` nor node sidecars.
+name contract without requiring execution data. The Python files init writes pass the generated
+lint job's `ruff check .` and `ruff format --check .` under ruff's defaults, since the project
+declares no `[tool.ruff]` and the pre-commit hook formats only what a milestone records, so a
+starter file left as written reaches the first pull request unformatted. Init creates neither
+`prompts/` nor node sidecars.
 
 **`run`**: resolves the pipeline file via `haute._project.resolve_pipeline_file`, calls
 `parse_pipeline_file(..., flatten=True)` (a Workbench node given its form's tables), takes the
