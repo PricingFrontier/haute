@@ -22,7 +22,6 @@ The site describes `main`, decided on 25 October 2026: the next release, due soo
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DOC-02 | Planned | P2 | The CI pages describe the workflows Haute generates: who can start production, each target's secrets, job limits and images, and what `haute ci update` rewrites. |
 | DOC-03 | Planned | P2 | A new project reaches a green first pull request and a staging deploy by following the guides from an empty folder. |
 | DOC-04 | Planned | P2 | The site publishes `main` again, with the other packages landed, before the next release. |
 | DOC-05 | Planned | P2 | A project made by haute 0.6.0 upgrades to the next release by following one page. |
@@ -34,62 +33,6 @@ a page restates a fact the code owns (a secret name, a job's time limit, an imag
 endpoint name), a documentation parity test derives it from the code, as
 `tests/test_docs_accuracy.py` already does for the scaffold tree, so the page cannot drift
 from the generator again.
-
-### DOC-02 — The CI pages describe the generated workflows
-**Why:** The three CI pages (`docs/deployment/ci/github-actions.md`, `gitlab.md` and
-`azure-devops.md`) disagree with the files `ci_files` generates:
-- **Approval.** The GitHub page tells readers to configure GitHub environments or branch
-  protections if production needs approval (:35, :105, :275), and the GitLab page to
-  configure protected environments (:94). An environment's rules gate only a job that names
-  it, and branch protection gates no manual run. As generated, the production jobs name none,
-  so production is started by anyone who may run the workflow (GitHub) or play the manual
-  job (GitLab), which works on every plan, a free GitHub plan included. A project gates it by
-  naming an environment in `[ci.production] environment` and running `haute ci update`,
-  which no page mentions. Azure DevOps' production deployment always runs under an
-  environment, `production` unless one is named, gated by the checks configured on it, as
-  its page says.
-- **Time limits.** The GitLab and Azure DevOps pages give the deploy jobs 15 minutes
-  (gitlab.md:218, :221; azure-devops.md:252, :255); a Databricks deploy job gets 60, because
-  the deploy waits for its endpoint (`_deploy_timeout_minutes`).
-- **`haute ci update`.** The GitHub page says it "leaves everything else alone" (:317). It
-  also deletes another provider's generated files and overwrites hand edits to its own,
-  and a git install's frontend build. The GitLab and Azure DevOps pages never mention the command,
-  though it serves every provider, and none says it now takes up a changed
-  `[ci.staging] endpoint_suffix` or `[ci.production] environment`.
-- **`.env.example`.** All three pages and `docs/deployment/index.md:173` say it "lists
-  exactly which secrets are needed". For Databricks it also holds the local data-access
-  pair, `DATABRICKS_HOST` and `DATABRICKS_TOKEN`, which no CI step reads; `haute init` prints
-  the CI secrets, and `haute ci secrets --check` checks them.
-- **Secrets by target.** No page lists GCP Cloud Run's secrets (`GCP_PROJECT_ID`,
-  `GCP_SERVICE_ACCOUNT_KEY`, the key the deploy jobs log in to Artifact Registry with),
-  though each names GCP as a target.
-- **Generated details.** The Azure DevOps page tells readers to give the production
-  checkout `persistCredentials: true` (:194), which the generated pipeline already sets, as
-  the page's own :245 says. The GitLab page says the jobs run in `python:3.11` (:150, :196);
-  the image follows the project's Python and is 3.11 only for a project that declares none.
-
-**Plan:** Each page says who can start production as generated, and how to require a
-reviewer. Name the environment in `[ci.production] environment`, run `haute ci update`,
-and configure its reviewers in the provider. Required reviewers exist for a private GitHub
-repository only on GitHub Enterprise, and GitLab's protected environments need Premium, so
-a team on a free plan leaves the setting unset. The time limits, image and secret tables state what the
-generator writes, with GCP's table added. The `haute ci update` section moves to the
-deployment overview, which all three pages link: what it rewrites, what it deletes, and that
-hand edits to generated files are overwritten. Each page points to the CI secrets
-`haute init` prints. The Azure checkout clause goes.
-
-**Acceptance:** Parity tests derive each CI page's secret tables from `ci_secret_names`, its
-deploy-job time limits from `_deploy_timeout_minutes`, and the GitLab image from the
-`python_version` pin. No page asks for a setting the generated files already have, or one
-that cannot gate the job it names.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_scaffold.py::ci_files`, `::github_deploy_prod_yml`,
-`::gitlab_ci_yml`, `::azure_devops_yml`, `::_deploy_timeout_minutes`, `::_pin_ci_python`,
-`::TARGETS` (each target's `secrets`) and `::env_example`;
-`src/haute/cli/_ci.py::handle_ci_update` and `::handle_ci_secrets`;
-`src/haute/cli/_init_cmd.py::_prune_stale_ci_files` and `::write_generated_files`.
 
 ### DOC-03 — A new project's path from an empty folder
 **Why:** The guides assume a project that already has a repository and a pipeline:
@@ -151,7 +94,7 @@ before the release ships. No workflow change: the site keeps tracking `main`.
 **Acceptance:** The published site matches `main` at the release commit, and a later docs
 change on `main` publishes without waiting on an older run.
 
-**Dependencies:** DOC-02, DOC-03 and DOC-05, which the site publishes.
+**Dependencies:** DOC-03 and DOC-05, which the site publishes.
 
 **Evidence:** `.github/workflows/docs.yml` (its triggers and `concurrency: pages`);
 `.github/workflows/release.yml`; the Deploy docs runs since 2 October 2026.

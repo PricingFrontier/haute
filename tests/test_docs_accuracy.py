@@ -2188,6 +2188,102 @@ def test_databricks_guide_quotes_the_errors_an_expired_token_gives(
         assert message.startswith(shown), (message, shown)
 
 
+DEPLOYMENT_OVERVIEW = ROOT / "docs" / "deployment" / "index.md"
+CI_PAGES = {
+    "github": ROOT / "docs" / "deployment" / "ci" / "github-actions.md",
+    "gitlab": ROOT / "docs" / "deployment" / "ci" / "gitlab.md",
+    "azure-devops": ROOT / "docs" / "deployment" / "ci" / "azure-devops.md",
+}
+#: The heading each CI page's secrets tables go under, by deploy target.
+_CI_SECRET_TABLE_LABELS = {
+    "databricks": "Databricks",
+    "container": "Docker/Container targets",
+    "aws-ecs": "AWS ECS",
+    "azure-container-apps": "Azure Container Apps",
+    "gcp-run": "GCP Cloud Run",
+}
+
+
+def _secret_table_names(text: str, label: str) -> list[str]:
+    """The names in the first column of the table under ``**For <label>:**``."""
+    match = re.search(rf"^\*\*For {re.escape(label)}:\*\*\n\n((?:\|.*\n)+)", text, re.MULTILINE)
+    assert match is not None, f"No secrets table for {label}"
+    rows = match.group(1).splitlines()[2:]
+    return [re.fullmatch(r"\| `([A-Z0-9_]+)` \|.*", row).group(1) for row in rows]  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("provider", sorted(CI_PAGES))
+def test_ci_pages_list_the_secrets_each_targets_jobs_read(provider: str) -> None:
+    from haute._scaffold import ci_secret_names
+
+    assert set(_CI_SECRET_TABLE_LABELS) == set(TARGETS)
+    text = CI_PAGES[provider].read_text(encoding="utf-8")
+    for target, label in _CI_SECRET_TABLE_LABELS.items():
+        assert _secret_table_names(text, label) == ci_secret_names(target), (provider, target)
+
+
+@pytest.mark.parametrize("provider", ["gitlab", "azure-devops"])
+def test_ci_pages_give_the_deploy_jobs_their_time_limits(provider: str) -> None:
+    from haute._scaffold import _CONTAINER_BASED_TARGETS, _deploy_timeout_minutes
+
+    (container_limit,) = {_deploy_timeout_minutes(t) for t in _CONTAINER_BASED_TARGETS}
+    limits = (
+        f"{_deploy_timeout_minutes('databricks')} min on Databricks",
+        f"{container_limit} min on the container targets",
+    )
+    rows = [
+        row
+        for row in CI_PAGES[provider].read_text(encoding="utf-8").splitlines()
+        if re.match(
+            r"\s*\| (?:deploy-staging|deploy-production|Deploy(?:Staging|Production)) \|", row
+        )
+    ]
+    assert len(rows) == 2
+    for row in rows:
+        assert all(limit in row for limit in limits), row
+
+
+def test_gitlab_page_shows_the_image_the_project_python_selects() -> None:
+    from haute._scaffold import DEFAULT_CI_PYTHON, gitlab_ci_yml
+
+    shown = re.search(
+        r"^\s*image: (python:\S+)  # the Python your project declares; "
+        r"(\S+) when it declares none$",
+        CI_PAGES["gitlab"].read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    assert shown is not None
+    assert f"  image: {shown.group(1)}\n" in gitlab_ci_yml("databricks")
+    assert shown.group(2) == DEFAULT_CI_PYTHON
+    assert "  image: python:3.13\n" in gitlab_ci_yml("databricks", python_version="3.13")
+
+
+@pytest.mark.parametrize("provider", sorted(CI_PAGES))
+def test_the_documented_production_environment_gates_the_production_job(
+    provider: str, tmp_path: Path
+) -> None:
+    """The overview's ``[ci.production]`` table, read as haute.toml reads it, puts the
+    generated production job under the environment it names."""
+    from haute._scaffold import ci_files
+    from haute.deploy._config import DeployConfig
+
+    section = _h2_section(DEPLOYMENT_OVERVIEW.read_text(encoding="utf-8"), "Validation and")
+    shown = re.search(r"```toml\n(\[ci\.production\]\n.*?)```", section, flags=re.DOTALL)
+    assert shown is not None
+    (tmp_path / "rating").mkdir()
+    (tmp_path / "rating" / "main.py").write_text("", encoding="utf-8")
+    toml = haute_toml("motor-pricing", "databricks", provider) + "\n" + shown.group(1)
+    (tmp_path / "haute.toml").write_text(toml, encoding="utf-8")
+    environment = DeployConfig.from_toml(tmp_path / "haute.toml").ci.production_environment
+
+    assert environment
+    generated = "\n".join(
+        ci_files("databricks", provider, production_environment=environment).values()
+    )
+    assert f'environment: "{environment}"' in generated
+    assert "who-can-start-production" in CI_PAGES[provider].read_text(encoding="utf-8")
+
+
 def _marked_block(text: str, marker: str) -> str:
     """Return a marker-delimited documentation block without its markers."""
     match = re.search(
