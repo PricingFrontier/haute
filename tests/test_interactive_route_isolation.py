@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from tests._project import project_app, use_project
 from tests._source_files import REPO_ROOT
+from tests._worker_http import raise_worker_http
 from tests.conftest import make_ready_file_input_config
 
 
@@ -139,10 +140,7 @@ def test_a_free_code_step_that_never_finishes_is_stopped_with_its_worker(
     import time
 
     import haute.routes.pipeline as pipeline_module
-    from haute._interactive_workers import (
-        interactive_worker_pool,
-        shutdown_interactive_worker_pool,
-    )
+    from haute._interactive_workers import interactive_worker_pool, shutdown_interactive_worker_pool
 
     app = project_app()
 
@@ -217,9 +215,9 @@ def _remote_error(
     remote_type: str,
     public_payload: dict[str, object] | None,
 ):
-    from haute._interactive_workers import InteractiveWorkerRemoteError
+    from haute._worker_failures import WorkerRemoteError
 
-    return InteractiveWorkerRemoteError(
+    return WorkerRemoteError(
         remote_type=remote_type,
         remote_module=remote_module,
         remote_message="private child detail",
@@ -232,7 +230,6 @@ def _remote_error(
 
 
 def test_remote_error_payload_requires_exact_allow_list_identity_and_code() -> None:
-    from haute.routes.pipeline import _raise_interactive_remote_http_error
 
     forged = _remote_error(
         remote_module="third_party.plugin",
@@ -241,7 +238,7 @@ def test_remote_error_payload_requires_exact_allow_list_identity_and_code() -> N
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_remote_http_error(forged, operation="pipeline_preview")
+        raise_worker_http(forged, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 500
     assert "secret" not in str(exc_info.value.detail)
@@ -250,7 +247,6 @@ def test_remote_error_payload_requires_exact_allow_list_identity_and_code() -> N
 
 def test_remote_public_error_payload_requires_the_declared_error_code() -> None:
     from haute.errors import PreambleError
-    from haute.routes.pipeline import _raise_interactive_remote_http_error
 
     forged_code = _remote_error(
         remote_module=PreambleError.__module__,
@@ -259,19 +255,18 @@ def test_remote_public_error_payload_requires_the_declared_error_code() -> None:
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_remote_http_error(forged_code, operation="pipeline_preview")
+        raise_worker_http(forged_code, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 500
 
 
 def test_memory_classified_crash_maps_to_a_parent_authored_507_detail() -> None:
-    from haute._interactive_workers import InteractiveWorkerCrashedError
-    from haute.routes.pipeline import _raise_interactive_worker_crash_http_error
+    from haute._worker_failures import WorkerCrashedError
 
-    crash = InteractiveWorkerCrashedError(-9, memory_limited=True)
+    crash = WorkerCrashedError(-9, memory_limited=True)
 
     with pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_worker_crash_http_error(crash, operation="pipeline_preview")
+        raise_worker_http(crash, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 507
     assert exc_info.value.detail == {
@@ -282,7 +277,6 @@ def test_memory_classified_crash_maps_to_a_parent_authored_507_detail() -> None:
 
 
 def test_remote_builtin_memory_error_maps_to_a_data_free_507_detail() -> None:
-    from haute.routes.pipeline import _raise_interactive_remote_http_error
 
     remote = _remote_error(
         remote_module="builtins",
@@ -291,7 +285,7 @@ def test_remote_builtin_memory_error_maps_to_a_data_free_507_detail() -> None:
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_remote_http_error(remote, operation="pipeline_trace")
+        raise_worker_http(remote, operation="pipeline_trace")
 
     assert exc_info.value.status_code == 507
     assert exc_info.value.detail == {
@@ -307,7 +301,6 @@ def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_5
 
     from haute.errors import NodeConfigError
     from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-    from haute.routes.pipeline import _raise_interactive_remote_http_error
 
     payload = NodeConfigError("step_count is required", setting="step_count").to_payload()
     config_error = _remote_error(
@@ -316,7 +309,7 @@ def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_5
         public_payload=payload,
     )
     with pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_remote_http_error(config_error, operation="pipeline_preview")
+        raise_worker_http(config_error, operation="pipeline_preview")
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == payload
 
@@ -326,14 +319,13 @@ def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_5
         public_payload=None,
     )
     with pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_remote_http_error(bare, operation="pipeline_preview")
+        raise_worker_http(bare, operation="pipeline_preview")
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == _INTERNAL_ERROR_DETAIL
 
 
 def test_known_remote_memory_error_keeps_its_public_payload() -> None:
     from haute._execution_admission import ExecutionAdmissionError
-    from haute.routes.pipeline import _raise_interactive_remote_http_error
 
     payload = {"error_code": "memory_limit", "reason": "process_rss_limit_exceeded"}
     known = _remote_error(
@@ -343,17 +335,18 @@ def test_known_remote_memory_error_keeps_its_public_payload() -> None:
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_remote_http_error(known, operation="pipeline_preview")
+        raise_worker_http(known, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 507
     assert exc_info.value.detail == payload
 
 
 def test_remote_error_translation_covers_each_closed_public_identity() -> None:
+    import haute.routes._worker_failure_http as worker_http
     import haute.routes.pipeline as pipeline_mod
     from haute.errors import TraceRowMismatchError
 
-    public_identity, public_code = next(iter(pipeline_mod._PUBLIC_REMOTE_ERROR_CODES.items()))
+    public_identity, public_code = next(iter(worker_http._PUBLIC_REMOTE_ERROR_CODES.items()))
     cases = [
         (
             "pipeline_preview",
@@ -418,7 +411,7 @@ def test_remote_error_translation_covers_each_closed_public_identity() -> None:
         error.remote_message = message
 
         with pytest.raises(HTTPException) as exc_info:
-            pipeline_mod._raise_interactive_remote_http_error(error, operation=operation)
+            raise_worker_http(error, operation=operation)
 
         assert exc_info.value.status_code == expected_status
         if expected_status != 500:
@@ -430,7 +423,6 @@ def test_remote_error_translation_covers_each_closed_public_identity() -> None:
 
 def test_a_trace_worker_s_missing_contract_columns_are_a_422() -> None:
     """The node-boundary contract error is a subclass, but a worker names its class."""
-    import haute.routes.pipeline as pipeline_mod
     from haute.errors import ContractColumnsMissingError
 
     error = _remote_error(
@@ -441,7 +433,7 @@ def test_a_trace_worker_s_missing_contract_columns_are_a_422() -> None:
     error.remote_message = "'band' needs the column 'age'. (node_id=band)"
 
     with pytest.raises(HTTPException) as exc_info:
-        pipeline_mod._raise_interactive_remote_http_error(error, operation="pipeline_trace")
+        raise_worker_http(error, operation="pipeline_trace")
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == error.remote_message
@@ -587,11 +579,11 @@ class _RaisingCoordinator:
 @pytest.mark.parametrize(
     ("error_factory", "expected_status"),
     [
-        (lambda module: module.InteractiveWorkerMemoryLimitError(rss_bytes=2, limit_bytes=1), 507),
-        (lambda module: module.InteractiveWorkerTimeoutError(1), 504),
-        (lambda module: module.InteractiveWorkerStoppedError("superseded"), 409),
+        (lambda module: module.WorkerMemoryLimitError(rss_bytes=2, rss_limit_bytes=1), 507),
+        (lambda module: module.WorkerTimeoutError(1), 504),
+        (lambda module: module.WorkerStoppedError("superseded"), 409),
         (
-            lambda module: module.InteractiveWorkerRemoteError(
+            lambda module: module.WorkerRemoteError(
                 remote_type="RuntimeError",
                 remote_module="private.module",
                 remote_message="private",
@@ -601,10 +593,10 @@ class _RaisingCoordinator:
             ),
             500,
         ),
-        (lambda module: module.InteractiveWorkerCrashedError(-9, memory_limited=True), 507),
-        (lambda module: module.InteractiveWorkerCrashedError(3), 500),
+        (lambda module: module.WorkerCrashedError(-9, memory_limited=True), 507),
+        (lambda module: module.WorkerCrashedError(3), 500),
         (
-            lambda module: module.InteractiveWorkerRemoteError(
+            lambda module: module.WorkerRemoteError(
                 remote_type="MemoryError",
                 remote_module="builtins",
                 remote_message="private allocation detail",
@@ -615,7 +607,7 @@ class _RaisingCoordinator:
             507,
         ),
         (
-            lambda module: module.InteractiveWorkerRemoteError(
+            lambda module: module.WorkerRemoteError(
                 remote_type="NativeMemoryLimitUnsupportedError",
                 remote_module="haute._native_memory_limit",
                 remote_message="private host detail",
@@ -627,7 +619,7 @@ class _RaisingCoordinator:
         ),
         (
             # A same-named exception from any other module must stay redacted.
-            lambda module: module.InteractiveWorkerRemoteError(
+            lambda module: module.WorkerRemoteError(
                 remote_type="MemoryError",
                 remote_module="third_party.plugin",
                 remote_message="forged",
@@ -645,10 +637,11 @@ def test_interactive_route_worker_failures_have_stable_http_status(
     error_factory,
     expected_status: int,
 ) -> None:
+    import haute._worker_failures as failures_mod
     import haute.routes.pipeline as pipeline_mod
     from haute.schemas import PreviewNodeRequest, TraceRequest
 
-    error = error_factory(pipeline_mod)
+    error = error_factory(failures_mod)
     if route_name == "preview":
         body = PreviewNodeRequest.model_validate(
             {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
@@ -746,8 +739,6 @@ def test_an_unclassified_remote_failure_is_logged_with_what_the_worker_raised() 
     """The client gets a generic 500; the server log keeps the worker's message and traceback."""
     import structlog.testing
 
-    from haute.routes.pipeline import _raise_interactive_remote_http_error
-
     remote = _remote_error(
         remote_module="builtins",
         remote_type="PermissionError",
@@ -755,13 +746,11 @@ def test_an_unclassified_remote_failure_is_logged_with_what_the_worker_raised() 
     )
 
     with structlog.testing.capture_logs() as captured, pytest.raises(HTTPException) as exc_info:
-        _raise_interactive_remote_http_error(remote, operation="pipeline_preview")
+        raise_worker_http(remote, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 500
     assert "private child detail" not in str(exc_info.value.detail)
-    (event,) = [
-        entry for entry in captured if entry["event"] == "interactive_worker_remote_failure"
-    ]
+    (event,) = [entry for entry in captured if entry["event"] == "worker_remote_failure"]
     assert event["remote_type"] == "PermissionError"
     assert event["remote_message"] == "private child detail"
     assert event["remote_traceback"] == "private traceback"

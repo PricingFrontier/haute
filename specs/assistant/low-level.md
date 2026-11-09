@@ -3205,7 +3205,7 @@ treats them; anything else becomes `internal`, logged as
 
 **Outcomes.** `ExecutionAdmissionError` maps to `admission_refused` with its
 `reason` as `detail`; the busy error to `worker_busy`;
-`InteractiveWorkerTimeoutError` to `deadline`; a worker terminal reason
+`WorkerTimeoutError` to `deadline`; a worker terminal reason
 `memory_limited` to `memory_limited`; a pre-emption to `superseded_by_preview`;
 `SupersededRequestError` to `superseded`; a cancelled turn to `cancelled`;
 anything else to `internal_error`. No outcome raises out of the dry-run tool.
@@ -3456,8 +3456,8 @@ defect in the check never fails a dry-run.
   `TypeAdapter`) validates the closed shapes. `DataCheckBinding.plan_hash` is
   `None` for an inspection of the saved graph, which no plan stores.
 - Shared extensions: `InteractiveWorkerPool.run_preemptible` and
-  `run_preemptible_in_interactive_worker` with `InteractiveWorkerBusyError` and
-  `InteractiveWorkerPreemptedError` (`_interactive_workers.py`);
+  `run_preemptible_in_interactive_worker` with `WorkerBusyError` and
+  `WorkerPreemptedError` (`_interactive_workers.py`);
   `WalkPurpose.MEASURE`, `CollectPolicy.measuring`, `MeasurementQueries`,
   `NodeMeasurement` and `AttributedFailure` (`_graph_walker.py`);
   `disk_cache_only_model_loads`, `DiskCachedRunModel` and

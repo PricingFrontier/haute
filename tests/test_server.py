@@ -3228,11 +3228,11 @@ class TestPipelineTimeouts:
             body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
 
         if endpoint == "write-output":
-            from haute._worker_isolation import IsolatedWorkerTimeoutError
+            from haute._worker_failures import WorkerTimeoutError
 
             timeout_patch = patch(
                 "haute.routes.pipeline._output_write_transaction",
-                side_effect=IsolatedWorkerTimeoutError(timeout_seconds=0.001),
+                side_effect=WorkerTimeoutError(timeout_seconds=0.001),
             )
         else:
             timeout_patch = patch(

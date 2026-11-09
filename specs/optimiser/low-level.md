@@ -369,8 +369,8 @@ child by `_record_solve_setup_failure`, the same mapping the setup thread uses, 
 replays the record (terminal reason, message, `error`/`error_code`/`error_detail`/
 `http_status_code`, and the child's metrics adopted as worker evidence) onto the real job.
 Worker-level failures map as training preparation's do: a stopped worker is the job's stop, a
-memory-shaped worker failure (`isolated_worker_failure_is_memory`) is a 507 `memory_limit` with
-`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then is the grid built from
+memory-shaped worker failure (`worker_failure_is_memory`) is a 507 `memory_limit` with
+`worker_memory_detail`, and any other is a 500 `error`. Only then is the grid built from
 the file, by the job's solver session (step 7 and step 8 in process mode are the session's
 `build_and_solve` command; see "Solver sessions (OPT-W01)"). The explicit `thread` compatibility mode runs steps 2–7 on the
 setup thread against the real job (`_prepare_solver_frame`, then `_build_grid`), with the same

@@ -15,6 +15,7 @@ from haute._seed_plans import ListedSeed
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from tests._project import project_app, use_project
 from tests._workbench_helpers import form_table, workbench_project
+from tests._worker_http import raise_worker_http
 from tests.test_preview_snapshot_seeding import (
     _ROWS,
     _code,
@@ -438,12 +439,11 @@ def test_trace_of_column_projected_capture_executes_that_point(
 def test_an_expired_seed_plan_from_a_worker_is_a_conflict() -> None:
     from fastapi import HTTPException
 
-    import haute.routes.pipeline as pipeline
-    from haute._interactive_workers import InteractiveWorkerRemoteError
+    from haute._worker_failures import WorkerRemoteError
     from haute.errors import SeedPlanExpiredError
 
     payload = SeedPlanExpiredError(node_id="join").to_payload()
-    error = InteractiveWorkerRemoteError(
+    error = WorkerRemoteError(
         remote_type=SeedPlanExpiredError.__name__,
         remote_module=SeedPlanExpiredError.__module__,
         remote_message="expired",
@@ -453,7 +453,7 @@ def test_an_expired_seed_plan_from_a_worker_is_a_conflict() -> None:
     )
 
     with pytest.raises(HTTPException) as raised:
-        pipeline._raise_interactive_remote_http_error(error, operation="pipeline_trace")
+        raise_worker_http(error, operation="pipeline_trace")
 
     assert raised.value.status_code == 409
     assert raised.value.detail == payload

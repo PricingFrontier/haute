@@ -331,7 +331,7 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    source still materialises that source in full — so the admission gate is never simply
    relaxed here; the cap is what keeps the bundle build bounded. A `BatchScoreError` from
    the child (the group-by exceeded the cap, say) or any `IsolatedWorker*Error`
-   (including `IsolatedWorkerMemoryLimitUnsupportedError` on a host that cannot install a
+   (including `WorkerMemoryLimitUnsupportedError` on a host that cannot install a
    cap) raises `DeployError` naming the node and operator from the original rejection: the
    bundle could not prove the served batch path can produce the schema, and the deployed
    endpoint would fail the same way on every batch request. Every other rejection
@@ -582,8 +582,8 @@ searches the working directory too. Spawned batch workers inherit the parent's `
    every batch request while `/health` still advertised conservative execution. Under
    `required` enforcement a host that cannot install a cap instead answers each batch
    with the typed 507 `native_memory_cap_unavailable` (`run_isolated_worker` raises
-   `IsolatedWorkerMemoryLimitUnsupportedError`, mapped through
-   `isolated_worker_memory_detail`).
+   `WorkerMemoryLimitUnsupportedError`, mapped through
+   `worker_memory_detail`).
 2. `POST /quote` reads JSON through `_request_limits.read_limited_json_body` before
    constructing a `DataFrame`. A JSON object becomes a one-row request; a JSON array is
    used as the batch; any other JSON top-level value returns HTTP 400. A body Python cannot
@@ -640,11 +640,11 @@ searches the working directory too. Spawned batch workers inherit the parent's `
    `to_payload()` — the same mapping the live single-row path uses.
    `BatchScoreError` kinds `contract`/`bounded` → 422 (the child's
    payload, else the typed bounded envelope), `memory` → 507, `cancelled` → 499,
-   `error` → 500 `deploy_internal_error`; `IsolatedWorkerMemoryLimitExceededError`,
-   `IsolatedWorkerMemoryLimitUnsupportedError`, a crash whose exit code looks
+   `error` → 500 `deploy_internal_error`; `WorkerMemoryLimitError`,
+   `WorkerMemoryLimitUnsupportedError`, a crash whose exit code looks
    memory-bound, and a remote memory type → 507 carrying
-   `_worker_isolation.isolated_worker_memory_detail(exc, operation="deploy_quote",
-   memory_limit_bytes=plan.budget.memory_limit_bytes)`; `IsolatedWorkerTimeoutError` →
+   `_worker_isolation.worker_memory_detail(exc, operation="deploy_quote",
+   memory_limit_bytes=plan.budget.memory_limit_bytes)`; `WorkerTimeoutError` →
    504 `{"error_code": "deploy_batch_timeout", "operation": "deploy_quote",
    "timeout_seconds": ...}`; every other worker death → logged 500.
 6. An `Accept` header containing `application/x-ndjson` or `application/ndjson` selects
@@ -1027,14 +1027,14 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `DeployError` (request rows) | `_request_rows.py::check_lookups` (a checked side holding a join key twice, or a cross join's side not holding exactly one row; every failure in one error) and `copy_verified` (an artefact's bytes differ from the digest resolution recorded) | Propagates from `resolve_config()` or the bundle copy; the build fails. |
 | `QuoteAnswerRowsError` (`DeployError`, `error_code="quote_answer_rows"`, public fields `quotes`, `position` and `rows`) | `_request_rows.py::check_quote_answer`, called by `score_quote_by_quote` | A contract error: the batch child's `contract` kind and `/quote` → HTTP 422 with `to_payload()`; raised from the MLflow `pyfunc` predict. |
 | `RequestRowCountError` (`ExecutionError`, no public code) | `_request_rows.py::check_answer_rows`, called by `score_graph` and the batch child for a request answered in request order | The batch child's `error` kind → HTTP 500 `deploy_internal_error`; the live path's catch-all → HTTP 500; raised from the MLflow `pyfunc` predict. |
-| `DeployError` (capped schema dry-run) | `deploy/_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
+| `DeployError` (capped schema dry-run) | `deploy/_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`WorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
 | `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required`, or `required` on a host where `process_memory_caps_supported()` is `False` | Uncaught — the service refuses to start rather than failing every batch request. |
-| `IsolatedWorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
+| `WorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
 | `BatchScoreCleanupError` | `_batch_scoring.py::_remove_batch_temp_dir` (temp directory removal failed with no primary error in flight) | Caught in `_quote_batch`'s `finally`, logged `deploy_quote_batch_cleanup_failed` with the request id, replaces the computed response with HTTP 500 `deploy_internal_error` naming that id. With a primary error in flight it is attached to that error as a note instead. |
 | `BatchScoreError` | `_batch_scoring.py::accept_batch_outcome` (classified child failure, wrong outcome type, missing/unreadable/row-count-mismatched result parquet) | Caught in `_quote_batch` → 422 (`contract`/`bounded`), 507 (`memory`), 499 (`cancelled`), 500 (`error`). |
-| `IsolatedWorkerMemoryLimitExceededError` / `IsolatedWorkerMemoryLimitUnsupportedError` / memory-bound `IsolatedWorkerCrashedError` / memory-typed `IsolatedWorkerRemoteError` | `_worker_isolation.run_isolated_worker` supervising the batch child | Caught in `_quote_batch` → HTTP 507 with `isolated_worker_memory_detail(...)`. |
-| `IsolatedWorkerTimeoutError` | Batch worker exceeded `deploy_batch_timeout_seconds()` | Caught in `_quote_batch` → HTTP 504 `deploy_batch_timeout`. |
-| Any other `IsolatedWorkerError` | Batch worker supervision | Caught in `_quote_batch`, logged `deploy_quote_batch_failed` with the request id, HTTP 500 `deploy_internal_error` naming it. |
+| `WorkerMemoryLimitError` / `WorkerMemoryLimitUnsupportedError` / memory-bound `WorkerCrashedError` / memory-typed `WorkerRemoteError` | `_worker_isolation.run_isolated_worker` supervising the batch child | Caught in `_quote_batch` → HTTP 507 with `worker_memory_detail(...)`. |
+| `WorkerTimeoutError` | Batch worker exceeded `deploy_batch_timeout_seconds()` | Caught in `_quote_batch` → HTTP 504 `deploy_batch_timeout`. |
+| Any other `WorkerError` | Batch worker supervision | Caught in `_quote_batch`, logged `deploy_quote_batch_failed` with the request id, HTTP 500 `deploy_internal_error` naming it. |
 | Any other non-Haute `Exception` | Runtime scoring inside `/quote` (live path) or parent-side batch supervision in `_quote_batch` (typed execution and public-contract Haute errors are mapped to 499/507/422 above and never reach here) | Caught by the container's catch-all, logged by `_internal_error` as `deploy_quote_failed` (live) or `deploy_quote_batch_failed` (batch, after `BatchScorePlan.cleanup`) with the request id, returned as HTTP 500 with `error_code: "deploy_internal_error"`, a fixed message and the `request_id` the log line carries, never the exception's text. The MLflow `pyfunc` predict path has no equivalent catch-all. |
 
 `build_and_push_image` and `deploy_to_mlflow` both stage in `owned_build_dir`, which removes
@@ -1150,7 +1150,7 @@ what they cover:
   returns. `TestOutputSchemaConservativeFallback` covers the capped-worker schema
   fallback: a real spawn (nothing patched across the boundary) asserting exactly one
   `haute-deploy-batch` worker ran and the aggregated column's dtype came back, a provable
-  graph spawning nothing, and both failure mappings (`IsolatedWorkerMemoryLimitUnsupportedError`
+  graph spawning nothing, and both failure mappings (`WorkerMemoryLimitUnsupportedError`
   and a child `BatchScoreError`) surfacing as `DeployError`. `tests/test_deploy_internals.py` adds the two `resolve_config`
   cache-miss regressions (container target bundles the warning, Databricks refuses).
 - **`test_deploy_data_location.py`** — a project with its pipeline in `rating/`: a Parquet or

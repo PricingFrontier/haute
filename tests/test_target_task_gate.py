@@ -25,7 +25,11 @@ import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._worker_isolation import IsolatedWorkerCrashedError, IsolatedWorkerTimeoutError
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerTimeoutError,
+    exitcode_looks_memory_limited,
+)
 from haute._worker_protocol import (
     WORKER_USER_MESSAGE_FIELD,
     WorkerFailurePayload,
@@ -1101,12 +1105,12 @@ class TestWorkerBoundaryUserMessage:
         )
         assert outcome.terminal_reason == "contract_error"
         assert outcome.message == curated
-        assert "Isolated worker raised" not in outcome.message
+        assert "The worker raised" not in outcome.message
         # The typed wrapper text stays available for diagnostics.
-        assert outcome.fields["error"].startswith("Isolated worker raised ValueError:")
+        assert outcome.fields["error"].startswith("The worker raised ValueError:")
 
     def test_user_message_field_is_bounded_like_the_payload_message(self) -> None:
-        from haute._worker_protocol import WorkerProtocolError
+        from haute._worker_failures import WorkerProtocolError
 
         with pytest.raises(WorkerProtocolError, match="fields.user_message"):
             WorkerFailurePayload(
@@ -1150,7 +1154,7 @@ class TestWorkerBoundaryUserMessage:
             completed_fields=lambda result: {"result": result},
             completed_message="Completed",
         )
-        assert outcome.message == "Isolated worker raised KeyError: 'frame'"
+        assert outcome.message == "The worker raised KeyError: 'frame'"
 
     def test_child_error_text_survives_the_wrapper_overwrite(self) -> None:
         """The supervisor claims the "error" field for the typed wrapper text;
@@ -1173,25 +1177,27 @@ class TestWorkerBoundaryUserMessage:
             completed_message="Completed",
         )
         assert outcome.fields["worker_error"] == "raw child text with the real diagnostic detail"
-        assert outcome.fields["error"].startswith("Isolated worker raised RuntimeError")
+        assert outcome.fields["error"].startswith("The worker raised RuntimeError")
 
     @pytest.mark.parametrize(
         ("make_exc", "expected_fragment", "expected_reason"),
         [
             (
-                lambda: IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=None),
+                lambda: WorkerCrashedError(-9),
                 "stopped unexpectedly before returning a result",
                 "error",
             ),
             (
                 # SIGKILL under a configured cap: the OOM wording is hedged —
                 # the exit-code heuristic is indicative, not proof.
-                lambda: IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100),
+                lambda: WorkerCrashedError(
+                    -9, memory_limited=exitcode_looks_memory_limited(-9, 100)
+                ),
                 "may have run out of memory",
                 "memory_limited",
             ),
             (
-                lambda: IsolatedWorkerTimeoutError(timeout_seconds=30.0),
+                lambda: WorkerTimeoutError(timeout_seconds=30.0),
                 "exceeding its time limit of 30 seconds",
                 "timed_out",
             ),

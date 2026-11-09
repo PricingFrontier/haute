@@ -66,12 +66,6 @@ from haute._hashing import content_hash_bytes
 from haute._input_preparation import preparation_base_dir, snapshot_backed_inputs
 from haute._input_providers import source_cache_identity, source_signature
 from haute._interactive_workers import (
-    InteractiveWorkerBusyError,
-    InteractiveWorkerError,
-    InteractiveWorkerPreemptedError,
-    InteractiveWorkerRemoteError,
-    InteractiveWorkerStoppedError,
-    InteractiveWorkerTimeoutError,
     resolve_interactive_execution_mode,
     run_preemptible_in_interactive_worker,
 )
@@ -99,7 +93,16 @@ from haute._source_cache import SourceCacheStore
 from haute._submodel_instances import runtime_instance_id
 from haute._topo import canonical_topological_order
 from haute._types import GraphEdge, GraphNode, PipelineGraph
-from haute._worker_isolation import WorkerTerminalReason, resolve_worker_memory_enforcement
+from haute._worker_failures import (
+    WorkerBusyError,
+    WorkerError,
+    WorkerPreemptedError,
+    WorkerRemoteError,
+    WorkerStoppedError,
+    WorkerTerminalReason,
+    WorkerTimeoutError,
+)
+from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import diff_seed_nodes
 from haute.assistant._config import EgressPolicy
 from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS
@@ -822,7 +825,7 @@ async def _run_check(
         return _not_run(binding, "superseded", started)
     except ExecutionAdmissionError as exc:
         return _not_run(binding, "admission_refused", started, detail=exc.reason)
-    except InteractiveWorkerError as exc:
+    except WorkerError as exc:
         return _not_run(binding, _worker_failure_reason(exc), started)
     return _checked_result(
         binding, outcome, scope.nodes, excluded, started, inspection=scope.inspection
@@ -838,7 +841,7 @@ async def _admitted_check(
     """Admit one preview execution, then run the job pre-emptibly in the worker."""
     reason = stop.reason()
     if reason is not None:
-        raise InteractiveWorkerStoppedError(reason)
+        raise WorkerStoppedError(reason)
     context = create_admitted_execution_context(
         operation=DATA_CHECK_OPERATION,
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -870,21 +873,21 @@ _MEMORY_REMOTE_IDENTITIES = frozenset(
 )
 
 
-def _worker_failure_reason(exc: InteractiveWorkerError) -> NotRunReason:
+def _worker_failure_reason(exc: WorkerError) -> NotRunReason:
     """The not-run reason of a worker outcome; anything unexpected is logged as internal."""
-    if isinstance(exc, InteractiveWorkerBusyError):
+    if isinstance(exc, WorkerBusyError):
         return "worker_busy"
-    if isinstance(exc, InteractiveWorkerPreemptedError):
+    if isinstance(exc, WorkerPreemptedError):
         return "superseded_by_preview"
-    if isinstance(exc, InteractiveWorkerTimeoutError):
+    if isinstance(exc, WorkerTimeoutError):
         return "deadline"
-    if isinstance(exc, InteractiveWorkerStoppedError) and exc.terminal_reason in (
+    if isinstance(exc, WorkerStoppedError) and exc.terminal_reason in (
         "superseded",
         "cancelled",
     ):
         return "superseded" if exc.terminal_reason == "superseded" else "cancelled"
     if exc.terminal_reason == "memory_limited" or (
-        isinstance(exc, InteractiveWorkerRemoteError)
+        isinstance(exc, WorkerRemoteError)
         and (exc.remote_module, exc.remote_type) in _MEMORY_REMOTE_IDENTITIES
     ):
         return "memory_limited"

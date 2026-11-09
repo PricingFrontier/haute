@@ -911,7 +911,8 @@ class TestWorkerArtifacts:
 
     @_ESCAPES
     def test_a_staged_path(self, layout: tuple[Path, Path], escape: str) -> None:
-        from haute._worker_protocol import WorkerProtocolError, WorkerRuntime
+        from haute._worker_failures import WorkerProtocolError
+        from haute._worker_protocol import WorkerRuntime
 
         project, outside = layout
         root = self._root(project)
@@ -929,7 +930,8 @@ class TestWorkerArtifacts:
 
     @_ESCAPES
     def test_a_manifest_built_by_the_worker(self, layout: tuple[Path, Path], escape: str) -> None:
-        from haute._worker_protocol import WorkerProtocolError, build_artifact_manifest
+        from haute._worker_failures import WorkerProtocolError
+        from haute._worker_protocol import build_artifact_manifest
 
         project, outside = layout
         root = self._root(project)
@@ -949,9 +951,9 @@ class TestWorkerArtifacts:
     def test_a_manifest_the_parent_validates(self, layout: tuple[Path, Path], escape: str) -> None:
         import hashlib
 
+        from haute._worker_failures import WorkerProtocolError
         from haute._worker_protocol import (
             WorkerArtifactManifest,
-            WorkerProtocolError,
             WorkerResultManifest,
             build_artifact_manifest,
             validate_result_manifest,

@@ -17,10 +17,10 @@ import pytest
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import NativeMemoryLease, model_thread_address_space_allowance
 from haute._project_context import context_thread
-from haute._worker_isolation import IsolatedWorkerConfig, IsolatedWorkerError
+from haute._worker_failures import WorkerError, WorkerProtocolError
+from haute._worker_isolation import IsolatedWorkerConfig
 from haute._worker_protocol import (
     WorkerFailurePayload,
-    WorkerProtocolError,
     WorkerRemoteFailureError,
     WorkerRequest,
     WorkerResultManifest,
@@ -1191,7 +1191,7 @@ def test_a_killed_workers_out_of_core_scratch_goes_with_the_job_artifacts(
     tmp_path: Path, training_root: Path
 ) -> None:
     """MOD-M01: the parent's cleanup after a worker death removes the fit's directory."""
-    from haute._worker_isolation import IsolatedWorkerCrashedError
+    from haute._worker_failures import WorkerCrashedError
 
     scratch_dirs: list[Path] = []
 
@@ -1216,7 +1216,7 @@ def test_a_killed_workers_out_of_core_scratch_goes_with_the_job_artifacts(
         try:
             _inline_protocol_runner(function, request, **kwargs)
         except _Killed:
-            raise IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=None) from None
+            raise WorkerCrashedError(-9) from None
         raise AssertionError("the worker was not killed")
 
     store = JobStore()
@@ -2091,7 +2091,7 @@ def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
         )
 
     if allowance == "none":
-        with pytest.raises(IsolatedWorkerError):
+        with pytest.raises(WorkerError):
             run()
         return
     result = run()

@@ -280,10 +280,10 @@ platforms, and on Windows with long paths on, nothing is renamed.
    tables, removing the build's scratch directory as it reconciles) raises the worker's
    failure, then retires its tables itself.
 8. Worker failure classification maps the child's own exception type name carried by
-   `IsolatedWorkerRemoteError.remote_type` first: `NativeMemoryLimitUnsupportedError` /
+   `WorkerRemoteError.remote_type` first: `NativeMemoryLimitUnsupportedError` /
    `NativeMemoryLimitCleanupError` are `cap_unavailable`, and `PathTooLongError` is
    `path_too_long`. It then uses
-   `isolated_worker_failure_is_memory` and the worker's terminal reason to choose
+   `worker_failure_is_memory` and the worker's terminal reason to choose
    `memory_limited`, `cancelled`, `timed_out`, or `build_failed`. An in-process build's
    failure is `path_too_long` when `path_too_long_error` finds one behind it, after a
    cancellation or a `MemoryError`. Each reason code carries
@@ -331,7 +331,7 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    worker failure maps onto the job lifecycle (`memory_limited`, `cancelled`, `timed_out`,
    or `error` with `cap_unavailable`/`build_failed`/`path_too_long`), after
    `reconcile_unpublished` has settled the build's parent-chosen generation and staging.
-   `cap_unavailable` (`isolated_worker_failure_is_cap_unavailable`: under `required`, the
+   `cap_unavailable` (`worker_failure_is_cap_unavailable`: under `required`, the
    spawn refused for a host without the cap, or the child could not install it) is decided
    before the memory outcomes, which would otherwise claim it; its message says the host
    could not install the cap and names `HAUTE_WORKER_MEMORY_ENFORCEMENT=best_effort`, which
@@ -351,7 +351,7 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
 4. A host without a native memory cap (macOS) runs every build, of either class, in the
    same worker, supervised rather than capped: its unset worker memory policy is
    `best_effort`, so the parent's RSS watchdog stops the child past the admitted limit
-   (`IsolatedWorkerMemoryLimitExceededError` → `memory_limited`). No explicit build runs
+   (`WorkerMemoryLimitError` → `memory_limited`). No explicit build runs
    in the server process on any host.
 
 ### Snapshot publication

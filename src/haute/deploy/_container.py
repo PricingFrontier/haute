@@ -460,17 +460,16 @@ from haute.deploy._request_limits import (
     deploy_quote_request_body_limit_bytes,
     read_limited_json_body,
 )
-from haute._worker_isolation import (
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerMemoryLimitUnsupportedError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerTimeoutError,
-    isolated_worker_failure_is_memory,
-    isolated_worker_memory_detail,
-    process_memory_caps_supported,
-    resolve_worker_memory_enforcement,
+from haute._worker_isolation import process_memory_caps_supported, resolve_worker_memory_enforcement
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerError,
+    WorkerMemoryLimitError,
+    WorkerMemoryLimitUnsupportedError,
+    WorkerRemoteError,
+    WorkerTimeoutError,
+    worker_failure_is_memory,
+    worker_memory_detail,
 )
 from haute.deploy._batch_scoring import (
     BatchScoreCleanupError,
@@ -843,18 +842,18 @@ async def _quote_batch(request: Request, rows: list):
     except BatchScoreError as exc:
         response = _batch_error_response(request, exc)
     except (
-        IsolatedWorkerMemoryLimitExceededError,
-        IsolatedWorkerMemoryLimitUnsupportedError,
+        WorkerMemoryLimitError,
+        WorkerMemoryLimitUnsupportedError,
     ) as exc:
         response = JSONResponse(
             status_code=507,
-            content=isolated_worker_memory_detail(
+            content=worker_memory_detail(
                 exc,
                 operation="deploy_quote",
                 memory_limit_bytes=plan.budget.memory_limit_bytes,
             ),
         )
-    except IsolatedWorkerTimeoutError:
+    except WorkerTimeoutError:
         logger.exception("deploy_quote_batch_timed_out")
         response = JSONResponse(
             status_code=504,
@@ -864,11 +863,11 @@ async def _quote_batch(request: Request, rows: list):
                 "timeout_seconds": deploy_batch_timeout_seconds(),
             }},
         )
-    except (IsolatedWorkerCrashedError, IsolatedWorkerRemoteError) as exc:
-        if isolated_worker_failure_is_memory(exc):
+    except (WorkerCrashedError, WorkerRemoteError) as exc:
+        if worker_failure_is_memory(exc):
             response = JSONResponse(
                 status_code=507,
-                content=isolated_worker_memory_detail(
+                content=worker_memory_detail(
                     exc,
                     operation="deploy_quote",
                     memory_limit_bytes=plan.budget.memory_limit_bytes,
@@ -876,7 +875,7 @@ async def _quote_batch(request: Request, rows: list):
             )
         else:
             response = _internal_error(request, "deploy_quote_batch_failed")
-    except IsolatedWorkerError:
+    except WorkerError:
         response = _internal_error(request, "deploy_quote_batch_failed")
     except Exception:
         # Same contract as the live path: an unexpected parent-side failure is

@@ -53,11 +53,7 @@ from haute._flatten import flatten_executable_graph
 from haute._graph_utils import (
     upstream_node_ids,
 )
-from haute._interactive_workers import (
-    InteractiveWorkerError,
-    InteractiveWorkerStoppedError,
-    resolve_interactive_execution_mode,
-)
+from haute._interactive_workers import resolve_interactive_execution_mode
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
 from haute._pipeline_settings import project_pipeline_settings
@@ -73,15 +69,14 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
-from haute._worker_isolation import (
-    IsolatedWorkerError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
-    isolated_worker_failure_is_memory,
-    isolated_worker_memory_detail,
-    run_isolated_worker,
-    worker_config_for_memory_policy,
+from haute._worker_failures import (
+    WorkerError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
+    worker_failure_is_memory,
+    worker_memory_detail,
 )
+from haute._worker_isolation import run_isolated_worker, worker_config_for_memory_policy
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
@@ -1553,7 +1548,7 @@ class OptimiserSolveService:
                 on_progress=on_progress,
                 cancellation_token=execution_token,
             )
-        except InteractiveWorkerStoppedError as exc:
+        except WorkerStoppedError as exc:
             logger.info("solve_session_stopped", job_id=job_id)
             self._record_stop(job_id, exc.terminal_reason, start_time=start_time)
         except SessionCommandError as exc:
@@ -1572,7 +1567,7 @@ class OptimiserSolveService:
                 },
                 elapsed_seconds=time.monotonic() - start_time,
             )
-        except InteractiveWorkerError as exc:
+        except WorkerError as exc:
             self._record_solve_setup_failure(
                 job_id,
                 ServiceFailedError(f"The optimiser's solver process could not run: {exc}"),
@@ -1910,16 +1905,16 @@ class OptimiserSolveService:
         )
         try:
             return run_isolated_worker(function, request, budget, config=worker_config)
-        except IsolatedWorkerStoppedError as exc:
+        except WorkerStoppedError as exc:
             raise BackgroundJobStoppedError(job_id, exc.terminal_reason) from None
-        except IsolatedWorkerTimeoutError:
+        except WorkerTimeoutError:
             if on_timeout is None:
                 raise RuntimeError("An optimiser worker without a timeout timed out") from None
             raise on_timeout() from None
-        except IsolatedWorkerError as exc:
-            if isolated_worker_failure_is_memory(exc):
+        except WorkerError as exc:
+            if worker_failure_is_memory(exc):
                 raise InsufficientMemoryError(
-                    isolated_worker_memory_detail(
+                    worker_memory_detail(
                         exc,
                         operation=budget.operation,
                         memory_limit_bytes=budget.memory_limit_bytes,

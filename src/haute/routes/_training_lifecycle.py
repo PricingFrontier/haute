@@ -36,22 +36,20 @@ from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import context_thread, current_project
 from haute._seed_plans import open_seed_plan
 from haute._types import NodeType, PipelineGraph
+from haute._worker_failures import (
+    WorkerError,
+    WorkerProtocolError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
+    worker_failure_is_memory,
+    worker_memory_detail,
+)
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
-    IsolatedWorkerError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
-    isolated_worker_failure_is_memory,
-    isolated_worker_memory_detail,
     run_isolated_worker,
     worker_config_for_memory_policy,
 )
-from haute._worker_protocol import (
-    WorkerProgressEvent,
-    WorkerProtocolError,
-    WorkerRequest,
-    WorkerResultManifest,
-)
+from haute._worker_protocol import WorkerProgressEvent, WorkerRequest, WorkerResultManifest
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
@@ -1630,16 +1628,16 @@ class TrainService:
                         budget,
                         config=replace(worker_config, timeout_seconds=remaining),
                     )
-                except IsolatedWorkerStoppedError:
+                except WorkerStoppedError:
                     self._discard_prepared_parquet(job_id, tmp_parquet)
                     raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
-                except IsolatedWorkerTimeoutError:
+                except WorkerTimeoutError:
                     raise timed_out() from None
-                except IsolatedWorkerError as exc:
+                except WorkerError as exc:
                     self._discard_prepared_parquet(job_id, tmp_parquet)
-                    if isolated_worker_failure_is_memory(exc):
+                    if worker_failure_is_memory(exc):
                         refusal = InsufficientMemoryError(
-                            isolated_worker_memory_detail(
+                            worker_memory_detail(
                                 exc,
                                 operation=budget.operation,
                                 memory_limit_bytes=budget.memory_limit_bytes,

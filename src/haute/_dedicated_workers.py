@@ -40,17 +40,7 @@ from typing import Any, Literal, cast
 
 from haute._cpu_performance import configure_process_high_qos
 from haute._execution_context import ExecutionCancellationToken
-from haute._interactive_workers import (
-    InteractiveWorkerCrashedError,
-    InteractiveWorkerError,
-    InteractiveWorkerMemoryLimitError,
-    InteractiveWorkerProtocolError,
-    InteractiveWorkerStartError,
-    InteractiveWorkerStoppedError,
-    InteractiveWorkerTimeoutError,
-    failure_evidence,
-    remote_error_from_evidence,
-)
+from haute._interactive_workers import failure_evidence, remote_error_from_evidence
 from haute._logging import get_logger
 from haute._native_memory_limit import (
     JOB_OBJECT_MSG_JOB_MEMORY_LIMIT,
@@ -68,9 +58,18 @@ from haute._polars_utils import current_streaming_chunk_size, set_streaming_chun
 from haute._process_memory import process_rss_bytes
 from haute._project_context import current_project, project_scope
 from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
-from haute._worker_isolation import (
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerError,
+    WorkerMemoryLimitError,
+    WorkerProtocolError,
+    WorkerStartError,
+    WorkerStoppedError,
     WorkerTerminalReason,
-    _exitcode_looks_memory_limited,
+    WorkerTimeoutError,
+    exitcode_looks_memory_limited,
+)
+from haute._worker_isolation import (
     _terminate_process,
     create_worker_queue,
     start_process_with_environment,
@@ -126,7 +125,7 @@ class CommandCap:
         )
 
 
-class DedicatedWorkerDeadError(InteractiveWorkerError):
+class WorkerDeadError(WorkerError):
     """A command was sent to a worker that has already died."""
 
     def __init__(self, death: WorkerDeath) -> None:
@@ -425,7 +424,7 @@ class DedicatedWorker:
         """Spawn the child and wait until it is ready; registered before it is spawned."""
         with _REGISTRY_LOCK:
             if _SHUTTING_DOWN:
-                raise InteractiveWorkerStartError(
+                raise WorkerStartError(
                     "The server is shutting down; no new worker can start.",
                     terminal_reason="cancelled",
                 )
@@ -455,7 +454,7 @@ class DedicatedWorker:
             # concurrent terminate then either stops the spawn or sees its pid.
             with self._state_lock:
                 if self._death is not None:
-                    raise InteractiveWorkerStoppedError(
+                    raise WorkerStoppedError(
                         cast(WorkerTerminalReason, self._death.reason or "cancelled")
                     )
                 self._process = process
@@ -463,12 +462,12 @@ class DedicatedWorker:
                     process, {"POLARS_MAX_THREADS": str(self._polars_threads)}
                 )
             self._wait_for_ready(start_timeout_seconds, stop_reason)
-        except InteractiveWorkerError:
+        except WorkerError:
             self.terminate("error")
             raise
         except BaseException as exc:
             self.terminate("error")
-            raise InteractiveWorkerStartError(
+            raise WorkerStartError(
                 f"Failed to start dedicated worker {self._process_name}: {exc}",
                 terminal_reason="error",
             ) from exc
@@ -484,20 +483,19 @@ class DedicatedWorker:
             if stop_reason is not None:
                 reason = stop_reason()
                 if reason is not None:
-                    raise InteractiveWorkerStoppedError(reason)
+                    raise WorkerStoppedError(reason)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise InteractiveWorkerTimeoutError(timeout_seconds)
+                raise WorkerTimeoutError(timeout_seconds)
             try:
                 raw_ready = self._result_queue.get(timeout=min(_POLL_INTERVAL_SECONDS, remaining))
             except queue.Empty:
                 if not process.is_alive():
-                    raise InteractiveWorkerCrashedError(process.exitcode) from None
+                    raise WorkerCrashedError(process.exitcode) from None
                 continue
             if pickle.loads(raw_ready) != ("ready", process.pid):
-                raise InteractiveWorkerProtocolError(
+                raise WorkerProtocolError(
                     "Dedicated worker returned an invalid ready envelope",
-                    terminal_reason="contract_error",
                 )
             return
 
@@ -521,7 +519,7 @@ class DedicatedWorker:
         command to stop through the cancel cell and never ends the worker; the
         command decides what stopping means (see :func:`on_command_cancel`). A
         remote exception is raised as
-        ``InteractiveWorkerRemoteError`` and leaves the worker running, unless it
+        ``WorkerRemoteError`` and leaves the worker running, unless it
         is memory-shaped: then the worker's state is suspect and it is
         terminated, recording its death. A crash, stop, timeout or RSS-watchdog
         breach also ends the worker; its :attr:`death` carries the evidence.
@@ -534,7 +532,7 @@ class DedicatedWorker:
             raise RuntimeError("A dedicated worker runs one command at a time")
         try:
             if self._death is not None:
-                raise DedicatedWorkerDeadError(self._death)
+                raise WorkerDeadError(self._death)
             process = cast(BaseProcess, self._process)
             evidence = cast(LimitEvidenceCounter, self._evidence)
             command_id = uuid.uuid4().hex
@@ -558,9 +556,8 @@ class DedicatedWorker:
             try:
                 serialised = pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)
             except BaseException as exc:
-                raise InteractiveWorkerProtocolError(
+                raise WorkerProtocolError(
                     f"Dedicated worker request is not serialisable: {exc}",
-                    terminal_reason="contract_error",
                 ) from exc
             rss_limit: int | None = None
             if growth_bytes is not None:
@@ -610,12 +607,10 @@ class DedicatedWorker:
                 cancel_requested = cancel_cell.request(command_id)
             death = self._death
             if death is not None:
-                raise InteractiveWorkerStoppedError(
-                    cast(WorkerTerminalReason, death.reason or "cancelled")
-                )
+                raise WorkerStoppedError(cast(WorkerTerminalReason, death.reason or "cancelled"))
             if deadline is not None and time.monotonic() >= deadline:
                 self._die("timed_out", evidence="none", reason="timed_out")
-                raise InteractiveWorkerTimeoutError(cast(float, timeout_seconds))
+                raise WorkerTimeoutError(cast(float, timeout_seconds))
             try:
                 raw_result = self._result_queue.get(timeout=_POLL_INTERVAL_SECONDS)
             except queue.Empty:
@@ -640,23 +635,23 @@ class DedicatedWorker:
                     # Terminated deliberately while we polled: a stop, not a crash.
                     continue
                 exit_code = process.exitcode
-                heuristic = _exitcode_looks_memory_limited(exit_code, growth_bytes)
+                heuristic = exitcode_looks_memory_limited(exit_code, growth_bytes)
                 confirmed = self._limit_recorded(evidence_before)
                 evidence: MemoryEvidence = (
                     "cap_confirmed" if confirmed else "suspected" if heuristic else "none"
                 )
                 self._die("crashed", evidence=evidence, exit_code=exit_code)
-                raise InteractiveWorkerCrashedError(exit_code, memory_limited=evidence != "none")
+                raise WorkerCrashedError(exit_code, memory_limited=evidence != "none")
             if stop_reason is not None:
                 reason = stop_reason()
                 if reason is not None:
                     self._die("stopped", evidence="none", reason=reason)
-                    raise InteractiveWorkerStoppedError(reason)
+                    raise WorkerStoppedError(reason)
             if rss_limit is not None:
                 rss = process_rss_bytes(cast(int, process.pid))
                 if rss is not None and rss > rss_limit:
                     self._die("watchdog", evidence="watchdog", reason="memory_limited")
-                    raise InteractiveWorkerMemoryLimitError(rss_bytes=rss, limit_bytes=rss_limit)
+                    raise WorkerMemoryLimitError(rss_bytes=rss, rss_limit_bytes=rss_limit)
 
     def _interpret_result(
         self, command_id: str, raw_result: Any, *, evidence_before: int | None
@@ -665,9 +660,8 @@ class DedicatedWorker:
             envelope = pickle.loads(raw_result)
         except BaseException as exc:
             self._die("crashed", evidence="none")
-            raise InteractiveWorkerProtocolError(
+            raise WorkerProtocolError(
                 f"Dedicated worker returned an unreadable result: {exc}",
-                terminal_reason="contract_error",
             ) from exc
         if (
             not isinstance(envelope, tuple)
@@ -677,9 +671,8 @@ class DedicatedWorker:
             or envelope[2] not in {"ok", "error"}
         ):
             self._die("crashed", evidence="none")
-            raise InteractiveWorkerProtocolError(
+            raise WorkerProtocolError(
                 "Dedicated worker returned a malformed or stale result envelope",
-                terminal_reason="contract_error",
             )
         _kind, _command_id, status, payload, cap = envelope
         self.last_cap = cap if isinstance(cap, CommandCap) else None
@@ -687,7 +680,7 @@ class DedicatedWorker:
             return payload
         try:
             error = remote_error_from_evidence(payload)
-        except InteractiveWorkerProtocolError:
+        except WorkerProtocolError:
             self._die("crashed", evidence="none")
             raise
         remote_type = error.remote_type

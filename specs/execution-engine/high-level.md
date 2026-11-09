@@ -818,13 +818,13 @@ successful run does no extra work.
   pipeline.
 - **Isolated-worker failures are reclassified into typed errors** rather than leaking
   raw `multiprocessing` exit codes: a remote Python exception becomes
-  `IsolatedWorkerRemoteError` (`memory_limited` when the child found it a `MemoryError`,
+  `WorkerRemoteError` (`memory_limited` when the child found it a `MemoryError`,
   the one memory rule every worker parent applies), a process that exits without a result payload becomes
-  `IsolatedWorkerCrashedError` (with a `terminal_reason="memory_limited"` guess when
+  `WorkerCrashedError` (with a `terminal_reason="memory_limited"` guess when
   the exit code looks like `SIGKILL`/`SIGABRT`, the Windows fail-fast status
   `0xC0000409` a native allocation failure exits with, or the Windows stack-overflow status
   `0xC00000FD` a refused stack commit exits with, under a configured memory cap), a
-  timeout becomes `IsolatedWorkerTimeoutError`, and a failure while the parent tears
+  timeout becomes `WorkerTimeoutError`, and a failure while the parent tears
   the child down is attached to the primary worker failure with `add_note()` rather
   than replacing it or raising a second exception.
 - **Worker memory enforcement is hard and fail-closed wherever the host can install a

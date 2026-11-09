@@ -31,7 +31,8 @@
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name from an owner and, from an instance, the instance's sanitised name (one output) or `<instance>_<port>` (several), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `resolve_orig_source_names`, and edge-id construction (`_edge_id`, the injective four-field encoding the browser's `edgeId` mints identically; frontend-graph-canvas, Failure model). |
-| `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state; the shared supervisor helpers `isolated_worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a remote exception the child found to be a memory error or whose native cap was unavailable) and `isolated_worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit) that the Data Output writer, training preparation, and the deployed batch path all map their 507 outcomes through. |
+| `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; it raises the `_worker_failures.py` family for every terminal state. |
+| `src/haute/_worker_failures.py` | The one worker-failure family every worker mechanism raises — the one-shot isolated worker, the warm interactive pool, the dedicated worker and the version-1 job transport: `WorkerError` (its `terminal_reason` the job's end state) and `WorkerStartError`, `WorkerHostError`, `WorkerRemoteError` (type, module, message, traceback, the child's curated public payload, whether it was a memory error), `WorkerCrashedError`, `WorkerTimeoutError`, `WorkerStoppedError`, `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`, `WorkerTerminationError`, `WorkerProtocolError`, `WorkerBusyError` and `WorkerPreemptedError`; `remote_failure_terminal_reason()` and `exitcode_looks_memory_limited()`, the two rules every parent classifies a child's end by; and the shared supervisor helpers `worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a remote exception the child found to be a memory error or whose native cap was unavailable) and `worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit). |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | The chunk-local classifiers only: the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists, admitting only chunk-proven operations; lazy execution's input-sliced write recipe (`_execute_lazy.py`) and trace edge alignment (`_trace_correlation.py`) use it. `classify_row_local_expression()` runs the same walk and argument guards over one expression in a row-semantics mode, admitting every operation the operation registry classes as row-local (and a `when` chained on a conditional) rather than only the chunk-proven ones; trace formula evaluation (`_expression_parser.py`) uses it. There is no chunk planner or runner. |
@@ -1225,10 +1226,10 @@ when a memory limit is configured) and attempts its native cap, then reports rea
 before it runs the job. The parent supervises that startup with `await_worker_ready`: the
 wait ends at `IsolatedWorkerConfig.startup_timeout_seconds` (default
 `WORKER_STARTUP_TIMEOUT_SECONDS`, 120 s), or the job's own earlier deadline, raising
-`IsolatedWorkerStartError` ("did not report ready") or the job's timeout; at the stop
+`WorkerStartError` ("did not report ready") or the job's timeout; at the stop
 reason; and the child's RSS must stay under `startup_rss_ceiling_bytes` (default
 `WORKER_STARTUP_RSS_CEILING_BYTES`, 1 GiB), or it is terminated with
-`IsolatedWorkerMemoryLimitExceededError` noting the startup ceiling. The heaviest supported
+`WorkerMemoryLimitError` noting the startup ceiling. The heaviest supported
 import set (Polars with CatBoost, LightGBM, XGBoost and the training worker) held 212 MiB
 after 3.8 s on a development host, which the defaults clear by about five and thirty
 times. Once the child is ready the parent samples its RSS as the watchdog's baseline
@@ -1238,7 +1239,7 @@ then it sets `go`. A failure the child reports before it is ready (a required ca
 not install, a preload it could not import) is its result, and no watchdog is armed; a
 child that ends without a word is classified as it would be after the job. Readiness never
 disables supervision: when the ready child's RSS cannot be sampled, a required limit
-without an address-space cap still fails with `IsolatedWorkerMemoryLimitUnsupportedError`.
+without an address-space cap still fails with `WorkerMemoryLimitUnsupportedError`.
 `NativeMemoryLease.baseline_bytes` is never read as RSS: it is address space under
 `RLIMIT_AS`, private commit under a Windows Job Object and cgroup usage under a cgroup.
 The warm pool and dedicated workers sample a child that is already warm and have no
@@ -1279,7 +1280,7 @@ a warm Windows worker retains an otherwise reusable Job Object handle. Native cg
 directories and Job Object handles are scoped to the
 worker and cleaned after exit. Cancellation or
 timeout terminates, escalates to kill, joins, and verifies death; a surviving child is
-`IsolatedWorkerTerminationError`, never reported as successful cancellation.
+`WorkerTerminationError`, never reported as successful cancellation.
 
 macOS exposes resource-limit symbols but does not provide a dependable hard
 per-process memory ceiling for this contract. Required mode therefore rejects it, and
@@ -1314,7 +1315,7 @@ while it waits, under the pool's state lock) and then submits to the index's cur
 slot, so a request that waited through a replacement submits to the replacement, which is
 installed while the job that ended the old worker still holds the lock. A request's
 `timeout_seconds` sets one deadline for its wait for the lock and its job alike: a wait
-still held at the deadline raises `InteractiveWorkerTimeoutError`, and the wait also ends
+still held at the deadline raises `WorkerTimeoutError`, and the wait also ends
 at the request's stop reason or the pool's shutdown, so a caller with no stop reason (the
 optimiser estimate) never waits unbounded. A worker is replaced only when its state is
 unknown or its memory was the failure: a timeout, a stop, a crash, a pre-emption, an RSS
@@ -1325,16 +1326,16 @@ request. A replacement that fails to start leaves the closed slot in place and i
 as a note on the error the request ends with; the next request on the index starts the
 slot again under its lock (`_current_slot`), so one failed start costs one request, not
 the slot for the server's life. `_start_slot` creates its queues and progress cell inside
-the guard that closes what it opened on any failure, an `IsolatedWorkerHostError`
+the guard that closes what it opened on any failure, an `WorkerHostError`
 included. The optimiser estimate route answers a worker that could not start, or a host
 that cannot start one, 503 with the reason, and a protocol failure an internal 500.
 `run_preemptible` (the assistant's data check) never waits and never starts the pool: it
-is refused at once (`InteractiveWorkerBusyError`) when the pool has not started, the lock
+is refused at once (`WorkerBusyError`) when the pool has not started, the lock
 is held or any interactive request is pending for the index, so a pre-empting request's
 handoff is reserved; it runs under one absolute deadline that bounds its submission, its
 result wait and its release acknowledgement; and while it runs, a pending interactive
 request marks it pre-empted, which stops and replaces its worker before the lock is
-released (`InteractiveWorkerPreemptedError`), so the waiting request runs next on the
+released (`WorkerPreemptedError`), so the waiting request runs next on the
 replacement. A stable, non-user-visible affinity digest maps the same
 graph/source lineage to the same slot so `_preview_cache` and trace cache hits survive
 between clicks. The server starts the pool after environment/project initialisation
@@ -1540,7 +1541,7 @@ errors may contribute an HTTP detail payload; an arbitrary exception that happen
 define `to_payload()` is still an internal 500 and cannot smuggle child data into a
 response. Three additional memory outcomes are classified from parent-side evidence
 and answered with a parent-authored, data-free 507 detail (never the child payload):
-an `InteractiveWorkerCrashedError` whose exit code looks memory-limited under a
+an `WorkerCrashedError` whose exit code looks memory-limited under a
 configured growth cap (the same `SIGKILL`/`SIGABRT`/Windows fail-fast/stack-overflow heuristic as one-shot workers,
 recorded as `terminal_reason="memory_limited"` on the exception), a remote error
 whose exact identity is `builtins.MemoryError`, and a remote
@@ -2902,8 +2903,8 @@ present a structural or schema result as execution evidence.
   Raised by every read, so admission refuses before context creation and every time
   limit, caching and cache-size consumer stops with it; the server's exception handler
   answers 409 with the message as `detail`, and a job records it as its error.
-- `IsolatedWorkerError` hierarchy (`_worker_isolation.py`) —
-  `IsolatedWorkerStartError` (process failed to start), `IsolatedWorkerRemoteError`
+- `WorkerError` hierarchy (`_worker_isolation.py`) —
+  `WorkerStartError` (process failed to start), `WorkerRemoteError`
   (child raised a Python exception; carries `remote_type`/`remote_message`/
   `remote_traceback` and `is_memory`, the child's own `isinstance(exc, MemoryError)`.
   `remote_failure_terminal_reason` is the one rule the one-shot, pool and dedicated
@@ -2912,7 +2913,7 @@ present a structural or schema result as execution evidence.
   (`ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`) `memory_limited`,
   anything else `error`; an exception caused by a path Windows refused for its length is
   reported as the `PathTooLongError` behind it, with the original traceback, see
-  [io-layer](../io-layer/low-level.md)), `IsolatedWorkerCrashedError` (child exited without a result;
+  [io-layer](../io-layer/low-level.md)), `WorkerCrashedError` (child exited without a result;
   reclassified to `terminal_reason="memory_limited"` when the exit code looks like
   `SIGKILL`/`SIGABRT`, or the Windows fail-fast status `0xC0000409` (exit code
   `3221226505`), under a configured cap. `SIGABRT` is deliberately kept in
@@ -2935,15 +2936,15 @@ present a structural or schema result as execution evidence.
   may-have-run-out-of-memory phrasing for the reclassified case (the exit-code
   heuristic is indicative, not proof), an unexpected-stop phrasing otherwise,
   each carrying the exit code when available; the code also stays on the
-  exception's `exitcode` attribute), `IsolatedWorkerTimeoutError` (parent
+  exception's `exitcode` attribute), `WorkerTimeoutError` (parent
   terminated a child that exceeded its timeout; its message is likewise
   parent-authored user-facing wording — a stopped-after-its-time-limit phrasing
   naming the limit, which also stays on `timeout_seconds`),
-  `IsolatedWorkerStoppedError` (parent-requested stop; raises `ValueError` if
+  `WorkerStoppedError` (parent-requested stop; raises `ValueError` if
   constructed with `terminal_reason="completed"`, which is not a valid stop reason),
-  `IsolatedWorkerMemoryLimitUnsupportedError` (neither a usable address-space cap nor
+  `WorkerMemoryLimitUnsupportedError` (neither a usable address-space cap nor
   observable child RSS is available for a required limit),
-  `IsolatedWorkerTerminationError` (the child remained alive after terminate
+  `WorkerTerminationError` (the child remained alive after terminate
   and kill attempts).
 - Other generic `ValueError`/`TypeError`/`RuntimeError` are used for internal-invariant
   violations that should never occur given the calling contract (e.g. a node
@@ -3337,11 +3338,11 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   a warmed preview cache returns the new rows after the
   source is rewritten, and the terminal payload's `input_preparation` records carry digests
   and counts only and validate through `ExecutionMetricsPayload`.
-- **`test_worker_isolation.py`** — the shared `isolated_worker_failure_is_memory` predicate over every worker outcome; picklable-result round-trip, remote-exception
+- **`test_worker_isolation.py`** — the shared `worker_failure_is_memory` predicate over every worker outcome; picklable-result round-trip, remote-exception
   reporting, live draining of a large result before child join (the pipe-feeder
   deadlock regression), crash-without-killing-parent, cleanup-on-failure, timeout,
   cooperative-stop, termination/kill escalation with a loud
-  `IsolatedWorkerTerminationError` if the child remains alive, memory-cap enforcement
+  `WorkerTerminationError` if the child remains alive, memory-cap enforcement
   (including the "unsupported on this platform" path), and the isolated-job-supervisor
   wrapper.
 - **`test_codegen_execution_equivalence.py`** — cross-checks that codegen-generated

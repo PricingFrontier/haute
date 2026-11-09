@@ -4586,7 +4586,7 @@ async def test_sink_route_releases_admission_before_isolated_timeout_returns(
     from fastapi import HTTPException
 
     from haute._execution_admission import IsolatedExecutionBudget
-    from haute._worker_isolation import IsolatedWorkerTimeoutError
+    from haute._worker_failures import WorkerTimeoutError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -4622,7 +4622,7 @@ async def test_sink_route_releases_admission_before_isolated_timeout_returns(
     )
 
     async def raise_timeout(*_args, **_kwargs):
-        raise IsolatedWorkerTimeoutError(timeout_seconds=0.01)
+        raise WorkerTimeoutError(timeout_seconds=0.01)
 
     monkeypatch.setattr(
         pipeline_route,
@@ -4664,7 +4664,7 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
     from fastapi import HTTPException
 
     from haute._execution_admission import IsolatedExecutionBudget
-    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute._worker_failures import WorkerStoppedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -4700,7 +4700,7 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
     )
 
     async def raise_cancelled(*_args, **_kwargs):
-        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+        raise WorkerStoppedError(terminal_reason="cancelled")
 
     monkeypatch.setattr(
         pipeline_route,
@@ -4740,7 +4740,7 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(
 ) -> None:
     from fastapi import HTTPException
 
-    from haute._worker_isolation import IsolatedWorkerTimeoutError
+    from haute._worker_failures import WorkerTimeoutError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -4766,7 +4766,7 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(
     )
 
     async def timed_out(*_args, **_kwargs):
-        raise IsolatedWorkerTimeoutError(timeout_seconds=0.05)
+        raise WorkerTimeoutError(timeout_seconds=0.05)
 
     fallback = Mock(side_effect=AssertionError("thread fallback must not run"))
     monkeypatch.setattr(pipeline_route, "run_cancellable_worker_transaction", timed_out)

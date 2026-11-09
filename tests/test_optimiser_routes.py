@@ -1745,17 +1745,15 @@ class TestEstimateRoute:
     ) -> None:
         """The warm pool's start, host and protocol failures are answered as such, never
         a bare internal error."""
-        import haute._interactive_workers as interactive
-        from haute._worker_isolation import IsolatedWorkerHostError
+        from haute._worker_failures import WorkerHostError, WorkerProtocolError, WorkerStartError
 
         errors = {
-            "start": interactive.InteractiveWorkerStartError(
+            "start": WorkerStartError(
                 "Failed to start interactive worker 0: not ready", terminal_reason="error"
             ),
-            "host": IsolatedWorkerHostError("the resource tracker died"),
-            "protocol": interactive.InteractiveWorkerProtocolError(
-                "Interactive worker returned a malformed result envelope",
-                terminal_reason="contract_error",
+            "host": WorkerHostError("the resource tracker died"),
+            "protocol": WorkerProtocolError(
+                "Interactive worker returned a malformed result envelope"
             ),
         }
 

@@ -507,13 +507,13 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    The parent maps the outcome: a `failure` transitions to its `terminal_reason` and raises
    the paired `RequestRefusedError`; a success whose `parquet_path` differs from the parent's, or
    whose file is missing or empty, is a 500 `error` ("Training preparation worker did not
-   produce its prepared data."); `IsolatedWorkerStoppedError` raises `ExecutionCancelledError`
+   produce its prepared data."); `WorkerStoppedError` raises `ExecutionCancelledError`
    (the outer branch reads the registry for cancelled vs. timed_out);
-   `IsolatedWorkerTimeoutError` records `timeout()` then raises it;
-   `IsolatedWorkerMemoryLimitExceededError`, `IsolatedWorkerMemoryLimitUnsupportedError`,
-   a crash whose exit code reads memory-limited, and an `IsolatedWorkerRemoteError` whose
+   `WorkerTimeoutError` records `timeout()` then raises it;
+   `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`,
+   a crash whose exit code reads memory-limited, and an `WorkerRemoteError` whose
    `remote_type` is a memory type become `memory_limited`/507 with
-   `src/haute/_worker_isolation.py::isolated_worker_memory_detail` labelled `budget.operation` — the
+   `src/haute/_worker_failures.py::worker_memory_detail` labelled `budget.operation` — the
    admitted context's own operation, so the dispersion flow (which admits
    `operation="dispersion_estimate"` and reuses this supervisor) is never mislabelled as
    `training_pipeline`; the child's own memory payload already carries it, since its context is

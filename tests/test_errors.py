@@ -351,11 +351,11 @@ class TestDocstringMatchesReality:
 
     def test_representative_domain_exceptions_root_at_stdlib(self):
         """Documents the real boundary the corrected docstring describes."""
-        from haute._worker_isolation import IsolatedWorkerError
+        from haute._worker_failures import WorkerError
         from haute.modelling._train_config import TrainingConfigError
 
-        assert not issubclass(IsolatedWorkerError, HauteError)
-        assert issubclass(IsolatedWorkerError, RuntimeError)
+        assert not issubclass(WorkerError, HauteError)
+        assert issubclass(WorkerError, RuntimeError)
         assert not issubclass(TrainingConfigError, HauteError)
         assert issubclass(TrainingConfigError, ValueError)
 

@@ -16,6 +16,7 @@ import polars as pl
 import pytest
 
 from tests._project import use_project
+from tests._worker_http import raise_worker_http
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
@@ -657,11 +658,10 @@ class TestErrorHandling:
         from fastapi import HTTPException
 
         import haute.errors
-        from haute._interactive_workers import InteractiveWorkerRemoteError
-        from haute.routes.pipeline import _raise_interactive_remote_http_error
+        from haute._worker_failures import WorkerRemoteError
 
         refused = getattr(haute.errors, refusal)("Worded any way at all.")
-        remote = InteractiveWorkerRemoteError(
+        remote = WorkerRemoteError(
             remote_type=refusal,
             remote_module="haute.errors",
             remote_message=str(refused),
@@ -671,7 +671,7 @@ class TestErrorHandling:
         )
 
         with pytest.raises(HTTPException) as answered:
-            _raise_interactive_remote_http_error(remote, operation="pipeline_trace")
+            raise_worker_http(remote, operation="pipeline_trace")
 
         assert answered.value.status_code == status
         assert answered.value.detail == "Worded any way at all."

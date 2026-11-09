@@ -371,10 +371,10 @@ def test_terminated_data_output_worker_leaves_no_capture_staging(
     project: Path, monkeypatch: pytest.MonkeyPatch, stopped: str, status_code: int
 ) -> None:
     from haute._data_points import DataPointResolver
-    from haute._worker_isolation import (
-        IsolatedWorkerMemoryLimitExceededError,
-        IsolatedWorkerStoppedError,
-        IsolatedWorkerTimeoutError,
+    from haute._worker_failures import (
+        WorkerMemoryLimitError,
+        WorkerStoppedError,
+        WorkerTimeoutError,
     )
 
     graph = _graph(project)
@@ -391,10 +391,10 @@ def test_terminated_data_output_worker_leaves_no_capture_staging(
         pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
         staged.append(artifact.directory)
         if stopped == "timed_out":
-            raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
+            raise WorkerTimeoutError(timeout_seconds=1.0)
         if stopped == "memory_limited":
-            raise IsolatedWorkerMemoryLimitExceededError(rss_bytes=2048, rss_limit_bytes=1024)
-        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            raise WorkerMemoryLimitError(rss_bytes=2048, rss_limit_bytes=1024)
+        raise WorkerStoppedError(terminal_reason="cancelled")
 
     _inline_worker(monkeypatch, child=staged_then_killed)
 
@@ -588,7 +588,7 @@ def test_cancelling_the_request_stops_parent_preparation(
     from types import SimpleNamespace
 
     from haute._execution_context import ExecutionContext, ExecutionProfile
-    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute._worker_failures import WorkerStoppedError
     from haute.errors import InputPreparationError
     from haute.routes._isolated_worker_async import WorkerCancellationGate
 
@@ -614,7 +614,7 @@ def test_cancelling_the_request_stops_parent_preparation(
         operation="pipeline_write_output", profile=ExecutionProfile.LAZY_SINK
     )
 
-    with pytest.raises(IsolatedWorkerStoppedError) as stopped:
+    with pytest.raises(WorkerStoppedError) as stopped:
         pipeline_route._output_write_transaction(
             PipelineGraph.model_validate(_graph(project)),
             "out",
@@ -663,7 +663,7 @@ def test_request_cancelled_while_preparation_succeeds_starts_no_worker(
 
     from haute._execution_admission import create_admitted_execution_context
     from haute._execution_context import ExecutionProfile
-    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute._worker_failures import WorkerStoppedError
     from haute.routes._isolated_worker_async import WorkerCancellationGate
 
     gate = WorkerCancellationGate()
@@ -680,7 +680,7 @@ def test_request_cancelled_while_preparation_succeeds_starts_no_worker(
         operation="pipeline_write_output", profile=ExecutionProfile.LAZY_SINK
     )
     try:
-        with pytest.raises(IsolatedWorkerStoppedError):
+        with pytest.raises(WorkerStoppedError):
             pipeline_route._output_write_transaction(
                 PipelineGraph.model_validate(_graph(project)),
                 "out",

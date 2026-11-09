@@ -14,23 +14,22 @@ from typing import Any
 import pytest
 
 from haute._project_context import current_project
-from haute._worker_isolation import (
-    IsolatedWorkerConfig,
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerStartError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
-    process_memory_caps_supported,
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerMemoryLimitError,
+    WorkerProtocolError,
+    WorkerRemoteError,
+    WorkerStartError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
 )
+from haute._worker_isolation import IsolatedWorkerConfig, process_memory_caps_supported
 from haute._worker_protocol import (
     WORKER_MAX_EVENTS,
     WorkerArtifactManifest,
     WorkerFailurePayload,
     WorkerProgressEnd,
     WorkerProgressEvent,
-    WorkerProtocolError,
     WorkerRemoteFailureError,
     WorkerRequest,
     WorkerResultManifest,
@@ -714,7 +713,7 @@ def test_termination_helper_rejects_a_process_that_remains_alive(
             return True
 
     monkeypatch.setattr(_worker_protocol, "_terminate_process", lambda process: None)
-    with pytest.raises(_worker_protocol.WorkerProcessTerminationError):
+    with pytest.raises(_worker_protocol.WorkerTerminationError):
         _worker_protocol._terminate_and_confirm(StuckProcess())
 
 
@@ -921,7 +920,7 @@ def test_a_worker_that_never_started_has_no_cgroup_to_remove(
 
     monkeypatch.setattr(multiprocessing.context.SpawnProcess, "start", refuse_start)
 
-    with pytest.raises(IsolatedWorkerStartError, match="spawn refused"):
+    with pytest.raises(WorkerStartError, match="spawn refused"):
         run_worker_protocol(
             _worker_recording_pid,
             _request(),
@@ -1020,7 +1019,7 @@ def test_a_failing_queue_close_is_a_note_on_the_primary_error(
 
     monkeypatch.setattr(multiprocessing.queues.Queue, "close", failing_close)
 
-    with pytest.raises(IsolatedWorkerRemoteError, match="child failed") as raised:
+    with pytest.raises(WorkerRemoteError, match="child failed") as raised:
         run_worker_protocol(
             _failing_worker,
             _request(),
@@ -1065,7 +1064,7 @@ def test_a_failed_process_cleanup_is_a_note_on_the_primary_error(
 
 
 def test_child_failure_is_typed(tmp_path: Path) -> None:
-    with pytest.raises(IsolatedWorkerRemoteError, match="child failed"):
+    with pytest.raises(WorkerRemoteError, match="child failed"):
         run_worker_protocol(
             _failing_worker,
             _request(),
@@ -1091,7 +1090,7 @@ def test_transported_failure_preserves_reason_and_fields(tmp_path: Path) -> None
 
 def test_timeout_and_cancel_clean_up_process(tmp_path: Path) -> None:
     name = "haute-test-stopped-protocol-worker"
-    with pytest.raises(IsolatedWorkerTimeoutError):
+    with pytest.raises(WorkerTimeoutError):
         run_worker_protocol(
             _slow_worker,
             _request(),
@@ -1105,7 +1104,7 @@ def test_timeout_and_cancel_clean_up_process(tmp_path: Path) -> None:
             ),
         )
     assert _live_workers(name) == []
-    with pytest.raises(IsolatedWorkerStoppedError) as exc_info:
+    with pytest.raises(WorkerStoppedError) as exc_info:
         run_worker_protocol(
             _slow_worker,
             _request(),
@@ -1125,7 +1124,7 @@ def test_timeout_and_cancel_clean_up_process(tmp_path: Path) -> None:
 def test_worker_crash_is_contained_and_runs_parent_cleanup(tmp_path: Path) -> None:
     name = "haute-test-crashed-protocol-worker"
 
-    with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         run_worker_protocol(
             _crash_worker,
             _request(),
@@ -1169,7 +1168,7 @@ def test_a_protocol_worker_without_a_native_cap_is_stopped_past_its_budget(
 ) -> None:
     from tests import _spawned_without_native_cap as fixture
 
-    with pytest.raises(IsolatedWorkerMemoryLimitExceededError):
+    with pytest.raises(WorkerMemoryLimitError):
         run_worker_protocol(
             fixture.allocate_in_protocol,
             WorkerRequest("grows", "training", {"mib": 400, "hold_seconds": 5.0}),
@@ -1186,7 +1185,7 @@ def test_a_protocol_worker_that_never_reports_ready_fails_and_is_cleaned_up(
     from tests import _spawned_slow_import as fixture
 
     started = time.monotonic()
-    with pytest.raises(IsolatedWorkerStartError, match="did not report ready"):
+    with pytest.raises(WorkerStartError, match="did not report ready"):
         run_worker_protocol(
             fixture.never_runs,
             WorkerRequest("hangs", "training", {}),

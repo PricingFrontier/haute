@@ -5064,7 +5064,7 @@ async def test_a_newer_free_code_request_for_the_node_stops_the_older(
                     assert time.monotonic() < deadline
                     time.sleep(0.01)
                 reasons.append(reason)
-                raise workers_module.InteractiveWorkerStoppedError(reason)
+                raise workers_module.WorkerStoppedError(reason)
             return function()
 
     monkeypatch.setattr(workers_module, "interactive_worker_pool", _Pool)

@@ -4797,7 +4797,7 @@ class TestDispersionErrorPaths:
     def test_dispersion_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it(
         self, client, nb_training_data, monkeypatch
     ):
-        from haute._worker_isolation import IsolatedWorkerTimeoutError
+        from haute._worker_failures import WorkerTimeoutError
         from haute.schemas import DispersionEstimateRequest
 
         graph = _make_negbinomial_graph(nb_training_data)
@@ -4830,7 +4830,7 @@ class TestDispersionErrorPaths:
 
         # Deadline is enforced via isolated worker timeout
         def standin_worker(*_args: object, **_kwargs: object) -> None:
-            raise IsolatedWorkerTimeoutError(timeout_seconds=60.0)
+            raise WorkerTimeoutError(timeout_seconds=60.0)
 
         threads: list[object] = []
         orig_launch = service._launch_dispersion_background

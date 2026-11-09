@@ -49,13 +49,7 @@ from haute._execution_context import (
 from haute._flatten import flatten_with_form_tables
 from haute._graph_utils import edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
-from haute._interactive_workers import (
-    InteractiveWorkerError,
-    InteractiveWorkerStoppedError,
-    InteractiveWorkerTimeoutError,
-    resolve_interactive_execution_mode,
-    run_in_interactive_worker,
-)
+from haute._interactive_workers import resolve_interactive_execution_mode, run_in_interactive_worker
 from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._node_specs import STRUCTURAL_NODE_TYPES, WORKBENCH_NODE_TYPES, node_spec
@@ -76,6 +70,7 @@ from haute._user_exec import user_code_line
 from haute._validation_error import HauteValidationError
 from haute._workbench_config import WorkbenchError
 from haute._workbench_tables import WorkbenchTablesError
+from haute._worker_failures import WorkerError, WorkerStoppedError, WorkerTimeoutError
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (
     CommittedVerificationError,
@@ -1911,11 +1906,11 @@ async def _run_column_profile(
 
 
 def _profile_worker_failure(
-    exc: InteractiveWorkerError | SupersededRequestError,
+    exc: WorkerError | SupersededRequestError,
 ) -> dict[str, object]:
     """Report a preview-worker outcome with a parent-authored, data-free message."""
 
-    if isinstance(exc, InteractiveWorkerError) and exc.terminal_reason == "memory_limited":
+    if isinstance(exc, WorkerError) and exc.terminal_reason == "memory_limited":
         return _error(
             "profile_unavailable",
             "Profiling this frame exceeded the preview memory budget. Profile a frame "
@@ -1923,7 +1918,7 @@ def _profile_worker_failure(
         )
     if isinstance(
         exc,
-        InteractiveWorkerTimeoutError | InteractiveWorkerStoppedError | SupersededRequestError,
+        WorkerTimeoutError | WorkerStoppedError | SupersededRequestError,
     ):
         return _error("profile_unavailable", str(exc))
     logger.error(
@@ -1968,7 +1963,7 @@ async def column_profiles(
                 "A newer column profile in this assistant session replaced this one."
             ),
         )
-    except (InteractiveWorkerError, SupersededRequestError) as exc:
+    except (WorkerError, SupersededRequestError) as exc:
         return _profile_worker_failure(exc)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         # Naming a failure's columns can resolve schemas, which runs the engine.

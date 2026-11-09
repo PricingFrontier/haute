@@ -704,10 +704,10 @@ def test_training_leaves_no_checkpoint_directory(
 def test_terminated_training_worker_leaves_no_capture_staging(
     project: Path, monkeypatch: pytest.MonkeyPatch, stopped: str
 ) -> None:
-    from haute._worker_isolation import (
-        IsolatedWorkerMemoryLimitExceededError,
-        IsolatedWorkerStoppedError,
-        IsolatedWorkerTimeoutError,
+    from haute._worker_failures import (
+        WorkerMemoryLimitError,
+        WorkerStoppedError,
+        WorkerTimeoutError,
     )
 
     graph = _chain(project)
@@ -721,10 +721,10 @@ def test_terminated_training_worker_leaves_no_capture_staging(
         pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
         staged.append(artifact.directory)
         if stopped == "timed_out":
-            raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
+            raise WorkerTimeoutError(timeout_seconds=1.0)
         if stopped == "memory_limited":
-            raise IsolatedWorkerMemoryLimitExceededError(rss_bytes=2048, rss_limit_bytes=1024)
-        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            raise WorkerMemoryLimitError(rss_bytes=2048, rss_limit_bytes=1024)
+        raise WorkerStoppedError(terminal_reason="cancelled")
 
     run = _train(monkeypatch, graph, child=staged_then_killed)
 

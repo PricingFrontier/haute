@@ -21,13 +21,14 @@ from haute._execution_context import (
     ExecutionCancellationToken,
     ExecutionContext,
 )
-from haute._worker_isolation import (
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerMemoryLimitUnsupportedError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerMemoryLimitError,
+    WorkerMemoryLimitUnsupportedError,
+    WorkerRemoteError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
+    exitcode_looks_memory_limited,
 )
 from haute.routes import _training_lifecycle
 from haute.routes._job_store import JobStore
@@ -463,7 +464,7 @@ class TestWorkerExceptionMapping:
         run = _drive_preparation(
             monkeypatch,
             _training_graph(training_parquet),
-            worker=_raising_worker(IsolatedWorkerStoppedError(terminal_reason="cancelled")),
+            worker=_raising_worker(WorkerStoppedError(terminal_reason="cancelled")),
         )
 
         job = run.job
@@ -481,7 +482,7 @@ class TestWorkerExceptionMapping:
         run = _drive_preparation(
             monkeypatch,
             _training_graph(training_parquet),
-            worker=_raising_worker(IsolatedWorkerTimeoutError(timeout_seconds=600.0)),
+            worker=_raising_worker(WorkerTimeoutError(timeout_seconds=600.0)),
         )
 
         job = run.job
@@ -493,13 +494,15 @@ class TestWorkerExceptionMapping:
     @pytest.mark.parametrize(
         "exc",
         [
-            IsolatedWorkerMemoryLimitExceededError(
+            WorkerMemoryLimitError(
                 rss_bytes=_MEMORY_LIMIT_BYTES + 1,
                 rss_limit_bytes=_MEMORY_LIMIT_BYTES,
             ),
-            IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=_MEMORY_LIMIT_BYTES),
-            IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=_MEMORY_LIMIT_BYTES),
-            IsolatedWorkerRemoteError(
+            WorkerMemoryLimitUnsupportedError(memory_limit_bytes=_MEMORY_LIMIT_BYTES),
+            WorkerCrashedError(
+                -9, memory_limited=exitcode_looks_memory_limited(-9, _MEMORY_LIMIT_BYTES)
+            ),
+            WorkerRemoteError(
                 remote_type="MemoryError",
                 remote_message="out of memory",
                 remote_traceback="",
@@ -535,8 +538,8 @@ class TestWorkerExceptionMapping:
     @pytest.mark.parametrize(
         "exc",
         [
-            IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=None),
-            IsolatedWorkerRemoteError(
+            WorkerCrashedError(1),
+            WorkerRemoteError(
                 remote_type="ValueError",
                 remote_message="bad frame",
                 remote_traceback="",
@@ -926,7 +929,7 @@ class TestDispersionWorkerMemoryOperation:
         )
 
         def raising(function, *args, config=None, **kwargs):
-            raise IsolatedWorkerMemoryLimitExceededError(
+            raise WorkerMemoryLimitError(
                 rss_bytes=_MEMORY_LIMIT_BYTES + 1,
                 rss_limit_bytes=_MEMORY_LIMIT_BYTES,
             )

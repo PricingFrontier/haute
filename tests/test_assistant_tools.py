@@ -667,7 +667,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
                     assert time.monotonic() < deadline
                     time.sleep(0.01)
                 reasons.append(reason)
-                raise workers_module.InteractiveWorkerStoppedError(reason)
+                raise workers_module.WorkerStoppedError(reason)
 
         monkeypatch.setattr(workers_module, "interactive_worker_pool", _Pool)
         call = asyncio.ensure_future(

@@ -68,13 +68,8 @@ from haute._source_cache import (
     new_staging_token,
 )
 from haute._types import PipelineGraph
-from haute._worker_isolation import (
-    IsolatedWorkerError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerRemoteError,
-    run_isolated_worker,
-    worker_config_for_memory_policy,
-)
+from haute._worker_failures import WorkerError, WorkerMemoryLimitError, WorkerRemoteError
+from haute._worker_isolation import run_isolated_worker, worker_config_for_memory_policy
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ContractMismatchError,
@@ -1244,11 +1239,11 @@ class NodeDataService:
                 fields=fields,
                 elapsed_seconds=elapsed,
             )
-        elif isinstance(exc, (ExecutionCancelledError, IsolatedWorkerError)):
+        elif isinstance(exc, (ExecutionCancelledError, WorkerError)):
             reason = token.terminal_reason or (
-                exc.terminal_reason if isinstance(exc, IsolatedWorkerError) else "cancelled"
+                exc.terminal_reason if isinstance(exc, WorkerError) else "cancelled"
             )
-            if isinstance(exc, IsolatedWorkerRemoteError):
+            if isinstance(exc, WorkerRemoteError):
                 logger.error(
                     "node_data_worker_failed",
                     job_id=job_id,
@@ -1259,14 +1254,14 @@ class NodeDataService:
                 message = _INTERNAL_ERROR_DETAIL
                 transition_fields: dict[str, Any] = {"error": _INTERNAL_ERROR_DETAIL}
             else:
-                message = str(exc) if isinstance(exc, IsolatedWorkerError) else f"{label} {reason}"
+                message = str(exc) if isinstance(exc, WorkerError) else f"{label} {reason}"
                 transition_fields = {}
             if reason == "memory_limited":
                 # A worker the parent killed over its RSS limit reports the same
                 # error code as one that reported the limit itself.
                 transition_fields["error"] = message
                 transition_fields["error_code"] = "memory_limit"
-                if isinstance(exc, IsolatedWorkerMemoryLimitExceededError):
+                if isinstance(exc, WorkerMemoryLimitError):
                     transition_fields["error_detail"] = {
                         "error_code": "memory_limit",
                         "rss_bytes": exc.rss_bytes,

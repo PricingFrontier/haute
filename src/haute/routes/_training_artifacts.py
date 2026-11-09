@@ -25,11 +25,8 @@ from haute._artifact_housekeeping import (
 )
 from haute._env import int_env
 from haute._logging import get_logger
-from haute._worker_protocol import (
-    WorkerArtifactManifest,
-    WorkerProtocolError,
-    WorkerResultManifest,
-)
+from haute._worker_failures import WorkerProtocolError
+from haute._worker_protocol import WorkerArtifactManifest, WorkerResultManifest
 from haute.errors import GoneError
 from haute.modelling._evaluation import (
     EvaluationPlan,

@@ -62,16 +62,15 @@ from haute._source_cache import (
     SourceCacheStore,
 )
 from haute._types import NodeType
-from haute._worker_isolation import (
-    IsolatedWorkerConfig,
-    IsolatedWorkerRemoteError,
+from haute._worker_failures import (
+    WorkerRemoteError,
     WorkerTerminalReason,
-    isolated_worker_failure_is_cap_unavailable,
-    isolated_worker_failure_is_memory,
-    isolated_worker_failure_is_path_too_long,
-    isolated_worker_memory_detail,
-    run_isolated_worker,
+    worker_failure_is_cap_unavailable,
+    worker_failure_is_memory,
+    worker_failure_is_path_too_long,
+    worker_memory_detail,
 )
+from haute._worker_isolation import IsolatedWorkerConfig, run_isolated_worker
 from haute.errors import ConfigError
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -510,7 +509,7 @@ def _worker_build_failure(
     token: Any,
 ) -> _WorkerBuildError:
     """Map one worker failure onto this job's terminal lifecycle state."""
-    if isolated_worker_failure_is_cap_unavailable(exc):
+    if worker_failure_is_cap_unavailable(exc):
         # Not a memory outcome: nothing ran, because the cap could not be installed.
         return _WorkerBuildError(
             terminal="error",
@@ -522,7 +521,7 @@ def _worker_build_failure(
             error_code="cap_unavailable",
             phase="failed",
         )
-    if isolated_worker_failure_is_memory(exc):
+    if worker_failure_is_memory(exc):
         return _WorkerBuildError(
             terminal="memory_limited",
             message=(
@@ -534,7 +533,7 @@ def _worker_build_failure(
             phase="failed",
             fields={
                 "error": str(exc),
-                "error_detail": isolated_worker_memory_detail(
+                "error_detail": worker_memory_detail(
                     exc,
                     operation=budget.operation,
                     memory_limit_bytes=budget.memory_limit_bytes,
@@ -562,7 +561,7 @@ def _worker_build_failure(
         phase="failed",
         diagnostic=(
             (exc.remote_type, exc.remote_message)
-            if isinstance(exc, IsolatedWorkerRemoteError)
+            if isinstance(exc, WorkerRemoteError)
             else (type(exc).__name__, str(exc))
         ),
     )
@@ -570,7 +569,7 @@ def _worker_build_failure(
 
 def _build_failure(exc: BaseException) -> tuple[str, str]:
     """The message and error code of a build that failed, neither naming a path."""
-    if isolated_worker_failure_is_path_too_long(exc):
+    if worker_failure_is_path_too_long(exc):
         return PATH_TOO_LONG_REMEDIATION, "path_too_long"
     return "Input snapshot build failed.", "build_failed"
 

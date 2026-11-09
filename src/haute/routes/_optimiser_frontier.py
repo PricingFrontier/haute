@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Protocol, cast
 
-from haute._dedicated_workers import DedicatedWorkerDeadError
+from haute._dedicated_workers import WorkerDeadError
 from haute._execution_admission import (
     ExecutionAdmissionError,
     WorkEstimate,
@@ -29,13 +29,13 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._interactive_workers import InteractiveWorkerError
 from haute._logging import get_logger
 from haute._polars_utils import streaming_collect
 from haute._price_contour import price_contour
 from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_point_apply_peak_bytes
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY
 from haute._types import SolveResultLike
+from haute._worker_failures import WorkerError
 from haute.errors import (
     ConflictError,
     GoneError,
@@ -992,13 +992,13 @@ class OptimiserFrontierService:
             )
         except SessionCommandError as exc:
             raise RequestRefusedError(exc.detail, status_code=exc.http_status_code) from None
-        except DedicatedWorkerDeadError:
+        except WorkerDeadError:
             raise GoneError(
                 _runtime_gone_detail(self._store.require_job(job_id), point_index)
             ) from None
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise InsufficientMemoryError(exc.to_payload()) from None
-        except InteractiveWorkerError as exc:
+        except WorkerError as exc:
             logger.error(
                 "frontier_point_session_failed",
                 job_id=job_id,

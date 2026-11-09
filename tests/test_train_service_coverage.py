@@ -28,12 +28,8 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._project_context import context_thread
-from haute._worker_protocol import (
-    WorkerArtifactManifest,
-    WorkerProgressEvent,
-    WorkerProtocolError,
-    WorkerResultManifest,
-)
+from haute._worker_failures import WorkerProtocolError
+from haute._worker_protocol import WorkerArtifactManifest, WorkerProgressEvent, WorkerResultManifest
 from haute.errors import BoundedMemoryUnsupportedError, PreambleError, RequestRefusedError
 from haute.projection import AllExcept
 from haute.routes._job_store import JobStore

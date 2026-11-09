@@ -1347,7 +1347,7 @@ async def test_slow_binding_delayed_dispatch_and_a_starting_worker_end_at_the_de
         monkeypatch.setattr(pool, "_start_slot", slow_start)
         timing_out = context_thread(
             lambda: pytest.raises(
-                workers.InteractiveWorkerTimeoutError,
+                workers.WorkerTimeoutError,
                 pool.run,
                 hold_worker,
                 60.0,
@@ -1570,8 +1570,8 @@ def test_each_worker_outcome_maps_to_one_not_run_reason(make: str, reason: str) 
     import haute._interactive_workers as workers
     from haute._execution_context import ExecutionMemoryLimitExceededError
 
-    def remote(error: type[BaseException]) -> workers.InteractiveWorkerRemoteError:
-        return workers.InteractiveWorkerRemoteError(
+    def remote(error: type[BaseException]) -> workers.WorkerRemoteError:
+        return workers.WorkerRemoteError(
             remote_type=error.__name__,
             remote_module=error.__module__,
             remote_message="private",
@@ -1580,17 +1580,17 @@ def test_each_worker_outcome_maps_to_one_not_run_reason(make: str, reason: str) 
             is_memory=issubclass(error, MemoryError),
         )
 
-    errors: dict[str, workers.InteractiveWorkerError] = {
-        "busy": workers.InteractiveWorkerBusyError("held"),
-        "preempted": workers.InteractiveWorkerPreemptedError(),
-        "timeout": workers.InteractiveWorkerTimeoutError(30.0),
-        "superseded": workers.InteractiveWorkerStoppedError("superseded"),
-        "cancelled": workers.InteractiveWorkerStoppedError("cancelled"),
-        "rss": workers.InteractiveWorkerMemoryLimitError(rss_bytes=2, limit_bytes=1),
-        "crash_memory": workers.InteractiveWorkerCrashedError(-9, memory_limited=True),
+    errors: dict[str, workers.WorkerError] = {
+        "busy": workers.WorkerBusyError("held"),
+        "preempted": workers.WorkerPreemptedError(),
+        "timeout": workers.WorkerTimeoutError(30.0),
+        "superseded": workers.WorkerStoppedError("superseded"),
+        "cancelled": workers.WorkerStoppedError("cancelled"),
+        "rss": workers.WorkerMemoryLimitError(rss_bytes=2, rss_limit_bytes=1),
+        "crash_memory": workers.WorkerCrashedError(-9, memory_limited=True),
         "remote_budget": remote(ExecutionMemoryLimitExceededError),
         "remote_other": remote(ValueError),
-        "crash": workers.InteractiveWorkerCrashedError(1),
+        "crash": workers.WorkerCrashedError(1),
     }
 
     assert data_check._worker_failure_reason(errors[make]) == reason

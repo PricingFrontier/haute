@@ -26,20 +26,21 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, Final, TypeVar
 
-from haute._dedicated_workers import DedicatedWorker, DedicatedWorkerDeadError, WorkerDeath
+from haute._dedicated_workers import DedicatedWorker, WorkerDeadError, WorkerDeath
 from haute._env import float_env, int_env
 from haute._execution_admission import admit_growth_grant
 from haute._execution_context import ExecutionCancellationToken, ExecutionProfile
-from haute._interactive_workers import (
-    InteractiveWorkerError,
-    InteractiveWorkerRemoteError,
-    InteractiveWorkerStoppedError,
-    InteractiveWorkerTimeoutError,
-)
 from haute._logging import get_logger
 from haute._native_memory_limit import model_thread_address_space_allowance
 from haute._step_progress import StepProgress
-from haute._worker_isolation import WorkerTerminalReason, resolve_worker_memory_enforcement
+from haute._worker_failures import (
+    WorkerError,
+    WorkerRemoteError,
+    WorkerStoppedError,
+    WorkerTerminalReason,
+    WorkerTimeoutError,
+)
+from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.routes._job_store import JobStore
 from haute.routes._memory_messages import solver_session_memory_message
 
@@ -63,7 +64,7 @@ _SLOT_POLL_SECONDS = 0.05
 _DEFAULT_RESULT_MAX_BYTES = 64 * 1024 * 1024
 
 
-def _is_library_cancel(exc: InteractiveWorkerRemoteError) -> bool:
+def _is_library_cancel(exc: WorkerRemoteError) -> bool:
     """Whether a remote error is price-contour's ``Cancelled`` (OPT-PC02)."""
     return exc.remote_type == "Cancelled" and exc.remote_module == "price_contour"
 
@@ -168,15 +169,15 @@ class SolverSession:
             if stop_reason is not None:
                 reason = stop_reason()
                 if reason is not None:
-                    raise InteractiveWorkerStoppedError(reason)
+                    raise WorkerStoppedError(reason)
             if deadline is not None and time.monotonic() >= deadline:
-                raise InteractiveWorkerTimeoutError(float(timeout_seconds or 0.0))
+                raise WorkerTimeoutError(float(timeout_seconds or 0.0))
         try:
             if on_slot is not None:
                 on_slot()
             with self._state_lock:
                 if self._closing:
-                    raise DedicatedWorkerDeadError(
+                    raise WorkerDeadError(
                         WorkerDeath(
                             kind="terminated",
                             exit_code=None,
@@ -253,19 +254,19 @@ class SolverSession:
                     max_result_bytes=_session_result_max_bytes(),
                     cancellation_token=cancellation_token,
                 )
-            except (InteractiveWorkerStoppedError, InteractiveWorkerTimeoutError):
+            except (WorkerStoppedError, WorkerTimeoutError):
                 raise
-            except InteractiveWorkerRemoteError as exc:
+            except WorkerRemoteError as exc:
                 if _is_library_cancel(exc) and cancellation_token is not None:
                     if cancellation_token.cancelled:
                         # The command stopped on its owner's cancel; the session lives on.
                         cancellation_token.throw_if_cancelled(operation, job_id=self.job_id)
                 raise self._command_failure(exc, operation=operation, grant=grant) from exc
-            except InteractiveWorkerError as exc:
+            except WorkerError as exc:
                 raise self._command_failure(exc, operation=operation, grant=grant) from exc
             if self._closing:
                 # Detached while it ran (expiry, clearing): its runtime is gone.
-                raise DedicatedWorkerDeadError(
+                raise WorkerDeadError(
                     WorkerDeath(
                         kind="terminated", exit_code=None, memory_evidence="none", reason="expired"
                     )
@@ -284,7 +285,7 @@ class SolverSession:
             context.release_admission()
 
     def _command_failure(
-        self, exc: InteractiveWorkerError, *, operation: str, grant: int
+        self, exc: WorkerError, *, operation: str, grant: int
     ) -> SessionCommandError:
         death = self._worker.death
         stage = self.stage

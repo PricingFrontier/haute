@@ -17,23 +17,26 @@ import pytest
 
 import haute._worker_isolation as isolation
 from haute._project_context import context_thread, current_project
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerHostError,
+    WorkerMemoryLimitError,
+    WorkerMemoryLimitUnsupportedError,
+    WorkerRemoteError,
+    WorkerStartError,
+    WorkerStoppedError,
+    WorkerTerminationError,
+    WorkerTimeoutError,
+    exitcode_looks_memory_limited,
+    worker_failure_is_cap_unavailable,
+    worker_failure_is_memory,
+)
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerHostError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerMemoryLimitUnsupportedError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerStartError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTerminationError,
-    IsolatedWorkerTimeoutError,
     _create_worker_rss_watchdog,
     _terminate_process,
     create_worker_queue,
     ensure_spawnable_interpreter,
-    isolated_worker_failure_is_cap_unavailable,
-    isolated_worker_failure_is_memory,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
@@ -216,7 +219,7 @@ def test_server_shutdown_cancels_a_running_job_and_leaves_no_worker(
         assert elapsed < server._JOB_SHUTDOWN_TIMEOUT_SECONDS
         assert workers_left == []
         assert job["status"] == "cancelled"
-        assert job["worker_error_class"] == "IsolatedWorkerStoppedError"
+        assert job["worker_error_class"] == "WorkerStoppedError"
     finally:
         # Without the shutdown under test, the worker would sleep on past this test.
         registry.cancel(job_id)
@@ -362,7 +365,7 @@ def test_worker_cancellation_gate_rejects_publication_after_cancellation() -> No
     assert not gate.is_set()
     gate.request()
     assert gate.is_set()
-    with pytest.raises(IsolatedWorkerStoppedError) as exc_info:
+    with pytest.raises(WorkerStoppedError) as exc_info:
         with gate.publication_guard():
             raise AssertionError("publication body must not run")
 
@@ -407,7 +410,7 @@ async def test_cancellable_worker_transaction_drains_before_reraising_cancellati
             time.sleep(0.001)
         time.sleep(0.01)
         finalized.set()
-        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+        raise WorkerStoppedError(terminal_reason="cancelled")
 
     task = asyncio.create_task(
         run_cancellable_worker_transaction(transaction, task_name="test-supervisor")
@@ -451,7 +454,7 @@ async def test_cancellable_worker_transaction_tolerates_repeated_task_cancellati
             time.sleep(0.001)
         cancellation_observed.set()
         assert release.wait(timeout=1.0)
-        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+        raise WorkerStoppedError(terminal_reason="cancelled")
 
     task = asyncio.create_task(
         run_cancellable_worker_transaction(transaction, task_name="test-supervisor")
@@ -509,7 +512,7 @@ async def test_cancellable_worker_transaction_notes_non_cancelled_stop() -> None
         started.set()
         while not gate.is_set():
             time.sleep(0.001)
-        raise IsolatedWorkerStoppedError(terminal_reason="superseded")
+        raise WorkerStoppedError(terminal_reason="superseded")
 
     task = asyncio.create_task(
         run_cancellable_worker_transaction(transaction, task_name="test-supervisor")
@@ -563,7 +566,7 @@ async def test_run_isolated_worker_async_propagates_route_cancellation(
         started.set()
         while config.stop_reason() is None:
             time.sleep(0.001)
-        raise IsolatedWorkerStoppedError(terminal_reason=config.stop_reason() or "missing")
+        raise WorkerStoppedError(terminal_reason=config.stop_reason() or "missing")
 
     monkeypatch.setattr("haute.routes._isolated_worker_async.run_isolated_worker", fake_run)
     task = asyncio.create_task(
@@ -611,14 +614,15 @@ def test_every_parent_reports_a_child_memory_refusal_as_memory_limited(
 ) -> None:
     """ROAD-WORKER-07: ExecutionAdmissionError and ExecutionMemoryLimitExceededError
     are MemoryErrors, so each parent reports them as memory, whatever their names."""
-    from haute._interactive_workers import InteractiveWorkerPool, InteractiveWorkerRemoteError
+    from haute._interactive_workers import InteractiveWorkerPool
+    from haute._worker_failures import WorkerRemoteError
 
     if parent == "one_shot":
-        with pytest.raises(IsolatedWorkerRemoteError) as raised:
+        with pytest.raises(WorkerRemoteError) as raised:
             run_isolated_worker(_raise_memory_refusal, kind)
-        assert isolated_worker_failure_is_memory(raised.value)
+        assert worker_failure_is_memory(raised.value)
     elif parent == "protocol":
-        with pytest.raises(IsolatedWorkerRemoteError) as raised:
+        with pytest.raises(WorkerRemoteError) as raised:
             run_worker_protocol(
                 _memory_refusal_protocol_worker,
                 WorkerRequest("memory", "test", {"kind": kind}),
@@ -626,11 +630,11 @@ def test_every_parent_reports_a_child_memory_refusal_as_memory_limited(
                 artifact_kinds=frozenset(),
                 max_artifact_size_bytes=0,
             )
-        assert isolated_worker_failure_is_memory(raised.value)
+        assert worker_failure_is_memory(raised.value)
     else:
         pool = InteractiveWorkerPool(size=1, polars_threads=2)
         try:
-            with pytest.raises(InteractiveWorkerRemoteError) as raised:
+            with pytest.raises(WorkerRemoteError) as raised:
                 pool.run(_raise_memory_refusal, kind, affinity_key="memory", timeout_seconds=120)
         finally:
             pool.close()
@@ -642,12 +646,12 @@ def test_every_parent_reports_a_child_memory_refusal_as_memory_limited(
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [
-        (IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100), True),
-        (IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
-        (IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100), True),
-        (IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100), False),
+        (WorkerMemoryLimitError(rss_bytes=200, rss_limit_bytes=100), True),
+        (WorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
+        (WorkerCrashedError(-9, memory_limited=exitcode_looks_memory_limited(-9, 100)), True),
+        (WorkerCrashedError(1, memory_limited=exitcode_looks_memory_limited(1, 100)), False),
         (
-            IsolatedWorkerRemoteError(
+            WorkerRemoteError(
                 remote_type="MemoryError",
                 remote_message="out of memory",
                 remote_traceback="traceback",
@@ -656,7 +660,7 @@ def test_every_parent_reports_a_child_memory_refusal_as_memory_limited(
             True,
         ),
         (
-            IsolatedWorkerRemoteError(
+            WorkerRemoteError(
                 remote_type="NativeMemoryLimitUnsupportedError",
                 remote_message="unsupported",
                 remote_traceback="traceback",
@@ -665,7 +669,7 @@ def test_every_parent_reports_a_child_memory_refusal_as_memory_limited(
             True,
         ),
         (
-            IsolatedWorkerRemoteError(
+            WorkerRemoteError(
                 remote_type="ValueError",
                 remote_message="bad value",
                 remote_traceback="traceback",
@@ -673,7 +677,7 @@ def test_every_parent_reports_a_child_memory_refusal_as_memory_limited(
             ),
             False,
         ),
-        (IsolatedWorkerTimeoutError(timeout_seconds=1.0), False),
+        (WorkerTimeoutError(timeout_seconds=1.0), False),
         (RuntimeError("generic"), False),
     ],
 )
@@ -682,11 +686,11 @@ def test_isolated_worker_failure_is_memory_classifies_every_worker_outcome(
     expected: bool,
 ) -> None:
     """Every supervisor maps worker failures to 507 through one shared predicate."""
-    assert isolated_worker_failure_is_memory(failure) is expected
+    assert worker_failure_is_memory(failure) is expected
 
 
-def _remote(remote_type: str, *, is_memory: bool = False) -> IsolatedWorkerRemoteError:
-    return IsolatedWorkerRemoteError(
+def _remote(remote_type: str, *, is_memory: bool = False) -> WorkerRemoteError:
+    return WorkerRemoteError(
         remote_type=remote_type,
         remote_message="message",
         remote_traceback="traceback",
@@ -697,12 +701,12 @@ def _remote(remote_type: str, *, is_memory: bool = False) -> IsolatedWorkerRemot
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [
-        (IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
+        (WorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
         (_remote("NativeMemoryLimitUnsupportedError"), True),
         (_remote("NativeMemoryLimitCleanupError"), True),
         (_remote("MemoryError", is_memory=True), False),
-        (IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100), False),
-        (IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100), False),
+        (WorkerMemoryLimitError(rss_bytes=200, rss_limit_bytes=100), False),
+        (WorkerCrashedError(-9, memory_limited=exitcode_looks_memory_limited(-9, 100)), False),
         (RuntimeError("generic"), False),
     ],
 )
@@ -711,7 +715,7 @@ def test_isolated_worker_failure_is_cap_unavailable_only_for_a_cap_the_host_cann
     expected: bool,
 ) -> None:
     """A missing cap is told apart from running out of memory, which also claims it."""
-    assert isolated_worker_failure_is_cap_unavailable(failure) is expected
+    assert worker_failure_is_cap_unavailable(failure) is expected
 
 
 def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
@@ -741,7 +745,7 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
     ("failure", "expected"),
     [
         (
-            IsolatedWorkerRemoteError(
+            WorkerRemoteError(
                 remote_type="PathTooLongError",
                 remote_message="too long",
                 remote_traceback="traceback",
@@ -750,7 +754,7 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
             True,
         ),
         (
-            IsolatedWorkerRemoteError(
+            WorkerRemoteError(
                 remote_type="FileNotFoundError",
                 remote_message="missing",
                 remote_traceback="traceback",
@@ -761,11 +765,13 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
         (RuntimeError("generic"), False),
     ],
 )
-def test_isolated_worker_failure_is_path_too_long_reads_the_childs_exception(
+def test_worker_failure_is_path_too_long_reads_the_childs_exception(
     failure: BaseException,
     expected: bool,
 ) -> None:
-    assert isolation.isolated_worker_failure_is_path_too_long(failure) is expected
+    from haute._worker_failures import worker_failure_is_path_too_long
+
+    assert worker_failure_is_path_too_long(failure) is expected
 
 
 def test_isolated_worker_environment_reaches_the_child_only() -> None:
@@ -907,7 +913,7 @@ def test_start_failure_preserves_typed_error(
         lambda _method: FakeContext(),
     )
 
-    with pytest.raises(IsolatedWorkerStartError, match="spawn unavailable"):
+    with pytest.raises(WorkerStartError, match="spawn unavailable"):
         run_isolated_worker(_return_payload, 1, 2)
 
 
@@ -999,7 +1005,7 @@ def test_one_shot_rejects_queued_payload_when_child_exits_nonzero(
         "haute._worker_isolation._wait_for_worker", lambda *_args, **_kwargs: ("ok", 7)
     )
 
-    with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         run_isolated_worker(lambda: 7)
 
     assert exc_info.value.exitcode == 23
@@ -1051,7 +1057,7 @@ def test_one_shot_notes_native_cleanup_failure_without_masking_remote_error(
         lambda _pid: (_ for _ in ()).throw(OSError("cgroup cleanup failed")),
     )
 
-    with pytest.raises(IsolatedWorkerRemoteError, match="bad") as exc_info:
+    with pytest.raises(WorkerRemoteError, match="bad") as exc_info:
         run_isolated_worker(lambda: 7)
 
     assert (
@@ -1073,12 +1079,12 @@ def test_terminate_process_fails_loudly_when_child_survives_kill() -> None:
         def is_alive(self) -> bool:
             return True
 
-    with pytest.raises(IsolatedWorkerTerminationError):
+    with pytest.raises(WorkerTerminationError):
         _terminate_process(StuckProcess())  # type: ignore[arg-type]
 
 
 def test_isolated_worker_reports_remote_exception() -> None:
-    with pytest.raises(IsolatedWorkerRemoteError) as exc_info:
+    with pytest.raises(WorkerRemoteError) as exc_info:
         run_isolated_worker(_raise_value_error, "bad input")
 
     assert exc_info.value.terminal_reason == "error"
@@ -1088,7 +1094,7 @@ def test_isolated_worker_reports_remote_exception() -> None:
 
 
 def test_isolated_worker_reports_crash_without_killing_parent() -> None:
-    with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         run_isolated_worker(_crash_process, 23)
 
     assert exc_info.value.terminal_reason == "error"
@@ -1104,7 +1110,7 @@ def _live_workers(process_name: str) -> list[object]:
 
 def test_timeout_terminates_worker() -> None:
     name = "haute-test-timed-out-worker"
-    with pytest.raises(IsolatedWorkerTimeoutError) as exc_info:
+    with pytest.raises(WorkerTimeoutError) as exc_info:
         run_isolated_worker(
             _sleep_for,
             5.0,
@@ -1117,7 +1123,7 @@ def test_timeout_terminates_worker() -> None:
 
 def test_stop_reason_terminates_worker_and_preserves_reason() -> None:
     name = "haute-test-stopped-worker"
-    with pytest.raises(IsolatedWorkerStoppedError) as exc_info:
+    with pytest.raises(WorkerStoppedError) as exc_info:
         run_isolated_worker(
             _sleep_for,
             5.0,
@@ -1133,7 +1139,7 @@ def test_required_memory_cap_fails_loudly_when_unsupported(
 ) -> None:
     monkeypatch.setattr("haute._worker_isolation.process_memory_caps_supported", lambda: False)
 
-    with pytest.raises(IsolatedWorkerMemoryLimitUnsupportedError):
+    with pytest.raises(WorkerMemoryLimitUnsupportedError):
         run_isolated_worker(
             _return_payload,
             1,
@@ -1198,7 +1204,7 @@ def test_cross_platform_worker_rss_watchdog_enforces_growth_budget(
         require_memory_limit=True,
     )
 
-    with pytest.raises(IsolatedWorkerMemoryLimitExceededError) as exc_info:
+    with pytest.raises(WorkerMemoryLimitError) as exc_info:
         watchdog.checkpoint()
     assert exc_info.value.rss_bytes == 1_051
     assert exc_info.value.rss_limit_bytes == 1_050
@@ -1244,7 +1250,7 @@ def test_worker_rss_watchdog_handles_absent_limits_and_samples(
     monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: None)
     isolation_mod._WorkerRssWatchdog(42, 100, False, False).checkpoint()
     isolation_mod._WorkerRssWatchdog(42, 100, True, True).checkpoint()
-    with pytest.raises(IsolatedWorkerMemoryLimitUnsupportedError):
+    with pytest.raises(WorkerMemoryLimitUnsupportedError):
         isolation_mod._WorkerRssWatchdog(42, 100, True, False).checkpoint()
 
     monkeypatch.setattr(isolation_mod, "process_rss_bytes", lambda _pid: 99)
@@ -1266,7 +1272,7 @@ def test_worker_rss_watchdog_creation_covers_unobservable_and_missing_pid(
     )
     assert no_limit.rss_limit_bytes is None
 
-    with pytest.raises(IsolatedWorkerStartError, match="process id"):
+    with pytest.raises(WorkerStartError, match="process id"):
         _create_worker_rss_watchdog(
             Process(),  # type: ignore[arg-type]
             memory_limit_bytes=50,
@@ -1468,19 +1474,19 @@ def test_isolated_worker_starts_its_result_feeder_before_the_cap(
 def test_memory_limited_exitcode_classification_is_platform_independent() -> None:
     import haute._worker_isolation as isolation_mod
 
-    assert isolation_mod._exitcode_looks_memory_limited(None, 10) is False
-    assert isolation_mod._exitcode_looks_memory_limited(-9, None) is False
-    assert isolation_mod._exitcode_looks_memory_limited(-9, 10) is True
-    assert isolation_mod._exitcode_looks_memory_limited(-int(signal.SIGABRT), 10) is True
-    assert isolation_mod._exitcode_looks_memory_limited(-7, 10) is False
+    assert isolation_mod.exitcode_looks_memory_limited(None, 10) is False
+    assert isolation_mod.exitcode_looks_memory_limited(-9, None) is False
+    assert isolation_mod.exitcode_looks_memory_limited(-9, 10) is True
+    assert isolation_mod.exitcode_looks_memory_limited(-int(signal.SIGABRT), 10) is True
+    assert isolation_mod.exitcode_looks_memory_limited(-7, 10) is False
     # Windows fail-fast (STATUS_STACK_BUFFER_OVERRUN): a refused native allocation.
-    assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, 10) is True
-    assert isolation_mod._exitcode_looks_memory_limited(0xC0000409, None) is False
+    assert isolation_mod.exitcode_looks_memory_limited(0xC0000409, 10) is True
+    assert isolation_mod.exitcode_looks_memory_limited(0xC0000409, None) is False
     # Windows STATUS_STACK_OVERFLOW: the Job Object cap refused to commit a
     # thread's next stack page (seen on a 10M-row preview join).
-    assert isolation_mod._exitcode_looks_memory_limited(0xC00000FD, 10) is True
-    assert isolation_mod._exitcode_looks_memory_limited(0xC00000FD, None) is False
-    assert isolation_mod._exitcode_looks_memory_limited(3, 10) is False
+    assert isolation_mod.exitcode_looks_memory_limited(0xC00000FD, 10) is True
+    assert isolation_mod.exitcode_looks_memory_limited(0xC00000FD, None) is False
+    assert isolation_mod.exitcode_looks_memory_limited(3, 10) is False
 
 
 @pytest.mark.skipif(
@@ -1491,7 +1497,7 @@ def test_native_allocation_refused_by_the_worker_cap_is_a_memory_outcome() -> No
     """A native allocator the cap refuses aborts the child without a payload
     (Linux ``SIGABRT``/``SIGKILL``, Windows fail-fast); the parent reports it
     as a hedged memory outcome rather than a generic crash."""
-    with pytest.raises(IsolatedWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         run_isolated_worker(
             _allocate_native_column,
             1_600_000_000,
@@ -1976,7 +1982,7 @@ class TestDeadResourceTrackerRecovery:
         """Never an unexplained internal error: say the host cannot start work."""
         monkeypatch.setattr("haute._worker_isolation._reset_resource_tracker", lambda: None)
         ctx = _QueueContext(BrokenPipeError(32, "Broken pipe"), BrokenPipeError(32, "Broken pipe"))
-        with pytest.raises(IsolatedWorkerHostError) as excinfo:
+        with pytest.raises(WorkerHostError) as excinfo:
             create_worker_queue(ctx, 1)
         assert ctx.calls == 2  # bounded at one retry, never a spin
         message = str(excinfo.value)
@@ -2032,9 +2038,9 @@ class TestDeadResourceTrackerRecovery:
 
 
 def test_worker_payload_decoding_refuses_malformed_payloads() -> None:
-    with pytest.raises(IsolatedWorkerCrashedError):
+    with pytest.raises(WorkerCrashedError):
         isolation._decode_worker_payload(b"not pickle")
-    with pytest.raises(IsolatedWorkerCrashedError):
+    with pytest.raises(WorkerCrashedError):
         isolation._decode_worker_payload(pickle.dumps(("wrong", 1)))
 
 
@@ -2078,13 +2084,13 @@ def test_watchdog_and_finalization_preserve_primary_error(monkeypatch: pytest.Mo
     process = SimpleNamespace(pid=4)
     monkeypatch.setattr(isolation, "process_memory_caps_supported", lambda: False)
     monkeypatch.setattr(isolation, "process_rss_bytes", lambda _pid: None)
-    with pytest.raises(IsolatedWorkerMemoryLimitUnsupportedError):
+    with pytest.raises(WorkerMemoryLimitUnsupportedError):
         isolation._create_worker_rss_watchdog(
             process, memory_limit_bytes=5, require_memory_limit=True
         )
     watchdog = isolation._WorkerRssWatchdog(4, 5, False, False)
     monkeypatch.setattr(isolation, "process_rss_bytes", lambda _pid: 6)
-    with pytest.raises(IsolatedWorkerMemoryLimitExceededError):
+    with pytest.raises(WorkerMemoryLimitError):
         watchdog.checkpoint()
 
 
@@ -2299,7 +2305,7 @@ def test_without_a_native_cap_the_watchdog_still_stops_a_job_past_its_budget() -
     """The job's own allocations come after the baseline is sampled, so they count."""
     from tests import _spawned_without_native_cap as fixture
 
-    with pytest.raises(IsolatedWorkerMemoryLimitExceededError):
+    with pytest.raises(WorkerMemoryLimitError):
         run_isolated_worker(
             fixture.allocate,
             400,
@@ -2311,7 +2317,7 @@ def test_without_a_native_cap_the_watchdog_still_stops_a_job_past_its_budget() -
 def test_a_worker_past_its_startup_ceiling_before_it_is_ready_is_stopped() -> None:
     from tests import _spawned_heavy_import as fixture
 
-    with pytest.raises(IsolatedWorkerMemoryLimitExceededError) as raised:
+    with pytest.raises(WorkerMemoryLimitError) as raised:
         run_isolated_worker(
             fixture.allocate,
             1,
@@ -2337,7 +2343,7 @@ def test_a_ready_report_from_a_worker_past_its_startup_ceiling_is_refused(
     monkeypatch.setattr(isolation, "process_rss_bytes", lambda _pid: 65 * _MIB)
     monkeypatch.setattr(isolation, "_terminate_process", stopped.append)
 
-    with pytest.raises(IsolatedWorkerMemoryLimitExceededError) as raised:
+    with pytest.raises(WorkerMemoryLimitError) as raised:
         isolation.await_worker_ready(
             process,
             ready_queue,
@@ -2354,7 +2360,7 @@ def test_a_worker_that_never_reports_ready_fails_at_its_startup_deadline() -> No
     from tests import _spawned_slow_import as fixture
 
     started = time.monotonic()
-    with pytest.raises(IsolatedWorkerStartError, match="did not report ready within 2 seconds"):
+    with pytest.raises(WorkerStartError, match="did not report ready within 2 seconds"):
         run_isolated_worker(
             fixture.never_runs,
             config=IsolatedWorkerConfig(timeout_seconds=120, startup_timeout_seconds=2),

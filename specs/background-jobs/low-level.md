@@ -413,7 +413,7 @@ the caller's `completed_fields`. It delegates to `_launch_callable` and returns 
 
 The thread executes one total outcome pipeline:
 
-1. `_produce_outcome` maps success or a typed `IsolatedWorkerError` to a
+1. `_produce_outcome` maps success or a typed `WorkerError` to a
    `_SupervisorOutcome`. A worker failure whose payload fields carry
    `WORKER_USER_MESSAGE_FIELD` uses that curated string as the outcome message
    rather than `str(exc)` ("Isolated worker raised …"); the wrapper text is kept in
@@ -588,7 +588,7 @@ is only warranted for a concrete thread callable that can honour such a signal.
 | `InvalidRequestError` (400) | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into a `ConflictError` (409). |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
-| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; a terminal-persistence failure is settled as `error` by the job's status route (`settle_unrecorded_outcome`). |
+| `WorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; a terminal-persistence failure is settled as `error` by the job's status route (`settle_unrecorded_outcome`). |
 | `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised only by explicitly configured compatibility-thread paths. Production API Input table builds, output-write, OUTPUT dry-run, and Explore paths use killable process isolation and do not fall back to this helper after a process-start or worker failure. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 
