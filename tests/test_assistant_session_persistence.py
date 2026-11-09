@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -798,7 +799,7 @@ class TestBounds:
         assert f"- Saved `{'a' * 64}` at revision `{'e' * 16}`" in str(live[1]["content"])
         assert "redacted" not in json.dumps(live)
         assert revived.evidence.sources() == ()
-        assert "evidence" not in revived.as_dict()
+        assert "evidence" not in revived.as_persisted_dict()
 
 
 class TestDegradation:
@@ -821,7 +822,7 @@ class TestSessionListing:
     the single record of which conversations exist.
     """
 
-    def test_lists_this_pipeline_s_conversations_most_recent_first(self, tmp_path: Path):
+    async def test_lists_this_pipeline_s_conversations_most_recent_first(self, tmp_path: Path):
         clock = iter(float(stamp) for stamp in range(1, 7))
         store = _store(tmp_path, clock=clock.__next__)
         older = store.create("rating/main.py")
@@ -831,28 +832,28 @@ class TestSessionListing:
         other_pipeline = store.create("other/main.py")
         store.append(other_pipeline, _turn("elsewhere"))
 
-        listed = store.list_sessions("rating/main.py")
+        listed = await store.list_sessions("rating/main.py")
 
         assert [item.session_id for item in listed] == [newer.id, older.id]
         assert [item.title for item in listed] == ["second question", "first question"]
         assert all(item.message_count == 2 for item in listed)
 
-    def test_empty_conversations_are_not_listed(self, tmp_path: Path):
+    async def test_empty_conversations_are_not_listed(self, tmp_path: Path):
         """`create` persists immediately, so an abandoned new chat exists on
         disk with nothing to show and no title to show it under."""
 
         store = _store(tmp_path)
         store.create("rating/main.py")
 
-        assert store.list_sessions("rating/main.py") == ()
+        assert await store.list_sessions("rating/main.py") == ()
 
-    def test_survives_a_restart_without_reviving_every_session(self, tmp_path: Path):
+    async def test_survives_a_restart_without_reviving_every_session(self, tmp_path: Path):
         store = _store(tmp_path)
         session = store.create("rating/main.py")
         store.append(session, _turn("persisted question"))
 
         restarted = _store(tmp_path)
-        listed = restarted.list_sessions("rating/main.py")
+        listed = await restarted.list_sessions("rating/main.py")
 
         assert [item.session_id for item in listed] == [session.id]
         assert listed[0].title == "persisted question"
@@ -860,30 +861,76 @@ class TestSessionListing:
         # bound with live sessions and would evict them.
         assert len(restarted) == 0
 
-    def test_a_long_first_message_is_bounded_and_collapsed(self, tmp_path: Path):
+    def test_a_held_fixed_temporary_does_not_stop_a_session_persisting(self, tmp_path: Path):
+        """Two writers of one session once shared a temporary path; each now has its own."""
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        sessions = tmp_path / "sessions"
+        (sessions / f"{session.id}.json.tmp").mkdir()
+
+        store.append(session, _turn("after the temporary was taken"))
+
+        persisted = json.loads((sessions / f"{session.id}.json").read_text(encoding="utf-8"))
+        assert persisted["history"]
+        assert sorted(path.name for path in sessions.glob("*.tmp")) == [f"{session.id}.json.tmp"]
+
+    async def test_an_unreadable_storage_directory_lists_nothing(self):
+        def unavailable() -> Path:
+            raise OSError("storage unavailable")
+
+        store = SessionStore(storage_dir=unavailable)
+
+        with structlog.testing.capture_logs() as logs:
+            assert await store.list_sessions("rating/main.py") == ()
+
+        assert any(e["event"] == "assistant_session_list_failed" for e in logs)
+
+    async def test_the_list_reads_no_file_on_the_event_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        writer = _store(tmp_path)
+        session = writer.create("rating/main.py")
+        writer.append(session, _turn("persisted question"))
+        restarted = _store(tmp_path)
+        original = restarted._persisted_summary
+        readers: list[threading.Thread] = []
+
+        def recording(path: Path):
+            readers.append(threading.current_thread())
+            return original(path)
+
+        monkeypatch.setattr(restarted, "_persisted_summary", recording)
+
+        listed = await restarted.list_sessions("rating/main.py")
+
+        assert [item.session_id for item in listed] == [session.id]
+        assert readers
+        assert threading.current_thread() not in readers
+
+    async def test_a_long_first_message_is_bounded_and_collapsed(self, tmp_path: Path):
         store = _store(tmp_path)
         session = store.create("rating/main.py")
         store.append(session, _turn("word  \n  spaced " + "x" * 200))
 
-        (listed,) = store.list_sessions("rating/main.py")
+        (listed,) = await store.list_sessions("rating/main.py")
 
         assert listed.title.startswith("word spaced ")
         assert len(listed.title) <= 80
         assert listed.title.endswith("…")
 
-    def test_an_unreadable_session_file_is_skipped_with_a_warning(self, tmp_path: Path):
+    async def test_an_unreadable_session_file_is_skipped_with_a_warning(self, tmp_path: Path):
         store = _store(tmp_path)
         session = store.create("rating/main.py")
         store.append(session, _turn("readable"))
         (tmp_path / "sessions" / f"{'0' * 32}.json").write_text("{not json")
 
         with structlog.testing.capture_logs() as logs:
-            listed = store.list_sessions("rating/main.py")
+            listed = await store.list_sessions("rating/main.py")
 
         assert [item.session_id for item in listed] == [session.id]
         assert any(e["event"] == "assistant_session_list_unreadable" for e in logs)
 
-    def test_valid_json_that_cannot_be_revived_is_not_advertised(self, tmp_path: Path):
+    async def test_valid_json_that_cannot_be_revived_is_not_advertised(self, tmp_path: Path):
         sessions = tmp_path / "sessions"
         sessions.mkdir()
         valid_turn = _turn("should not appear")
@@ -917,7 +964,7 @@ class TestSessionListing:
             (sessions / f"{file_id}.json").write_text(json.dumps(payload), encoding="utf-8")
 
         with structlog.testing.capture_logs() as logs:
-            listed = _store(tmp_path).list_sessions("rating/main.py")
+            listed = await _store(tmp_path).list_sessions("rating/main.py")
 
         assert listed == ()
         assert sum(e["event"] == "assistant_session_list_unreadable" for e in logs) == 3

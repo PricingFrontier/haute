@@ -147,4 +147,6 @@ Credentials never go in `haute.toml`. They go in the project's `.env` file, whic
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
 
+Haute ignores `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`: the assistant only talks to the endpoint `haute.toml` describes.
+
 A Databricks project that already deploys to Databricks usually has both keys in `.env` already. Two optional keys tune the assistant: `HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS` limits how long each reply from the model may be, and `HAUTE_ASSISTANT_TURN_TIMEOUT` sets how many seconds the assistant may work on one message before it is stopped (600 by default).

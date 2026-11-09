@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -11,6 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
+from haute._file_ops import atomic_write_text
 from haute._sandbox import contained_path, is_contained
 from haute.assistant._config import EgressPolicy, Sensitivity
 from haute.errors import HauteError, PathOutsideProjectError
@@ -56,7 +56,10 @@ class ProjectKnowledgeView:
     items: tuple[KnowledgeItem, ...]
     source_manifest: MappingProxyType[str, str]
     excluded_by_policy: tuple[str, ...]
-    cache_hit: bool
+    #: Documents over the size limit or past the document limit, not read.
+    omitted_documents: int
+    #: Whether the derived index on disk already held this view's sources.
+    index_unchanged: bool
 
 
 def _digest(data: bytes) -> str:
@@ -103,7 +106,13 @@ def _graph_fact(project_root: Path, source_file: str) -> KnowledgeItem:
     except PathOutsideProjectError:
         raise ValueError("pipeline source must resolve inside the project root") from None
     data = source.read_bytes()
-    graph = parse_pipeline_to_graph(source)
+    try:
+        graph = parse_pipeline_to_graph(source)
+    except (HauteError, SyntaxError) as exc:
+        # The cause by its type: the parser's message can quote the source.
+        raise ProjectKnowledgeError(
+            f"Pipeline source could not be parsed ({type(exc).__name__}): {source_file}."
+        ) from exc
     node_types: dict[str, int] = {}
     for node in graph.nodes:
         node_type = getattr(node.data.nodeType, "value", str(node.data.nodeType))
@@ -151,10 +160,12 @@ def _toml_fact(project_root: Path) -> KnowledgeItem | None:
     )
 
 
-def _document_items(project_root: Path) -> list[KnowledgeItem]:
+def _document_items(project_root: Path) -> tuple[list[KnowledgeItem], int]:
+    """The project documents read, and how many were too large or too many to read."""
+
     docs = project_root / "docs"
     if not docs.is_dir():
-        return []
+        return [], 0
     if docs.is_symlink() or not is_contained(project_root, docs.resolve()):
         raise ValueError("project documentation must stay inside the project root")
     items: list[KnowledgeItem] = []
@@ -170,9 +181,11 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
         ),
         key=lambda path: path.relative_to(project_root).as_posix(),
     )
+    omitted = max(0, len(candidates) - _MAX_DOCUMENTS)
     for path in candidates[:_MAX_DOCUMENTS]:
         data = path.read_bytes()
         if len(data) > _MAX_DOCUMENT_BYTES:
+            omitted += 1
             continue
         try:
             text = data.decode("utf-8")
@@ -190,7 +203,7 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
                 content=text,
             )
         )
-    return items
+    return items, omitted
 
 
 def _cache_payload(items: list[KnowledgeItem]) -> dict[str, object]:
@@ -219,13 +232,11 @@ def _write_cache(project_root: Path, payload: dict[str, object]) -> bool:
         previous = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         previous = None
-    hit = previous == rendered
-    if not hit:
+    unchanged = previous == rendered
+    if not unchanged:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(rendered, encoding="utf-8")
-        os.replace(temporary, path)
-    return hit
+        atomic_write_text(path, rendered)
+    return unchanged
 
 
 def build_project_knowledge(
@@ -240,9 +251,10 @@ def build_project_knowledge(
     all_items = [_graph_fact(root, source_file)]
     if (toml_item := _toml_fact(root)) is not None:
         all_items.append(toml_item)
-    all_items.extend(_document_items(root))
+    documents, omitted_documents = _document_items(root)
+    all_items.extend(documents)
     all_items.sort(key=lambda item: item.source)
-    cache_hit = _write_cache(root, _cache_payload(all_items))
+    index_unchanged = _write_cache(root, _cache_payload(all_items))
     included = tuple(item for item in all_items if _within_policy(item, policy))
     excluded = tuple(item.source for item in all_items if not _within_policy(item, policy))
     manifest = MappingProxyType({item.source: item.source_digest for item in included})
@@ -250,7 +262,8 @@ def build_project_knowledge(
         items=included,
         source_manifest=manifest,
         excluded_by_policy=excluded,
-        cache_hit=cache_hit,
+        omitted_documents=omitted_documents,
+        index_unchanged=index_unchanged,
     )
 
 

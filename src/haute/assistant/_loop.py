@@ -37,6 +37,7 @@ from haute.assistant._providers import (
     TurnStop,
     turn_deadline,
 )
+from haute.assistant._render import one_line
 from haute.assistant._session import AssistantSession, AssistantTurn, SessionStore
 from haute.errors import HauteError
 from haute.schemas import (
@@ -179,8 +180,13 @@ class UnknownSessionError(HauteError):
 class ConcurrentTurnError(HauteError):
     """Raised when a second turn is started while a session is busy."""
 
+    error_code = "assistant_turn_running"
+
     def __init__(self, session_id: str) -> None:
         super().__init__("An assistant turn is already running", session_id=session_id)
+
+
+_TIME_LIMIT_DETAIL = "Assistant time limit exceeded."
 
 
 class _TurnLimitError(Exception):
@@ -532,22 +538,9 @@ def build_system_prompt(*, source_file: str) -> str:
     )
 
 
-def _provider_tools(tools: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
-    """Return one stable structured tool contract for every request wording."""
-
-    return tuple(tools)
-
-
 _SUMMARY_LIMIT = 160
 #: A data check, or an inspection's data part, that did not fit in the tool result.
 _DATA_CHECK_TOO_LARGE = "data checked, result too large to show"
-
-
-def _bounded(text: str) -> str:
-    """*text* on one line, cut to the activity row's limit."""
-
-    line = " ".join(text.split())
-    return line if len(line) <= _SUMMARY_LIMIT else line[: _SUMMARY_LIMIT - 1] + "…"
 
 
 def _counted(count: int, noun: str) -> str:
@@ -773,7 +766,7 @@ def _started_summary(name: str, arguments: Mapping[str, Any]) -> str:
     """
 
     summarise = _STARTED_SUMMARIES.get(name)
-    return "" if summarise is None else _bounded(summarise(arguments))
+    return "" if summarise is None else one_line(summarise(arguments), _SUMMARY_LIMIT)
 
 
 def _result_summary(name: str, payload: Mapping[str, Any], is_error: bool) -> str:
@@ -796,7 +789,7 @@ def _result_summary(name: str, payload: Mapping[str, Any], is_error: bool) -> st
                 )
         return "tool error"
     summarise = _FINISHED_SUMMARIES.get(name)
-    return "" if summarise is None else _bounded(summarise(payload))
+    return "" if summarise is None else one_line(summarise(payload), _SUMMARY_LIMIT)
 
 
 def _stable_error_code(payload: Mapping[str, Any]) -> str | None:
@@ -972,6 +965,19 @@ def _append_round(
     turn_messages.extend(complete_results)
 
 
+def _require_time_left(deadline: float) -> None:
+    """Fail the turn once its monotonic *deadline* has passed."""
+
+    if time.monotonic() >= deadline:
+        raise _TurnLimitError(_TIME_LIMIT_DETAIL)
+
+
+def _step_limit(deadline: float) -> asyncio.Timeout:
+    """A timeout for one awaited step of the turn, ending at its monotonic *deadline*."""
+
+    return asyncio.timeout(deadline - time.monotonic())
+
+
 async def _aclose_quietly(stream: object) -> None:
     """Close a provider stream generator; log (never mask) cleanup failures."""
 
@@ -1136,7 +1142,6 @@ async def run_turn(
         _resolved_limit(max_tool_calls, "HAUTE_ASSISTANT_MAX_TOOL_CALLS", DEFAULT_MAX_TOOL_CALLS)
     )
     deadline = time.monotonic() + timeout_seconds
-    provider_tools = _provider_tools(tools)
     user_message: dict[str, Any] = {"role": "user", "content": user_text}
     request_messages: list[Mapping[str, Any]] = [
         *store.provider_history(session),
@@ -1165,262 +1170,271 @@ async def run_turn(
     active_stream: AsyncGenerator[Any, None] | Any = None
 
     try:
-        async with asyncio.timeout(timeout_seconds):
+        while True:
+            _require_time_left(deadline)
+            round_text = []
+            round_calls = []
+            round_results = []
+            round_committed = False
+            round_changes: list[AssistantChangeRecord] = []
+            round_replay: tuple[Mapping[str, Any], ...] | None = None
+            stop: TurnStop | None = None
+            # The stream is owned so the outer finally can aclose() it:
+            # an abnormal turn exit must shut the provider's SDK stream
+            # deterministically, never leave it to GC finalisation.
+            active_stream = provider.stream_turn(
+                system=system_prompt,
+                messages=request_messages,
+                tools=tools,
+            )
             while True:
-                if time.monotonic() >= deadline:
-                    raise _TurnLimitError("Assistant time limit exceeded.")
-                round_text = []
-                round_calls = []
-                round_results = []
-                round_committed = False
-                round_changes: list[AssistantChangeRecord] = []
-                round_replay: tuple[Mapping[str, Any], ...] | None = None
-                stop: TurnStop | None = None
-                # The stream is owned so the outer finally can aclose() it:
-                # an abnormal turn exit must shut the provider's SDK stream
-                # deterministically, never leave it to GC finalisation.
-                active_stream = provider.stream_turn(
-                    system=system_prompt,
-                    messages=request_messages,
-                    tools=provider_tools,
-                )
-                while True:
-                    # Each step of the stream runs under the turn's deadline, so a
-                    # provider's pre-stream retry never waits past it; the variable
-                    # is set and reset within the step, never across a yield.
-                    with turn_deadline(deadline):
-                        try:
+                # This generator is suspended at each yield while its consumer
+                # runs, and a timeout held across one would cancel the consumer
+                # instead of the turn, so no terminal event would be sent. The
+                # deadline therefore bounds each awaited step, and is checked
+                # again here for the time the consumer took since the last.
+                _require_time_left(deadline)
+                # Each step of the stream runs under the turn's deadline, so a
+                # provider's pre-stream retry never waits past it; the variable
+                # is set and reset within the step, never across a yield.
+                with turn_deadline(deadline):
+                    try:
+                        async with _step_limit(deadline):
                             event = await anext(active_stream)
-                        except StopAsyncIteration:
-                            break
-                    if isinstance(event, TextDelta):
-                        round_text.append(event.text)
-                        yield AssistantTextDeltaEvent(text=event.text)
-                    elif isinstance(event, ThinkingStarted):
-                        yield AssistantThinkingEvent()
-                    elif isinstance(event, ReplayContent):
-                        if round_replay is not None:
-                            raise RuntimeError("a provider round replays its content once")
-                        round_replay = event.blocks
-                    elif isinstance(event, ToolCallRequest):
-                        if committed_unverified_detail is not None:
-                            logger.warning(
-                                "assistant_tool_ignored_after_unverified_save",
-                                tool_name=event.name,
-                            )
-                            continue
-                        # Limits are checked BEFORE the call is recorded: a
-                        # turn aborted here must not persist a tool call with
-                        # no result — the next provider request would carry an
-                        # orphaned call and be rejected wholesale.
-                        if tool_count >= tool_limit:
-                            raise _TurnLimitError("Assistant tool-call limit exceeded.")
-                        if time.monotonic() >= deadline:
-                            raise _TurnLimitError("Assistant time limit exceeded.")
-                        if execute_tool is None:
-                            raise RuntimeError("assistant tool executor is not configured")
-                        round_calls.append(event)
-                        tool_count += 1
-                        yield AssistantToolStartedEvent(
-                            id=event.id,
-                            name=event.name,
-                            title=tool_title(event.name, event.arguments),
-                            summary=_started_summary(event.name, event.arguments),
+                    except StopAsyncIteration:
+                        break
+                if isinstance(event, TextDelta):
+                    round_text.append(event.text)
+                    yield AssistantTextDeltaEvent(text=event.text)
+                elif isinstance(event, ThinkingStarted):
+                    yield AssistantThinkingEvent()
+                elif isinstance(event, ReplayContent):
+                    if round_replay is not None:
+                        raise RuntimeError("a provider round replays its content once")
+                    round_replay = event.blocks
+                elif isinstance(event, ToolCallRequest):
+                    if committed_unverified_detail is not None:
+                        logger.warning(
+                            "assistant_tool_ignored_after_unverified_save",
+                            tool_name=event.name,
                         )
-                        payload: Mapping[str, Any]
-                        plan_before = session.build_plan.current
-                        # A further dry-run call inside the provider round
-                        # that stopped the dry-runs is refused without running.
-                        # Its synthetic result must not re-enter accounting, or
-                        # it would overwrite the recorded blocker.
-                        refused_by_budget = (
-                            event.name in _DRY_RUN_TOOLS and dry_runs.stop is not None
-                        )
-                        interrupt: BaseException | None = None
-                        if refused_by_budget:
-                            payload = _DRY_RUN_REFUSED_RESULT
-                        elif (
-                            event.name == "apply_graph_plan"
-                            # Every adapter streams a message's text before its calls.
-                            and _prefixed_outcome("".join(round_text), ()) is not None
-                        ):
-                            payload = _APPLY_IN_OUTCOME_MESSAGE_RESULT
-                        else:
-                            running = _RunningTool(execute_tool, event)
-                            while interrupt is None:
-                                try:
+                        continue
+                    # Limits are checked BEFORE the call is recorded: a
+                    # turn aborted here must not persist a tool call with
+                    # no result — the next provider request would carry an
+                    # orphaned call and be rejected wholesale.
+                    if tool_count >= tool_limit:
+                        raise _TurnLimitError("Assistant tool-call limit exceeded.")
+                    _require_time_left(deadline)
+                    if execute_tool is None:
+                        raise RuntimeError("assistant tool executor is not configured")
+                    round_calls.append(event)
+                    tool_count += 1
+                    yield AssistantToolStartedEvent(
+                        id=event.id,
+                        name=event.name,
+                        title=tool_title(event.name, event.arguments),
+                        summary=_started_summary(event.name, event.arguments),
+                    )
+                    payload: Mapping[str, Any]
+                    plan_before = session.build_plan.current
+                    # A further dry-run call inside the provider round
+                    # that stopped the dry-runs is refused without running.
+                    # Its synthetic result must not re-enter accounting, or
+                    # it would overwrite the recorded blocker.
+                    refused_by_budget = event.name in _DRY_RUN_TOOLS and dry_runs.stop is not None
+                    interrupt: BaseException | None = None
+                    if refused_by_budget:
+                        payload = _DRY_RUN_REFUSED_RESULT
+                    elif (
+                        event.name == "apply_graph_plan"
+                        # Every adapter streams a message's text before its calls.
+                        and _prefixed_outcome("".join(round_text), ()) is not None
+                    ):
+                        payload = _APPLY_IN_OUTCOME_MESSAGE_RESULT
+                    elif time.monotonic() >= deadline:
+                        # The reader held the stream past the deadline at the
+                        # started event. The call is recorded, so it gets a
+                        # result, but it never runs: a shielded apply would
+                        # otherwise begin a save after the turn's time is up.
+                        payload = _TOOL_INTERRUPTED_RESULT
+                        interrupt = _TurnLimitError(_TIME_LIMIT_DETAIL)
+                    else:
+                        running = _RunningTool(execute_tool, event)
+                        while interrupt is None:
+                            try:
+                                async with _step_limit(deadline):
                                     title = await running.progress()
-                                except (asyncio.CancelledError, GeneratorExit) as exc:
-                                    interrupt = exc
-                                    break
-                                if title is None:
-                                    break
-                                try:
-                                    yield AssistantToolProgressEvent(id=event.id, title=title)
-                                except (asyncio.CancelledError, GeneratorExit) as exc:
-                                    interrupt = exc
-                            payload = await running.settle(interrupt)
-                        is_error = "error" in payload
-                        if event.name in _DRY_RUN_TOOLS and not refused_by_budget:
-                            if is_error:
-                                dry_runs.record_failure(event, payload)
-                            open_state = "failed" if is_error else "validated"
-                        change: AssistantChangeRecord | None = None
-                        if event.name == "apply_graph_plan" and not is_error:
-                            # A saved plan clears the open state and is progress:
-                            # the dry-run budget starts afresh for the next plan.
+                            except (TimeoutError, asyncio.CancelledError, GeneratorExit) as exc:
+                                interrupt = exc
+                                break
+                            if title is None:
+                                break
+                            try:
+                                yield AssistantToolProgressEvent(id=event.id, title=title)
+                            except (asyncio.CancelledError, GeneratorExit) as exc:
+                                interrupt = exc
+                        payload = await running.settle(interrupt)
+                    is_error = "error" in payload
+                    if event.name in _DRY_RUN_TOOLS and not refused_by_budget:
+                        if is_error:
+                            dry_runs.record_failure(event, payload)
+                        open_state = "failed" if is_error else "validated"
+                    change: AssistantChangeRecord | None = None
+                    if event.name == "apply_graph_plan" and not is_error:
+                        # A saved plan clears the open state and is progress:
+                        # the dry-run budget starts afresh for the next plan.
+                        change = AssistantChangeRecord.model_validate(payload["change"])
+                        saved_changes.append(change.id)
+                        round_changes.append(change)
+                        open_state = None
+                        dry_runs = _DryRunProgress()
+                    if (
+                        event.name == "apply_graph_plan"
+                        and _stable_error_code(payload) == _COMMITTED_UNVERIFIED_ERROR_CODE
+                    ):
+                        committed_unverified_detail = _result_summary(event.name, payload, is_error)
+                        # The save committed, so its record is a change the
+                        # turn saved, and the analyst can undo it.
+                        if "change" in payload:
                             change = AssistantChangeRecord.model_validate(payload["change"])
                             saved_changes.append(change.id)
-                            round_changes.append(change)
-                            open_state = None
-                            dry_runs = _DryRunProgress()
-                        if (
-                            event.name == "apply_graph_plan"
-                            and _stable_error_code(payload) == _COMMITTED_UNVERIFIED_ERROR_CODE
-                        ):
-                            committed_unverified_detail = _result_summary(
-                                event.name, payload, is_error
-                            )
-                            # The save committed, so its record is a change the
-                            # turn saved, and the analyst can undo it.
-                            if "change" in payload:
-                                change = AssistantChangeRecord.model_validate(payload["change"])
-                                saved_changes.append(change.id)
-                        round_results.append(_tool_result_message(event, payload, is_error))
-                        if interrupt is None:
-                            yield AssistantToolFinishedEvent(
-                                id=event.id,
-                                name=event.name,
-                                title=tool_title(event.name, event.arguments, payload),
-                                is_error=is_error,
-                                summary=_result_summary(event.name, payload, is_error),
-                            )
-                        if change is not None and interrupt is None:
-                            yield AssistantChangeAppliedEvent(change=change)
-                        plan_after = session.build_plan.current
-                        if (
-                            plan_after is not plan_before
-                            and plan_after is not None
-                            and interrupt is None
-                        ):
-                            yield AssistantBuildPlanUpdatedEvent(build_plan=plan_after)
-                        if interrupt is not None:
-                            # Re-raise the original interrupt (CancelledError
-                            # or GeneratorExit) now that the completed tool
-                            # result is recorded for the history append.
-                            raise interrupt
-                    elif isinstance(event, TurnStop):
-                        stop = event
-                        total_input_tokens += event.usage.input_tokens
-                        total_output_tokens += event.usage.output_tokens
-                        break
-                    else:
-                        raise RuntimeError("provider returned an unknown event")
+                    round_results.append(_tool_result_message(event, payload, is_error))
+                    if interrupt is None:
+                        yield AssistantToolFinishedEvent(
+                            id=event.id,
+                            name=event.name,
+                            title=tool_title(event.name, event.arguments, payload),
+                            is_error=is_error,
+                            summary=_result_summary(event.name, payload, is_error),
+                        )
+                    if change is not None and interrupt is None:
+                        yield AssistantChangeAppliedEvent(change=change)
+                    plan_after = session.build_plan.current
+                    if (
+                        plan_after is not plan_before
+                        and plan_after is not None
+                        and interrupt is None
+                    ):
+                        yield AssistantBuildPlanUpdatedEvent(build_plan=plan_after)
+                    if interrupt is not None:
+                        # Re-raise the original interrupt (CancelledError
+                        # or GeneratorExit) now that the completed tool
+                        # result is recorded for the history append.
+                        raise interrupt
+                elif isinstance(event, TurnStop):
+                    stop = event
+                    total_input_tokens += event.usage.input_tokens
+                    total_output_tokens += event.usage.output_tokens
+                    break
+                else:
+                    raise RuntimeError("provider returned an unknown event")
 
-                # Per-round close: `break` on TurnStop leaves the provider
-                # generator suspended at its yield, and the next round would
-                # reassign `active_stream` and orphan this one — every
-                # round's SDK stream is shut before the next opens.  The
-                # outer finally remains the abnormal-exit guard.
+            # Per-round close: `break` on TurnStop leaves the provider
+            # generator suspended at its yield, and the next round would
+            # reassign `active_stream` and orphan this one — every
+            # round's SDK stream is shut before the next opens.  The
+            # outer finally remains the abnormal-exit guard.
+            async with _step_limit(deadline):
                 await _aclose_quietly(active_stream)
-                active_stream = None
+            active_stream = None
 
-                if stop is None:
-                    raise RuntimeError("provider stream ended without a turn stop")
-                usage = AssistantUsage(
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
-                )
-                if committed_unverified_detail is not None:
-                    _append_round(turn_messages, round_text, round_calls, round_results)
-                    round_committed = True
-                    closing_text = _MUTATION_COMMITTED_UNVERIFIED_DETAIL
-                    turn_outcome = AssistantTurnOutcome(
-                        kind="committed_unverified",
-                        detail=committed_unverified_detail,
-                        changes=list(saved_changes),
-                    )
-                    turn_messages.append({"role": "assistant", "content": closing_text})
-                    yield AssistantTextDeltaEvent(text=closing_text)
-                    yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
-                    return
-                if stop.reason == "end":
-                    _append_round(turn_messages, round_text, round_calls, round_results)
-                    round_committed = True
-                    explicit_outcome = _prefixed_outcome("".join(round_text), saved_changes)
-                    if explicit_outcome is None and open_state is not None and not reminder_sent:
-                        request_messages.extend(
-                            [
-                                message
-                                for message in (
-                                    _assistant_message(round_text, round_calls, round_replay),
-                                    *round_results,
-                                )
-                                if message is not None
-                            ]
-                        )
-                        controller_message: dict[str, Any] = {
-                            "role": "controller",
-                            "content": _OPEN_STATE_REMINDERS[open_state],
-                        }
-                        request_messages.append(controller_message)
-                        turn_messages.append(controller_message)
-                        reminder_sent = True
-                        continue
-                    if explicit_outcome is not None:
-                        turn_outcome = explicit_outcome
-                    elif open_state is not None:
-                        turn_outcome = AssistantTurnOutcome(
-                            kind="incomplete",
-                            detail=_INCOMPLETE_DETAILS[open_state],
-                            changes=list(saved_changes),
-                        )
-                    else:
-                        # Each change card streamed with its apply says what was
-                        # saved; the turn adds no text of its own.
-                        turn_outcome = AssistantTurnOutcome(
-                            kind="applied" if saved_changes else "answered",
-                            detail=None,
-                            changes=list(saved_changes),
-                        )
-                    yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
-                    return
-
+            if stop is None:
+                raise RuntimeError("provider stream ended without a turn stop")
+            usage = AssistantUsage(
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
+            )
+            if committed_unverified_detail is not None:
                 _append_round(turn_messages, round_text, round_calls, round_results)
                 round_committed = True
-                if dry_runs.stop is not None:
-                    blocked_text = dry_runs.blocker(len(saved_changes))
-                    turn_messages.append({"role": "assistant", "content": blocked_text})
-                    yield AssistantTextDeltaEvent(text=blocked_text)
-                    # Built, not parsed: its last error can quote the model's own
-                    # text, which may hold a marker of its own.
+                closing_text = _MUTATION_COMMITTED_UNVERIFIED_DETAIL
+                turn_outcome = AssistantTurnOutcome(
+                    kind="committed_unverified",
+                    detail=committed_unverified_detail,
+                    changes=list(saved_changes),
+                )
+                turn_messages.append({"role": "assistant", "content": closing_text})
+                yield AssistantTextDeltaEvent(text=closing_text)
+                yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
+                return
+            if stop.reason == "end":
+                _append_round(turn_messages, round_text, round_calls, round_results)
+                round_committed = True
+                explicit_outcome = _prefixed_outcome("".join(round_text), saved_changes)
+                if explicit_outcome is None and open_state is not None and not reminder_sent:
+                    request_messages.extend(
+                        [
+                            message
+                            for message in (
+                                _assistant_message(round_text, round_calls, round_replay),
+                                *round_results,
+                            )
+                            if message is not None
+                        ]
+                    )
+                    controller_message: dict[str, Any] = {
+                        "role": "controller",
+                        "content": _OPEN_STATE_REMINDERS[open_state],
+                    }
+                    request_messages.append(controller_message)
+                    turn_messages.append(controller_message)
+                    reminder_sent = True
+                    continue
+                if explicit_outcome is not None:
+                    turn_outcome = explicit_outcome
+                elif open_state is not None:
                     turn_outcome = AssistantTurnOutcome(
-                        kind="blocked",
-                        detail=blocked_text.removeprefix("BLOCKED:").strip(),
+                        kind="incomplete",
+                        detail=_INCOMPLETE_DETAILS[open_state],
                         changes=list(saved_changes),
                     )
-                    yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
-                    return
-                request_messages.extend(
-                    [
-                        message
-                        for message in (
-                            _assistant_message(round_text, round_calls, round_replay),
-                            *round_results,
-                        )
-                        if message is not None
-                    ]
-                )
-                if round_changes and refresh_context is not None:
-                    # After the round's results, which stay contiguous on
-                    # every wire; never stored with the turn.
-                    request_messages.append(
-                        {"role": "context", "content": await refresh_context(round_changes)}
+                else:
+                    # Each change card streamed with its apply says what was
+                    # saved; the turn adds no text of its own.
+                    turn_outcome = AssistantTurnOutcome(
+                        kind="applied" if saved_changes else "answered",
+                        detail=None,
+                        changes=list(saved_changes),
                     )
+                yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
+                return
+
+            _append_round(turn_messages, round_text, round_calls, round_results)
+            round_committed = True
+            if dry_runs.stop is not None:
+                blocked_text = dry_runs.blocker(len(saved_changes))
+                turn_messages.append({"role": "assistant", "content": blocked_text})
+                yield AssistantTextDeltaEvent(text=blocked_text)
+                # Built, not parsed: its last error can quote the model's own
+                # text, which may hold a marker of its own.
+                turn_outcome = AssistantTurnOutcome(
+                    kind="blocked",
+                    detail=blocked_text.removeprefix("BLOCKED:").strip(),
+                    changes=list(saved_changes),
+                )
+                yield AssistantCompletedEvent(usage=usage, outcome=turn_outcome)
+                return
+            request_messages.extend(
+                [
+                    message
+                    for message in (
+                        _assistant_message(round_text, round_calls, round_replay),
+                        *round_results,
+                    )
+                    if message is not None
+                ]
+            )
+            if round_changes and refresh_context is not None:
+                # After the round's results, which stay contiguous on
+                # every wire; never stored with the turn.
+                async with _step_limit(deadline):
+                    refreshed = await refresh_context(round_changes)
+                request_messages.append({"role": "context", "content": refreshed})
     except _TurnLimitError as exc:
         yield AssistantFailedEvent(message=str(exc))
     except TimeoutError:
-        yield AssistantFailedEvent(message="Assistant time limit exceeded.")
+        yield AssistantFailedEvent(message=_TIME_LIMIT_DETAIL)
     except AssistantProviderError as exc:
         yield AssistantFailedEvent(message=str(exc))
     except asyncio.CancelledError:

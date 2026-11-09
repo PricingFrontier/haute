@@ -989,18 +989,51 @@ describe("send failures", () => {
     ])
   })
 
-  it("renders the still-finishing notice on 409 without auto-retry", async () => {
+  it("renders the still-finishing notice on the 409's code, whatever its wording, without auto-retry", async () => {
     useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    const rawDetail = { error_code: "assistant_turn_running", message: "Reworded by the server." }
     vi.mocked(streamAssistantMessage).mockRejectedValue(
-      new ApiError(
-        "An assistant turn is already running",
-        409,
-        "An assistant turn is already running",
-      ),
+      new ApiError("HTTP 409", 409, JSON.stringify(rawDetail), { detail: rawDetail }, rawDetail),
     )
     await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    const { entries, notice } = useAssistantStore.getState()
     expect(streamAssistantMessage).toHaveBeenCalledTimes(1)
-    expect(useAssistantStore.getState().notice ?? "").toMatch(/finishing|moment|running/i)
+    expect(notice).toMatch(/still finishing/)
+    expect(entries.find((entry) => entry.kind === "marker")).toEqual(
+      expect.objectContaining({ outcome: "failed", detail: "Reworded by the server." }),
+    )
+  })
+
+  it.each([
+    [409, "This chat belongs to pipeline 'other.py'."],
+    [403, "Forbidden by policy."],
+    [500, "The assistant could not start."],
+    [503, "The provider is unavailable."],
+  ])("shows the server's detail for a send-time %i", async (status, detail) => {
+    useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    vi.mocked(streamAssistantMessage).mockRejectedValue(new ApiError(`HTTP ${status}`, status, detail, undefined, detail))
+
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+
+    const { entries, notice } = useAssistantStore.getState()
+    expect(notice).toBe(detail)
+    expect(entries.filter((entry) => entry.kind === "marker")).toEqual([
+      expect.objectContaining({ outcome: "failed", detail }),
+    ])
+  })
+
+  it("calls onSent once the message is in the transcript, and never when the gate refuses it", async () => {
+    useAssistantStore.setState({ sessionId: "session-1", pipelineSource: "main.py" })
+    vi.mocked(streamAssistantMessage).mockResolvedValue(undefined)
+    const onSent = vi.fn()
+
+    useAssistantStore.setState({ turnStatus: "streaming" })
+    await useAssistantStore.getState().sendMessage("refused", { ...SEND_OPTS, onSent })
+    expect(onSent).not.toHaveBeenCalled()
+
+    useAssistantStore.setState({ turnStatus: "idle" })
+    await useAssistantStore.getState().sendMessage("sent", { ...SEND_OPTS, onSent })
+    expect(onSent).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1205,6 +1238,16 @@ describe("undo", () => {
     expect(entries).toEqual([{ kind: "change", change: CHANGE }])
     expect(notice).toMatch(/can no longer be undone here/)
     expect(undoingChangeId).toBeNull()
+  })
+
+  it("sets a notice instead of throwing for a card outside an open chat", async () => {
+    openChat()
+    useAssistantStore.setState({ sessionId: null })
+
+    await useAssistantStore.getState().undoChange(CHANGE)
+
+    expect(undoAssistantChange).not.toHaveBeenCalled()
+    expect(useAssistantStore.getState().notice).toMatch(/can no longer be undone here/)
   })
 
   it("posts nothing while disabled", async () => {

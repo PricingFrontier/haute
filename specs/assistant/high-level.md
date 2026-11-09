@@ -88,6 +88,9 @@ hostname and no embedded user information; malformed, relative, unsupported-
 scheme, whitespace/control-bearing, or invalid-port values raise a
 field-specific `ConfigError` without echoing the URL. Anthropic continues to
 reject the field entirely, as does Databricks because its endpoint is derived.
+The endpoint the egress policy checks and readiness reports is the one the SDK client
+is built with: it is passed explicitly, so `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`
+in the environment cannot redirect the key or the prompt.
 During lifespan startup, `haute serve` loads the project `.env` into the process environment
 without overriding variables the caller already exported. A status endpoint reports whether the
 assistant is ready and, if not, exactly which piece is missing (no `[assistant]` table, unknown
@@ -1152,7 +1155,10 @@ Under the shared save lock it reloads the snapshot, rejects a stale revision,
 recomputes the normalized plan, warnings, schema evidence, and hash through the
 same `build_verified_plan` path used by dry-run, checks exact-plan authority, and
 commits once through `SavePipelineService`, with the change headline as the Git
-commit message. A plan is single-use; a repeated
+commit message. The lock cannot exclude an editor outside Haute, so the save's
+base-revision precondition names the editor document revision read around the
+snapshot, never a later read: an external edit at any point before the save
+fails the apply with `stale_revision` and keeps its bytes. A plan is single-use; a repeated
 apply returns `plan_already_applied` with no write, until a fresh dry-run of the
 same plan succeeds against its base revision again (after an undo; see **Undo and
 Compare**). Any changed authority fact invalidates the plan.
@@ -1430,8 +1436,7 @@ evaluation of 2026-10-01 under an `internal` policy, 11 of 37 failing case-runs
 came from retyping such lists and six of them saved silent corruptions of a
 rating or the response contract; a second run that day, with configuration
 readable, replaced a response's mapping without reading it and dropped two of
-its rows. Item-level edits (ASSIST-52) remain the way to change one entry
-without reading the rest.
+its rows.
 
 Project knowledge is derived from a bounded saved-graph fact, a value-free
 `haute.toml` digest fact, and allowlisted ordinary documentation, never from an
@@ -1440,7 +1445,8 @@ through the schema-only operation, whose exact schema digest participates in
 the revision of a plan that uses it.
 Every item carries source identity and digest, extraction version, sensitivity,
 and evidence class. Unknown sensitivity is `restricted`; natural-language
-content remains untrusted evidence. The private `.haute/assistant/knowledge`
+content remains untrusted evidence. A document over 64 KB, or past the fiftieth
+in path order, is not read, and the tool result counts how many were left out. The private `.haute/assistant/knowledge`
 cache contains only content-addressed derived index metadata, is excluded from
 the project revision, invalidates changed or removed sources, and is safe to
 delete and rebuild. Retrieved source digests that affect a plan are included
@@ -2034,11 +2040,6 @@ see [the assistant evaluation](evaluation.md#tiers).
   to `commit_save` as the commit message.
 
 ## Failure model
-
-> NOTE: Apply currently rereads the editor revision after authenticating its plan,
-> so an external edit in that interval can be overwritten despite successful
-> verification. Binding commit to the authenticated snapshot is tracked in
-> [ASSIST-61](../roadmap/assistant.md#assist-61--keep-the-authenticated-revision-through-commit).
 
 Loud, typed, and never averaged away:
 

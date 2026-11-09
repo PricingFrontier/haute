@@ -38,6 +38,11 @@ from haute.assistant._node_descriptions import (
     ASSISTANT_NODE_DESCRIPTIONS,
     _validate_descriptions,
 )
+from haute.assistant._wire_ops import (
+    MAX_PLAN_OPERATIONS,
+    MAX_TOOL_CONTEXT_BYTES,
+    MAX_TOOL_PAYLOAD_BYTES,
+)
 
 
 class TestNodeDescriptors:
@@ -52,6 +57,7 @@ class TestNodeDescriptors:
         assert set(nodes) == {node_type.value for node_type in NodeType}
         for node_id, descriptor in nodes.items():
             assert descriptor.usage.strip(), f"{node_id} has no usage note"
+            assert descriptor.summary.strip(), f"{node_id} has no summary"
 
     def test_a_type_without_a_description_fails_at_import(self):
         descriptions = dict(ASSISTANT_NODE_DESCRIPTIONS)
@@ -173,6 +179,17 @@ class TestCapabilityManifest:
         changed = capability_manifest()
         assert changed is not first
         assert changed.capability_hash != first.capability_hash
+
+    def test_a_warm_manifest_builds_no_descriptor(self, monkeypatch: pytest.MonkeyPatch):
+        capability_manifest()
+
+        def refuse(*_args: object) -> None:
+            raise AssertionError("a warm call must not build a descriptor")
+
+        monkeypatch.setattr(_catalog, "_node_descriptor", refuse)
+        monkeypatch.setattr(_catalog, "_operation_descriptor", refuse)
+
+        capability_manifest()
 
     def test_cached_manifest_material_is_immutable(self):
         manifest = capability_manifest()
@@ -387,10 +404,11 @@ class TestResolvedDescriptors:
             assert len(dumped["output_schema"]["oneOf"]) == 2
             assert all(branch.get("required") for branch in dumped["output_schema"]["oneOf"])
             assert dumped["version"] == "1.0"
-            assert dumped["limits"]["timeout_seconds"] > 0
-            assert dumped["limits"]["max_operations"] > 0
-            assert dumped["limits"]["max_payload_bytes"] > 0
-            assert dumped["limits"]["max_context_bytes"] > 0
+            assert dumped["limits"] == {
+                "max_operations": MAX_PLAN_OPERATIONS,
+                "max_payload_bytes": MAX_TOOL_PAYLOAD_BYTES,
+                "max_context_bytes": MAX_TOOL_CONTEXT_BYTES,
+            }
             assert dumped["errors"]
 
         by_id = {operation.id: operation for operation in capability_manifest().operations}
@@ -537,6 +555,16 @@ class TestResolvedDescriptors:
         assert "node index" in branches["add_node"]["properties"]["node_type"]["description"]
         update_config = branches["update_node"]["properties"]["config"]["description"]
         assert "replaces" in update_config and "null" in update_config
+
+
+def test_load_file_names_exactly_the_file_types_it_loads() -> None:
+    from haute._io import EXTERNAL_FILE_TYPES
+
+    load_file = _descriptors()["externalFile"]
+
+    for text in (load_file.summary.lower(), load_file.usage.lower()):
+        assert all(file_type in text for file_type in EXTERNAL_FILE_TYPES)
+        assert "catboost" not in text
 
 
 def test_polars_usage_names_inputs_by_edge_without_input_mapping() -> None:

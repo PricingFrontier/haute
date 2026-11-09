@@ -70,7 +70,6 @@ covers opportunistic or low-exposure items.
 | Priority | Trigger and observed consequence | Owning package | Evidence |
 |---|---|---|---|
 | P2 | `useQuoteListStore` does not reset or fence `loadingMore` across list switches; `priceSample` searches only top-level `graph.nodes` for `WORKBENCH_OUTPUT`; `specs/workbench/high-level.md` retains a stale `The blank form is a form` bullet. | [WB-41](workbench.md#wb-41--fence-loadingmore-in-usequoteliststore-resolve-submodel-workbench_output-runtime-targets-in-pricesample-and-remove-stale-blank-form-rationale) | Source inspection of `frontend/src/app/useQuoteListStore.ts::useQuoteListStore`, `frontend/src/workbench/priceSample.ts::priceSample` and `specs/workbench/high-level.md`. |
-| P2 | `_PreparedGraph.build`, `_bound`, `data_check_visibility` and `_prepare_column_profile` in `src/haute/assistant/` hardcode `project_root=Path.cwd()`; `_write_cache` and `SessionStore._persist` write to fixed `.json.tmp` paths without `atomic_write_text`; `_graph_fact` does not wrap `parse_pipeline_to_graph` failures in `ProjectKnowledgeError`. | [ASSIST-62](assistant.md#assist-62--project-root-workbench-form-resolution-atomic-cachesession-writes-and-resilient-_graph_fact-parsing) | Source inspection of `src/haute/assistant/_application.py::_PreparedGraph.build`, `src/haute/assistant/_data_check.py::_bound`, `src/haute/assistant/_project_knowledge.py::_write_cache`, `src/haute/assistant/_project_knowledge.py::_graph_fact` and `src/haute/assistant/_session.py::SessionStore._persist`. |
 
 ## Validation — 2 November 2026
 

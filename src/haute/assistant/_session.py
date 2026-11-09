@@ -48,11 +48,17 @@ from typing import Any, TypeAlias, cast
 from uuid import uuid4
 
 from haute._credential_security import redact_sensitive_text
+from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute.assistant._build_plan import BuildPlan
 from haute.assistant._ops import SourceEvidenceLedger
-from haute.assistant._render import TurnRecord, render_omitted_turns, render_turn_record
+from haute.assistant._render import (
+    TurnRecord,
+    one_line,
+    render_omitted_turns,
+    render_turn_record,
+)
 from haute.schemas import AssistantBuildPlan, AssistantChangeRecord, AssistantTurnOutcome
 
 logger = get_logger(component="assistant.session")
@@ -353,15 +359,6 @@ _PERSISTED_TOOL_EVIDENCE_KEYS = frozenset(
 _MAX_SESSION_TITLE_CHARS = 80
 
 
-def _session_title(text: str) -> str:
-    """Render one conversation title from its opening user message."""
-
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= _MAX_SESSION_TITLE_CHARS:
-        return collapsed
-    return collapsed[: _MAX_SESSION_TITLE_CHARS - 1].rstrip() + "…"
-
-
 @dataclass(frozen=True, slots=True)
 class SessionSummary:
     """One conversation as the chat list shows it, without its transcript.
@@ -583,18 +580,6 @@ class AssistantTurn:
 
         return len(self.messages)
 
-    def as_dict(self) -> dict[str, JSONValue]:
-        """Return the JSON-shaped turn record."""
-
-        return {
-            "messages": [message.as_dict() for message in self.messages],
-            "outcome": None if self.outcome is None else self.outcome.model_dump(),
-            "undone": [record.model_dump(mode="json") for record in self.undone],
-            "build_plan": (
-                None if self.build_plan is None else self.build_plan.model_dump(mode="json")
-            ),
-        }
-
     def record(self) -> TurnRecord:
         """This turn as a compact record for a later turn's provider history.
 
@@ -685,24 +670,8 @@ class AssistantSession:
         for turn in self.history:
             for message in turn.messages:
                 if message.role == "user" and isinstance(message.content, str):
-                    return _session_title(message.content)
+                    return one_line(message.content, _MAX_SESSION_TITLE_CHARS)
         return ""
-
-    def as_dict(self) -> dict[str, JSONValue]:
-        """Return the serializable session state, excluding the live lock."""
-
-        return {
-            "id": self.id,
-            "source_file": self.source_file,
-            "history": [turn.as_dict() for turn in self.history],
-            "build_plan": (
-                None
-                if self.build_plan.current is None
-                else self.build_plan.current.model_dump(mode="json")
-            ),
-            "created_at": self.created_at,
-            "last_used": self.last_used,
-        }
 
     def as_persisted_dict(self) -> dict[str, JSONValue]:
         """Return restartable history with provider-working payloads redacted."""
@@ -858,9 +827,7 @@ class SessionStore:
         try:
             path = self._storage_dir() / f"{session.id}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(session.as_persisted_dict()), encoding="utf-8")
-            os.replace(tmp, path)
+            atomic_write_text(path, json.dumps(session.as_persisted_dict()))
         except OSError:
             logger.warning("assistant_session_persist_failed", session_id=session.id, exc_info=True)
 
@@ -871,6 +838,7 @@ class SessionStore:
             return
         try:
             base = self._storage_dir()
+            # What an earlier version's fixed temporary left behind.
             for path in base.glob("*.json.tmp"):
                 session_id = path.name.removesuffix(".json.tmp")
                 if _SESSION_ID_PATTERN.fullmatch(session_id) is not None:
@@ -991,27 +959,38 @@ class SessionStore:
             message_count=session.stored_message_count,
         )
 
-    def list_sessions(self, source_file: str | os.PathLike[str]) -> tuple[SessionSummary, ...]:
+    def _persisted_summaries(self, source: str) -> dict[str, SessionSummary]:
+        """Summaries of this source's persisted files; reads no live record."""
+
+        if self._storage_dir is None:
+            return {}
+        try:
+            paths = sorted(self._storage_dir().glob("*.json"))
+        except OSError:
+            logger.warning("assistant_session_list_failed", exc_info=True)
+            return {}
+        summaries: dict[str, SessionSummary] = {}
+        for path in paths:
+            summary = self._persisted_summary(path)
+            if summary is not None and summary[0] == source:
+                summaries[summary[1].session_id] = summary[1]
+        return summaries
+
+    async def list_sessions(
+        self, source_file: str | os.PathLike[str]
+    ) -> tuple[SessionSummary, ...]:
         """Return this pipeline's conversations, most recently used first.
 
-        A session with no messages is omitted: `create` persists immediately,
-        so an abandoned "new chat" would otherwise sit in the list as an
-        untitled empty row. Live sessions take precedence over their persisted
-        copy, which can lag by one turn.
+        The persisted files are read and parsed on a worker thread, so a long
+        list blocks no other request; the merge with the event-loop-owned live
+        records runs back on the loop. A session with no messages is omitted:
+        `create` persists immediately, so an abandoned "new chat" would
+        otherwise sit in the list as an untitled empty row. Live sessions take
+        precedence over their persisted copy, which can lag by one turn.
         """
 
         source = self._source_file_text(source_file)
-        summaries: dict[str, SessionSummary] = {}
-        if self._storage_dir is not None:
-            try:
-                paths = sorted(self._storage_dir().glob("*.json"))
-            except OSError:
-                logger.warning("assistant_session_list_failed", exc_info=True)
-                paths = []
-            for path in paths:
-                summary = self._persisted_summary(path)
-                if summary is not None and summary[0] == source:
-                    summaries[summary[1].session_id] = summary[1]
+        summaries = await asyncio.to_thread(self._persisted_summaries, source)
         for session_id in self._sessions:
             session = self._sessions.peek(session_id)
             if session is None or session.source_file != source:

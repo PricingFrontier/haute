@@ -1682,6 +1682,29 @@ class TestTurnOutcome:
         }
         assert _stored_outcome(store, session_id) == terminal.outcome
 
+    async def test_an_unverified_save_without_a_record_still_ends_committed_unverified(
+        self, store, session_id
+    ):
+        provider = _dry_run_then(
+            [
+                ToolCallRequest("apply-1", "apply_graph_plan", {"plan_hash": "a" * 64}),
+                TurnStop("tool_use", _usage()),
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "apply_graph_plan":
+                return {"error": {"code": "verification_failed", "message": "Unverified."}}
+            return {"plan_hash": "a" * 64}
+
+        events = await _run(
+            store, session_id, "build a pipeline", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.kind == "committed_unverified"
+        assert terminal.outcome.changes == []
+
     async def test_a_save_that_fails_verification_ends_committed_unverified(
         self, store, session_id
     ):
@@ -2157,6 +2180,111 @@ class TestLimits:
         assert terminal.type == "failed"
         assert "time" in terminal.message.lower()
 
+    async def test_a_deadline_during_a_slow_consumer_ends_with_a_failed_event(
+        self, store, session_id
+    ):
+        """The deadline must end the turn, never cancel the task reading its stream."""
+        from haute.assistant._loop import run_turn
+
+        provider = ScriptedProvider(
+            [[TextDelta(text="first"), TextDelta(text="second"), TurnStop("end", _usage())]]
+        )
+        stream = run_turn(
+            store,
+            session_id,
+            "slow reader",
+            provider=provider,
+            tools=[],
+            execute_tool=None,
+            system_prompt="system prompt under test",
+            turn_timeout=0.05,
+            max_tool_calls=8,
+        )
+
+        events = [await anext(stream)]
+        await asyncio.sleep(0.1)
+        events.extend([event async for event in stream])
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "failed"
+        assert "time" in terminal.message.lower()
+
+    async def test_a_deadline_at_a_tools_started_event_never_runs_the_tool(self, store, session_id):
+        """A shielded apply must not begin a save after the turn's time is up."""
+        from haute.assistant._loop import run_turn
+
+        provider = ScriptedProvider(
+            [[ToolCallRequest("t1", "apply_graph_plan", {}), TurnStop("tool_use", _usage())]]
+        )
+        executed: list[str] = []
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            executed.append(name)
+            return {"ok": True}
+
+        events = []
+        async for event in run_turn(
+            store,
+            session_id,
+            "slow reader",
+            provider=provider,
+            tools=[],
+            execute_tool=execute_tool,
+            system_prompt="system prompt under test",
+            turn_timeout=0.05,
+            max_tool_calls=8,
+        ):
+            events.append(event)
+            if event.type == "tool_started":
+                await asyncio.sleep(0.1)
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.type == "failed"
+        assert "time" in terminal.message.lower()
+        assert executed == []
+        stored = store.lookup(session_id).history[-1].messages
+        assert [message.tool_call_id for message in stored if message.role == "tool"] == ["t1"]
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            pytest.param([TextDelta("no stop follows")], id="stream-ends-without-a-stop"),
+            pytest.param([object()], id="unknown-event"),
+        ],
+    )
+    async def test_a_provider_breaking_the_event_contract_fails_the_turn(
+        self, store, session_id, script
+    ):
+        provider = ScriptedProvider([script])
+
+        events = await _run(store, session_id, "hi", provider=provider)
+
+        assert _assert_single_terminal(events).type == "failed"
+
+    async def test_a_tool_call_with_no_executor_fails_the_turn(self, store, session_id):
+        from haute.assistant._loop import run_turn
+
+        provider = ScriptedProvider(
+            [[ToolCallRequest("t1", "get_pipeline", {}), TurnStop("tool_use", _usage())]]
+        )
+
+        events = [
+            event
+            async for event in run_turn(
+                store,
+                session_id,
+                "hi",
+                provider=provider,
+                tools=[],
+                execute_tool=None,
+                system_prompt="system prompt under test",
+                turn_timeout=5.0,
+                max_tool_calls=8,
+            )
+        ]
+
+        assert _assert_single_terminal(events).type == "failed"
+
     async def test_a_provider_stream_runs_under_the_turns_deadline(self, store, session_id):
         """A provider's pre-stream retry waits only within the turn: each step of
         its stream, and of any stream it wraps, sees the turn's deadline, and
@@ -2164,15 +2292,15 @@ class TestLimits:
 
         import time
 
-        from haute.assistant._providers import current_turn_deadline
+        from haute.assistant._providers import _TURN_DEADLINE
 
         seen: list[float | None] = []
 
         class DeadlineProvider:
             async def stream_turn(self, *, system, messages, tools):
-                seen.append(current_turn_deadline())
+                seen.append(_TURN_DEADLINE.get())
                 yield TextDelta("hi")
-                seen.append(current_turn_deadline())
+                seen.append(_TURN_DEADLINE.get())
                 yield TurnStop("end", _usage())
 
         started = time.monotonic()
@@ -2182,7 +2310,7 @@ class TestLimits:
         assert _assert_single_terminal(events).type == "completed"
         assert len(seen) == 2 and seen[0] == seen[1]
         assert seen[0] is not None and started + 30 <= seen[0] <= finished + 30
-        assert current_turn_deadline() is None
+        assert _TURN_DEADLINE.get() is None
 
     async def test_provider_error_becomes_failed_event(self, store, session_id):
         provider = ScriptedProvider(
@@ -2579,17 +2707,12 @@ class TestSystemPrompt:
         assert "natural-language hints" not in prompt
 
     def test_provider_tool_contract_has_no_request_text_input(self):
-        import inspect
-
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _provider_tools(TOOL_DEFINITIONS)
+        routed = TOOL_DEFINITIONS
         dry_run = next(tool for tool in routed if tool["name"] == "dry_run_graph_edits")
         branches = dry_run["input_schema"]["properties"]["ops"]["items"]["oneOf"]
 
-        assert tuple(inspect.signature(_provider_tools).parameters) == ("tools",)
-        assert routed == tuple(TOOL_DEFINITIONS)
         assert [tool["name"] for tool in routed] == [
             "get_pipeline",
             "inspect_node",
@@ -2756,11 +2879,10 @@ class TestSystemPrompt:
         each recipe's arguments, and the primitive edit and postcondition items keep
         their contracts."""
 
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import _compatible_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _compatible_tools(_provider_tools(TOOL_DEFINITIONS))
+        routed = _compatible_tools(TOOL_DEFINITIONS)
         schema = next(
             tool["input_schema"] for tool in routed if tool["name"] == "dry_run_graph_edits"
         )
@@ -2784,11 +2906,10 @@ class TestSystemPrompt:
         assert "kind" in schema["properties"]["postconditions"]["items"]["properties"]
 
     def test_dataset_tool_schema_is_the_same_for_every_request(self):
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import _compatible_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _compatible_tools(_provider_tools(TOOL_DEFINITIONS))
+        routed = _compatible_tools(TOOL_DEFINITIONS)
         schema = next(tool["input_schema"] for tool in routed if tool["name"] == "find_data")
 
         assert schema["properties"]["directory"]["type"] == "string"
@@ -3082,7 +3203,8 @@ class TestCompactedHistory:
         assert not any("provider_content" in message for message in provider.calls[2]["messages"])
         session = store.lookup(session_id)
         assert session is not None
-        assert "provider_content" not in str(session.as_dict())
+        stored = [message.as_dict() for turn in session.history for message in turn.messages]
+        assert "provider_content" not in str(stored)
 
     async def test_a_second_replay_in_one_round_fails_the_turn(self, store, session_id):
         from haute.assistant._providers import ReplayContent
@@ -3205,14 +3327,6 @@ class TestSessionStoreMisuse:
         assert len(store) == 1
         assert session.id in store
         assert "ghost" not in store
-
-    def test_session_as_dict_excludes_the_live_lock(self):
-        store = SessionStore()
-        session = store.create("a.py")
-        store.append(session, _turn("u", "a"))
-        dumped = store.lookup(session.id).as_dict()
-        assert "lock" not in dumped
-        assert dumped["history"][0]["messages"][0]["content"] == "u"
 
 
 class TestNeutralRecordValidationSweep:

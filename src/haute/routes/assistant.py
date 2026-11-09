@@ -137,6 +137,20 @@ def _http_error_detail(exc: Exception, operation: str) -> str:
     return _INTERNAL_ERROR_DETAIL
 
 
+async def _message_config() -> AssistantConfig:
+    """The configuration one message runs under, resolved once, or the 400 saying why not.
+
+    A send asks Git nothing: whether a turn may save is the tools' to check.
+    """
+
+    try:
+        return await asyncio.to_thread(resolve_assistant_config)
+    except HauteError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=_http_error_detail(exc, "readiness")) from None
+
+
 def _readiness() -> AssistantStatusResponse:
     """Read readiness and translate malformed configuration at the HTTP edge."""
 
@@ -227,7 +241,7 @@ async def list_assistant_sessions(
     """
 
     bound_source = await _bound_source_file(source_file)
-    summaries = session_store.list_sessions(bound_source)
+    summaries = await session_store.list_sessions(bound_source)
     return AssistantSessionListResponse(
         source_file=bound_source,
         sessions=[
@@ -348,11 +362,7 @@ class _ReservedStreamingResponse(StreamingResponse):
 async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResponse:
     """Start one provider turn and return its typed SSE event stream."""
 
-    readiness = await asyncio.to_thread(_readiness)
-    if not readiness.configured:
-        raise HTTPException(
-            status_code=400, detail=readiness.reason or "Assistant is not configured"
-        )
+    config = await _message_config()
     # The source file needs no session, so it resolves before the reservation;
     # comparing it with the session's binding waits until the session is held.
     source_file = await _bound_source_file(body.source_file)
@@ -365,10 +375,8 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         reservation = await _loop.reserve_turn(session_store, body.session_id)
     except _loop.UnknownSessionError:
         raise HTTPException(status_code=404, detail="Unknown assistant session") from None
-    except _loop.ConcurrentTurnError:
-        raise HTTPException(
-            status_code=409, detail="An assistant turn is already running"
-        ) from None
+    except _loop.ConcurrentTurnError as exc:
+        raise HTTPException(status_code=409, detail=exc.to_payload()) from None
     session = reservation.session
 
     try:
@@ -383,7 +391,6 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
                 ),
             )
         try:
-            config = resolve_assistant_config()
             provider = _provider_factory(config)
         except ConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None

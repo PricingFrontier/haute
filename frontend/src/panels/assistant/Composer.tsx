@@ -37,11 +37,11 @@ export default function Composer({
 
   const send = () => {
     if (!text.trim() || disabled) return
-    setText("")
     void useAssistantStore.getState().sendMessage(text, {
       isInsideSubmodel,
       currentSourceFile,
       readOnly,
+      onSent: () => setText(""),
     })
   }
 

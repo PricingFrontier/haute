@@ -327,9 +327,11 @@ cannot partially append text or activity.
   (`haute.toml`) beside "Check again"; any other failure offers a retry.
 - **Session-list fetch failure** leaves the transcript untouched and renders a retryable error state on
   the list screen; it never blanks the panel.
-- **Send-time rejections** (400 unconfigured, 404 stale session, 409 concurrent turn) map to
+- **Send-time rejections** (400 unconfigured, 404 stale session, 409 concurrent turn,
+  recognised by its `assistant_turn_running` code) map to
   distinct inline messages; the stale-session case offers starting a new chat, and none of
-  them silently retry.
+  them silently retry. Any other HTTP failure renders as `failed` with the server's detail.
+  A message the send gate refuses stays in the composer.
 - **A `failed` terminal event** renders the backend-provided error message inline at the
   failure point plus an error toast; the composer re-enables.
 - **A transport drop mid-stream** (network error, aborted reader without a terminal event)

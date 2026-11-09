@@ -16,6 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
@@ -55,6 +56,7 @@ from haute._interactive_workers import (
     resolve_interactive_execution_mode,
     run_in_interactive_worker,
 )
+from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._node_specs import STRUCTURAL_NODE_TYPES, WORKBENCH_NODE_TYPES, node_spec
 from haute._pipeline_settings import project_pipeline_settings
@@ -129,6 +131,7 @@ from haute.assistant._render import (
     render_context_update,
     render_pipeline_graph,
 )
+from haute.assistant._wire_ops import MAX_TOOL_CONTEXT_BYTES, MAX_TOOL_PAYLOAD_BYTES
 from haute.errors import (
     ConfigSettingError,
     HauteError,
@@ -136,7 +139,7 @@ from haute.errors import (
     PathOutsideProjectError,
     PreambleError,
 )
-from haute.execution import execute_lazy_graph
+from haute.execution import execute_lazy_graph, runtime_input_signed_paths
 from haute.executor import (
     _build_node_fn,
     _compile_preamble,
@@ -168,8 +171,8 @@ _DENIED_DATASET_NAMES = frozenset(
 )
 _DENIED_DATASET_DIRECTORIES = frozenset({"credentials", "secrets"})
 _PLAN_STORE = PlanStore()
-_MAX_TOOL_PAYLOAD_BYTES = 1_000_000
-_MAX_TOOL_CONTEXT_BYTES = 256_000
+_MAX_TOOL_PAYLOAD_BYTES = MAX_TOOL_PAYLOAD_BYTES
+_MAX_TOOL_CONTEXT_BYTES = MAX_TOOL_CONTEXT_BYTES
 _MAX_LISTED_DATASETS = 200
 _MAX_LISTED_DATASET_DIRECTORIES = 200
 _MAX_VISITED_DATASET_DIRECTORIES = 500
@@ -315,6 +318,39 @@ def _submitted_names(submitted: object) -> set[str]:
     return names
 
 
+class _ToolCallPolicy:
+    """The egress policy of one tool call, read from ``haute.toml`` at most once.
+
+    *policy* seeds it where the call continues in a spawned worker, which cannot
+    inherit this context and must not read the configuration again.
+    """
+
+    def __init__(self, policy: EgressPolicy | None = None) -> None:
+        self._lock = threading.Lock()
+        self._policy = policy
+
+    def get(self) -> EgressPolicy:
+        with self._lock:
+            if self._policy is None:
+                self._policy = resolve_egress_policy(current_project().root)
+            return self._policy
+
+
+#: Set by the tool executor around one call. A context variable, because the
+#: error paths that decide what a message may quote run deep below the tools
+#: and on the worker threads ``asyncio.to_thread`` copies the context to.
+_TOOL_CALL_POLICY: ContextVar[_ToolCallPolicy | None] = ContextVar(
+    "assistant_tool_call_policy", default=None
+)
+
+
+def _egress_policy() -> EgressPolicy:
+    """The project's egress policy: once per tool call, or read afresh outside one."""
+
+    call = _TOOL_CALL_POLICY.get()
+    return resolve_egress_policy(current_project().root) if call is None else call.get()
+
+
 def _submitted_scalars(submitted: object) -> set[str]:
     """The text of every scalar the operations the model sent hold."""
 
@@ -346,7 +382,7 @@ def _config_setting_message(
     if exc.values:
         try:
             if policy is None:
-                policy = resolve_egress_policy(current_project().root)
+                policy = _egress_policy()
             readable = _part_requirement(policy, "config") is None
         except Exception:  # noqa: BLE001 - an unreadable policy withholds
             readable = False
@@ -532,7 +568,7 @@ def _execution_failure(
     elif line is not None:
         summary += f" at line {line} of the node code"
     try:
-        policy = resolve_egress_policy(current_project().root)
+        policy = _egress_policy()
         allowed = policy.allow_row_samples
         allow_executable_source = policy.allow_executable_source
         withheld_because = (
@@ -1177,7 +1213,7 @@ def get_pipeline(source_file: str) -> dict[str, object]:
     """Return the saved graph in the assistant's compact graph shape."""
 
     try:
-        policy = resolve_egress_policy(current_project().root)
+        policy = _egress_policy()
         graph = _parse_graph(source_file)
         project_revision = _project_revision(source_file, graph)
         return {
@@ -1194,8 +1230,9 @@ class TurnContextError(HauteError):
 
 # The brief's resolved facts for the latest project revisions. A revision covers
 # the pipeline file, `haute.toml` and the capability hash, so an edit always
-# misses; a data file's header is read again only when the revision changes. The
-# tables the workbench nodes take from the form join the key (`_cached_brief_nodes`).
+# misses. The revision does not cover the data files the schemas are read from or
+# the tables the workbench nodes take from the form, so both join the key
+# (`_cached_brief_nodes`).
 _BRIEF_CACHE: OrderedDict[str, tuple[BriefNode, ...]] = OrderedDict()
 _BRIEF_CACHE_SIZE = 8
 _BRIEF_CACHE_LOCK = threading.Lock()
@@ -1384,12 +1421,38 @@ def _brief_flat(graph: PipelineGraph) -> PipelineGraph:
         return flatten_graph(graph)
 
 
+def _freshness_token(path: str) -> object:
+    """A file's freshness record, never its content; ``None`` when it cannot be read."""
+
+    try:
+        return freshness_record(Path(path))
+    except OSError:
+        return None
+
+
+def _brief_input_freshness(flat: PipelineGraph) -> dict[str, object] | None:
+    """The freshness of each file the brief's schemas come from, or None if unlistable.
+
+    A node too broken to name its files is not a failure of the brief, which
+    marks that node unresolved; the brief is then resolved afresh, uncached.
+    """
+
+    try:
+        paths = runtime_input_signed_paths(flat)
+    except Exception as exc:  # noqa: BLE001 - a broken node only marks itself unresolved
+        logger.info("assistant_turn_context_inputs_unlisted", error=type(exc).__name__)
+        return None
+    return {str(path): _freshness_token(str(path)) for path in paths}
+
+
 def _cached_brief_nodes(graph: PipelineGraph, revision: str) -> tuple[BriefNode, ...]:
     flat = _brief_flat(graph)
-    # The project revision does not cover the form folder the workbench nodes take their
-    # tables from, so the tables they were given key the brief beside it.
-    given = [node.data.config for node in flat.nodes if node.data.nodeType in WORKBENCH_NODE_TYPES]
-    key = f"{revision}:{content_hash_bytes(canonical_json(given).encode('utf-8'))}"
+    inputs = _brief_input_freshness(flat)
+    if inputs is None:
+        return _brief_nodes(graph, flat)
+    tables = [node.data.config for node in flat.nodes if node.data.nodeType in WORKBENCH_NODE_TYPES]
+    material = canonical_json({"inputs": inputs, "tables": tables})
+    key = f"{revision}:{content_hash_bytes(material.encode('utf-8'))}"
     with _BRIEF_CACHE_LOCK:
         cached = _BRIEF_CACHE.get(key)
         if cached is not None:
@@ -1535,7 +1598,7 @@ def node_config(source_file: str, node: str) -> dict[str, object]:
     """`inspect_node`'s config part, with executable and secret values redacted by policy."""
 
     try:
-        policy = resolve_egress_policy(current_project().root)
+        policy = _egress_policy()
         required = _part_requirement(policy, "config")
         if required is not None:
             return _error(
@@ -1666,6 +1729,7 @@ class _ColumnProfileRequest:
     graph: PipelineGraph
     node: str
     input_name: str | None
+    policy: EgressPolicy
 
 
 # One running profile per assistant session: a newer call stops an older one.
@@ -1678,7 +1742,7 @@ def _prepare_column_profile(
     """Gate, parse and validate on the server; return the request or an error."""
 
     try:
-        policy = resolve_egress_policy(current_project().root)
+        policy = _egress_policy()
         required = _part_requirement(policy, "profile")
         if required is not None:
             return _error(
@@ -1703,7 +1767,7 @@ def _prepare_column_profile(
             f"Node {node!r} has no input named {input_name!r}.",
             inputs=[item.name for item in inputs],
         )
-    return _ColumnProfileRequest(graph, node, input_name), project_revision
+    return _ColumnProfileRequest(graph, node, input_name, policy), project_revision
 
 
 def _profile_failure_site(request: _ColumnProfileRequest) -> _FailureSite:
@@ -1790,9 +1854,11 @@ def _run_column_profile_worker(
     """The preview worker's half: profile under the budget the server admitted."""
 
     context = create_isolated_execution_context(budget)
+    policy_token = _TOOL_CALL_POLICY.set(_ToolCallPolicy(request.policy))
     try:
         return _collect_column_profile(request, context)
     finally:
+        _TOOL_CALL_POLICY.reset(policy_token)
         context.release_admission(preserve_primary_error=True)
 
 
@@ -1870,13 +1936,16 @@ def _profile_worker_failure(
 
 
 async def column_profiles(
-    source_file: str,
-    node: str,
-    input_name: str | None = None,
+    request: _ColumnProfileRequest,
+    project_revision: str,
     *,
     session_id: str,
 ) -> dict[str, object]:
     """`inspect_node`'s profile part: the values in one node frame, without returning rows.
+
+    *request* is prepared under the save lock; the frame is collected here,
+    outside it, because a collection can run to the pipeline time limit and
+    every save, on every server process of the project, would wait for it.
 
     This is the only part that reads data, and it never emits a row: a value
     only appears as a distinct level of a small-cardinality column, alongside
@@ -1887,10 +1956,7 @@ async def column_profiles(
     editor preview.
     """
 
-    prepared = await asyncio.to_thread(_prepare_column_profile, source_file, node, input_name)
-    if isinstance(prepared, dict):
-        return prepared
-    request, project_revision = prepared
+    node, input_name = request.node, request.input_name
     token = ExecutionCancellationToken()
     session_key = ("assistant_column_profiles", session_id)
     try:
@@ -2017,8 +2083,9 @@ async def inspect_node(
     A part that fails is reported under ``part_errors`` with its error while
     the other parts answer; when no permitted part answers, the call fails
     with the first failing part's error, naming the part. The parts read the
-    saved graph under the save lock; the data part's check runs after the
-    lock is released, and a check that does not run is its answer.
+    saved graph under the save lock; the profile's collection and the data
+    part's check run after the lock is released, and a check that does not
+    run is its answer.
     """
 
     if input_name is not None and "profile" not in parts:
@@ -2036,7 +2103,7 @@ async def inspect_node(
             validation_reason="column_without_data",
         )
     try:
-        policy = resolve_egress_policy(current_project().root)
+        policy = _egress_policy()
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error("egress_policy_unavailable", _error_message(exc, operation="inspect_node"))
     requested = [part for part in INSPECT_NODE_PARTS if part in parts]
@@ -2060,6 +2127,16 @@ async def inspect_node(
     failures: dict[str, dict[str, object]] = {}
     revisions: set[object] = set()
     data_request: NodeDataCheckRequest | None = None
+    profile_request: _ColumnProfileRequest | None = None
+
+    def record(part: str, answer: dict[str, object]) -> None:
+        if isinstance(answer.get("error"), Mapping):
+            failures[part] = answer
+            return
+        revisions.add(answer.pop("project_revision"))
+        answer.pop("node")
+        result[part] = answer
+
     async with save_lock:
         for part in permitted:
             if part == "data":
@@ -2071,21 +2148,26 @@ async def inspect_node(
                     continue
                 data_request, revision = prepared
                 revisions.add(revision)
-                continue
-            if part == "schema":
-                answer = await asyncio.to_thread(node_schema, source_file, node)
-            elif part == "config":
-                answer = await asyncio.to_thread(node_config, source_file, node)
+            elif part == "profile":
+                prepared_profile = await asyncio.to_thread(
+                    _prepare_column_profile, source_file, node, input_name
+                )
+                if isinstance(prepared_profile, dict):
+                    failures[part] = prepared_profile
+                    continue
+                profile_request, profile_revision = prepared_profile
+            elif part == "schema":
+                record(part, await asyncio.to_thread(node_schema, source_file, node))
             else:
-                answer = await column_profiles(source_file, node, input_name, session_id=session_id)
-            if isinstance(answer.get("error"), Mapping):
-                failures[part] = answer
-                continue
-            revisions.add(answer.pop("project_revision"))
-            answer.pop("node")
-            result[part] = answer
+                record(part, await asyncio.to_thread(node_config, source_file, node))
+    if profile_request is not None:
+        record(
+            "profile",
+            await column_profiles(profile_request, profile_revision, session_id=session_id),
+        )
     if len(failures) == len(permitted):
-        part, failure = next(iter(failures.items()))
+        part = next(part for part in permitted if part in failures)
+        failure = failures[part]
         return {"error": {**cast(Mapping[str, object], failure["error"]), "part": part}}
     if len(revisions) != 1:
         raise RuntimeError("inspect_node parts described different project revisions")
@@ -2383,7 +2465,7 @@ def get_project_knowledge(
 
     try:
         project_root = current_project().root
-        policy = resolve_egress_policy(project_root)
+        policy = _egress_policy()
         view = build_project_knowledge(project_root, source_file, policy=policy)
         items = query_project_knowledge(view, query, limit=limit)
         for item in items:
@@ -2408,7 +2490,8 @@ def get_project_knowledge(
         return {
             "items": list(items),
             "excluded_by_policy_count": len(view.excluded_by_policy),
-            "cache_hit": view.cache_hit,
+            "omitted_document_count": view.omitted_documents,
+            "index_unchanged": view.index_unchanged,
             "policy_hash": policy.policy_hash,
             "trust": policy.trust,
             "max_sensitivity": policy.max_sensitivity,
@@ -3586,7 +3669,11 @@ def build_tool_executor(
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         started = time.monotonic()
-        result = _with_retryable(await _dispatch_tool(name, arguments))
+        token = _TOOL_CALL_POLICY.set(_ToolCallPolicy())
+        try:
+            result = _with_retryable(await _dispatch_tool(name, arguments))
+        finally:
+            _TOOL_CALL_POLICY.reset(token)
         _log_tool_outcome(name, result, elapsed_ms=(time.monotonic() - started) * 1000)
         return result
 
@@ -3600,7 +3687,7 @@ def build_tool_executor(
             )
         if name in _INTERNAL_PROJECT_TOOLS:
             try:
-                policy = resolve_egress_policy(current_project().root)
+                policy = _egress_policy()
             except Exception as exc:  # noqa: BLE001 - executor must not raise
                 return _attributed_tool_result(
                     name,

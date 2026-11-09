@@ -14,7 +14,7 @@ from typing import Any, cast
 from haute._graph_utils import _sanitize_func_name
 from haute._node_specs import SINGLETON_NODE_NAMES
 from haute.assistant._node_descriptions import recipe_node_type
-from haute.assistant._wire_ops import OpValidationError, parse_ops
+from haute.assistant._wire_ops import OpValidationError, freeze_json, parse_ops
 
 
 class RecipeError(Exception):
@@ -24,14 +24,6 @@ class RecipeError(Exception):
         super().__init__(message)
         self.code = code
         self.context = MappingProxyType(dict(context))
-
-
-def _freeze(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
-    if isinstance(value, list | tuple):
-        return tuple(_freeze(item) for item in value)
-    return value
 
 
 _CATEGORICAL_VALUE_DESCRIPTION = (
@@ -198,7 +190,7 @@ def _descriptor(
     properties = schemas[identifier]
     return cast(
         Mapping[str, object],
-        _freeze(
+        freeze_json(
             {
                 "id": identifier,
                 "version": "1",

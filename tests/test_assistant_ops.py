@@ -2669,6 +2669,29 @@ class TestPlanStore:
             store.get(plan.plan_hash)
         assert exc.value.code == "plan_expired"
 
+    def test_a_plan_revalidated_late_stays_applicable_for_a_full_ttl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant import _ops
+        from haute.assistant._ops import PlanStore, build_graph_edit_plan, build_project_snapshot
+
+        now = [100.0]
+        monkeypatch.setattr(_ops, "monotonic", lambda: now[0])
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        plan = build_graph_edit_plan(
+            build_project_snapshot(tmp_path, source, _graph([_node("source")])),
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+        store = PlanStore(ttl_seconds=10)
+        store.put(plan, _RECEIPT)
+
+        now[0] += 9.5
+        store.put(plan, _RECEIPT)
+        now[0] += 9.5
+
+        assert store.begin_apply(plan.plan_hash) == plan
+
     @pytest.mark.parametrize("ending", ["complete", "abort"])
     def test_plans_awaiting_use_are_bounded_and_a_lease_does_not_count(
         self, tmp_path: Path, ending: str

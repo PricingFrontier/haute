@@ -12,6 +12,7 @@ import asyncio
 import copy
 import json
 import math
+import sys
 import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -23,6 +24,7 @@ from inspect import isawaitable
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeAlias
 
+from haute._credential_security import redact_sensitive_text
 from haute._env import int_env
 from haute._logging import get_logger
 from haute.assistant._catalog import MUTATING_OPERATION_IDS, OPERATION_IDS
@@ -30,6 +32,7 @@ from haute.assistant._config import (
     DEFAULT_TURN_TIMEOUT,
     TURN_TIMEOUT_ENV,
     AssistantConfig,
+    endpoint_url,
     unsupported_anthropic_model,
 )
 from haute.errors import ConfigError, HauteError
@@ -144,12 +147,6 @@ def turn_deadline(deadline: float) -> Iterator[None]:
         _TURN_DEADLINE.reset(token)
 
 
-def current_turn_deadline() -> float | None:
-    """The running turn's deadline while a provider stream step runs, else ``None``."""
-
-    return _TURN_DEADLINE.get()
-
-
 def _retry_after_seconds(error: Exception) -> float | None:
     """The wait a failed request's ``Retry-After`` response header asks for, in seconds.
 
@@ -180,39 +177,47 @@ def _retry_after_seconds(error: Exception) -> float | None:
 _PROVIDER_CONNECT_TIMEOUT_SECONDS = 30.0
 
 
-def _failure_category(error: Exception) -> str:
-    """Classify an SDK exception by its class name, without logging."""
+#: The SDK packages whose exception hierarchies classify a provider failure.
+_SDK_MODULES = ("anthropic", "openai")
 
-    class_name = type(error).__name__.lower()
-    if "auth" in class_name or "permission" in class_name:
-        return "authentication"
-    if "rate" in class_name or "ratelimit" in class_name:
-        return "rate_limit"
-    if any(word in class_name for word in ("connection", "timeout", "network")):
-        return "connection"
-    if "status" in class_name or class_name in {
-        "badrequesterror",
-        "internalservererror",
-        "apierror",
-    }:
-        return "status"
+
+def _failure_category(error: Exception) -> str:
+    """Classify an exception by the SDKs' own hierarchies, without logging.
+
+    An SDK's exception exists only once that SDK is imported, so one that is
+    not loaded has nothing to match. Anything neither hierarchy claims is a
+    failure of the opened stream.
+    """
+
+    for module in _SDK_MODULES:
+        sdk = sys.modules.get(module)
+        if sdk is None:
+            continue
+        if isinstance(error, (sdk.AuthenticationError, sdk.PermissionDeniedError)):
+            return "authentication"
+        if isinstance(error, sdk.RateLimitError):
+            return "rate_limit"
+        if isinstance(error, sdk.APIConnectionError):
+            return "connection"
+        if isinstance(error, sdk.APIStatusError):
+            return "status"
     return "stream"
 
 
-def _classify_sdk_error(provider: str, error: Exception) -> AssistantProviderError:
+def _classify_sdk_error(provider: str, error: Exception, *, api_key: str) -> AssistantProviderError:
     """Map an SDK exception class to a sanitized failure category.
 
-    The raw provider error is logged server-side for the operator — the
-    sanitization contract only forbids leaking it into the chat stream.
-    Without this log a quota/authentication failure is undiagnosable from
-    ``haute serve`` output.
+    The provider error is logged server-side for the operator, redacted,
+    because its text embeds the HTTP response body. The sanitization contract
+    forbids leaking it into the chat stream. Without this log a
+    quota/authentication failure is undiagnosable from ``haute serve`` output.
     """
 
     logger.warning(
         "assistant_provider_request_failed",
         provider=provider,
         error_class=type(error).__name__,
-        detail=str(error),
+        detail=redact_sensitive_text(str(error), known_secrets=(api_key,)),
     )
     return _provider_error(
         provider, _failure_category(error), "the provider request could not be completed"
@@ -1068,9 +1073,12 @@ def _load_anthropic_client(config: AssistantConfig) -> Any:
     except ImportError as exc:
         raise _sdk_import_failure("anthropic", "anthropic", exc) from exc
     try:
-        return anthropic.AsyncAnthropic(api_key=config.api_key)
+        return anthropic.AsyncAnthropic(
+            api_key=config.api_key,
+            base_url=endpoint_url(config.provider, config.base_url),
+        )
     except Exception as exc:
-        raise _classify_sdk_error("anthropic", exc) from exc
+        raise _classify_sdk_error("anthropic", exc, api_key=config.api_key) from exc
 
 
 def _load_openai_client(config: AssistantConfig, provider: str = "openai") -> Any:
@@ -1084,16 +1092,15 @@ def _load_openai_client(config: AssistantConfig, provider: str = "openai") -> An
     read_timeout = float(int_env(TURN_TIMEOUT_ENV, DEFAULT_TURN_TIMEOUT))
     kwargs: dict[str, Any] = {
         "api_key": config.api_key,
+        "base_url": endpoint_url(config.provider, config.base_url),
         "timeout": openai.Timeout(read_timeout, connect=_PROVIDER_CONNECT_TIMEOUT_SECONDS),
     }
-    if config.base_url is not None:
-        kwargs["base_url"] = config.base_url
     if provider == "databricks":
         kwargs["max_retries"] = 0
     try:
         return openai.AsyncOpenAI(**kwargs)
     except Exception as exc:
-        raise _classify_sdk_error(provider, exc) from exc
+        raise _classify_sdk_error(provider, exc, api_key=config.api_key) from exc
 
 
 def _json_string(value: object) -> str:
@@ -1259,6 +1266,10 @@ class AnthropicProvider:
         finished: dict[int, dict[str, Any]] = {}
         thought = False
         wire_tools = _canonical_tools(tools, "anthropic")
+        wire_messages = _anthropic_messages(
+            messages,
+            system_context=self.config.model in MID_CONVERSATION_SYSTEM_MODELS,
+        )
 
         try:
             stream = self.client.messages.stream(
@@ -1266,10 +1277,7 @@ class AnthropicProvider:
                 # The one cache breakpoint: tools render before the system
                 # prompt, so it caches both. Everything per-turn is in messages.
                 system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                messages=_anthropic_messages(
-                    messages,
-                    system_context=self.config.model in MID_CONVERSATION_SYSTEM_MODELS,
-                ),
+                messages=wire_messages,
                 tools=wire_tools,
                 max_tokens=self.config.max_output_tokens,
                 thinking={"type": "adaptive"},
@@ -1455,7 +1463,7 @@ class AnthropicProvider:
         except AssistantProviderError:
             raise
         except Exception as exc:
-            raise _classify_sdk_error("anthropic", exc) from exc
+            raise _classify_sdk_error("anthropic", exc, api_key=self.config.api_key) from exc
 
 
 def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1815,7 +1823,7 @@ class OpenAIProvider:
         except AssistantProviderError:
             raise
         except Exception as exc:
-            raise _classify_sdk_error(self.provider_name, exc) from exc
+            raise _classify_sdk_error(self.provider_name, exc, api_key=self.config.api_key) from exc
         finally:
             close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
             if callable(close):

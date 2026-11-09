@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 
 from haute.assistant._providers import TextDelta, TurnStop
 from haute.assistant._session import SessionStore
-from haute.schemas import AssistantChangeRecord
+from haute.schemas import ASSISTANT_MESSAGE_CHAR_LIMIT, AssistantChangeRecord
 from tests._project import project_app, use_project
 
 pytestmark = pytest.mark.usefixtures("project_root")
@@ -242,23 +242,22 @@ class TestSessionList:
         response = client.get("/api/assistant/sessions")
         assert response.status_code == 422
 
-    def test_reads_the_store_on_its_event_loop_thread(
-        self,
-        client: TestClient,
-        store: SessionStore,
-        monkeypatch: pytest.MonkeyPatch,
+    @pytest.mark.parametrize(
+        "message",
+        [
+            pytest.param("", id="empty"),
+            pytest.param(" \n\t", id="blank"),
+            pytest.param("x" * (ASSISTANT_MESSAGE_CHAR_LIMIT + 1), id="over-long"),
+        ],
+    )
+    def test_a_message_out_of_bounds_is_refused_before_any_stream(
+        self, client: TestClient, store: SessionStore, message: str
     ):
-        original = store.list_sessions
+        session = store.create("main.py")
 
-        def list_sessions(source_file: str):
-            asyncio.get_running_loop()
-            return original(source_file)
+        response = client.post("/api/assistant/message", json=_message(session.id, message))
 
-        monkeypatch.setattr(store, "list_sessions", list_sessions)
-
-        response = client.get("/api/assistant/sessions", params=_CANVAS)
-
-        assert response.status_code == 200, response.text
+        assert response.status_code == 422
 
     def test_unknown_source_file_is_404(self, client: TestClient, store: SessionStore):
         response = client.get("/api/assistant/sessions", params={"source_file": "nope.py"})
@@ -454,7 +453,6 @@ class TestMessageTurn:
         configured: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        import asyncio
 
         session_id = self._session(client)
         session = store.lookup(session_id)
@@ -468,8 +466,62 @@ class TestMessageTurn:
         try:
             response = client.post("/api/assistant/message", json=_message(session_id))
             assert response.status_code == 409
+            assert response.json()["detail"]["error_code"] == "assistant_turn_running"
         finally:
             session.lock.release()
+
+    def test_an_unexpected_config_failure_is_a_sanitized_500(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        configured: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.routes.assistant as assistant_routes
+
+        session_id = self._session(client)
+
+        def broken() -> None:
+            raise RuntimeError("private path /srv/secret")
+
+        monkeypatch.setattr(assistant_routes, "resolve_assistant_config", broken)
+
+        response = client.post("/api/assistant/message", json=_message(session_id))
+
+        assert response.status_code == 500
+        assert "/srv/secret" not in response.text
+
+    def test_a_send_resolves_its_config_once_and_asks_git_nothing(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        configured: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.routes.assistant as assistant_routes
+        from haute import _git
+        from haute.assistant._providers import ProviderUsage
+
+        def no_git(*_args, **_kwargs):
+            raise AssertionError("a send must not run git")
+
+        monkeypatch.setattr(_git, "working_branch_status", no_git)
+        resolved: list[object] = []
+        original = assistant_routes.resolve_assistant_config
+
+        def counting():
+            config = original()
+            resolved.append(config)
+            return config
+
+        monkeypatch.setattr(assistant_routes, "resolve_assistant_config", counting)
+        _patch_provider(monkeypatch, [TextDelta("hello"), TurnStop("end", ProviderUsage(1, 1))])
+        session_id = self._session(client)
+
+        response = client.post("/api/assistant/message", json=_message(session_id))
+
+        assert response.status_code == 200, response.text
+        assert len(resolved) == 1
 
     def test_happy_path_streams_sse_events(
         self,
@@ -731,7 +783,6 @@ class TestTurnReservation:
     async def test_concurrent_sends_get_exactly_one_stream_and_one_409(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        import asyncio
         import threading
         import time as time_module
 

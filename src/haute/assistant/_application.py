@@ -90,7 +90,7 @@ from haute.modelling._train_config import (
     training_objective_issue,
 )
 from haute.routes._helpers import commit_pipeline_graph, parse_pipeline_to_graph, save_lock
-from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._save_pipeline import SavePipelineService, StaleDocumentRevisionError
 from haute.routes._training_preparation import build_training_feature_selection
 from haute.schemas import AssistantChangeDataCheck, AssistantChangeRecord, AssistantGraphChanges
 
@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from haute.assistant._data_check import DataCheckResult
 
 _MAX_SCHEMA_TARGETS = 100
+_STALE_PLAN_MESSAGE = "The saved project changed after this plan was validated"
 
 MutationReadiness = Callable[[Path], tuple[bool, str | None]]
 # Publishes the current on-disk editor document for *source_file* to live
@@ -1260,15 +1261,23 @@ class PipelineApplicationService:
         self,
         source_file: str,
         plan: GraphEditPlan,
-    ) -> tuple[PipelineGraph, PipelineGraph, GraphEditPlan]:
+    ) -> tuple[PipelineGraph, PipelineGraph, GraphEditPlan, str | None]:
+        """Authenticate *plan* against the saved project and derive the graph it saves.
+
+        Also returns the editor revision of the document it authenticated, which
+        the commit's save precondition names. ``save_lock`` cannot exclude an
+        external editor, so that revision is read on both sides of the snapshot's
+        reads: equal, they prove the snapshot describes that document.
+        """
         source = self._source_path(source_file)
+        document_revision = self._document_revision(source_file)
         before = self._parse_graph(source)
         snapshot = self._snapshot_for_plan(source_file, before, plan)
-        if snapshot.revision != plan.base_revision:
-            raise AssistantOperationError(
-                "stale_revision",
-                "The saved project changed after this plan was validated",
-            )
+        if (
+            snapshot.revision != plan.base_revision
+            or self._document_revision(source_file) != document_revision
+        ):
+            raise AssistantOperationError("stale_revision", _STALE_PLAN_MESSAGE)
         wire = plan.as_dict()
         raw_operations = wire["normalized_operations"]
         raw_postconditions = wire["postconditions"]
@@ -1290,7 +1299,7 @@ class PipelineApplicationService:
                 "invalid_plan",
                 "The stored plan no longer matches its canonical payload",
             )
-        return before, verified.result_graph, recomputed
+        return before, verified.result_graph, recomputed, document_revision
 
     def _document_revision(self, source_file: str) -> str | None:
         source = self._source_path(source_file)
@@ -1323,16 +1332,19 @@ class PipelineApplicationService:
         source_file: str,
         after: PipelineGraph,
         receipt: PlanReceipt,
+        document_revision: str | None,
     ) -> Any:
-        # Plan freshness was proven against the assistant snapshot under
-        # ``save_lock``; the save precondition wants the editor protocol's
-        # document revision, so read it now, still under that lock.
-        return self._save(
-            source_file,
-            after,
-            base_revision=self._document_revision(source_file),
-            commit_message=change_headline(receipt.summary),
-        )
+        # *document_revision* is the one preparation authenticated. Reading a
+        # fresh one here would bless an external edit made since then.
+        try:
+            return self._save(
+                source_file,
+                after,
+                base_revision=document_revision,
+                commit_message=change_headline(receipt.summary),
+            )
+        except StaleDocumentRevisionError as exc:
+            raise AssistantOperationError("stale_revision", _STALE_PLAN_MESSAGE) from exc
 
     def _verify_commit(
         self,
@@ -1393,7 +1405,7 @@ class PipelineApplicationService:
             receipt = self.plan_store.receipt(plan_hash)
             stored_check = self.plan_store.data_check(plan_hash)
             try:
-                before, after, recomputed = await asyncio.to_thread(
+                before, after, recomputed, document_revision = await asyncio.to_thread(
                     self._prepare_apply,
                     source_file,
                     plan,
@@ -1405,7 +1417,9 @@ class PipelineApplicationService:
                 raise
 
             try:
-                response = await asyncio.to_thread(self._commit, source_file, after, receipt)
+                response = await asyncio.to_thread(
+                    self._commit, source_file, after, receipt, document_revision
+                )
             except BaseException:
                 self.plan_store.abort_apply(plan_hash)
                 raise

@@ -7,11 +7,11 @@
 | `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in the routes package and is not re-exported here. |
 | `src/haute/assistant/_config.py` | Resolves assistant configuration: the outer `[assistant]` table is closed to provider/model/base URL/egress and the required nested `[assistant.egress]` table is closed to trust, maximum sensitivity, and the three `allow_*` booleans. It validates endpoint/trust combinations and credential-free OpenAI URLs before SDK/key probing. The first-class Databricks mode rejects `base_url`, reads DATABRICKS_HOST / DATABRICKS_TOKEN, validates a credential-free HTTPS workspace-root host, and derives `<host>/serving-endpoints`. Other credentials come from their named environment variables. It produces `AssistantConfig`/`AssistantReadiness` including safe endpoint host, trust, and sensitivity status. It owns `ADAPTIVE_THINKING_MODELS`, the Claude models the Anthropic adapter runs, and `unsupported_anthropic_model`, the not-ready reason for any other Anthropic model, which readiness reports and the adapter raises. |
 | `src/haute/assistant/_catalog.py` | The versioned capability registry, the assistant's one node catalogue. It derives mechanical node facts and resolved JSON Schemas from Haute's canonical types, config validation, config I/O, node registry, Polars I/O registry, and save validation, and each node type's display name and input cardinality from the node specification (`haute._node_specs`); reads the hand-authored semantic metadata (summary, usage note, schema effect, ports, wiring, anti-patterns, examples, recipes) from `_node_descriptions.py`; declares the closed operation descriptors consumed by the tool layer; serves each node type's card from `_node_cards.py` as its descriptor's `card`, and at import refuses a card configuration whose keys fall outside that type's closed config schema; computes canonical manifest identity; and caches immutable manifests by installed version plus capability hash. It also holds the activity-row titles and the running tool call's progress reporter (`report_tool_progress`, which a tool calls to retitle its row, and `tool_progress_reporter`, which the loop sets for each call). |
-| `src/haute/assistant/_node_descriptions.py` | The assistant's per-type table, `ASSISTANT_NODE_DESCRIPTIONS`: a `haute._node_specs.node_type_table` holding one frozen `AssistantNodeDescription` per `NodeType`, so a type without a description fails at import. It gathers what only the assistant needs about a type: the descriptor prose (summary, usage note, schema effect, input and output ports in words, the wiring rule or its type-specific sentences, anti-patterns, linked examples and recipes, a non-lazy execution class), the graph-edit facts (the field naming each config list's entries, a workbench type's wire-to-its-tables hint, an Explore's pivot-step fix, Quote Response's `output_mapping` rows), the config parser a written node must pass, the readiness check (training or file load), and the data check's parts (the structured configuration it measures, whether the builder binds the preamble, the Load File types it never opens, the artifact a preview would fetch). Facts other modules also read (display name, input cardinality and roles, request input, workbench, structural role, scenario router, code surface) stay on the node specification. It also holds `INPUT_NAMING_RULE` and `recipe_node_type`, the type a recipe creates (the one whose `recipes` lists it). It sits below every assistant module that reads it, importing only the node specification at import (a config parser loads its parser when it runs), and at import refuses a description that disagrees with the specification: a read-only hint exactly on the workbench types, input ports in words exactly on the types taking several, optional or structural inputs, and each recipe creating one type. |
+| `src/haute/assistant/_node_descriptions.py` | The assistant's per-type table, `ASSISTANT_NODE_DESCRIPTIONS`: a `haute._node_specs.node_type_table` holding one frozen `AssistantNodeDescription` per `NodeType`, so a type without a description fails at import. It gathers what only the assistant needs about a type: the descriptor prose (summary, usage note, schema effect, input and output ports in words, the wiring rule or its type-specific sentences, anti-patterns, linked examples and recipes, a non-lazy execution class), the graph-edit facts (the field naming each config list's entries, a workbench type's wire-to-its-tables hint, an Explore's pivot-step fix, Quote Response's `output_mapping` rows), the config parser a written node must pass, the readiness check (training or file load), and the data check's parts (the structured configuration it measures, whether the builder binds the preamble, the Load File types it never opens, the artifact a preview would fetch). Facts other modules also read (display name, input cardinality and roles, request input, workbench, structural role, scenario router, code surface) stay on the node specification. It also holds `INPUT_NAMING_RULE` and `recipe_node_type`, the type a recipe creates (the one whose `recipes` lists it). It sits below every assistant module that reads it, importing only the node specification and the Load File types at import (a config parser loads its parser when it runs), and at import refuses a description that disagrees with the specification: a read-only hint exactly on the workbench types, input ports in words exactly on the types taking several, optional or structural inputs, and each recipe creating one type. |
 | `src/haute/assistant/_node_cards.py` | Loads and validates the packaged node cards (read via `importlib.resources`, cached). Exactly one card per `NodeType` must exist, each a closed JSON object: an authorable card has `fields` (config path to meaning), `inputs` (edge, optional source and target handles, column-to-dtype map), `configs` (exactly `minimal` then `realistic`, each with `intent`, `config`, `produces` and optionally its own `inputs`) and a `fixture`; a card for a type the assistant cannot author has only `authorable: false` and a `note`. A missing, unexpected or malformed card raises `NodeCardError`. `node_card(node_type)` returns the model-facing card without its fixture; `node_card_fixture(node_type)` returns the fixture for the CI harness, or nothing for a non-authorable card. |
 | `src/haute/assistant/assets/node_cards/<nodeType>.json` | One node card per node type, library content with no project data. Its closed `fixture` holds `frames` (tiny rows, with `dates` naming string columns to parse as Date, each written to `data/<name>.parquet` and added as a Data Input only when the plan reads it), `files` (project paths to JSON values or text), `upstream` and `downstream` operations placed around the card node, `model_run` (the frame and features of a tiny CatBoost model logged to the project's local MLflow folder, whose run id replaces the card's `run_id` placeholder), and `expect` (per-configuration expected rows of produced columns). |
 | `src/haute/assistant/_assets.py` | Loader and verifier for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `example_index()` lists only bundles whose manifest sets `teaching: true`, and `load_example(name)` refuses any other name as an unknown example; for a teaching bundle it materialises the complete example tree for validation, then returns only a self-contained model-facing attribution/narrative/rendered-graph view, its node configurations rendered with their values, with no inaccessible resource inventory. `validate_example_bundles()` checks closed manifests, content digests, evidence-resource roles, graph/schema assertions, positional golden output, and the declared installed-package fast checks; `materialize_example_bundle()` copies one already-validated project into an empty destination for specialist ordinary/negative checks. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured error listing valid names. |
-| `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and the deterministic `expand_recipe_operations`, which expands each recipe operation of a dry-run batch in place through `expand_recipe`. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Explanation-only requests do not route to mutations, while a later explicit sequenced authoring clause retains mutation intent. Each expansion is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code with the index of the `recipe` operation. |
+| `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and the deterministic `expand_recipe_operations`, which expands each recipe operation of a dry-run batch in place through `expand_recipe`. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Each expansion is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code with the index of the `recipe` operation. |
 | `src/haute/assistant/_project_knowledge.py` | Source-linked project-knowledge extraction, bounded query selection, and disposable content-addressed index. Derives a saved-graph fact, a value-free `haute.toml` digest fact, and allowlisted UTF-8 documentation evidence; labels unmarked document sensitivity as restricted; records source digest/extraction version/evidence class; filters by `EgressPolicy`; and atomically refreshes metadata-only cache state under `.haute/assistant/knowledge/`. An allowlisted document that is not valid UTF-8 fails the read with a typed, project-relative error instead of silently disappearing. Dataset schemas remain a separate schema-only tool result. |
 | `scripts/run_assistant_self_test.py` | Developer-facing evaluation harness, outside the installed package, for both tiers of [the assistant evaluation](evaluation.md), and its live runner. It loads the closed case format v5 (`load_self_test_cases`: area, split, egress profile, inapplicable variants and one or more turns, each with its expectations, a recovery case's declared data findings among them, their kinds checked against `ADVISORY_KINDS`, which is read from the data check's closed finding shapes) and reference trajectories (`load_trajectories`), copies each case's project fixture into a caller-supplied empty work directory, logs the fixture's model artefacts into the copy's local MLflow folder and writes their run ids over the Model Scoring placeholders (`prepare_fixture_models`), writes the case's egress profile (one of `EGRESS_PROFILES`, as `egress_policy` defines it) at the invoking project's provider trust, never the invoking project's own allowances, into the copy (`self_test_config`; `evaluation_trust` refuses an external provider), binds the sandbox project root to that copy for the case and restores it afterwards, builds every snapshot-backed input's snapshot as a preview does (`prepare_fixture_snapshots`), initializes the real Git mutation gate, and runs every turn of the case in one session through the provider-neutral loop with the real tool executor, built each turn on the session's evidence ledger and build plan as the message route builds it, with the turn context carrying that plan (`run_self_test_case`); a case transcript records each build-plan update beside the text, tool calls and outcome. `TrajectoryProvider` and `replay_self_test_case` replay a trajectory with `$result` substitution and raise `TrajectoryDivergedError` when a tool result's status or error code differs from the recording. After each turn the harness executes that turn's golden nodes of the flattened saved graph under their scenarios and compares each with its golden by column name (`execute_goldens`; an exception the saved pipeline raises there is an execution reason naming its class and message) and `score_turn` scores the protocol (from the completed event's typed outcome and its saved changes), structure, configuration (subsets matched recursively, same-length lists element by element), collateral, editor and execution layers and any efficiency limits, and beside them the data findings layer (`score_data_findings`: the checks the model received, read from each tool result by `received_check`; the harness's check of the saved graph over the turn's `changed_nodes`, run through `run_node_data_check` in a preview worker under a session of its own by `final_data_check`; and the change cards' checks, `change_card`), which judges the saved graph, gates a case only in the `recovery` area and classifies each turn for the recovery metric as recovered, avoided or not recovered by what it received and its saved graph; `frames_equal` is the one frame comparison and `config_digest` the per-node configuration digest. `VARIANTS` names the configuration variants; the one-apply-per-turn variant is applied by the observed provider, which ends the turn in place of the round after a saving apply, the canonical-tools variant by rebuilding the case's Databricks provider with the canonical tool projection (`canonical_tools_provider`; any other provider is refused before the case runs, since the other lanes already receive it), and a case is never run under a variant it lists as inapplicable. The command (`python -m scripts.run_assistant_self_test`) has `record`, which runs each selected case that applies to the variant live in its own spawned process inside a directory the parent removes once that process has exited, records a case that raises or whose process ends abruptly as that case's crash (`crashed_result`) and goes on to the next, and writes the report, with the inapplicable cases listed as not applicable, and, on request, transcripts; `compare` and `list` make no provider call. A case run in process mode starts the interactive preview workers inside its project copy, as the server starts them, and shuts them down with the case (`_preview_workers`), so its dry-runs' data checks run; a transcript records each tool result whole, a dry-run's data check included. |
 | `scripts/assistant_eval_report.py` | The evaluation's report and comparison, outside the installed package: `report_payload` builds the closed content-redacted report v7 (run identity, the run's recovery metric, per-area counts of cases run, passed, crashed and not applicable, with the data findings counts, the area's recovery metric (cases that received an advisory finding, recovered and avoided one, and the recovered-within-budget rate, recovered over received) and the median of each efficiency metric over the cases that did not crash, per-case egress profile, correctness layers, first failing layer, reasons, crash traceback, data findings layer and metrics, per-turn data findings by kind, node, status and reason, per-turn outcome, saved-change count, graph structure and value-free tool diagnostics, and the cases not applicable to the run's variant, listed apart) from results of one evidence kind, `write_report` writes it atomically, `compare_reports` compares two reports of one evidence kind per area (counts, data findings counts and recovery metrics, flips with their first failing layer among the cases both ran, data findings flips between passed and failed, both runs' recovery metrics with the differences of their rates and avoided counts, each report's not-applicable cases, cases only one report holds, metric medians and their differences), `write_transcript` writes one live case's local-only transcript, and `load_support_matrix` reads the closed support matrix v2 that attributes a live report to a configuration. |
@@ -239,7 +239,12 @@ orphaned halves).
 - **`AssistantProviderError(HauteError)`** (`src/haute/assistant/_providers.py`): hand-authored message carrying
   provider name and a classified failure such as `authentication`, `rate_limit`,
   `connection`, `status`, `stream`, `dependency`, `malformed_stream`, `truncated`, or
-  `filtered` — never the raw provider response body.
+  `filtered` — never the raw provider response body. `authentication`, `rate_limit`,
+  `connection` and `status` come from `isinstance` against the installed SDKs' own
+  status and connection hierarchies; `stream` is every exception neither claims. A
+  request is built before the `try` that classifies, so a defect translating the
+  history reaches the loop's internal-error path. The operator log carries the error
+  through `redact_sensitive_text` with the API key as a known secret.
 - **`GraphEditOp`** (discriminated union, `_ops.py`), addressing nodes by id (the function
   name shown by `get_pipeline`) or — within one batch — by `$<ref>`, the batch-local handle
   a preceding `add_node` declared. Refs are resolved server-side to the real sanitised node
@@ -372,7 +377,7 @@ orphaned halves).
   the `node_config` postconditions — so a change beyond the fiftieth in its
   category is verified like the first.
 - **`PlanStore`**: process-local, size- and TTL-bounded records keyed by plan
-  hash, held in the shared `LRUCache`. It owns validated/applying/applied/aborted state transitions under a
+  hash, held in the shared `LRUCache`. A dry-run that reissues a still-validated plan restarts its TTL. It owns validated/applying/applied/aborted state transitions under a
   lock. An applied record cannot return to validated. A failed pre-commit
   application becomes aborted and cannot be applied directly again; an
   identical fresh dry-run may replace that aborted record and reissue the same
@@ -795,9 +800,10 @@ conversation bound to that source file, carrying id, title, created/last-used ti
 and message count, most recently used first. The title is the opening user message,
 whitespace-collapsed and bounded to 80 characters. Summaries are read directly from the
 persisted files rather than through `_revive`: listing must not pull every stored
-conversation into the retained LRU, where it would evict live sessions. Like every other
-store operation, the merge with live records runs synchronously on the asyncio event-loop
-thread; moving that call to a worker would race the event-loop-owned mapping. A live
+conversation into the retained LRU, where it would evict live sessions. The files are read
+and parsed on a worker thread, so a long list blocks no other request; like every other
+store operation, the merge with live records runs on the asyncio event-loop thread, because
+moving it to a worker would race the event-loop-owned mapping. A live
 session takes precedence over its persisted copy, which can lag by one
 turn; an unreadable or malformed file is a logged warning treated as absent, matching the
 store's existing degradation posture. A conversation with no messages is omitted, because
@@ -855,13 +861,18 @@ the turn that follows.
 
 **Message turn** (`POST /api/assistant/message` → SSE stream from `_loop.run_turn`):
 
-1. Readiness is checked before session lookup (400 before the stream opens if
-   unconfigured). This ordering means an unconfigured request reports the configuration
-   problem even when its session id is also unknown. The request's `source_file` is then
+0. A message must hold non-whitespace text and at most `ASSISTANT_MESSAGE_CHAR_LIMIT`
+   (256 KiB) characters, or the request is answered 422 before any stream opens: it would
+   otherwise be sent to the provider in every round and persisted on every append.
+1. The provider configuration is resolved once, before session lookup (400 before the
+   stream opens if unconfigured). This ordering means an unconfigured request reports the
+   configuration problem even when its session id is also unknown. A send runs no `git`:
+   the Git working-branch state only decides whether a mutation may save, and the
+   mutation tools check it themselves. The request's `source_file` is then
    resolved (see Source file binding); it needs no session, so it happens before the
    reservation.
 2. Look up the session (404) and atomically acquire its lock without waiting — held →
-   409. The reservation happens before provider construction or pipeline parsing; either
+   409, whose detail carries the stable `error_code` `assistant_turn_running`. The reservation happens before provider construction or pipeline parsing; either
    pre-stream failure releases it immediately, while a started turn releases it from the
    loop/response lifecycle and appends the turn to history. A resolved `source_file` that
    differs from the session's binding releases the reservation and is refused with 409
@@ -1212,8 +1223,11 @@ the turn that follows.
    `get_project_knowledge`) hold the
    process-wide `save_lock` across their worker-thread operation, so a concurrent save cannot
    interleave graph parsing with schema or value resolution; `inspect_node` takes the lock
-   itself around its parts' reads, so that its data part's check, which may wait up to its
-   deadline, runs after the lock is released. The schema part
+   itself around its parts' reads, so that the profile part's collection, bounded only by
+   the pipeline time limit, and the data part's check, which may wait up to its deadline,
+   run after the lock is released: only the parse and the request built from it need the
+   lock, and each part keeps the revision it read under it. One tool call resolves the
+   egress policy once. The schema part
    (`node_schema`) parses the
    saved pipeline, then proceeds in this order:
    1. **Validate the target id against the original hierarchical graph** — a submodel
@@ -1536,7 +1550,12 @@ the turn that follows.
    streaming and before each tool dispatch, and passed to the provider: the loop runs each
    step of a provider stream (`anext`) inside `turn_deadline(deadline)` and never across a
    `yield`, so the context variable is set and reset in one context and any stream the
-   provider wraps sees it, and an adapter's pre-stream retry never waits past it; and a
+   provider wraps sees it, and an adapter's pre-stream retry never waits past it. The
+   deadline bounds each awaited step on its own (`_step_limit`) and is checked before each
+   stream step: a timeout held across a `yield` would cancel the task reading the stream
+   rather than the turn, leaving no terminal event. No tool is dispatched once the deadline
+   has passed, counting the time a slow reader took at its started event; the recorded call
+   gets a `tool_interrupted` result. The second limit is a
    per-turn tool-call cap
    (`HAUTE_ASSISTANT_MAX_TOOL_CALLS`). Hitting either aborts the provider stream and emits
    `failed` naming the limit. A non-mutating tool still running at the deadline is cancelled
@@ -1617,7 +1636,7 @@ the turn that follows.
   once and classified as below, so the turn fails as `rate_limit` (or `connection`) rather
   than at its time limit. The deadline reaches the adapter through
   `turn_deadline(deadline)`, a context variable the loop sets around each `anext` of a
-  provider stream (read with `current_turn_deadline()`); outside a turn there is none and
+  provider stream; outside a turn there is none and
   only the schedule's count bounds the retries. Each retry is logged as
   `assistant_provider_request_retry` by provider identity, failure class, SDK exception class
   name, ordinal, delay and its source (`schedule` or `retry_after`) without the raw
@@ -1829,6 +1848,13 @@ the turn that follows.
   those sources, replays the exact plan, saves, reparses, verifies, and publishes
   under the process-wide `save_lock`. A GUI save before apply therefore produces
   `stale_revision`; a GUI save after apply is a distinct later save.
+- **Apply saves against the revision it authenticated.** `save_lock` cannot exclude an
+  external editor, so `_prepare_apply` reads the editor document revision before and
+  after the reads that build the snapshot and refuses `stale_revision` unless the two
+  agree. `_commit` passes that revision as the save's `base_revision` and never reads
+  a fresh one, which would treat an intervening edit as the authorised baseline; the
+  save's `StaleDocumentRevisionError` becomes `stale_revision`, and the external bytes
+  are untouched.
 - **A batch is all-or-nothing**: op validation failures abort before the save; a mid-save
   failure rolls back every staged file (the save service's existing `_TouchedFile`
   snapshot/rollback); in both cases the pipeline on disk is exactly what it was.
@@ -2134,8 +2160,8 @@ the turn that follows.
   snapshot then includes `sources()`, so a current entry that is missing or changed fails
   it naming the file and the refreshing call, and a carried entry that still holds binds
   the plan. An apply checks its plan's own source manifest and never reads the ledger. The
-  ledger is live state on `AssistantSession`, omitted from `as_dict` and
-  `as_persisted_dict`, so a revived session starts with an empty one.
+  ledger is live state on `AssistantSession`, omitted from `as_persisted_dict`, so a
+  revived session starts with an empty one.
 - **Build plan**: `update_build_plan {items?, complete?}` first passes its closed input
   schema (`items`: one to twelve `{id, title}` objects, `id` matching
   `^[a-z][a-z0-9_]{0,31}$` and `title` one to 80 characters; `complete`: an item id). A

@@ -59,19 +59,9 @@ follow-up checked the job log.
 Priorities follow the roadmap convention: P1 threatens saved work, calculated
 results or security; P2 materially affects correctness, UX or assurance; P3 covers
 the limited-impact or rare-input items. The review recorded 42 groups: 13 P1, 25 P2 and
-4 P3. Groups whose packages were delivered have since been removed, so the tables hold
-the open ones. The table keeps what is open of the ten initial finding groups; every
-full-source finding has been delivered. A group is not an individual failing assertion
-or a release-wide blocker count.
-
-| Priority | Trigger and observed consequence | Owning package | Evidence strength |
-|---|---|---|---|
-| P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-
-The first implementation pass should address the P1 packages before opportunistic
-cleanup. Each package includes the expected behaviour, scope, regression scenarios
-and dependencies. These additions are not assigned delivery rounds; adding them
-does not silently reorder the existing delivery plan.
+4 P3. Groups whose packages were delivered have since been removed; every group has now
+been delivered. A group is not an individual failing assertion or a release-wide
+blocker count.
 
 ## Reproduction details
 
@@ -184,14 +174,14 @@ adds a finding group or changes the 42-group count.
 | Candidate scope | Disposition |
 |---|---|
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |
-| assistant undo/state fencing | Duplicate **ASSIST-60**. |
+| assistant undo/state fencing | Delivered: the chat panel's failures and clicks (the retired assistant roadmap's ASSIST-60). |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Delivered: one project context (the pipeline-config roadmap's PCFG-R04). |
-| Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
+| Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Delivered: the retired assistant roadmap's ASSIST-55, ASSIST-57, ASSIST-58, ASSIST-59 and ASSIST-54 respectively. The recipe-consolidation note names no additional behavior. |
 | CLI/init/deploy existing gaps | Delivered: impact alignment, build ownership and dependency closure (the retired deploy roadmap's DEP-R11, DEP-R12A and DEP-R09), and init overwrite, TOML mutation and hook behavior (the retired CLI roadmap's CLI-R01, CLI-R04 and CLI-R06). Generic CLI errors/eager reads name no additional concrete case. |
 | Hosted sign-in headers | Duplicate **WB-25**. |
-| Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
+| Asynchronous assistant tool blocking | Delivered: the retired assistant roadmap's ASSIST-57. |
 
 ### Pending notes resolved by accepted findings
 

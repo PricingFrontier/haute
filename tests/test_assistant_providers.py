@@ -29,10 +29,12 @@ Authored test-first per CLAUDE.md TDD.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from types import SimpleNamespace
+from typing import Any
 
 import anthropic
 import httpx
@@ -764,7 +766,7 @@ class TestAnthropicTurnPrefix:
         assert second_turn["messages"][0] == {"role": "user", "content": "What reads quotes?"}
         assert second_turn["messages"][1]["role"] == "assistant"
         assert second_turn["messages"][1]["content"].startswith("Done.\n\n## Turn record\n")
-        stored = json.dumps(store.lookup(session.id).as_dict())
+        stored = json.dumps(store.lookup(session.id).as_persisted_dict())
         assert "sig-1" not in stored and "provider_content" not in stored
 
 
@@ -1444,13 +1446,15 @@ class TestOpenAIProvider:
 _IMMEDIATE_RETRIES = {"connection": (0.0, 0.0), "rate_limit": (0.0, 0.0)}
 
 
-def _rate_limited(retry_after: str | None = None) -> openai.RateLimitError:
+def _rate_limited(
+    retry_after: str | None = None, *, message: str = "REQUEST_LIMIT_EXCEEDED"
+) -> openai.RateLimitError:
     """A real SDK rate-limit error, its 429 response carrying *retry_after*."""
 
     request = httpx.Request("POST", "https://workspace.example/serving")
     headers = {} if retry_after is None else {"Retry-After": retry_after}
     response = httpx.Response(429, request=request, headers=headers)
-    return openai.RateLimitError("REQUEST_LIMIT_EXCEEDED", response=response, body=None)
+    return openai.RateLimitError(message, response=response, body=None)
 
 
 class TestDatabricksProvider:
@@ -1473,17 +1477,11 @@ class TestDatabricksProvider:
         assert client.captured_kwargs["max_tokens"] == 1234
 
     async def test_retries_pre_stream_rate_limit_with_a_fixed_bound(self):
-        rate_limit_error = type("RateLimitError", (Exception,), {})
-
         class ImmediateRetryProvider(DatabricksProvider):
             pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
         client = _SequencedOpenAIClient(
-            [
-                rate_limit_error("first"),
-                rate_limit_error("second"),
-                _openai_text_tool_chunks(),
-            ]
+            [_rate_limited(), _rate_limited(), _openai_text_tool_chunks()]
         )
         events = await _collect(
             ImmediateRetryProvider(
@@ -1499,13 +1497,11 @@ class TestDatabricksProvider:
         assert client.calls == 3
 
     async def test_exhausted_pre_stream_rate_limit_stays_sanitized(self):
-        rate_limit_error = type("RateLimitError", (Exception,), {})
-
         class ImmediateRetryProvider(DatabricksProvider):
             pre_stream_retry_delays = {"rate_limit": (0.0,)}
 
         client = _SequencedOpenAIClient(
-            [rate_limit_error("secret-one"), rate_limit_error("secret-two")]
+            [_rate_limited(message="secret-one"), _rate_limited(message="secret-two")]
         )
         with pytest.raises(AssistantProviderError) as exc_info:
             await _collect(
@@ -1706,10 +1702,12 @@ class TestDatabricksProvider:
         class ImmediateRetryProvider(DatabricksProvider):
             pre_stream_retry_delays = _IMMEDIATE_RETRIES
 
-        authentication_error = type("AuthenticationError", (Exception,), {})
-        client = _SequencedOpenAIClient(
-            [authentication_error("secret"), _openai_text_tool_chunks()]
+        authentication_error = openai.AuthenticationError(
+            "secret",
+            response=httpx.Response(401, request=httpx.Request("POST", "https://w.example")),
+            body=None,
         )
+        client = _SequencedOpenAIClient([authentication_error, _openai_text_tool_chunks()])
         with pytest.raises(AssistantProviderError) as exc_info:
             await _collect(
                 ImmediateRetryProvider(
@@ -1946,7 +1944,6 @@ class TestDatabricksProvider:
         built for the canonical_tools variant. Every lane's wire tools are its
         projection of the canonical definitions."""
 
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import (
             _canonical_tools,
             _compatible_tools,
@@ -1954,7 +1951,7 @@ class TestDatabricksProvider:
         )
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed_tools = _provider_tools(TOOL_DEFINITIONS)
+        routed_tools = TOOL_DEFINITIONS
         canonical = {tool["name"]: tool["input_schema"] for tool in routed_tools}
         databricks = _config(
             "databricks", base_url="https://workspace.cloud.databricks.com/serving-endpoints"
@@ -2494,25 +2491,98 @@ class TestDatabricksProvider:
         assert exc_info.value.provider == "databricks"
 
 
-@pytest.mark.parametrize("sdk", [anthropic, openai])
+def _sdk_error(sdk: object, class_name: str, text: str = "") -> Exception:
+    """An instance of the installed SDK's exception, without its HTTP constructor."""
+
+    cls = getattr(sdk, class_name)
+    error = cls.__new__(cls)
+    error.args = (text,)
+    return error
+
+
+def _status_category(sdk: Any, cls: type) -> str:
+    if issubclass(cls, (sdk.AuthenticationError, sdk.PermissionDeniedError)):
+        return "authentication"
+    return "rate_limit" if issubclass(cls, sdk.RateLimitError) else "status"
+
+
+def _every_sdk_status_class() -> list[tuple[object, str, str]]:
+    return [
+        (sdk, name, _status_category(sdk, getattr(sdk, name)))
+        for sdk in (anthropic, openai)
+        # By name first: an older SDK's module-level client proxies build a client when touched.
+        for name in sorted(dir(sdk))
+        if name.endswith("Error") and issubclass(getattr(sdk, name), sdk.APIStatusError)
+    ]
+
+
 @pytest.mark.parametrize(
-    ("class_name", "category"),
+    ("sdk", "class_name", "category"),
     [
-        ("AuthenticationError", "authentication"),
-        ("RateLimitError", "rate_limit"),
-        ("APIConnectionError", "connection"),
-        ("APITimeoutError", "connection"),
-        ("BadRequestError", "status"),
-        ("InternalServerError", "status"),
+        *_every_sdk_status_class(),
+        *(
+            (sdk, name, category)
+            for sdk in (anthropic, openai)
+            for name, category in (
+                ("APIConnectionError", "connection"),
+                ("APITimeoutError", "connection"),
+                ("APIResponseValidationError", "stream"),
+            )
+        ),
     ],
+    ids=lambda value: getattr(value, "__name__", value),
 )
 def test_installed_sdk_exception_classes_keep_classification_contract(
     sdk: object, class_name: str, category: str
 ) -> None:
-    cls = getattr(sdk, class_name)
-    error = cls.__new__(cls)
-    classified = _classify_sdk_error(sdk.__name__, error)
+    classified = _classify_sdk_error(
+        sdk.__name__, _sdk_error(sdk, class_name), api_key="sk-test-secret"
+    )
     assert classified.failure_class == category
+
+
+def test_a_wrong_model_name_and_an_overloaded_endpoint_are_status_failures() -> None:
+    for sdk, name in ((anthropic, "NotFoundError"), (openai, "NotFoundError")):
+        classified = _classify_sdk_error(
+            sdk.__name__, _sdk_error(sdk, name), api_key="sk-test-secret"
+        )
+        assert classified.failure_class == "status"
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    overloaded = anthropic.APIStatusError(
+        "overloaded", response=httpx.Response(529, request=request), body=None
+    )
+    classified = _classify_sdk_error("anthropic", overloaded, api_key="sk-test-secret")
+    assert classified.failure_class == "status"
+
+
+@pytest.mark.parametrize(
+    ("provider", "adapter", "variable", "validated"),
+    [
+        ("anthropic", AnthropicProvider, "ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+        ("openai", OpenAIProvider, "OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    ],
+)
+def test_a_base_url_in_the_environment_never_redirects_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    adapter: type,
+    variable: str,
+    validated: str,
+) -> None:
+    monkeypatch.setenv(variable, "https://elsewhere.example/v1")
+
+    client = adapter(_config(provider)).client
+
+    assert str(client.base_url).rstrip("/") == validated
+
+
+def test_a_configured_openai_endpoint_is_the_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://elsewhere.example/v1")
+    configured = "https://gateway.example/v1"
+
+    client = OpenAIProvider(_config("openai", base_url=configured)).client
+
+    assert str(client.base_url).rstrip("/") == configured
 
 
 class TestErrorClassification:
@@ -2523,21 +2593,116 @@ class TestErrorClassification:
             ("PermissionDeniedError", "authentication"),
             ("RateLimitError", "rate_limit"),
             ("APIConnectionError", "connection"),
-            ("ReadTimeoutError", "connection"),
+            ("APITimeoutError", "connection"),
             ("InternalServerError", "status"),
-            ("APIStatusError", "status"),
-            ("SomethingUnexpected", "stream"),
+            ("NotFoundError", "status"),
         ],
     )
     async def test_stream_failures_classify_by_sdk_exception_class(
         self, class_name: str, category: str
     ):
-        error_type = type(class_name, (Exception,), {})
-        client = _FakeAnthropicClient([], error=error_type("secret detail DO-NOT-LEAK"))
+        error = _sdk_error(anthropic, class_name, "secret detail DO-NOT-LEAK")
+        client = _FakeAnthropicClient([], error=error)
         with pytest.raises(AssistantProviderError) as excinfo:
             await _collect(AnthropicProvider(_config("anthropic"), client=client))
         assert excinfo.value.failure_class == category
         assert "DO-NOT-LEAK" not in str(excinfo.value)
+
+    @pytest.mark.parametrize("class_name", ["AuthenticationError", "ReadTimeoutError", "Other"])
+    async def test_a_foreign_exception_is_a_stream_failure_whatever_its_name(self, class_name: str):
+        error = type(class_name, (Exception,), {})("detail")
+        client = _FakeAnthropicClient([], error=error)
+        with pytest.raises(AssistantProviderError) as excinfo:
+            await _collect(AnthropicProvider(_config("anthropic"), client=client))
+        assert excinfo.value.failure_class == "stream"
+
+    async def test_a_history_translation_error_is_not_a_provider_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant import _providers
+
+        def broken(*_args, **_kwargs):
+            raise ValueError("translation bug")
+
+        monkeypatch.setattr(_providers, "_anthropic_messages", broken)
+        client = _FakeAnthropicClient([])
+        with pytest.raises(ValueError, match="translation bug"):
+            await _collect(AnthropicProvider(_config("anthropic"), client=client))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            'Error: {"token": "abc123"}',
+            "Error code: 400 - {'error': {'token': 'abc123'}}",
+            '{"message": "bad", "token": "abc123"}',
+            '{"error": {"auth": {"password": "abc123"}}}',
+            'message: "invalid token=abc123"',
+            "password={abc123}",
+        ],
+    )
+    def test_a_credential_anywhere_in_an_error_body_is_redacted(self, body: str):
+        from haute._credential_security import redact_sensitive_text
+
+        assert "abc123" not in redact_sensitive_text(body)
+
+    def test_redaction_leaves_ordinary_error_fields_readable(self):
+        from haute._credential_security import redact_sensitive_text
+
+        body = "Error code: 404 - {'error': {'type': 'not_found', 'message': 'model: x'}}"
+
+        assert redact_sensitive_text(body) == body
+
+    def test_an_sdk_that_is_not_loaded_classifies_nothing(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delitem(sys.modules, "anthropic")
+
+        classified = _classify_sdk_error(
+            "openai", _sdk_error(openai, "RateLimitError"), api_key="sk-test-secret"
+        )
+
+        assert classified.failure_class == "rate_limit"
+
+    @pytest.mark.parametrize(
+        ("provider", "adapter", "sdk", "client"),
+        [
+            ("anthropic", AnthropicProvider, anthropic, "AsyncAnthropic"),
+            ("openai", OpenAIProvider, openai, "AsyncOpenAI"),
+        ],
+    )
+    def test_a_client_that_cannot_be_built_is_a_provider_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        adapter: type,
+        sdk: object,
+        client: str,
+    ):
+        def refuse(**_kwargs: object) -> None:
+            raise ValueError("bad client option")
+
+        monkeypatch.setattr(sdk, client, refuse)
+
+        with pytest.raises(AssistantProviderError) as excinfo:
+            adapter(_config(provider))
+
+        assert excinfo.value.failure_class == "stream"
+        assert "bad client option" not in str(excinfo.value)
+
+    def test_the_logged_provider_error_is_redacted(self):
+        import structlog.testing
+
+        body = (
+            """Error: {"message": "bad key sk-test-secret", "token": "abc123", 'secret': 'xyz'}"""
+        )
+        with structlog.testing.capture_logs() as captured:
+            _classify_sdk_error(
+                "anthropic",
+                _sdk_error(anthropic, "AuthenticationError", body),
+                api_key="sk-test-secret",
+            )
+
+        (event,) = [e for e in captured if e["event"] == "assistant_provider_request_failed"]
+        for secret in ("sk-test-secret", "abc123", "xyz"):
+            assert secret not in event["detail"]
 
     async def test_malformed_usage_value_is_provider_error(self):
         ns = SimpleNamespace
