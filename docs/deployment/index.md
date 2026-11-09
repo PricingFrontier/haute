@@ -8,7 +8,7 @@ Deployment packages a pricing pipeline for a serving target. For **Databricks**,
 !!! tip "Haven't built your pipeline yet?"
     These docs assume you already have a working pricing pipeline (`rating/main.py`). If you haven't created one yet, start with the **[Building Models](../building-models/index.md)** guide first, then come back here when you're ready to deploy.
 
-`haute init` generates CI examples, but they are ordinary workflow files that your team owns. They run Haute commands in sequence; they do **not** themselves provision infrastructure, create a staging environment, or enforce an approval policy. Review the generated workflow and configure your CI provider's own branch protections, environments, and approvals before relying on it for a release process.
+`haute init` generates CI examples, but they are ordinary workflow files that your team owns. They run Haute commands in sequence; they do **not** themselves provision infrastructure or create a staging environment. Review the generated workflows, and decide [who can start production](#who-can-start-production), before relying on them for a release process.
 
 ---
 
@@ -128,7 +128,7 @@ The starter pipeline contains **0 nodes**, giving you a blank canvas.
 
 ## The configuration file
 
-The most important generated file is `haute.toml` - a plain text file that says what gets deployed and where. You don't need to write it from scratch; `haute init` creates it pre-filled for your chosen target. Here's what a typical one looks like:
+The most important generated file is `haute.toml` - a plain text file that says what gets deployed and where. You don't need to write it from scratch; `haute init` creates it pre-filled for your chosen target. Here's the one it writes for a Databricks project named `motor-pricing` on GitHub:
 
 ```toml
 [project]
@@ -147,10 +147,10 @@ schema = "pricing"
 serving_workload_size = "Small"
 serving_scale_to_zero = true
 
-[test_quotes]
-dir = "tests/quotes"
-
 [safety]
+# `haute impact` compares staging with production on these quotes. Without a
+# sample it compares the test quotes; commit a Parquet sample of your book (not
+# under data/, which is gitignored) and name it here to compare that instead:
 # impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
@@ -175,10 +175,18 @@ Every target needs credentials to authenticate - for example, a Databricks acces
 
 Credentials live in **two places**:
 
-- **On your laptop** - in a `.env` file, so you can call the live endpoint locally (e.g. to run your own impact comparisons before pushing). Copy `.env.example` to `.env` and fill in the values. This file is gitignored and never shared.
-- **In your CI provider** - as encrypted secrets (GitHub Secrets, GitLab CI/CD Variables, or Azure DevOps Variable Groups), so the automated deploy pipeline can use them. Your IT team or tech lead usually sets these up once.
+- **On your laptop** - in a `.env` file. Copy `.env.example` to `.env` and fill in the values you have. The editor loads it when `haute serve` starts, and so does every Haute command that reads `haute.toml`, such as `haute ci secrets`, which copies the deploy's credentials from it into your CI provider. This file is gitignored and never shared.
+- **In your CI provider** - as encrypted secrets (GitHub Secrets, GitLab CI/CD Variables, or Azure DevOps Variable Groups), so the automated deploy pipeline can use them. CI never sees `.env`, since it is never committed. Your IT team or tech lead usually sets these up once.
 
-Both use the same credential values. The `.env.example` file in your project lists exactly what's needed - give it to whoever sets up the CI secrets.
+On Databricks, `.env.example` holds three pairs, kept apart because a token's scopes can be narrow (one token can serve all three when its scopes cover them):
+
+| Pair | What reads it |
+|---|---|
+| `DATABRICKS_HOST`, `DATABRICKS_TOKEN` | The editor, to browse the workspace and read and write its tables. No CI step reads it |
+| `DATABRICKS_MLFLOW_HOST`, `DATABRICKS_MLFLOW_TOKEN` | MLflow: the editor's experiment tracking and model registry, and the deploy's model registration |
+| `DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN` | The serving endpoints: the deploy, and `haute smoke` and `haute impact` |
+
+Both use the same credential values, but CI needs only some of them: `.env.example` also holds variables no CI step reads, such as Databricks' data-access pair, `DATABRICKS_HOST` and `DATABRICKS_TOKEN`. `haute init` ends by printing the secrets your CI needs - give those names to whoever sets up the CI secrets. On GitHub, `haute ci secrets --check` lists which of them the repository has.
 
 The target-specific pages and the [CI/CD setup guides](ci/github-actions.md) explain exactly which secrets to add and how.
 
@@ -224,7 +232,7 @@ On Databricks, Model Serving turns a request's quotes into one table before Haut
 
 ## Requests with several quotes
 
-A request to a deployed pipeline can hold several quotes, sent as a JSON array. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote. `haute impact` sends quotes this way, in batches.
+A request to a deployed pipeline can hold several quotes, sent as a JSON array. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote. `haute impact` sends a portfolio sample (`[safety] impact_dataset`) this way, in batches; without one, it sends each test quote as a request of its own.
 
 Every deployment answers such a request, in one of two ways. When you deploy, Haute checks every node between the Quote Input and the Quote Response to make sure each quote keeps exactly one row, in its place, and that no quote's answer depends on the other quotes sent with it. `haute deploy` prints the result.
 
@@ -263,10 +271,40 @@ Haute validates a deployment graph and scores configured test quotes before a no
 | **Staging deployment** | `--endpoint-suffix` chooses a different name; the target and your infrastructure must provide that endpoint |
 | **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint. For HTTP endpoints it reads the address from `[ci.staging] endpoint_url` in `haute.toml` and does not accept `--endpoint-suffix` (see [Docker](targets/docker.md#step-3-give-smoke-and-impact-their-endpoints)) |
 | **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`, or on the test quotes when none is named, as `haute init` leaves it. A sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`. The report is advisory: the changes it shows never fail the run, but an endpoint that cannot be reached, or answers with a different number of rows than quotes it was sent, does |
-| **Approval gate** | Configure this in GitHub, GitLab, Azure DevOps, or your own release process; `min_approvers` is configuration metadata, not an enforced gate |
+| **Approval gate** | Name an environment for the production deploy and give it reviewers in your CI provider ([Who can start production](#who-can-start-production)); `min_approvers` is configuration metadata, not an enforced gate |
 | **Rollback** | Use your target platform's model/image revision and rollback procedure |
 
 The CI files generated by `haute init` sequence the available commands. Whether they run, whether production requires approval, and how a failed stage is handled are CI-provider and repository-policy decisions. See the CI setup guides ([GitHub Actions](ci/github-actions.md), [GitLab](ci/gitlab.md), [Azure DevOps](ci/azure-devops.md)) for the generated-job behaviour and required platform configuration.
+
+### Who can start production
+
+As generated, the production deploy on GitHub and GitLab runs under no environment, so whoever may start it starts it: on GitHub, anyone with write access to the repository can click **Run workflow**; on GitLab, anyone allowed to merge to `main` can click the ▶ play button. On GitHub, branch protection does not change that: it gates merges, not a manual run. On GitLab, who may merge to `main` is who may start the job, but neither asks someone else to approve a deploy. This works on every plan, a free one included. Azure DevOps' production deployment always runs under an environment, `production` unless you name another, and the approval checks on that environment gate it.
+
+To make a reviewer approve each production deploy, name an environment in `haute.toml`:
+
+```toml
+[ci.production]
+environment = "production"
+```
+
+Then run [`haute ci update`](#keeping-the-generated-files-up-to-date), commit the workflows, and give the environment its reviewers in your CI provider: **required reviewers** on a GitHub environment, a **protected environment** with required approvals on GitLab, an **Approvals** check on Azure DevOps. The production job then waits for one of them. GitHub offers required reviewers for a private repository only on GitHub Enterprise, and GitLab's protected environments need GitLab Premium: on a plan without them, leave `environment` unset, since an environment without reviewers gates nothing.
+
+### Keeping the generated files up to date
+
+The workflow files and `.env.example` are generated by the Haute version that ran `haute init`. After upgrading Haute, and after changing `[ci.staging] endpoint_suffix`, `[ci.production] environment` or the sign-ins in `connections.toml`, run:
+
+```powershell
+haute ci update
+```
+
+It writes the files for the `[ci] provider` in `haute.toml`, as the installed Haute generates them:
+
+- It rewrites each generated workflow file and `.env.example`. Changes you made to those files by hand are overwritten.
+- It deletes the files Haute generates for another CI provider, or for the other kind of project (an automated project's or a [workbench project's](../building-models/workbench.md)).
+- On GitHub, it writes `.python-version` when the project has none, since the jobs run the Python that file names.
+- It changes no other file: `haute.toml`, `rating/` and `tests/` stay as they are.
+
+It reports each file as updated or unchanged. A file it adds is recorded in version history for your working branch's next Commit. Review what changed with `git status` and `git diff`, then commit it. (`git diff` alone does not list new files.)
 
 ---
 

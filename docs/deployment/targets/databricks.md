@@ -38,6 +38,8 @@ Before you start, you need:
 - A **Databricks workspace** (your organisation probably already has one)
 - **Python 3.11+** installed on your machine
 - **Haute** installed with Databricks extras (`uv add "haute[databricks]"` - see [Installing Haute](../../getting-started/installing-haute.md#installing-extras))
+- A **pipeline with an output** and **test quotes of your own**. The starter pipeline is empty, and CI's dry-run deploy fails on it with "No nodes found" ("No output node found" on a pipeline without an output): build your pipeline, ending in a [Quote Response](../../building-models/nodes/output.md), and replace the starter `tests/quotes/example.json` with your own [test quotes](../index.md#test-quotes) before you push
+- A **repository** on your CI provider for the project: [Before You Start](../before-you-start.md#starting-a-new-repository) covers creating one for a new project
 
 If you haven't initialised your project yet, open your VS Code terminal and run:
 
@@ -126,8 +128,8 @@ How to add them depends on your CI provider:
 !!! tip "Don't know which CI provider you're using?"
     It depends on where your code is hosted. If you access your project on **github.com**, you're using GitHub. If it's **gitlab.com** (or a company GitLab server), you're using GitLab. If it's **dev.azure.com**, you're using Azure DevOps. If you're not sure, ask your IT team or tech lead: *"Where is our code repository hosted?"* They'll tell you GitHub, GitLab, or Azure DevOps.
 
-!!! note "You don't need credentials on your laptop"
-    You never run `haute deploy` locally, so you don't need a `.env` file with passwords on your machine. The CI runner has the credentials; you just merge to main. The `.env.example` file in your project is a reference for whoever sets up the CI secrets, and `haute ci secrets` reads the values from a `.env` made from it.
+!!! note "You never deploy from your laptop"
+    You never run `haute deploy` locally: the CI runner has the credentials, and you just merge to main. The `.env` on your laptop serves the editor and `haute ci secrets` ([which pair does what](../index.md#credentials)).
 
 ---
 
@@ -221,7 +223,7 @@ Databricks Model Serving is the feature that actually hosts your pipeline as an 
 
 ## Step 7: Review your full configuration
 
-Here's what your complete `haute.toml` should look like:
+Here's the `haute.toml` that `haute init` writes for a project named `motor-pricing`:
 
 ```toml
 [project]
@@ -240,10 +242,10 @@ schema = "pricing"
 serving_workload_size = "Small"
 serving_scale_to_zero = true
 
-[test_quotes]
-dir = "tests/quotes"
-
 [safety]
+# `haute impact` compares staging with production on these quotes. Without a
+# sample it compares the test quotes; commit a Parquet sample of your book (not
+# under data/, which is gitignored) and name it here to compare that instead:
 # impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
@@ -268,11 +270,11 @@ endpoint_suffix = "-staging"
 | `schema` | Unity Catalog schema | `"pricing"` |
 | `serving_workload_size` | How much compute to allocate - `Small`, `Medium`, or `Large` | `"Small"` |
 | `serving_scale_to_zero` | Whether the endpoint shuts down when idle (saves money) | `true` |
-| `dir` (`[test_quotes]`) | Where the [test quotes](../index.md#test-quotes) are | `"tests/quotes"` |
+| `dir` (`[test_quotes]`) | Where the [test quotes](../index.md#test-quotes) are, when not in `tests/quotes`. `haute init` leaves it out | `"tests/quotes"` |
 | `impact_dataset` | The Parquet portfolio sample the impact step scores. Left unset, as `haute init` leaves it, the impact step compares your test quotes instead. CI can read only files in the repository, and `haute init` gitignores `data/`, so commit a sample you are allowed to share somewhere else (for example `tests/impact/portfolio_sample.parquet`) and point this at it | `"tests/impact/portfolio_sample.parquet"` |
 | `min_approvers` | A record of how many approvals your team expects; your CI provider's settings enforce it | `2` |
 | `provider` | The CI provider `haute init` generated workflows for | `"github"` |
-| `endpoint_suffix` | Added to the endpoint, model and experiment names for staging deploys | `"-staging"` |
+| `endpoint_suffix` | Added to the endpoint, model and experiment names for staging deploys. The generated workflows hold it, so after changing it run `haute ci update` and commit the workflows | `"-staging"` |
 
 ---
 
@@ -309,7 +311,7 @@ See your CI provider's setup guide for full details: [GitHub Actions](../ci/gith
 
 ## Step 9: Call the API
 
-Once the endpoint is live, you can call it from any system that can make HTTP requests.
+Once the endpoint is live, you can call it from any system that can make HTTP requests. After a merge, the endpoint is the staging one, `motor-pricing-staging`, which the examples below call. The production endpoint, `motor-pricing`, answers once the production workflow has run: drop the suffix from the name to call it.
 
 ### Using Python (recommended)
 
@@ -320,7 +322,7 @@ If you're more comfortable with Python than the command line, this is the easies
 import requests
 
 # Replace these with your actual values
-url = "https://adb-xxx.12.azuredatabricks.net/serving-endpoints/motor-pricing/invocations"
+url = "https://adb-xxx.12.azuredatabricks.net/serving-endpoints/motor-pricing-staging/invocations"
 token = "dapi_your_token_here"  # Your Databricks personal access token from Step 2
 
 headers = {
@@ -344,7 +346,7 @@ from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 response = w.serving_endpoints.query(
-    name="motor-pricing",
+    name="motor-pricing-staging",
     dataframe_records=[
         {"IDpol": 99001, "VehPower": 7, "DrivAge": 42, "Area": "C", "VehBrand": "B12"}
     ],
@@ -358,7 +360,7 @@ print(response.predictions)
 
 ```powershell
 curl -X POST `
-  "https://<your-workspace-url>/serving-endpoints/motor-pricing/invocations" `
+  "https://<your-workspace-url>/serving-endpoints/motor-pricing-staging/invocations" `
   -H "Authorization: Bearer <your-token-here>" `
   -H "Content-Type: application/json" `
   -d '{\"dataframe_records\": [{\"IDpol\": 99001, \"VehPower\": 7, \"DrivAge\": 42, \"Area\": \"C\", \"VehBrand\": \"B12\"}]}'
@@ -383,15 +385,22 @@ Ask your Databricks admin to grant these if you see permission errors. This is u
 
 ### "Endpoint not found" when calling the API
 
-After deploying, the serving endpoint can take 5–10 minutes to provision. To check its status, click **Serving** in the Databricks left sidebar and look for your endpoint: it is ready to call once it shows **Ready**.
+A deploy that finished has already waited for its endpoint to serve, so waiting longer won't help: the name or the workspace is wrong. Check that you are calling the staging name, `motor-pricing-staging`, after a merge (the production name, `motor-pricing`, exists only once the production workflow has run), and that the URL is the workspace the deploy used, `DATABRICKS_RATING_HOST`. The **Serving** page in the Databricks left sidebar lists the endpoints the workspace has.
 
 ### Token expired
 
-Tokens have a lifetime (default 90 days). If your deploy suddenly fails with an authentication error, generate a new token (Step 2) and update the `DATABRICKS_MLFLOW_TOKEN` or `DATABRICKS_RATING_TOKEN` secret in your CI provider (the error names which step failed: model registration uses the MLflow token, the serving endpoint the rating token).
+Tokens have a lifetime (default 90 days). An expired token fails the deploy before it uploads anything, and the error names the token:
+
+- `Databricks returned 401 Unauthorized. Check that your DATABRICKS_RATING_TOKEN is valid and has not expired.` - the serving endpoint's token
+- `Databricks returned 401 Unauthorized to the model registry. Check that DATABRICKS_MLFLOW_TOKEN is valid and has not expired.` - the token MLflow registers the model with
+
+Generate a new token (Step 2) and replace that secret in your CI provider. On GitHub, put the new value in `.env` and run `haute ci secrets`.
 
 ### Slow first request (cold start)
 
-With `serving_scale_to_zero = true`, the endpoint shuts down when it's idle. The first request after idle can take 30–60 seconds. For production endpoints that need consistent response times, set `serving_scale_to_zero = false` in `haute.toml`.
+With `serving_scale_to_zero = true`, the endpoint shuts down when it's idle. The first request after idle can take 30–60 seconds. `serving_scale_to_zero = false` in `haute.toml` keeps an endpoint running, at the cost of paying for it while idle, and applies to staging and production alike: both deploys read the one `[deploy.databricks]` value.
+
+To keep only production running, leave `haute.toml` as it is and set the environment variable `HAUTE_SERVING_SCALE_TO_ZERO=false` on the production deploy job, which overrides the `haute.toml` value for that deploy. On GitHub that is an `env:` entry in `.github/workflows/deploy-production.yml`. `haute ci update` rewrites that file and removes the entry, so add it again after an update.
 
 ### The endpoint fails to build or start
 
@@ -422,7 +431,7 @@ The workflow files are generated by the Haute version that ran `haute init`. Aft
 haute ci update
 ```
 
-It rewrites the generated workflow files and `.env.example` for the installed version, and leaves everything else alone. A workflow the new version adds is recorded in version history for your working branch's next Commit; review what changed with `git status` and `git diff`, then commit it. (`git diff` alone does not list new files.)
+It rewrites the generated workflow files and `.env.example` for the installed version, overwriting changes you made to them by hand. [Keeping the generated files up to date](../index.md#keeping-the-generated-files-up-to-date) says what it rewrites and removes, and how to commit the result.
 
 ---
 
@@ -436,7 +445,7 @@ Before your first deploy, confirm:
 - [ ] Unity Catalog is enabled with a catalog and schema
 - [ ] `haute.toml` has the correct `experiment_name`, `catalog`, and `schema`
 - [ ] Model Serving is available in your workspace
-- [ ] You have at least one test quote JSON file in `tests/quotes/`, in the [test quote format](../index.md#test-quotes)
+- [ ] Your pipeline ends in a [Quote Response](../../building-models/nodes/output.md), and `tests/quotes/` holds your own quotes, in the [test quote format](../index.md#test-quotes), in place of the starter `example.json`
 - [ ] `impact_dataset` points at a portfolio sample committed to the repository, or is left unset to compare the test quotes
 - [ ] CI/CD workflows are committed to your repository, with `pyproject.toml` and `uv.lock`
 - [ ] CI validation passes on a pull request

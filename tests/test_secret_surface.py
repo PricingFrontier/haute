@@ -148,6 +148,9 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     # The serving pair: read per call into the endpoint's workspace client only; the
     # credentials' repr leaves the token out, and the missing-credentials message lists names.
     ("deploy/_databricks_serving.py", "DATABRICKS_RATING_TOKEN"),
+    # The registry check's refusal of a token Databricks rejects names the variable; the
+    # token itself comes from MLflow's credentials and never reaches the message.
+    ("deploy/_mlflow.py", "DATABRICKS_MLFLOW_TOKEN"),
     ("assistant/_config.py", "ANTHROPIC_API_KEY"),
     ("assistant/_config.py", "OPENAI_API_KEY"),
     # Same provider→env-var-NAME table as the two above; the value is read only

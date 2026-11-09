@@ -149,7 +149,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
-    "docs",
     "polars-2",
     "polars-node-clarity",
     "workbench",
@@ -2085,6 +2084,207 @@ def test_deployment_docs_use_scaffolded_pipeline_path() -> None:
                 f'{doc.name} shows pipeline = "{shown}" but haute init '
                 f'scaffolds pipeline = "{real_path}"'
             )
+
+
+DATABRICKS_GUIDE = ROOT / "docs" / "deployment" / "targets" / "databricks.md"
+
+
+def _h2_section(text: str, heading_prefix: str) -> str:
+    """The body of the level-two section whose heading starts with *heading_prefix*."""
+    match = re.search(
+        rf"^## {re.escape(heading_prefix)}[^\n]*\n(.*?)(?=^## |\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"No '## {heading_prefix}' section"
+    return match.group(1)
+
+
+def _scaffolded_staging_suffix() -> str:
+    match = re.search(
+        r'^endpoint_suffix = "(.*)"$',
+        haute_toml("motor-pricing", "databricks", "github"),
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+@pytest.mark.parametrize(
+    ("page", "section"),
+    [("targets/databricks.md", "Step 7"), ("index.md", "The configuration file")],
+)
+def test_deployment_pages_show_the_haute_toml_init_writes(page: str, section: str) -> None:
+    text = (ROOT / "docs" / "deployment" / page).read_text(encoding="utf-8")
+    shown = re.search(r"```toml\n(.*?)```", _h2_section(text, section), flags=re.DOTALL)
+    assert shown is not None
+    assert shown.group(1) == haute_toml("motor-pricing", "databricks", "github")
+
+
+def test_databricks_guide_calls_the_endpoint_a_merge_deploys() -> None:
+    """A merge deploys staging only, so Step 9's examples call the staging endpoint."""
+    step = _h2_section(DATABRICKS_GUIDE.read_text(encoding="utf-8"), "Step 9")
+    called = re.findall(r"serving-endpoints/([^/\"]+)/invocations", step)
+    called += re.findall(r'\bname="([^"]+)"', step)
+    assert len(called) == 3
+    assert set(called) == {"motor-pricing" + _scaffolded_staging_suffix()}
+
+
+def test_databricks_guide_names_the_production_only_scale_to_zero_override() -> None:
+    from haute.deploy._config import _ENV_OVERRIDES
+
+    (override,) = (
+        name
+        for name, (attribute, _) in _ENV_OVERRIDES.items()
+        if attribute == "databricks.serving_scale_to_zero"
+    )
+    assert f"`{override}=false`" in DATABRICKS_GUIDE.read_text(encoding="utf-8")
+
+
+def _quoted_token_errors() -> list[str]:
+    section = _h2_section(DATABRICKS_GUIDE.read_text(encoding="utf-8"), "Troubleshooting")
+    token = re.search(r"^### Token expired\n(.*?)(?=^### |\Z)", section, re.M | re.S)
+    assert token is not None
+    return re.findall(r"^- `([^`]+)`", token.group(1), flags=re.MULTILINE)
+
+
+def test_databricks_guide_quotes_the_errors_an_expired_token_gives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+    import urllib.request
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    from databricks.sdk.errors import Unauthenticated
+
+    from haute.deploy import _mlflow
+    from haute.deploy._config import DeployConfig
+    from haute.errors import DeployError
+
+    host = "https://adb-1.azuredatabricks.net"
+    monkeypatch.setenv("DATABRICKS_RATING_HOST", host)
+    monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "dapi-expired")
+    refused = urllib.error.HTTPError(host, 401, "Unauthorized", {}, None)  # type: ignore[arg-type]
+    with (
+        patch.object(urllib.request, "urlopen", side_effect=refused),
+        pytest.raises(DeployError) as rating,
+    ):
+        _mlflow._check_databricks_connectivity(lambda _: None)
+
+    workspace = MagicMock()
+    workspace.schemas.get.side_effect = Unauthenticated("Invalid access token.")
+    config = DeployConfig(pipeline_file=Path("rating/main.py"), model_name="motor-pricing")
+    with (
+        patch.object(_mlflow, "pat_workspace_client", return_value=workspace),
+        patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=SimpleNamespace(host=host, token="dapi-expired"),
+        ),
+        pytest.raises(DeployError) as registry,
+    ):
+        _mlflow._check_registry_schema(config, "databricks-uc")
+
+    quoted = _quoted_token_errors()
+    assert len(quoted) == 2
+    for message, shown in zip((str(rating.value), str(registry.value)), quoted, strict=True):
+        assert message.startswith(shown), (message, shown)
+
+
+DEPLOYMENT_OVERVIEW = ROOT / "docs" / "deployment" / "index.md"
+CI_PAGES = {
+    "github": ROOT / "docs" / "deployment" / "ci" / "github-actions.md",
+    "gitlab": ROOT / "docs" / "deployment" / "ci" / "gitlab.md",
+    "azure-devops": ROOT / "docs" / "deployment" / "ci" / "azure-devops.md",
+}
+#: The heading each CI page's secrets tables go under, by deploy target.
+_CI_SECRET_TABLE_LABELS = {
+    "databricks": "Databricks",
+    "container": "Docker/Container targets",
+    "aws-ecs": "AWS ECS",
+    "azure-container-apps": "Azure Container Apps",
+    "gcp-run": "GCP Cloud Run",
+}
+
+
+def _secret_table_names(text: str, label: str) -> list[str]:
+    """The names in the first column of the table under ``**For <label>:**``."""
+    match = re.search(rf"^\*\*For {re.escape(label)}:\*\*\n\n((?:\|.*\n)+)", text, re.MULTILINE)
+    assert match is not None, f"No secrets table for {label}"
+    rows = match.group(1).splitlines()[2:]
+    return [re.fullmatch(r"\| `([A-Z0-9_]+)` \|.*", row).group(1) for row in rows]  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("provider", sorted(CI_PAGES))
+def test_ci_pages_list_the_secrets_each_targets_jobs_read(provider: str) -> None:
+    from haute._scaffold import ci_secret_names
+
+    assert set(_CI_SECRET_TABLE_LABELS) == set(TARGETS)
+    text = CI_PAGES[provider].read_text(encoding="utf-8")
+    for target, label in _CI_SECRET_TABLE_LABELS.items():
+        assert _secret_table_names(text, label) == ci_secret_names(target), (provider, target)
+
+
+@pytest.mark.parametrize("provider", ["gitlab", "azure-devops"])
+def test_ci_pages_give_the_deploy_jobs_their_time_limits(provider: str) -> None:
+    from haute._scaffold import _CONTAINER_BASED_TARGETS, _deploy_timeout_minutes
+
+    (container_limit,) = {_deploy_timeout_minutes(t) for t in _CONTAINER_BASED_TARGETS}
+    limits = (
+        f"{_deploy_timeout_minutes('databricks')} min on Databricks",
+        f"{container_limit} min on the container targets",
+    )
+    rows = [
+        row
+        for row in CI_PAGES[provider].read_text(encoding="utf-8").splitlines()
+        if re.match(
+            r"\s*\| (?:deploy-staging|deploy-production|Deploy(?:Staging|Production)) \|", row
+        )
+    ]
+    assert len(rows) == 2
+    for row in rows:
+        assert all(limit in row for limit in limits), row
+
+
+def test_gitlab_page_shows_the_image_the_project_python_selects() -> None:
+    from haute._scaffold import DEFAULT_CI_PYTHON, gitlab_ci_yml
+
+    shown = re.search(
+        r"^\s*image: (python:\S+)  # the Python your project declares; "
+        r"(\S+) when it declares none$",
+        CI_PAGES["gitlab"].read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    assert shown is not None
+    assert f"  image: {shown.group(1)}\n" in gitlab_ci_yml("databricks")
+    assert shown.group(2) == DEFAULT_CI_PYTHON
+    assert "  image: python:3.13\n" in gitlab_ci_yml("databricks", python_version="3.13")
+
+
+@pytest.mark.parametrize("provider", sorted(CI_PAGES))
+def test_the_documented_production_environment_gates_the_production_job(
+    provider: str, tmp_path: Path
+) -> None:
+    """The overview's ``[ci.production]`` table, read as haute.toml reads it, puts the
+    generated production job under the environment it names."""
+    from haute._scaffold import ci_files
+    from haute.deploy._config import DeployConfig
+
+    section = _h2_section(DEPLOYMENT_OVERVIEW.read_text(encoding="utf-8"), "Validation and")
+    shown = re.search(r"```toml\n(\[ci\.production\]\n.*?)```", section, flags=re.DOTALL)
+    assert shown is not None
+    (tmp_path / "rating").mkdir()
+    (tmp_path / "rating" / "main.py").write_text("", encoding="utf-8")
+    toml = haute_toml("motor-pricing", "databricks", provider) + "\n" + shown.group(1)
+    (tmp_path / "haute.toml").write_text(toml, encoding="utf-8")
+    environment = DeployConfig.from_toml(tmp_path / "haute.toml").ci.production_environment
+
+    assert environment
+    generated = "\n".join(
+        ci_files("databricks", provider, production_environment=environment).values()
+    )
+    assert f'environment: "{environment}"' in generated
+    assert "who-can-start-production" in CI_PAGES[provider].read_text(encoding="utf-8")
 
 
 def _marked_block(text: str, marker: str) -> str:

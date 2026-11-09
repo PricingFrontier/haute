@@ -747,7 +747,10 @@ read as MLflow reads it (`_profile_problem`, `get_databricks_host_creds`) and mu
 and a personal access token, a failure reported by its exception type alone, since a malformed
 config file's parse error quotes its lines. Before the model uploads, `_check_registry_schema`
 looks up `<catalog>.<schema>` with the registry's own credentials and refuses a schema that does
-not exist, listing the catalogs the token can see (many workspaces have no `main`).
+not exist, listing the catalogs the token can see (many workspaces have no `main`). That lookup is
+the registry token's first request, so a token Databricks refuses (401, the SDK's
+`Unauthenticated`: an expired one) fails there naming `DATABRICKS_MLFLOW_TOKEN`, or the token of
+the profile `MLFLOW_TRACKING_URI` selects, rather than as an SDK traceback.
 
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 0. A request of several quotes is answered as `request_rows` says (`answers_quote_by_quote`).

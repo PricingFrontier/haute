@@ -115,7 +115,7 @@ Analysts preview their changes in the editor and push them; everything after tha
 
 1. **Validate.** Every change is checked with `haute lint`, and your test quotes are scored through the pipeline with `haute deploy --dry-run`, optionally against expected outputs within a tolerance.
 2. **Deploy to staging.** `haute deploy` packages the live scoring path, leaving out training and analysis branches, as an API that takes quotes and returns prices. A real deploy refuses to run outside CI.
-3. **Check staging.** For Databricks, `haute smoke` sends the test quotes to the staging endpoint, and `haute impact` writes a report comparing staging with production on a sample.
+3. **Check staging.** For Databricks, `haute smoke` sends the test quotes to the staging endpoint, and `haute impact` writes a report comparing staging with production on your test quotes, or on a portfolio sample you name.
 4. **Release.** Production is a separate step that someone approves.
 
 | Target | Current support |

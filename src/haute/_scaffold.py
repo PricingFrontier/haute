@@ -2098,7 +2098,8 @@ def months_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
 
         months_between(to_date("start_date"), to_date("end_date")).alias("tenure_months")
     """
-    return (later.dt.year() - earlier.dt.year()) * 12 + (later.dt.month() - earlier.dt.month())
+    years = later.dt.year() - earlier.dt.year()
+    return years * 12 + (later.dt.month() - earlier.dt.month())
 
 
 def days_between(earlier: pl.Expr, later: pl.Expr) -> pl.Expr:
@@ -2171,6 +2172,7 @@ from haute.parser import parse_pipeline_file
 
 
 PIPELINE_FILE = Path(__file__).resolve().parent.parent / "rating" / "main.py"
+
 
 def test_pipeline_parses() -> None:
     """The pipeline remains valid Haute source."""

@@ -594,9 +594,11 @@ def _check_registry_schema(config: DeployConfig, registry_uri: str) -> None:
     MLflow registers the model as ``<catalog>.<schema>.<model>`` only after uploading it,
     and many workspaces have no ``main`` catalog (a newer workspace's is named
     ``workspace``), so a missing schema is looked up first, with the registry's own
-    credentials, and its error lists the catalogs the token can see.
+    credentials, and its error lists the catalogs the token can see. This is the first
+    request the registry's token makes, so a token Databricks refuses (an expired one) is
+    named here.
     """
-    from databricks.sdk.errors import NotFound
+    from databricks.sdk.errors import NotFound, Unauthenticated
     from mlflow.utils.databricks_utils import get_databricks_host_creds
 
     catalog, schema = config.databricks.catalog, config.databricks.schema
@@ -604,6 +606,17 @@ def _check_registry_schema(config: DeployConfig, registry_uri: str) -> None:
     ws = pat_workspace_client(creds.host, creds.token)
     try:
         ws.schemas.get(full_name=f"{catalog}.{schema}")
+    except Unauthenticated:
+        _, _, profile = registry_uri.partition("://")
+        token = (
+            f"the token of the Databricks profile '{profile}' that MLFLOW_TRACKING_URI selects"
+            if profile
+            else "DATABRICKS_MLFLOW_TOKEN"
+        )
+        raise DeployError(
+            "Databricks returned 401 Unauthorized to the model registry. "
+            f"Check that {token} is valid and has not expired. Host: {creds.host}"
+        ) from None
     except NotFound:
         catalogs = sorted(c.name for c in ws.catalogs.list() if c.name)
         raise DeployError(
