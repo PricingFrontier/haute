@@ -22,7 +22,6 @@ The site describes `main`, decided on 25 October 2026: the next release, due soo
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DOC-03 | Planned | P2 | A new project reaches a green first pull request and a staging deploy by following the guides from an empty folder. |
 | DOC-04 | Planned | P2 | The site publishes `main` again, with the other packages landed, before the next release. |
 | DOC-05 | Planned | P2 | A project made by haute 0.6.0 upgrades to the next release by following one page. |
 
@@ -33,50 +32,6 @@ a page restates a fact the code owns (a secret name, a job's time limit, an imag
 endpoint name), a documentation parity test derives it from the code, as
 `tests/test_docs_accuracy.py` already does for the scaffold tree, so the page cannot drift
 from the generator again.
-
-### DOC-03 — A new project's path from an empty folder
-**Why:** The guides assume a project that already has a repository and a pipeline:
-- `docs/deployment/before-you-start.md` covers cloning an existing repository (:65-104)
-  and nothing that connects a new `uv init` project to a GitHub repository. `haute ci secrets`
-  runs `gh secret set` in the project without `--repo`, so it needs that remote, and a first
-  push of a new branch needs `git push -u origin <branch>` rather than the page's `git push`
-  (:180).
-- The scaffolded pipeline is an empty canvas and its test quote a placeholder, so a new
-  project's first pull request fails its dry-run deploy with "No output node found. Mark a
-  node with @pipeline.output()." The Databricks prerequisites and checklist
-  (`databricks.md`:36-45, :436) never say to build the pipeline and its test quotes before
-  pushing.
-- The pages disagree about `.env`. `getting-started/installing-haute.md`:22 says to fill it
-  in; `databricks.md`:127 says no credentials are needed on a laptop, though :108 reads
-  `.env` for `haute ci secrets`; `before-you-start.md`:131-133 says it is only for calling the
-  endpoint, while the editor loads it for the data-access and MLflow pairs.
-- `before-you-start.md` says the platform must provide the staging endpoint and that impact
-  needs existing staging and production endpoints (:253, :276-277, :301). On Databricks the
-  staging deploy creates `<name>-staging`, and impact treats a missing production endpoint
-  as a first deploy.
-- `docs/deployment/index.md`:211 says `haute impact` sends quotes in batches, which it does
-  only with `[safety] impact_dataset`; the test quotes, the default, go one per request. The
-  README (:118) says impact compares "on a sample"; without `impact_dataset` it compares the
-  test quotes.
-
-**Plan:** A "new repository" path beside the clone path: create the GitHub repository,
-add it as `origin`, first push with `-u`, then `haute ci secrets`. The checklist builds the
-pipeline and replaces the placeholder test quote before the first push. One account of
-`.env`: which pairs it holds, which commands and the editor read it, and that CI reads
-secrets instead. The staging and impact statements say what a Databricks project gets by
-itself, and the impact wording says when it batches.
-
-**Acceptance:** Following the guides alone from an empty folder on a scratch GitHub
-repository reaches a green first pull request and a staging deploy, with each step's
-command as written.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_scaffold.py::starter_pipeline` and `::starter_test_quote`;
-`src/haute/deploy/_pruner.py` ("No output node found");
-`src/haute/cli/_ci.py::_set_every_secret` (no `--repo`); `src/haute/server.py` (`_load_env` at start);
-`src/haute/cli/_impact.py::handle_impact` and `::_impact_records` (one quote per request
-without a sample, and a missing production endpoint taken as a first deploy).
 
 ### DOC-04 — The site publishes `main` again
 **Why:** The site describes `main`: `.github/workflows/docs.yml` deploys it on every push to
@@ -94,7 +49,7 @@ before the release ships. No workflow change: the site keeps tracking `main`.
 **Acceptance:** The published site matches `main` at the release commit, and a later docs
 change on `main` publishes without waiting on an older run.
 
-**Dependencies:** DOC-03 and DOC-05, which the site publishes.
+**Dependencies:** DOC-05, which the site publishes.
 
 **Evidence:** `.github/workflows/docs.yml` (its triggers and `concurrency: pages`);
 `.github/workflows/release.yml`; the Deploy docs runs since 2 October 2026.

@@ -38,6 +38,8 @@ Before you start, you need:
 - A **Databricks workspace** (your organisation probably already has one)
 - **Python 3.11+** installed on your machine
 - **Haute** installed with Databricks extras (`uv add "haute[databricks]"` - see [Installing Haute](../../getting-started/installing-haute.md#installing-extras))
+- A **pipeline with an output** and **test quotes of your own**. The starter pipeline is empty, and CI's dry-run deploy fails on it with "No nodes found" ("No output node found" on a pipeline without an output): build your pipeline, ending in a [Quote Response](../../building-models/nodes/output.md), and replace the starter `tests/quotes/example.json` with your own [test quotes](../index.md#test-quotes) before you push
+- A **repository** on your CI provider for the project: [Before You Start](../before-you-start.md#starting-a-new-repository) covers creating one for a new project
 
 If you haven't initialised your project yet, open your VS Code terminal and run:
 
@@ -126,8 +128,8 @@ How to add them depends on your CI provider:
 !!! tip "Don't know which CI provider you're using?"
     It depends on where your code is hosted. If you access your project on **github.com**, you're using GitHub. If it's **gitlab.com** (or a company GitLab server), you're using GitLab. If it's **dev.azure.com**, you're using Azure DevOps. If you're not sure, ask your IT team or tech lead: *"Where is our code repository hosted?"* They'll tell you GitHub, GitLab, or Azure DevOps.
 
-!!! note "You don't need credentials on your laptop"
-    You never run `haute deploy` locally, so you don't need a `.env` file with passwords on your machine. The CI runner has the credentials; you just merge to main. The `.env.example` file in your project is a reference for whoever sets up the CI secrets, and `haute ci secrets` reads the values from a `.env` made from it.
+!!! note "You never deploy from your laptop"
+    You never run `haute deploy` locally: the CI runner has the credentials, and you just merge to main. The `.env` on your laptop serves the editor and `haute ci secrets` ([which pair does what](../index.md#credentials)).
 
 ---
 
@@ -443,7 +445,7 @@ Before your first deploy, confirm:
 - [ ] Unity Catalog is enabled with a catalog and schema
 - [ ] `haute.toml` has the correct `experiment_name`, `catalog`, and `schema`
 - [ ] Model Serving is available in your workspace
-- [ ] You have at least one test quote JSON file in `tests/quotes/`, in the [test quote format](../index.md#test-quotes)
+- [ ] Your pipeline ends in a [Quote Response](../../building-models/nodes/output.md), and `tests/quotes/` holds your own quotes, in the [test quote format](../index.md#test-quotes), in place of the starter `example.json`
 - [ ] `impact_dataset` points at a portfolio sample committed to the repository, or is left unset to compare the test quotes
 - [ ] CI/CD workflows are committed to your repository, with `pyproject.toml` and `uv.lock`
 - [ ] CI validation passes on a pull request

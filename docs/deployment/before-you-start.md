@@ -74,7 +74,7 @@ Haute needs a repository because the entire deployment process is built around i
 
 ### Getting access to the repository
 
-Someone on your team (a tech lead, data engineer, or IT) creates the repository and gives you access. If you don't have one yet, ask: *"I need a Git repository for my pricing project - can you create one and give me access?"*
+Someone on your team (a tech lead, data engineer, or IT) creates the repository and gives you access. If you don't have one yet, ask: *"I need a Git repository for my pricing project - can you create one and give me access?"* On GitHub you can also create it yourself: see [Starting a new repository](#starting-a-new-repository).
 
 They'll send you a link that looks something like:
 
@@ -103,6 +103,30 @@ uv sync                            # Install all the project's dependencies
 
 You'll see `(.venv)` appear at the start of your terminal prompt after the activate step - that means it's active. Run `haute serve` to check everything works.
 
+### Starting a new repository
+
+A project you made yourself, with `uv init` and `haute init` as in [Installing Haute](../getting-started/installing-haute.md), has no shared copy yet. To give it one on GitHub:
+
+1. **Build the pipeline first.** The starter pipeline is empty, so CI's dry-run deploy fails on it with "No nodes found", and on a pipeline without an output with "No output node found": build your pipeline in the editor, ending in a [Quote Response](../building-models/nodes/output.md), and replace the starter test quote, `tests/quotes/example.json`, with quotes of your own ([Test quotes](index.md#test-quotes)).
+2. **Create an empty repository.** On github.com, click **+** → **New repository**, name it after your project, and leave **Add a README**, `.gitignore` and licence off, so it starts empty.
+3. **Connect your project to it.** In the VS Code terminal, in your project folder (replace the URL with your repository's):
+
+    ```powershell
+    git remote add origin https://github.com/yourcompany/motor-pricing.git
+    ```
+
+    The generated workflows run for a branch called `main`, but Git may have named your project's first branch `master`. If `git branch --list master` prints `master`, rename it:
+
+    ```powershell
+    git branch -m master main
+    ```
+
+4. **Sign in to the GitHub CLI** once, with `gh auth login`, and fill in `.env` ([Credentials](index.md#credentials)), so Haute can store the deploy's secrets in the repository.
+5. **Push from the editor.** In the Git panel, click **Push**. The first Push to an empty repository stores the deploy's secrets from `.env`, then publishes `main` on its own, then your working branch.
+6. **Open your first pull request**, from your working branch into `main` ([Ask for a review](#4-ask-for-a-review-pull-request)). CI checks it; merging it runs the staging deploy.
+
+From the terminal instead, run `haute ci secrets` after step 4 (it finds the repository through `origin`), and push `main` on its own first with `git push -u origin main`: GitHub never runs the workflows of a repository whose first push created more than one branch.
+
 ### Common setup problems
 
 **`uv sync` prints a wall of red text**
@@ -123,21 +147,21 @@ When you open your project folder, you'll see files like these:
 |---|---|
 | `haute.toml` | Your deployment configuration - what gets deployed and where |
 | `rating/main.py` | Your pricing pipeline |
-| `.env` | Your credentials (passwords/tokens) for calling the live API locally - **never shared or committed** |
+| `.env` | Your credentials (passwords/tokens) for the editor and Haute's commands on your laptop - **never shared or committed** |
 | `.env.example` | A template showing which credentials are needed - safe to share. Give this to whoever sets up CI secrets. |
 | `.gitignore` | A list of files that Git should **not** track (like `.env`) |
 | `tests/quotes/` | Test data used to validate your pipeline before deploying |
 
 !!! info "When do I need a `.env` file?"
-    You need a `.env` file on your laptop if you want to **call the live endpoint locally** - for example, to run your own impact comparisons against the current production model before pushing your changes. To create one, copy the template and fill in the values:
+    The editor reads `.env` when it starts, to reach your data and MLflow (on Databricks, for example, the workspace URL and token), and `haute ci secrets` reads the deploy's credentials from it. To create one, copy the template and fill in the values you have:
 
     ```powershell
     copy .env.example .env
     ```
 
-    Then open `.env` in VS Code and fill in the values (e.g. your Databricks workspace URL and token). The `.gitignore` file ensures `.env` is **never committed or shared** - your passwords stay on your machine only.
+    Then open `.env` in VS Code and fill in the values. The `.gitignore` file ensures `.env` is **never committed or shared** - your passwords stay on your machine only.
 
-    The same credentials also need to be set up as **encrypted secrets in your CI provider** (GitHub Secrets, GitLab CI/CD Variables, or Azure DevOps Variable Groups) so that the automated deploy pipeline can use them. Your IT team or tech lead usually handles that part - give them the `.env.example` file.
+    CI never reads `.env`. The deploy's credentials are set up as **encrypted secrets in your CI provider** (GitHub Secrets, GitLab CI/CD Variables, or Azure DevOps Variable Groups); [Credentials](index.md#credentials) says which pair does what.
 
 ### Gitignore: keeping secrets safe
 
@@ -177,11 +201,13 @@ git commit -m "Updated motor frequency model"
 **Pushing** uploads your branch to the shared repository (on GitHub/GitLab/Azure DevOps) so others can see it. The shared repository already exists on the hosting service (see [Getting your project ready](#getting-your-project-ready-for-deployment)) - `git push` just sends your latest changes to it.
 
 ```powershell
-git push
+git push -u origin my-new-rates
 ```
 
+The first push of a branch names where it goes: `-u origin my-new-rates` creates the branch in the shared repository and links yours to it. After that, `git push` is enough.
+
 !!! info "First time pushing? Git will ask you to log in"
-    The very first time you run `git push`, Git needs to verify who you are. A **browser window will open** asking you to sign in to your GitHub, GitLab, or Azure DevOps account. Sign in with your normal work credentials and you're done - Git remembers you after this, so you won't be asked again.
+    The very first time you push, Git needs to verify who you are. A **browser window will open** asking you to sign in to your GitHub, GitLab, or Azure DevOps account. Sign in with your normal work credentials and you're done - Git remembers you after this, so you won't be asked again.
 
     If no browser window opens and the terminal asks for a username/password, enter your account username and a **personal access token** (not your normal password). Ask your IT team if you're unsure - they can help you through this the first time.
 
@@ -250,10 +276,10 @@ print(response.json())
 
 Many release processes use **two copies** of an API:
 
-- **Staging** is a **private test copy** that only your team can see. It is an infrastructure and release-process choice: you configure a separate endpoint name (often with `--endpoint-suffix "-staging"`) and arrange for it to be deployed and protected by your target platform.
+- **Staging** is a **private test copy** that only your team can see. On Databricks, the generated workflow's staging deploy creates it, naming it with `[ci.staging] endpoint_suffix` (`motor-pricing-staging`). On the container targets, your platform team runs it, at the address in `[ci.staging] endpoint_url`.
 - **Production** is the **real one** that your policy admin system calls. It serves actual quotes to customers.
 
-Haute does **not** automatically create a staging environment, require an approval, or promote a deployment. On Databricks, `haute deploy` returns once the endpoint serves the new version. Its generated CI examples run staging deploy, smoke, and impact commands in sequence, but your CI-provider configuration controls approvals and production access; for container targets, arrange the hosting handoff before those commands. Set branch protection and environment rules before treating that sequence as a release gate.
+Haute does **not** require an approval or promote a deployment by itself. On Databricks, `haute deploy` creates or updates the endpoint it names, staging included, and returns once that endpoint serves the new version. Its generated CI examples run staging deploy, smoke, and impact commands in sequence, but your CI-provider configuration controls approvals and production access; for container targets, arrange the hosting handoff before those commands. Set branch protection and environment rules before treating that sequence as a release gate.
 
 When you see "deploys to staging" in these docs, it means: "runs the selected target's staging deployment step." That creates or updates a test endpoint only when the target supports it and the endpoint is ready. When you see "promotes to production," it means: "runs the production deployment step configured by your release process."
 
@@ -274,7 +300,7 @@ The generated CI files are an example command sequence. Once you enable and adap
 4. ✓ Test quotes score successfully
 5. → Deploy to a staging (test) endpoint if your target supports it
 6. → Smoke test an already-running staging endpoint
-7. → Generate an impact report from existing staging and production endpoints
+7. → Compare staging with production in an impact report (before production's first deploy, the report says so instead)
 8. → A human follows the approval process configured by the CI provider
 
 CI/CD can make those checks repeatable, but only the policies and controls you configure in the CI provider make them a release gate.
@@ -298,7 +324,7 @@ The CI/CD system runs on a service like **GitHub Actions**, **GitLab CI/CD**, or
 | **Merge** | Accepting reviewed changes into the main version |
 | **API / endpoint** | A web address that other systems call to get premiums |
 | **REST API** | A specific type of API that uses standard web addresses and JSON data |
-| **Staging** | A private test copy of your API that only your team can see - your target and release process must provide it before Haute can test it |
+| **Staging** | A private test copy of your API that only your team can see - the staging deploy creates it on Databricks; on the container targets your platform runs it |
 | **Production** | The real, live API that your policy admin system calls |
 | **CI/CD** | Automated testing and deployment that runs every time you make a change |
 | **`.env` file** | A file on your machine that stores passwords and tokens (never shared) |

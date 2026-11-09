@@ -128,7 +128,7 @@ The starter pipeline contains **0 nodes**, giving you a blank canvas.
 
 ## The configuration file
 
-The most important generated file is `haute.toml` - a plain text file that says what gets deployed and where. You don't need to write it from scratch; `haute init` creates it pre-filled for your chosen target. Here's what a typical one looks like:
+The most important generated file is `haute.toml` - a plain text file that says what gets deployed and where. You don't need to write it from scratch; `haute init` creates it pre-filled for your chosen target. Here's the one it writes for a Databricks project named `motor-pricing` on GitHub:
 
 ```toml
 [project]
@@ -147,10 +147,10 @@ schema = "pricing"
 serving_workload_size = "Small"
 serving_scale_to_zero = true
 
-[test_quotes]
-dir = "tests/quotes"
-
 [safety]
+# `haute impact` compares staging with production on these quotes. Without a
+# sample it compares the test quotes; commit a Parquet sample of your book (not
+# under data/, which is gitignored) and name it here to compare that instead:
 # impact_dataset = "tests/impact/portfolio_sample.parquet"
 
 [safety.approval]
@@ -175,8 +175,16 @@ Every target needs credentials to authenticate - for example, a Databricks acces
 
 Credentials live in **two places**:
 
-- **On your laptop** - in a `.env` file, so you can call the live endpoint locally (e.g. to run your own impact comparisons before pushing). Copy `.env.example` to `.env` and fill in the values. This file is gitignored and never shared.
-- **In your CI provider** - as encrypted secrets (GitHub Secrets, GitLab CI/CD Variables, or Azure DevOps Variable Groups), so the automated deploy pipeline can use them. Your IT team or tech lead usually sets these up once.
+- **On your laptop** - in a `.env` file. Copy `.env.example` to `.env` and fill in the values you have. The editor loads it when `haute serve` starts, and so does every Haute command that reads `haute.toml`, such as `haute ci secrets`, which copies the deploy's credentials from it into your CI provider. This file is gitignored and never shared.
+- **In your CI provider** - as encrypted secrets (GitHub Secrets, GitLab CI/CD Variables, or Azure DevOps Variable Groups), so the automated deploy pipeline can use them. CI never sees `.env`, since it is never committed. Your IT team or tech lead usually sets these up once.
+
+On Databricks, `.env.example` holds three pairs, kept apart because a token's scopes can be narrow (one token can serve all three when its scopes cover them):
+
+| Pair | What reads it |
+|---|---|
+| `DATABRICKS_HOST`, `DATABRICKS_TOKEN` | The editor, to browse the workspace and read and write its tables. No CI step reads it |
+| `DATABRICKS_MLFLOW_HOST`, `DATABRICKS_MLFLOW_TOKEN` | MLflow: the editor's experiment tracking and model registry, and the deploy's model registration |
+| `DATABRICKS_RATING_HOST`, `DATABRICKS_RATING_TOKEN` | The serving endpoints: the deploy, and `haute smoke` and `haute impact` |
 
 Both use the same credential values, but CI needs only some of them: `.env.example` also holds variables no CI step reads, such as Databricks' data-access pair, `DATABRICKS_HOST` and `DATABRICKS_TOKEN`. `haute init` ends by printing the secrets your CI needs - give those names to whoever sets up the CI secrets. On GitHub, `haute ci secrets --check` lists which of them the repository has.
 
@@ -224,7 +232,7 @@ On Databricks, Model Serving turns a request's quotes into one table before Haut
 
 ## Requests with several quotes
 
-A request to a deployed pipeline can hold several quotes, sent as a JSON array. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote. `haute impact` sends quotes this way, in batches.
+A request to a deployed pipeline can hold several quotes, sent as a JSON array. The answer then has one row per quote, in the order the quotes were sent, so the first row answers the first quote. `haute impact` sends a portfolio sample (`[safety] impact_dataset`) this way, in batches; without one, it sends each test quote as a request of its own.
 
 Every deployment answers such a request, in one of two ways. When you deploy, Haute checks every node between the Quote Input and the Quote Response to make sure each quote keeps exactly one row, in its place, and that no quote's answer depends on the other quotes sent with it. `haute deploy` prints the result.
 

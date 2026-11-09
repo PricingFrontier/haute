@@ -19,7 +19,7 @@ uv run haute init --target databricks
 
 This fills the project folder with everything Haute needs: the starter pipeline `rating/main.py` (the pipeline the editor opens), a `rating/utility/` folder for your own helper functions, a `data/` folder for your data files, a `haute.toml` configuration file, a starter test with an example test quote in `tests/`, CI/CD workflow files, and a `.env.example` credential template. It also removes the `main.py` that `uv init` created, because Haute uses `rating/main.py`.
 
-Copy the credential template to `.env` and fill in your values. `.env` is gitignored, so your credentials are never committed:
+Copy the credential template to `.env` and fill in the values you have: the editor reads them when it starts, for example to reach your Databricks data and MLflow ([Credentials](../deployment/index.md#credentials) says which reads what). `.env` is gitignored, so your credentials are never committed:
 
 ```powershell
 cp .env.example .env

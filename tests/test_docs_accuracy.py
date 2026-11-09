@@ -2111,9 +2111,13 @@ def _scaffolded_staging_suffix() -> str:
     return match.group(1)
 
 
-def test_databricks_guide_shows_the_haute_toml_init_writes() -> None:
-    step = _h2_section(DATABRICKS_GUIDE.read_text(encoding="utf-8"), "Step 7")
-    shown = re.search(r"```toml\n(.*?)```", step, flags=re.DOTALL)
+@pytest.mark.parametrize(
+    ("page", "section"),
+    [("targets/databricks.md", "Step 7"), ("index.md", "The configuration file")],
+)
+def test_deployment_pages_show_the_haute_toml_init_writes(page: str, section: str) -> None:
+    text = (ROOT / "docs" / "deployment" / page).read_text(encoding="utf-8")
+    shown = re.search(r"```toml\n(.*?)```", _h2_section(text, section), flags=re.DOTALL)
     assert shown is not None
     assert shown.group(1) == haute_toml("motor-pricing", "databricks", "github")
 
