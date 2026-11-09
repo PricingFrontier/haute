@@ -21,6 +21,8 @@ Current targets (budgets + rationale are owned by [`targets.json`](targets.json)
 - `cosmic-ray.output-assembler.toml`: [src/haute/_output_assembler.py](../src/haute/_output_assembler.py)
 - `cosmic-ray.jsonpath.toml`: [src/haute/_jsonpath.py](../src/haute/_jsonpath.py)
 - `cosmic-ray.json-shred.toml`: [src/haute/_json_shred/](../src/haute/_json_shred/) (the complete package)
+- `cosmic-ray.rating.toml`: [src/haute/_rating.py](../src/haute/_rating.py)
+- `cosmic-ray.deploy-scorer.toml`: [src/haute/deploy/_scorer.py](../src/haute/deploy/_scorer.py)
 
 Run the default mutation suite locally:
 
@@ -77,9 +79,9 @@ survival matched on real targets).
 Every target explicitly declares a positive-integer `max_pending_per_shard` in
 [`targets.json`](targets.json). The planner counts executable (pending) mutants
 only and creates `max(1, ceil(pending / cap))` shards for each target. Current
-caps are 80 for every target except `json-shred`, which is capped at 20 so that
-its 90-second per-mutant ceiling bounds a worst-case shard's test portion to
-30 minutes. The
+caps are 80 for `output-assembler` and `jsonpath`, 20 for `rating`, 10 for
+`deploy-scorer`, and 20 for `json-shred`, whose 90-second per-mutant ceiling
+bounds a worst-case shard's test portion to 30 minutes. The
 JSON/cache/runtime command currently collects 687 tests, including the complete
 inference cache, strict structural filter, shared-prefix, and byte-range limit
 contracts. Native-filter witnesses check fast-path acceptance as well as schema
@@ -116,7 +118,9 @@ Timeouts are target-specific upper bounds for one witness-suite invocation.
 `jsonpath` uses 30 seconds and `output-assembler` 15 seconds (its recursive loops
 hang under loop-bound mutations, so a tight cap flags them quickly).
 `json-shred` uses 90 seconds for its maintained streaming, publication,
-recovery, and lifecycle command. The exact command is measured again during
+recovery, and lifecycle command; `rating` 90 seconds for a command that takes
+about 25, and `deploy-scorer` 180 seconds for one that takes about 50, so their
+caps of 20 and 10 mutants bound a worst-case shard to 30 minutes. The exact command is measured again during
 every plan; the extra
 target-specific headroom prevents normal hosted-runner variance from classifying
 a passing baseline as a mutant timeout, while an actual calibration regression

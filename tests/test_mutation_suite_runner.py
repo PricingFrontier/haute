@@ -41,12 +41,19 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
     and the `executor` graph engine; ENG-T12 added `parser-conservation`, the
     F3 structural acceptance gate. ENGQ-R04 narrowed the set to the
     safety-critical modules (deploy scoring and API-input snapshot
-    publication). Adding or removing a target must update this contract
+    publication). ENGQ-R11 added `rating` and `deploy-scorer`, the two modules
+    whose silent failure changes a price. Adding or removing a target must update this contract
     deliberately.
     """
     targets = _targets()
 
-    assert {target.name for target in targets} == {"output-assembler", "jsonpath", "json-shred"}
+    assert {target.name for target in targets} == {
+        "output-assembler",
+        "jsonpath",
+        "json-shred",
+        "rating",
+        "deploy-scorer",
+    }
     assert all(target.config_path.exists() for target in targets)
     assert all(target.module_path.exists() for target in targets)
     assert all(target.test_paths for target in targets)
@@ -62,11 +69,15 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
         "output-assembler": 10.0,
         "jsonpath": 4.0,
         "json-shred": 5.0,
+        "rating": 100.0,
+        "deploy-scorer": 100.0,
     }
     assert {target.name: target.max_pending_per_shard for target in targets} == {
         "output-assembler": 80,
         "jsonpath": 80,
         "json-shred": 20,
+        "rating": 20,
+        "deploy-scorer": 10,
     }
     for target in targets:
         config = tomllib.loads(target.config_path.read_text(encoding="utf-8"))["cosmic-ray"]
@@ -181,7 +192,7 @@ def test_changed_manifest_selected_test_file_selects_json_shred_target() -> None
 def test_changed_file_selection_ignores_unowned_python_files() -> None:
     selected = _select_targets_for_changed_files(
         _targets(),
-        ["tests/test_column_contracts_adoption.py", "src/haute/_rating.py"],
+        ["tests/test_column_contracts_adoption.py", "src/haute/_registry.py"],
     )
 
     assert selected == []
@@ -220,6 +231,8 @@ def test_mutation_runner_dry_run_writes_manifest_without_cosmic_ray(tmp_path) ->
         "output-assembler",
         "jsonpath",
         "json-shred",
+        "rating",
+        "deploy-scorer",
     }
 
 
