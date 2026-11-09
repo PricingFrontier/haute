@@ -122,7 +122,7 @@ A project you made yourself, with `uv init` and `haute init` as in [Installing H
     ```
 
 4. **Sign in to the GitHub CLI** once, with `gh auth login`, and fill in `.env` ([Credentials](index.md#credentials)), so Haute can store the deploy's secrets in the repository.
-5. **Push from the editor.** In the Git panel, click **Push**. The first Push to an empty repository stores the deploy's secrets from `.env`, then publishes `main` on its own, then your working branch.
+5. **Commit a milestone, then push from the editor.** Your saves are not on your working branch until a milestone gathers them: in the Git panel, click **Commit a milestone** ([Versions](../building-models/versions.md#saves-and-milestones)), with your pipeline and test quotes saved. Then click **Push**. The first Push to an empty repository stores the deploy's secrets from `.env`, then publishes `main` on its own, then your working branch.
 6. **Open your first pull request**, from your working branch into `main` ([Ask for a review](#4-ask-for-a-review-pull-request)). CI checks it; merging it runs the staging deploy.
 
 From the terminal instead, run `haute ci secrets` after step 4 (it finds the repository through `origin`), and push `main` on its own first with `git push -u origin main`: GitHub never runs the workflows of a repository whose first push created more than one branch.
