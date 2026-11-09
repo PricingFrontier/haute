@@ -466,6 +466,7 @@ class TestMessageTurn:
         try:
             response = client.post("/api/assistant/message", json=_message(session_id))
             assert response.status_code == 409
+            assert response.json()["detail"]["error_code"] == "assistant_turn_running"
         finally:
             session.lock.release()
 

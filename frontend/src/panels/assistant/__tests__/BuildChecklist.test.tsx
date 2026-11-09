@@ -12,6 +12,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 
 import type { AssistantBuildPlan, AssistantChangeRecord } from "../../../api/assistant"
 import type { TranscriptEntry } from "../../../stores/useAssistantStore"
+import useAssistantStore from "../../../stores/useAssistantStore"
 import BuildChecklist from "../BuildChecklist"
 
 function change(id: string, summary: string): AssistantChangeRecord {
@@ -119,6 +120,17 @@ describe("BuildChecklist", () => {
 
     const cards = screen.getAllByTestId("card")
     expect(scrolled).toEqual([cards[0]])
+  })
+
+  it("sets a notice instead of throwing when the card has left the transcript", () => {
+    useAssistantStore.setState({ notice: null })
+    render(<Harness plan={PLAN} entries={ENTRIES} />)
+    const [source] = screen.getAllByTestId("assistant-build-item")
+    screen.getAllByTestId("card").forEach((card) => card.remove())
+
+    fireEvent.click(within(source).getByRole("button", { name: SOURCE.summary }))
+
+    expect(useAssistantStore.getState().notice).toMatch(/no longer in this chat/)
   })
 
   it("names a change whose card is not in the transcript without a link, and marks an undone change", () => {

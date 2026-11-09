@@ -872,7 +872,7 @@ the turn that follows.
    resolved (see Source file binding); it needs no session, so it happens before the
    reservation.
 2. Look up the session (404) and atomically acquire its lock without waiting — held →
-   409. The reservation happens before provider construction or pipeline parsing; either
+   409, whose detail carries the stable `error_code` `assistant_turn_running`. The reservation happens before provider construction or pipeline parsing; either
    pre-stream failure releases it immediately, while a started turn releases it from the
    loop/response lifecycle and appends the turn to history. A resolved `source_file` that
    differs from the session's binding releases the reservation and is refused with 409

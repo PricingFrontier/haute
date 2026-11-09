@@ -375,10 +375,8 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         reservation = await _loop.reserve_turn(session_store, body.session_id)
     except _loop.UnknownSessionError:
         raise HTTPException(status_code=404, detail="Unknown assistant session") from None
-    except _loop.ConcurrentTurnError:
-        raise HTTPException(
-            status_code=409, detail="An assistant turn is already running"
-        ) from None
+    except _loop.ConcurrentTurnError as exc:
+        raise HTTPException(status_code=409, detail=exc.to_payload()) from None
     session = reservation.session
 
     try:

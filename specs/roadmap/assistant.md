@@ -39,7 +39,6 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
-| ASSIST-60 | Planned | P3 | The chat panel recognises the server's "still finishing" answer by a code, shows the server's detail for every other failure, never throws from a click, and keeps a draft the store refused to send. |
 | ASSIST-62 | Planned | P2 | Session/knowledge caches write atomically without fixed `.json.tmp` collisions, and `_graph_fact` handles unparseable pipelines cleanly. |
 
 ## Planned improvements
@@ -136,30 +135,6 @@ per configuration with run identifiers.
 **Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-60 — The chat panel's failures and clicks
-**Why:** The send-time 409 notice is chosen by comparing `error.detail` with the
-server's English sentence ("An assistant turn is already running"), and every
-other HTTP failure (500, 403, 422, 503) is rendered as "Turn interrupted" with
-the server's detail discarded. Two assertions throw from click paths (a
-checklist link whose card is missing; Undo on a card outside an open chat),
-which React does not route to the error boundary, so the click silently does
-nothing. The composer clears the draft before the store re-checks the send gate,
-so a send refused at the gate loses the typed text.
-
-**Plan:** A stable code on the server's 409 and a match on it; render other
-failures as `failed` with the detail; disable the link when the card is absent
-and set a notice instead of throwing; clear the draft only after a successful
-send.
-
-**Acceptance:** A 503 shows the server's detail; a reworded 409 sentence still
-shows the still-finishing notice; a refused send keeps the draft.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useAssistantStore.ts`;
-`src/haute/routes/assistant.py`; `frontend/src/panels/assistant/BuildChecklist.tsx`;
-`frontend/src/panels/assistant/Composer.tsx`.
 
 ### ASSIST-62 — Project-root workbench form resolution, atomic cache/session writes, and resilient `_graph_fact` parsing
 **Why:** Two assistant persistence defects affect session/knowledge cache writes and

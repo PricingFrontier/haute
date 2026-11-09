@@ -3,6 +3,7 @@
 import { create } from "zustand"
 
 import { ApiError } from "../api/client"
+import { apiErrorCode, apiErrorMessage } from "../api/errors"
 import {
   createAssistantSession,
   getAssistantStatus,
@@ -74,11 +75,16 @@ export const CHOOSE_FOR_ME_REPLY = "You choose, and tell me what you picked."
 /** The draft "Ask the assistant to fix" puts in an empty composer. */
 export const FIX_ERROR_PROMPT = "Fix the error this node raises when it runs."
 
+/** The server's stable code for a send while another turn of the chat is running. */
+const TURN_RUNNING_CODE = "assistant_turn_running"
+
 export interface SendMessageOptions {
   isInsideSubmodel: boolean
   /** The canvas document's source file; `null` while the canvas has none. */
   currentSourceFile: string | null
   readOnly: boolean
+  /** Called once the message is in the transcript, so a refused send keeps its draft. */
+  onSent?: () => void
 }
 
 export interface AssistantStoreState {
@@ -452,14 +458,13 @@ function rejectTurn(set: SetAssistantState, error: unknown): void {
     return
   }
 
-  if (error instanceof ApiError && error.status === 409) {
-    let notice = error.detail ?? "The assistant request conflicted with current server state."
-    if (error.detail === "An assistant turn is already running") {
-      notice = "The assistant is still finishing its last edit; try again in a moment."
-    }
+  if (error instanceof ApiError) {
+    const detail = apiErrorMessage(error, "The assistant could not take this message.")
     set((state) => ({
-      entries: appendMarker(removeStreamingAssistant(state.entries), "failed", error.detail),
-      notice,
+      entries: appendMarker(removeStreamingAssistant(state.entries), "failed", detail),
+      notice: apiErrorCode(error) === TURN_RUNNING_CODE
+        ? "The assistant is still finishing its last edit; try again in a moment."
+        : detail,
     }))
     return
   }
@@ -661,6 +666,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       turnStatus: "streaming",
       notice: null,
     }))
+    options.onSent?.()
 
     type TerminalEvent = Extract<AssistantStreamEvent, {
       type: "completed" | "failed" | "cancelled"
@@ -780,7 +786,8 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     }
     const { sessionId, pipelineSource } = current
     if (sessionId === null || pipelineSource === null) {
-      throw new Error("Assistant contract violation: a change card outside an open chat.")
+      set({ notice: "This change can no longer be undone here." })
+      return
     }
     set({ undoingChangeId: change.id, notice: null })
     try {

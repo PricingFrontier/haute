@@ -180,6 +180,8 @@ class UnknownSessionError(HauteError):
 class ConcurrentTurnError(HauteError):
     """Raised when a second turn is started while a session is busy."""
 
+    error_code = "assistant_turn_running"
+
     def __init__(self, session_id: str) -> None:
         super().__init__("An assistant turn is already running", session_id=session_id)
 

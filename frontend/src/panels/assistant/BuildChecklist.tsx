@@ -2,7 +2,7 @@ import { useState, type RefObject } from "react"
 import { CheckCircle2, ChevronDown, ChevronRight, Circle, ListChecks } from "lucide-react"
 
 import type { AssistantBuildPlan, AssistantBuildPlanItem } from "../../api/assistant"
-import type { TranscriptEntry } from "../../stores/useAssistantStore"
+import useAssistantStore, { type TranscriptEntry } from "../../stores/useAssistantStore"
 
 /** The length of the abbreviated change id a change without a card is named by. */
 const SHORT_ID = 7
@@ -42,7 +42,8 @@ export default function BuildChecklist({ plan, entries, transcriptRef }: BuildCh
     )
     const card = cards?.[cards.length - 1]
     if (card === undefined) {
-      throw new Error(`Build checklist: the transcript has no card for change ${changeId}.`)
+      useAssistantStore.setState({ notice: "That change's card is no longer in this chat." })
+      return
     }
     card.scrollIntoView({ block: "nearest", behavior: "smooth" })
   }
