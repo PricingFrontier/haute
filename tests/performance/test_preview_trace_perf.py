@@ -20,6 +20,7 @@ from haute.executor import _preview_cache, execute_graph
 from haute.schemas import NodeResult, TraceResponse
 from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
+from tests._process_state import supersession_snapshot
 from tests._project import project_app
 from tests.conftest import build_test_input_snapshot, head_frame_resolver
 
@@ -768,7 +769,7 @@ async def _wait_for_thread_event(event: threading.Event, label: str) -> None:
 async def _wait_for_latest_generation(coordinator: Any, expected: int) -> None:
     deadline = time.perf_counter() + 2
     while time.perf_counter() < deadline:
-        states = list((await coordinator.snapshot_for_tests()).values())
+        states = list((await supersession_snapshot(coordinator)).values())
         latest = max((state.latest_generation for state in states), default=0)
         if latest >= expected:
             return
@@ -896,4 +897,4 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
         assert call_count == 2
         assert max_active == 1
         assert active == 0
-    assert await coordinator.snapshot_for_tests() == {}
+    assert await supersession_snapshot(coordinator) == {}

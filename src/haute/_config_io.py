@@ -528,59 +528,6 @@ def load_node_config(
     return loaded
 
 
-def remove_config_file(
-    node_type: NodeType,
-    node_name: str,
-    base_dir: Path,
-) -> bool:
-    """Remove a node's config file.  Returns *True* if removed."""
-    try:
-        rel_path = config_path_for_node(node_type, node_name)
-    except ValueError:
-        return False
-    abs_path = base_dir / rel_path
-    if abs_path.is_file():
-        abs_path.unlink()
-        logger.info("config_removed", path=str(rel_path))
-        return True
-    return False
-
-
-def find_config_by_func_name(
-    func_name: str,
-    base_dir: Path,
-) -> tuple[dict[str, Any], NodeType] | None:
-    """Scan config folders for a JSON file matching *func_name*.
-
-    Used as a recovery path when the ``config=`` path in a ``.py`` file is
-    mangled by Windows backslash escape interpretation (e.g. ``\\b`` →
-    backspace).  The function name is always a valid Python identifier and
-    unaffected by path escapes, so we can reconstruct the correct file.
-
-    Returns ``(config_dict, node_type)`` on success, or ``None``.
-    """
-    # Reject func_name with path separators to prevent traversal
-    if ".." in func_name or "/" in func_name or "\\" in func_name:
-        logger.warning("config_recovery_rejected", func=func_name, reason="path traversal")
-        return None
-    for folder, node_type in FOLDER_TO_NODE_TYPE.items():
-        candidate = base_dir / "config" / folder / f"{func_name}.json"
-        if candidate.is_file():
-            try:
-                config = _normalise_loaded_config(_load_json_object(candidate), node_type)
-            except (json.JSONDecodeError, OSError, ValueError, ConfigError) as exc:
-                logger.warning(
-                    "config_recovery_failed",
-                    func=func_name,
-                    path=str(candidate),
-                    error=str(exc),
-                )
-                return None
-            logger.info("config_recovered", func=func_name, path=str(candidate))
-            return config, node_type
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Graph-level helpers
 # ---------------------------------------------------------------------------

@@ -120,13 +120,14 @@ def materialisation_calibration_snapshot() -> MappingProxyType[str, int]:
         )
 
 
-def _reset_materialisation_calibration_for_tests() -> None:
+def _forget_calibration() -> None:
+    """Drop every learnt estimate, so a forked child starts from none."""
     with _calibration_lock:
         _calibration_by_profile.clear()
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_reset_materialisation_calibration_for_tests)
+    os.register_at_fork(after_in_child=_forget_calibration)
 
 
 __all__ = [

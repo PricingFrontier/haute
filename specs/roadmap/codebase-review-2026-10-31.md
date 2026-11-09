@@ -54,7 +54,7 @@ The functional areas covered:
    `frontend/src/components/`, `frontend/src/nodes/`, `frontend/src/utils/`).
 
 Candidates were compared against all existing component roadmaps and the
-[23 September](codebase-review-2026-09-23.md), [25 October](codebase-review-2026-10-25.md)
+23 September (since retired), [25 October](codebase-review-2026-10-25.md)
 and [28 October](codebase-review-2026-10-28.md) review reports to avoid duplicating
 already-tracked issues. The main session verified every accepted finding directly
 against the current source lines on `HEAD` and ran targeted Python behavioural probes

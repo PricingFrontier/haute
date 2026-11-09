@@ -343,20 +343,6 @@ class _ExprConverter:
                 return True
         return False
 
-    def _is_method_call(self, node: ast.Call, method: str) -> bool:
-        """Check if node is <expr>.<method>(...)."""
-        return isinstance(node.func, ast.Attribute) and node.func.attr == method
-
-    def _get_method_chain(self, node: ast.Call) -> tuple[ast.AST, list[tuple[str, ast.Call]]]:
-        """Unwind a method chain, returning (root_expr, [(method_name, call_node), ...])."""
-        chain: list[tuple[str, ast.Call]] = []
-        current: ast.AST = node
-        while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
-            chain.append((current.func.attr, current))
-            current = current.func.value
-        chain.reverse()
-        return current, chain
-
     # -- node handlers -------------------------------------------------------
 
     def _operand_prec(self, node: ast.AST) -> float:

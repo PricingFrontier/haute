@@ -29,14 +29,15 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._worker_isolation import (
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerMemoryLimitUnsupportedError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerTimeoutError,
-    run_isolated_worker,
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerMemoryLimitError,
+    WorkerMemoryLimitUnsupportedError,
+    WorkerRemoteError,
+    WorkerTimeoutError,
+    exitcode_looks_memory_limited,
 )
+from haute._worker_isolation import run_isolated_worker
 from haute.deploy import _batch_scoring, _schema
 from haute.deploy._batch_scoring import (
     DEPLOY_BATCH_PROCESS_NAME,
@@ -618,19 +619,19 @@ class TestGeneratedAppBatchPath:
         ("exc", "reason"),
         [
             (
-                IsolatedWorkerMemoryLimitExceededError(rss_bytes=9, rss_limit_bytes=4),
+                WorkerMemoryLimitError(rss_bytes=9, rss_limit_bytes=4),
                 "worker_rss_limit_exceeded",
             ),
             (
-                IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=1024),
+                WorkerMemoryLimitUnsupportedError(memory_limit_bytes=1024),
                 "native_memory_cap_unavailable",
             ),
             (
-                IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=1024),
+                WorkerCrashedError(-9, memory_limited=exitcode_looks_memory_limited(-9, 1024)),
                 "worker_may_have_exceeded_memory_limit",
             ),
             (
-                IsolatedWorkerRemoteError(
+                WorkerRemoteError(
                     remote_type="MemoryError",
                     remote_message="child died",
                     remote_traceback="",
@@ -675,7 +676,7 @@ class TestGeneratedAppBatchPath:
         harness = _BatchHarness(module, monkeypatch)
 
         def raise_timeout(_plan):
-            raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
+            raise WorkerTimeoutError(timeout_seconds=1.0)
 
         harness.set_worker(monkeypatch, raise_timeout)
 
@@ -692,8 +693,8 @@ class TestGeneratedAppBatchPath:
     @pytest.mark.parametrize(
         "exc",
         [
-            IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=None),
-            IsolatedWorkerRemoteError(
+            WorkerCrashedError(1),
+            WorkerRemoteError(
                 remote_type="ValueError",
                 remote_message="child raised",
                 remote_traceback="",
@@ -1323,7 +1324,7 @@ class TestOutputSchemaConservativeFallback:
         graph = _write_policy_sample(tmp_path, _conservative_graph())
 
         def unsupported_runner(_function, *_args, config):
-            raise IsolatedWorkerMemoryLimitUnsupportedError(
+            raise WorkerMemoryLimitUnsupportedError(
                 memory_limit_bytes=config.memory_limit_bytes or 1,
             )
 
@@ -1593,7 +1594,7 @@ class TestFailClosedBatchEnforcement:
         harness = _BatchHarness(module, monkeypatch)
 
         def raise_unsupported(plan):
-            raise IsolatedWorkerMemoryLimitUnsupportedError(
+            raise WorkerMemoryLimitUnsupportedError(
                 memory_limit_bytes=plan.budget.memory_limit_bytes,
             )
 

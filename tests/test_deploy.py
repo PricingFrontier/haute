@@ -1,17 +1,21 @@
 """Tests for the haute.deploy package.
 
 Tests the target-agnostic layers (pruner, bundler, schema, scorer, validators,
-config). MLflow-specific tests are integration-level and require mlflow installed.
+config), the served-model wrapper, schema inference from data inputs, and the
+MLflow deploy orchestration (progress reporting, artifact copy, registered
+version selection, build-directory cleanup). MLflow-specific tests are
+integration-level and require mlflow installed.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import ANY, MagicMock, patch
 
 import polars as pl
@@ -20,16 +24,14 @@ import pytest
 import haute
 from haute._mlflow_io import _artifact_cache_path
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
-from haute._project_context import context_thread
+from haute._project_context import context_thread, current_project
+from haute.deploy._request_rows import RequestRows
 from haute.deploy._served_haute import ServedHaute
 from haute.graph_utils import PipelineGraph
 from haute.parser import parse_pipeline_file
+from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests._project import use_project
 from tests._source_files import REPO_ROOT
-
-if TYPE_CHECKING:
-    pass
-from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
 from tests.conftest import make_output_config
 
@@ -38,7 +40,11 @@ from tests.conftest import make_output_config
 # ---------------------------------------------------------------------------
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+
+
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
+
+
 DATA_DIR = FIXTURE_DIR / "data"
 
 
@@ -150,6 +156,8 @@ _MLFLOW_DATABRICKS_PAIR = {
     "DATABRICKS_MLFLOW_HOST": "https://myhost.databricks.com",
     "DATABRICKS_MLFLOW_TOKEN": "mlflow-test-token",
 }
+
+
 _AMBIENT_MLFLOW_DATABRICKS_ENV = (
     "MLFLOW_TRACKING_URI",
     "DATABRICKS_CONFIG_PROFILE",
@@ -2142,3 +2150,484 @@ class TestParserApiInput:
         config = policies_node.data.config
         assert config["input_scenario_map"] == {"quotes": "live", "batch_quotes": "test_batch"}
         assert config["inputs"] == ["quotes", "batch_quotes"]
+
+
+@pytest.mark.sandbox_strict
+class TestProgressCallback:
+    """The optional progress callback (line 76) must receive step messages."""
+
+    def test_progress_callback_receives_messages(self, deploy_pipeline_file: Path) -> None:
+        from haute.deploy._mlflow import deploy_to_mlflow
+
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+        messages: list[str] = []
+
+        with mock_mlflow_deploy():
+            deploy_to_mlflow(resolved, progress=messages.append)
+
+        # The callback body (the guarded `progress(msg)`) must have run.
+        assert messages
+        assert any("Databricks" in m for m in messages)
+
+    def test_no_progress_callback_does_not_raise(self, deploy_pipeline_file: Path) -> None:
+        """When progress is None the guard short-circuits and no error occurs."""
+        from haute.deploy._mlflow import DeployResult, deploy_to_mlflow
+
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+
+        with mock_mlflow_deploy():
+            result = deploy_to_mlflow(resolved, progress=None)
+
+        assert isinstance(result, DeployResult)
+
+
+@pytest.mark.sandbox_strict
+class TestArtifactCopy:
+    """Resolved artifacts (line 109) must be merged into the log_model artifacts."""
+
+    def test_resolved_artifacts_are_passed_to_log_model(
+        self, deploy_pipeline_file: Path, tmp_path: Path
+    ) -> None:
+        from haute.deploy._mlflow import deploy_to_mlflow
+
+        artifact_file = tmp_path / "model.cbm"
+        artifact_file.write_text("artifact", encoding="utf-8")
+        resolved = _make_resolved(
+            pipeline_file=deploy_pipeline_file,
+            artifacts={"my_model": artifact_file},
+        )
+
+        staged: dict[str, bytes] = {}
+
+        def read_staged(**kwargs: object) -> MagicMock:
+            artifacts = kwargs["artifacts"]
+            assert isinstance(artifacts, dict)
+            staged.update({name: Path(path).read_bytes() for name, path in artifacts.items()})
+            return MagicMock(registered_model_version=1)
+
+        with mock_mlflow_deploy() as mocks:
+            mocks.log_model.side_effect = read_staged
+            deploy_to_mlflow(resolved)
+
+        artifacts = mocks.log_model.call_args.kwargs["artifacts"]
+        # The manifest is always present; the resolved artifact goes in as a copy staged
+        # under the digest resolution recorded, removed once the model is logged.
+        assert "deploy_manifest" in artifacts
+        assert staged["my_model"] == artifact_file.read_bytes()
+        assert Path(artifacts["my_model"]).name == "my_model"
+        assert not Path(artifacts["my_model"]).exists()
+
+
+@pytest.mark.sandbox_strict
+class TestVersionSelection:
+    """When the registry already has versions (line 138), the max is selected."""
+
+    def test_a_concurrent_registration_does_not_change_the_served_version(
+        self, deploy_pipeline_file: Path
+    ) -> None:
+        """The version served is the one this deploy's log_model registered.
+
+        Another job registering the same name in between owns the registry's
+        highest version; serving that would price on another model.
+        """
+        from haute.deploy._mlflow import deploy_to_mlflow
+
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+        competing = MagicMock()
+        competing.version = "9"
+
+        with (
+            mock_mlflow_deploy() as mocks,
+            patch("haute.deploy._mlflow.search_versions", return_value=[competing]) as search,
+        ):
+            mocks.log_model.return_value.registered_model_version = 7
+            result = deploy_to_mlflow(resolved)
+
+        assert result.model_version == "7"
+        assert result.model_uri.endswith("/7")
+        assert mocks.create_or_update_endpoint.call_args.kwargs["model_version"] == 7
+        search.assert_not_called()
+
+    def test_no_versions_fails_instead_of_synthesising_one(
+        self, deploy_pipeline_file: Path
+    ) -> None:
+        from haute.deploy._mlflow import deploy_to_mlflow
+        from haute.errors import DeployError
+
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+
+        with mock_mlflow_deploy() as mocks:
+            mocks.log_model.return_value.registered_model_version = None
+            with pytest.raises(DeployError, match="registered model version") as exc_info:
+                deploy_to_mlflow(resolved)
+
+        assert "main.pricing.test-model" in str(exc_info.value)
+
+
+@pytest.mark.sandbox_strict
+class TestBuildDirCleanup:
+    """DEP-R12A: a deploy stages in a directory of its own under the project's
+    ``.haute_build`` and removes only that one, shipped or failed, unless kept."""
+
+    def test_failure_removes_only_its_own_build_dir(
+        self, deploy_pipeline_file: Path, tmp_path: Path
+    ) -> None:
+        from haute.deploy._mlflow import deploy_to_mlflow
+
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+        # The project is the pipeline's own directory, the test's scratch directory.
+        builds = tmp_path / ".haute_build"
+        assert resolved.project_root == tmp_path.resolve()
+        builds.mkdir()
+        (builds / "notes.txt").write_text("the user's own file")
+
+        with mock_mlflow_deploy() as mocks:
+            mocks.log_model.side_effect = RuntimeError("boom")
+            with pytest.raises(RuntimeError, match="boom"):
+                deploy_to_mlflow(resolved)
+
+        assert [path.name for path in builds.iterdir()] == ["notes.txt"]
+
+    def test_success_removes_the_build_dir_unless_kept(self, deploy_pipeline_file: Path) -> None:
+        from haute.deploy._mlflow import deploy_to_mlflow
+
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+        builds = resolved.project_root / ".haute_build"
+
+        with mock_mlflow_deploy():
+            shipped = deploy_to_mlflow(resolved)
+            kept = deploy_to_mlflow(resolved, keep_build=True)
+
+        assert shipped.build_dir is None
+        assert kept.build_dir is not None
+        assert kept.build_dir.parent == builds
+        assert (kept.build_dir / "deploy_manifest.json").is_file()
+        assert list(builds.iterdir()) == [kept.build_dir]
+
+
+# ===========================================================================
+# deploy/_model_code.py — additional edge cases
+# ===========================================================================
+
+
+@pytest.mark.sandbox_strict
+class TestHauteModelEdgeCases:
+    """Additional tests for HauteModel."""
+
+    def test_load_context_multiple_artifacts(self, tmp_path):
+        """load_context maps every artifact declared by the manifest."""
+        from haute.deploy._model_code import HauteModel
+
+        manifest = {
+            "polars_version": pl.__version__,
+            "pruned_graph": {"nodes": [], "edges": []},
+            "input_node_ids": ["src"],
+            "output_node_id": "out",
+            "input_schema": {},
+            "omittable_inputs": [],
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
+            "output_fields": None,
+            "artifacts": {
+                "model.pkl": "/orig/model.pkl",
+                "scaler.pkl": "/orig/scaler.pkl",
+                "encoder.pkl": "/orig/encoder.pkl",
+            },
+        }
+        manifest_path = tmp_path / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        model = HauteModel()
+        ctx = MagicMock()
+        ctx.artifacts = {
+            "deploy_manifest": str(manifest_path),
+            "model.pkl": "/served/model.pkl",
+            "scaler.pkl": "/served/scaler.pkl",
+            "encoder.pkl": "/served/encoder.pkl",
+        }
+        model.load_context(ctx)
+
+        assert model._artifact_paths == {
+            "model.pkl": "/served/model.pkl",
+            "scaler.pkl": "/served/scaler.pkl",
+            "encoder.pkl": "/served/encoder.pkl",
+        }
+
+    def test_load_context_empty_artifacts(self, tmp_path):
+        """Manifest with no artifacts results in empty artifact_paths."""
+        from haute.deploy._model_code import HauteModel
+
+        manifest = {
+            "polars_version": pl.__version__,
+            "pruned_graph": {"nodes": [], "edges": []},
+            "input_node_ids": ["src"],
+            "output_node_id": "out",
+            "input_schema": {},
+            "omittable_inputs": [],
+            "request_rows": {
+                "multi_quote": "in_request_order",
+                "refusals": [],
+                "checked_lookups": [],
+            },
+            "artifacts": {},
+        }
+        manifest_path = tmp_path / "deploy_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        model = HauteModel()
+        ctx = MagicMock()
+        ctx.artifacts = {"deploy_manifest": str(manifest_path)}
+        model.load_context(ctx)
+
+        assert model._artifact_paths == {}
+
+    def test_predict_input_converted_to_polars(self):
+        """predict() converts pandas input to polars for score_graph."""
+        import pandas as pd
+
+        from haute.deploy._model_code import HauteModel
+
+        model = HauteModel()
+        model._graph = MagicMock()
+        model._project = current_project()
+        model._input_node_ids = ["src"]
+        model._output_node_id = "out"
+        model._artifact_paths = {}
+        model._output_fields = None
+        model._request_rows = RequestRows("in_request_order")
+        model._omittable = frozenset()
+        model._input_schema = {"a": pl.Int64(), "b": pl.Float64()}
+
+        input_pd = pd.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})
+        mock_result = pl.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})
+
+        with patch("haute.deploy._scorer.score_graph", return_value=mock_result) as mock:
+            result = model.predict(MagicMock(), input_pd)
+
+        # Verify input was converted to polars
+        call_kw = mock.call_args.kwargs
+        assert isinstance(call_kw["input_df"], pl.DataFrame)
+        assert call_kw["input_df"].columns == ["a", "b"]
+        assert call_kw["input_df"].shape == (2, 2)
+
+        # Verify output was converted back to pandas
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.columns) == ["a", "b"]
+
+
+# ===========================================================================
+# deploy/_schema.py — _find_node and edge cases
+# ===========================================================================
+
+
+@pytest.mark.sandbox_strict
+class TestFindNode:
+    """Direct tests for _find_node."""
+
+    def test_finds_existing_node(self):
+        """_find_node returns the correct node when it exists."""
+        from haute.deploy._schema import _find_node
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": "/data"},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {"label": "out", "nodeType": "output", "config": {}},
+                    },
+                ],
+            }
+        )
+
+        node = _find_node(graph, "src")
+        assert node.id == "src"
+        assert node.data.config.get("path") == "/data"
+
+    def test_raises_for_missing_node(self):
+        """_find_node raises ConfigError for non-existent node ID."""
+        from haute.deploy._schema import _find_node
+        from haute.errors import ConfigError
+
+        graph = _g({"nodes": []})
+        with pytest.raises(ConfigError, match="not found"):
+            _find_node(graph, "nonexistent")
+
+    def test_raises_message_includes_node_id(self):
+        """ConfigError carries the missing node ID in context."""
+        from haute.deploy._schema import _find_node
+        from haute.errors import ConfigError
+
+        graph = _g({"nodes": []})
+        with pytest.raises(ConfigError) as exc_info:
+            _find_node(graph, "my_missing_node")
+        assert exc_info.value.context["node_id"] == "my_missing_node"
+
+
+@pytest.mark.sandbox_strict
+class TestInferOutputSchemaEdgeCases:
+    """Edge cases for infer_output_schema."""
+
+    def test_no_input_node_ids_raises(self, monkeypatch, tmp_path):
+        """infer_output_schema with empty input_node_ids raises ValueError."""
+        from haute.deploy._schema import infer_output_schema
+
+        use_project(tmp_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "out",
+                        "data": {"label": "out", "nodeType": "output", "config": {}},
+                    },
+                ],
+            }
+        )
+
+        with pytest.raises(ValueError, match="No API input nodes"):
+            infer_output_schema(graph, "out", [], project_root=tmp_path)
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_cache_write_failure_does_not_raise(self, monkeypatch, tmp_path):
+        """If cache writing fails, infer_output_schema still returns the schema."""
+        from haute.deploy._schema import infer_output_schema
+
+        use_project(tmp_path)
+
+        pq_path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": str(pq_path)},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {"label": "out", "nodeType": "output", "config": {}},
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+
+        mock_result = pl.DataFrame({"result": [42.0]})
+
+        # The cache's one write fails as a read-only or full disk would.
+        with (
+            patch("haute.deploy._scorer.score_graph", return_value=mock_result),
+            patch(
+                "haute.deploy._schema.atomic_write_text", side_effect=OSError("read-only")
+            ) as write,
+        ):
+            result = infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
+
+        # Should still return the computed schema despite cache write failure
+        write.assert_called_once()
+        assert result == {"result": "Float64"}
+
+    def test_input_node_with_no_path_for_sample_raises(self, monkeypatch, tmp_path):
+        """infer_output_schema raises when input node has no path for sample row."""
+        from haute.deploy._schema import infer_output_schema
+
+        use_project(tmp_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {},  # no path
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {"label": "out", "nodeType": "output", "config": {}},
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+
+        with pytest.raises(ValueError, match="no path"):
+            infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
+
+
+@pytest.mark.sandbox_strict
+class TestInferInputSchemaEdgeCases:
+    """Extra edge cases for infer_input_schema."""
+
+    def test_csv_file_schema(self, tmp_path):
+        """infer_input_schema can read schema from CSV files."""
+        from haute.deploy._schema import infer_input_schema
+
+        csv_path = tmp_path / "input.csv"
+        pl.DataFrame({"name": ["alice"], "score": [95.5]}).write_csv(csv_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": str(csv_path)},
+                        },
+                    },
+                ],
+            }
+        )
+
+        schema = infer_input_schema(graph, "src")
+        assert "name" in schema
+        assert "score" in schema
+        assert isinstance(schema["name"], str)
+
+    def test_parquet_multiple_columns(self, tmp_path):
+        """infer_input_schema returns all columns from a multi-column parquet."""
+        from haute.deploy._schema import infer_input_schema
+
+        pq_path = tmp_path / "input.parquet"
+        pl.DataFrame(
+            {"age": [25], "premium": [100.5], "region": ["A"], "active": [True]}
+        ).write_parquet(pq_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": str(pq_path)},
+                        },
+                    },
+                ],
+            }
+        )
+
+        schema = infer_input_schema(graph, "src")
+        assert len(schema) == 4
+        assert set(schema.keys()) == {"age", "premium", "region", "active"}

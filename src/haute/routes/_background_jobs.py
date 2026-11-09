@@ -14,12 +14,8 @@ from typing import Any, cast
 
 from haute._execution_context import ExecutionCancellationToken
 from haute._logging import get_logger
-from haute._worker_isolation import (
-    IsolatedWorkerConfig,
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerError,
-    IsolatedWorkerRemoteError,
-)
+from haute._worker_failures import WorkerCrashedError, WorkerError, WorkerRemoteError
+from haute._worker_isolation import IsolatedWorkerConfig
 from haute._worker_protocol import (
     WORKER_USER_MESSAGE_FIELD,
     WorkerFunction,
@@ -506,7 +502,7 @@ class IsolatedJobSupervisor:
         try:
             result = execute()
             fields = dict(completed_fields(result))
-        except IsolatedWorkerError as exc:
+        except WorkerError as exc:
             failure_fields = _isolated_worker_failure_fields(exc)
             reported = failure_fields.get("execution_metrics")
             if failure_metrics is not None and isinstance(reported, dict):
@@ -635,7 +631,7 @@ def _unexpected_supervisor_outcome(
     )
 
 
-def _worker_terminal_message(exc: IsolatedWorkerError) -> str:
+def _worker_terminal_message(exc: WorkerError) -> str:
     """Prefer a child-curated user-facing message over the typed wrapper text.
 
     A worker failure payload whose fields carry ``WORKER_USER_MESSAGE_FIELD``
@@ -651,7 +647,7 @@ def _worker_terminal_message(exc: IsolatedWorkerError) -> str:
     return str(exc)
 
 
-def _isolated_worker_failure_fields(exc: IsolatedWorkerError) -> dict[str, Any]:
+def _isolated_worker_failure_fields(exc: WorkerError) -> dict[str, Any]:
     worker_fields = getattr(exc, "fields", None)
     fields: dict[str, Any] = dict(worker_fields) if isinstance(worker_fields, Mapping) else {}
     # The supervisor claims the "error" field for the typed wrapper text, but
@@ -669,10 +665,10 @@ def _isolated_worker_failure_fields(exc: IsolatedWorkerError) -> dict[str, Any]:
             "worker_error_class": type(exc).__name__,
         }
     )
-    if isinstance(exc, IsolatedWorkerRemoteError):
+    if isinstance(exc, WorkerRemoteError):
         fields["worker_error_type"] = exc.remote_type
         fields["worker_remote_traceback"] = exc.remote_traceback
-    if isinstance(exc, IsolatedWorkerCrashedError):
+    if isinstance(exc, WorkerCrashedError):
         fields["worker_exitcode"] = exc.exitcode
     if exc.terminal_reason == "memory_limited":
         fields["error_code"] = "memory_limit"

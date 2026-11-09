@@ -1,9 +1,3 @@
-import {
-  expectBoolean,
-  expectExactKeys,
-  expectNonBlankString,
-  expectPlainObject,
-} from "./guards"
 import type { PipelineRepairApplyResponse } from "../generated/api-contracts.generated"
 import { expectGeneratedContract } from "./generatedContractValidation"
 import {
@@ -37,22 +31,6 @@ export interface RecoverUnavailableNodeRequest {
   targetSourceFile: string
   targetRecoveryId: string
   action: RecoverUnavailableNodeAction
-}
-
-function parseRequestBase(value: unknown, field: string): RemoveUnavailableNodeRequest {
-  const object = expectPlainObject(PARSER, value, field)
-  expectExactKeys(PARSER, object, field, ["sourceFile", "sourceRevision", "targetSourceFile", "targetRecoveryId", "deleteConfig"])
-  return {
-    sourceFile: expectNonBlankString(PARSER, object.sourceFile, `${field}.sourceFile`),
-    sourceRevision: expectNonBlankString(PARSER, object.sourceRevision, `${field}.sourceRevision`),
-    targetSourceFile: expectNonBlankString(PARSER, object.targetSourceFile, `${field}.targetSourceFile`),
-    targetRecoveryId: expectNonBlankString(PARSER, object.targetRecoveryId, `${field}.targetRecoveryId`),
-    deleteConfig: expectBoolean(PARSER, object.deleteConfig, `${field}.deleteConfig`),
-  }
-}
-
-export function parseRemoveUnavailableNodeRequest(value: unknown): RemoveUnavailableNodeRequest {
-  return parseRequestBase(value, "request")
 }
 
 export type {

@@ -24,6 +24,7 @@ from haute.modelling._ebm import EBMAlgorithm, EBMModel, _cell_labels
 from haute.modelling._feature_contract import load_contract, save_contract
 from haute.modelling._train_config import TrainingConfigError, build_training_job_kwargs
 from haute.modelling._training_job import TrainingJob, model_contract_filename
+from tests._process_state import clear_deploy_artifact_caches
 from tests._project import use_project
 
 EVALUATION = {
@@ -778,9 +779,8 @@ def _replace_sidecar(path: Path, contract: object) -> None:
 
 def test_the_deployed_cache_reloads_when_only_the_contract_changes(tmp_path: Path) -> None:
     from haute._mlflow_io import load_local_model_cached
-    from haute.deploy._scorer import _clear_deploy_artifact_caches
 
-    _clear_deploy_artifact_caches()
+    clear_deploy_artifact_caches()
     _job, result = train(tmp_path, target="severity", loss="RMSE")
     sidecar = Path(result.model_path).parent / model_contract_filename("ebm")
     first = load_local_model_cached(result.model_path, "regression", str(sidecar))
@@ -788,7 +788,7 @@ def test_the_deployed_cache_reloads_when_only_the_contract_changes(tmp_path: Pat
     _replace_sidecar(sidecar, _another_loss(contract_of(result)))
     with pytest.raises(ConfigError, match="describes a Gamma model"):
         load_local_model_cached(result.model_path, "regression", str(sidecar))
-    _clear_deploy_artifact_caches()
+    clear_deploy_artifact_caches()
 
 
 def test_a_run_contract_change_rebinds_without_reloading_the_model(

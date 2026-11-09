@@ -16,7 +16,7 @@ from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
 from haute._cpu_performance import configure_process_high_qos
-from haute._file_ops import PathTooLongError, path_too_long_error
+from haute._file_ops import path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import (
     NativeMemoryLease,
@@ -35,20 +35,24 @@ from haute._process_memory import (
     process_rss_bytes,
 )
 from haute._project_context import ProjectContext, current_project, project_scope
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerHostError,
+    WorkerMemoryLimitError,
+    WorkerMemoryLimitUnsupportedError,
+    WorkerRemoteError,
+    WorkerStartError,
+    WorkerStoppedError,
+    WorkerTerminalReason,
+    WorkerTerminationError,
+    WorkerTimeoutError,
+    exitcode_looks_memory_limited,
+)
 
 logger = get_logger(component="worker_isolation")
 
 T = TypeVar("T")
 
-WorkerTerminalReason = Literal[
-    "completed",
-    "superseded",
-    "timed_out",
-    "cancelled",
-    "memory_limited",
-    "contract_error",
-    "error",
-]
 WorkerMemoryEnforcement = Literal["best_effort", "required"]
 _WORKER_MEMORY_ENFORCEMENT_ENV = "HAUTE_WORKER_MEMORY_ENFORCEMENT"
 
@@ -164,251 +168,6 @@ def worker_config_for_memory_policy(
     )
 
 
-class IsolatedWorkerError(RuntimeError):
-    """Base class for typed isolated-worker failures."""
-
-    terminal_reason: WorkerTerminalReason
-
-    def __init__(self, message: str, *, terminal_reason: WorkerTerminalReason = "error") -> None:
-        super().__init__(message)
-        self.terminal_reason = terminal_reason
-
-
-class IsolatedWorkerStartError(IsolatedWorkerError):
-    """Raised when the parent cannot start the worker process."""
-
-
-class IsolatedWorkerHostError(IsolatedWorkerError):
-    """The host's process machinery is unusable, so no worker can start.
-
-    Distinct from a worker that ran and failed: nothing ran at all, and
-    the cause is the environment rather than the job. Specifically,
-    CPython's ``multiprocessing`` resource tracker — a helper process that
-    must be alive before any queue or lock can be created — has died and
-    could not be replaced. Named so the failure reads as the host problem
-    it is instead of an unexplained internal error.
-    """
-
-
-def remote_failure_terminal_reason(remote_type: str, *, is_memory: bool) -> WorkerTerminalReason:
-    """The terminal reason for an exception a child reported: one rule for every parent.
-
-    *is_memory* is the child's own ``isinstance(exc, MemoryError)``, so every subclass
-    (an admission refusal, a sampled checkpoint over budget) counts whatever its name.
-    A native cap the child could not install is a contract error.
-    """
-    if remote_type.startswith("NativeMemoryLimit"):
-        return "contract_error"
-    return "memory_limited" if is_memory else "error"
-
-
-class IsolatedWorkerRemoteError(IsolatedWorkerError):
-    """Raised when the child process returns a Python exception."""
-
-    def __init__(
-        self,
-        *,
-        remote_type: str,
-        remote_message: str,
-        remote_traceback: str,
-        is_memory: bool,
-    ) -> None:
-        super().__init__(
-            f"Isolated worker raised {remote_type}: {remote_message}",
-            terminal_reason=remote_failure_terminal_reason(remote_type, is_memory=is_memory),
-        )
-        self.remote_type = remote_type
-        self.remote_message = remote_message
-        self.remote_traceback = remote_traceback
-        self.is_memory = is_memory
-
-
-class IsolatedWorkerCrashedError(IsolatedWorkerError):
-    """Raised when the child exits without returning a result payload.
-
-    The message is parent-authored — a crashed child left no payload to
-    curate — so it is written directly for the user rather than in
-    supervisor jargon. The exit code stays on the exception (and in the
-    job's ``worker_exitcode`` field) for diagnostics.
-    """
-
-    def __init__(self, *, exitcode: int | None, memory_limit_bytes: int | None) -> None:
-        memory_limited = _exitcode_looks_memory_limited(exitcode, memory_limit_bytes)
-        exit_detail = "" if exitcode is None else f" (exit code {exitcode})"
-        if memory_limited:
-            # The exit-code heuristic is indicative, not proof (a native abort
-            # or an external kill can look the same) — the wording hedges
-            # rather than asserting an out-of-memory condition as fact.
-            message = (
-                f"The background process was stopped and may have run out of memory"
-                f"{exit_detail}. Reduce the data size, or run on a server with more "
-                "memory, then try again."
-            )
-        else:
-            message = (
-                "The background process stopped unexpectedly before returning a result"
-                f"{exit_detail}. This usually means it crashed or was stopped by the "
-                "operating system — check the server logs, then try again."
-            )
-        super().__init__(
-            message,
-            terminal_reason="memory_limited" if memory_limited else "error",
-        )
-        self.exitcode = exitcode
-
-
-class IsolatedWorkerTimeoutError(IsolatedWorkerError):
-    """Raised when the parent terminates a worker that exceeded its timeout.
-
-    Like the crash wrapper, the message is parent-authored — a timed-out
-    child produced no payload to curate — so it is written directly for the
-    user rather than in supervisor jargon. The limit stays on the exception's
-    ``timeout_seconds`` for diagnostics.
-    """
-
-    def __init__(self, *, timeout_seconds: float) -> None:
-        super().__init__(
-            f"The background process was stopped after exceeding its time limit "
-            f"of {timeout_seconds:g} seconds. Try again with less data, or "
-            "increase the configured timeout.",
-            terminal_reason="timed_out",
-        )
-        self.timeout_seconds = timeout_seconds
-
-
-class IsolatedWorkerStoppedError(IsolatedWorkerError):
-    """Raised when parent-side cancellation requests terminate the worker."""
-
-    def __init__(self, *, terminal_reason: WorkerTerminalReason) -> None:
-        if terminal_reason == "completed":
-            raise ValueError("completed is not a valid stopped-worker reason")
-        super().__init__(
-            f"Isolated worker was stopped with reason {terminal_reason!r}",
-            terminal_reason=terminal_reason,
-        )
-
-
-class IsolatedWorkerMemoryLimitUnsupportedError(IsolatedWorkerError):
-    """Raised when a required child-process memory cap cannot be enforced."""
-
-    def __init__(self, *, memory_limit_bytes: int) -> None:
-        super().__init__(
-            "Isolated worker memory caps require a supported native kernel limit on this host.",
-            terminal_reason="contract_error",
-        )
-        self.memory_limit_bytes = memory_limit_bytes
-
-
-class IsolatedWorkerMemoryLimitExceededError(IsolatedWorkerError, MemoryError):
-    """Raised when the parent watchdog observes a child above its RSS limit."""
-
-    def __init__(self, *, rss_bytes: int, rss_limit_bytes: int) -> None:
-        super().__init__(
-            f"Isolated worker exceeded its RSS watchdog limit: {rss_bytes} bytes used > "
-            f"{rss_limit_bytes} bytes allowed",
-            terminal_reason="memory_limited",
-        )
-        self.rss_bytes = rss_bytes
-        self.rss_limit_bytes = rss_limit_bytes
-
-
-class IsolatedWorkerTerminationError(IsolatedWorkerError):
-    """Raised when a child remains alive after terminate and kill attempts."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "Isolated worker remained alive after terminate and kill attempts",
-            terminal_reason="error",
-        )
-
-
-def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
-    """Return whether a worker failure is a memory outcome.
-
-    An RSS breach and an unsupported native cap always are; a crashed child
-    is memory-bound only when its exit-code heuristic said so; a remote
-    exception is when the child's exception was a ``MemoryError`` or its native cap
-    could not be installed.
-    """
-    if isinstance(
-        exc,
-        IsolatedWorkerMemoryLimitExceededError | IsolatedWorkerMemoryLimitUnsupportedError,
-    ):
-        return True
-    if isinstance(exc, IsolatedWorkerCrashedError):
-        return exc.terminal_reason == "memory_limited"
-    if isinstance(exc, IsolatedWorkerRemoteError):
-        return exc.is_memory or exc.remote_type == "NativeMemoryLimitUnsupportedError"
-    return False
-
-
-# The child's own exceptions when it could not install, or release, its native cap.
-_CAP_UNAVAILABLE_REMOTE_TYPES = frozenset(
-    {"NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"}
-)
-
-
-def isolated_worker_failure_is_cap_unavailable(exc: BaseException) -> bool:
-    """Return whether a worker failed because this host cannot install its required cap.
-
-    The spawn refuses a required cap a host cannot install before any child
-    exists, and a child reports one it could not install or release. Decide
-    this before :func:`isolated_worker_failure_is_memory`, which counts both as
-    memory outcomes although nothing ran out of memory.
-    """
-    if isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError):
-        return True
-    return isinstance(exc, IsolatedWorkerRemoteError) and (
-        exc.remote_type in _CAP_UNAVAILABLE_REMOTE_TYPES
-    )
-
-
-def isolated_worker_failure_is_path_too_long(exc: BaseException) -> bool:
-    """Return whether a worker failure is a path Windows refused for its length.
-
-    A child reports the :class:`~haute._file_ops.PathTooLongError` behind its failure
-    (:func:`_worker_error_envelope`); a failure raised in this process is read directly.
-    """
-    if isinstance(exc, IsolatedWorkerRemoteError):
-        return exc.remote_type == PathTooLongError.__name__
-    return path_too_long_error(exc) is not None
-
-
-def isolated_worker_memory_detail(
-    exc: BaseException,
-    *,
-    operation: str,
-    memory_limit_bytes: int | None,
-) -> dict[str, object]:
-    """Return the typed ``memory_limit`` payload for a worker memory outcome.
-
-    Shared by every surface that supervises a hard-capped worker so a worker
-    RSS breach, an unsupported native cap, and a crash that looks memory-bound
-    are reported with the same closed reason codes.
-    """
-    payload: dict[str, object] = {
-        "error_code": "memory_limit",
-        "operation": operation,
-        "reason": "worker_memory_limit",
-    }
-    if memory_limit_bytes is not None:
-        payload["memory_limit_bytes"] = memory_limit_bytes
-    if isinstance(exc, IsolatedWorkerMemoryLimitExceededError):
-        payload.update(
-            rss_bytes=exc.rss_bytes,
-            rss_limit_bytes=exc.rss_limit_bytes,
-            reason="worker_rss_limit_exceeded",
-        )
-    elif isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError) or (
-        isinstance(exc, IsolatedWorkerRemoteError)
-        and exc.remote_type == "NativeMemoryLimitUnsupportedError"
-    ):
-        payload["reason"] = "native_memory_cap_unavailable"
-    elif isinstance(exc, IsolatedWorkerCrashedError):
-        payload["reason"] = "worker_may_have_exceeded_memory_limit"
-    return payload
-
-
 def process_memory_caps_supported() -> bool:
     """Return whether a native kernel hard cap is theoretically available."""
     return native_memory_caps_supported()
@@ -429,12 +188,10 @@ class _WorkerRssWatchdog:
         rss_bytes = process_rss_bytes(self.pid)
         if rss_bytes is None:
             if self.require_memory_limit and not self.address_space_cap_active:
-                raise IsolatedWorkerMemoryLimitUnsupportedError(
-                    memory_limit_bytes=self.rss_limit_bytes
-                )
+                raise WorkerMemoryLimitUnsupportedError(memory_limit_bytes=self.rss_limit_bytes)
             return
         if rss_bytes > self.rss_limit_bytes:
-            raise IsolatedWorkerMemoryLimitExceededError(
+            raise WorkerMemoryLimitError(
                 rss_bytes=rss_bytes,
                 rss_limit_bytes=self.rss_limit_bytes,
             )
@@ -463,7 +220,7 @@ def await_worker_ready(
     """
     pid = process.pid
     if pid is None:
-        raise IsolatedWorkerStartError(
+        raise WorkerStartError(
             "Isolated worker did not expose a process id after startup",
             terminal_reason="error",
         )
@@ -483,7 +240,7 @@ def await_worker_ready(
         rss_bytes = process_rss_bytes(pid)
         if rss_bytes is not None and rss_bytes > config.startup_rss_ceiling_bytes:
             _terminate_process(process)
-            exceeded = IsolatedWorkerMemoryLimitExceededError(
+            exceeded = WorkerMemoryLimitError(
                 rss_bytes=rss_bytes, rss_limit_bytes=config.startup_rss_ceiling_bytes
             )
             exceeded.add_note("The worker exceeded its startup ceiling before it reported ready.")
@@ -492,14 +249,12 @@ def await_worker_ready(
             return "ready", None
         if config.stop_reason is not None and (reason := config.stop_reason()) is not None:
             _terminate_process(process)
-            raise IsolatedWorkerStoppedError(terminal_reason=reason)
+            raise WorkerStoppedError(terminal_reason=reason)
         if time.monotonic() >= ends_at:
             _terminate_process(process)
             if deadline is not None and deadline <= startup_deadline:
-                raise IsolatedWorkerTimeoutError(
-                    timeout_seconds=cast(float, config.timeout_seconds)
-                )
-            raise IsolatedWorkerStartError(
+                raise WorkerTimeoutError(timeout_seconds=cast(float, config.timeout_seconds))
+            raise WorkerStartError(
                 "Isolated worker did not report ready within "
                 f"{config.startup_timeout_seconds:g} seconds",
                 terminal_reason="error",
@@ -536,7 +291,7 @@ def _create_worker_rss_watchdog(
         return _WorkerRssWatchdog(None, None, require_memory_limit, False)
     pid = process.pid
     if pid is None:
-        raise IsolatedWorkerStartError(
+        raise WorkerStartError(
             "Isolated worker did not expose a process id after startup",
             terminal_reason="error",
         )
@@ -544,7 +299,7 @@ def _create_worker_rss_watchdog(
     baseline_rss_bytes = process_rss_bytes(pid)
     if baseline_rss_bytes is None:
         if require_memory_limit and not address_space_cap_active:
-            raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=memory_limit_bytes)
+            raise WorkerMemoryLimitUnsupportedError(memory_limit_bytes=memory_limit_bytes)
         return _WorkerRssWatchdog(
             pid,
             None,
@@ -734,7 +489,7 @@ def create_worker_queue(ctx: Any, maxsize: int) -> Any:
     The retry is deliberately bounded at one attempt and logs both times:
     a dead tracker is a host fault worth seeing, not something to paper
     over. If the replacement tracker also fails, the failure is raised as
-    :class:`IsolatedWorkerHostError` so the user is told the host cannot
+    :class:`WorkerHostError` so the user is told the host cannot
     start workers rather than being handed an unexplained internal error.
     """
     if not _interpreter_checked:
@@ -760,7 +515,7 @@ def create_worker_queue(ctx: Any, maxsize: int) -> Any:
                 error_type=type(retry_exc).__name__,
                 **_resource_tracker_diagnostics(),
             )
-            raise IsolatedWorkerHostError(
+            raise WorkerHostError(
                 "This server cannot start background work at the moment — the process "
                 "tracker it relies on has stopped. Restart the app and try again."
             ) from retry_exc
@@ -825,7 +580,7 @@ def run_isolated_worker(
         and worker_config.memory_limit_bytes is not None
         and not process_memory_caps_supported()
     ):
-        raise IsolatedWorkerMemoryLimitUnsupportedError(
+        raise WorkerMemoryLimitUnsupportedError(
             memory_limit_bytes=worker_config.memory_limit_bytes,
         )
 
@@ -857,7 +612,7 @@ def run_isolated_worker(
             start_process_with_environment(process, worker_config.environment)
             process_started = True
         except Exception as exc:  # pragma: no cover - depends on multiprocessing internals
-            raise IsolatedWorkerStartError(
+            raise WorkerStartError(
                 f"Failed to start isolated worker: {exc}",
             ) from exc
 
@@ -895,9 +650,11 @@ def run_isolated_worker(
         # and joins that feeder under its cap, so its exit status is the only
         # trustworthy confirmation that transport completed.
         if queued_payload is not None and process.exitcode not in {None, 0}:
-            raise IsolatedWorkerCrashedError(
-                exitcode=process.exitcode,
-                memory_limit_bytes=worker_config.memory_limit_bytes,
+            raise WorkerCrashedError(
+                process.exitcode,
+                memory_limited=exitcode_looks_memory_limited(
+                    process.exitcode, worker_config.memory_limit_bytes
+                ),
             )
 
         status, payload = (
@@ -917,16 +674,18 @@ def run_isolated_worker(
                 tuple[str, str, str, bool],
                 payload,
             )
-            raise IsolatedWorkerRemoteError(
+            raise WorkerRemoteError(
                 remote_type=remote_type,
                 remote_message=remote_message,
                 remote_traceback=remote_traceback,
                 is_memory=is_memory,
             )
         else:  # pragma: no cover - guarded by child entrypoint protocol
-            raise IsolatedWorkerCrashedError(
-                exitcode=process.exitcode,
-                memory_limit_bytes=worker_config.memory_limit_bytes,
+            raise WorkerCrashedError(
+                process.exitcode,
+                memory_limited=exitcode_looks_memory_limited(
+                    process.exitcode, worker_config.memory_limit_bytes
+                ),
             )
     except BaseException as exc:
         primary_error = exc
@@ -973,9 +732,11 @@ def run_isolated_worker(
         raise primary_error
     if has_result:
         return cast(T, result)
-    raise IsolatedWorkerCrashedError(
-        exitcode=process.exitcode,
-        memory_limit_bytes=worker_config.memory_limit_bytes,
+    raise WorkerCrashedError(
+        process.exitcode,
+        memory_limited=exitcode_looks_memory_limited(
+            process.exitcode, worker_config.memory_limit_bytes
+        ),
     )
 
 
@@ -1086,9 +847,8 @@ def _read_worker_payload(
     try:
         return _decode_worker_payload(result_queue.get(timeout=1.0))
     except queue.Empty as exc:
-        raise IsolatedWorkerCrashedError(
-            exitcode=exitcode,
-            memory_limit_bytes=memory_limit_bytes,
+        raise WorkerCrashedError(
+            exitcode, memory_limited=exitcode_looks_memory_limited(exitcode, memory_limit_bytes)
         ) from exc
 
 
@@ -1101,7 +861,7 @@ def _terminate_process(process: BaseProcess) -> None:
             kill()
             process.join(timeout=2.0)
     if process.is_alive():
-        raise IsolatedWorkerTerminationError()
+        raise WorkerTerminationError()
 
 
 def _wait_for_worker(
@@ -1124,13 +884,13 @@ def _wait_for_worker(
             reason = config.stop_reason()
             if reason is not None:
                 _terminate_process(process)
-                raise IsolatedWorkerStoppedError(terminal_reason=reason)
+                raise WorkerStoppedError(terminal_reason=reason)
         wait_seconds = config.stop_poll_interval_seconds
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _terminate_process(process)
-                raise IsolatedWorkerTimeoutError(
+                raise WorkerTimeoutError(
                     timeout_seconds=cast(float, config.timeout_seconds),
                 )
             wait_seconds = min(wait_seconds, remaining)
@@ -1142,55 +902,7 @@ def _decode_worker_payload(raw_payload: Any) -> tuple[str, Any]:
     try:
         payload = pickle.loads(raw_payload)
     except BaseException as exc:
-        raise IsolatedWorkerCrashedError(exitcode=None, memory_limit_bytes=None) from exc
+        raise WorkerCrashedError(None) from exc
     if not isinstance(payload, tuple) or len(payload) != 2 or payload[0] not in {"ok", "error"}:
-        raise IsolatedWorkerCrashedError(exitcode=None, memory_limit_bytes=None)
+        raise WorkerCrashedError(None)
     return cast(tuple[str, Any], payload)
-
-
-# ``STATUS_STACK_BUFFER_OVERRUN``: the exit status of a Windows fail-fast abort.
-_WINDOWS_FAIL_FAST_EXITCODE = 0xC0000409
-# ``STATUS_STACK_OVERFLOW``: under a Job Object commit cap, a thread whose next
-# stack page the cap refuses to commit dies with this status, not an allocation
-# failure — a 10M-row preview join capture ended exactly this way.
-_WINDOWS_STACK_OVERFLOW_EXITCODE = 0xC00000FD
-
-
-def _exitcode_looks_memory_limited(
-    exitcode: int | None,
-    memory_limit_bytes: int | None,
-) -> bool:
-    # SIGABRT is deliberately classified alongside SIGKILL, but only when a
-    # memory cap was configured: under RLIMIT_AS a native allocator that
-    # cannot allocate raises bad_alloc and aborts, so SIGABRT is the cap's
-    # PRIMARY out-of-memory signature (SIGKILL covers the kernel OOM killer).
-    # Narrowing to SIGKILL-only would misroute exactly the failures the cap
-    # exists to catch. The residual misdiagnosis vector — a native assertion
-    # or heap-corruption abort under a cap — is accepted: the crash wording
-    # hedges ("may have run out of memory") and the exit code stays on the
-    # exception and in ``worker_exitcode``, at the cost of the UI showing
-    # memory guidance for such an abort.
-    #
-    # ``_WINDOWS_FAIL_FAST_EXITCODE`` is SIGABRT's Windows counterpart: a
-    # native allocation the Job Object cap refuses aborts through the
-    # fail-fast path (Polars prints ``memory allocation of N bytes failed``),
-    # and a panic or assertion abort exits the same way. A refused stack commit
-    # exits as ``_WINDOWS_STACK_OVERFLOW_EXITCODE``; a genuine deep-recursion
-    # overflow under a cap reads the same, which the hedged wording accepts.
-    if memory_limit_bytes is None or exitcode is None:
-        return False
-    try:
-        import signal
-    except ImportError:
-        return False
-    # ``SIGKILL`` is not exported by Python's Windows signal module. Keep the
-    # conventional POSIX value for decoded/synthetic worker status records so
-    # their classification is platform-independent; live Windows RSS breaches
-    # are reported directly by the parent watchdog rather than this heuristic.
-    sigkill_number = int(getattr(signal, "SIGKILL", 9))
-    return exitcode in {
-        -sigkill_number,
-        -int(signal.SIGABRT),
-        _WINDOWS_FAIL_FAST_EXITCODE,
-        _WINDOWS_STACK_OVERFLOW_EXITCODE,
-    }

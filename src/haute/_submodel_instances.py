@@ -265,11 +265,6 @@ def resolve_submodel_instances(
     return resolved
 
 
-def validate_submodel_instances(graph: PipelineGraph) -> None:
-    """Fail loudly when definition, occurrence, or public binding state is invalid."""
-    resolve_submodel_instances(graph)
-
-
 def _port_name(
     *,
     edge: GraphEdge,

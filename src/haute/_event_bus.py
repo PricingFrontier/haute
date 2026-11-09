@@ -291,19 +291,6 @@ class EventBus:
     # Prefer instantiating a fresh ``EventBus()`` inside a test for full
     # isolation; these hooks are a safety net, not the primary pattern.
 
-    def _snapshot_handlers_for_testing(self) -> dict[str, list[HandlerType]]:
-        """Deep copy of the current handler registry.  Test-only."""
-        with self._lock:
-            return {et: list(hs) for et, hs in self._handlers.items()}
-
-    def _restore_handlers_for_testing(self, snapshot: dict[str, list[HandlerType]]) -> None:
-        """Replace the handler registry with *snapshot*.  Test-only."""
-        with self._lock:
-            self._handlers.clear()
-            for event_type, hs in snapshot.items():
-                if hs:
-                    self._handlers[event_type] = list(hs)
-
 
 # Module-level default bus so producers (file-watcher) and consumers
 # (WebSocket broadcaster) can find each other without plumbing a bus

@@ -162,7 +162,8 @@ type NonFunctionGitActionKeys = {
   [K in keyof GitActions]: GitActions[K] extends (...args: never[]) => unknown ? never : K
 }[keyof GitActions]
 type StaticAssert<T extends true> = T
-/** Exported only so noUnusedLocals keeps the assertion alive; never import it. */
+/** Exported only so noUnusedLocals keeps the assertion alive; never import it.
+ * @public (knip: a compile-time assertion has no importer) */
 export type GitActionsHoldOnlyFunctions = StaticAssert<
   [NonFunctionGitActionKeys] extends [never] ? true : false
 >

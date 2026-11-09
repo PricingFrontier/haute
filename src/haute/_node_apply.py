@@ -262,18 +262,6 @@ def workbench_input_tables_from_config(
     )
 
 
-def workbench_input_ports_from_config(
-    config_or_path: Mapping[str, Any] | str | PathLike[str],
-    *,
-    base_dir: str | Path | None = None,
-) -> tuple[str, ...]:
-    """A Workbench Input's ports, ``<table>_input``, its tables given as a run gives them."""
-    return tuple(
-        table.port
-        for table in workbench_input_tables_from_config(config_or_path, base_dir=base_dir)
-    )
-
-
 def validate_external_file_config(config: Mapping[str, Any]) -> None:
     """Refuse External File settings its object cannot be loaded with, naming the setting.
 

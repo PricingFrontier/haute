@@ -36,22 +36,20 @@ from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import context_thread, current_project
 from haute._seed_plans import open_seed_plan
 from haute._types import NodeType, PipelineGraph
+from haute._worker_failures import (
+    WorkerError,
+    WorkerProtocolError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
+    worker_failure_is_memory,
+    worker_memory_detail,
+)
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
-    IsolatedWorkerError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
-    isolated_worker_failure_is_memory,
-    isolated_worker_memory_detail,
     run_isolated_worker,
     worker_config_for_memory_policy,
 )
-from haute._worker_protocol import (
-    WorkerProgressEvent,
-    WorkerProtocolError,
-    WorkerRequest,
-    WorkerResultManifest,
-)
+from haute._worker_protocol import WorkerProgressEvent, WorkerRequest, WorkerResultManifest
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
@@ -312,8 +310,6 @@ class TrainService:
         )
         self._training_jobs = CancellableJobRegistry()
         self._start_lock = threading.Lock()
-        self._preparation_threads_lock = threading.Lock()
-        self._preparation_threads: dict[str, threading.Thread] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -389,18 +385,11 @@ class TrainService:
                 # infrastructure races from escaping as an unhandled daemon-thread
                 # exception while still leaving a server-side diagnostic.
                 logger.exception(f"{kind}_preparation_thread_failed", job_id=job_id)
-            finally:
-                with self._preparation_threads_lock:
-                    self._preparation_threads.pop(job_id, None)
 
         thread = context_thread(run, name=f"haute-{kind}-prep-{job_id}", daemon=True)
-        with self._preparation_threads_lock:
-            self._preparation_threads[job_id] = thread
         try:
             start_job_thread(thread)
         except Exception as exc:
-            with self._preparation_threads_lock:
-                self._preparation_threads.pop(job_id, None)
             self._training_jobs.release(job_id)
             logger.exception(f"{kind}_preparation_thread_start_failed", job_id=job_id)
             message = (
@@ -576,16 +565,6 @@ class TrainService:
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)
-
-    def _join_preparation(self, job_id: str, *, timeout: float = 10.0) -> None:
-        """Wait for an in-flight preparation owner (used by shutdown/tests)."""
-        with self._preparation_threads_lock:
-            thread = self._preparation_threads.get(job_id)
-        if thread is None:
-            return
-        thread.join(timeout=timeout)
-        if thread.is_alive():
-            raise TimeoutError(f"Training preparation for job {job_id!r} is still running")
 
     def _prepare_and_launch_training(
         self,
@@ -1649,16 +1628,16 @@ class TrainService:
                         budget,
                         config=replace(worker_config, timeout_seconds=remaining),
                     )
-                except IsolatedWorkerStoppedError:
+                except WorkerStoppedError:
                     self._discard_prepared_parquet(job_id, tmp_parquet)
                     raise ExecutionCancelledError("training_preparation", job_id=job_id) from None
-                except IsolatedWorkerTimeoutError:
+                except WorkerTimeoutError:
                     raise timed_out() from None
-                except IsolatedWorkerError as exc:
+                except WorkerError as exc:
                     self._discard_prepared_parquet(job_id, tmp_parquet)
-                    if isolated_worker_failure_is_memory(exc):
+                    if worker_failure_is_memory(exc):
                         refusal = InsufficientMemoryError(
-                            isolated_worker_memory_detail(
+                            worker_memory_detail(
                                 exc,
                                 operation=budget.operation,
                                 memory_limit_bytes=budget.memory_limit_bytes,

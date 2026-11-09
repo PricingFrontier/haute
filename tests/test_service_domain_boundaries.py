@@ -241,57 +241,14 @@ def test_git_mutators_preserve_the_shared_repository_lock_boundary() -> None:
             ), f"{module_name}.{name} lost the repository mutation lock"
 
 
-def test_training_facade_is_declaration_only_and_helper_imports_stay_stable() -> None:
-    facade_tree = _tree("haute.routes._train_service")
-    assert not any(
-        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
-        for node in facade_tree.body
-    )
-
-    facade = importlib.import_module("haute.routes._train_service")
-    expected = {
-        "TrainService",
-        "_VramCheck",
-        "_assert_json_finite",
-        "_check_gpu_vram",
-        "_clamp_row_limit",
-        "_default_train_timeout",
-        "_evaluation_preview_payload",
-        "_find_modelling_node",
-        "_friendly_error",
-        "_known_training_worker_failure",
-        "_validate_training_artifacts",
-        "_run_dispersion_process_job",
-        "_run_training_process_job",
-        "_seeded_training_sample",
-        "_training_required_columns_by_node",
-        "_validate_glm_config_values",
-        "_worker_failure_payload",
-    }
-    assert not sorted(name for name in expected if not hasattr(facade, name))
-    assert facade.TrainService.__module__ == "haute.routes._training_lifecycle"
-    assert facade._seeded_training_sample.__module__ == "haute.routes._training_preparation"
-    assert facade._check_gpu_vram.__module__ == "haute.routes._training_preparation"
-    assert facade._training_required_columns_by_node.__module__ == (
-        "haute.routes._training_preparation"
-    )
-    assert facade._validate_glm_config_values.__module__ == ("haute.routes._training_evaluation")
-    assert facade._evaluation_preview_payload.__module__ == ("haute.routes._training_evaluation")
-    assert facade._run_training_process_job.__module__ == "haute.routes._training_worker"
-    assert facade._validate_training_artifacts.__module__ == "haute.routes._training_artifacts"
-
-
 def test_training_domain_imports_are_acyclic_and_leaves_do_not_own_job_state() -> None:
     _assert_acyclic(TRAINING_MODULES)
     _assert_single_implementation_owner(TRAINING_MODULES)
-    for module_name in ("haute.routes._train_service", *TRAINING_MODULES):
+    for module_name in TRAINING_MODULES:
         assert not _has_star_import(module_name)
         assert not _mutates_dynamic_globals(module_name)
     for module_name in TRAINING_LEAF_MODULES:
-        forbidden = {
-            "haute.routes._train_service",
-            "haute.routes._training_lifecycle",
-        }
+        forbidden = {"haute.routes._training_lifecycle"}
         assert not _internal_imports(module_name, forbidden)
         assert not _imports_module(module_name, "haute.routes._job_lifecycle")
         assert not _imports_module(module_name, "haute.routes._job_store")
@@ -311,6 +268,7 @@ HTTP_EDGE_MODULES = frozenset(
         "haute.routes._contract_errors",
         "haute.routes._error_handlers",
         "haute.routes._mlflow_log_errors",
+        "haute.routes._worker_failure_http",
         "haute.routes._runtime_path_errors",
     }
 )

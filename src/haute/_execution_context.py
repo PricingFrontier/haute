@@ -587,14 +587,6 @@ class ExecutionMetricsRecorder:
         with self._lock:
             return tuple(self._stages)
 
-    def memory_pressure_snapshot(self) -> tuple[ExecutionMemoryPressureEvent, ...]:
-        with self._lock:
-            return tuple(self._memory_pressure_events)
-
-    def by_node_elapsed_ms(self) -> dict[str, float]:
-        with self._lock:
-            return dict(self._node_elapsed_ms)
-
     def summary(
         self,
         *,
@@ -1770,18 +1762,6 @@ class _TimedStage:
                 n_checkpoints=stage.n_checkpoints,
             )
         )
-
-
-def ensure_execution_context(
-    context: ExecutionContext | None,
-    *,
-    operation: str,
-    profile: ExecutionProfile,
-    job_id: str | None = None,
-) -> ExecutionContext:
-    if context is not None:
-        return context
-    return ExecutionContext(operation=operation, profile=profile, job_id=job_id)
 
 
 def current_execution_context() -> ExecutionContext | None:

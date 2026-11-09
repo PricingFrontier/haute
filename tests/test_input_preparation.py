@@ -42,13 +42,13 @@ from haute._project_context import (
     installed_project,
 )
 from haute._source_cache import SourceCacheStore
-from haute._worker_isolation import (
-    IsolatedWorkerConfig,
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerStoppedError,
-    process_memory_caps_supported,
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerRemoteError,
+    WorkerStoppedError,
+    exitcode_looks_memory_limited,
 )
+from haute._worker_isolation import IsolatedWorkerConfig, process_memory_caps_supported
 from haute.errors import InputPreparationError
 from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_output_config
@@ -506,7 +506,7 @@ class _FakeSpawn:
 
 
 def _memory_failure() -> BaseException:
-    return IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=1024)
+    return WorkerCrashedError(-9, memory_limited=exitcode_looks_memory_limited(-9, 1024))
 
 
 def _child_store(root: Path) -> SourceCacheStore:
@@ -727,7 +727,7 @@ def test_a_worker_that_dies_after_the_rename_leaves_no_unreferenced_generation(
         store,
         tmp_path,
         stop_after="renamed",
-        failure=IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=None),
+        failure=WorkerCrashedError(1),
     )
     context = _context()
     try:
@@ -1152,7 +1152,7 @@ def test_a_stopped_worker_is_classified_as_cancelled(
         store,
         tmp_path,
         stop_after="nothing",
-        failure=IsolatedWorkerStoppedError(terminal_reason="cancelled"),
+        failure=WorkerStoppedError(terminal_reason="cancelled"),
     )
     context = _context()
     try:
@@ -1185,7 +1185,7 @@ def test_a_spawned_build_is_stopped_when_the_execution_is_cancelled(
         while True:
             reason = config.stop_reason()
             if reason is not None:
-                raise IsolatedWorkerStoppedError(terminal_reason=reason)
+                raise WorkerStoppedError(terminal_reason=reason)
             time.sleep(0.01)
 
     context = _context()
@@ -1240,8 +1240,8 @@ def test_a_single_flight_waiter_is_cancelled_instead_of_blocking_forever(
 # ------------------------------------------- (5) remote worker failure classification
 
 
-def _remote_error(remote_type: str) -> IsolatedWorkerRemoteError:
-    return IsolatedWorkerRemoteError(
+def _remote_error(remote_type: str) -> WorkerRemoteError:
+    return WorkerRemoteError(
         remote_type=remote_type,
         remote_message=f"{remote_type} raised in the child",
         remote_traceback="Traceback (most recent call last):\n",

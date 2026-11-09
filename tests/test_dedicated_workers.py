@@ -15,7 +15,7 @@ import pytest
 
 from haute._dedicated_workers import (
     DedicatedWorker,
-    DedicatedWorkerDeadError,
+    WorkerDeadError,
     child_limit_evidence_counter,
     on_command_cancel,
     open_dedicated_workers,
@@ -23,18 +23,18 @@ from haute._dedicated_workers import (
     shutdown_dedicated_workers,
 )
 from haute._execution_context import ExecutionCancellationToken
-from haute._interactive_workers import (
-    InteractiveWorkerCrashedError,
-    InteractiveWorkerError,
-    InteractiveWorkerProtocolError,
-    InteractiveWorkerRemoteError,
-    InteractiveWorkerStartError,
-    InteractiveWorkerStoppedError,
-    InteractiveWorkerTimeoutError,
-)
 from haute._native_memory_limit import JOB_OBJECT_MSG_JOB_MEMORY_LIMIT, native_memory_caps_supported
 from haute._process_memory import process_rss_bytes
 from haute._project_context import context_thread
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerError,
+    WorkerProtocolError,
+    WorkerRemoteError,
+    WorkerStartError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
+)
 
 _MIB = 1024 * 1024
 _GROWTH = 512 * _MIB
@@ -191,14 +191,14 @@ def test_every_command_reapplies_the_cap_from_its_own_growth(worker: DedicatedWo
 
 
 def test_an_allocation_over_the_cap_fails_only_the_worker(worker: DedicatedWorker) -> None:
-    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+    with pytest.raises(WorkerRemoteError) as raised:
         _run(worker, allocate, 1024 * _MIB, growth=128 * _MIB)
     assert raised.value.terminal_reason == "memory_limited"
     death = worker.death
     assert death is not None and death.kind == "remote_memory"
     assert death.memory_evidence in {"cap_confirmed", "suspected"}
     assert not worker.alive
-    with pytest.raises(DedicatedWorkerDeadError):
+    with pytest.raises(WorkerDeadError):
         _run(worker, recall)
 
 
@@ -209,33 +209,33 @@ def test_a_command_that_fits_its_grant_runs(worker: DedicatedWorker) -> None:
 
 
 def test_a_non_memory_failure_leaves_the_worker_running(worker: DedicatedWorker) -> None:
-    with pytest.raises(InteractiveWorkerRemoteError):
+    with pytest.raises(WorkerRemoteError):
         _run(worker, value_error)
     assert worker.alive
     assert _run(worker, remember, 5) == 5
 
 
 def test_a_job_memory_notification_confirms_the_cap(worker: DedicatedWorker) -> None:
-    with pytest.raises(InteractiveWorkerRemoteError):
+    with pytest.raises(WorkerRemoteError):
         _run(worker, notified_memory_error)
     assert worker.death is not None and worker.death.memory_evidence == "cap_confirmed"
 
 
 def test_a_missing_notification_leaves_the_cap_suspected(worker: DedicatedWorker) -> None:
-    with pytest.raises(InteractiveWorkerRemoteError):
+    with pytest.raises(WorkerRemoteError):
         _run(worker, plain_memory_error)
     assert worker.death is not None and worker.death.memory_evidence == "suspected"
 
 
 def test_another_job_message_is_not_limit_evidence(worker: DedicatedWorker) -> None:
-    with pytest.raises(InteractiveWorkerRemoteError):
+    with pytest.raises(WorkerRemoteError):
         _run(worker, other_job_message_then_memory_error)
     assert worker.death is not None and worker.death.memory_evidence == "suspected"
 
 
 def test_a_child_dying_holding_the_evidence_lock_never_stalls(worker: DedicatedWorker) -> None:
     started = time.monotonic()
-    with pytest.raises(InteractiveWorkerCrashedError):
+    with pytest.raises(WorkerCrashedError):
         _run(worker, die_holding_evidence_lock)
     assert time.monotonic() - started < 5
     assert worker.death is not None and worker.death.memory_evidence == "none"
@@ -251,7 +251,7 @@ def test_a_cancelled_command_stops_and_the_worker_keeps_running(worker: Dedicate
     token = ExecutionCancellationToken()
     canceller = _cancel_after(token, 0.3)
     started = time.monotonic()
-    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+    with pytest.raises(WorkerRemoteError) as raised:
         _run(worker, stop_when_cancelled, cancellation_token=token)
     canceller.join()
     assert time.monotonic() - started < 5
@@ -267,7 +267,7 @@ def test_a_token_cancelled_before_the_command_starts_stops_it_at_once(
     token = ExecutionCancellationToken()
     token.cancel()
     started = time.monotonic()
-    with pytest.raises(InteractiveWorkerRemoteError):
+    with pytest.raises(WorkerRemoteError):
         _run(worker, stop_when_cancelled, cancellation_token=token)
     assert time.monotonic() - started < 5
     assert worker.alive
@@ -284,7 +284,7 @@ def test_a_command_that_registers_nothing_runs_to_completion(worker: DedicatedWo
 def test_a_cancel_never_reaches_the_next_command(worker: DedicatedWorker) -> None:
     token = ExecutionCancellationToken()
     token.cancel()
-    with pytest.raises(InteractiveWorkerRemoteError):
+    with pytest.raises(WorkerRemoteError):
         _run(worker, stop_when_cancelled, cancellation_token=token)
     assert _run(worker, report_whether_cancelled, 0.3) is False
 
@@ -292,7 +292,7 @@ def test_a_cancel_never_reaches_the_next_command(worker: DedicatedWorker) -> Non
 def test_a_failed_command_keeps_nothing_alive_into_the_next(worker: DedicatedWorker) -> None:
     """The child's loop must drop a failed command's exception once it is sent: its
     traceback would hold the command's frame (a cancelled apply's per-quote table)."""
-    with pytest.raises(InteractiveWorkerRemoteError):
+    with pytest.raises(WorkerRemoteError):
         _run(worker, fail_holding_a_frame)
     assert _run(worker, held_frame_is_released) is True
 
@@ -321,7 +321,7 @@ def test_a_child_holding_the_cancel_lock_never_stalls_its_owner(worker: Dedicate
     thread.join(timeout=10)
     canceller.join()
     assert not thread.is_alive(), "the owner blocked on the cancel cell's lock"
-    assert errors and isinstance(errors[0], InteractiveWorkerTimeoutError)
+    assert errors and isinstance(errors[0], WorkerTimeoutError)
 
 
 def test_on_command_cancel_outside_a_worker_command_raises() -> None:
@@ -347,7 +347,7 @@ def test_terminate_stops_a_running_command_promptly(worker: DedicatedWorker) -> 
     worker.terminate("cancelled")
     thread.join(timeout=10)
     assert time.monotonic() - started < 5
-    assert errors and isinstance(errors[0], InteractiveWorkerStoppedError)
+    assert errors and isinstance(errors[0], WorkerStoppedError)
     assert pid is not None and _wait_for_exit(pid, 5)
 
 
@@ -381,7 +381,7 @@ def test_shutdown_fences_new_workers_and_ends_live_ones() -> None:
         shutdown_dedicated_workers()
         assert pid is not None and _wait_for_exit(pid, 5)
         refused = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-refused")
-        with pytest.raises(InteractiveWorkerStartError):
+        with pytest.raises(WorkerStartError):
             refused.start(start_timeout_seconds=60)
     finally:
         open_dedicated_workers()
@@ -443,7 +443,7 @@ def big_result() -> bytes:
 def test_a_result_over_the_owner_bound_fails_the_command_not_the_worker(
     worker: DedicatedWorker,
 ) -> None:
-    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+    with pytest.raises(WorkerRemoteError) as raised:
         _run(worker, big_result, max_result_bytes=1 * _MIB)
     assert raised.value.remote_type == "WorkerResultTooLargeError"
     assert worker.alive
@@ -454,7 +454,7 @@ def test_malformed_failure_evidence_is_a_protocol_failure_that_ends_the_worker()
     created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-evidence")
     malformed = pickle.dumps(("result", "c" * 32, "error", ("only", "three", "fields"), None))
 
-    with pytest.raises(InteractiveWorkerProtocolError, match="malformed error evidence"):
+    with pytest.raises(WorkerProtocolError, match="malformed error evidence"):
         created._interpret_result("c" * 32, malformed, evidence_before=None)
 
     assert created.death is not None
@@ -474,7 +474,7 @@ def test_a_sampled_checkpoint_over_budget_ends_the_worker_on_watchdog_evidence()
     )
     result = pickle.dumps(("result", "c" * 32, "error", evidence, None))
 
-    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+    with pytest.raises(WorkerRemoteError) as raised:
         created._interpret_result("c" * 32, result, evidence_before=None)
 
     assert raised.value.terminal_reason == "memory_limited"
@@ -519,7 +519,7 @@ def test_a_worker_terminated_before_it_starts_never_spawns() -> None:
     open_dedicated_workers()
     created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-early")
     created.terminate("cancelled")
-    with pytest.raises(InteractiveWorkerStoppedError):
+    with pytest.raises(WorkerStoppedError):
         created.start(start_timeout_seconds=60)
     assert created.pid is None
 
@@ -544,7 +544,7 @@ def test_a_start_whose_allocation_fails_releases_what_it_opened(
         return made
 
     monkeypatch.setattr(dedicated, "create_worker_queue", second_queue_fails)
-    with pytest.raises(InteractiveWorkerStartError, match="no more semaphores"):
+    with pytest.raises(WorkerStartError, match="no more semaphores"):
         created.start(start_timeout_seconds=60)
 
     assert created not in dedicated._REGISTRY
@@ -571,7 +571,7 @@ def test_a_worker_terminated_while_it_spawns_does_not_survive(
         real_spawn(process, environment)
 
     monkeypatch.setattr(dedicated, "start_process_with_environment", spawn_while_terminated)
-    with pytest.raises(InteractiveWorkerError):
+    with pytest.raises(WorkerError):
         created.start(start_timeout_seconds=60)
     stopper[0].join(timeout=30)
     assert created.pid is not None and _wait_for_exit(created.pid, 10)

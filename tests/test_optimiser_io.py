@@ -1,8 +1,10 @@
-"""Comprehensive tests for haute._optimiser_io.
+"""Tests for haute._optimiser_io.
 
 Covers:
-  - load_optimiser_artifact  — caching, mtime invalidation, file errors
-  - load_mlflow_optimiser_artifact — run/registered paths, validation, caching
+  - load_optimiser_artifact  — caching, mtime invalidation, file errors, and
+    deep-copy isolation of cached artifacts
+  - load_mlflow_optimiser_artifact — run/registered paths, validation, caching,
+    and deep-copy isolation of cached artifacts
   - _resolve_version — "latest", explicit version, empty versions list
 """
 
@@ -360,3 +362,95 @@ class TestResolveVersion:
         call_arg = client.search_model_versions.call_args[0][0]
         # The single quote should be escaped
         assert "\\'" in call_arg
+
+
+# ===========================================================================
+# _optimiser_io.py — deepcopy isolation and edge cases
+# ===========================================================================
+
+
+class TestOptimiserArtifactDeepCopy:
+    """Ensure load_optimiser_artifact returns independent copies."""
+
+    def test_mutation_does_not_affect_cache(self, tmp_path):
+        """Mutating the returned dict should not change cached data."""
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
+
+        _load_artifact_cached.cache_clear()
+
+        f = tmp_path / "artifact.json"
+        data = {"mode": "online", "lambdas": {"x": 1.5}}
+        f.write_text(json.dumps(data))
+
+        result1 = load_optimiser_artifact(str(f))
+        result1["mode"] = "MUTATED"
+        result1["lambdas"]["x"] = 999
+
+        result2 = load_optimiser_artifact(str(f))
+        assert result2["mode"] == "online"
+        assert result2["lambdas"]["x"] == 1.5
+
+        _load_artifact_cached.cache_clear()
+
+    def test_two_results_are_independent(self, tmp_path):
+        """Two calls return independent dict objects."""
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
+
+        _load_artifact_cached.cache_clear()
+
+        f = tmp_path / "artifact.json"
+        f.write_text(json.dumps({"items": [1, 2, 3]}))
+
+        r1 = load_optimiser_artifact(str(f))
+        r2 = load_optimiser_artifact(str(f))
+        assert r1 is not r2
+        assert r1 == r2
+
+        r1["items"].append(4)
+        assert r2["items"] == [1, 2, 3]
+
+        _load_artifact_cached.cache_clear()
+
+
+class TestOptimiserArtifactMtimeZero:
+    """Test mtime fallback when getmtime raises OSError."""
+
+    def test_mtime_defaults_to_zero_on_oserror(self, tmp_path):
+        """When os.path.getmtime raises, mtime defaults to 0.0 but open() still fails."""
+        from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
+
+        _load_artifact_cached.cache_clear()
+
+        nonexistent = str(tmp_path / "does_not_exist.json")
+        with pytest.raises(FileNotFoundError):
+            load_optimiser_artifact(nonexistent)
+
+        _load_artifact_cached.cache_clear()
+
+
+class TestLoadMlflowOptimiserArtifactDeepCopy:
+    """Ensure load_mlflow_optimiser_artifact returns independent copies."""
+
+    def test_mutation_does_not_affect_mlflow_cache(self, tmp_path):
+        """Mutating result from MLflow path should not affect cache."""
+        from haute._optimiser_io import _load_mlflow_cached, load_mlflow_optimiser_artifact
+
+        _load_mlflow_cached.cache_clear()
+
+        artifact_data = {"mode": "ratebook", "constraints": [1, 2]}
+        artifact_path = tmp_path / "optimiser_result.json"
+        artifact_path.write_text(json.dumps(artifact_data))
+
+        with (
+            patch("haute._optimiser_io.resolve_mlflow_source") as mock_resolve,
+            patch("mlflow.artifacts.download_artifacts", return_value=str(artifact_path)),
+        ):
+            mock_resolve.return_value = ("run_id_1", "1", MagicMock(), MagicMock(), MagicMock())
+
+            r1 = load_mlflow_optimiser_artifact(source_type="run", run_id="run_id_1")
+            r1["mode"] = "MUTATED"
+
+            r2 = load_mlflow_optimiser_artifact(source_type="run", run_id="run_id_1")
+            assert r2["mode"] == "ratebook"
+
+        _load_mlflow_cached.cache_clear()

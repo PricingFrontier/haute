@@ -22,7 +22,6 @@ from haute.modelling._descriptors import (
     algorithm_descriptor,
     capability_fixture,
     project_refit_params,
-    refit_descriptor,
     round_ceiling,
     training_threads,
 )
@@ -284,9 +283,6 @@ def test_refit_projection_writes_one_round_key_and_drops_validation_only_params(
     assert round_ceiling(CATBOOST, params, 1000) == 500
     projected = project_refit_params(CATBOOST, params, 3)
     assert projected == {"depth": 6, "iterations": 3}
-    assert refit_descriptor(projected) is CATBOOST
-    with pytest.raises(HauteValidationError, match="exactly one family's refit round key"):
-        refit_descriptor({"depth": 6})
 
 
 def test_thread_allotment_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

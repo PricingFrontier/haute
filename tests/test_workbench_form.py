@@ -26,7 +26,6 @@ from haute._workbench_form import (
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
     QUOTE_DETAILS_NAME,
-    QUOTE_DETAILS_REFUSAL,
     TABLE_ROWS_MAX,
     FormDocument,
     FormSpec,
@@ -427,9 +426,6 @@ def test_the_editor_mirrors_the_forms_limits_and_words() -> None:
     )
     assert int(constant("panels/explore/pivotConfig.ts", "PIVOT_DECIMAL_PLACES_MAX")) == (
         PIVOT_DECIMAL_PLACES_MAX
-    )
-    assert json.loads(constant("utils/workbenchForm.ts", "QUOTE_DETAILS_REFUSAL")) == (
-        QUOTE_DETAILS_REFUSAL
     )
     assert int(constant("utils/workbenchForm.ts", "HEADER_ROW_MAX")) == HEADER_ROW_MAX
     assert int(constant("utils/sheetVisibility.ts", "DAYS_MAX")) == DAYS_MAX

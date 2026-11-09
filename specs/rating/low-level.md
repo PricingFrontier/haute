@@ -316,11 +316,11 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   generated frames and rule sets asserts the invariant the counts rest on: every claimed row gets
   that rule's assignment from `_apply_banding`, and every unclaimed row gets the default.
 - **`tests/test_rating_step.py`** — `RATING_STEP` executor node building, decorator parsing, codegen, and canonical-sidecar round-trip integration.
-- **`tests/test_rating_step_config_coverage.py`** — targeted and property coverage
+- **`tests/test_rating_step.py`** — targeted and property coverage
   of `_rating_step_config.py`: every zero/one/two/three-factor accepted canonical
   shape, scalar identity and metadata/order preservation, JSON round trips, and
   malformed-shape rejection.
-- **`tests/test_banding_config_coverage.py`** — targeted coverage of `_banding_config.py`: map-value validation, compact rule map/row conversion, and malformed shape rejections.
+- **`tests/test_banding.py`** — targeted coverage of `_banding_config.py`: map-value validation, compact rule map/row conversion, and malformed shape rejections.
 - **`tests/test_rating_dtype_contract.py`** and
   **`tests/fixtures/rating_key_cases.py`** — the shared real-Polars matrix for
   `normalise_rating_key(value, dtype)` and `_rating_key_expr` across every

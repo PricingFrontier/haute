@@ -22,7 +22,8 @@ from haute._logging import get_logger
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._workbench_input import null_quote, workbench_input_tables
 from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, request_schema
-from haute._worker_isolation import IsolatedWorkerError, run_isolated_worker
+from haute._worker_failures import WorkerError
+from haute._worker_isolation import run_isolated_worker
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS, is_workbench_input
 from haute.errors import ConfigError
 from haute.execution import dataframe_graph_input_fingerprint
@@ -551,7 +552,7 @@ def infer_output_schema(
                 input_node_ids=input_node_ids,
                 artifact_paths=artifact_paths,
             )
-        except (BatchScoreError, IsolatedWorkerError) as worker_error:
+        except (BatchScoreError, WorkerError) as worker_error:
             raise DeployError(
                 "Deployed batch scoring could not be proven at bundle time: the "
                 f"group-by at node {exc.node_id!r} (operator {exc.operator!r}) has no "

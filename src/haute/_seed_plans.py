@@ -46,7 +46,6 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._logging import get_logger
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
-    NodeSnapshotArtifact,
     NodeSnapshotColumns,
     NodeSnapshotGeneration,
     NodeSnapshotPublication,
@@ -1167,10 +1166,6 @@ class SeedPlan:
     def register_publication(self, publication: NodeSnapshotPublication) -> None:
         """Own one capture's publication until the plan closes."""
         self._stack.callback(publication.close)
-
-    def register_artifact(self, artifact: NodeSnapshotArtifact) -> None:
-        """Own one request-owned staged artifact until the plan closes."""
-        self._stack.callback(artifact.close)
 
     def record_published(self, node_id: str, generation: NodeSnapshotGeneration) -> None:
         """Record the generation a capture published and its readers then read."""

@@ -21,7 +21,7 @@ import pytest
 
 from haute._config_builder import resolve_parse_time_contract
 from haute._config_io import collect_node_configs
-from haute._contracts import Contract, get_column_contract
+from haute._contracts import Contract, get_node_contract
 from haute._graph_utils import _sanitize_func_name
 from haute._mlflow_io import ScoringModel
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -276,7 +276,7 @@ def _node_labelled(label: str, response: str = "fan_in") -> GraphNode:
 
 
 def _builder_contract(node: GraphNode) -> Contract:
-    return Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+    return Contract.from_tuple(get_node_contract(node.data.nodeType, node.data.config).to_tuple())
 
 
 def _effective_contract(node: GraphNode) -> Contract:

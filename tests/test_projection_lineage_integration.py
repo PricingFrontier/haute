@@ -315,8 +315,14 @@ def test_parent_id_contract_cannot_conflate_parallel_api_port_edges() -> None:
     assert api_input_port_columns_by_node(
         prepared.node_map, prepared.relevant_edges, projection
     ) == {"api": {"left": None, "right": None}}
-    assert projection.reason_for_edge(graph.edges[0]).rule == "parallel_edge_contract_ambiguous"
-    assert projection.reason_for_edge(graph.edges[1]).rule == "parallel_edge_contract_ambiguous"
+    assert (
+        projection.diagnostics.edge_reasons.get(ProjectionEdgeKey.from_edge(graph.edges[0])).rule
+        == "parallel_edge_contract_ambiguous"
+    )
+    assert (
+        projection.diagnostics.edge_reasons.get(ProjectionEdgeKey.from_edge(graph.edges[1])).rule
+        == "parallel_edge_contract_ambiguous"
+    )
 
 
 def test_runtime_inference_does_not_hide_an_opaque_fan_out_sibling() -> None:

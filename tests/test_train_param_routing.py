@@ -141,7 +141,7 @@ def capturing_job() -> type[_CapturingTrainingJob]:
 @pytest.fixture()
 def inline_training_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep patched training doubles in-process while exercising the protocol."""
-    from haute.routes._train_service import TrainService
+    from haute.routes._training_lifecycle import TrainService
     from haute.routes.modelling import _store
     from tests.test_training_worker_protocol import _inline_protocol_runner
 
@@ -540,13 +540,13 @@ class TestSeededSampleHelper:
     """Unit contract of the lazy seeded-sample helper used by _execute_and_sink."""
 
     def test_exact_row_count(self):
-        from haute.routes._train_service import _seeded_training_sample
+        from haute.routes._training_preparation import _seeded_training_sample
 
         lf = pl.LazyFrame({"y": list(range(1_000))})
         assert _seeded_training_sample(lf, 100).collect().height == 100
 
     def test_deterministic_for_same_input(self):
-        from haute.routes._train_service import _seeded_training_sample
+        from haute.routes._training_preparation import _seeded_training_sample
 
         lf = pl.LazyFrame({"y": list(range(1_000))})
         first = _seeded_training_sample(lf, 100).collect()
@@ -554,21 +554,21 @@ class TestSeededSampleHelper:
         assert first.equals(second)
 
     def test_preserves_relative_row_order(self):
-        from haute.routes._train_service import _seeded_training_sample
+        from haute.routes._training_preparation import _seeded_training_sample
 
         lf = pl.LazyFrame({"y": list(range(1_000))})
         sampled = _seeded_training_sample(lf, 100).collect()
         assert sampled["y"].is_sorted()
 
     def test_limit_at_or_above_height_is_identity(self):
-        from haute.routes._train_service import _seeded_training_sample
+        from haute.routes._training_preparation import _seeded_training_sample
 
         lf = pl.LazyFrame({"y": list(range(50))})
         assert _seeded_training_sample(lf, 50).collect().height == 50
         assert _seeded_training_sample(lf, 51).collect().height == 50
 
     def test_non_positive_limit_fails_loud(self):
-        from haute.routes._train_service import _seeded_training_sample
+        from haute.routes._training_preparation import _seeded_training_sample
 
         lf = pl.LazyFrame({"y": [1, 2, 3]})
         with pytest.raises(ValueError, match="row_limit"):
@@ -579,7 +579,7 @@ class TestSeededSampleHelper:
     def test_not_a_contiguous_prefix(self):
         """Distribution property: a 100/1000 uniform sample equals the first 100
         rows with probability ~1e-143 — this pins 'not head(N)' without flake."""
-        from haute.routes._train_service import _seeded_training_sample
+        from haute.routes._training_preparation import _seeded_training_sample
 
         lf = pl.LazyFrame({"y": list(range(1_000))})
         sampled = _seeded_training_sample(lf, 100).collect()

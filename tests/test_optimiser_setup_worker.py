@@ -23,12 +23,12 @@ from fastapi import HTTPException
 from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
 from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
 from haute._polars_utils import set_streaming_chunk_size
-from haute._worker_isolation import (
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerMemoryLimitError,
+    WorkerRemoteError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
 )
 from haute.errors import InvalidRequestError, RequestRefusedError, UnprocessableError
 from haute.routes import _optimiser_artifacts, _optimiser_service, _optimiser_worker
@@ -608,9 +608,7 @@ class TestWorkerOutcomes:
     def test_a_memory_shaped_worker_failure_is_a_507(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        worker = _InlineWorker(
-            raises=IsolatedWorkerMemoryLimitExceededError(rss_bytes=2, rss_limit_bytes=1)
-        )
+        worker = _InlineWorker(raises=WorkerMemoryLimitError(rss_bytes=2, rss_limit_bytes=1))
         service, job_id, _raised = self._auto_range(project, monkeypatch, worker)
         job = service._store.require_job(job_id)
 
@@ -622,7 +620,7 @@ class TestWorkerOutcomes:
     def test_a_stopped_worker_is_the_job_stop_and_follows_its_cancellation(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        worker = _InlineWorker(raises=IsolatedWorkerStoppedError(terminal_reason="cancelled"))
+        worker = _InlineWorker(raises=WorkerStoppedError(terminal_reason="cancelled"))
         service, job_id, raised = self._auto_range(project, monkeypatch, worker)
 
         assert isinstance(raised, BackgroundJobStoppedError)
@@ -636,7 +634,7 @@ class TestWorkerOutcomes:
         self, project: Path, monkeypatch: pytest.MonkeyPatch, pipeline_settings
     ) -> None:
         pipeline_settings(optimisation_time_limit_minutes=30)
-        worker = _InlineWorker(raises=IsolatedWorkerTimeoutError(timeout_seconds=1.0))
+        worker = _InlineWorker(raises=WorkerTimeoutError(timeout_seconds=1.0))
         service, job_id, raised = self._auto_range(project, monkeypatch, worker)
         job = service._store.require_job(job_id)
 
@@ -704,9 +702,7 @@ class TestWorkerOutcomes:
         self, client, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _process_mode(monkeypatch)
-        worker = _InlineWorker(
-            raises=IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=None)
-        )
+        worker = _InlineWorker(raises=WorkerCrashedError(1))
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
 
         status = _solve(client, _online_graph(_scored_parquet(project)))
@@ -767,7 +763,7 @@ class TestWorkerOutcomes:
         self, client, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _process_mode(monkeypatch)
-        worker = _InlineWorker(raises=IsolatedWorkerTimeoutError(timeout_seconds=1.0))
+        worker = _InlineWorker(raises=WorkerTimeoutError(timeout_seconds=1.0))
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
 
         status = _solve(client, _online_graph(_scored_parquet(project)))
@@ -907,7 +903,7 @@ class TestWorkerOutcomes:
             try:
                 return function(request, budget)
             except MemoryError as exc:
-                raise IsolatedWorkerRemoteError(
+                raise WorkerRemoteError(
                     remote_type=type(exc).__name__,
                     remote_message=str(exc),
                     remote_traceback="",
@@ -932,7 +928,7 @@ class TestWorkerOutcomes:
             try:
                 return function(request, budget)
             except MemoryError as exc:
-                raise IsolatedWorkerRemoteError(
+                raise WorkerRemoteError(
                     remote_type=type(exc).__name__,
                     remote_message=str(exc),
                     remote_traceback="",
@@ -964,7 +960,7 @@ class TestWorkerOutcomes:
             (Path(request.scratch_dir) / "bucket_part.parquet").write_bytes(b"partial")
             (Path(request.ratebook_factors_dir) / "factors.parquet").write_bytes(b"partial")
             Path(request.output_path).write_bytes(b"partial")
-            raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            raise WorkerStoppedError(terminal_reason="cancelled")
 
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", wrote_then_stopped)
 
@@ -1210,13 +1206,13 @@ class TestEstimateWorker:
     def test_a_worker_memory_kill_answers_the_typed_507(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._interactive_workers import InteractiveWorkerMemoryLimitError
+        from haute._worker_failures import WorkerMemoryLimitError
         from haute.routes import optimiser as optimiser_routes
         from haute.schemas import OptimiserEstimateRequest
 
         class _MemoryKilledPool:
             def run(self, *_args: Any, **_kwargs: Any) -> Any:
-                raise InteractiveWorkerMemoryLimitError(rss_bytes=2048, limit_bytes=1024)
+                raise WorkerMemoryLimitError(rss_bytes=2048, rss_limit_bytes=1024)
 
         _process_mode(monkeypatch)
         monkeypatch.setattr(optimiser_routes, "interactive_worker_pool", _MemoryKilledPool)
@@ -1230,6 +1226,7 @@ class TestEstimateWorker:
         assert raised.value.status_code == 507
         assert raised.value.detail == {
             "error_code": "memory_limit",
+            "operation": "optimiser_estimate",
             "rss_bytes": 2048,
             "rss_limit_bytes": 1024,
             "reason": "worker_rss_limit_exceeded",
@@ -1245,7 +1242,7 @@ def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(
         create_admitted_execution_context,
         isolated_execution_budget,
     )
-    from haute._interactive_workers import InteractiveWorkerRemoteError
+    from haute._worker_failures import WorkerRemoteError
     from haute.routes import optimiser as optimiser_routes
     from haute.routes._optimiser_worker import optimiser_estimate_worker
     from haute.schemas import OptimiserEstimateRequest
@@ -1273,7 +1270,7 @@ def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(
             try:
                 return function(*args)
             except BaseException as exc:
-                raise InteractiveWorkerRemoteError(
+                raise WorkerRemoteError(
                     remote_type=type(exc).__name__,
                     remote_module=type(exc).__module__,
                     remote_message=str(exc),

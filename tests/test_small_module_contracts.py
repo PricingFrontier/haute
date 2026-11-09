@@ -9,7 +9,7 @@ import pytest
 import haute
 from haute import _contracts
 from haute._column_summary import json_safe_scalar
-from haute._contracts import Contract, get_column_contract
+from haute._contracts import Contract, get_node_contract
 from haute._json_safe import row_to_json_safe, rows_to_json_safe, to_json_safe
 from haute._registry import NodeRegistryEntry
 from haute._types import NodeType
@@ -167,7 +167,7 @@ class TestContracts:
         with pytest.raises(ValueError, match="unsupported type"):
             Contract.from_user_declared(123)
 
-    def test_get_column_contract_returns_registered_contract(
+    def test_get_node_contract_returns_registered_contract(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -185,12 +185,12 @@ class TestContracts:
             },
         )
 
-        assert get_column_contract(NodeType.POLARS, {"emit": True}) == (
+        assert get_node_contract(NodeType.POLARS, {"emit": True}).to_tuple() == (
             {"premium"},
             {"base_rate"},
         )
 
-    def test_get_column_contract_fails_loudly_when_missing(
+    def test_get_node_contract_fails_loudly_when_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -198,7 +198,7 @@ class TestContracts:
         monkeypatch.setattr(_contracts, "NODE_REGISTRY", {})
 
         with pytest.raises(KeyError, match="no column contract registered"):
-            get_column_contract(NodeType.POLARS, {})
+            get_node_contract(NodeType.POLARS, {})
 
 
 class TestPackageInit:

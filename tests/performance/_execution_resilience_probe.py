@@ -17,10 +17,11 @@ import orjson
 import polars as pl
 
 from haute._execution_context import ExecutionProfile
-from haute._interactive_workers import InteractiveWorkerCrashedError, InteractiveWorkerPool
+from haute._interactive_workers import InteractiveWorkerPool
 from haute._json_shred._snapshots import api_input_snapshot_source, build_api_input_tables
 from haute._process_memory import process_rss_bytes
 from haute._source_cache import SourceCacheIdentity, SourceCacheStore
+from haute._worker_failures import WorkerCrashedError
 
 _SCALES = {"ci": (120, 8, 4), "1m": (2_000, 100, 12), "10m": (10_000, 1_000, 32)}
 
@@ -295,7 +296,7 @@ def _soak(calls: int, replacements: int) -> dict[str, Any]:
                         memory_growth_limit_bytes=256 * 1024 * 1024,
                         require_memory_limit=True,
                     )
-                except InteractiveWorkerCrashedError:
+                except WorkerCrashedError:
                     pass
                 else:
                     raise RuntimeError("crashed worker did not report crash")

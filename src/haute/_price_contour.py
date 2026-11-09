@@ -342,8 +342,3 @@ def price_contour() -> ModuleType:
 def price_contour_install() -> PriceContourInstall:
     """Return where the verified ``price-contour`` distribution was installed from."""
     return _verified()[1]
-
-
-def clear_price_contour_cache() -> None:
-    """Forget the verification so the next call re-imports and re-checks (tests only)."""
-    _verified.cache_clear()

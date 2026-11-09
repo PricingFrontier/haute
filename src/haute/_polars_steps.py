@@ -345,7 +345,7 @@ _NUMBER_TARGETS: frozenset[str] = frozenset(
 )
 #: The Change types targets Polars 2 refuses for each source column type, even with
 #: ``strict=False``: what the editor withholds and what a failed run is checked
-#: against (``step_refusal``). ``tests/test_polars_steps.py`` holds it equal to the
+#: against (``step_refusal``). ``tests/test_polars_steps_execution.py`` holds it equal to the
 #: installed Polars, and the catalogue test to the editor's copy.
 CAST_REFUSALS: dict[str, frozenset[str]] = {
     "integer": frozenset({"Categorical"}),

@@ -645,7 +645,7 @@ def test_text_mode_subprocess_calls_pin_utf8_in_caller_chokepoints() -> None:
     — cp1252 on Windows — silently corrupting non-ASCII branch names, paths,
     and error messages.  Ruff cannot catch this (PLW1514 covers the ``open()``
     family only), so it is pinned here.  A stricter _git.py-local variant of
-    this check lives in test_git_engine.py and stays there.
+    this check lives in test_git_core_commands.py and stays there.
     """
     offenders: list[tuple[str, int, str]] = []
     for rel in _CALLER_CHOKEPOINTS:

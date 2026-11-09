@@ -23,6 +23,7 @@ from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests._project import project_app, use_project
 
 ALL = NodeSnapshotColumns.all()
@@ -110,7 +111,7 @@ def test_preview_inputs_preserves_error_contracts(
     elif kind == "timeout":
         assert "Preview input resolution timed out" in response.json()["detail"]
     else:
-        assert response.json()["detail"] == pipeline._INTERNAL_ERROR_DETAIL
+        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
     assert "private worker detail" not in response.text
 
 
@@ -1561,7 +1562,7 @@ def test_killed_preview_worker_leaves_no_staging(
     project: Path, api: Any, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import haute.routes.pipeline as pipeline
-    from haute._interactive_workers import InteractiveWorkerCrashedError
+    from haute._worker_failures import WorkerCrashedError
 
     graph = _join_graph(project)
     staged: list[Path] = []
@@ -1573,7 +1574,7 @@ def test_killed_preview_worker_leaves_no_staging(
         artifact = store.stage_node_output(identity, staging_token=token)
         artifact.part_path(0).write_bytes(b"partial")
         staged.append(artifact.part_path(0))
-        raise InteractiveWorkerCrashedError(9)
+        raise WorkerCrashedError(9)
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
     monkeypatch.setattr(pipeline, "run_in_interactive_worker", crashing_worker)

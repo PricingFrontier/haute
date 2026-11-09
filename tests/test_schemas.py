@@ -1,6 +1,7 @@
 """Tests for haute.schemas — Pydantic model validation.
 
-Focuses on: required-field validation, nested structure, roundtrip dump.
+Focuses on: required-field validation, nested structure, roundtrip dump, and
+the response models that share fields through a common base.
 Pure default-value assertions removed (Pydantic guarantees those).
 """
 
@@ -349,3 +350,209 @@ class TestAssistantTurnOutcome:
 
         with pytest.raises(ValidationError):
             AssistantTurnOutcome.model_validate(payload)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# D7: Pydantic-native git result types (item #74)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The ``_git`` module returns response models such as
+# ``GitBranchListResponse`` directly — the former dataclass → Pydantic shim was
+# dead code and has been removed.
+# Dedicated tests for the contract live in ``tests/test_git_routes_pydantic.py``.
+
+
+# ──────────────────────────────────────────────────────────────────────
+# D12: PreviewNodeResponse inherits from NodeResult
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestPreviewNodeResponseInheritance:
+    """D12: PreviewNodeResponse should inherit all NodeResult fields."""
+
+    def test_is_subclass(self) -> None:
+        from haute.schemas import NodeResult, PreviewNodeResponse
+
+        assert issubclass(PreviewNodeResponse, NodeResult)
+
+    def test_inherits_all_node_result_fields(self) -> None:
+        from haute.schemas import NodeResult, PreviewNodeResponse
+
+        node_fields = set(NodeResult.model_fields.keys())
+        preview_fields = set(PreviewNodeResponse.model_fields.keys())
+        assert node_fields.issubset(preview_fields), (
+            f"Missing fields: {node_fields - preview_fields}"
+        )
+
+    def test_serialization_includes_inherited_and_own_fields(self) -> None:
+        from haute.schemas import ColumnInfo, PreviewNodeResponse
+
+        resp = PreviewNodeResponse(
+            node_id="n1",
+            status="ok",
+            row_count=42,
+            column_count=3,
+            columns=[ColumnInfo(name="a", dtype="Int64")],
+            preview=[{"a": 1}],
+            error=None,
+            timing_ms=12.5,
+            memory_bytes=1024,
+            timings=[],
+            memory=[],
+            node_statuses={"n1": "ok", "n2": "ok"},
+        )
+        d = resp.model_dump()
+        # Inherited from NodeResult
+        assert d["status"] == "ok"
+        assert d["row_count"] == 42
+        assert d["column_count"] == 3
+        assert d["columns"] == [{"name": "a", "dtype": "Int64"}]
+        assert d["timing_ms"] == 12.5
+        assert d["memory_bytes"] == 1024
+        assert d["error"] is None
+        # Own fields
+        assert d["node_id"] == "n1"
+        assert d["node_statuses"] == {"n1": "ok", "n2": "ok"}
+
+    def test_deserialization_from_dict(self) -> None:
+        from haute.schemas import PreviewNodeResponse
+
+        data = {
+            "node_id": "n2",
+            "status": "error",
+            "error": "bad column",
+            "error_line": 5,
+            "row_count": 0,
+        }
+        resp = PreviewNodeResponse.model_validate(data)
+        assert resp.node_id == "n2"
+        assert resp.status == "error"
+        assert resp.error == "bad column"
+        assert resp.error_line == 5
+        assert resp.row_count == 0
+
+    def test_defaults_from_node_result(self) -> None:
+        """Fields with defaults in NodeResult should have same defaults."""
+        from haute.schemas import PreviewNodeResponse
+
+        resp = PreviewNodeResponse(node_id="n1", status="ok")
+        assert resp.row_count == 0
+        assert resp.column_count == 0
+        assert resp.columns == []
+        assert resp.preview == []
+        assert resp.error is None
+        assert resp.timing_ms == 0
+        assert resp.memory_bytes == 0
+        assert resp.schema_warnings == []
+
+    def test_node_result_standalone_still_works(self) -> None:
+        """NodeResult should still work independently (not broken by inheritance)."""
+        from haute.schemas import NodeResult
+
+        nr = NodeResult(status="ok", row_count=10, column_count=2)
+        d = nr.model_dump()
+        assert d["status"] == "ok"
+        assert d["row_count"] == 10
+        assert "node_id" not in d  # Not in NodeResult
+
+
+# ──────────────────────────────────────────────────────────────────────
+# D13: MlflowLogResponse shared base
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _without_receipt_fields(dumped: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in dumped.items() if key not in {"operation_id", "logged_at"}}
+
+
+class TestMlflowLogResponseSharedBase:
+    """D13: LogExperimentResponse and OptimiserMlflowLogResponse share a base."""
+
+    def test_both_subclass_base(self) -> None:
+        from haute.schemas import (
+            LogExperimentResponse,
+            MlflowLogResponse,
+            OptimiserMlflowLogResponse,
+        )
+
+        assert issubclass(LogExperimentResponse, MlflowLogResponse)
+        assert issubclass(OptimiserMlflowLogResponse, MlflowLogResponse)
+
+    def test_shared_fields_come_from_the_base(self) -> None:
+        from haute.schemas import (
+            LogExperimentResponse,
+            MlflowLogResponse,
+            OptimiserMlflowLogResponse,
+        )
+
+        base_fields = set(MlflowLogResponse.model_fields.keys())
+        opt_fields = set(OptimiserMlflowLogResponse.model_fields.keys())
+        log_fields = set(LogExperimentResponse.model_fields.keys())
+        assert opt_fields == base_fields
+        # A training-result log also repeats its export receipt identity.
+        assert log_fields - base_fields == {"operation_id", "logged_at"}
+
+    def test_identical_serialization(self) -> None:
+        from haute.schemas import LogExperimentResponse, OptimiserMlflowLogResponse
+
+        kwargs = {
+            "status": "ok",
+            "backend": "databricks",
+            "experiment_name": "/my/experiment",
+            "run_id": "abc123",
+            "run_url": "https://example.com/run/abc123",
+            "tracking_uri": "databricks",
+        }
+        log_resp = LogExperimentResponse(**kwargs)
+        opt_resp = OptimiserMlflowLogResponse(**kwargs)
+        assert _without_receipt_fields(log_resp.model_dump()) == opt_resp.model_dump()
+
+    def test_error_case_serialization(self) -> None:
+        from haute.schemas import LogExperimentResponse, OptimiserMlflowLogResponse
+
+        kwargs = {
+            "status": "error",
+            "error": "MLflow server unreachable",
+        }
+        log_resp = LogExperimentResponse(**kwargs)
+        opt_resp = OptimiserMlflowLogResponse(**kwargs)
+        assert _without_receipt_fields(log_resp.model_dump()) == opt_resp.model_dump()
+        assert log_resp.error == "MLflow server unreachable"
+
+    def test_defaults(self) -> None:
+        from haute.schemas import MlflowLogResponse
+
+        resp = MlflowLogResponse(status="ok")
+        assert resp.backend == ""
+        assert resp.experiment_name == ""
+        assert resp.run_id is None
+        assert resp.run_url is None
+        assert resp.tracking_uri == ""
+        assert resp.error is None
+
+    def test_run_id_accepts_string_and_none(self) -> None:
+        from haute.schemas import LogExperimentResponse, OptimiserMlflowLogResponse
+
+        # String run_id
+        r1 = LogExperimentResponse(status="ok", run_id="run123")
+        assert r1.run_id == "run123"
+
+        # None run_id (default)
+        r2 = OptimiserMlflowLogResponse(status="ok")
+        assert r2.run_id is None
+
+    def test_base_model_dump_matches_children(self) -> None:
+        """Base class should produce same JSON shape as children."""
+        from haute.schemas import (
+            LogExperimentResponse,
+            MlflowLogResponse,
+            OptimiserMlflowLogResponse,
+        )
+
+        kwargs = {"status": "ok", "backend": "local", "run_id": "x"}
+        base = MlflowLogResponse(**kwargs)
+        child1 = LogExperimentResponse(**kwargs)
+        child2 = OptimiserMlflowLogResponse(**kwargs)
+        assert (
+            base.model_dump() == _without_receipt_fields(child1.model_dump()) == child2.model_dump()
+        )

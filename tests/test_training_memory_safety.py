@@ -26,7 +26,8 @@ from haute.errors import RequestRefusedError
 from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
 from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData, _SplitResult
 from haute.routes._job_store import JobStore
-from haute.routes._train_service import TrainService
+from haute.routes._training_lifecycle import TrainService
+from tests._training_helpers import join_training_preparation
 from tests.test_training_worker_protocol import (
     _inline_protocol_runner,
     _SuccessfulTrainingJob,
@@ -732,7 +733,7 @@ def test_start_releases_admission_when_prep_fails_before_launch(
 ) -> None:
     """When prep raises before launch, the admitted context must be released."""
     from haute.schemas import TrainRequest
-    from tests.test_modelling_routes import _make_modelling_graph
+    from tests._modelling_route_helpers import _make_modelling_graph
 
     data_path = tmp_path / "training.parquet"
     pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)
@@ -759,7 +760,7 @@ def test_start_releases_admission_when_prep_fails_before_launch(
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
         )
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     assert captured_contexts, "admitted context should have been created"
     assert captured_contexts[0].lease.released is True
@@ -778,7 +779,7 @@ def test_start_keeps_admission_held_after_successful_launch(
     in its finally — ownership transfers to the background worker.
     """
     from haute.schemas import TrainRequest
-    from tests.test_modelling_routes import _make_modelling_graph
+    from tests._modelling_route_helpers import _make_modelling_graph
 
     data_path = tmp_path / "training.parquet"
     pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)
@@ -813,7 +814,7 @@ def test_start_keeps_admission_held_after_successful_launch(
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"),
         )
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     assert response.status == "started"
     admitted = captured["context"]
@@ -833,7 +834,7 @@ def test_catboost_gpu_vram_limit_refuses_before_launch(
     client,
     haute_scratch: Path,
 ) -> None:
-    from tests.test_modelling_routes import (
+    from tests._modelling_route_helpers import (
         _fast_training_params,
         _make_modelling_graph,
         _poll_until_done,
@@ -875,7 +876,7 @@ def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
     tmp_path: Path,
 ) -> None:
     from haute.schemas import TrainRequest
-    from tests.test_modelling_routes import _make_modelling_graph
+    from tests._modelling_route_helpers import _make_modelling_graph
 
     data_path = tmp_path / "training.parquet"
     pl.DataFrame({"x": [1.0, 2.0], "y": [0.0, 1.0]}).write_parquet(data_path)
@@ -889,7 +890,7 @@ def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
         )
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     execute_and_sink.assert_not_called()
     job = store.require_job(response.job_id)

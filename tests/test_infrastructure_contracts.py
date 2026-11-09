@@ -59,14 +59,6 @@ class TestNodeRegistryContracts:
         with pytest.raises(RuntimeError, match="duplicate codegen registration"):
             registry.set_codegen(NodeType.POLARS, _codegen_builder)
 
-    def test_getters_fail_loudly_when_entry_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(registry, "NODE_REGISTRY", {})
-
-        with pytest.raises(KeyError, match="no exec builder"):
-            registry.get_exec(NodeType.POLARS)
-        with pytest.raises(KeyError, match="no codegen builder"):
-            registry.get_codegen(NodeType.POLARS)
-
     def test_validate_registry_complete_reports_both_missing_sides(
         self,
         monkeypatch: pytest.MonkeyPatch,

@@ -251,7 +251,7 @@ Depended on:
   `CancellableJobRegistry` wraps, and `ExecutionMemoryPressureEvent` drives the
   running-job metrics publisher.
 - [execution-engine](../execution-engine/high-level.md) (worker isolation) —
-  `IsolatedWorkerConfig` and the `IsolatedWorkerError` family, carried by the version-1
+  `IsolatedWorkerConfig` and the `WorkerError` family, carried by the version-1
   transport, are what `IsolatedJobSupervisor` adapts into job-lifecycle transitions.
 - [tracing](../tracing/high-level.md) — execution metrics published onto running jobs
   feed the same metrics surfaces documented there.
@@ -283,7 +283,7 @@ Depended on:
   `CancellableJobRegistry.cancellation_reason` can keep running. Supervised process
   workers additionally poll the registry in the parent and are terminated and joined
   when a stop reason appears.
-- **Isolated worker failures.** Every `IsolatedWorkerError` subtype (crash, remote
+- **Worker failures.** Every `WorkerError` subtype (crash, remote
   exception, timeout, memory limit, contract violation) is caught by
   `IsolatedJobSupervisor` and turned into a terminal transition with diagnostic
   fields (`worker_error_class`, `worker_error_type`/`worker_remote_traceback` for

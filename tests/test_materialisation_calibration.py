@@ -10,7 +10,7 @@ import pytest
 from haute._estimate_calibration import (
     CALIBRATION_BASE_BASIS_POINTS,
     CALIBRATION_MAX_BASIS_POINTS,
-    _reset_materialisation_calibration_for_tests,
+    _forget_calibration,
     calibrate_materialisation_bytes,
     materialisation_calibration_snapshot,
     observe_materialisation_estimate,
@@ -29,9 +29,9 @@ from tests.conftest import make_edge, make_file_input_config, make_graph
 
 @pytest.fixture(autouse=True)
 def _reset_calibration() -> None:
-    _reset_materialisation_calibration_for_tests()
+    _forget_calibration()
     yield
-    _reset_materialisation_calibration_for_tests()
+    _forget_calibration()
 
 
 def _group_by_graph():
@@ -123,7 +123,7 @@ def test_calibration_registers_a_child_reset_when_fork_hooks_are_available(
     module_path = Path(__file__).parents[1] / "src" / "haute" / "_estimate_calibration.py"
     namespace = runpy.run_path(str(module_path), run_name="_fork_hook_probe")
 
-    assert callbacks == [namespace["_reset_materialisation_calibration_for_tests"]]
+    assert callbacks == [namespace["_forget_calibration"]]
 
 
 def test_calibration_loads_when_fork_hooks_are_unavailable(
@@ -134,7 +134,7 @@ def test_calibration_loads_when_fork_hooks_are_unavailable(
     module_path = Path(__file__).parents[1] / "src" / "haute" / "_estimate_calibration.py"
     namespace = runpy.run_path(str(module_path), run_name="_no_fork_hook_probe")
 
-    assert callable(namespace["_reset_materialisation_calibration_for_tests"])
+    assert callable(namespace["_forget_calibration"])
 
 
 def test_calibration_never_ratchets_down_and_is_profile_scoped() -> None:

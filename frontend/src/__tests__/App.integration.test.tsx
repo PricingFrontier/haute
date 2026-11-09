@@ -86,7 +86,6 @@ vi.mock("../api/client", async () => {
     isHauteSessionExpiredError: actual.isHauteSessionExpiredError,
     notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
-    checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline settings reads the snapshot store's size.
     fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
     // Pipeline endpoints

@@ -50,12 +50,14 @@ from haute._source_cache import (
     SourceCacheStore,
     new_staging_token,
 )
+from haute._worker_failures import (
+    WorkerTerminalReason,
+    worker_failure_is_cap_unavailable,
+    worker_failure_is_memory,
+    worker_failure_is_path_too_long,
+)
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
-    WorkerTerminalReason,
-    isolated_worker_failure_is_cap_unavailable,
-    isolated_worker_failure_is_memory,
-    isolated_worker_failure_is_path_too_long,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
@@ -962,14 +964,14 @@ def _classify_local_failure(
 
 
 def _classify_worker_failure(exc: BaseException) -> str:
-    # A worker exception arrives as ``IsolatedWorkerRemoteError`` carrying the
+    # A worker exception arrives as ``WorkerRemoteError`` carrying the
     # child's exception type name, so classify on that name before falling back
     # to the generic memory heuristic.
-    if isolated_worker_failure_is_cap_unavailable(exc):
+    if worker_failure_is_cap_unavailable(exc):
         return "cap_unavailable"
-    if isolated_worker_failure_is_path_too_long(exc):
+    if worker_failure_is_path_too_long(exc):
         return "path_too_long"
-    if isolated_worker_failure_is_memory(exc):
+    if worker_failure_is_memory(exc):
         return "memory_limited"
     reason = getattr(exc, "terminal_reason", None)
     if reason in ("timed_out", "cancelled"):

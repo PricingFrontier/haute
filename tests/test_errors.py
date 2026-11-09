@@ -1,8 +1,5 @@
 """Tests for the typed error hierarchy in ``haute.errors``.
 
-F1 of the codebase review execution plan. Written TDD-style — these tests
-fail (ModuleNotFoundError) until ``src/haute/errors.py`` is implemented.
-
 Hierarchy::
 
     HauteError(Exception)
@@ -11,6 +8,9 @@ Hierarchy::
         ExecutionError          — runtime execution failures
         DeployError             — deploy validation / bundling failures
         FeatureMismatchError    — feature / categorical train-vs-score mismatch
+
+Every Haute-specific exception, wherever it is defined, inherits from
+``HauteError``.
 
 Contract::
 
@@ -39,6 +39,8 @@ from haute.errors import (
 )
 
 SUBCLASSES = [ConfigError, ParseError, ExecutionError, DeployError, FeatureMismatchError]
+
+
 SUBCLASS_IDS = [cls.__name__ for cls in SUBCLASSES]
 
 
@@ -351,11 +353,11 @@ class TestDocstringMatchesReality:
 
     def test_representative_domain_exceptions_root_at_stdlib(self):
         """Documents the real boundary the corrected docstring describes."""
-        from haute._worker_isolation import IsolatedWorkerError
+        from haute._worker_failures import WorkerError
         from haute.modelling._train_config import TrainingConfigError
 
-        assert not issubclass(IsolatedWorkerError, HauteError)
-        assert issubclass(IsolatedWorkerError, RuntimeError)
+        assert not issubclass(WorkerError, HauteError)
+        assert issubclass(WorkerError, RuntimeError)
         assert not issubclass(TrainingConfigError, HauteError)
         assert issubclass(TrainingConfigError, ValueError)
 
@@ -565,3 +567,54 @@ class TestPickleAndPublicAlias:
 
         output = buf.getvalue()
         assert "boom (path=/x, node_id=n1)" in output
+
+
+# ── A9: Exception hierarchy ────────────────────────────────────────
+
+
+class TestExceptionHierarchy:
+    """All Haute-specific exceptions should inherit from HauteError."""
+
+    def test_preamble_error_inherits_from_haute_error(self) -> None:
+        from haute.executor import PreambleError
+
+        assert issubclass(PreambleError, HauteError)
+        exc = PreambleError("bad preamble")
+        assert isinstance(exc, HauteError)
+        assert isinstance(exc, Exception)
+
+    def test_git_error_inherits_from_haute_error(self) -> None:
+        from haute._git import GitError
+
+        assert issubclass(GitError, HauteError)
+        exc = GitError("git broke")
+        assert isinstance(exc, HauteError)
+
+    def test_git_guardrail_error_inherits_from_git_error_and_haute_error(self) -> None:
+        from haute._git import GitGuardrailError
+
+        assert issubclass(GitGuardrailError, HauteError)
+
+    def test_api_input_schema_error_inherits_from_haute_error(self) -> None:
+        from haute._api_input_schema import ApiInputSchemaError
+
+        assert issubclass(ApiInputSchemaError, HauteError)
+        exc = ApiInputSchemaError("bad schema")
+        assert isinstance(exc, HauteError)
+
+    def test_preamble_error_preserves_source_line(self) -> None:
+        from haute.executor import PreambleError
+
+        exc = PreambleError("msg", source_line=42)
+        assert exc.source_line == 42
+        assert str(exc) == "msg"
+
+    def test_catch_all_haute_errors(self) -> None:
+        """Catching HauteError should catch all subclasses."""
+        from haute._api_input_schema import ApiInputSchemaError
+        from haute._git import GitError
+        from haute.executor import PreambleError
+
+        for exc_cls in (PreambleError, GitError, ApiInputSchemaError):
+            with pytest.raises(HauteError):
+                raise exc_cls("test")

@@ -980,26 +980,3 @@ export function frontierAutoRangeStatusFromContract(
 // ---------------------------------------------------------------------------
 
 
-// ---------------------------------------------------------------------------
-// React Flow node validation
-// ---------------------------------------------------------------------------
-
-export function validateReactFlowNode(value: unknown): Node {
-  const obj = expectPlainObject("validateReactFlowNode", value)
-  const id = expectString("validateReactFlowNode", obj.id, "field `id`")
-  if (id === "") {
-    throw new Error(
-      "validateReactFlowNode: field `id` must not be an empty string (ReactFlow silently drops edges that reference empty ids)",
-    )
-  }
-  const position = expectPlainObject("validateReactFlowNode", obj.position, "field `position`")
-  expectNumber("validateReactFlowNode", position.x, "field `position.x`")
-  expectNumber("validateReactFlowNode", position.y, "field `position.y`")
-  if (obj.data === undefined) {
-    throw new Error("validateReactFlowNode: expected field `data` to be a plain object, got missing")
-  }
-  if (!isPlainObject(obj.data)) {
-    throw new Error(`validateReactFlowNode: expected field \`data\` to be a plain object, got ${typeName(obj.data)}`)
-  }
-  return value as Node
-}

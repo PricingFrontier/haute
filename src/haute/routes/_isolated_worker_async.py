@@ -9,11 +9,8 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, TypeVar
 
-from haute._worker_isolation import (
-    IsolatedWorkerConfig,
-    IsolatedWorkerStoppedError,
-    run_isolated_worker,
-)
+from haute._worker_failures import WorkerStoppedError
+from haute._worker_isolation import IsolatedWorkerConfig, run_isolated_worker
 
 T = TypeVar("T")
 
@@ -55,7 +52,7 @@ class WorkerCancellationGate:
         """Reject a late commit, or serialize cancellation after this commit."""
         with self._publication_lock:
             if self._requested.is_set():
-                raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+                raise WorkerStoppedError(terminal_reason="cancelled")
             yield
 
 
@@ -83,7 +80,7 @@ async def run_cancellable_worker_transaction(
                 break
         try:
             task.result()
-        except IsolatedWorkerStoppedError as exc:
+        except WorkerStoppedError as exc:
             if exc.terminal_reason != "cancelled":
                 cancellation.add_note(f"isolated worker stopped as {exc.terminal_reason}")
         except BaseException as exc:

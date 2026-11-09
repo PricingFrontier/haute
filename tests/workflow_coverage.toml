@@ -391,15 +391,15 @@ lane = "backend"
 real = ["watcher-classification", "filesystem"]
 stubbed = ["event-delivery"]
 tests = [
-  "tests/test_server.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast",
-  "tests/test_server.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed",
-  "tests/test_server.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast",
+  "tests/test_server_file_watcher.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast",
+  "tests/test_server_file_watcher.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed",
+  "tests/test_server_file_watcher.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast",
 ]
 invariant = "A server write followed by an external write to the same path before the coalesced event is processed is broadcast as the external content; an unchanged self-write and a self-deletion stay suppressed."
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast" "tests/test_server.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed" "tests/test_server.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast" -q -n 4'
+command = 'uv run pytest "tests/test_server_file_watcher.py::TestFileWatcher::test_external_write_to_self_written_path_before_flush_is_broadcast" "tests/test_server_file_watcher.py::TestFileWatcher::test_unchanged_self_write_to_same_path_is_suppressed" "tests/test_server_file_watcher.py::TestFileWatcher::test_self_delete_is_suppressed_but_external_recreate_is_broadcast" -q -n 4'
 result = "3 passed in 9.30s; sensitivity replay 2026-09-06 at 9daa4372: TestFileWatcher fails 6 of 12 against src/haute/routes/_helpers.py, src/haute/_file_ops.py and src/haute/server.py from e512dc5f^"
 
 [[scenarios]]
@@ -413,13 +413,13 @@ lane = "backend"
 real = ["watcher-classification", "filesystem"]
 stubbed = ["event-delivery"]
 tests = [
-  "tests/test_server.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content",
+  "tests/test_server_file_watcher.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content",
 ]
 invariant = "An unrelated external edit in the same watcher batch as a server write is broadcast with the edited file's actual document content and fingerprint."
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest "tests/test_server.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content" -q'
+command = 'uv run pytest "tests/test_server_file_watcher.py::TestFileWatcher::test_unrelated_external_edit_in_same_batch_is_broadcast_with_its_content" -q'
 result = "1 passed in 4.95s"
 
 [[scenarios]]
@@ -663,7 +663,7 @@ tests = [
   "tests/test_output_assembler.py::test_validate_rejects_two_frames_emitting_at_one_array_level",
   "tests/test_v2_codec_and_shred.py::test_validate_v2_schema_rejects_invalid_declared_scalars",
   "tests/test_scalar_array_and_inference.py::test_build_bool_in_numeric_column_fails_loud",
-  "tests/test_json_shred_w1_conservation.py::test_build_conserves_root_rows_and_accounts_skips",
+  "tests/test_json_shred_conservation.py::test_build_conserves_root_rows_and_accounts_skips",
   "frontend/e2e/edge-join.spec.ts::inserts lookup and named API joins on rendered edges, persists them, and traces both",
   "frontend/e2e/persistence/api-input-frame-alignment.spec.ts::frame-bound edges and downstream names survive save/reload and an in-place rename",
   "frontend/e2e/persistence/api-input-v2-native.spec.ts::Infer Tables → Preview → optional Cache round-trips through disk and reload",
@@ -672,7 +672,7 @@ invariant = "JSON, JSONL and XML inputs shred to the declared tables with every 
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_v2_codec_and_shred.py tests/test_load_v2_api_source.py tests/test_scalar_array_and_inference.py tests/test_json_shred_parallel.py tests/test_xml_api_input.py tests/test_edge_join.py tests/test_output_assembler.py tests/test_output_nested_roundtrip.py tests/test_apiinput_flat_output_dry_run.py tests/test_json_shred_w1_conservation.py -q -n 4'
+command = 'uv run pytest tests/test_v2_codec_and_shred.py tests/test_load_v2_api_source.py tests/test_scalar_array_and_inference.py tests/test_json_shred_parallel.py tests/test_xml_api_input.py tests/test_edge_join.py tests/test_output_assembler.py tests/test_output_nested_roundtrip.py tests/test_apiinput_flat_output_dry_run.py tests/test_json_shred_conservation.py -q -n 4'
 result = "588 passed in 36.06s"
 
 [[scenarios]]
@@ -686,7 +686,7 @@ lane = "backend"
 real = ["executor", "cache", "tracer"]
 stubbed = []
 tests = [
-  "tests/test_server.py::TestPreviewNode::test_preview_returns_node_data",
+  "tests/test_server_pipeline_routes.py::TestPreviewNode::test_preview_returns_node_data",
   "tests/test_runtime_input_cache_invalidation.py::TestPreviewRuntimeFileInvalidation::test_external_file_change_recomputes_preview",
   "tests/test_runtime_input_cache_invalidation.py::TestPreviewRuntimeFileInvalidation::test_direct_parquet_overwrite_recomputes_preview",
   "tests/test_runtime_input_cache_invalidation.py::TestTraceRuntimeInputInvalidation::test_trace_recomputes_after_datasource_edit",
@@ -714,7 +714,7 @@ invariant = "Preview, refresh and trace over the active source return the same r
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_trace_matches_preview.py tests/test_trace_multi_frame.py tests/test_pipeline_route_supersession.py tests/test_runtime_input_cache_invalidation.py "tests/test_executor.py::TestPreviewCacheInvalidation" "tests/test_executor.py::TestPreviewCachePartialHit" "tests/test_trace_api.py::TestRequestValidation" "tests/test_server.py::TestPreviewNode" tests/test_input_preparation.py -q -n 4'
+command = 'uv run pytest tests/test_trace_matches_preview.py tests/test_trace_multi_frame.py tests/test_pipeline_route_supersession.py tests/test_runtime_input_cache_invalidation.py "tests/test_executor.py::TestPreviewCacheInvalidation" "tests/test_executor.py::TestPreviewCachePartialHit" "tests/test_trace_api.py::TestRequestValidation" "tests/test_server_pipeline_routes.py::TestPreviewNode" tests/test_input_preparation.py -q -n 4'
 result = "195 passed in 19.44s"
 
 [[scenarios]]
@@ -758,7 +758,7 @@ stubbed = []
 tests = [
   "tests/test_rating_hand_calculated.py::test_rating_preview_matches_hand_calculated_premiums",
   "tests/test_rating_hand_calculated.py::test_rating_trace_matches_hand_calculated_premiums",
-  "tests/test_rating_step_config_coverage.py::test_normalise_roundtrip_three_factors",
+  "tests/test_rating_step.py::test_normalise_roundtrip_three_factors",
   "tests/test_rating.py::TestBandingBoundaryValues::test_boundary_value_inclusive_exclusive",
   "tests/test_rating.py::TestApplyBandingEdgeCases::test_null_values_get_default",
   "tests/test_rating.py::TestExtremeFloatValues::test_inf_in_banding_sanitized_to_default",
@@ -773,7 +773,7 @@ tests = [
   "tests/test_rating_miss_fail_loud.py::TestMissFailsLoudByDefault::test_renamed_band_label_raises_through_config_path",
   "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_duplicate_entries_are_refused",
   "tests/test_rating_step.py::TestRatingStepExecutor::test_combine_operations",
-  "tests/test_rating_step_config_coverage.py::test_duplicate_table_output_columns_are_rejected_with_both_indices",
+  "tests/test_rating_step.py::test_duplicate_table_output_columns_are_rejected_with_both_indices",
   "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_nan_in_entries_rejected",
   "tests/test_expression_parity_properties.py::test_evaluator_agrees_with_polars_on_documented_single_row_forms",
   "tests/test_expression_parity_properties.py::test_receiver_value_window_forms_classified",
@@ -786,7 +786,7 @@ invariant = "A rating step previewed and traced through the real executor reprod
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step_config_coverage.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -n 4'
+command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -n 4'
 result = "851 passed in 19.78s"
 
 [[scenarios]]
@@ -808,16 +808,16 @@ tests = [
   "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage::test_haute_validation_error_channel_is_stamped_user_facing",
   "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage::test_plain_value_error_does_not_ride_the_validation_channel",
   "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage::test_metric_stage_wrapper_rides_the_validation_channel",
-  "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_validation_error",
-  "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback",
-  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error",
-  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message",
+  "tests/test_modelling_train_routes.py::TestBackgroundThreadErrors::test_background_validation_error",
+  "tests/test_modelling_train_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback",
+  "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error",
+  "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message",
 ]
 invariant = "A HauteValidationError (the metric-stage wrapper included) is promoted verbatim as a contract_error while a dependency's plain ValueError is classified as an unexpected error whose public message names only the type, the raw text surviving in the diagnostic field; training and dispersion workers apply the same taxonomy."
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest "tests/test_training_worker_protocol.py::test_training_entrypoint_maps_contract_failures" "tests/test_training_worker_protocol.py::test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_malformed_requests_to_contract_failures" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures" "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_validation_error" "tests/test_modelling_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error" "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message" -q -n 4'
+command = 'uv run pytest "tests/test_training_worker_protocol.py::test_training_entrypoint_maps_contract_failures" "tests/test_training_worker_protocol.py::test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_malformed_requests_to_contract_failures" "tests/test_training_worker_protocol.py::test_dispersion_worker_maps_estimator_failures" "tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage" "tests/test_modelling_train_routes.py::TestBackgroundThreadErrors::test_background_validation_error" "tests/test_modelling_train_routes.py::TestBackgroundThreadErrors::test_background_plain_value_error_takes_the_fallback" "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths::test_worker_missing_term_columns_is_contract_error" "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths::test_worker_fallback_stamps_curated_message" -q -n 4'
 result = "42 passed in 17.92s"
 
 [[scenarios]]
@@ -834,7 +834,7 @@ tests = [
   "tests/test_train_config_builder.py::TestBuildTrainingJobKwargs::test_kwargs_construct_a_real_training_job",
   "tests/test_train_config_builder.py::TestExplicitObjectiveRequired::test_catboost_empty_loss_fails_loud",
   "tests/test_training_worker_protocol.py::test_train_service_publishes_complete_evaluation_run",
-  "tests/test_train_service_coverage.py::TestTrainServiceLifecycles::test_a_training_job_can_be_started_again_after_a_failed_and_after_a_cancelled_run",
+  "tests/test_train_service.py::TestTrainServiceLifecycles::test_a_training_job_can_be_started_again_after_a_failed_and_after_a_cancelled_run",
   "tests/test_training_worker_protocol.py::test_cancel_before_publication_removes_the_job_artifact_directory",
   "tests/test_training_worker_protocol.py::test_train_service_publication_wins_late_cancel_and_records_elapsed",
   "tests/test_training_worker_protocol.py::test_training_entrypoint_stages_complete_evaluation_and_public_response",
@@ -851,7 +851,7 @@ tests = [
   "tests/test_training_evaluation.py::test_final_test_positions_never_enter_any_selection_fit",
   "tests/test_training_evaluation.py::test_selection_fits_are_sequential_evaluation_only_and_final_fit_is_once",
   "tests/test_training_lorenz_nonfinite.py::TestLorenzCallSiteFiltering::test_non_finite_predictions_are_filtered",
-  "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures::test_non_finite_training_result_marks_job_error",
+  "tests/test_modelling_train_routes.py::TestTrainBackgroundLaunchFailures::test_non_finite_training_result_marks_job_error",
   "tests/test_mlflow_io.py::TestResolveArtifactLocal::test_cache_hit_returns_local_path",
   "tests/test_mlflow_io_concurrency.py::TestLoadModelSingleFlight::test_concurrent_same_model_loads_once_and_shares_instance",
   "tests/test_mlflow_model_cache_key_contract.py::TestFastPathArtifactPerturbation::test_relogged_artifact_bytes_invalidate_in_process_cache",
@@ -870,7 +870,7 @@ invariant = "Configure, train, cancel, retry, persist, load and score run throug
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_train_service_coverage.py tests/test_training_worker_protocol.py tests/test_train_config_builder.py tests/test_mlflow_io.py tests/test_mlflow_io_concurrency.py tests/test_mlflow_model_cache_key_contract.py tests/test_model_scorer.py tests/test_target_task_gate.py tests/test_training_evaluation.py tests/test_training_lorenz_nonfinite.py tests/test_modelling_export.py tests/test_offset_scoring.py "tests/test_modelling.py::TestCatBoostAlgorithm" "tests/test_modelling.py::TestTrainingJob" "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures" -q -n 4'
+command = 'uv run pytest tests/test_train_service.py tests/test_training_worker_protocol.py tests/test_train_config_builder.py tests/test_mlflow_io.py tests/test_mlflow_io_concurrency.py tests/test_mlflow_model_cache_key_contract.py tests/test_model_scorer.py tests/test_target_task_gate.py tests/test_training_evaluation.py tests/test_training_lorenz_nonfinite.py tests/test_modelling_export.py tests/test_offset_scoring.py "tests/test_modelling.py::TestCatBoostAlgorithm" "tests/test_modelling.py::TestTrainingJob" "tests/test_modelling_train_routes.py::TestTrainBackgroundLaunchFailures" -q -n 4'
 result = "762 passed, 2 skipped in 60.26s (0:01:00)"
 
 [[scenarios]]
@@ -918,8 +918,8 @@ lane = "backend"
 real = ["preamble-compiler", "dataframe-cache", "builders", "filesystem"]
 stubbed = []
 tests = [
-  "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation",
-  "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged",
+  "tests/test_optimiser_pipeline_execution.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation",
+  "tests/test_optimiser_pipeline_execution.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged",
   "tests/test_optimiser_auto_range_stage.py::test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint",
   "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation",
   "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim",
@@ -928,7 +928,7 @@ invariant = "A second optimiser setup, data-output preparation, or auto-range jo
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_routes.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_auto_range_stage.py::test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -n 4'
+command = 'uv run pytest "tests/test_optimiser_pipeline_execution.py::TestExecutePipelineExtended::test_execute_pipeline_uses_edited_helper_on_next_operation" "tests/test_optimiser_pipeline_execution.py::TestExecutePipelineExtended::test_execute_pipeline_reuses_namespace_when_helper_is_unchanged" "tests/test_optimiser_auto_range_stage.py::test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint" "tests/test_executor.py::TestPreviewCacheInvalidation::test_prepare_data_output_uses_edited_helper_on_next_operation" "tests/test_executor.py::TestPreambleLockConcurrency::test_compile_preamble_pinned_fingerprint_is_used_verbatim" -q -n 4'
 result = "5 passed in 11.17s; auto-range now runs the solve setup's pipeline stage, so its pinned-fingerprint witness moved to tests/test_optimiser_auto_range_stage.py (the streaming auto-range job it replaced is gone)"
 
 [[scenarios]]
@@ -943,31 +943,31 @@ real = ["optimiser", "solver", "artifact-store"]
 stubbed = ["mlflow"]
 tests = [
   "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand",
-  "tests/test_optimiser_routes.py::TestSolveOnlineUnit::test_solve_online_initializes_solver_and_records_history",
-  "tests/test_optimiser_routes.py::TestRatebookSolve::test_ratebook_solve_completes",
+  "tests/test_optimiser_solver_service.py::TestSolveOnlineUnit::test_solve_online_initializes_solver_and_records_history",
+  "tests/test_optimiser_ratebook_solve.py::TestRatebookSolve::test_ratebook_solve_completes",
   "tests/test_optimiser_routes_real_library.py::TestEffectiveBoundsContract::test_unswept_constraint_survives_the_solve_time_frontier_and_select",
   "tests/test_optimiser_frontier_materialisation.py::test_select_frontier_point_uses_stored_summary_without_solver",
-  "tests/test_optimiser_routes.py::TestSaveResultUnit::test_save_completed_job_writes_json",
-  "tests/test_optimiser_routes.py::TestMlflowLogExtended::test_mlflow_log_success_with_frontier",
+  "tests/test_optimiser_publish_routes.py::TestSaveResultUnit::test_save_completed_job_writes_json",
+  "tests/test_optimiser_publish_routes.py::TestMlflowLogExtended::test_mlflow_log_success_with_frontier",
   "tests/test_optimiser_apply.py::TestExecutorOnline::test_online_apply_basic",
   "tests/test_optimiser_apply.py::TestExecutorRatebook::test_ratebook_apply_basic",
   "tests/test_optimiser_apply_trace_enrichment.py::test_online_execute_trace_attaches_candidate_explanation",
   "tests/test_optimiser_apply_trace_enrichment.py::test_ratebook_execute_trace_explains_configured_input_factor_ladder",
-  "tests/test_optimiser_routes.py::TestFinalizeSolveResult::test_convergence_warning_when_not_converged",
-  "tests/test_optimiser_routes.py::TestFrontierInSolve::test_solve_with_empty_constraints_completes_without_frontier",
-  "tests/test_optimiser_routes.py::TestSaveArtifactGate::test_save_rejects_non_finite_values_pre_write",
+  "tests/test_optimiser_solver_service.py::TestFinalizeSolveResult::test_convergence_warning_when_not_converged",
+  "tests/test_optimiser_frontier_routes.py::TestFrontierInSolve::test_solve_with_empty_constraints_completes_without_frontier",
+  "tests/test_optimiser_publish_routes.py::TestSaveArtifactGate::test_save_rejects_non_finite_values_pre_write",
   "tests/test_optimiser_contracts.py::test_solve_rejects_null_quote_id_instead_of_dropping_rows",
   "tests/test_rating_dtype_contract.py::test_ratebook_apply_reuses_the_same_dtype_contract",
   "tests/test_rating_dtype_contract.py::test_ratebook_rejects_exact_dtype_drift_before_neutral_miss",
   "tests/test_optimiser_ratebook_apply_agreement.py::TestMirrorAgreesWithEngine::test_a_duplicate_level_is_refused_by_the_engine",
-  "tests/test_optimiser_routes.py::TestFrontierSelect::test_select_last_frontier_point",
+  "tests/test_optimiser_frontier_routes.py::TestFrontierSelect::test_select_last_frontier_point",
   "tests/test_optimiser_frontier_materialisation.py::test_save_without_point_saves_the_anchor_not_the_selected_point",
   "tests/test_optimiser_apply.py::TestExecutorRatebook::test_ratebook_apply_rejects_stale_configured_input",
   "tests/test_optimiser_contracts.py::test_real_solve_apply_totals_match_selected_rows",
   "tests/test_optimiser_frontier_materialisation.py::test_apply_explicit_frontier_point_artifact_matches_response_preview",
   "tests/test_optimiser_ratebook_apply_agreement.py::TestRealSolverEndToEnd::test_factor_values_land_on_the_right_rows",
-  "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard::test_heavy_entrypoints_fail_loud_outside_worker_context",
-  "tests/test_optimiser_routes.py::TestApplyLambdasUnit::test_apply_preview_payload_is_capped_with_the_counts",
+  "tests/test_optimiser_solver_service.py::TestSolverWorkerContextGuard::test_heavy_entrypoints_fail_loud_outside_worker_context",
+  "tests/test_optimiser_solver_service.py::TestApplyLambdasUnit::test_apply_preview_payload_is_capped_with_the_counts",
   "tests/test_optimiser_ratebook_choices.py::TestRatebookFrontierPointChoices::test_apply_serves_a_ratebook_points_detail_and_selects_it_with_its_tables",
   "tests/test_optimiser_frontier_materialisation.py::test_frontier_point_artifact_handles_are_capped_oldest_first",
   "tests/test_optimiser_apply_trace_enrichment.py::test_online_enrichment_surfaces_reconciliation_error",
@@ -976,7 +976,7 @@ invariant = "Estimate, solve, frontier, select, save, apply and trace agree in b
 
 [scenarios.evidence]
 commit = "d886cc203"
-command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes_real_library.py::TestEffectiveBoundsContract" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -n 4'
+command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_solver_service.py::TestSolveOnlineUnit" "tests/test_optimiser_ratebook_solve.py::TestRatebookSolve" "tests/test_optimiser_routes_real_library.py::TestEffectiveBoundsContract" "tests/test_optimiser_frontier_routes.py::TestFrontierSelect" "tests/test_optimiser_publish_routes.py::TestSaveResultUnit" "tests/test_optimiser_publish_routes.py::TestSaveArtifactGate" "tests/test_optimiser_publish_routes.py::TestMlflowLogExtended" "tests/test_optimiser_solver_service.py::TestFinalizeSolveResult" "tests/test_optimiser_frontier_routes.py::TestFrontierInSolve" "tests/test_optimiser_solver_service.py::TestSolverWorkerContextGuard" "tests/test_optimiser_solver_service.py::TestApplyLambdasUnit" "tests/test_optimiser_pipeline_execution.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -n 4'
 result = "531 passed in 31.24s; a duplicate ratebook level is refused at apply (READ-06); auto-range's data-input demand is the solve's (tests/test_optimiser_auto_range_stage.py), replacing the removed auto-range-specific seeding"
 
 [[scenarios]]
@@ -1207,7 +1207,7 @@ tests = [
   "tests/test_assistant_session_persistence.py::TestRevival::test_restart_revives_a_session_from_disk",
   "tests/test_assistant_providers.py::TestDatabricksProvider::test_each_lane_sends_its_projection_of_the_production_tools",
   "tests/test_assistant_config.py::TestReadinessMatrix::test_missing_api_key_names_the_env_var",
-  "tests/test_assistant_tools.py::TestReadTools::test_get_node_config_returns_redacted_policy_eligible_config",
+  "tests/test_assistant_tool_executor.py::TestReadTools::test_get_node_config_returns_redacted_policy_eligible_config",
   "tests/test_assistant_ops.py::TestSemanticPlans::test_plan_rejects_polars_code_whose_result_is_discarded",
   "frontend/src/stores/__tests__/useAssistantStore.test.ts::renders a failed terminal event as marker plus error toast",
   "frontend/src/stores/__tests__/useAssistantStore.test.ts::renders a backend cancelled event as a stopped marker without a toast",
@@ -1218,7 +1218,7 @@ invariant = "A turn streams typed events through the real application service wi
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_assistant_routes.py tests/test_assistant_loop.py tests/test_assistant_application.py tests/test_assistant_integration.py tests/test_assistant_session_persistence.py tests/test_assistant_providers.py tests/test_assistant_config.py tests/test_assistant_tools.py tests/test_assistant_ops.py -q -n 4'
+command = 'uv run pytest tests/test_assistant_routes.py tests/test_assistant_loop.py tests/test_assistant_application.py tests/test_assistant_integration.py tests/test_assistant_session_persistence.py tests/test_assistant_providers.py tests/test_assistant_config.py tests/test_assistant_node_schema.py tests/test_assistant_tool_executor.py tests/test_assistant_authoring_tools.py tests/test_assistant_tool_errors.py tests/test_assistant_turn_context.py tests/test_assistant_ops.py -q -n 4'
 result = "1044 passed, 1 skipped in 103.27s (0:01:43); the provider witness is now the per-lane projection test, which replaced the one-projection-for-every-provider test"
 
 [[scenarios]]
@@ -1239,7 +1239,7 @@ tests = [
   "tests/test_deploy.py::TestBundler::test_missing_artifact_raises",
   "tests/test_deploy_config_and_bundle.py::TestArtifactContainmentAndModelContracts::test_local_artifact_escape_is_rejected",
   "tests/test_deploy_config_and_bundle.py::TestSnapshotGenerationLease::test_inline_snapshot_is_packaged_with_its_leased_generation",
-  "tests/test_deploy_internals.py::TestHauteModelLoadContext::test_load_context_parses_manifest",
+  "tests/test_deploy_model_schema.py::TestHauteModelLoadContext::test_load_context_parses_manifest",
   "tests/test_deploy.py::TestScorer::test_score_single_row",
   "tests/test_deploy.py::TestScorer::test_score_multiple_rows",
   "tests/test_deploy_batch_scoring.py::TestGeneratedAppBatchPath::test_single_row_request_never_launches_a_worker",
@@ -1259,7 +1259,7 @@ invariant = "Validate, prune, bundle, load and score succeed for one and many re
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_deploy.py tests/test_deploy_config.py tests/test_deploy_expected_output_validation.py tests/test_deploy_config_and_bundle.py tests/test_deploy_internals.py tests/test_deploy_batch_scoring.py tests/test_deploy_identity_parity.py tests/test_deploy_dispatch.py tests/test_container.py tests/test_deploy_container.py -q -n 4'
+command = 'uv run pytest tests/test_deploy.py tests/test_deploy_config.py tests/test_deploy_expected_output_validation.py tests/test_deploy_config_and_bundle.py tests/test_deploy_model_schema.py tests/test_deploy_score_graph.py tests/test_deploy_score_graph_artifacts.py tests/test_deploy_resolve_config.py tests/test_deploy_mlflow_packaging.py tests/test_deploy_impact_report.py tests/test_deploy_validation.py tests/test_deploy_batch_scoring.py tests/test_deploy_identity_parity.py tests/test_deploy_dispatch.py tests/test_container.py tests/test_deploy_container.py -q -n 4'
 result = "586 passed, 2 skipped in 37.96s"
 
 [[scenarios]]
@@ -1300,19 +1300,19 @@ lane = "backend"
 real = ["job-store", "lifecycle", "isolated-worker"]
 stubbed = []
 tests = [
-  "tests/test_modelling_routes.py::TestTrainEndpoint::test_train_reports_progress",
-  "tests/test_modelling_routes.py::TestTrainBackgroundLaunchFailures::test_launch_background_start_failure_marks_job_error",
-  "tests/test_modelling_routes.py::TestTrainStatusTimeout::test_cancel_training_marks_job_cancelled",
-  "tests/test_modelling_routes.py::TestTrainStatusTimeout::test_timeout_sets_error_with_elapsed",
-  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_start_maps_unexpected_exception_to_error",
-  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_cancel_dispersion_running_then_terminal_noop",
-  "tests/test_modelling_routes.py::TestDispersionErrorPaths::test_dispersion_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it",
-  "tests/test_optimiser_routes.py::TestSolveBackgroundErrors::test_solve_generic_exception",
-  "tests/test_optimiser_routes.py::TestSolveStatusTimeout::test_cancel_solve_marks_job_cancelled",
-  "tests/test_optimiser_routes.py::TestSolveStatusTimeout::test_timeout_sets_error_with_elapsed",
-  "tests/test_optimiser_routes.py::TestEstimateRoute::test_frontier_auto_range_cancel_marks_job_terminal",
-  "tests/test_optimiser_routes.py::TestEstimateRoute::test_frontier_auto_range_status_returns_canonical_job_status",
-  "tests/test_optimiser_routes.py::TestLaunchBackground::test_late_completion_does_not_overwrite_timeout",
+  "tests/test_modelling_train_routes.py::TestTrainEndpoint::test_train_reports_progress",
+  "tests/test_modelling_train_routes.py::TestTrainBackgroundLaunchFailures::test_launch_background_start_failure_marks_job_error",
+  "tests/test_modelling_train_routes.py::TestTrainStatusTimeout::test_cancel_training_marks_job_cancelled",
+  "tests/test_modelling_train_routes.py::TestTrainStatusTimeout::test_timeout_sets_error_with_elapsed",
+  "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths::test_start_maps_unexpected_exception_to_error",
+  "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths::test_cancel_dispersion_running_then_terminal_noop",
+  "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths::test_dispersion_timeout_marks_the_job_timed_out_and_late_completion_cannot_revive_it",
+  "tests/test_optimiser_solve_routes.py::TestSolveBackgroundErrors::test_solve_generic_exception",
+  "tests/test_optimiser_solve_routes.py::TestSolveStatusTimeout::test_cancel_solve_marks_job_cancelled",
+  "tests/test_optimiser_solve_routes.py::TestSolveStatusTimeout::test_timeout_sets_error_with_elapsed",
+  "tests/test_optimiser_estimate_routes.py::TestEstimateRoute::test_frontier_auto_range_cancel_marks_job_terminal",
+  "tests/test_optimiser_estimate_routes.py::TestEstimateRoute::test_frontier_auto_range_status_returns_canonical_job_status",
+  "tests/test_optimiser_solve_routes.py::TestLaunchBackground::test_late_completion_does_not_overwrite_timeout",
   "tests/test_node_data_routes.py::test_a_different_signature_supersedes_the_running_build",
   "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing",
   "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing",
@@ -1327,13 +1327,13 @@ tests = [
   "tests/test_worker_protocol.py::test_timeout_and_cancel_clean_up_process",
   "tests/test_worker_protocol.py::test_worker_crash_is_contained_and_runs_parent_cleanup",
   "tests/test_artifact_housekeeping.py::test_reaper_removes_only_marked_owned_stale_direct_child",
-  "tests/test_optimiser_routes.py::TestSaveArtifactGate::test_save_failure_then_retry_succeeds_without_resolve",
+  "tests/test_optimiser_publish_routes.py::TestSaveArtifactGate::test_save_failure_then_retry_succeeds_without_resolve",
 ]
 invariant = "Every job family that owns a background lifecycle (training, dispersion, optimiser solve and auto-range, node-data build and profile, input-cache build) reaches its running, completed, error, cancelled and timed-out terminal states through the shared lifecycle; a late completion or progress report never revives a terminal job; single-flight keys, child processes, cache admission and marker-owned artifacts release exactly once; and a retry after a failure succeeds."
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_job_lifecycle.py tests/test_job_store.py tests/test_worker_protocol.py tests/test_artifact_housekeeping.py tests/test_input_cache_route.py "tests/test_modelling_routes.py::TestTrainStatusTimeout" "tests/test_modelling_routes.py::TestDispersionErrorPaths" "tests/test_optimiser_routes.py::TestSolveStatusTimeout" "tests/test_optimiser_routes.py::TestLaunchBackground" "tests/test_node_data_routes.py::test_a_different_signature_supersedes_the_running_build" "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing" "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing" -q -n 4'
+command = 'uv run pytest tests/test_job_lifecycle.py tests/test_job_store.py tests/test_worker_protocol.py tests/test_artifact_housekeeping.py tests/test_input_cache_route.py "tests/test_modelling_train_routes.py::TestTrainStatusTimeout" "tests/test_modelling_dispersion_routes.py::TestDispersionErrorPaths" "tests/test_optimiser_solve_routes.py::TestSolveStatusTimeout" "tests/test_optimiser_solve_routes.py::TestLaunchBackground" "tests/test_node_data_routes.py::test_a_different_signature_supersedes_the_running_build" "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing" "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing" -q -n 4'
 result = "447 passed in 27.08s"
 
 [[scenarios]]

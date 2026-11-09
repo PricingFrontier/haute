@@ -3,7 +3,7 @@
 These tests pin the public contract of ``compute_prepared_plan(...).needed_by_node`` so the
 implementation can be optimised from an O(edges × contract
 lookups) backward pass into a single forward-pass over sorted nodes that
-reuses a per-node cached ``get_column_contract`` result (review item #87
+reuses a per-node cached ``get_node_contract`` result (review item #87
 in ``docs/CODEBASE_REVIEW.md``).
 
 The suite has three layers:
@@ -29,7 +29,7 @@ from collections.abc import Callable
 
 import pytest
 
-from haute._contracts import get_column_contract
+from haute._contracts import get_node_contract
 from haute._types import (
     GraphNode,
     NodeData,
@@ -158,10 +158,10 @@ def _reference_backward_pass(
             if child_needed is None:
                 needed_by_children = None
                 break
-            produced, referenced = get_column_contract(
+            produced, referenced = get_node_contract(
                 child_node.data.nodeType,
                 child_node.data.config,
-            )
+            ).to_tuple()
             if produced is None or referenced is None:
                 needed_by_children = None
                 break
@@ -180,7 +180,7 @@ def _reference_forward_pass(
 
     Key optimisations over the backward transcription:
 
-    * ``get_column_contract`` is invoked **once per node**, not once
+    * ``get_node_contract`` is invoked **once per node**, not once
       per incoming edge.  For a node with ``k`` parents this drops
       ``k-1`` redundant lookups.
     * The node-level contribution ``(needed[n] - produced_n) |
@@ -235,10 +235,10 @@ def _reference_forward_pass(
         if my_needed is None:
             contribution[nid] = None
             continue
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             node.data.nodeType,
             node.data.config,
-        )
+        ).to_tuple()
         if produced is None or referenced is None:
             contribution[nid] = None
         else:
@@ -1509,7 +1509,7 @@ def _build_realistic_200_node_graph() -> tuple[
     """Build a 200-node graph resembling a production pricing pipeline.
 
     The baseline algorithm's quadratic behaviour comes from calling
-    ``get_column_contract(child)`` once **per incoming edge** of every
+    ``get_node_contract(child)`` once **per incoming edge** of every
     child node.  A node with in-degree ``k`` has its contract recomputed
     ``k`` times — ``k-1`` of those are wasted.  To expose that cost the
     benchmark uses a dense bipartite "banding bank → aggregator bank"
@@ -1631,7 +1631,7 @@ def _count_contract_lookups(
     fn: Callable[[], dict[str, set[str] | None]],
 ) -> tuple[int, dict[str, set[str] | None]]:
     """Run *fn* while counting calls to that module's contract resolver."""
-    name = "get_node_contract" if hasattr(module, "get_node_contract") else "get_column_contract"
+    name = "get_node_contract"
     original = getattr(module, name)
     calls = 0
 

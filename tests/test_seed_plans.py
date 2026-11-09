@@ -1069,9 +1069,6 @@ def test_plan_owns_what_the_run_registers(project: Path, store: NodeSnapshotStor
     plan = open_resolved_seed_plan(_request(graph, required={"T": ["a"]}), store=store)
     assert plan.fingerprint == plan.decision.fingerprint
 
-    artifact = store.stage_node_output(identity)
-    pl.DataFrame({"a": [1]}).write_parquet(artifact.part_path(0))
-    plan.register_artifact(artifact)
     published = store.stage_node_output(identity)
     pl.DataFrame({"a": [1]}).write_parquet(published.part_path(0))
     publication = store.publish_node_output(
@@ -1093,7 +1090,6 @@ def test_plan_owns_what_the_run_registers(project: Path, store: NodeSnapshotStor
     assert _generation_dir(store, identity, generation).is_dir()
     plan.close()
     plan.close()
-    assert not artifact.directory.exists()
     assert not _generation_dir(store, identity, generation).exists()
 
 

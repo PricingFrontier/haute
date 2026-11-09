@@ -1,4 +1,4 @@
-"""Advanced path traversal tests covering gaps beyond test_path_traversal_fixes.py.
+"""Advanced path traversal tests covering gaps beyond test_route_path_traversal.py.
 
 Each test class targets a specific module or attack vector:
 
@@ -139,24 +139,6 @@ class TestConfigPathForNodeTraversal:
 
         with pytest.raises(ValueError, match="must not contain"):
             config_path_for_node(NodeType.BANDING, "../../pwned")
-
-    def test_remove_config_file_deletes_outside_config_dir(self, tmp_path: Path):
-        """remove_config_file with a crafted node_name is now blocked.
-
-        The fix: config_path_for_node rejects names with '..' so
-        remove_config_file returns False without deleting anything.
-        """
-        from haute._config_io import remove_config_file
-        from haute._types import NodeType
-
-        # Place a victim file at project root
-        victim = tmp_path / "important.json"
-        victim.write_text(json.dumps({"important": True}))
-
-        # Craft node_name to target ../../important — should be blocked
-        result = remove_config_file(NodeType.BANDING, "../../important", base_dir=tmp_path)
-        assert result is False, "remove_config_file should return False for invalid names"
-        assert victim.exists(), "Victim file should not have been deleted"
 
 
 # =========================================================================
@@ -628,68 +610,13 @@ class TestVeryLongPaths:
 
 
 # =========================================================================
-# 8. find_config_by_func_name -- func_name with traversal
-# =========================================================================
-
-
-class TestFindConfigByFuncNameTraversal:
-    """find_config_by_func_name scans config/<folder>/<func_name>.json.
-
-    If func_name contains path separators, it could match files outside
-    the expected directory.
-
-    Production failure: func_name='../../credentials' reads a credentials
-    file through the config recovery path.
-    """
-
-    def test_func_name_with_dotdot_escapes(self, tmp_path: Path):
-        """func_name with '..' should not read files above config/."""
-        from haute._config_io import find_config_by_func_name
-
-        # Place a "secret" file that a traversal would reach
-        secret = tmp_path / "secret.json"
-        secret.write_text(json.dumps({"leaked": True}))
-
-        # Create the config directory structure
-        (tmp_path / "config" / "banding").mkdir(parents=True)
-
-        # func_name that would resolve to ../../secret.json from config/banding/
-        result = find_config_by_func_name("../../secret", base_dir=tmp_path)
-        # On some OS/filesystem combos, the traversal might work
-        if result is not None:
-            # Vulnerability confirmed: traversal worked
-            config_data, _ = result
-            assert config_data.get("leaked") is True, (
-                "find_config_by_func_name followed a '..' traversal"
-            )
-
-    def test_func_name_with_slash_reads_sibling_folder(self, tmp_path: Path):
-        """func_name with '/' could read from a sibling config folder."""
-        from haute._config_io import find_config_by_func_name
-
-        # Set up config directories
-        (tmp_path / "config" / "banding").mkdir(parents=True)
-        (tmp_path / "config" / "model_scoring").mkdir(parents=True)
-
-        # Place a config in model_scoring
-        target = tmp_path / "config" / "model_scoring" / "victim.json"
-        target.write_text(json.dumps({"cross_folder": True}))
-
-        # func_name that crosses into model_scoring from banding
-        result = find_config_by_func_name("../model_scoring/victim", base_dir=tmp_path)
-        if result is not None:
-            config_data, _ = result
-            assert config_data.get("cross_folder") is True
-
-
-# =========================================================================
 # 9. validate_project_path edge cases
 # =========================================================================
 
 
 class TestValidateProjectPathEdgeCases:
     """Additional edge cases for _sandbox.validate_project_path beyond
-    what test_path_traversal_fixes.py covers.
+    what test_route_path_traversal.py covers.
     """
 
     def test_empty_path_resolves_to_cwd(self, tmp_path: Path):

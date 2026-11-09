@@ -117,7 +117,7 @@ _ACCESSOR_CASES = [
         1000,
     ),
     (
-        "haute.routes._train_service",
+        "haute.routes._training_worker",
         "_max_train_loss_history",
         "HAUTE_TRAIN_LOSS_HISTORY_LIMIT",
         "10",

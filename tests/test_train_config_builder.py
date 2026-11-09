@@ -1,7 +1,7 @@
 """Unit tests for haute.modelling._train_config — the single config→kwargs builder.
 
 This module is the single source of truth shared by live training
-(``routes/_train_service``) and script export (``modelling/_export``): both
+(``routes/_training_lifecycle``) and script export (``modelling/_export``): both
 consumers must derive TrainingJob kwargs from it so they can never drift
 (4b.1 / 4b.2).
 """

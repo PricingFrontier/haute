@@ -464,7 +464,7 @@ the app's own origin check refuses another site's writes. Its tests are in
   (`TestJoblibFindClassWeakerThanPickle`, `TestPickleAllowlistDotAnchoring`,
   `TestJoblibMonkeyPatchThreadSafety`) and the pickle classes pin the restricted
   unpickler.
-- `tests/test_sandbox_coverage_gaps.py` — targets the *accept* arms of
+- `tests/test_sandbox.py` — targets the *accept* arms of
   `_RestrictedUnpickler.find_class`/the restricted joblib subclass specifically (the exhaustive
   suite above concentrates on the *reject* arms): exact 2-tuple accepts for both
   the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, a hidden
@@ -488,7 +488,7 @@ the app's own origin check refuses another site's writes. Its tests are in
   contents (including the explicit "stable-layer JSON must NOT be ignored"
   assertion) and exercises `ensure_gitignore_guards`'s four behaviors: create,
   append-missing-only, no-op-when-complete, and non-UTF-8 tolerance.
-- `tests/test_security_gaps.py::TestW8bLocalSessionProtection` — end-to-end
+- `tests/test_security_hardening.py::TestW8bLocalSessionProtection` — end-to-end
   `TestClient`/`websocket_connect` coverage of `_local_security.py` through the
   real FastAPI app: missing/empty token, foreign Origin, non-ASCII token bytes,
   malformed IPv6 Host/Origin variants, and a same-file check that a legitimate
@@ -516,7 +516,7 @@ the app's own origin check refuses another site's writes. Its tests are in
 - `tests/test_path_traversal_advanced.py` — adversarial config/model path resolution:
   symlink escapes, Windows mixed separators, null bytes, overlong paths,
   `config_path_for_node`, function-name lookup, and project-path edge cases.
-- `tests/test_path_traversal_fixes.py` — route/config traversal regressions for
+- `tests/test_route_path_traversal.py` — route/config traversal regressions for
   optimiser save, submodel lookup/create/dissolve, dissolve-sidecar files, and the
   containment check.
 - `tests/test_path_containment.py` — the containment matrix: for every caller in

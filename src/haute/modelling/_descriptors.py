@@ -817,25 +817,6 @@ def project_refit_params(
     return projected
 
 
-def refit_descriptor(final_params: Mapping[str, Any]) -> AlgorithmDescriptor:
-    """The round-refitting family whose round key a final-fit param set carries.
-
-    :func:`project_refit_params` writes exactly one family's round key and drops
-    every other spelling, so the key identifies the family unambiguously.
-    """
-    matches = [
-        descriptor
-        for descriptor in DESCRIPTORS.values()
-        if descriptor.refit_policy == "validation_weighted_rounds"
-        and descriptor.round_key in final_params
-    ]
-    if len(matches) != 1:
-        raise HauteValidationError(
-            "final-fit parameters must carry exactly one family's refit round key"
-        )
-    return matches[0]
-
-
 def tuning_family(final_params: Mapping[str, Any]) -> AlgorithmDescriptor:
     """The tunable family a study's final parameters belong to.
 

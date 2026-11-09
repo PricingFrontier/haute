@@ -680,10 +680,6 @@ class ProjectionPlan:
         """Return the demand for exactly *edge*, or ``None`` when absent/opaque."""
         return self.edge_demands.get(ProjectionEdgeKey.from_edge(edge))
 
-    def reason_for_edge(self, edge: GraphEdge) -> ProjectionReason | None:
-        """Return the diagnostic reason for exactly *edge*."""
-        return self.diagnostics.edge_reasons.get(ProjectionEdgeKey.from_edge(edge))
-
     def _node_strategy(self, node_id: str) -> str:
         reason = self.diagnostics.node_reasons.get(
             node_id,
@@ -1853,10 +1849,6 @@ def _build_preamble_facts(preamble: str = "") -> _PreambleFacts:
         shadowed_builtins=_shadowed_builtins(tree),
         selector_aliases=preamble_selector_aliases(preamble),
     )
-
-
-def _preamble_imports(preamble: str) -> frozenset[str]:
-    return _build_preamble_facts(preamble).imports
 
 
 def _shadowed_builtins(code_tree: ast.AST, preamble_tree: ast.AST | None = None) -> frozenset[str]:

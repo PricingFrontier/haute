@@ -501,7 +501,6 @@ def render_horizontal_bars_svg(
 def render_ave_feature_svg(
     feature_name: str,
     bins: list[dict[str, Any]],
-    is_categorical: bool,
 ) -> str:
     """Dual-axis AvE chart for a single feature."""
     if not bins:

@@ -150,13 +150,11 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "docs",
-    "engineering-quality",
     "polars-2",
     "polars-node-clarity",
     "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
-    "codebase-review-2026-09-23.md",
     "codebase-review-2026-10-25.md",
     "codebase-review-2026-10-28.md",
     "codebase-review-2026-10-31.md",

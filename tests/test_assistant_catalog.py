@@ -43,6 +43,7 @@ from haute.assistant._wire_ops import (
     MAX_TOOL_CONTEXT_BYTES,
     MAX_TOOL_PAYLOAD_BYTES,
 )
+from tests._process_state import clear_capability_manifest_cache
 
 
 class TestNodeDescriptors:
@@ -164,7 +165,7 @@ class TestCapabilityManifest:
     def test_manifest_cache_reuses_identity_and_invalidates_on_installed_capabilities(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        _catalog._clear_manifest_cache()
+        clear_capability_manifest_cache()
         first = capability_manifest()
         second = capability_manifest()
         assert first is second

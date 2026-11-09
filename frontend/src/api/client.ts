@@ -126,7 +126,6 @@ import type {
   UtilityWriteResult,
   GitMilestoneFork,
   GitPushRejection,
-  SessionStatusResponse,
 } from "./types"
 import {
   explorePivotMembersFromContract,
@@ -641,14 +640,6 @@ export async function postRawStream(
 
 function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
   return request<T>(url, { method: "DELETE", ...options })
-}
-
-export function checkHauteSession(options: ApiClientOptions = {}): Promise<SessionStatusResponse> {
-  return request<unknown>("/api/session", {
-    ...options,
-    timeout: options.timeout ?? 5_000,
-    retry: options.retry ?? { maxRetries: 0, baseDelayMs: 100 },
-  }).then(async (data) => expectGeneratedContract("SessionStatusResponse", (await sessionValidators()).validateSessionStatusResponse, data))
 }
 
 // ---------------------------------------------------------------------------

@@ -250,14 +250,6 @@ def get_node_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
     return result if isinstance(result, Contract) else Contract.from_tuple(result)
 
 
-def get_column_contract(
-    node_type: NodeType,
-    config: dict[str, Any],
-) -> ColumnContract:
-    """Return the column contract for a node type as its tuple form."""
-    return get_node_contract(node_type, config).to_tuple()
-
-
 def declared_contract_json(value: Any) -> str | dict[str, Any]:
     """A user-declared contract in the JSON form a config holds.
 

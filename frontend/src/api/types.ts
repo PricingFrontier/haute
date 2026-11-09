@@ -15,11 +15,7 @@ import type {
   ExplorePivotResult as GeneratedExplorePivotResult,
   ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
   ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
-  GitStorageBind as GeneratedGitStorageBind,
-  GitStorageSync as GeneratedGitStorageSync,
-  GitWorkingBranchResponse as GeneratedGitWorkingBranchResponse,
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
-  MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
   CreateNodeInstanceResponse as GeneratedCreateNodeInstanceResponse,
   CreateSubmodelResponse as GeneratedCreateSubmodelResponse,
@@ -33,7 +29,6 @@ import type {
   WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
-  OptimiserSolveResponse as GeneratedOptimiserSolveResponse,
   OptimiserSolveResult as GeneratedOptimiserSolveResult,
   OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
   TrainEstimateResponse as GeneratedTrainEstimateResponse,
@@ -50,8 +45,7 @@ import type {
   ExecutionStrategyProvenancePayload as GeneratedExecutionStrategyProvenance,
   ExecutionStrategyReasonPayload as GeneratedExecutionStrategyReason,
 } from "../generated/api-contracts.generated"
-export type { BackendNodeStatus, ColumnInfo, NodeStatus, PipelineGraph } from "../types/node"
-export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
+export type { PipelineGraph } from "../types/node"
 
 /** A prospective node to name; the editor always sends its source handles. */
 export type EditorIdentityRequestNode = GeneratedEditorIdentityRequestNode & { source_handles: string[] }
@@ -68,19 +62,12 @@ export interface EditorIdentityBatchRequest {
 export type {
   EditorIdentitiesResponse as EditorIdentityBatchResponse,
   EditorIdentityResponseNode as EditorNodeIdentity,
-  PipelineSettingsAutomatic,
   PipelineSettingsResponse,
   PipelineSettingsValues,
   PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"
 export type ExecutionMemoryPressureEvent = ExecutionMemoryPressureEventPayload
-
-export type ExecutionStrategyStatus = GeneratedExecutionStrategyDiagnostic["status"]
-export type ExecutionStrategy = GeneratedExecutionStrategyDiagnostic["strategy"]
-export type ExecutionStrategyProfile = GeneratedExecutionStrategyDiagnostic["profile"]
-export type ExecutionStrategyBoundedness = GeneratedExecutionStrategyDiagnostic["boundedness"]
-export type ExecutionStrategyDetailState = GeneratedExecutionStrategyDiagnostic["detail_state"]
 
 export type ExecutionStrategyBoundary = GeneratedExecutionStrategyBoundary
 
@@ -125,7 +112,6 @@ export type {
   NodeMemoryInfo as NodeMemory,
   NodeTimingInfo as NodeTiming,
   JsonCacheInferResponse,
-  PortPreview,
   PreviewInputsResponse,
   PreviewProgressResponse,
   PreviewSeedPlanEntry,
@@ -189,7 +175,6 @@ export type {
   ChartWidget,
   CollectionWidget,
   ColumnLook,
-  ColumnName,
   Condition,
   ConditionGroup,
   CsvExport,
@@ -202,9 +187,7 @@ export type {
   FormSpec,
   HeadingWidget,
   ImportWidget,
-  OptionsSource,
   Page,
-  QueryParameter,
   RowCount,
   RowsCondition,
   RowTest,
@@ -216,7 +199,6 @@ export type {
   SqlExport,
   SqlImport,
   TableInputWidget,
-  TableName,
   Theme,
   WorkbenchAppFormResponse,
   WorkbenchAppPeopleResponse,
@@ -238,7 +220,6 @@ export type {
   WorkbenchAppQuotesResponse,
   WorkbenchAppRelatedQuote,
   WorkbenchAppReleaseResponse,
-  WorkbenchCatalogueColumn,
   WorkbenchCatalogueTable,
   WorkbenchColumn,
   WorkbenchFormResponse,
@@ -251,13 +232,11 @@ export type {
   WorkbenchStoreDifference,
   WorkbenchStoreExtra,
   WorkbenchStoreRename,
-  WorkbenchStoreSqlEnvironment,
   WorkbenchStoreSqlResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
   WorkbenchTestQuoteMove,
   WorkbenchTestQuoteOpenResponse,
-  WorkbenchTestQuoteRefusal,
   WorkbenchTestQuoteRunResponse,
   WorkbenchTestQuotesAcceptResponse,
   WorkbenchTestQuotesResponse,
@@ -275,7 +254,6 @@ export type {
   CacheClearResponse,
   CacheNodeEntry,
   CacheNodesResponse,
-  CacheOwnerEntry,
   CacheUsageResponse,
 } from "../generated/api-contracts.generated"
 
@@ -293,11 +271,8 @@ export type {
 export type {
   InputCacheBuildResponse,
   InputCacheCancelResponse,
-  InputCacheGenerationPayload as InputCacheGeneration,
   InputCacheJobStatusResponse,
-  InputCacheProgress,
   InputCacheSnapshotStatusResponse as InputCacheSnapshotResponse,
-  InputCacheTableStatus,
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
@@ -329,7 +304,6 @@ export type GraphPayload = {
 export type {
   DispersionEstimateResponse as DispersionEstimateStart,
   DispersionEstimateStatusResponse as DispersionEstimateStatus,
-  EvaluationDateRangePayload as EvaluationDateRange,
   EvaluationPreviewPayload as EvaluationPreview,
   GpuFamilyStatus,
   LogExperimentResponse,
@@ -350,8 +324,6 @@ export type {
 
 /** The three tracking destinations; a request's `""` means the local folder. */
 export type MlflowDestinationKey = GeneratedMlflowDestinationEntry["key"]
-
-export type MlflowProbeCategory = GeneratedMlflowTestConnectionResponse["category"]
 
 export type {
   MlflowSettingsUpdateRequest,
@@ -562,10 +534,8 @@ export interface TBoostTables {
 
 // The training contracts are generated (scripts/generate_api_contracts.py).
 export type {
-  EvaluationFitPayload as EvaluationFit,
   EvaluationMetricSummaryPayload as EvaluationMetricSummary,
   EvaluationReportPayload as EvaluationReport,
-  EvaluationSummaryPayload as EvaluationSummary,
   MlflowExportReceipt,
   ModelFileExportReceipt,
   TrainExportReceipts,
@@ -573,7 +543,6 @@ export type {
   TrainShapCurveFeature,
   TrainShapCurvePoint,
   TuningReportPayload as TuningReport,
-  TuningTrialPayload as TuningTrial,
 } from "../generated/api-contracts.generated"
 
 /**
@@ -620,19 +589,12 @@ export type TrainStatusResponse = Omit<GeneratedTrainStatusResponse, keyof Train
 // Explore types
 // ---------------------------------------------------------------------------
 
-/** Per-column statistics surfaced in the Schema overview card. */
-export type ExploreColumnKind = "Numeric" | "Text" | "Temporal" | "Boolean" | "Nested" | "Other"
-
 // The profile's column and overview statistics are generated with the node-data
 // responses that carry them.
 export type {
-  ExploreCategoricalColumnProfile,
   ExploreColumnStat,
-  ExploreDataQualityIssue,
-  ExploreDataQualitySummary,
-  ExploreDistinctValueCount,
+  
   ExploreHistogram,
-  ExploreHistogramBin,
   ExploreOverviewSummary,
 } from "../generated/api-contracts.generated"
 
@@ -662,35 +624,20 @@ export type NodeDataRetention = "pinned" | "automatic"
 export type {
   BandingHistogramBin,
   BandingStatsResponse,
-  BandingValueCount,
   NodeDataClearResponse,
   NodeDataGeneration,
-  NodeDataJob,
-  NodeDataPointRef,
+  
   NodeDataPointResponse,
   NodeDataProfile,
   NodeDataProfileResponse,
   NodeDataRunResponse,
-  RatingLevelColumn,
-  RatingLevelValue,
+  
   RatingLevelsResponse,
 } from "../generated/api-contracts.generated"
 
 export type NodeDataStatusResponse = Omit<GeneratedNodeDataStatusResponse, "execution_metrics"> & {
   execution_metrics: ExecutionMetrics | null
 }
-
-export type ExplorePivotMemberKind =
-  | "null"
-  | "string"
-  | "boolean"
-  | "integer"
-  | "float"
-  | "nan"
-  | "date"
-  | "datetime"
-  | "time"
-  | "decimal"
 
 export type ExplorePivotMemberKey =
   | { kind: "null" | "nan"; value: null }
@@ -699,9 +646,7 @@ export type ExplorePivotMemberKey =
   | { kind: "float"; value: number }
 
 export type {
-  ExplorePivotCell,
   ExplorePivotFailure,
-  ExplorePivotValueIdentity,
 } from "../generated/api-contracts.generated"
 
 // The pivot responses are generated; the UI narrows each member key to the
@@ -766,24 +711,19 @@ export type {
   OptimiserRatebookCdTraceRecord,
   OptimiserRatebookFrontierPoint,
   OptimiserEstimateResponse as OptimiserEstimate,
-  OptimiserFrontierAutoRangeResponse as FrontierAutoRangeResponse,
   OptimiserFrontierAutoRangeStartResponse as FrontierAutoRangeStartResponse,
   OptimiserFrontierPointSummary as FrontierPointSummary,
-  OptimiserFrontierRange as FrontierRange,
   OptimiserFrontierSelectResponse as FrontierSelectResponse,
   OptimiserHistoryEntry,
   OptimiserMlflowLogResponse as MlflowLogResponse,
   OptimiserSaveResponse as SaveOptimiserResponse,
-  OptimiserSegmentFigures,
-  OptimiserSegmentIndexKey,
+  
   OptimiserSegmentIndexResponse,
   OptimiserSegmentKey,
   OptimiserSegmentRow,
   OptimiserSegmentsResponse,
   OptimiserSolveResponse,
 } from "../generated/api-contracts.generated"
-
-export type SolveOptimiserResponse = GeneratedOptimiserSolveResponse
 
 /** The Quotes explorer's filters (OPT-V12), combined with AND, as the apply route reads them. */
 export type OptimiserQuoteFilters = Required<GeneratedOptimiserQuoteFilters>
@@ -863,13 +803,9 @@ export type OptimiserStatusResponse = Omit<
 
 // Generated from the backend response models (scripts/generate_api_contracts.py).
 export type {
-  CatalogItem as DatabricksCatalog,
   CatalogListResponse as DatabricksCatalogsResponse,
-  SchemaItem as DatabricksSchema,
   SchemaListResponse as DatabricksSchemasResponse,
-  TableItem as DatabricksTable,
   TableListResponse as DatabricksTablesResponse,
-  WarehouseItem as DatabricksWarehouse,
   WarehouseListResponse as DatabricksWarehousesResponse,
 } from "../generated/api-contracts.generated"
 
@@ -889,7 +825,6 @@ export type {
   ProjectFileEntry,
   ProjectFileWriteResponse,
   ProjectFolderResponse,
-  SessionStatusResponse,
 } from "../generated/api-contracts.generated"
 
 /** The Files panel's two places: the pipeline folder's versioned files/, and local data/ and outputs/. */
@@ -947,25 +882,13 @@ export type {
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStorageBind,
-  GitStorageClaim,
-  GitStorageSync,
+  
   GitUndeleteResponse,
   GitWorkingBranchesResponse,
   GitWorkingBranchResponse,
   GitUpstreamStatusResponse as GitUpstreamStatus,
   SaveCapture,
 } from "../generated/api-contracts.generated"
-
-export type WorkingBranchState = GeneratedGitWorkingBranchResponse["state"]
-
-/** Whether this deployment can durably remember a bound remote at all (§ hosted storage). */
-export type StorageState = GeneratedGitWorkingBranchResponse["storage"]
-
-export type SyncState = GeneratedGitStorageSync["state"]
-
-export type SyncFailure = NonNullable<GeneratedGitStorageSync["failure"]>
-
-export type BindState = GeneratedGitStorageBind["state"]
 
 // The 409 advisory bodies of a diverged push and a forking milestone.
 export type { GitMilestoneFork, GitPushRejection } from "../generated/api-contracts.generated"

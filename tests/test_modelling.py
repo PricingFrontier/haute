@@ -1,8 +1,19 @@
-"""Tests for haute.modelling — TrainingJob, algorithms, metrics, splits."""
+"""Tests for haute.modelling — TrainingJob, algorithms, metrics, splits.
+
+Covers the CatBoost and GLM algorithms (pool building, loss resolution, fit,
+predict, importance, SHAP, GPU iteration and evals-result paths, save/load) and
+the TrainingJob stages (load, validate, derive, split, metrics, artifacts,
+MLflow logging, memory readings).
+"""
 
 from __future__ import annotations
 
+import sys
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -1523,3 +1534,2195 @@ class TestSHAP:
         shap_features = {s["feature"] for s in result.shap_summary}
         assert shap_features == {"x1", "x2"}
         assert len(result.feature_importance_loss) == 2
+
+
+_RANDOM_EVALUATION: dict[str, object] = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "test": {"size": 0.2},
+    "validation": {"method": "none"},
+}
+
+
+def _three_round_training_params(**overrides: object) -> dict[str, object]:
+    """Cheap-but-real CatBoost settings for TrainingJob coverage paths."""
+    params: dict[str, object] = {"iterations": 3, "depth": 2}
+    params.update(overrides)
+    return params
+
+
+# ---------------------------------------------------------------------------
+# _get_rss_mb — platform-specific branches
+# ---------------------------------------------------------------------------
+
+
+class TestGetRssMb:
+    """Verify _get_rss_mb reads through the psutil-backed process probe."""
+
+    def test_returns_positive_float(self):
+        from haute.modelling._algorithms import _get_rss_mb
+
+        result = _get_rss_mb()
+        assert isinstance(result, float)
+        assert result > 0.0
+
+    def test_returns_zero_when_probe_is_unavailable(self, monkeypatch: pytest.MonkeyPatch):
+        from haute.modelling._algorithms import _get_rss_mb
+
+        monkeypatch.setattr("haute.modelling._algorithms.current_process_rss_bytes", lambda: None)
+        assert _get_rss_mb() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _get_available_mb
+# ---------------------------------------------------------------------------
+
+
+class TestGetAvailableMb:
+    def test_delegates_to_available_ram_bytes(self):
+        from haute.modelling._algorithms import _get_available_mb
+
+        with patch(
+            "haute.modelling._algorithms.available_ram_bytes", return_value=1024 * 1024 * 512
+        ):
+            result = _get_available_mb()
+        assert result == pytest.approx(512.0, rel=1e-6)
+
+    def test_returns_float(self):
+        from haute.modelling._algorithms import _get_available_mb
+
+        with patch(
+            "haute.modelling._algorithms.available_ram_bytes",
+            return_value=1024 * 1024 * 1024,
+        ):
+            result = _get_available_mb()
+        assert isinstance(result, float)
+        assert result == pytest.approx(1024.0, rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# _CatBoostProgressCallback
+# ---------------------------------------------------------------------------
+
+
+class TestCatBoostProgressCallback:
+    def test_after_iteration_with_metrics(self):
+        from haute.modelling._algorithms import _CatBoostProgressCallback
+
+        loss_history: list[dict[str, float]] = []
+        calls: list[tuple] = []
+
+        def on_iter(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
+            calls.append((iteration, total, metrics, row))
+
+        cb = _CatBoostProgressCallback(on_iter, 100, loss_history)
+
+        # Match CatBoost's one-based completed-iteration callback contract.
+        info = SimpleNamespace(
+            iteration=1,
+            metrics={
+                "learn": {"RMSE": [0.5]},
+                "validation": {"RMSE": [0.6]},
+            },
+        )
+        result = cb.after_iteration(info)
+        assert result is True
+        assert len(calls) == 1
+        # The readout keeps CatBoost's names; the history row is the prefixed one.
+        assert calls[0] == (
+            1,
+            100,
+            {"RMSE": 0.5, "validation_RMSE": 0.6},
+            {"iteration": 1.0, "train_RMSE": 0.5, "eval_RMSE": 0.6},
+        )
+        assert loss_history == [calls[0][3]]
+
+    def test_after_iteration_without_callback(self):
+        from haute.modelling._algorithms import _CatBoostProgressCallback
+
+        loss_history: list[dict[str, float]] = []
+        cb = _CatBoostProgressCallback(None, 10, loss_history)
+
+        info = SimpleNamespace(iteration=1, metrics={})
+        result = cb.after_iteration(info)
+        assert result is True
+        assert len(loss_history) == 1
+
+    def test_empty_metrics_dict(self):
+        from haute.modelling._algorithms import _CatBoostProgressCallback
+
+        loss_history: list[dict[str, float]] = []
+        cb = _CatBoostProgressCallback(None, 10, loss_history)
+
+        info = SimpleNamespace(iteration=5, metrics=None)
+        result = cb.after_iteration(info)
+        assert result is True
+        assert loss_history[0]["iteration"] == 5.0
+
+    def test_empty_values_list(self):
+        """Metric values list is empty — should not crash."""
+        from haute.modelling._algorithms import _CatBoostProgressCallback
+
+        loss_history: list[dict[str, float]] = []
+        cb = _CatBoostProgressCallback(None, 10, loss_history)
+
+        info = SimpleNamespace(iteration=1, metrics={"learn": {"RMSE": []}})
+        cb.after_iteration(info)
+        assert "train_RMSE" not in loss_history[0]
+
+    def test_logging_frequency(self):
+        """Memory checkpoint is logged for iterations 1-5 and every 50th."""
+        from haute.modelling._algorithms import _CatBoostProgressCallback
+
+        loss_history: list[dict[str, float]] = []
+        cb = _CatBoostProgressCallback(None, 200, loss_history)
+
+        checkpoints: list[str] = []
+        with patch(
+            "haute.modelling._algorithms._mem_checkpoint",
+            side_effect=lambda label: checkpoints.append(label),
+        ):
+            for i in range(1, 201):
+                info = SimpleNamespace(iteration=i, metrics=None)
+                cb.after_iteration(info)
+
+        # Iterations 1-5 and every 50th (50,100,150,200)
+        assert len(checkpoints) == 9  # 5 + 4
+
+
+# ---------------------------------------------------------------------------
+# _build_pool
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPool:
+    def test_basic_pool_creation(self):
+        """Test _build_pool with numeric features only."""
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "f2": [4.0, 5.0, 6.0], "y": [0.0, 1.0, 0.0]})
+        pool = _build_pool(df, ["f1", "f2"], [], target="y")
+        assert pool.num_row() == 3
+
+    def test_pool_with_categorical(self):
+        """Test _build_pool with categorical features."""
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "cat": ["a", "b", "c"], "y": [0.0, 1.0, 0.0]})
+        pool = _build_pool(df, ["f1", "cat"], ["cat"], target="y")
+        assert pool.num_row() == 3
+
+    def test_pool_with_weight_and_offset(self):
+        """Weight and offset are extracted from df; a log link logs the exposure."""
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame(
+            {
+                "f1": [1.0, 2.0, 3.0],
+                "y": [0.0, 1.0, 0.0],
+                "w": [1.0, 2.0, 1.0],
+                "off": [0.5, 1.0, 2.0],
+            }
+        )
+        log_pool = _build_pool(
+            df, ["f1"], [], target="y", weight="w", offset="off", offset_link="log"
+        )
+        identity_pool = _build_pool(
+            df, ["f1"], [], target="y", weight="w", offset="off", offset_link="identity"
+        )
+        assert log_pool.num_row() == 3
+        np.testing.assert_allclose(log_pool.get_baseline().ravel(), np.log([0.5, 1.0, 2.0]))
+        np.testing.assert_allclose(identity_pool.get_baseline().ravel(), [0.5, 1.0, 2.0])
+
+    def test_a_feature_missing_from_the_frame_is_named(self):
+        """A pool narrower than its features would shift every categorical index."""
+        from haute.errors import HauteValidationError
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0], "cat": ["a", "b"], "y": [0.0, 1.0]})
+        with pytest.raises(HauteValidationError, match="'f2'"):
+            _build_pool(df, ["f1", "f2", "cat"], ["cat"], target="y")
+
+    def test_pool_offset_needs_its_link_and_log_link_refuses_non_positive_exposure(self):
+        from haute.errors import HauteValidationError
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0], "y": [0.0, 1.0], "off": [0.0, 1.0]})
+        with pytest.raises(HauteValidationError, match="needs its link"):
+            _build_pool(df, ["f1"], [], target="y", offset="off")
+        with pytest.raises(
+            HauteValidationError, match="must be positive under a log link, but 1 rows"
+        ):
+            _build_pool(df, ["f1"], [], target="y", offset="off", offset_link="log")
+
+    def test_pool_with_pre_extracted_arrays(self):
+        """Pre-extracted y, w, baseline arrays bypass df extraction."""
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0]})
+        y = np.array([0.0, 1.0, 0.0])
+        w = np.array([1.0, 2.0, 1.0])
+        baseline = np.array([0.1, 0.2, 0.3])
+
+        pool = _build_pool(df, ["f1"], [], y=y, w=w, baseline=baseline)
+        assert pool.num_row() == 3
+
+    def test_numeric_only_pool_carries_feature_names(self):
+        """The numpy fast path must still name features (not ['0', '1', ...]).
+
+        Without explicit names, models trained on a numeric-only Pool save
+        feature_names_ == ['0', '1', ...] and the serve-side name validation
+        rejects every named scoring frame.
+        """
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "f2": [4.0, 5.0, 6.0], "y": [0.0, 1.0, 0.0]})
+        pool = _build_pool(df, ["f1", "f2"], [], target="y")
+        assert pool.get_feature_names() == ["f1", "f2"]
+
+    def test_categorical_pool_carries_feature_names(self):
+        """The pandas branch keeps names too, in feature order."""
+        from haute.modelling._algorithms import _build_pool
+
+        df = pl.DataFrame({"f1": [1.0, 2.0, 3.0], "cat": ["a", "b", "c"], "y": [0.0, 1.0, 0.0]})
+        pool = _build_pool(df, ["f1", "cat"], ["cat"], target="y")
+        assert pool.get_feature_names() == ["f1", "cat"]
+
+
+class TestNumericOnlyModelServeRoundtrip:
+    """Regression: all-numeric CatBoost models must keep real feature names.
+
+    The numeric-only training path hands CatBoost a bare numpy array; before
+    _build_pool passed feature_names explicitly, the saved .cbm reported
+    feature_names_ == ['0', '1', ...] and the serve path
+    (load_local_model → _wrap_catboost → _validate_features) rejected every
+    named scoring frame with a feature mismatch.
+    """
+
+    def test_all_numeric_model_saves_names_and_scores_named_frame(
+        self, haute_scratch: Path
+    ) -> None:
+        from haute._mlflow_io import load_local_model
+        from haute._model_scorer import _run_score_pipeline
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        rng = np.random.default_rng(42)
+        train_df = pl.DataFrame(
+            {
+                "age": rng.uniform(18, 80, 100),
+                "exposure": rng.uniform(0.1, 1.0, 100),
+                "claims": rng.poisson(0.2, 100).astype(np.float64),
+            }
+        )
+
+        algo = CatBoostAlgorithm()
+        result = algo.fit(
+            train_df,
+            features=["age", "exposure"],
+            cat_features=[],
+            target="claims",
+            weight=None,
+            params={"iterations": 5, "depth": 2, "verbose": 0},
+            task="regression",
+        )
+
+        model_path = haute_scratch / "numeric_only.cbm"
+        algo.save(result.model, model_path)
+
+        scoring_model = load_local_model(str(model_path), task="regression")
+        assert scoring_model.feature_names == ["age", "exposure"]
+
+        score_df = pl.DataFrame(
+            {
+                "age": [30.0, 55.0, 70.0],
+                "exposure": [0.5, 0.8, 1.0],
+            }
+        )
+        scored = _run_score_pipeline(
+            scoring_model,
+            score_df.lazy(),
+            task="regression",
+            output_col="prediction",
+        )
+        collected = scored.collect() if isinstance(scored, pl.LazyFrame) else scored
+        assert "prediction" in collected.columns
+        assert collected.height == 3
+        assert collected["prediction"].is_finite().all()
+
+    def test_named_model_predicts_positionally_via_numpy_path(self) -> None:
+        """CatBoostAlgorithm.predict's numpy fast path stays valid: CatBoost
+        accepts unnamed numpy input positionally even when the model carries
+        real feature names, so training-time names don't break in-process
+        prediction."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        rng = np.random.default_rng(7)
+        train_df = pl.DataFrame(
+            {
+                "x1": rng.uniform(0, 1, 50),
+                "x2": rng.uniform(0, 1, 50),
+                "y": rng.uniform(0, 1, 50),
+            }
+        )
+        algo = CatBoostAlgorithm()
+        result = algo.fit(
+            train_df,
+            features=["x1", "x2"],
+            cat_features=[],
+            target="y",
+            weight=None,
+            params={"iterations": 5, "depth": 2, "verbose": 0},
+            task="regression",
+        )
+        assert result.model.feature_names_ == ["x1", "x2"]
+
+        preds = algo.predict(result.model, train_df.head(5), ["x1", "x2"])
+        assert preds.shape == (5,)
+        assert np.isfinite(preds).all()
+
+
+# ---------------------------------------------------------------------------
+# resolve_loss_function — full coverage
+# ---------------------------------------------------------------------------
+
+
+class TestResolveLossFunctionCoverage:
+    def test_all_regression_losses(self):
+        from haute.modelling._algorithms import resolve_loss_function
+
+        assert resolve_loss_function("RMSE", "regression") == "RMSE"
+        assert resolve_loss_function("MAE", "regression") == "MAE"
+        assert resolve_loss_function("Poisson", "regression") == "Poisson"
+
+    def test_tweedie_with_explicit_variance_power(self):
+        from haute.modelling._algorithms import resolve_loss_function
+
+        result = resolve_loss_function("Tweedie", "regression", 1.8)
+        assert result == "Tweedie:variance_power=1.8"
+
+    def test_tweedie_with_none_variance_power(self):
+        from haute.errors import HauteValidationError
+        from haute.modelling._algorithms import resolve_loss_function
+
+        with pytest.raises(HauteValidationError, match="Tweedie loss needs its variance power"):
+            resolve_loss_function("Tweedie", "regression", None)
+
+    def test_all_classification_losses(self):
+        from haute.modelling._algorithms import resolve_loss_function
+
+        assert resolve_loss_function("Logloss", "classification") == "Logloss"
+        assert resolve_loss_function("CrossEntropy", "classification") == "CrossEntropy"
+
+    def test_regression_loss_for_classification_raises(self):
+        from haute.modelling._algorithms import resolve_loss_function
+
+        with pytest.raises(ValueError, match="not valid"):
+            resolve_loss_function("RMSE", "classification")
+
+    def test_classification_loss_for_regression_raises(self):
+        from haute.modelling._algorithms import resolve_loss_function
+
+        with pytest.raises(ValueError, match="not valid"):
+            resolve_loss_function("Logloss", "regression")
+
+    def test_empty_string_returns_none(self):
+        from haute.modelling._algorithms import resolve_loss_function
+
+        assert resolve_loss_function("", "regression") is None
+
+    def test_none_returns_none(self):
+        from haute.modelling._algorithms import resolve_loss_function
+
+        assert resolve_loss_function(None, "classification") is None
+
+
+# ---------------------------------------------------------------------------
+# CatBoostAlgorithm.fit — GPU and early stopping paths
+# ---------------------------------------------------------------------------
+
+
+class TestCatBoostAlgorithmFitCoverage:
+    def _make_df(self, n: int = 50) -> pl.DataFrame:
+        rng = np.random.RandomState(42)
+        return pl.DataFrame(
+            {
+                "x1": rng.randn(n),
+                "x2": rng.randn(n),
+                "y": rng.randn(n),
+            }
+        )
+
+    def test_gpu_task_type_sets_verbose_and_allow_writing(self):
+        """GPU path sets verbose=50 and doesn't set allow_writing_files=False."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        df = self._make_df()
+
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 5
+        mock_model.evals_result_ = {}
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            mock_pool.return_value = MagicMock()
+            result = algo.fit(
+                df,
+                features=["x1", "x2"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 10},
+                task="regression",
+            )
+
+        assert result.model is mock_model
+
+    def test_early_stopping_rounds_default(self):
+        """When eval_pool provided without explicit early_stopping_rounds, default 50 is used."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 8
+
+        captured_params: dict[str, Any] = {}
+
+        def capture_regressor(**kwargs: Any) -> MagicMock:
+            captured_params.update(kwargs)
+            return mock_model
+
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            mock_pool.return_value = MagicMock()
+            algo.fit(
+                None,
+                features=["x1", "x2"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"iterations": 100},
+                task="regression",
+                pool=MagicMock(),
+                eval_pool=MagicMock(),
+            )
+
+        assert captured_params.get("early_stopping_rounds") == 50
+
+    def test_classification_uses_classifier(self):
+        """Classification task uses CatBoostClassifier."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+
+        with (
+            patch("catboost.CatBoostClassifier", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            mock_pool.return_value = MagicMock()
+            result = algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"iterations": 5},
+                task="classification",
+                pool=MagicMock(),
+            )
+
+        assert result.model is mock_model
+
+    def test_monotone_constraints_mapped_to_indices(self):
+        """Monotone constraints dict is mapped to index-based list."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        captured_params: dict[str, Any] = {}
+
+        def capture_regressor(**kwargs: Any) -> MagicMock:
+            captured_params.update(kwargs)
+            return mock_model
+
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            mock_pool.return_value = MagicMock()
+            algo.fit(
+                None,
+                features=["x1", "x2", "x3"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"iterations": 5},
+                task="regression",
+                monotone_constraints={"x1": 1, "x3": -1},
+                pool=MagicMock(),
+            )
+
+        assert captured_params["monotone_constraints"] == [1, 0, -1]
+
+    def test_feature_weights_mapped_to_indices(self):
+        """Feature weights dict is mapped to index-based list."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        captured_params: dict[str, Any] = {}
+
+        def capture_regressor(**kwargs: Any) -> MagicMock:
+            captured_params.update(kwargs)
+            return mock_model
+
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            mock_pool.return_value = MagicMock()
+            algo.fit(
+                None,
+                features=["x1", "x2"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"iterations": 5},
+                task="regression",
+                feature_weights={"x1": 2.0},
+                pool=MagicMock(),
+            )
+
+        assert captured_params["feature_weights"] == [2.0, 1.0]
+
+    def test_gpu_with_eval_pool_reconstructs_loss_history(self):
+        """GPU path reconstructs loss history from evals_result_."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 3
+        mock_model.evals_result_ = {
+            "validation": {"RMSE": [0.5, 0.4, 0.3]},
+            "learn": {"RMSE": [0.4, 0.3, 0.2]},
+        }
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            mock_pool.return_value = MagicMock()
+            result = algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 3},
+                task="regression",
+                pool=MagicMock(),
+                eval_pool=MagicMock(),
+            )
+
+        assert len(result.loss_history) == 3
+        assert result.loss_history[0]["eval_RMSE"] == 0.5
+        assert result.loss_history[2]["train_RMSE"] == 0.2
+
+
+# ---------------------------------------------------------------------------
+# CatBoostAlgorithm.predict — classification probability extraction
+# ---------------------------------------------------------------------------
+
+
+class TestCatBoostAlgorithmPredictCoverage:
+    def test_classifier_uses_predict_proba(self):
+        """Classification model uses predict_proba and extracts column 1."""
+        from catboost import CatBoostClassifier
+
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock(spec=CatBoostClassifier)
+        mock_model.predict_proba.return_value = np.array([[0.8, 0.2], [0.3, 0.7], [0.5, 0.5]])
+
+        df = pl.DataFrame({"x1": [1.0, 2.0, 3.0]})
+
+        with patch("haute._mlflow_io._prepare_predict_frame", return_value=MagicMock()):
+            preds = algo.predict(mock_model, df, ["x1"])
+
+        np.testing.assert_array_almost_equal(preds, [0.2, 0.7, 0.5])
+
+    def test_regressor_uses_predict(self):
+        """Regression model uses predict and flattens."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.predict.return_value = np.array([[1.0], [2.0], [3.0]])
+
+        df = pl.DataFrame({"x1": [1.0, 2.0, 3.0]})
+
+        with patch("haute._mlflow_io._prepare_predict_frame", return_value=MagicMock()):
+            preds = algo.predict(mock_model, df, ["x1"])
+
+        np.testing.assert_array_almost_equal(preds, [1.0, 2.0, 3.0])
+
+
+class TestCatBoostImportanceOfAConstantModel:
+    """A refit at a small validation-selected tree count can predict a constant."""
+
+    @staticmethod
+    def _constant_model() -> Any:
+        from catboost import CatBoostRegressor
+
+        rows = 120
+        x = pl.DataFrame(
+            {
+                "a": [float(i % 7) for i in range(rows)],
+                "b": [float(i % 5) for i in range(rows)],
+            }
+        ).to_pandas()
+        y = [float(i % 3) for i in range(rows)]
+        model = CatBoostRegressor(iterations=1, depth=2, learning_rate=0.3, verbose=0)
+        model.fit(x, y)
+        assert len(np.unique(model.predict(x))) == 1
+        # CatBoost normalises by a zero total prediction change: 0/0.
+        assert np.isnan(model.get_feature_importance()).all()
+        return model, x, y
+
+    def test_split_features_score_zero_instead_of_nan(self):
+        from catboost import Pool
+
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        model, x, y = self._constant_model()
+        algo = CatBoostAlgorithm()
+
+        assert algo.feature_importance(model) == [
+            {"feature": "a", "importance": 0.0},
+            {"feature": "b", "importance": 0.0},
+        ]
+        typed = algo.feature_importance_typed(model, Pool(x, y), "PredictionValuesChange")
+        assert {row["importance"] for row in typed} == {0.0}
+
+    def test_infinite_importance_is_not_masked(self):
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        model = MagicMock()
+        model.feature_names_ = ["a", "b"]
+        model.get_feature_importance.return_value = np.array([np.inf, 1.0])
+
+        rows = CatBoostAlgorithm().feature_importance(model)
+
+        assert rows[0] == {"feature": "a", "importance": float("inf")}
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic progress stages; CatBoostAlgorithm.shap_values 1D edge case
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnosticProgress:
+    @pytest.fixture()
+    def metrics_inputs(self, monkeypatch):
+        from haute.modelling._training_job import TrainingJob, _SplitResult, _TrainModelResult
+
+        frame = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [2.0, 4.0, 6.0]})
+        job = TrainingJob(name="diagnostic_progress", data=frame, target="y", metrics=["rmse"])
+        monkeypatch.setattr(job, "_read_partition", lambda *args, **kwargs: frame)
+        monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *args, **kwargs: [])
+        monkeypatch.setattr("haute.modelling._algorithms._mem_checkpoint", lambda *args: None)
+        pool_builder = MagicMock()
+        monkeypatch.setattr("haute.modelling._algorithms._build_pool", pool_builder)
+        algo = SimpleNamespace(
+            feature_importance=lambda model: [{"feature": "x", "importance": 1.0}],
+            predict=lambda *args, **kwargs: frame["y"].to_numpy(),
+        )
+        split = _SplitResult("unused.parquet", False, len(frame), 0, 0)
+        trained = _TrainModelResult(SimpleNamespace(), algo, None, {})
+        return job, split, trained, pool_builder
+
+    @pytest.mark.parametrize("has_shap", [True, False])
+    def test_progress_names_the_diagnostic_actually_running(self, metrics_inputs, has_shap):
+        job, split, trained, pool_builder = metrics_inputs
+        progress = []
+        active_at_call = []
+        loss_rows = [{"feature": "x", "importance": 0.25}]
+
+        def shap(model, rows, features, cat_features):
+            active_at_call.append(progress[-1])
+            return np.full((rows.height, len(features)), -0.5)
+
+        def loss(*args):
+            active_at_call.append(progress[-1])
+            return loss_rows
+
+        if has_shap:
+            trained.algo.shap_values = shap
+        trained.algo.feature_importance_typed = loss
+        pool_builder.side_effect = lambda *args, **kwargs: active_at_call.append(progress[-1])
+
+        result = job._compute_metrics(
+            split, ["x"], [], trained, lambda message, fraction: progress.append(message)
+        )
+
+        expected = ["Computing SHAP values"] if has_shap else []
+        assert active_at_call == expected + ["Computing loss-based feature importance"] * 2
+        assert ("Computing SHAP values" in progress) is has_shap
+        assert result.shap_summary == ([{"feature": "x", "mean_abs_shap": 0.5}] if has_shap else [])
+        assert [entry["feature"] for entry in result.shap_beeswarm] == (["x"] if has_shap else [])
+        assert result.feature_importance_loss == loss_rows
+        assert result.diagnostics_errors == []
+
+    def test_cancel_between_diagnostics_stops_before_loss_pool(self, metrics_inputs):
+        from haute._execution_context import ExecutionCancelledError
+
+        job, split, trained, pool_builder = metrics_inputs
+        trained.algo.shap_values = MagicMock(return_value=np.zeros((3, 1)))
+        trained.algo.feature_importance_typed = MagicMock(return_value=[])
+
+        def report(message, fraction):
+            if message == "Computing loss-based feature importance":
+                raise ExecutionCancelledError("Cancelled")
+
+        with pytest.raises(ExecutionCancelledError, match="Cancelled"):
+            job._compute_metrics(split, ["x"], [], trained, report)
+
+        trained.algo.shap_values.assert_called_once()
+        pool_builder.assert_not_called()
+        trained.algo.feature_importance_typed.assert_not_called()
+
+
+class TestCatBoostShapValues:
+    def test_shap_1d_reshaped(self):
+        """A 1D ShapValues array is one row; the base value column is dropped."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        # 1D array: 1 feature + base value = 2 elements
+        mock_model.get_feature_importance.return_value = np.array([0.5, 0.1])
+
+        df = pl.DataFrame({"f1": [1.0]})
+
+        with patch("haute.modelling._algorithms._build_pool", return_value=MagicMock()):
+            values = algo.shap_values(mock_model, df, ["f1"])
+
+        assert values.shape == (1, 1)
+        assert values[0, 0] == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# CatBoostAlgorithm.cross_validate — removed in Phase 2 Package 2C-5.
+# The dead GLM CV code path in ``TrainingJob`` was deleted along with the
+# ``cross_validate`` methods on both algorithm classes. No callers remain.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# CatBoostAlgorithm.save — parent directory creation
+# ---------------------------------------------------------------------------
+
+
+class TestSaveCoverage:
+    def test_save_creates_parent_directory(self, tmp_path):
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+
+        nested_path = tmp_path / "deep" / "nested" / "model.cbm"
+        algo.save(mock_model, nested_path)
+
+        mock_model.save_model.assert_called_once_with(str(nested_path))
+        assert nested_path.parent.exists()
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._load_data
+# ---------------------------------------------------------------------------
+
+
+class TestLoadDataCoverage:
+    def test_load_from_dataframe(self):
+        from haute.modelling._training_job import TrainingJob
+
+        df = pl.DataFrame({"x": [1, 2], "y": [3, 4]})
+        job = TrainingJob(name="test", data=df, target="y")
+        result = job._load_data()
+        assert result.shape == (2, 2)
+
+    def test_load_from_lazyframe(self):
+        from haute.modelling._training_job import TrainingJob
+
+        lf = pl.DataFrame({"x": [1, 2], "y": [3, 4]}).lazy()
+        job = TrainingJob(name="test", data=lf, target="y")
+        result = job._load_data()
+        assert result.shape == (2, 2)
+
+    def test_load_from_none_raises(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="test", data=pl.DataFrame({"y": [1]}), target="y")
+        job._data = None
+        with pytest.raises(RuntimeError, match="already been consumed"):
+            job._load_data()
+
+    def test_load_from_missing_file_raises(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="test", data="/nonexistent/path.csv", target="y")
+        with pytest.raises(FileNotFoundError, match="not found"):
+            job._load_data()
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._validate_columns
+# ---------------------------------------------------------------------------
+
+
+class TestValidateColumnsCoverage:
+    def test_missing_target_raises(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="t", data=pl.DataFrame({"x": [1]}), target="missing")
+        df = pl.DataFrame({"x": [1]})
+        with pytest.raises(ValueError, match="Target column"):
+            job._validate_columns(df)
+
+    def test_missing_weight_raises(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="t", data=pl.DataFrame({"y": [1]}), target="y", weight="w")
+        df = pl.DataFrame({"y": [1]})
+        with pytest.raises(ValueError, match="Weight column"):
+            job._validate_columns(df)
+
+    def test_missing_offset_raises(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="t", data=pl.DataFrame({"y": [1]}), target="y", offset="off")
+        df = pl.DataFrame({"y": [1]})
+        with pytest.raises(ValueError, match="Offset column"):
+            job._validate_columns(df)
+
+    def test_valid_columns_pass(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="t",
+            data=pl.DataFrame({"y": [1]}),
+            target="y",
+            weight="w",
+            offset="off",
+        )
+        df = pl.DataFrame({"y": [1], "w": [1.0], "off": [0.1], "x": [2]})
+        # Should not raise
+        job._validate_columns(df)
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._derive_features
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveFeaturesCoverage:
+    def test_excludes_target_weight_offset(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="t",
+            data=pl.DataFrame({"y": [1]}),
+            target="y",
+            weight="w",
+            offset="off",
+            exclude=["id"],
+        )
+        df = pl.DataFrame({"y": [1], "w": [1.0], "off": [0.1], "id": [1], "x": [2.0]})
+        features, cat_features = job._derive_features(df)
+        assert features == ["x"]
+        assert cat_features == []
+
+    def test_detects_categorical_features(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="t", data=pl.DataFrame({"y": [1]}), target="y")
+        df = pl.DataFrame({"y": [1], "cat": ["a"], "num": [1.0]})
+        features, cat_features = job._derive_features(df)
+        assert "cat" in cat_features
+        assert "num" not in cat_features
+
+    def test_no_features_raises(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="t", data=pl.DataFrame({"y": [1]}), target="y", exclude=["x"])
+        df = pl.DataFrame({"y": [1], "x": [2]})
+        with pytest.raises(ValueError, match="No feature columns"):
+            job._derive_features(df)
+
+    def test_string_and_categorical_dtype_detected(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(name="t", data=pl.DataFrame({"y": [1]}), target="y")
+        df = pl.DataFrame(
+            {
+                "y": [1],
+                "str_col": pl.Series(["a"], dtype=pl.String),
+                "cat_col": pl.Series(["b"]).cast(pl.Categorical),
+                # Polars 2 makes 1.x's ordering spelling a named category pool.
+                "lexical_col": pl.Series(["c"]).cast(pl.Categorical("lexical")),
+                "num_col": [1.0],
+            }
+        )
+        features, cat_features = job._derive_features(df)
+        assert "str_col" in cat_features
+        assert "cat_col" in cat_features
+        assert "lexical_col" in cat_features
+        assert "num_col" not in cat_features
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._save_artifacts
+# ---------------------------------------------------------------------------
+
+
+class TestSaveArtifactsCoverage:
+    def test_save_catboost_model(self, tmp_path):
+        from haute.modelling._training_job import TrainingJob, _TrainModelResult
+
+        mock_algo = MagicMock()
+        mock_model = MagicMock()
+        mock_fit_result = MagicMock()
+
+        job = TrainingJob(
+            name="mymodel",
+            data=pl.DataFrame({"y": [1]}),
+            target="y",
+            algorithm="catboost",
+            output_dir=str(tmp_path),
+        )
+        train_result = _TrainModelResult(
+            model=mock_model, algo=mock_algo, fit_result=mock_fit_result, fit_params={}
+        )
+        path = job._save_artifacts(train_result)
+
+        assert path == tmp_path / "mymodel.cbm"
+        mock_algo.save.assert_called_once_with(mock_model, path)
+
+    def test_save_glm_model(self, tmp_path):
+        from haute.modelling._training_job import TrainingJob, _TrainModelResult
+
+        mock_algo = MagicMock()
+        mock_model = MagicMock()
+        mock_fit_result = MagicMock()
+
+        job = TrainingJob(
+            name="myglm",
+            data=pl.DataFrame({"y": [1], "x": [1.0]}),
+            target="y",
+            algorithm="glm",
+            params={"family": "gaussian", "terms": {"x": {"type": "linear"}}},
+            output_dir=str(tmp_path),
+        )
+        train_result = _TrainModelResult(
+            model=mock_model, algo=mock_algo, fit_result=mock_fit_result, fit_params={}
+        )
+        path = job._save_artifacts(train_result)
+
+        assert path == tmp_path / "myglm.rsglm"
+
+    def test_save_algorithm_without_a_suffix_raises(self, tmp_path):
+        from haute.modelling._training_job import TrainingJob, _TrainModelResult
+
+        mock_algo = MagicMock()
+        mock_model = MagicMock()
+        mock_fit_result = MagicMock()
+
+        job = TrainingJob(
+            name="mymodel",
+            data=pl.DataFrame({"y": [1]}),
+            target="y",
+            algorithm="catboost",  # will override
+            output_dir=str(tmp_path),
+        )
+        job.algorithm = "unregistered"  # an algorithm with no registered suffix
+        train_result = _TrainModelResult(
+            model=mock_model, algo=mock_algo, fit_result=mock_fit_result, fit_params={}
+        )
+        from haute.errors import HauteValidationError
+
+        with pytest.raises(HauteValidationError, match="has no model file suffix"):
+            job._save_artifacts(train_result)
+        assert not (tmp_path / "mymodel.model").exists()
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._log_to_mlflow
+# ---------------------------------------------------------------------------
+
+
+class TestLogToMlflowCoverage:
+    def test_log_to_mlflow_no_experiment_returns_early(self):
+        from haute.modelling._training_job import TrainingJob, TrainResult
+
+        job = TrainingJob(
+            name="test",
+            data=pl.DataFrame({"y": [1]}),
+            target="y",
+            mlflow_experiment=None,
+        )
+
+        result = MagicMock(spec=TrainResult)
+        # Should return early without error
+        job._log_to_mlflow(result)
+
+    def test_log_to_mlflow_import_error_fails_loudly_when_experiment_configured(self):
+        from haute.modelling._training_job import TrainingJob, TrainResult
+
+        job = TrainingJob(
+            name="test",
+            data=pl.DataFrame({"y": [1]}),
+            target="y",
+            mlflow_experiment="/test",
+            evaluation=_RANDOM_EVALUATION,
+        )
+
+        result = MagicMock(spec=TrainResult)
+        with patch.dict(sys.modules, {"haute.modelling._mlflow_log": None}):
+            with pytest.raises(ImportError):
+                job._log_to_mlflow(result)
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._split_data — strategies with mask creation
+# ---------------------------------------------------------------------------
+
+
+class TestSplitDataCoverage:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
+    def test_split_data_temporal(self, tmp_path):
+        """Temporal split reads date column for mask."""
+        from haute.modelling._training_job import TrainingJob
+
+        df = pl.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-06-15", "2024-08-01", "2024-12-31"],
+                "x": [1.0, 2.0, 3.0, 4.0],
+                "y": [0.1, 0.2, 0.3, 0.4],
+            }
+        )
+        job = TrainingJob(
+            name="temporal",
+            data=df,
+            target="y",
+            split={
+                "strategy": "temporal",
+                "date_column": "date",
+                "cutoff_date": "2024-07-01",
+            },
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert result.train_rows == 2
+        assert result.validation_rows == 2
+
+    def test_split_data_with_holdout(self, tmp_path):
+        """Split with holdout creates three partitions."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 100
+        df = pl.DataFrame(
+            {
+                "x1": rng.randn(n),
+                "y": rng.randn(n),
+            }
+        )
+        job = TrainingJob(
+            name="holdout",
+            data=df,
+            target="y",
+            split={"validation_size": 0.2, "holdout_size": 0.1, "seed": 42},
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert result.holdout_rows == 10
+        assert result.validation_rows == 20
+        assert result.train_rows == 70
+
+    def test_split_no_validation(self, tmp_path):
+        """Split with validation_size=0 puts everything in training."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="no_val",
+            data=df,
+            target="y",
+            split={"validation_size": 0, "holdout_size": 0, "seed": 42},
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert result.train_rows == n
+        assert result.validation_rows == 0
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._compute_metrics — diagnostics set selection
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMetricsCoverage:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
+    def test_diagnostics_set_is_holdout_when_holdout_present(self, tmp_path):
+        """When holdout is present, diagnostics_set should be 'holdout'."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 100
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="diag_holdout",
+            data=df,
+            target="y",
+            split={"validation_size": 0.2, "holdout_size": 0.1, "seed": 42},
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert result.diagnostics_set == "holdout"
+        assert len(result.holdout_metrics) > 0
+
+    def test_diagnostics_set_is_train_when_no_val_no_holdout(self, tmp_path):
+        """Without validation or holdout, diagnostics use training data."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="diag_train",
+            data=df,
+            target="y",
+            split={"validation_size": 0, "holdout_size": 0, "seed": 42},
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert result.diagnostics_set == "train"
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — parquet input path (on-disk data)
+# ---------------------------------------------------------------------------
+
+
+class TestParquetInputPath:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
+    def test_parquet_input_skips_collect(self, tmp_path):
+        """When data is a .parquet path string, no collect happens."""
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        parquet_path = tmp_path / "data.parquet"
+        df.write_parquet(str(parquet_path))
+
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="parquet_test",
+            data=str(parquet_path),
+            target="y",
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert result.train_rows > 0
+
+
+# ---------------------------------------------------------------------------
+# FitResult dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestFitResult:
+    def test_default_values(self):
+        from haute.modelling._algorithms import FitResult
+
+        result = FitResult(model="dummy")
+        assert result.best_iteration is None
+        assert result.loss_history == []
+
+    def test_with_values(self):
+        from haute.modelling._algorithms import FitResult
+
+        result = FitResult(model="dummy", best_iteration=42, loss_history=[{"iteration": 1}])
+        assert result.best_iteration == 42
+        assert len(result.loss_history) == 1
+
+
+# ---------------------------------------------------------------------------
+# ALGORITHM_REGISTRY
+# ---------------------------------------------------------------------------
+
+
+class TestAlgorithmRegistry:
+    def test_catboost_registered(self):
+        from haute.modelling._algorithms import ALGORITHM_REGISTRY, CatBoostAlgorithm
+
+        assert "catboost" in ALGORITHM_REGISTRY
+        assert ALGORITHM_REGISTRY["catboost"] is CatBoostAlgorithm
+
+
+# ---------------------------------------------------------------------------
+# GPU + on_iteration threaded fit path (lines 382-470)
+# ---------------------------------------------------------------------------
+
+
+class TestGPUOnIterationPath:
+    def test_gpu_with_on_iteration_creates_tempdir_and_polls(self):
+        """GPU + on_iteration creates a temp dir and polls metric file."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 2
+        mock_model.evals_result_ = {}
+
+        on_iter_calls: list[tuple] = []
+
+        def on_iter(it: int, total: int, metrics: dict, row: dict | None) -> None:
+            on_iter_calls.append((it, total, row))
+
+        # When model.fit is called in the thread, create a fake metric file
+
+        real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_test_")
+
+        def fake_fit(pool: Any, **kwargs: Any) -> None:
+            # Simulate CatBoost writing learn_error.tsv
+            metric_path = Path(real_tempdir) / "learn_error.tsv"
+            with open(metric_path, "w", encoding="utf-8") as f:
+                f.write("iter\tRMSE\n")
+                f.write("0\t0.5\n")
+                f.write("1\t0.4\n")
+
+        mock_model.fit = fake_fit
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("tempfile.mkdtemp", return_value=real_tempdir),
+        ):
+            mock_pool.return_value = MagicMock()
+            result = algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 2},
+                task="regression",
+                on_iteration=on_iter,
+                pool=MagicMock(),
+            )
+
+        assert result.model is mock_model
+        # on_iteration should have been called for each data line
+        assert len(on_iter_calls) >= 1
+        # The GPU fit polls only the iteration: it adds no loss-history row.
+        assert all(row is None for _it, _total, row in on_iter_calls)
+
+    def test_gpu_fit_error_is_reraised(self):
+        """When model.fit raises in the GPU thread, the error is re-raised."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+
+        def failing_fit(pool: Any, **kwargs: Any) -> None:
+            raise RuntimeError("GPU training failed")
+
+        mock_model.fit = failing_fit
+
+        real_tempdir = tempfile.mkdtemp(prefix="catboost_gpu_err_")
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("tempfile.mkdtemp", return_value=real_tempdir),
+        ):
+            mock_pool.return_value = MagicMock()
+            with pytest.raises(RuntimeError, match="GPU training failed"):
+                algo.fit(
+                    None,
+                    features=["x1"],
+                    cat_features=[],
+                    target="y",
+                    weight=None,
+                    params={"task_type": "GPU", "iterations": 2},
+                    task="regression",
+                    on_iteration=lambda it, total, m, row: None,
+                    pool=MagicMock(),
+                )
+
+    def test_gpu_verbose_default_50(self):
+        """GPU sets verbose to 50 by default."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 1
+        mock_model.evals_result_ = {}
+
+        captured_params: dict[str, Any] = {}
+
+        def capture_regressor(**kwargs: Any) -> MagicMock:
+            captured_params.update(kwargs)
+            return mock_model
+
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
+            mock_pool.return_value = MagicMock()
+            algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 2},
+                task="regression",
+                pool=MagicMock(),
+            )
+
+        assert captured_params["verbose"] == 50
+
+    def test_gpu_without_on_iteration_no_tempdir(self):
+        """GPU without on_iteration doesn't create a temp dir."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 1
+        mock_model.evals_result_ = {}
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+            patch("tempfile.mkdtemp") as mock_mkdtemp,
+        ):
+            mock_pool.return_value = MagicMock()
+            algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 2},
+                task="regression",
+                on_iteration=None,
+                pool=MagicMock(),
+            )
+
+        mock_mkdtemp.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GPU evals_result reconstruction: validation + learn branches
+# ---------------------------------------------------------------------------
+
+
+class TestGPUEvalsResultReconstruction:
+    def test_gpu_evals_result_validation_only(self):
+        """GPU with eval_pool reconstructs loss history from validation only."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 2
+        mock_model.evals_result_ = {
+            "validation": {"RMSE": [0.5, 0.4]},
+        }
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
+            mock_pool.return_value = MagicMock()
+            result = algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 2},
+                task="regression",
+                pool=MagicMock(),
+                eval_pool=MagicMock(),
+            )
+
+        assert len(result.loss_history) == 2
+        assert result.loss_history[0]["eval_RMSE"] == 0.5
+        assert "train_RMSE" not in result.loss_history[0]
+
+    def test_gpu_evals_result_longer_than_existing_history(self):
+        """When evals_result has more entries than existing loss_history, new ones are created."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 3
+        mock_model.evals_result_ = {
+            "validation": {"RMSE": [0.5, 0.4, 0.3]},
+            "learn": {"RMSE": [0.4, 0.3, 0.2, 0.1]},  # Longer than validation
+        }
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
+            mock_pool.return_value = MagicMock()
+            result = algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 4},
+                task="regression",
+                pool=MagicMock(),
+                eval_pool=MagicMock(),
+            )
+
+        assert len(result.loss_history) == 4
+        assert result.loss_history[3]["train_RMSE"] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# CatBoostAlgorithm.fit — allow_writing_files not set for GPU
+# ---------------------------------------------------------------------------
+
+
+class TestGPUAllowWritingFiles:
+    def test_gpu_no_allow_writing_files_default(self):
+        """GPU doesn't set allow_writing_files=False (CPU does)."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 1
+        mock_model.evals_result_ = {}
+
+        captured_params: dict[str, Any] = {}
+
+        def capture_regressor(**kwargs: Any) -> MagicMock:
+            captured_params.update(kwargs)
+            return mock_model
+
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
+            mock_pool.return_value = MagicMock()
+            algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"task_type": "GPU", "iterations": 2},
+                task="regression",
+                pool=MagicMock(),
+            )
+
+        # GPU should NOT set allow_writing_files=False
+        assert "allow_writing_files" not in captured_params
+
+    def test_cpu_sets_allow_writing_files_false(self):
+        """CPU sets allow_writing_files=False by default."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+
+        captured_params: dict[str, Any] = {}
+
+        def capture_regressor(**kwargs: Any) -> MagicMock:
+            captured_params.update(kwargs)
+            return mock_model
+
+        with (
+            patch("catboost.CatBoostRegressor", side_effect=capture_regressor),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._build_pool") as mock_pool,
+        ):
+            mock_pool.return_value = MagicMock()
+            algo.fit(
+                None,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"iterations": 2},
+                task="regression",
+                pool=MagicMock(),
+            )
+
+        assert captured_params["allow_writing_files"] is False
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob GLM code paths (lines 543-561, 836-858)
+# ---------------------------------------------------------------------------
+
+
+class TestTrainingJobGLMPaths:
+    """Cover GLM-specific branches in _train_model and _compute_metrics.
+
+    Uses a real GLM if available, otherwise mocks.
+    """
+
+    def test_glm_no_features_after_term_matching_raises(self, tmp_path):
+        """GLM with terms that match no data columns raises ValueError."""
+        from haute.modelling._training_job import TrainingJob
+
+        df = pl.DataFrame({"x1": [1.0, 2.0, 3.0], "y": [0.1, 0.2, 0.3]})
+        job = TrainingJob(
+            name="glm_empty",
+            data=df,
+            target="y",
+            algorithm="glm",
+            params={"family": "gaussian", "terms": {"nonexistent": {"type": "linear"}}},
+            output_dir=str(tmp_path),
+        )
+        with pytest.raises(ValueError, match="not found in training data"):
+            job.run()
+
+
+# ---------------------------------------------------------------------------
+# CatBoostAlgorithm.fit — eval_df builds eval_pool automatically
+# ---------------------------------------------------------------------------
+
+
+class TestFitEvalDfAutoPool:
+    def test_eval_df_creates_eval_pool(self):
+        """When eval_df is provided (not eval_pool), it auto-builds eval_pool."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        mock_model = MagicMock()
+        mock_model.best_iteration_ = 3
+
+        train_df = pl.DataFrame({"x1": [1.0, 2.0, 3.0], "y": [0.1, 0.2, 0.3]})
+        eval_df = pl.DataFrame({"x1": [4.0, 5.0], "y": [0.4, 0.5]})
+
+        pool_calls: list = []
+
+        def mock_build_pool(*args: Any, **kwargs: Any) -> MagicMock:
+            pool_calls.append(("build_pool", args, kwargs))
+            return MagicMock()
+
+        with (
+            patch("catboost.CatBoostRegressor", return_value=mock_model),
+            patch("haute.modelling._algorithms._build_pool", side_effect=mock_build_pool),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+        ):
+            algo.fit(
+                train_df,
+                features=["x1"],
+                cat_features=[],
+                target="y",
+                weight=None,
+                params={"iterations": 3},
+                task="regression",
+                eval_df=eval_df,
+            )
+
+        # Two pool builds: train + eval
+        assert len(pool_calls) == 2
+
+    def test_train_df_none_without_pool_raises(self):
+        """When train_df is None and no pool is provided, assertion fails."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        algo = CatBoostAlgorithm()
+        with patch("haute.modelling._algorithms._mem_checkpoint"):
+            with pytest.raises(AssertionError, match="Either train_df or pool"):
+                algo.fit(
+                    None,
+                    features=["x1"],
+                    cat_features=[],
+                    target="y",
+                    weight=None,
+                    params={"iterations": 1},
+                    task="regression",
+                )
+
+
+# ---------------------------------------------------------------------------
+# GLM algorithm registry (line 660-661)
+# ---------------------------------------------------------------------------
+
+
+class TestGLMRegistry:
+    def test_glm_registered_when_rustystats_available(self):
+        """GLM is in the registry if rustystats can be imported."""
+        from haute.modelling._algorithms import ALGORITHM_REGISTRY
+
+        try:
+            from haute.modelling._rustystats import GLMAlgorithm
+
+            assert "glm" in ALGORITHM_REGISTRY
+            assert ALGORITHM_REGISTRY["glm"] is GLMAlgorithm
+        except ImportError:
+            assert "glm" not in ALGORITHM_REGISTRY
+
+
+# ---------------------------------------------------------------------------
+# GLM full training job — covers _train_model GLM path (543-561),
+# _compute_metrics GLM diagnostics (836-858), and GLM term narrowing (259-272)
+# ---------------------------------------------------------------------------
+
+
+class TestGLMFullTrainingJob:
+    """Integration test covering GLM-specific code paths in TrainingJob."""
+
+    def test_glm_training_job_runs_end_to_end(self, tmp_path):
+        """Full GLM training job covering _train_model and _compute_metrics GLM branches."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 100
+        df = pl.DataFrame(
+            {
+                "age": rng.randint(20, 60, n).astype(float),
+                "income": rng.randn(n) * 10000 + 50000,
+                "y": (rng.randn(n) * 0.5 + 1.0).clip(0.1),
+            }
+        )
+        job = TrainingJob(
+            name="glm_full",
+            data=df,
+            target="y",
+            algorithm="glm",
+            params={
+                "family": "gaussian",
+                "terms": {"age": {"type": "linear"}, "income": {"type": "linear"}},
+            },
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+
+        assert result.train_rows > 0
+        assert result.validation_rows >= 0
+        assert len(result.features) == 2
+        assert "gini" in result.metrics or "rmse" in result.metrics
+
+    def test_glm_term_narrowing_filters_features(self, tmp_path):
+        """GLM term narrowing selects only the specified terms from features."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 100
+        df = pl.DataFrame(
+            {
+                "age": rng.randint(20, 60, n).astype(float),
+                "income": rng.randn(n) * 10000 + 50000,
+                "unused_col": rng.randn(n),
+                "y": (rng.randn(n) * 0.5 + 1.0).clip(0.1),
+            }
+        )
+        job = TrainingJob(
+            name="glm_narrow",
+            data=df,
+            target="y",
+            algorithm="glm",
+            params={
+                "family": "gaussian",
+                "terms": {"age": {"type": "linear"}},  # Only age, not income or unused_col
+            },
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+
+        # Only age should be in features after narrowing
+        assert result.features == ["age"]
+
+    def test_glm_with_categorical_terms(self, tmp_path):
+        """GLM with categorical terms covers the cat_features narrowing."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 100
+        df = pl.DataFrame(
+            {
+                "region": rng.choice(["north", "south", "east", "west"], n),
+                "age": rng.randint(20, 60, n).astype(float),
+                "y": (rng.randn(n) * 0.5 + 1.0).clip(0.1),
+            }
+        )
+        job = TrainingJob(
+            name="glm_cat",
+            data=df,
+            target="y",
+            algorithm="glm",
+            params={
+                "family": "gaussian",
+                "terms": {
+                    "region": {"type": "categorical"},
+                    "age": {"type": "linear"},
+                },
+            },
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+        assert "region" in result.features
+        assert "region" in result.cat_features
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — read_source path for non-parquet file (line 939)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadDataReadSource:
+    def test_load_data_from_csv_file(self, tmp_path):
+        """_load_data delegates to read_source for non-parquet files."""
+        from haute.modelling._training_job import TrainingJob
+
+        csv_path = tmp_path / "data.csv"
+        csv_path.write_text("x,y\n1.0,2.0\n3.0,4.0\n")
+
+        job = TrainingJob(name="test", data=str(csv_path), target="y")
+        result = job._load_data()
+        assert result.shape[0] == 2
+        assert "y" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — parquet write error cleanup (line 376-378)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareDataWriteError:
+    def test_parquet_write_error_cleans_up_temp_file(self, tmp_path):
+        """If parquet write fails, the temp file is cleaned up."""
+        from haute.modelling._training_job import TrainingJob
+
+        df = pl.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
+        job = TrainingJob(
+            name="write_err",
+            data=df,
+            target="y",
+            output_dir=str(tmp_path),
+        )
+
+        with patch.object(pl.DataFrame, "write_parquet", side_effect=OSError("disk full")):
+            with pytest.raises(IOError, match="disk full"):
+                job._prepare_data(lambda msg, frac: None)
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob._compute_metrics — GLM diagnostics exception paths
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMetricsGLMExceptions:
+    """Cover the try/except blocks in _compute_metrics for GLM diagnostics."""
+
+    def test_glm_result_failures_are_recorded_without_failing_training(self, tmp_path, monkeypatch):
+        """Each GLM result diagnostic that raises is recorded by name; training succeeds."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="glm_exc",
+            data=df,
+            target="y",
+            algorithm="glm",
+            params={
+                "family": "gaussian",
+                "terms": {"x1": {"type": "linear"}},
+            },
+            output_dir=str(tmp_path),
+        )
+
+        from haute.modelling import _rustystats
+
+        def fail(name: str):
+            def raise_error(*_args, **_kwargs):
+                raise RuntimeError(f"{name} fail")
+
+            return raise_error
+
+        monkeypatch.setattr(_rustystats, "glm_coefficient_rows", fail("coef"))
+        monkeypatch.setattr(_rustystats, "glm_relativity_rows", fail("rel"))
+        monkeypatch.setattr(_rustystats, "glm_fit_statistics", fail("stats"))
+
+        result = job.run()
+
+        assert result.glm_coefficients == []
+        assert result.glm_relativities == []
+        assert result.glm_fit_statistics == {}
+        assert result.glm_inference == {
+            "status": "valid_standard",
+            "valid": True,
+            "standard_errors": "model",
+            "reason": None,
+        }
+        assert {(error["diagnostic"], error["error"]) for error in result.diagnostics_errors} >= {
+            ("glm_coefficients", "coef fail"),
+            ("glm_relativities", "rel fail"),
+            ("glm_fit_statistics", "stats fail"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — split_config from SplitConfig (line 206)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitConfigFromSplitConfig:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
+    def test_split_config_passed_as_splitconfig_object(self, tmp_path):
+        """When split is a SplitConfig object, it's used directly."""
+        from haute.modelling._split import SplitConfig
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        sc = SplitConfig(validation_size=0.3, seed=42)
+        job = TrainingJob(
+            name="sc_obj",
+            data=df,
+            target="y",
+            split=sc,
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+        assert job.split_config is sc
+        result = job.run()
+        assert result.validation_rows == 15
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — mlflow experiment triggers logging (line 332)
+# ---------------------------------------------------------------------------
+
+
+class TestMlflowExperimentTrigger:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
+    def test_mlflow_experiment_logs_a_contracted_candidate_run(self, tmp_path):
+        """A scripted run with mlflow_experiment logs one candidate built from the
+        files it just wrote, identified by the job's own training identity."""
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="mlflow_trigger",
+            data=df,
+            target="y",
+            params=_three_round_training_params(),
+            mlflow_experiment="/test/exp",
+            mlflow_destination="local",
+            evaluation=_RANDOM_EVALUATION,
+            output_dir=str(tmp_path),
+        )
+
+        with patch("haute.modelling._mlflow_log.log_experiment") as mock_log:
+            result = job.run()
+
+        mock_log.assert_called_once()
+        kwargs = mock_log.call_args.kwargs
+        assert kwargs["experiment_name"] == "/test/exp"
+        assert kwargs["destination"] == "local"
+        candidate = kwargs["candidate"]
+        assert candidate.run_name.startswith("mlflow_trigger · ")
+        assert candidate.tags["haute.training_identity_sha256"] == job.training_identity_sha256
+        assert candidate.artifacts.model == Path(result.model_path)
+        candidate.artifacts.require_files()
+        assert set(candidate.artifacts.evidence) == {
+            "evaluation_plan",
+            "evaluation_results",
+            "evaluation_report",
+        }
+        assert all(name.startswith("final_test_") for name in candidate.metrics)
+
+    def test_mlflow_experiment_requires_an_evaluation_contract(self):
+        from haute.errors import HauteValidationError
+        from haute.modelling._training_job import TrainingJob
+
+        with pytest.raises(HauteValidationError, match="requires an explicit evaluation"):
+            TrainingJob(
+                name="no_eval",
+                data=pl.DataFrame({"y": [1.0]}),
+                target="y",
+                mlflow_experiment="/test/exp",
+            )
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — SHAP exception path (lines 800-801)
+# ---------------------------------------------------------------------------
+
+
+class TestSHAPExceptionPath:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
+    def test_shap_exception_is_logged_and_empty_list_returned(self, tmp_path, monkeypatch):
+        """When shap_values raises, both SHAP views are empty and the failure is recorded."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="shap_fail",
+            data=df,
+            target="y",
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+
+        def failing_shap(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("SHAP failed")
+
+        monkeypatch.setattr(CatBoostAlgorithm, "shap_values", failing_shap, raising=False)
+        result = job.run()
+
+        assert result.shap_summary == []
+        assert result.shap_beeswarm == []
+        assert [error["diagnostic"] for error in result.diagnostics_errors] == ["shap"]
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — feature_importance_loss exception path (lines 816-817)
+# ---------------------------------------------------------------------------
+
+
+class TestFeatureImportanceLossExceptionPath:
+    @pytest.fixture(autouse=True)
+    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_optional_catboost_diagnostics(monkeypatch)
+
+    def test_feature_importance_loss_exception_is_logged(self, tmp_path):
+        """When feature_importance_typed raises, empty list is used."""
+        from haute.modelling._algorithms import CatBoostAlgorithm
+        from haute.modelling._training_job import TrainingJob
+
+        rng = np.random.RandomState(42)
+        n = 50
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="fi_loss_fail",
+            data=df,
+            target="y",
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path),
+        )
+
+        orig_fi = CatBoostAlgorithm.feature_importance_typed
+
+        def failing_fi(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("FI failed")
+
+        CatBoostAlgorithm.feature_importance_typed = failing_fi
+        try:
+            result = job.run()
+            assert result.feature_importance_loss == []
+        finally:
+            CatBoostAlgorithm.feature_importance_typed = orig_fi
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — CV exception path: removed in Phase 2 Package 2C-5.
+# The dead GLM CV branch (and its silent exception swallowing into
+# ``diagnostics_errors``) was deleted. ``cross_validate`` no longer exists.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — exclude columns debug log (line 961)
+# ---------------------------------------------------------------------------
+
+
+class TestExcludeColumnsDebugLog:
+    def test_excluded_columns_already_dropped_logs_debug(self):
+        """When exclude references columns not in the data, debug log is emitted."""
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="t",
+            data=pl.DataFrame({"y": [1]}),
+            target="y",
+            exclude=["already_dropped_col"],
+        )
+        df = pl.DataFrame({"y": [1], "x": [2.0]})
+        # Should not raise, just log debug
+        job._validate_columns(df)
+
+
+# ---------------------------------------------------------------------------
+# TrainingJob — GLM empty features after narrowing (line 272)
+# ---------------------------------------------------------------------------
+
+
+class TestGLMEmptyFeaturesAfterNarrowing:
+    def test_glm_no_features_remaining_after_term_narrowing(self, tmp_path):
+        """When all GLM terms reference columns not in data, raise ValueError."""
+        from haute.modelling._training_job import TrainingJob
+
+        # Both features exist but the term references a nonexistent column
+        df = pl.DataFrame(
+            {
+                "x1": [1.0, 2.0, 3.0],
+                "x2": [4.0, 5.0, 6.0],
+                "y": [0.1, 0.2, 0.3],
+            }
+        )
+        job = TrainingJob(
+            name="glm_no_feat",
+            data=df,
+            target="y",
+            algorithm="glm",
+            params={
+                "family": "gaussian",
+                "terms": {"nonexistent": {"type": "linear"}},
+            },
+            output_dir=str(tmp_path),
+        )
+        with pytest.raises(ValueError, match="not found in training data"):
+            job.run()
+
+
+# ---------------------------------------------------------------------------
+# Polars 2 dtypes at the training boundary
+# ---------------------------------------------------------------------------
+
+
+class TestPolars2DtypesInTraining:
+    @staticmethod
+    def _frame() -> pl.DataFrame:
+        rng = np.random.RandomState(7)
+        n = 60
+        return pl.DataFrame(
+            {
+                "region": rng.choice(["north", "south", "east"], n).tolist(),
+                "age": rng.randint(18, 80, n),
+                "y": rng.randn(n),
+            }
+        ).with_columns(pl.col("region").cast(pl.Categorical("lexical")))
+
+    def test_a_pooled_categorical_feature_trains_as_categorical(self, tmp_path, monkeypatch):
+        """``Categorical("lexical")`` is a named pool under Polars 2: it trains
+        as a categorical feature and its contract name is String."""
+        from haute.modelling._training_job import TrainingJob
+
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        data_path = tmp_path / "lexical.parquet"
+        self._frame().write_parquet(data_path)
+        assert pl.read_parquet_schema(data_path)["region"] == pl.Categorical("lexical")
+
+        prepared = TrainingJob(name="lexical", data=str(data_path), target="y")._prepare_data(
+            lambda _msg, _frac: None
+        )
+        assert prepared.cat_features == ["region"]
+        assert prepared.feature_dtypes["region"] == "String"
+
+        job = TrainingJob(
+            name="lexical",
+            data=self._frame(),
+            target="y",
+            algorithm="catboost",
+            params=_three_round_training_params(),
+            output_dir=str(tmp_path / "out"),
+        )
+        result = job.run()
+        assert result.train_rows > 0
+
+    @pytest.mark.parametrize("source", ["frame", "lazy", "parquet"])
+    def test_a_128_bit_column_is_refused_before_anything_is_written(self, tmp_path, source):
+        """pyarrow cannot open a Parquet file that holds a 128-bit integer and
+        ``to_numpy`` panics on one, so the job names the column first, whatever
+        its role: here an excluded one."""
+        from haute.modelling._training_job import TrainingJob
+
+        frame = self._frame().with_columns(
+            policy_key=pl.col("age").cast(pl.Int64) + pl.lit(1, dtype=pl.UInt64)
+        )
+        assert frame.schema["policy_key"] == pl.Int128
+        data: object = frame
+        if source == "lazy":
+            data = frame.lazy()
+        elif source == "parquet":
+            data_path = tmp_path / "wide.parquet"
+            frame.write_parquet(data_path)
+            data = str(data_path)
+        written_before = set(tmp_path.iterdir())
+
+        job = TrainingJob(
+            name="wide", data=data, target="y", exclude=["policy_key"], output_dir=str(tmp_path)
+        )
+        with pytest.raises(ValueError, match="Column 'policy_key' is Int128") as exc_info:
+            job._prepare_data(lambda _msg, _frac: None)
+
+        assert "cast it upstream to Int64" in str(exc_info.value)
+        assert set(tmp_path.iterdir()) == written_before
+
+    def test_a_nested_128_bit_column_is_refused(self):
+        from haute.modelling._training_job import TrainingJob
+
+        frame = self._frame().with_columns(keys=pl.concat_list(pl.lit(1, dtype=pl.Int128)))
+        job = TrainingJob(name="wide", data=frame, target="y")
+
+        with pytest.raises(ValueError, match="Column 'keys' is List\\(Int128\\), which holds"):
+            job._prepare_data(lambda _msg, _frac: None)

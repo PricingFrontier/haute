@@ -501,11 +501,6 @@ def load_contract_cached(path: Path | str) -> FeatureContract:
     )
 
 
-def _clear_contract_cache() -> None:
-    """Drop every cached contract (test isolation / targeted resets)."""
-    _contract_cache.clear()
-
-
 def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -> None:
     """Raise :class:`FeatureMismatchError` if any contract field differs.
 

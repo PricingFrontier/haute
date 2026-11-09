@@ -645,14 +645,14 @@ def test_a_remote_worker_failure_reports_only_the_fixed_internal_detail(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._worker_isolation import IsolatedWorkerRemoteError
+    from haute._worker_failures import WorkerRemoteError
     from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
     from haute.routes.node_data import _store
 
     secret = "database password appeared in the child exception"
 
     def fail_worker(*_args: Any, **_kwargs: Any) -> Any:
-        raise IsolatedWorkerRemoteError(
+        raise WorkerRemoteError(
             remote_type="RuntimeError",
             remote_message=secret,
             remote_traceback=f"traceback containing {secret}",
@@ -751,7 +751,7 @@ def test_clear_does_not_let_a_build_paused_before_publication_repopulate_the_slo
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute._worker_failures import WorkerStoppedError
 
     entered = threading.Event()
     stop_requested = threading.Event()
@@ -793,7 +793,7 @@ def test_clear_does_not_let_a_build_paused_before_publication_repopulate_the_slo
             if reason is not None:
                 stop_requested.set()
                 child.join(30)
-                raise IsolatedWorkerStoppedError(terminal_reason=reason)
+                raise WorkerStoppedError(terminal_reason=reason)
             time.sleep(0.01)
         if "error" in result:
             raise result["error"]
@@ -862,7 +862,7 @@ def test_a_killed_workers_staging_is_discarded_by_the_parent(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute._worker_failures import WorkerStoppedError
 
     def killed_after_staging(function, request, budget, *, config):
         store = NodeSnapshotStore(current_project().root)
@@ -872,7 +872,7 @@ def test_a_killed_workers_staging_is_discarded_by_the_parent(
         )
         artifact = store.stage_node_output(identity, staging_token=request.staging_token)
         _write(artifact.part_path(0), b"partial parquet")
-        raise IsolatedWorkerStoppedError(terminal_reason="timed_out")
+        raise WorkerStoppedError(terminal_reason="timed_out")
 
     monkeypatch.setattr(service_mod, "run_isolated_worker", killed_after_staging)
 
@@ -1355,10 +1355,10 @@ def test_terminated_build_worker_leaves_no_capture_staging(
     monkeypatch: pytest.MonkeyPatch,
     stopped: str,
 ) -> None:
-    from haute._worker_isolation import (
-        IsolatedWorkerMemoryLimitExceededError,
-        IsolatedWorkerStoppedError,
-        IsolatedWorkerTimeoutError,
+    from haute._worker_failures import (
+        WorkerMemoryLimitError,
+        WorkerStoppedError,
+        WorkerTimeoutError,
     )
 
     graph = _chain_graph(project)
@@ -1374,10 +1374,10 @@ def test_terminated_build_worker_leaves_no_capture_staging(
         _write(artifact.part_path(0), b"partial parquet")
         staged.append(artifact.directory)
         if stopped == "timed_out":
-            raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
+            raise WorkerTimeoutError(timeout_seconds=1.0)
         if stopped == "memory_limited":
-            raise IsolatedWorkerMemoryLimitExceededError(rss_bytes=2048, rss_limit_bytes=1024)
-        raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            raise WorkerMemoryLimitError(rss_bytes=2048, rss_limit_bytes=1024)
+        raise WorkerStoppedError(terminal_reason="cancelled")
 
     monkeypatch.setattr(service_mod, "run_isolated_worker", killed_after_capture_staging)
     run = client.post("/api/node-data/run", json=_body(graph, "explore_b")).json()

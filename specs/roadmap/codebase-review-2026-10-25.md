@@ -177,24 +177,7 @@ puts it in front of the owner because of what it can cost in production:
 | Area | Findings | Package |
 |---|---|---|
 | Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |
-| Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
-| Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
 | Workbench UI | FWB-7 | `WB-38` (Decision) |
-| Tests, scripts and CI | ENG-6 | `ENGQ-R01` |
-| Tests, scripts and CI | ENG-17 | `ENGQ-R11` (Decision) |
-
-Already tracked before this review and not repeated: the
-three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
-the test-only config helpers and
-event-bus hooks (`ENGQ-R01`); the test-only
-`_compute_schema_hash` and the training facade (`ENGQ-R01`); the test-only manifest cache reset (`ENGQ-R01`); the dead
-`checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
-(`ENGQ-R01`); the dead
-`submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); in the workbench UI and
-the app shell, knip's export-only symbols (`ENGQ-R01`); in the tests, scripts
-and CI, the campaign-named test modules (`ENGQ-R05`) and the test-only reset hooks in
-production code (`ENGQ-R01`).
 
 ## Verdicts that changed or stayed open
 
@@ -248,8 +231,8 @@ All probes live outside the repository and wrote nothing into it.
 | Tool | Result |
 |---|---|
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
-| vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ENGQ-R01`; the deploy, CLI and background-jobs ones are removed. |
+| vulture (60 %) | 61 candidates; the ones confirmed unreferenced are removed, and `scripts/check_dead_code.py` now fails the build on a new one. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones, in deploy and the background jobs, are removed. |
 | jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are removed. |
-| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
-| sweeps | 35 campaign-named test modules (`ENGQ-R05`). |
+| knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports, not dead code; knip now runs in the frontend lint, reporting what nothing imports. |
+| sweeps | 35 campaign-named test modules; they are folded into the modules that own their behaviour, and `tests/test_test_layout.py` now refuses one. |

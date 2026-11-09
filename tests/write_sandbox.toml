@@ -30,14 +30,12 @@ strict = [
     "test_backend_frontend_contracts.py",
     "test_banding.py",
     "test_banding_claims.py",
-    "test_banding_config_coverage.py",
     "test_banding_stats.py",
     "test_binary_classification_contract.py",
     "test_boundary_operator_equivalence.py",
     "test_bounded_collect_contracts.py",
     "test_bounded_sink_contract.py",
     "test_bug_regressions.py",
-    "test_bugfixes.py",
     "test_builder_edge_cases.py",
     "test_bundle6_trust_model_cleanup.py",
     "test_cache_fingerprint_injectivity.py",
@@ -63,7 +61,6 @@ strict = [
     "test_cli_deploy.py",
     "test_cli_fail_loudly.py",
     "test_cli_helpers.py",
-    "test_cli_impact_gaps.py",
     "test_cli_lint.py",
     "test_cli_no_shadow.py",
     "test_cli_serve.py",
@@ -71,7 +68,7 @@ strict = [
     "test_cli_status.py",
     "test_cli_train.py",
     "test_cli_ux.py",
-    "test_code_extraction_coverage.py",
+    "test_code_extraction.py",
     "test_code_extraction_roundtrip.py",
     "test_codegen.py",
     "test_codegen_builders_contracts.py",
@@ -93,12 +90,10 @@ strict = [
     "test_compute_needed_columns.py",
     "test_config_field_roundtrip.py",
     "test_config_io.py",
-    "test_config_io_gaps.py",
     "test_config_validation.py",
     "test_container.py",
     "test_container_smoke_script.py",
     "test_contract_error_adapter.py",
-    "test_coverage_gaps.py",
     "test_cpu_performance.py",
     "test_cpu_performance_json_pools.py",
     "test_cpu_performance_startup.py",
@@ -117,27 +112,29 @@ strict = [
     "test_deploy_expected_output_validation.py",
     "test_deploy_identity_parity.py",
     "test_deploy_mlflow_credentials.py",
-    "test_deploy_mlflow_gaps.py",
     "test_deploy_project_modules.py",
     "test_deploy_request_rows.py",
-    "test_deploy_scorer_coverage.py",
+    "test_deploy_scorer.py",
     "test_deploy_submodels.py",
     "test_deploy_utils.py",
     "test_discovery.py",
     "test_docs_accuracy.py",
-    "test_dry_fixes.py",
-    "test_dry_refactors.py",
     "test_edge_join.py",
     "test_editor_name_allocation.py",
     "test_env_lazy_accessors.py",
     "test_error_detail_sanitization.py",
     "test_errors.py",
-    "test_event_bus_gaps.py",
+    "test_event_bus.py",
     "test_executable_names.py",
     "test_execute_lazy.py",
-    "test_execute_lazy_contract_coverage.py",
+    "test_execute_lazy_contracts.py",
     "test_execute_lazy_paths.py",
-    "test_execution_context.py",
+    "test_execution_admission.py",
+    "test_execution_context_executors.py",
+    "test_execution_context_lifecycle.py",
+    "test_execution_context_routes.py",
+    "test_execution_context_services.py",
+    "test_execution_metrics_payload.py",
     "test_execution_profile_semantics.py",
     "test_executor_builders.py",
     "test_executor_critical_edges.py",
@@ -149,12 +146,11 @@ strict = [
     "test_explore_relationships.py",
     "test_explore_round_trip.py",
     "test_export_receipts.py",
+    "test_expression_evaluator.py",
     "test_expression_parity_properties.py",
     "test_expression_parser.py",
     "test_expression_parser_advanced.py",
     "test_expression_parser_chain.py",
-    "test_expression_parser_coverage.py",
-    "test_expression_parser_w3_fixes.py",
     "test_extract_column_refs.py",
     "test_feature_contract.py",
     "test_feature_contract_identity.py",
@@ -171,10 +167,10 @@ strict = [
     "test_git_helpers.py",
     "test_git_improvements.py",
     "test_git_lifecycle_improvements.py",
-    "test_git_rollback_coverage.py",
+    "test_git_rollback.py",
     "test_git_routes.py",
     "test_git_routes_pydantic.py",
-    "test_git_state_coverage.py",
+    "test_git_state.py",
     "test_gitignore_guard.py",
     "test_glm_integration.py",
     "test_glm_terms.py",
@@ -202,7 +198,7 @@ strict = [
     "test_job_lifecycle_properties.py",
     "test_job_store.py",
     "test_join_orders.py",
-    "test_json_cache_coverage_uplift.py",
+    "test_json_cache_corrupt_and_errors.py",
     "test_json_direct_spill.py",
     "test_json_read_documented.py",
     "test_json_runtime_storage.py",
@@ -264,9 +260,9 @@ strict = [
     "test_node_snapshot_signature.py",
     "test_non_canonical_input.py",
     "test_optimiser_apply.py",
-    "test_optimiser_apply_artifacts.py",
     "test_optimiser_apply_trace_enrichment.py",
     "test_optimiser_auto_range_stage.py",
+    "test_optimiser_contracts.py",
     "test_optimiser_golden.py",
     "test_optimiser_io.py",
     "test_optimiser_level_tie_properties.py",
@@ -303,6 +299,7 @@ strict = [
     "test_pipeline_route_supersession.py",
     "test_pipeline_runtime_path_validation.py",
     "test_pipeline_settings.py",
+    "test_pipeline_source_file.py",
     "test_polars_backend_strategy_contract.py",
     "test_polars_dtypes.py",
     "test_polars_environment.py",
@@ -310,9 +307,14 @@ strict = [
     "test_polars_io_registry.py",
     "test_polars_operations.py",
     "test_polars_selectors.py",
-    "test_polars_steps.py",
     "test_polars_steps_catalogue.py",
     "test_polars_steps_corpus.py",
+    "test_polars_steps_execution.py",
+    "test_polars_steps_expressions.py",
+    "test_polars_steps_frame_starts.py",
+    "test_polars_steps_persistence.py",
+    "test_polars_steps_rendering.py",
+    "test_polars_steps_routes.py",
     "test_port_aware_executor.py",
     "test_preserve_markers.py",
     "test_preview_admission.py",
@@ -326,7 +328,6 @@ strict = [
     "test_price_contour_guard.py",
     "test_process_memory.py",
     "test_project_files_routes.py",
-    "test_project_gaps.py",
     "test_project_layout.py",
     "test_project_python.py",
     "test_project_root.py",
@@ -346,7 +347,6 @@ strict = [
     "test_rating_levels.py",
     "test_rating_miss_fail_loud.py",
     "test_rating_step.py",
-    "test_rating_step_config_coverage.py",
     "test_read_user_text.py",
     "test_reference_pipeline.py",
     "test_registry_contracts.py",
@@ -367,7 +367,6 @@ strict = [
     "test_safety.py",
     "test_safety_critical_lists.py",
     "test_sandbox.py",
-    "test_sandbox_coverage_gaps.py",
     "test_sanitize_parity_fixture.py",
     "test_save_incomplete_transform.py",
     "test_save_pipeline_integrity.py",
@@ -383,7 +382,7 @@ strict = [
     "test_scoring_path_unified.py",
     "test_scoring_prep_perf.py",
     "test_secret_surface.py",
-    "test_security_gaps.py",
+    "test_security_hardening.py",
     "test_serialization_invariants.py",
     "test_served_haute.py",
     "test_server_concurrency.py",
@@ -428,7 +427,6 @@ strict = [
     "test_trace_cache_byte_awareness.py",
     "test_trace_calculation_hero.py",
     "test_trace_correlation_remediation.py",
-    "test_trace_coverage.py",
     "test_trace_display_edge_cases.py",
     "test_trace_edge_join.py",
     "test_trace_enrichment.py",
@@ -444,11 +442,10 @@ strict = [
     "test_trace_row_scope_lookup.py",
     "test_trace_snapshot_seeding.py",
     "test_trace_value_lineage.py",
-    "test_trace_w4_fixes.py",
     "test_trace_waterfall.py",
     "test_train_config_builder.py",
     "test_train_evaluation_config.py",
-    "test_train_service_helpers_coverage.py",
+    "test_train_service.py",
     "test_training_catboost_projection.py",
     "test_training_lorenz_nonfinite.py",
     "test_training_null_target_fused_split.py",
@@ -489,10 +486,10 @@ strict = [
 # taint cannot resolve, plus a handful of genuine system-temp users. The
 # runtime census (layer 3 observe mode) is the ground truth for which of
 # these actually escape the sandbox at run time.
-"tests/test_algorithms_coverage.py" = [
-    "478fb2eeb7affd56",  # TestGPUOnIterationPath.test_gpu_fit_error_is_reraised
-    "50449bfb7cc038fb",  # TestGPUOnIterationPath.test_gpu_with_on_iteration_creates_tempdir_and_polls
-    "8463a0c400408741",  # TestGPUOnIterationPath.test_gpu_with_on_iteration_creates_tempdir_and_polls.fake_fit
+"tests/test_modelling.py" = [
+    "5b18397103d62ce1",  # TestGPUOnIterationPath.test_gpu_with_on_iteration_creates_tempdir_and_polls
+    "6990055a2eb30461",  # TestGPUOnIterationPath.test_gpu_with_on_iteration_creates_tempdir_and_polls.fake_fit
+    "6ce0ed17de73b5d6",  # TestGPUOnIterationPath.test_gpu_fit_error_is_reraised
 ]
 "tests/test_deploy.py" = [
     "d2f2018ff6fb11d7",  # _write_cached_model
@@ -575,8 +572,8 @@ strict = [
 "tests/test_model_score_executor.py" = [
     "22ee01c87b75519b",  # TestResolveArtifactLocal.test_disk_cache_hit
 ]
-"tests/test_optimiser_service_coverage.py" = [
-    "8f44369b7dd8987c",  # test_load_rejects_corrupt_parquet
+"tests/test_optimiser_apply_artifacts.py" = [
+    "d91c262067fa7cfc",  # test_load_rejects_corrupt_parquet
 ]
 # ``main()`` regenerates the checked-in compatibility corpus offline; it
 # never runs under pytest.
@@ -586,8 +583,8 @@ strict = [
 "tests/test_polars_utils.py" = [
     "a492c980180bfa30",  # TestAtomicWriteEdgeCases.test_cleans_up_temp_on_exception
 ]
-"tests/test_server.py" = [
-    "3b25eb4acbb3cdbc",  # TestServerPipelineDiscoveryHelpers.test_discovered_pipeline_paths_filters_non_pipeline_python
+"tests/test_server_pipeline_routes.py" = [
+    "fc7e081b33a6e97d",  # TestServerPipelineDiscoveryHelpers.test_discovered_pipeline_paths_filters_non_pipeline_python
 ]
 "tests/test_submodel_routes.py" = [
     "001032abfbb1ed71",  # TestDissolveSubmodel.test_dissolve_retains_configured_pipeline_module_until_save

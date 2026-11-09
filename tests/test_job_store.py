@@ -2755,7 +2755,7 @@ class TestOptimiserConcurrencyGuard:
 
     def test_train_service_has_start_lock(self) -> None:
         """Verify TrainService has the _start_lock attribute."""
-        from haute.routes._train_service import TrainService
+        from haute.routes._training_lifecycle import TrainService
 
         store = JobStore()
         svc = TrainService(store)

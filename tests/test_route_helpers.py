@@ -1,8 +1,9 @@
-"""Comprehensive tests for haute.routes._helpers.
+"""Tests for haute.routes._helpers.
 
 Covers:
   - contained_path  — valid paths, traversal attempts, absolute paths
   - raise_node_not_found / raise_node_type_error / raise_pipeline_not_found
+  - find_typed_node — lookup by id and type, and the services that use it
   - mark_self_write / is_self_write — content-identity self-write detection
   - load_sidecar / load_sidecar_positions — valid JSON, corrupt JSON, missing file
   - save_sidecar — round-trip test, scenario state
@@ -16,7 +17,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1239,3 +1240,66 @@ class TestParsePipelineToGraph:
         graph = parse_pipeline_to_graph(py_path)
         assert graph.sources == ["live"]
         assert graph.active_source == "live"
+
+
+# ── D16: find_typed_node helper ────────────────────────────────────
+
+
+class TestFindTypedNodeSharedHelper:
+    """Tests for routes._helpers.find_typed_node()."""
+
+    def _make_graph_with_node(self, node_type: str = "modelling") -> MagicMock:
+        """Build a minimal mock graph with one node."""
+        from haute._types import GraphNode, NodeData, PipelineGraph
+
+        node = GraphNode(
+            id="n1",
+            data=NodeData(label="MyNode", nodeType=node_type, config={}),
+        )
+        graph = PipelineGraph(nodes=[node], edges=[])
+        return graph
+
+    def test_finds_matching_node(self) -> None:
+        from haute.graph_utils import NodeType
+        from haute.routes._helpers import find_typed_node
+
+        graph = self._make_graph_with_node("modelling")
+        node = find_typed_node(graph, "n1", NodeType.MODELLING, "modelling")
+        assert node.id == "n1"
+
+    def test_raises_404_when_node_missing(self) -> None:
+
+        from haute.graph_utils import NodeType
+        from haute.routes._helpers import find_typed_node
+
+        graph = self._make_graph_with_node("modelling")
+        with pytest.raises(RequestRefusedError) as exc_info:
+            find_typed_node(graph, "nonexistent", NodeType.MODELLING, "modelling")
+        assert exc_info.value.status_code == 404
+
+    def test_raises_400_when_wrong_type(self) -> None:
+
+        from haute.graph_utils import NodeType
+        from haute.routes._helpers import find_typed_node
+
+        graph = self._make_graph_with_node("polars")
+        with pytest.raises(RequestRefusedError) as exc_info:
+            find_typed_node(graph, "n1", NodeType.MODELLING, "modelling")
+        assert exc_info.value.status_code == 400
+        assert "modelling" in exc_info.value.detail
+
+    def test_optimiser_service_uses_find_typed_node(self) -> None:
+        """_find_optimiser_node should delegate to find_typed_node."""
+        from haute.routes._optimiser_input import _find_optimiser_node
+
+        graph = self._make_graph_with_node("optimiser")
+        node = _find_optimiser_node(graph, "n1")
+        assert node.id == "n1"
+
+    def test_train_service_uses_find_typed_node(self) -> None:
+        """_find_modelling_node should delegate to find_typed_node."""
+        from haute.routes._training_preparation import _find_modelling_node
+
+        graph = self._make_graph_with_node("modelling")
+        node = _find_modelling_node(graph, "n1")
+        assert node.id == "n1"

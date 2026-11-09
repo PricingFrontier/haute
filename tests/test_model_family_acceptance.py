@@ -23,7 +23,9 @@ from haute.errors import HauteValidationError
 from haute.modelling import _training_job
 from haute.modelling._training_job import TrainingJob, model_contract_filename
 from haute.routes._training_worker import _training_response_payload
+from tests._process_state import clear_deploy_artifact_caches
 from tests._project import use_project
+from tests._training_helpers import join_training_preparation
 from tests.conftest import make_ram_estimate
 
 EVALUATION = {
@@ -145,7 +147,7 @@ def every_path(
     from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
     from haute._model_scorer import ModelScorer, score_from_config
     from haute._model_source import FileModelSource, RunModelSource, scoring_contract_path
-    from haute.deploy._scorer import _clear_deploy_artifact_caches, score_graph
+    from haute.deploy._scorer import score_graph
     from haute.modelling._feature_contract import CONTRACT_FILENAME
     from haute.modelling._mlflow_log import resolve_tracking_backend
     from haute.modelling._native_pyfunc import NativePyfuncModel, package_native_model
@@ -175,7 +177,7 @@ def every_path(
 
     # Deployed scoring reads bundle files only from inside the project root.
     use_project(model_path.parent)
-    _clear_deploy_artifact_caches()
+    clear_deploy_artifact_caches()
     deployed = score_graph(
         graph=_deploy_graph(model_path.name, task),
         input_df=data,
@@ -197,7 +199,7 @@ def every_path(
         output_node_id="out",
         artifact_paths=bundle,
     )
-    _clear_deploy_artifact_caches()
+    clear_deploy_artifact_caches()
 
     # The preview's builder and a standalone run both resolve the file and the
     # contract saved beside it from the project.
@@ -529,7 +531,7 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
     newer success publishes its own model."""
     from haute.modelling._algorithms import ALGORITHM_REGISTRY
     from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
+    from haute.routes._training_lifecycle import TrainService
     from haute.schemas import TrainRequest
     from tests.conftest import make_edge, make_graph
     from tests.test_training_worker_protocol import _inline_protocol_runner
@@ -597,7 +599,7 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
     def run_once() -> dict:
         response = service.start(body)
         assert response.status == "started"
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
         launched[-1].join_and_raise(timeout=120)
         return store.require_job(response.job_id)
 
@@ -622,7 +624,7 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
     # A cancelled run publishes nothing and leaves the completed model intact.
     response = service.start(body)
     cancel_job_id = response.job_id
-    service._join_preparation(response.job_id)
+    join_training_preparation(response.job_id)
     launched[-1].join_and_raise(timeout=120)
     cancelled_run = store.require_job(response.job_id)
     assert cancelled_run["status"] == "cancelled"
@@ -649,12 +651,12 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
 
 
 def test_only_a_haute_binary_contract_declares_the_probability_column(tmp_path: Path) -> None:
-    from haute._contracts import get_column_contract
+    from haute._contracts import get_node_contract
     from haute._types import NodeType
     from haute.modelling._feature_contract import build_contract, save_contract
 
     def produced(config: dict[str, str]) -> set[str] | None:
-        return get_column_contract(NodeType.MODEL_SCORE, config)[0]
+        return get_node_contract(NodeType.MODEL_SCORE, config).to_tuple()[0]
 
     result = train(
         tmp_path,
@@ -697,7 +699,7 @@ def test_a_prediction_only_classifier_deploys_its_labels(tmp_path: Path) -> None
     from sklearn.svm import LinearSVC
 
     from haute._mlflow_io import ScoringModel
-    from haute.deploy._scorer import _clear_deploy_artifact_caches, score_graph
+    from haute.deploy._scorer import score_graph
     from haute.modelling._feature_contract import (
         CONTRACT_FILENAME,
         build_contract,
@@ -761,7 +763,7 @@ def test_a_prediction_only_classifier_deploys_its_labels(tmp_path: Path) -> None
         }
     )
     use_project(tmp_path)
-    _clear_deploy_artifact_caches()
+    clear_deploy_artifact_caches()
     with patch("haute._mlflow_io.load_local_model", return_value=scoring):
         scored = score_graph(
             graph=graph,
@@ -773,7 +775,7 @@ def test_a_prediction_only_classifier_deploys_its_labels(tmp_path: Path) -> None
                 f"ms__{CONTRACT_FILENAME}": str(contract),
             },
         )
-    _clear_deploy_artifact_caches()
+    clear_deploy_artifact_caches()
     expected = classifier.predict(data.select("age").to_numpy()).tolist()
     assert scored.sort("row")["pred"].to_list() == expected
 

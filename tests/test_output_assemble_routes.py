@@ -21,15 +21,15 @@ from fastapi.testclient import TestClient
 
 from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
 from haute._execution_context import ExecutionProfile
-from haute._interactive_workers import (
-    InteractiveWorkerCrashedError,
-    InteractiveWorkerMemoryLimitError,
-    InteractiveWorkerRemoteError,
-    InteractiveWorkerTimeoutError,
-)
 from haute._output_assembler import OutputMappingSchemaError
 from haute._project_context import current_project
 from haute._types import NodeType
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerMemoryLimitError,
+    WorkerRemoteError,
+    WorkerTimeoutError,
+)
 from haute.errors import ConfigError, ContractColumnsMissingError, ContractMismatchError
 from haute.executor import _preview_cache
 from haute.routes._timeouts import BlockingWorkTimeoutError
@@ -476,19 +476,19 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
         budget_policy="fixed_default",
     )
     if failure_kind == "memory":
-        failure: BaseException = InteractiveWorkerMemoryLimitError(
+        failure: BaseException = WorkerMemoryLimitError(
             rss_bytes=200,
-            limit_bytes=123,
+            rss_limit_bytes=123,
         )
         expected_status = 507
     elif failure_kind == "crash_memory":
-        failure = InteractiveWorkerCrashedError(-9, memory_limited=True)
+        failure = WorkerCrashedError(-9, memory_limited=True)
         expected_status = 507
     elif failure_kind == "crash":
-        failure = InteractiveWorkerCrashedError(3)
+        failure = WorkerCrashedError(3)
         expected_status = 500
     else:
-        failure = InteractiveWorkerRemoteError(
+        failure = WorkerRemoteError(
             remote_type="RuntimeError",
             remote_module="builtins",
             remote_message="private child detail",
@@ -548,7 +548,7 @@ def test_dry_run_process_worker_contract_failures_are_422_as_in_a_thread(
     failure: type[Exception],
 ) -> None:
     client, data_path = project
-    remote = InteractiveWorkerRemoteError(
+    remote = WorkerRemoteError(
         remote_type=failure.__name__,
         remote_module=failure.__module__,
         remote_message="Node 'out' is missing columns: premium",
@@ -598,7 +598,7 @@ def test_dry_run_process_timeout_releases_parent_admission_immediately(project) 
 
     async def _timeout(*args, **kwargs):
         del args, kwargs
-        raise InteractiveWorkerTimeoutError(1)
+        raise WorkerTimeoutError(1)
 
     with (
         patch(

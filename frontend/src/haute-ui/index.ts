@@ -7,9 +7,7 @@
  * `side-panel.css` and `dropdowns.css` from this directory.
  */
 export { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems, PaletteRevealStrip } from "./PaletteShell"
-export type { PaletteItemProps } from "./PaletteShell"
 export { SidePanel, SidePanelClose, SidePanelHeader } from "./SidePanel"
 export { halfWindowWidth } from "./sidePanelWidth"
-export type { SidePanelHeaderProps, SidePanelProps } from "./SidePanel"
+export type { SidePanelProps } from "./SidePanel"
 export { SaveCommit, ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "./ToolbarControls"
-export type { ToolbarButtonProps } from "./ToolbarControls"

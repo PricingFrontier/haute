@@ -16,7 +16,7 @@ import pytest
 from haute import _registry as registry
 from haute import _standalone_nodes as standalone_nodes
 from haute._node_specs import STANDALONE_PASSTHROUGH_TYPES
-from haute._types import NodeType
+from haute._types import GraphNode, NodeData, NodeType
 from haute.errors import ConfigError
 
 
@@ -137,7 +137,7 @@ def test_register_exec_stores_builder_and_column_contract(
 
     assert registered is _exec_builder
     assert entry.exec is _exec_builder
-    assert registry.get_exec(NodeType.DATA_INPUT) is _exec_builder
+    assert registry.NODE_REGISTRY[NodeType.DATA_INPUT].exec is _exec_builder
     assert entry.column_contract is _column_contract
     assert entry.column_contract(config) == ("contract", config)
 
@@ -153,8 +153,8 @@ def test_register_exec_then_codegen_preserves_single_entry(
     entry = registry.NODE_REGISTRY[NodeType.POLARS]
     assert entry.exec is _exec_builder
     assert entry.codegen is _codegen_builder
-    assert registry.get_exec(NodeType.POLARS) is _exec_builder
-    assert registry.get_codegen(NodeType.POLARS) is _codegen_builder
+    assert registry.NODE_REGISTRY[NodeType.POLARS].exec is _exec_builder
+    assert registry.NODE_REGISTRY[NodeType.POLARS].codegen is _codegen_builder
 
 
 def test_register_codegen_decorator_rejects_duplicates(
@@ -178,7 +178,7 @@ def test_register_codegen_stores_builder(
     registered = registry.register_codegen(NodeType.POLARS)(_codegen_builder)
 
     assert registered is _codegen_builder
-    assert registry.get_codegen(NodeType.POLARS) is _codegen_builder
+    assert registry.NODE_REGISTRY[NodeType.POLARS].codegen is _codegen_builder
 
 
 def test_register_codegen_then_exec_preserves_single_entry(
@@ -192,8 +192,8 @@ def test_register_codegen_then_exec_preserves_single_entry(
     entry = registry.NODE_REGISTRY[NodeType.POLARS]
     assert entry.exec is _exec_builder
     assert entry.codegen is _codegen_builder
-    assert registry.get_exec(NodeType.POLARS) is _exec_builder
-    assert registry.get_codegen(NodeType.POLARS) is _codegen_builder
+    assert registry.NODE_REGISTRY[NodeType.POLARS].exec is _exec_builder
+    assert registry.NODE_REGISTRY[NodeType.POLARS].codegen is _codegen_builder
 
 
 def test_set_codegen_rejects_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,63 +211,7 @@ def test_set_codegen_stores_builder(monkeypatch: pytest.MonkeyPatch) -> None:
 
     registry.set_codegen(NodeType.POLARS, _codegen_builder)
 
-    assert registry.get_codegen(NodeType.POLARS) is _codegen_builder
-
-
-def test_get_exec_missing_entry_fails_loudly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(registry, "NODE_REGISTRY", {})
-
-    with pytest.raises(KeyError) as exc_info:
-        registry.get_exec(NodeType.POLARS)
-
-    assert "no exec builder registered" in str(exc_info.value)
-    assert repr(NodeType.POLARS) in str(exc_info.value)
-
-
-def test_get_exec_missing_builder_fails_loudly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        registry,
-        "NODE_REGISTRY",
-        {NodeType.POLARS: registry.NodeRegistryEntry(codegen=_codegen_builder)},
-    )
-
-    with pytest.raises(KeyError) as exc_info:
-        registry.get_exec(NodeType.POLARS)
-
-    assert "no exec builder registered" in str(exc_info.value)
-    assert repr(NodeType.POLARS) in str(exc_info.value)
-
-
-def test_get_codegen_missing_entry_fails_loudly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(registry, "NODE_REGISTRY", {})
-
-    with pytest.raises(KeyError) as exc_info:
-        registry.get_codegen(NodeType.POLARS)
-
-    assert "no codegen builder registered" in str(exc_info.value)
-    assert repr(NodeType.POLARS) in str(exc_info.value)
-
-
-def test_get_codegen_missing_builder_fails_loudly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        registry,
-        "NODE_REGISTRY",
-        {NodeType.POLARS: registry.NodeRegistryEntry(exec=_exec_builder)},
-    )
-
-    with pytest.raises(KeyError) as exc_info:
-        registry.get_codegen(NodeType.POLARS)
-
-    assert "no codegen builder registered" in str(exc_info.value)
-    assert repr(NodeType.POLARS) in str(exc_info.value)
+    assert registry.NODE_REGISTRY[NodeType.POLARS].codegen is _codegen_builder
 
 
 def test_validate_registry_complete_accepts_fully_registered_registry(
@@ -523,3 +467,59 @@ def test_standalone_passthrough_list_matches_what_a_standalone_run_does(
                 fn=declaration,
                 frames=(scored, factors),
             )
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        pytest.param({}, id="no-entry"),
+        pytest.param(
+            {NodeType.POLARS: registry.NodeRegistryEntry(codegen=_codegen_builder)},
+            id="no-exec-builder",
+        ),
+    ],
+)
+def test_build_node_fn_without_an_exec_builder_names_the_node(
+    monkeypatch: pytest.MonkeyPatch,
+    entries: dict[NodeType, registry.NodeRegistryEntry],
+) -> None:
+    from haute import _builders
+
+    monkeypatch.setattr(_builders, "NODE_REGISTRY", entries)
+    node = GraphNode(
+        id="t1",
+        data=NodeData(label="transform", nodeType=NodeType.POLARS, config={"code": "df"}),
+    )
+
+    with pytest.raises(KeyError, match="no exec builder registered") as exc_info:
+        _builders._build_node_fn(node, config_checked=True)
+
+    assert "node id='t1'" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        pytest.param({}, id="no-entry"),
+        pytest.param(
+            {NodeType.POLARS: registry.NodeRegistryEntry(exec=_exec_builder)},
+            id="no-codegen-builder",
+        ),
+    ],
+)
+def test_generate_node_code_without_a_codegen_builder_names_the_node(
+    monkeypatch: pytest.MonkeyPatch,
+    entries: dict[NodeType, registry.NodeRegistryEntry],
+) -> None:
+    from haute import codegen
+
+    monkeypatch.setattr(codegen, "NODE_REGISTRY", entries)
+    node = GraphNode(
+        id="t1",
+        data=NodeData(label="transform", nodeType=NodeType.POLARS, config={"code": "df"}),
+    )
+
+    with pytest.raises(KeyError, match="no codegen builder registered") as exc_info:
+        codegen._generate_node_code(node)
+
+    assert "node id='t1'" in str(exc_info.value)

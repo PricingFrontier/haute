@@ -1,7 +1,7 @@
 """Tests for capture projection — backward column analysis.
 
 Covers:
-  - get_column_contract          — builder-registered column contracts
+  - get_node_contract          — builder-registered column contracts
   - prepared projection plans     — backward pass computing minimal column sets
   - capture projection in a planned lazy walk — what a planned run writes into the
     shared snapshot store at a join, fan-out, or join feeder
@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from haute._contracts import get_column_contract
+from haute._contracts import get_node_contract
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import native_memory_backend_scope
@@ -128,7 +128,7 @@ def _transform_node(nid: str, *, code: str = "") -> GraphNode:
 
 
 # ===========================================================================
-# get_column_contract — produced and referenced columns per node type
+# get_node_contract — produced and referenced columns per node type
 # ===========================================================================
 
 
@@ -138,7 +138,7 @@ class TestGetColumnContract:
     # -- BANDING --------------------------------------------------------
 
     def test_banding_produces_output_columns(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.BANDING,
             {
                 "factors": [
@@ -156,39 +156,39 @@ class TestGetColumnContract:
                     },
                 ]
             },
-        )
+        ).to_tuple()
         assert produced == {"age_band", "region_band"}
         assert referenced == {"age", "region"}
 
     def test_banding_empty_factors(self):
-        produced, referenced = get_column_contract(NodeType.BANDING, {"factors": []})
+        produced, referenced = get_node_contract(NodeType.BANDING, {"factors": []}).to_tuple()
         assert produced == set()
         assert referenced == set()
 
     def test_banding_missing_output_column(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.BANDING,
             {"factors": [{"banding": "breakpoints", "column": "age", "rules": _RULE}]},
-        )
+        ).to_tuple()
         # Without an output column the factor is a draft execution skips, so
         # the contract neither creates nor reads anything for it.
         assert produced == set()
         assert referenced == set()
 
     def test_banding_none_factors(self):
-        produced, referenced = get_column_contract(NodeType.BANDING, {"factors": None})
+        produced, referenced = get_node_contract(NodeType.BANDING, {"factors": None}).to_tuple()
         assert produced == set()
         assert referenced == set()
 
     def test_banding_no_config(self):
-        produced, referenced = get_column_contract(NodeType.BANDING, {})
+        produced, referenced = get_node_contract(NodeType.BANDING, {}).to_tuple()
         assert produced == set()
         assert referenced == set()
 
     # -- RATING_STEP ----------------------------------------------------
 
     def test_rating_step_produces_and_references(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.RATING_STEP,
             {
                 "tables": [
@@ -203,19 +203,19 @@ class TestGetColumnContract:
                     }
                 ],
             },
-        )
+        ).to_tuple()
         assert produced == {"age_factor", "vehicle_factor", "combined"}
         assert referenced == {"age", "region", "vehicle_type"}
 
     def test_rating_step_no_combined(self):
-        produced, _ = get_column_contract(
+        produced, _ = get_node_contract(
             NodeType.RATING_STEP,
             {"tables": [{"factors": ["x"], "output_column": "x_out"}]},
-        )
+        ).to_tuple()
         assert produced == {"x_out"}
 
     def test_rating_step_empty_combined_outputs_multiple_tables_is_noop(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.RATING_STEP,
             {
                 "tables": [
@@ -224,17 +224,17 @@ class TestGetColumnContract:
                 ],
                 "combined_outputs": [],
             },
-        )
+        ).to_tuple()
         assert produced == {"age_factor", "region_factor"}
         assert referenced == {"age", "region"}
 
     def test_rating_step_empty_tables(self):
-        produced, referenced = get_column_contract(NodeType.RATING_STEP, {"tables": []})
+        produced, referenced = get_node_contract(NodeType.RATING_STEP, {"tables": []}).to_tuple()
         assert produced == set()
         assert referenced == set()
 
     def test_rating_step_combined_outputs_produced(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.RATING_STEP,
             {
                 "tables": [
@@ -250,7 +250,7 @@ class TestGetColumnContract:
                     {"output_column": "additive_score", "operation": "add", "base_value": 0},
                 ],
             },
-        )
+        ).to_tuple()
         assert produced == {
             "age_factor",
             "region_factor",
@@ -260,18 +260,18 @@ class TestGetColumnContract:
         assert referenced == {"age", "region"}
 
     def test_rating_step_empty_combined_outputs_is_noop(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.RATING_STEP,
             {
                 "tables": [{"factors": ["age"], "output_column": "age_factor"}],
                 "combined_outputs": [],
             },
-        )
+        ).to_tuple()
         assert produced == {"age_factor"}
         assert referenced == {"age"}
 
     def test_rating_step_combined_output_base_only_produced(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.RATING_STEP,
             {
                 "tables": [],
@@ -283,43 +283,43 @@ class TestGetColumnContract:
                     },
                 ],
             },
-        )
+        ).to_tuple()
         assert produced == {"technical_premium"}
         assert referenced == set()
 
     def test_rating_step_with_code_is_opaque(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.RATING_STEP,
             {
                 "tables": [{"factors": ["x"], "output_column": "x_factor"}],
                 "code": "df = df.with_columns(pl.col('y').alias('z'))",
             },
-        )
+        ).to_tuple()
         assert produced is None
         assert referenced is None
 
     # -- MODEL_SCORE ----------------------------------------------------
 
     def test_model_score_default_output(self):
-        produced, _ = get_column_contract(NodeType.MODEL_SCORE, {})
+        produced, _ = get_node_contract(NodeType.MODEL_SCORE, {}).to_tuple()
         assert produced == {"prediction"}
 
     def test_model_score_custom_output(self):
-        produced, _ = get_column_contract(
+        produced, _ = get_node_contract(
             NodeType.MODEL_SCORE,
             {"output_column": "score"},
-        )
+        ).to_tuple()
         assert produced == {"score"}
 
     def test_model_score_no_source_type_opaque_referenced(self):
-        _, referenced = get_column_contract(NodeType.MODEL_SCORE, {"source_type": ""})
+        _, referenced = get_node_contract(NodeType.MODEL_SCORE, {"source_type": ""}).to_tuple()
         assert referenced is None
 
     def test_model_score_with_code_opaque_referenced(self):
-        _, referenced = get_column_contract(
+        _, referenced = get_node_contract(
             NodeType.MODEL_SCORE,
             {"source_type": "run", "code": "df = df.filter(pl.col('x') > 0)"},
-        )
+        ).to_tuple()
         assert referenced is None
 
     def test_model_score_with_loadable_model(self):
@@ -328,10 +328,10 @@ class TestGetColumnContract:
         mock_model.optional_feature_names = frozenset()
 
         with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
-            produced, referenced = get_column_contract(
+            produced, referenced = get_node_contract(
                 NodeType.MODEL_SCORE,
                 {"source_type": "run", "run_id": "abc123", "task": "regression"},
-            )
+            ).to_tuple()
         assert produced == {"prediction"}
         assert referenced == {"feat_a", "feat_b", "feat_c"}
 
@@ -341,34 +341,34 @@ class TestGetColumnContract:
         it and returned opaque columns, masking config/infra problems."""
         with patch("haute._mlflow_io.load_mlflow_model", side_effect=Exception("fail")):
             with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: patches with generic Exception to test propagation
-                get_column_contract(
+                get_node_contract(
                     NodeType.MODEL_SCORE,
                     {"source_type": "run", "run_id": "abc123", "task": "regression"},
-                )
+                ).to_tuple()
 
     # -- SCENARIO_EXPANDER ----------------------------------------------
 
     def test_scenario_expander_produces_columns(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.SCENARIO_EXPANDER,
             {"column_name": "scenario_value", "step_column": "scenario_index"},
-        )
+        ).to_tuple()
         assert produced == {"scenario_value", "scenario_index"}
         assert referenced == set()
 
     def test_scenario_expander_with_code_opaque(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.SCENARIO_EXPANDER,
             {"column_name": "val", "code": "df = df.filter(True)"},
-        )
+        ).to_tuple()
         assert produced is None
         assert referenced is None
 
     def test_scenario_expander_empty_column_name(self):
-        produced, _ = get_column_contract(
+        produced, _ = get_node_contract(
             NodeType.SCENARIO_EXPANDER,
             {"column_name": "  ", "step_column": "idx"},
-        )
+        ).to_tuple()
         assert produced == {"idx"}
 
     # -- OPTIMISER_APPLY ------------------------------------------------
@@ -381,23 +381,23 @@ class TestGetColumnContract:
         # "declared pass-through, truly reads nothing" from "opaque
         # because the schema comes from a runtime artifact" (tested
         # below).
-        produced, referenced = get_column_contract(NodeType.OPTIMISER_APPLY, {})
+        produced, referenced = get_node_contract(NodeType.OPTIMISER_APPLY, {}).to_tuple()
         assert produced == set()
         assert referenced == set()
 
     def test_optimiser_apply_custom_version_column_unconfigured(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.OPTIMISER_APPLY,
             {"version_column": "opt_ver"},
-        )
+        ).to_tuple()
         assert produced == set()
         assert referenced == set()
 
     def test_optimiser_apply_custom_optimised_value_column_unconfigured(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.OPTIMISER_APPLY,
             {"optimised_value_column": "selected_price_factor"},
-        )
+        ).to_tuple()
         assert produced == set()
         assert referenced == set()
 
@@ -406,22 +406,22 @@ class TestGetColumnContract:
         # honestly opaque — the column dependencies come from the
         # artifact at runtime (quote_id, scenario_index, constraints,
         # etc.) which is not introspectable without loading it.
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.OPTIMISER_APPLY,
             {"artifact_path": "/tmp/opt.json", "source_type": "file"},
-        )
+        ).to_tuple()
         assert produced == {"__optimiser_version__"}
         assert referenced is None
 
     def test_optimiser_apply_with_custom_optimised_value_column(self):
-        produced, referenced = get_column_contract(
+        produced, referenced = get_node_contract(
             NodeType.OPTIMISER_APPLY,
             {
                 "artifact_path": "/tmp/opt.json",
                 "source_type": "file",
                 "optimised_value_column": "selected_price_factor",
             },
-        )
+        ).to_tuple()
         assert produced == {"__optimiser_version__", "selected_price_factor"}
         assert referenced is None
 
@@ -440,20 +440,20 @@ class TestGetColumnContract:
         ],
     )
     def test_passthrough_types(self, node_type: NodeType):
-        produced, referenced = get_column_contract(node_type, {})
+        produced, referenced = get_node_contract(node_type, {}).to_tuple()
         assert produced == set()
         assert referenced == set()
 
     def test_constant_empty_config(self):
         """Constant with no values config declares produced={} (no columns)."""
-        produced, referenced = get_column_contract(NodeType.CONSTANT, {})
+        produced, referenced = get_node_contract(NodeType.CONSTANT, {}).to_tuple()
         assert produced == {"constant"}
         assert referenced == set()
 
     def test_constant_with_values(self):
         """Constant with named values declares those as produced columns."""
         config = {"values": [{"name": "rate", "value": "1.5"}, {"name": "fee", "value": "10"}]}
-        produced, referenced = get_column_contract(NodeType.CONSTANT, config)
+        produced, referenced = get_node_contract(NodeType.CONSTANT, config).to_tuple()
         assert produced == {"rate", "fee"}
         assert referenced == set()
 
@@ -464,7 +464,7 @@ class TestGetColumnContract:
         [NodeType.POLARS, NodeType.EXTERNAL_FILE, NodeType.API_INPUT, NodeType.DATA_INPUT],
     )
     def test_opaque_types(self, node_type: NodeType):
-        produced, referenced = get_column_contract(node_type, {})
+        produced, referenced = get_node_contract(node_type, {}).to_tuple()
         assert produced is None
         assert referenced is None
 

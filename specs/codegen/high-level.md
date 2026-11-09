@@ -527,7 +527,7 @@ extraction ends with.
   and code generation consume that canonical text directly; they do not accept
   generated function bodies as another config-code representation.
 - Contract computation calls into `src/haute/_contracts.py`
-  (`get_column_contract`, `Contract`), whose callbacks are registered by the execution builders;
+  (`get_node_contract`, `Contract`), whose callbacks are registered by the execution builders;
   this is shared registry/contract infrastructure, not expression evaluation.
 
 ## Failure model

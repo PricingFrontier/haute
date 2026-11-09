@@ -26,6 +26,7 @@ from haute._node_specs import NODE_TYPE_TO_FOLDER
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute._worker_failures import exitcode_looks_memory_limited, worker_memory_detail
 from haute.errors import (
     ExecutionError,
     GroupByExecutionUnsupportedError,
@@ -304,14 +305,14 @@ class TestExecuteSinkDataOutput:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from haute._worker_isolation import IsolatedWorkerStoppedError
+        from haute._worker_failures import WorkerStoppedError
         from haute.routes import pipeline as pipeline_route
 
         _stub_plans(monkeypatch)
 
         gate = WorkerCancellationGate()
         gate.request()
-        with pytest.raises(IsolatedWorkerStoppedError):
+        with pytest.raises(WorkerStoppedError):
             pipeline_route._output_write_transaction(
                 PipelineGraph(),
                 "sink",
@@ -384,35 +385,35 @@ class TestExecuteSinkDataOutput:
         failure_kind: str,
         expected_reason: str,
     ) -> None:
-        from haute._worker_isolation import (
-            IsolatedWorkerCrashedError,
-            IsolatedWorkerMemoryLimitExceededError,
-            IsolatedWorkerMemoryLimitUnsupportedError,
-            IsolatedWorkerRemoteError,
+        from haute._worker_failures import (
+            WorkerCrashedError,
+            WorkerMemoryLimitError,
+            WorkerMemoryLimitUnsupportedError,
+            WorkerRemoteError,
         )
-        from haute.routes import pipeline as pipeline_route
 
         if failure_kind == "rss":
-            failure: BaseException = IsolatedWorkerMemoryLimitExceededError(
+            failure: BaseException = WorkerMemoryLimitError(
                 rss_bytes=200,
                 rss_limit_bytes=100,
             )
         elif failure_kind == "unsupported":
-            failure = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
+            failure = WorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
         elif failure_kind == "remote_native":
-            failure = IsolatedWorkerRemoteError(
+            failure = WorkerRemoteError(
                 remote_type="NativeMemoryLimitUnsupportedError",
                 remote_message="unsupported",
                 remote_traceback="traceback",
                 is_memory=False,
             )
         elif failure_kind == "crashed":
-            failure = IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100)
+            failure = WorkerCrashedError(1, memory_limited=exitcode_looks_memory_limited(1, 100))
         else:
             failure = RuntimeError("generic")
 
-        payload = pipeline_route._isolated_output_memory_detail(
+        payload = worker_memory_detail(
             failure,
+            operation="pipeline_write_output",
             memory_limit_bytes=None if failure_kind == "generic" else 100,
         )
 
@@ -533,7 +534,7 @@ class TestExecuteSinkDataOutput:
     ) -> None:
         import hashlib
 
-        from haute._worker_isolation import IsolatedWorkerStoppedError
+        from haute._worker_failures import WorkerStoppedError
         from haute.routes import pipeline as pipeline_route
 
         _stub_plans(monkeypatch)
@@ -566,7 +567,7 @@ class TestExecuteSinkDataOutput:
             return_after_cancellation,
         )
 
-        with pytest.raises(IsolatedWorkerStoppedError):
+        with pytest.raises(WorkerStoppedError):
             pipeline_route._output_write_transaction(
                 graph=None,  # type: ignore[arg-type]
                 output_node_id="sink",
@@ -603,7 +604,7 @@ class TestExecuteSinkDataOutput:
         self,
         tmp_path: Path,
     ) -> None:
-        from haute._worker_isolation import IsolatedWorkerStoppedError
+        from haute._worker_failures import WorkerStoppedError
 
         prepared = PreparedDataOutput(
             response=WriteOutputResponse(status="ok", path="database"),
@@ -617,7 +618,7 @@ class TestExecuteSinkDataOutput:
         gate = WorkerCancellationGate()
         gate.request()
 
-        with pytest.raises(IsolatedWorkerStoppedError):
+        with pytest.raises(WorkerStoppedError):
             commit_prepared_data_output(
                 prepared,
                 publication_guard=gate.publication_guard(),
@@ -2885,11 +2886,11 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
 ) -> None:
     """Each output-worker failure maps to one status, and a 500 never leaks
     the child's private message or traceback."""
-    from haute._worker_isolation import (
-        IsolatedWorkerCrashedError,
-        IsolatedWorkerMemoryLimitExceededError,
-        IsolatedWorkerMemoryLimitUnsupportedError,
-        IsolatedWorkerRemoteError,
+    from haute._worker_failures import (
+        WorkerCrashedError,
+        WorkerMemoryLimitError,
+        WorkerMemoryLimitUnsupportedError,
+        WorkerRemoteError,
     )
     from haute.routes import pipeline as pipeline_route
     from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
@@ -2919,22 +2920,22 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
     elif failure_kind == "unknown_envelope":
         failure = pipeline_route._OutputWriteWorkerError("unknown", "unknown failure")
     elif failure_kind == "native_rss":
-        failure = IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100)
+        failure = WorkerMemoryLimitError(rss_bytes=200, rss_limit_bytes=100)
     elif failure_kind == "native_unsupported":
-        failure = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
+        failure = WorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
     elif failure_kind == "crashed_memory":
-        failure = IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100)
+        failure = WorkerCrashedError(-9, memory_limited=exitcode_looks_memory_limited(-9, 100))
     elif failure_kind == "crashed":
-        failure = IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100)
+        failure = WorkerCrashedError(1, memory_limited=exitcode_looks_memory_limited(1, 100))
     elif failure_kind == "remote_memory":
-        failure = IsolatedWorkerRemoteError(
+        failure = WorkerRemoteError(
             remote_type="MemoryError",
             remote_message="private memory detail",
             remote_traceback="private traceback",
             is_memory=True,
         )
     else:
-        failure = IsolatedWorkerRemoteError(
+        failure = WorkerRemoteError(
             remote_type="RuntimeError",
             remote_message="private child detail",
             remote_traceback="private traceback",

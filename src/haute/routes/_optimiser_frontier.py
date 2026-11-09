@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Protocol, cast
 
-from haute._dedicated_workers import DedicatedWorkerDeadError
+from haute._dedicated_workers import WorkerDeadError
 from haute._execution_admission import (
     ExecutionAdmissionError,
     WorkEstimate,
@@ -29,13 +29,13 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._interactive_workers import InteractiveWorkerError
 from haute._logging import get_logger
 from haute._polars_utils import streaming_collect
 from haute._price_contour import price_contour
 from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_point_apply_peak_bytes
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY
 from haute._types import SolveResultLike
+from haute._worker_failures import WorkerError
 from haute.errors import (
     ConflictError,
     GoneError,
@@ -565,17 +565,6 @@ class OptimiserFrontierService:
                 lock = self._parent_locks[parent_job_id] = threading.RLock()
             return lock
 
-    def _touch_heavy_objects_or_raise(
-        self,
-        job_id: str,
-        *,
-        required_keys: tuple[str, ...],
-        detail: str,
-    ) -> None:
-        """Reserve completed-job heavy runtime state before using it."""
-        if not self._store.touch_heavy_objects(job_id, required_keys=required_keys):
-            raise InvalidRequestError(detail)
-
     def select_point(self, body: OptimiserFrontierSelectRequest) -> dict[str, Any]:
         """Select a frontier summary point without re-solving; returns the result dict."""
         with self.parent_lock(body.job_id):
@@ -1003,13 +992,13 @@ class OptimiserFrontierService:
             )
         except SessionCommandError as exc:
             raise RequestRefusedError(exc.detail, status_code=exc.http_status_code) from None
-        except DedicatedWorkerDeadError:
+        except WorkerDeadError:
             raise GoneError(
                 _runtime_gone_detail(self._store.require_job(job_id), point_index)
             ) from None
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise InsufficientMemoryError(exc.to_payload()) from None
-        except InteractiveWorkerError as exc:
+        except WorkerError as exc:
             logger.error(
                 "frontier_point_session_failed",
                 job_id=job_id,

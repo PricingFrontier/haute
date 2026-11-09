@@ -543,14 +543,6 @@ class _EstimateGraphIndex:
             self.resolving_cardinality.remove(key)
 
 
-# Bytes per column for the analytical estimate.  Training features are
-# cast to Float32 (4 bytes) in _build_pool, but the Polars DataFrame
-def _parquet_metadata(path: str) -> tuple[int, int]:
-    """Return (row_count, column_count) from parquet footer metadata."""
-    meta = _detailed_parquet_metadata(path)
-    return meta.row_count, meta.column_count
-
-
 def _parquet_files(path: str | Sequence[Path]) -> list[Path]:
     """The files a Parquet source reads: a list of parts, or the files a path names.
 
@@ -1750,17 +1742,6 @@ def _selected_column_names(config: Mapping[str, object]) -> tuple[str, ...] | No
     return tuple(selected)
 
 
-def _resolve_edge_join_columns(
-    node: GraphNode,
-    graph: PipelineGraph,
-    source: str,
-    *,
-    _index: _EstimateGraphIndex | None = None,
-) -> _ResolvedTargetColumns | None:
-    index = _index or _EstimateGraphIndex.build(graph, source)
-    return _resolve_edge_join_columns_from_index(node, index)
-
-
 def _resolve_edge_join_columns_from_index(
     node: GraphNode,
     index: _EstimateGraphIndex,
@@ -1803,15 +1784,6 @@ def _resolve_edge_join_columns_from_index(
         output_columns.append((column, width_column))
 
     return _dedupe_resolved_columns(output_columns)
-
-
-def _resolve_edge_join_column_names(
-    node: GraphNode,
-    graph: PipelineGraph,
-    source: str,
-) -> tuple[str, ...] | None:
-    resolved = _resolve_edge_join_columns(node, graph, source)
-    return resolved.columns if resolved is not None else None
 
 
 def _resolve_target_columns_from_index(
@@ -1977,16 +1949,6 @@ def _resolve_code_node_columns(
         )
         pairs.append((column, widest(read, column)))
     return _dedupe_resolved_columns(pairs)
-
-
-def _resolve_target_column_names(
-    graph: PipelineGraph,
-    target_node_id: str,
-    source: str,
-) -> tuple[str, ...] | None:
-    """Resolve target column names when config or parquet metadata exposes them."""
-    resolved = _resolve_target_columns(graph, target_node_id, source)
-    return resolved.columns if resolved is not None else None
 
 
 def _edge_join_key_columns_on_path(

@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, NoReturn, TypeVar
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -51,20 +51,10 @@ from haute._global_constants import reference_problem
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
-from haute._interactive_workers import (
-    InteractiveWorkerCrashedError,
-    InteractiveWorkerError,
-    InteractiveWorkerMemoryLimitError,
-    InteractiveWorkerRemoteError,
-    InteractiveWorkerStoppedError,
-    InteractiveWorkerTimeoutError,
-    resolve_interactive_execution_mode,
-    run_in_interactive_worker,
-)
+from haute._interactive_workers import resolve_interactive_execution_mode, run_in_interactive_worker
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
-from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._node_snapshots import NodeSnapshotStore
 from haute._node_specs import known_node_spec
 from haute._output_assembler import OutputMappingSchemaError
@@ -127,15 +117,13 @@ from haute._topo import ancestors
 from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, SubmodelDefinition
 from haute._workbench_config import WorkbenchError
 from haute._workbench_tables import WorkbenchTablesError
+from haute._worker_failures import (
+    WorkerError,
+    WorkerRemoteError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
+)
 from haute._worker_isolation import (
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerMemoryLimitExceededError,
-    IsolatedWorkerMemoryLimitUnsupportedError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
-    isolated_worker_failure_is_memory,
-    isolated_worker_memory_detail,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
     worker_config_for_memory_policy,
@@ -147,7 +135,6 @@ from haute.errors import (
     ContractMismatchError,
     ParseError,
     SchemaMismatchError,
-    SeedPlanExpiredError,
     TraceNodeFailedError,
     TraceRequestError,
     TraceRowAmbiguousError,
@@ -183,12 +170,10 @@ from haute.graph_utils import (
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
-    SEED_PLAN_EXPIRED_HTTP_STATUS,
     contract_error_http_exception,
     contract_error_payload,
 )
 from haute.routes._helpers import (
-    _INTERNAL_ERROR_DETAIL,
     connection_owner,
     discover_pipelines,
     load_pipeline_editor_document,
@@ -216,6 +201,7 @@ from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
     run_blocking_with_response_timeout,
 )
+from haute.routes._worker_failure_http import RemoteAnswer, worker_failure_http_exception
 from haute.schemas import (
     ColumnInfo,
     EditorIdentitiesRequest,
@@ -269,17 +255,6 @@ def _is_occurrence(node_type: NodeType | str) -> bool:
     return spec is not None and spec.structural_role == "occurrence"
 
 
-_PUBLIC_REMOTE_ERROR_CODES = {
-    (error_type.__module__, error_type.__name__): error_type.error_code
-    for error_type in PUBLIC_CONTRACT_ERROR_TYPES
-}
-_MEMORY_REMOTE_ERROR_CODES = {
-    (ExecutionAdmissionError.__module__, ExecutionAdmissionError.__name__): "memory_limit",
-    (
-        ExecutionMemoryLimitExceededError.__module__,
-        ExecutionMemoryLimitExceededError.__name__,
-    ): "memory_limit",
-}
 _PREVIEW_PROJECTION_REMOTE_IDENTITY = (
     PreviewProjectionError.__module__,
     PreviewProjectionError.__name__,
@@ -476,9 +451,9 @@ def _unresolved_free_code(steps: list[dict[str, Any]], message: str) -> list[Res
     ]
 
 
-def _free_code_worker_failure(exc: InteractiveWorkerError, timeout: float) -> str:
+def _free_code_worker_failure(exc: WorkerError, timeout: float) -> str:
     """A parent-authored, data-free reason for a worker that did not answer."""
-    if isinstance(exc, InteractiveWorkerTimeoutError):
+    if isinstance(exc, WorkerTimeoutError):
         return f"The code did not finish within {timeout:g} seconds."
     if exc.terminal_reason == "memory_limited":
         return "Running it used more memory than a preview may."
@@ -531,9 +506,9 @@ async def _resolve_free_code_columns_isolated(
         )
     except ExecutionAdmissionError:
         return _unresolved_free_code(body.steps, "There is not enough free memory to run it now.")
-    except InteractiveWorkerStoppedError:
+    except WorkerStoppedError:
         raise
-    except InteractiveWorkerError as exc:
+    except WorkerError as exc:
         return _unresolved_free_code(body.steps, _free_code_worker_failure(exc, timeout))
     except BlockingWorkTimeoutError as exc:
         run.release(once_done=exc.background_task)
@@ -590,7 +565,7 @@ async def resolve_free_code_columns_endpoint(
             started=lambda: started,
             detail="The client closed the free-code column request before it finished.",
         )
-    except (SupersededRequestError, InteractiveWorkerStoppedError) as exc:
+    except (SupersededRequestError, WorkerStoppedError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return PolarsFreeCodeColumnsResponse(
         free_code_columns=[
@@ -819,111 +794,37 @@ class _PreviewTargetNotReturnedError(RuntimeError):
     """The executor completed but omitted the requested target result."""
 
 
-def _interactive_memory_detail(operation: str, *, reason: str) -> dict[str, object]:
-    """Build the parent-authored, data-free 507 detail for a memory outcome."""
-    return {
-        "error_code": "memory_limit",
-        "operation": operation,
-        "reason": reason,
-    }
+def _pipeline_remote_answer(operation: str) -> RemoteAnswer:
+    """The answers a preview, a trace and an OUTPUT dry run give remote exceptions of their own."""
 
-
-def _raise_interactive_worker_crash_http_error(
-    exc: InteractiveWorkerCrashedError,
-    *,
-    operation: str,
-) -> NoReturn:
-    """Map a pool-worker crash to 507 when its exit code looks memory-limited."""
-    if exc.terminal_reason == "memory_limited":
-        raise HTTPException(
-            status_code=507,
-            detail=_interactive_memory_detail(
-                operation,
-                reason="worker_may_have_exceeded_memory_limit",
-            ),
-        ) from None
-    logger.error(
-        "interactive_worker_crashed",
-        operation=operation,
-        exitcode=exc.exitcode,
-    )
-    raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
-
-
-def _raise_interactive_remote_http_error(
-    exc: InteractiveWorkerRemoteError,
-    *,
-    operation: str,
-) -> NoReturn:
-    payload = exc.public_payload
-    identity = (exc.remote_module, exc.remote_type)
-    expected_memory_code = _MEMORY_REMOTE_ERROR_CODES.get(identity)
-    if (
-        payload is not None
-        and expected_memory_code is not None
-        and payload.get("error_code") == expected_memory_code
-    ):
-        raise HTTPException(status_code=507, detail=payload) from None
-    # Memory outcomes the child cannot curate: classified by exact identity
-    # and answered with a parent-authored detail, never the child payload. A
-    # same-named exception from any other module stays an internal 500.
-    if identity == ("builtins", "MemoryError"):
-        raise HTTPException(
-            status_code=507,
-            detail=_interactive_memory_detail(operation, reason="worker_memory_exhausted"),
-        ) from None
-    if identity == (
-        NativeMemoryLimitUnsupportedError.__module__,
-        NativeMemoryLimitUnsupportedError.__name__,
-    ):
-        raise HTTPException(
-            status_code=507,
-            detail=_interactive_memory_detail(operation, reason="native_memory_cap_unavailable"),
-        ) from None
-    expected_public_code = _PUBLIC_REMOTE_ERROR_CODES.get(identity)
-    if (
-        payload is not None
-        and expected_public_code is not None
-        and payload.get("error_code") == expected_public_code
-    ):
-        status_code = (
-            SEED_PLAN_EXPIRED_HTTP_STATUS
-            if expected_public_code == SeedPlanExpiredError.error_code
-            else 422
-        )
-        raise HTTPException(status_code=status_code, detail=payload) from None
-    if operation == "pipeline_preview":
-        if identity == _PREVIEW_PROJECTION_REMOTE_IDENTITY:
-            raise HTTPException(status_code=400, detail=exc.remote_message) from None
-        if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
-            raise HTTPException(status_code=404, detail=exc.remote_message) from None
-    if (
-        operation == "output_assemble_dry_run"
-        and identity in _OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES
-    ):
-        raise HTTPException(status_code=422, detail=exc.remote_message) from None
-    if operation == "pipeline_trace":
-        if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
-            raise HTTPException(status_code=422, detail=exc.remote_message) from None
-        refusal = _TRACE_REFUSAL_REMOTE.get(identity)
+    def answer(exc: WorkerRemoteError) -> HTTPException | None:
+        identity = (exc.remote_module, exc.remote_type)
+        payload = exc.public_payload
+        if operation == "pipeline_preview":
+            if identity == _PREVIEW_PROJECTION_REMOTE_IDENTITY:
+                return HTTPException(status_code=400, detail=exc.remote_message)
+            if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
+                return HTTPException(status_code=404, detail=exc.remote_message)
         if (
-            refusal is not None
-            and payload is not None
-            and payload.get("error_code") == refusal.error_code
+            operation == "output_assemble_dry_run"
+            and identity in _OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES
         ):
-            raise HTTPException(
-                status_code=_TRACE_REFUSAL_STATUS[refusal], detail=str(payload["message"])
-            ) from None
-    # The client gets a generic 500; the server log keeps what the worker raised.
-    logger.error(
-        "interactive_worker_remote_failure",
-        operation=operation,
-        remote_type=exc.remote_type,
-        remote_module=exc.remote_module,
-        remote_message=exc.remote_message,
-        remote_traceback=exc.remote_traceback,
-    )
-    raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
+            return HTTPException(status_code=422, detail=exc.remote_message)
+        if operation == "pipeline_trace":
+            if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
+                return HTTPException(status_code=422, detail=exc.remote_message)
+            refusal = _TRACE_REFUSAL_REMOTE.get(identity)
+            if (
+                refusal is not None
+                and payload is not None
+                and payload.get("error_code") == refusal.error_code
+            ):
+                return HTTPException(
+                    status_code=_TRACE_REFUSAL_STATUS[refusal], detail=str(payload["message"])
+                )
+        return None
+
+    return answer
 
 
 _Result = TypeVar("_Result")
@@ -1010,33 +911,34 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
     """Answer for what an interactive run raised that is not its route's own, then give
     its admission back.
 
-    The memory budget answers 507; a deadline 504 with *timed_out*, the run's token
-    cancelled so its work stops; a newer request 409 with ``request_superseded``, and a
-    worker stopped for another reason a plain 409; a worker that crashed or failed
-    507 or 500, by what it reported; a public contract error its own payload. A thread
-    still running past its deadline keeps the admission until it ends.
+    A deadline answers 504 with *timed_out*, the run's token cancelled so its work
+    stops; a newer request 409 with ``request_superseded``; a worker's failure what
+    :func:`worker_failure_http_exception` answers for it, with this route's own remote
+    exceptions; a public contract error its own payload. A thread still running past
+    its deadline keeps the admission until it ends.
     """
     try:
         yield
-    except InteractiveWorkerMemoryLimitError as exc:
-        raise HTTPException(status_code=507, detail=exc.to_payload()) from None
     except BlockingWorkTimeoutError as exc:
         run.token.cancel()
         run.release(once_done=exc.background_task)
         raise HTTPException(status_code=504, detail=timed_out) from None
-    except (InteractiveWorkerTimeoutError, TimeoutError):
+    except TimeoutError:
         run.token.cancel()
         raise HTTPException(status_code=504, detail=timed_out) from None
     except SupersededRequestError as exc:
         # The browser drops a superseded preview silently, so it is named by a
         # code rather than recognised by its wording.
         raise HTTPException(status_code=409, detail=exc.to_payload()) from None
-    except InteractiveWorkerStoppedError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-    except InteractiveWorkerCrashedError as exc:
-        _raise_interactive_worker_crash_http_error(exc, operation=run.operation)
-    except InteractiveWorkerRemoteError as exc:
-        _raise_interactive_remote_http_error(exc, operation=run.operation)
+    except WorkerError as exc:
+        if isinstance(exc, WorkerTimeoutError):
+            run.token.cancel()
+        raise worker_failure_http_exception(
+            exc,
+            operation=run.operation,
+            timed_out=timed_out,
+            remote=_pipeline_remote_answer(run.operation),
+        ) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
         logger.warning(
             "interactive_public_contract_error",
@@ -2444,7 +2346,7 @@ def _output_write_transaction(
     deadline = time.monotonic() + _pipeline_time_limit()
     try:
         if cancellation_requested.is_set():
-            raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            raise WorkerStoppedError(terminal_reason="cancelled")
         # Preparing inputs here stops with the request.
         cancellation_requested.on_request(execution_context.cancellation_token.cancel)
         try:
@@ -2460,18 +2362,18 @@ def _output_write_transaction(
             )
         except Exception as exc:
             if cancellation_requested.is_set():
-                raise IsolatedWorkerStoppedError(terminal_reason="cancelled") from exc
+                raise WorkerStoppedError(terminal_reason="cancelled") from exc
             if time.monotonic() >= deadline:
-                raise IsolatedWorkerTimeoutError(timeout_seconds=_pipeline_time_limit()) from exc
+                raise WorkerTimeoutError(timeout_seconds=_pipeline_time_limit()) from exc
             raise
         with plan:
             # Preparation can finish (a cancelled build reconciled as published)
             # after the request went away; nothing is launched for it then.
             if cancellation_requested.is_set():
-                raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+                raise WorkerStoppedError(terminal_reason="cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise IsolatedWorkerTimeoutError(timeout_seconds=_pipeline_time_limit())
+                raise WorkerTimeoutError(timeout_seconds=_pipeline_time_limit())
             config = worker_config_for_memory_policy(
                 memory_limit_bytes=budget.memory_limit_bytes,
                 timeout_seconds=remaining,
@@ -2530,18 +2432,6 @@ def _output_write_transaction(
             if primary_error is None:
                 raise
             primary_error.add_note(f"Output staging cleanup failed: {cleanup_exc}")
-
-
-def _isolated_output_memory_detail(
-    exc: BaseException,
-    *,
-    memory_limit_bytes: int | None,
-) -> dict[str, object]:
-    return isolated_worker_memory_detail(
-        exc,
-        operation="pipeline_write_output",
-        memory_limit_bytes=memory_limit_bytes,
-    )
 
 
 @router.post("/pipeline/write-output", response_model=WriteOutputResponse)
@@ -2629,50 +2519,13 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         if e.kind == "memory":
             raise HTTPException(status_code=507, detail=e.payload or e.detail) from None
         raise AssertionError(f"unhandled output worker failure kind: {e.kind}")
-    except (
-        IsolatedWorkerMemoryLimitExceededError,
-        IsolatedWorkerMemoryLimitUnsupportedError,
-    ) as e:
-        raise HTTPException(
-            status_code=507,
-            detail=_isolated_output_memory_detail(
-                e,
-                memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
-            ),
+    except WorkerError as e:
+        raise worker_failure_http_exception(
+            e,
+            operation="pipeline_write_output",
+            timed_out=f"Sink execution timed out ({_pipeline_time_limit():.0f}s limit)",
+            memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
         ) from None
-    except IsolatedWorkerCrashedError as e:
-        if isolated_worker_failure_is_memory(e):
-            raise HTTPException(
-                status_code=507,
-                detail=_isolated_output_memory_detail(
-                    e,
-                    memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
-                ),
-            ) from None
-        logger.error("sink_worker_crashed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
-    except IsolatedWorkerRemoteError as e:
-        if isolated_worker_failure_is_memory(e):
-            raise HTTPException(
-                status_code=507,
-                detail=_isolated_output_memory_detail(
-                    e,
-                    memory_limit_bytes=None if budget is None else budget.memory_limit_bytes,
-                ),
-            ) from None
-        logger.error(
-            "sink_worker_remote_failure",
-            remote_type=e.remote_type,
-            error=e.remote_message,
-        )
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
-    except IsolatedWorkerTimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail=f"Sink execution timed out ({_pipeline_time_limit():.0f}s limit)",
-        ) from None
-    except IsolatedWorkerStoppedError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("sink_public_contract_error", **contract_error_payload(e))
         raise contract_error_http_exception(e) from None

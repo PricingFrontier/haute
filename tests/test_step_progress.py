@@ -11,9 +11,10 @@ from typing import Any
 
 import pytest
 
-from haute._interactive_workers import InteractiveWorkerCrashedError, InteractiveWorkerPool
+from haute._interactive_workers import InteractiveWorkerPool
 from haute._project_context import context_thread
 from haute._step_progress import ProgressCell, StepProgress, current_job_progress_reporter
+from haute._worker_failures import WorkerCrashedError
 from haute.routes._preview_progress import PreviewProgressRegistry
 
 
@@ -180,7 +181,7 @@ def test_a_worker_killed_holding_the_progress_lock_settles_and_its_replacement_r
     seen: list[StepProgress] = []
     try:
         started = time.monotonic()
-        with pytest.raises(InteractiveWorkerCrashedError):
+        with pytest.raises(WorkerCrashedError):
             pool.run(
                 _die_holding_the_progress_lock,
                 affinity_key="k",

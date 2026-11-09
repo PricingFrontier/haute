@@ -264,7 +264,7 @@ started via `threading.Thread` only if the thread explicitly re-enters the conte
 inherited automatically the way they are across `asyncio` tasks), `_solve_background` and the
 session's `build_and_solve` wrap their body in `with solver_worker_context():` themselves
 — the guard is a call-site check, not a mechanism that follows the thread implicitly. Pinned by
-`tests/test_optimiser_routes.py::TestSolverWorkerContextGuard` (a direct call to any guarded
+`tests/test_optimiser_solver_service.py::TestSolverWorkerContextGuard` (a direct call to any guarded
 entrypoint outside the context raises; a call inside `solver_worker_context()` succeeds; the
 contextvar resets to `False` after the context exits, including via `finally`).
 
@@ -369,8 +369,8 @@ child by `_record_solve_setup_failure`, the same mapping the setup thread uses, 
 replays the record (terminal reason, message, `error`/`error_code`/`error_detail`/
 `http_status_code`, and the child's metrics adopted as worker evidence) onto the real job.
 Worker-level failures map as training preparation's do: a stopped worker is the job's stop, a
-memory-shaped worker failure (`isolated_worker_failure_is_memory`) is a 507 `memory_limit` with
-`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then is the grid built from
+memory-shaped worker failure (`worker_failure_is_memory`) is a 507 `memory_limit` with
+`worker_memory_detail`, and any other is a 500 `error`. Only then is the grid built from
 the file, by the job's solver session (step 7 and step 8 in process mode are the session's
 `build_and_solve` command; see "Solver sessions (OPT-W01)"). The explicit `thread` compatibility mode runs steps 2–7 on the
 setup thread against the real job (`_prepare_solver_frame`, then `_build_grid`), with the same
@@ -1446,8 +1446,8 @@ share fixtures from `tests/optimiser_fixtures.py`. No dedicated property-based t
 for this component; coverage is unit + integration + golden-fixture + real-library contract
 tests.
 
-- **`tests/test_optimiser_routes.py`** — by far the largest file (dozens of test
-  classes) covering the full route surface end-to-end against the FastAPI test client: node
+- **`tests/test_optimiser_solve_routes.py`**, **`tests/test_optimiser_estimate_routes.py`**, **`tests/test_optimiser_ratebook_solve.py`**, **`tests/test_optimiser_pipeline_execution.py`**, **`tests/test_optimiser_frontier_routes.py`**, **`tests/test_optimiser_publish_routes.py`** and **`tests/test_optimiser_solver_service.py`** — together
+  cover the full route surface end-to-end against the FastAPI test client: node
   registration/codegen/executor passthrough, solve/status/estimate/apply/save/
   frontier-select/mlflow-log routes, ratebook solve, solve-with-history, the as-solved adjustment report,
   column validation, non-convergence warnings, background-thread error classification, job-state
@@ -1480,7 +1480,7 @@ tests.
   `/estimate`); the frontier-touching tests in these classes all go through
   `run_frontier_and_wait` and assert on the polled `result` payload rather than an immediate
   response body.
-- **`tests/test_optimiser_service_coverage.py`** — apply-result and ratebook-factor artifact
+- **`tests/test_optimiser_apply_artifacts.py`** — apply-result and ratebook-factor artifact
   handles: validation of kind, version, format, filename, directory containment and null bytes;
   persistence returning `None` for non-dataframe inputs and cleaning its directory when a write
   or lazy sink fails; loading and scanning that report a missing artifact and reject a corrupt

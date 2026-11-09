@@ -34,12 +34,10 @@ from haute._ram_estimate import (
     _estimate_peak_bytes,
     _EstimateGraphIndex,
     _named_cardinality_inputs,
-    _parquet_metadata,
     _passthrough_cardinality,
     _port_operand_counts,
-    _resolve_edge_join_column_names,
+    _resolve_edge_join_columns_from_index,
     _resolve_row_cardinality_from_index,
-    _resolve_target_column_names,
     _resolve_target_columns,
     _ResolvedRowCardinality,
     _safe_edge_input_name,
@@ -547,7 +545,8 @@ class TestRowCounts:
         path = tmp_path / "test.parquet"
         df = pl.DataFrame({"a": range(500), "b": range(500)})
         df.write_parquet(str(path))
-        rows, cols = _parquet_metadata(str(path))
+        meta = _detailed_parquet_metadata(str(path))
+        rows, cols = meta.row_count, meta.column_count
         assert rows == 500
         assert cols == 2
 
@@ -1596,8 +1595,10 @@ class TestDetailedColumnResolution:
         )
         graph = PipelineGraph(nodes=[src], edges=[])
 
-        assert _resolve_target_column_names(graph, src.id, "live") == ("a", "b")
-        assert _resolve_target_column_names(graph, "missing", "live") is None
+        resolved = _resolve_target_columns(graph, src.id, "live")
+        assert resolved is not None
+        assert resolved.columns == ("a", "b")
+        assert _resolve_target_columns(graph, "missing", "live") is None
 
     def test_detail_resolution_skips_revisited_nodes(self) -> None:
         """Diamond-shaped parent graphs do not loop when no schema is available."""
@@ -1644,10 +1645,9 @@ class TestDetailedEdgeJoinColumnResolution:
         assert resolved is not None
         assert resolved.columns == ("premium",)
         assert (
-            _resolve_edge_join_column_names(
+            _resolve_edge_join_columns_from_index(
                 joined,
-                graph,
-                "live",
+                _EstimateGraphIndex.build(graph, "live"),
             )
             is None
         )
@@ -1664,10 +1664,9 @@ class TestDetailedEdgeJoinColumnResolution:
         graph = PipelineGraph(nodes=[joined], edges=[])
 
         assert (
-            _resolve_edge_join_column_names(
+            _resolve_edge_join_columns_from_index(
                 joined,
-                graph,
-                "live",
+                _EstimateGraphIndex.build(graph, "live"),
             )
             is None
         )
@@ -1702,10 +1701,9 @@ class TestDetailedEdgeJoinColumnResolution:
         )
 
         assert (
-            _resolve_edge_join_column_names(
+            _resolve_edge_join_columns_from_index(
                 joined,
-                graph,
-                "live",
+                _EstimateGraphIndex.build(graph, "live"),
             )
             is None
         )
@@ -2424,7 +2422,7 @@ class TestEstimateGpuVramEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# _parquet_metadata edge cases
+# _detailed_parquet_metadata edge cases
 # ---------------------------------------------------------------------------
 
 
@@ -2433,7 +2431,8 @@ class TestParquetMetadataEdgeCases:
         path = tmp_path / "meta.parquet"
         df = pl.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6], "z": [7, 8, 9]})
         df.write_parquet(str(path))
-        rows, cols = _parquet_metadata(str(path))
+        meta = _detailed_parquet_metadata(str(path))
+        rows, cols = meta.row_count, meta.column_count
         assert rows == 3
         assert cols == 3
 
@@ -2444,7 +2443,7 @@ class TestParquetMetadataEdgeCases:
         # raises rather than returning empty metadata"; polars does not promise a
         # stable exception type for a missing parquet path across versions.
         with pytest.raises(Exception):  # noqa: PT011
-            _parquet_metadata(str(tmp_path / "does_not_exist.parquet"))
+            _detailed_parquet_metadata(str(tmp_path / "does_not_exist.parquet"))
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ import {
   createUtilityFile,
   deleteUtilityFile,
   dissolveSubmodel,
-  checkHauteSession,
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
@@ -1410,7 +1409,6 @@ describe("shared client trust-boundary endpoints", () => {
     /** The exact failure, when a generated validator checks the response. */
     malformedError?: string
   }> = [
-    { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" }, malformedError: "SessionStatusResponse: invalid contract at /ok: type" },
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
     { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }], malformedError: "MlflowExperimentList: invalid contract at /0/name: required" },

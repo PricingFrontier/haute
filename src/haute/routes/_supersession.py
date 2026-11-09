@@ -30,15 +30,6 @@ class _SupersessionState:
     active_cancel: Callable[[], None] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class SupersessionStateSnapshot:
-    """Immutable, test-facing view of one coordinator state."""
-
-    latest_generation: int
-    active: bool
-    references: int
-
-
 class SupersessionCoordinator:
     """Keep at most one running and one latest waiting request per key."""
 
@@ -157,19 +148,6 @@ class SupersessionCoordinator:
                         _release_limiter_when_done(deferred_limiter_release, limiter)
         finally:
             await self._release_state(key, state)
-
-    async def snapshot_for_tests(self) -> dict[Hashable, SupersessionStateSnapshot]:
-        """Return a copied, immutable view of coordinator state for tests."""
-        async with self._states_lock:
-            snapshot: dict[Hashable, SupersessionStateSnapshot] = {}
-            for key, state in self._states.items():
-                async with state.condition:
-                    snapshot[key] = SupersessionStateSnapshot(
-                        latest_generation=state.latest_generation,
-                        active=state.active,
-                        references=state.references,
-                    )
-            return snapshot
 
     async def _acquire_limiter_unless_superseded(
         self,

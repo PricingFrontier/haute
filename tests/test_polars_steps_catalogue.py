@@ -67,9 +67,11 @@ def test_step_kinds_and_their_required_fields_agree() -> None:
         ("AGGREGATIONS", steps.AGGREGATIONS),
         ("WINDOW_ONLY_AGGREGATIONS", steps.WINDOW_ONLY_AGGREGATIONS),
         ("PIVOT_AGGREGATIONS", steps.PIVOT_AGGREGATIONS),
+        ("JOIN_HOW_OPTIONS", steps.JOIN_HOW),
         ("JOIN_VALIDATE", steps.JOIN_VALIDATE),
         ("JOIN_MAINTAIN_ORDER", steps.JOIN_MAINTAIN_ORDER),
         ("LITERAL_TYPES", steps.LITERAL_TYPES),
+        ("FILL_STRATEGY_OPTIONS", steps.FILL_STRATEGIES),
     ],
 )
 def test_option_lists_match_the_renderer(name: str, expected: tuple[str, ...]) -> None:
@@ -80,18 +82,14 @@ def test_option_lists_match_the_renderer(name: str, expected: tuple[str, ...]) -
     ("name", "expected"),
     [
         ("CAST_DTYPES", steps.CAST_DTYPES),
-        ("JOIN_HOW", steps.JOIN_HOW),
         ("JOIN_VALIDATED_HOW", steps.JOIN_VALIDATED_HOW),
-        ("FILL_STRATEGIES", steps.FILL_STRATEGIES),
-        ("OPERAND_KINDS", steps.OPERAND_KINDS),
     ],
 )
 def test_plain_lists_match_the_renderer(name: str, expected: tuple[str, ...]) -> None:
     assert strings(name) == list(expected)
 
 
-def test_cast_families_and_number_types_agree() -> None:
-    assert strings("CAST_FAMILIES") == list(steps.CAST_FAMILIES)
+def test_number_types_agree() -> None:
     assert entries("NUMBER_TYPES") == list(steps.NUMBER_TYPES)
 
 

@@ -80,7 +80,7 @@ def _cancel_at(stage_message: str) -> tuple[Callable[[str, float], None], Callab
     ``TrainingJob.run``'s ``_report`` calls ``check_cancelled`` immediately
     after ``progress``, so flipping the flag inside ``progress`` raises the
     cancellation at exactly the named stage — the same interleaving the
-    real ``_train_service`` produces when the user presses stop.
+    real ``TrainService`` produces when the user presses stop.
     """
     state = {"cancel": False}
 

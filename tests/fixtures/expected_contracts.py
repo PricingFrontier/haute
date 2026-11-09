@@ -72,7 +72,7 @@ Canonical API
     from haute._contracts import (
         Contract,
         OPAQUE_CONTRACT,
-        get_column_contract,
+        get_node_contract,
     )
 """
 

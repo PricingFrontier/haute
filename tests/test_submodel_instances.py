@@ -21,8 +21,8 @@ from haute._polars_io_registry import validate_data_input_config
 from haute._project_context import ProjectContext, project_scope
 from haute._submodel_instances import (
     qualified_runtime_node_id,
+    resolve_submodel_instances,
     rewrite_boundary_input_names,
-    validate_submodel_instances,
 )
 from haute._types import (
     GraphEdge,
@@ -871,7 +871,7 @@ def test_flatten_validates_the_graph_once(
 def test_instance_validation_rejects_unknown_definition_and_duplicate_alias() -> None:
     unknown = PipelineGraph(nodes=[_instance("instance_a", "pricing")], edges=[], submodels={})
     with pytest.raises(ParseError, match="definition"):
-        validate_submodel_instances(unknown)
+        resolve_submodel_instances(unknown)
 
     duplicate_alias = PipelineGraph(
         nodes=[_instance("instance_a", "pricing"), _instance("instance_b", "pricing")],
@@ -879,7 +879,7 @@ def test_instance_validation_rejects_unknown_definition_and_duplicate_alias() ->
         submodels={"definition_scoring": _definition()},
     )
     with pytest.raises(ParseError, match="alias"):
-        validate_submodel_instances(duplicate_alias)
+        resolve_submodel_instances(duplicate_alias)
 
 
 def test_instance_alias_cannot_shadow_any_parent_node_id() -> None:
@@ -893,7 +893,7 @@ def test_instance_alias_cannot_shadow_any_parent_node_id() -> None:
     )
 
     with pytest.raises(ParseError, match="alias.*node id"):
-        validate_submodel_instances(graph)
+        resolve_submodel_instances(graph)
 
 
 def test_only_submodel_nodes_are_resolved_as_occurrences() -> None:
@@ -910,7 +910,7 @@ def test_only_submodel_nodes_are_resolved_as_occurrences() -> None:
         submodels={},
     )
 
-    validate_submodel_instances(graph)
+    resolve_submodel_instances(graph)
     assert flatten_graph(graph) is graph
 
 
@@ -938,7 +938,7 @@ def test_submodel_occurrence_identity_is_always_required(
     )
 
     with pytest.raises(ParseError, match="identity|config|definition_id"):
-        validate_submodel_instances(graph)
+        resolve_submodel_instances(graph)
 
 
 def test_definition_registry_never_infers_definition_identity() -> None:
@@ -1027,7 +1027,7 @@ def test_instance_validation_rejects_invalid_owner_topology(
     )
 
     with pytest.raises(ParseError, match="owner|instance_of"):
-        validate_submodel_instances(graph)
+        resolve_submodel_instances(graph)
 
 
 def test_targeted_flatten_rejects_dissolving_owner_with_remaining_copy() -> None:
@@ -2552,7 +2552,7 @@ def test_canonical_input_port_rejects_more_than_one_parent_binding() -> None:
     )
 
     with pytest.raises(ParseError, match="bound more than once") as exc_info:
-        validate_submodel_instances(graph)
+        resolve_submodel_instances(graph)
 
     assert exc_info.value.context["instance_id"] == "scoring"
     assert exc_info.value.context["port_name"] == "policy"

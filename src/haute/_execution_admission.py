@@ -1133,13 +1133,6 @@ def _in_flight_limit_bytes(budget: ExecutionBudget, settings: PipelineSettings) 
     return max(available - reserve, 1)
 
 
-def _clear_in_flight_reservations_for_tests() -> None:
-    """Clear process-local reservations for tests that patch memory policy."""
-    with _IN_FLIGHT_LOCK:
-        _IN_FLIGHT_RESERVATIONS.clear()
-        _IN_FLIGHT_RELEASED.notify_all()
-
-
 def _process_rss_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], ...]:
     profile_bytes, profile_mb = _PROFILE_PROCESS_RSS_ENV[profile]
     global_bytes, global_mb = _GLOBAL_PROCESS_RSS_ENV

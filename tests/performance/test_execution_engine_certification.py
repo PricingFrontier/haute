@@ -29,6 +29,7 @@ from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import MANY_TO_MANY_JOIN_DETAIL, plan_prepared_execution_strategy
 from haute.executor import _preview_cache, execute_graph
 from scripts.memory_smoke import run_smoke
+from tests._process_state import clear_source_signatures
 from tests._project import use_project
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
@@ -706,7 +707,7 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
     assert source_path.stat().st_size == _SIGNATURE_SOURCE_BYTES
     assert _source_proof._strong_file_revision(source_path) is not None
 
-    _source_proof.clear_file_signatures()
+    clear_source_signatures()
     real_hash_file = _source_proof._hash_file
     source_hashes = 0
 
@@ -826,7 +827,7 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
         ],
     )
     resolved = source_path.resolve()
-    _source_proof.clear_file_signatures()
+    clear_source_signatures()
     _preview_cache.clear()
     source_hashes = 0
     source_opens = 0
@@ -964,7 +965,6 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
     """Certify that a complete preview hit is lookup/serialization work only."""
 
     import haute.executor as executor_mod
-    from haute._json_shred import _source_proof
 
     use_project(tmp_path)
     source_path = tmp_path / "preview-hit.json"
@@ -992,7 +992,7 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
         ],
         edges=[],
     )
-    _source_proof.clear_file_signatures()
+    clear_source_signatures()
     _preview_cache.clear()
     real_plan = executor_mod.execution_facade.plan_execution_strategy
     plan_calls = 0

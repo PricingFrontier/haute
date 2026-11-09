@@ -103,7 +103,7 @@ def _render_importance_data():
 
 
 def _render_ave_data():
-    return render_ave_feature_svg("age", _sample_numeric_bins(), is_categorical=False)
+    return render_ave_feature_svg("age", _sample_numeric_bins())
 
 
 def _render_lorenz_data():
@@ -158,9 +158,7 @@ class TestChartValidXml:
         pytest.param(
             lambda: render_horizontal_bars_svg([], "f", "v", title="Empty"), id="horizontal_bars"
         ),
-        pytest.param(
-            lambda: render_ave_feature_svg("empty", [], is_categorical=False), id="ave_feature"
-        ),
+        pytest.param(lambda: render_ave_feature_svg("empty", []), id="ave_feature"),
         pytest.param(lambda: render_lorenz_curve_svg([], []), id="lorenz_curve"),
         pytest.param(lambda: render_residuals_svg([]), id="residuals"),
         pytest.param(lambda: render_scatter_svg([]), id="scatter"),
@@ -339,19 +337,19 @@ class TestAveFeatureSvg:
         ]
 
     def test_categorical_valid_xml(self, categorical_bins):
-        svg = render_ave_feature_svg("vehicle_type", categorical_bins, is_categorical=True)
+        svg = render_ave_feature_svg("vehicle_type", categorical_bins)
         root = _parse_svg(svg)
         assert root.tag == "{http://www.w3.org/2000/svg}svg"
 
     def test_contains_circles(self, numeric_bins):
-        svg = render_ave_feature_svg("age", numeric_bins, is_categorical=False)
+        svg = render_ave_feature_svg("age", numeric_bins)
         root = _parse_svg(svg)
         circles = root.findall(".//{http://www.w3.org/2000/svg}circle")
         # At least circles for actual and predicted dots
         assert len(circles) >= len(numeric_bins) * 2
 
     def test_correct_colors(self, numeric_bins):
-        svg = render_ave_feature_svg("age", numeric_bins, is_categorical=False)
+        svg = render_ave_feature_svg("age", numeric_bins)
         assert COLOR_ACTUAL in svg
         assert COLOR_PREDICTED in svg
         assert COLOR_BARS in svg
@@ -361,7 +359,7 @@ class TestAveFeatureSvg:
     def test_single_bin_dot_only(self):
         """Single bin should produce dots, not a line."""
         bins = [{"label": "3.14", "exposure": 100.0, "avg_actual": 0.5, "avg_predicted": 0.6}]
-        svg = render_ave_feature_svg("const", bins, is_categorical=False)
+        svg = render_ave_feature_svg("const", bins)
         root = _parse_svg(svg)
         circles = root.findall(".//{http://www.w3.org/2000/svg}circle")
         assert len(circles) >= 2  # one for actual, one for predicted
@@ -692,7 +690,7 @@ class TestAveFeatureSvgExtra:
             }
             for _ in range(3)
         ]
-        svg = render_ave_feature_svg("feature", bins, is_categorical=True)
+        svg = render_ave_feature_svg("feature", bins)
         assert "rotate(-45" in svg
 
     def test_numeric_with_short_labels(self):
@@ -701,7 +699,7 @@ class TestAveFeatureSvgExtra:
             {"label": f"{i}", "exposure": 100.0, "avg_actual": 0.5, "avg_predicted": 0.6}
             for i in range(3)
         ]
-        svg = render_ave_feature_svg("feature", bins, is_categorical=False)
+        svg = render_ave_feature_svg("feature", bins)
         # Short labels - rotation depends on label length
         root = _parse_svg(svg)
         assert root.tag == "{http://www.w3.org/2000/svg}svg"

@@ -153,7 +153,6 @@ export const DTYPE_OPTIONS: Array<{ value: CastDtype; label: string }> = [
   ...COMMON_DTYPES.map((dtype) => ({ value: dtype, label: DTYPE_WORDS[dtype] ? `${dtype} (${DTYPE_WORDS[dtype]})` : dtype })),
   ...CAST_DTYPES.filter((dtype) => !COMMON_DTYPES.includes(dtype)).map((dtype) => ({ value: dtype, label: dtype })),
 ]
-export const JOIN_HOW: JoinHow[] = ["inner", "left", "right", "full", "semi", "anti", "cross"]
 /** Each join kind by its Polars name, with the rows it keeps. */
 export const JOIN_HOW_OPTIONS: Array<{ value: JoinHow; label: string }> = [
   { value: "inner", label: "inner: only rows that match" },
@@ -196,7 +195,6 @@ export function joinOrderAfterHowChange(order: string, from: string, to: JoinHow
   if (order === previousDefault || !JOIN_MAINTAIN_ORDER_VALUES.has(order)) return DEFAULT_JOIN_ORDER[to]
   return order as JoinMaintainOrder
 }
-export const FILL_STRATEGIES: FillStrategy[] = ["forward", "backward", "min", "max", "mean", "zero", "one"]
 /** Fill strategies in plain words, each with its Polars name where it has one. */
 export const FILL_STRATEGY_OPTIONS: Array<{ value: FillStrategy; label: string }> = [
   { value: "forward", label: "the previous row's value (forward)" },
@@ -214,9 +212,6 @@ export const LITERAL_TYPES: Array<{ value: LiteralType; label: string }> = [
   { value: "date", label: "date" },
   { value: "null", label: "missing (null)" },
 ]
-/** What an operand may be (the renderer's `OPERAND_KINDS`). */
-export const OPERAND_KINDS = ["column", "literal", "expr", "variable", "constant"] as const
-
 /** How deep expressions may nest as operands; a step's expression is depth 1 (mirrors the renderer). */
 export const MAX_EXPR_DEPTH = 12
 /**
@@ -299,11 +294,6 @@ export const DATE_FORMAT_DEFAULTS: Record<"Date" | "Datetime", string> = {
 /** Whether a cast target is reached from text by parsing it with a format. */
 export const parsesText = (dtype: CastDtype): dtype is "Date" | "Datetime" => dtype === "Date" || dtype === "Datetime"
 
-/** The source column types the cast table tells apart (the renderer's `CAST_FAMILIES`). */
-export const CAST_FAMILIES: CastFamily[] = [
-  "integer", "float", "decimal", "boolean", "text", "category",
-  "date", "datetime", "duration", "time", "binary", "null",
-]
 /**
  * The Change types targets Polars 2 refuses for each source column type, even
  * with `strict=False` (the renderer's `CAST_REFUSALS`): a text column reaches

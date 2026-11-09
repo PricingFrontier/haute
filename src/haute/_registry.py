@@ -140,31 +140,6 @@ def set_codegen(node_type: NodeType, fn: CodegenFn) -> None:
     entry.codegen = fn
 
 
-def get_exec(node_type: NodeType) -> ExecFn:
-    """Return the exec builder for *node_type* or raise ``KeyError``.
-
-    Fails loudly — missing entries indicate a registration bug, not a
-    transient condition worth falling back from.
-    """
-    entry = NODE_REGISTRY.get(node_type)
-    if entry is None or entry.exec is None:
-        raise KeyError(f"no exec builder registered for {node_type!r}")
-    return entry.exec
-
-
-def get_codegen(node_type: NodeType) -> CodegenFn:
-    """Return the codegen builder for *node_type* or raise ``KeyError``.
-
-    Fails loudly — the previous silent fallback to ``_gen_transform``
-    hid misregistered NodeTypes; now a missing entry crashes with a clear
-    message pointing at the exact NodeType that needs wiring.
-    """
-    entry = NODE_REGISTRY.get(node_type)
-    if entry is None or entry.codegen is None:
-        raise KeyError(f"no codegen builder registered for {node_type!r}")
-    return entry.codegen
-
-
 def validate_registry_complete() -> None:
     """Assert every :class:`NodeType` registers its callables.
 

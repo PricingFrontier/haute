@@ -17,17 +17,19 @@ import pytest
 
 import haute._interactive_workers as worker_mod
 from haute._interactive_workers import (
-    InteractiveWorkerCrashedError,
-    InteractiveWorkerMemoryLimitError,
     InteractiveWorkerPool,
-    InteractiveWorkerRemoteError,
-    InteractiveWorkerStoppedError,
-    InteractiveWorkerTimeoutError,
     resolve_interactive_execution_mode,
     resolve_interactive_polars_threads,
 )
 from haute._project_context import context_thread, current_project
-from haute._worker_isolation import IsolatedWorkerHostError
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerHostError,
+    WorkerMemoryLimitError,
+    WorkerRemoteError,
+    WorkerStoppedError,
+    WorkerTimeoutError,
+)
 
 
 def _cell() -> Any:
@@ -140,7 +142,7 @@ def test_startup_readiness_fails_promptly_when_child_has_exited() -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
     process = SimpleNamespace(pid=123, exitcode=17, is_alive=lambda: False)
 
-    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         pool._wait_for_ready(process, _EmptyResultQueue())
 
     assert exc_info.value.exitcode == 17
@@ -242,7 +244,7 @@ def test_timeout_kills_and_replaces_exact_worker() -> None:
             affinity_key="lineage",
             timeout_seconds=5,
         )
-        with pytest.raises(InteractiveWorkerTimeoutError) as exc_info:
+        with pytest.raises(WorkerTimeoutError) as exc_info:
             pool.run(
                 _worker_sleep,
                 5.0,
@@ -276,7 +278,7 @@ def test_stop_reason_kills_and_replaces_worker() -> None:
             affinity_key="lineage",
             timeout_seconds=5,
         )
-        with pytest.raises(InteractiveWorkerStoppedError) as exc_info:
+        with pytest.raises(WorkerStoppedError) as exc_info:
             pool.run(
                 _worker_sleep,
                 5.0,
@@ -341,7 +343,7 @@ def test_parent_rss_watchdog_applies_limit_to_per_request_growth(
     samples = iter([1_000, 1_051])
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: next(samples))
     try:
-        with pytest.raises(InteractiveWorkerMemoryLimitError) as exc_info:
+        with pytest.raises(WorkerMemoryLimitError) as exc_info:
             pool.run(
                 _worker_sleep,
                 5.0,
@@ -356,7 +358,7 @@ def test_parent_rss_watchdog_applies_limit_to_per_request_growth(
         pool.close()
 
     assert exc_info.value.rss_bytes == 1_051
-    assert exc_info.value.limit_bytes == 1_050
+    assert exc_info.value.rss_limit_bytes == 1_050
 
 
 def test_remote_error_is_structured_and_the_same_worker_stays_warm() -> None:
@@ -365,7 +367,7 @@ def test_remote_error_is_structured_and_the_same_worker_stays_warm() -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     try:
         before, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
-        with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
+        with pytest.raises(WorkerRemoteError) as exc_info:
             pool.run(
                 _worker_fail,
                 affinity_key="lineage",
@@ -401,9 +403,7 @@ def test_a_worker_breaching_its_growth_cap_is_replaced_and_the_next_request_serv
     pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.02)
     try:
         before, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=60)
-        with pytest.raises(
-            (InteractiveWorkerMemoryLimitError, InteractiveWorkerRemoteError)
-        ) as breached:
+        with pytest.raises((WorkerMemoryLimitError, WorkerRemoteError)) as breached:
             pool.run(
                 _worker_allocate,
                 256,
@@ -428,7 +428,7 @@ def test_a_warm_worker_keeps_nothing_of_its_last_job(job: Any) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     try:
         if job is _worker_fail_holding_data:
-            with pytest.raises(InteractiveWorkerRemoteError, match="child failed"):
+            with pytest.raises(WorkerRemoteError, match="child failed"):
                 pool.run(job, affinity_key="lineage", timeout_seconds=30)
         else:
             pool.run(job, affinity_key="lineage", timeout_seconds=30)
@@ -442,10 +442,8 @@ def test_a_warm_worker_keeps_nothing_of_its_last_job(job: Any) -> None:
 @pytest.mark.parametrize(
     "start_error",
     [
-        worker_mod.InteractiveWorkerStartError(
-            "replacement did not become ready", terminal_reason="error"
-        ),
-        IsolatedWorkerHostError("replacement did not become ready: resource tracker died"),
+        worker_mod.WorkerStartError("replacement did not become ready", terminal_reason="error"),
+        WorkerHostError("replacement did not become ready: resource tracker died"),
     ],
     ids=["start", "host"],
 )
@@ -467,7 +465,7 @@ def test_a_failed_replacement_is_started_again_by_the_next_request(
     try:
         before, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
         monkeypatch.setattr(pool, "_start_slot", start_failing_once)
-        with pytest.raises(InteractiveWorkerTimeoutError) as timed_out:
+        with pytest.raises(WorkerTimeoutError) as timed_out:
             pool.run(_worker_sleep, 5.0, affinity_key="lineage", timeout_seconds=0.05)
         after, value = pool.run(_worker_identity, 3, affinity_key="lineage", timeout_seconds=30)
     finally:
@@ -486,7 +484,7 @@ def test_a_wait_for_a_busy_slot_ends_at_the_request_deadline() -> None:
         pool.start()
         pool._scheduling_locks[0].acquire()
         started = time.monotonic()
-        with pytest.raises(InteractiveWorkerTimeoutError):
+        with pytest.raises(WorkerTimeoutError):
             pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=0.2)
         assert time.monotonic() - started < 5
     finally:
@@ -542,7 +540,7 @@ def test_close_kills_in_flight_work_without_waiting_for_its_deadline(
     assert not thread.is_alive()
     assert elapsed < 2
     assert len(failures) == 1
-    assert isinstance(failures[0], InteractiveWorkerStoppedError)
+    assert isinstance(failures[0], WorkerStoppedError)
     assert failures[0].terminal_reason == "cancelled"
 
 
@@ -596,16 +594,16 @@ def test_pool_validation_result_shapes_and_queue_cleanup() -> None:
     slot = SimpleNamespace(index=0)
     assert pool._interpret_result(slot, job_id="id", envelope=("result", "id", "ok", 7)) == 7
     for envelope in (None, ("result", "other", "ok", 7), ("result", "id", "error", None)):
-        with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+        with pytest.raises(worker_mod.WorkerProtocolError):
             pool._interpret_result(slot, job_id="id", envelope=envelope)
-    with pytest.raises(InteractiveWorkerRemoteError) as remote:
+    with pytest.raises(WorkerRemoteError) as remote:
         pool._interpret_result(
             slot,
             job_id="id",
             envelope=("result", "id", "error", ("MemoryError", "m", "x", "t", {"x": 1}, True)),
         )
     assert remote.value.terminal_reason == "memory_limited"
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+    with pytest.raises(worker_mod.WorkerProtocolError):
         # The memory flag is the child's isinstance check: a bool, never inferred.
         pool._interpret_result(
             slot,
@@ -640,7 +638,7 @@ def test_wait_for_result_defensive_paths(monkeypatch: pytest.MonkeyPatch) -> Non
     process = SimpleNamespace(pid=1, exitcode=9, is_alive=lambda: False)
     slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
     monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
-    with pytest.raises(InteractiveWorkerCrashedError):
+    with pytest.raises(WorkerCrashedError):
         pool._wait_for_result(
             slot,
             job_id="x",
@@ -653,7 +651,7 @@ def test_wait_for_result_defensive_paths(monkeypatch: pytest.MonkeyPatch) -> Non
     alive = SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True)
     slot.process = alive
     slot.result_queue = _Queue([pickle.dumps(("bad",))])
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+    with pytest.raises(worker_mod.WorkerProtocolError):
         pool._wait_for_result(
             slot,
             job_id="x",
@@ -691,7 +689,7 @@ def test_crashed_worker_memory_classification_follows_the_one_shot_heuristic(
     process = SimpleNamespace(pid=1, exitcode=exitcode, is_alive=lambda: False)
     slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
     monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
-    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         pool._wait_for_result(
             slot,
             job_id="x",
@@ -717,7 +715,7 @@ def test_worker_death_during_required_rss_sampling_classifies_the_crash(
     slot = SimpleNamespace(index=0, process=process, result_queue=_Queue(), closed=False)
     monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
     monkeypatch.setattr(worker_mod, "process_rss_bytes", lambda _pid: None)
-    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         pool._wait_for_result(
             slot,
             job_id="x",
@@ -762,7 +760,7 @@ def test_worker_teardown_without_rss_waits_briefly_for_exit(
         "memory_growth_limit_bytes": 100,
         "require_memory_limit": True,
     }
-    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         if phase == "result":
             pool._wait_for_result(slot, **kwargs)
         else:
@@ -949,7 +947,7 @@ def test_remote_result_keeps_primary_error_when_release_is_invalid(
     replacements: list[object] = []
     monkeypatch.setattr(pool, "_replace_slot", _recording(replacements))
 
-    with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
+    with pytest.raises(WorkerRemoteError) as exc_info:
         pool._wait_for_result(
             slot,
             job_id="x",
@@ -1034,7 +1032,7 @@ async def test_async_worker_wrapper_forwards_and_thread_mode_start_is_noop(
 
 def test_stopped_error_rejects_completed_and_payload_must_be_a_mapping() -> None:
     with pytest.raises(ValueError, match="completed"):
-        InteractiveWorkerStoppedError("completed")
+        WorkerStoppedError("completed")
 
     class SequencePayloadError(Exception):
         def to_payload(self):
@@ -1106,7 +1104,7 @@ def test_run_can_be_stopped_while_waiting_for_an_affinity_slot(
     pool._scheduling_locks = (BusyLock(),)  # type: ignore[assignment]
     monkeypatch.setattr(pool, "start", lambda: None)
 
-    with pytest.raises(InteractiveWorkerStoppedError) as exc_info:
+    with pytest.raises(WorkerStoppedError) as exc_info:
         pool.run(
             _returns,
             affinity_key="busy",
@@ -1244,7 +1242,7 @@ def test_unserialisable_worker_request_fails_before_queue_submission(
     monkeypatch.setattr(pool, "start", lambda: None)
     monkeypatch.setattr(pool, "_current_slot", lambda _index: slot)
 
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError, match="not serialisable"):
+    with pytest.raises(worker_mod.WorkerProtocolError, match="not serialisable"):
         pool.run(lambda: None, affinity_key="lineage", timeout_seconds=1)
 
     assert slot.request_queue.values == []
@@ -1271,11 +1269,11 @@ def test_slot_lookup_fails_loudly_for_a_closed_or_unstarted_pool_and_restarts_a_
     def start(*, index: int, generation: int):
         starts.append((index, generation))
         if len(starts) == 1:
-            raise worker_mod.InteractiveWorkerStartError("not ready", terminal_reason="error")
+            raise worker_mod.WorkerStartError("not ready", terminal_reason="error")
         return SimpleNamespace(index=index, generation=generation, closed=False)
 
     monkeypatch.setattr(pool, "_start_slot", start)
-    with pytest.raises(worker_mod.InteractiveWorkerStartError, match="not ready"):
+    with pytest.raises(worker_mod.WorkerStartError, match="not ready"):
         pool._current_slot(0)
     started = pool._current_slot(0)
 
@@ -1302,10 +1300,10 @@ def test_start_slot_preserves_host_error_and_closes_queues(
     monkeypatch.setattr(
         pool,
         "_wait_for_ready",
-        lambda *_args: (_ for _ in ()).throw(worker_mod.IsolatedWorkerHostError("host failed")),
+        lambda *_args: (_ for _ in ()).throw(worker_mod.WorkerHostError("host failed")),
     )
 
-    with pytest.raises(worker_mod.IsolatedWorkerHostError, match="host failed"):
+    with pytest.raises(worker_mod.WorkerHostError, match="host failed"):
         pool._start_slot(index=0, generation=1)
 
 
@@ -1324,7 +1322,7 @@ def test_start_slot_wraps_startup_failure_and_attempts_bounded_termination(
     terminations: list[object] = []
     monkeypatch.setattr(worker_mod, "_terminate_process", terminations.append)
 
-    with pytest.raises(worker_mod.InteractiveWorkerStartError, match="readiness failed"):
+    with pytest.raises(worker_mod.WorkerStartError, match="readiness failed"):
         pool._start_slot(index=0, generation=1)
 
     assert terminations == ([] if pid is None else [process])
@@ -1344,7 +1342,7 @@ def test_start_slot_notes_termination_failure(monkeypatch: pytest.MonkeyPatch) -
         lambda _process: (_ for _ in ()).throw(OSError("terminate failed")),
     )
 
-    with pytest.raises(worker_mod.InteractiveWorkerStartError) as exc_info:
+    with pytest.raises(worker_mod.WorkerStartError) as exc_info:
         pool._start_slot(index=0, generation=1)
 
     assert "worker termination failed" in str(exc_info.value.__cause__.__notes__)
@@ -1355,7 +1353,7 @@ def test_ready_handshake_rejects_wrong_envelope() -> None:
     process = SimpleNamespace(pid=42, exitcode=None, is_alive=lambda: True)
     results = _Queue([pickle.dumps(("ready", 99))])
 
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError, match="invalid ready"):
+    with pytest.raises(worker_mod.WorkerProtocolError, match="invalid ready"):
         pool._wait_for_ready(process, results)
 
 
@@ -1364,7 +1362,7 @@ def test_slot_replacement_rejects_close_race_and_generation_race(
 ) -> None:
     for closed, replace_current, expected in (
         (True, True, RuntimeError),
-        (False, False, worker_mod.InteractiveWorkerProtocolError),
+        (False, False, worker_mod.WorkerProtocolError),
     ):
         pool = InteractiveWorkerPool(size=1, polars_threads=2)
         original = SimpleNamespace(index=0, generation=1)
@@ -1564,7 +1562,7 @@ def test_close_slot_reports_process_that_survives_without_other_failure(
     slot = _close_slot(process)
     monkeypatch.setattr(worker_mod, "_terminate_process", lambda _process: None)
 
-    with pytest.raises(worker_mod.IsolatedWorkerTerminationError):
+    with pytest.raises(worker_mod.WorkerTerminationError):
         worker_mod.InteractiveWorkerPool._close_slot(slot, graceful=False)
 
 
@@ -1599,7 +1597,7 @@ async def test_async_wrapper_cancellation_waits_for_worker_cleanup(
             time.sleep(0.001)
         if cleanup_failure:
             raise RuntimeError("cleanup failed")
-        raise InteractiveWorkerStoppedError("cancelled")
+        raise WorkerStoppedError("cancelled")
 
     monkeypatch.setattr(worker_mod, "interactive_worker_pool", lambda: SimpleNamespace(run=run))
     errors: list[dict[str, object]] = []
@@ -1685,7 +1683,7 @@ def test_wait_for_result_preserves_remote_error_when_ack_or_release_fails(
     )
     replaced: list[object] = []
     monkeypatch.setattr(pool, "_replace_slot", _recording(replaced))
-    with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
+    with pytest.raises(WorkerRemoteError) as exc_info:
         pool._wait_for_result(
             slot,
             job_id="job",
@@ -1723,9 +1721,9 @@ def test_wait_and_protocol_error_boundaries(monkeypatch: pytest.MonkeyPatch) -> 
             require_memory_limit=True,
         )
     assert replaced == [slot]
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+    with pytest.raises(worker_mod.WorkerProtocolError):
         pool._interpret_release(job_id="job", envelope=("released", "job", "ok", 1))
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+    with pytest.raises(worker_mod.WorkerProtocolError):
         pool._interpret_release(job_id="job", envelope=("released", "job", "error", "bad"))
 
 
@@ -1740,7 +1738,7 @@ def test_wait_for_release_covers_protocol_stop_and_rss_boundaries(
         process=process,
         result_queue=_ScriptedResultQueue(pickle.dumps(("bad",))),
     )
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+    with pytest.raises(worker_mod.WorkerProtocolError):
         pool._wait_for_release(
             malformed,
             job_id="job",
@@ -1758,7 +1756,7 @@ def test_wait_for_release_covers_protocol_stop_and_rss_boundaries(
         process=process,
         result_queue=_ScriptedResultQueue(queue.Empty()),
     )
-    with pytest.raises(InteractiveWorkerStoppedError):
+    with pytest.raises(WorkerStoppedError):
         pool._wait_for_release(
             empty,
             job_id="job",
@@ -1777,7 +1775,7 @@ def test_wait_for_release_covers_protocol_stop_and_rss_boundaries(
         process=process,
         result_queue=_ScriptedResultQueue(queue.Empty()),
     )
-    with pytest.raises(InteractiveWorkerMemoryLimitError):
+    with pytest.raises(WorkerMemoryLimitError):
         pool._wait_for_release(
             empty,
             job_id="job",
@@ -1803,7 +1801,7 @@ def test_wait_for_result_surfaces_ack_and_release_errors_without_user_error(
         request_queue=SimpleNamespace(put=lambda *_args: (_ for _ in ()).throw(OSError("ack"))),
     )
     monkeypatch.setattr(pool, "_replace_slot", lambda _slot, failure: failure)
-    with pytest.raises(worker_mod.InteractiveWorkerProtocolError, match="acknowledgement"):
+    with pytest.raises(worker_mod.WorkerProtocolError, match="acknowledgement"):
         pool._wait_for_result(
             slot,
             job_id="job",
@@ -1838,7 +1836,7 @@ def test_wait_for_result_surfaces_ack_and_release_errors_without_user_error(
 
 
 def test_memory_limit_error_exposes_public_payload() -> None:
-    error = InteractiveWorkerMemoryLimitError(rss_bytes=101, limit_bytes=100)
+    error = WorkerMemoryLimitError(rss_bytes=101, rss_limit_bytes=100)
 
     assert error.to_payload() == {
         "error_code": "memory_limit",
@@ -1853,7 +1851,7 @@ def test_wait_for_release_covers_shutdown_deadline_and_dead_child() -> None:
     alive = SimpleNamespace(pid=5, exitcode=None, is_alive=lambda: True)
     slot = SimpleNamespace(index=0, process=alive, result_queue=_ScriptedResultQueue())
     pool._shutdown_event.set()
-    with pytest.raises(InteractiveWorkerStoppedError, match="cancelled"):
+    with pytest.raises(WorkerStoppedError, match="cancelled"):
         pool._wait_for_release(
             slot,
             job_id="job",
@@ -1866,7 +1864,7 @@ def test_wait_for_release_covers_shutdown_deadline_and_dead_child() -> None:
             sampler_unavailable_logged=False,
         )
     pool._shutdown_event.clear()
-    with pytest.raises(InteractiveWorkerTimeoutError):
+    with pytest.raises(WorkerTimeoutError):
         pool._wait_for_release(
             slot,
             job_id="job",
@@ -1879,7 +1877,7 @@ def test_wait_for_release_covers_shutdown_deadline_and_dead_child() -> None:
             sampler_unavailable_logged=False,
         )
     dead = SimpleNamespace(pid=5, exitcode=17, is_alive=lambda: False)
-    with pytest.raises(InteractiveWorkerCrashedError) as exc_info:
+    with pytest.raises(WorkerCrashedError) as exc_info:
         pool._wait_for_release(
             SimpleNamespace(
                 index=0, process=dead, result_queue=_ScriptedResultQueue(queue.Empty())
@@ -1979,7 +1977,7 @@ def test_wait_for_release_retries_stop_and_rss_sampling(
 def test_interpret_release_surfaces_valid_remote_error_evidence() -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
 
-    with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
+    with pytest.raises(WorkerRemoteError) as exc_info:
         pool._interpret_release(
             job_id="job",
             envelope=(
@@ -2077,7 +2075,7 @@ def test_preemptible_request_is_refused_at_once_while_unstarted_or_its_slot_is_h
 ) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
     try:
-        with pytest.raises(worker_mod.InteractiveWorkerBusyError, match="not running"):
+        with pytest.raises(worker_mod.WorkerBusyError, match="not running"):
             pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 5)
         assert pool._slots == []  # refusing never starts the pool
 
@@ -2091,7 +2089,7 @@ def test_preemptible_request_is_refused_at_once_while_unstarted_or_its_slot_is_h
         holder.start()
         _await_marker(marker)
         started = time.monotonic()
-        with pytest.raises(worker_mod.InteractiveWorkerBusyError, match="another request"):
+        with pytest.raises(worker_mod.WorkerBusyError, match="another request"):
             pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 30)
         assert time.monotonic() - started < 0.5
         holder.join(30)
@@ -2134,7 +2132,7 @@ def test_an_editor_request_preempts_a_running_preemptible_job_and_runs_on_its_re
     finally:
         pool.close()
 
-    assert [type(exc) for exc in outcome] == [worker_mod.InteractiveWorkerPreemptedError]
+    assert [type(exc) for exc in outcome] == [worker_mod.WorkerPreemptedError]
     assert value == 3
     assert preview_pid != check_pid
     assert check_process.exitcode is not None and not check_process.is_alive()
@@ -2162,7 +2160,7 @@ def test_a_preemptible_request_is_refused_while_a_preempting_request_has_not_res
                 affinity_key="check",
                 deadline=time.monotonic() + 30,
             )
-        except worker_mod.InteractiveWorkerPreemptedError:
+        except worker_mod.WorkerPreemptedError:
             pass
         except BaseException as exc:
             failures.append(exc)
@@ -2182,7 +2180,7 @@ def test_a_preemptible_request_is_refused_while_a_preempting_request_has_not_res
         check.join(30)
         assert pool._slots[0].generation == 2
         assert not gated.locked()
-        with pytest.raises(worker_mod.InteractiveWorkerBusyError, match="editor request"):
+        with pytest.raises(worker_mod.WorkerBusyError, match="editor request"):
             pool.run_preemptible(_returns, 1, affinity_key="late", deadline=time.monotonic() + 30)
         gated.gate.set()
         preview.join(30)
@@ -2201,7 +2199,7 @@ def test_a_preemptible_deadline_bounds_a_stuck_job_and_a_delayed_dispatch() -> N
     try:
         first_pid, _ = pool.run(_worker_identity, affinity_key="k", timeout_seconds=30)
         started = time.monotonic()
-        with pytest.raises(InteractiveWorkerTimeoutError):
+        with pytest.raises(WorkerTimeoutError):
             pool.run_preemptible(
                 _worker_sleep, 30.0, affinity_key="k", deadline=time.monotonic() + 0.5
             )
@@ -2226,7 +2224,7 @@ def test_a_preemptible_deadline_bounds_a_stuck_job_and_a_delayed_dispatch() -> N
 
         slot.request_queue = _UnreadQueue()
         started = time.monotonic()
-        with pytest.raises(InteractiveWorkerTimeoutError):
+        with pytest.raises(WorkerTimeoutError):
             pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 0.3)
         assert time.monotonic() - started < 15
         third_pid, _ = pool.run(_worker_identity, affinity_key="k", timeout_seconds=30)
@@ -2261,7 +2259,7 @@ def test_a_preemptible_request_is_refused_while_its_slots_replacement_is_startin
         runner.start()
         assert starting.wait(30)
         started = time.monotonic()
-        with pytest.raises(worker_mod.InteractiveWorkerBusyError):
+        with pytest.raises(worker_mod.WorkerBusyError):
             pool.run_preemptible(_returns, 1, affinity_key="k", deadline=time.monotonic() + 30)
         assert time.monotonic() - started < 0.5
         proceed.set()
@@ -2273,4 +2271,4 @@ def test_a_preemptible_request_is_refused_while_its_slots_replacement_is_startin
         proceed.set()
         pool.close()
 
-    assert [type(exc) for exc in timed_out] == [InteractiveWorkerTimeoutError]
+    assert [type(exc) for exc in timed_out] == [WorkerTimeoutError]

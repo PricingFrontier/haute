@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from haute._parser_submodels import extract_submodel_registrations
-from haute._submodel_instances import validate_submodel_instances
+from haute._submodel_instances import resolve_submodel_instances
 from haute._types import (
     GraphNode,
     NodeData,
@@ -310,7 +310,7 @@ def test_validate_submodel_instances_invariant_label_differs_from_alias() -> Non
     )
 
     with pytest.raises(ParseError) as exc_info:
-        validate_submodel_instances(graph)
+        resolve_submodel_instances(graph)
 
     assert exc_info.value.message == "Submodel occurrence label must equal its alias."
     assert exc_info.value.context["instance_id"] == "pricing"

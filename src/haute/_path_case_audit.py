@@ -18,8 +18,7 @@ silently disagree:
 Neither is haute's to *fix* (no-normalization is the pinned contract, see
 ``notes-haute/common/INVARIANTS.md`` §Invariant 1), but both are worth a
 loud warning at access time.  This module provides that audit as a
-standalone check, plus a generic function wrapper so any path-consuming
-callable can opt in. The retained API Input and External File runtime
+standalone check. The retained API Input and External File runtime
 chokepoint (:func:`haute._node_apply.resolve_api_input_from_config` and its
 external-object sibling) calls :func:`warn_if_case_ambiguous` on each resolved
 path.
@@ -28,16 +27,12 @@ path.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
-from functools import wraps
 from pathlib import Path
-from typing import Any, TypeVar
 
 from haute._logging import get_logger
 
 logger = get_logger(component="path_case_audit")
 
-_F = TypeVar("_F", bound=Callable[..., Any])
 
 # Paths already warned about in this process.  The audit runs on every node
 # execution, so an interactive preview loop would otherwise repeat the same
@@ -122,30 +117,3 @@ def warn_if_case_ambiguous(
             ),
         )
     return found
-
-
-def wrap_path_case_audit(
-    func: _F,
-    index: int | str,
-    *,
-    stop: str | Path | None = None,
-) -> _F:
-    """Wrap *func* so the argument at *index* is case-audited on every call.
-
-    *index* selects the path argument: an ``int`` for a positional, a
-    ``str`` for a keyword.  The audit is advisory — a missing argument or a
-    finding never changes the call, it only warns.
-    """
-
-    @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        target: Any = None
-        if isinstance(index, str):
-            target = kwargs.get(index)
-        elif 0 <= index < len(args):
-            target = args[index]
-        if target is not None:
-            warn_if_case_ambiguous(target, stop=stop)
-        return func(*args, **kwargs)
-
-    return wrapper  # type: ignore[return-value]

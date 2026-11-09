@@ -41,6 +41,7 @@ from haute._types import GraphEdge
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
 from haute.trace import execute_trace
+from tests._process_state import clear_source_signatures
 from tests._project import use_project
 from tests.conftest import (
     make_edge as _edge,
@@ -651,7 +652,7 @@ class TestStatGatedFingerprintMemo:
         graph = _json_api_input_group_by_graph(data)
         resolved = data.resolve()
 
-        _source_proof.clear_file_signatures()
+        clear_source_signatures()
         source_hashes = 0
         real_source_hash = _source_proof._hash_file
 
@@ -674,13 +675,12 @@ class TestStatGatedFingerprintMemo:
         monkeypatch,
     ):
         """The strong JSON revision, not size/mtime, gates cached previews."""
-        from haute._json_shred import _source_proof
 
         use_project(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
-        _source_proof.clear_file_signatures()
+        clear_source_signatures()
 
         first = execute_graph(graph, target_node_id="t")
         first_key = _preview_cache.most_recent_key

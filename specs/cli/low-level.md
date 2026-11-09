@@ -539,7 +539,7 @@ Key files and what they cover:
   budget) versus the `handle_*` function doing the real work.
 - `test_cli_helpers.py` — `_open_browser` (including the `webbrowser.open` failure path) and
   `_find_frontend_dir` walking-up-parents behaviour.
-- `test_cli_impact.py` / `test_cli_impact_gaps.py` — `impact` end-to-end and edge cases: unsupported
+- `test_cli_impact.py` / `test_cli_impact.py` — `impact` end-to-end and edge cases: unsupported
   target, Databricks SDK not installed, "not found" vs. genuine-error classification for the
   first-deploy check, and, with no portfolio sample, the test quotes compared (their requests,
   segmented by their text fields) or, with none, a refusal.

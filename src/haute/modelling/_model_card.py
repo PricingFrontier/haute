@@ -280,12 +280,7 @@ def generate_model_card(
     if diag.ave_per_feature:
         sections.append("<h2>Actual vs Expected — Per Feature</h2>")
         for feat_data in diag.ave_per_feature:
-            is_cat = feat_data.get("type") == "categorical"
-            svg = render_ave_feature_svg(
-                feat_data["feature"],
-                feat_data["bins"],
-                is_cat,
-            )
+            svg = render_ave_feature_svg(feat_data["feature"], feat_data["bins"])
             sections.append(f'<div class="chart">{svg}</div>')
 
     # --- PDP ---

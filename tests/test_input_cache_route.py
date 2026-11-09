@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._project_context import context_thread, current_project
+from tests._process_state import reset_input_cache_route
 from tests._project import project_app, use_project, work_elsewhere
 
 
@@ -50,12 +51,8 @@ def _threaded_spawn(function: Any, *args: Any, config: Any, **kwargs: Any) -> An
     at the configured time limit, and reports a failure through the child's
     error envelope.
     """
-    from haute._worker_isolation import (
-        IsolatedWorkerRemoteError,
-        IsolatedWorkerStoppedError,
-        IsolatedWorkerTimeoutError,
-        _worker_error_envelope,
-    )
+    from haute._worker_failures import WorkerRemoteError, WorkerStoppedError, WorkerTimeoutError
+    from haute._worker_isolation import _worker_error_envelope
 
     outcome: dict[str, Any] = {}
 
@@ -73,14 +70,14 @@ def _threaded_spawn(function: Any, *args: Any, config: Any, **kwargs: Any) -> An
         child.join(0.01)
         reason = config.stop_reason()
         if reason is not None:
-            raise IsolatedWorkerStoppedError(terminal_reason=reason)
+            raise WorkerStoppedError(terminal_reason=reason)
         if time.monotonic() > deadline:
-            raise IsolatedWorkerTimeoutError(timeout_seconds=config.timeout_seconds)
+            raise WorkerTimeoutError(timeout_seconds=config.timeout_seconds)
     if "error" in outcome:
         _status, (remote_type, message, remote_traceback, is_memory) = _worker_error_envelope(
             outcome["error"]
         )
-        raise IsolatedWorkerRemoteError(
+        raise WorkerRemoteError(
             remote_type=remote_type,
             remote_message=message,
             remote_traceback=remote_traceback,
@@ -131,10 +128,10 @@ def client(
     app = project_app()
     # Every explicit build runs in an isolated worker; here its entry point runs on a thread.
     monkeypatch.setattr(input_cache, "run_isolated_worker", _threaded_spawn)
-    input_cache._reset_for_tests()
+    reset_input_cache_route(monkeypatch)
     with TestClient(app) as test_client:
         yield test_client
-    input_cache._reset_for_tests()
+    reset_input_cache_route(monkeypatch)
 
 
 def test_build_job_publishes_snapshot_and_snapshot_status(
@@ -685,7 +682,7 @@ def test_admitted_eager_memory_limit_reconciles_and_keeps_the_previous_generatio
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute._input_providers import source_cache_identity
-    from haute._worker_isolation import IsolatedWorkerMemoryLimitExceededError
+    from haute._worker_failures import WorkerMemoryLimitError
     from haute.routes import input_cache
 
     (tmp_path / "input.csv").write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
@@ -711,7 +708,7 @@ def test_admitted_eager_memory_limit_reconciles_and_keeps_the_previous_generatio
         (staging / "part.parquet").write_bytes(b"partial")
         staged["path"] = staging
         staged["generation_id"] = request.generation_id  # type: ignore[assignment]
-        raise IsolatedWorkerMemoryLimitExceededError(
+        raise WorkerMemoryLimitError(
             rss_bytes=4096,
             rss_limit_bytes=1024,
         )
@@ -759,18 +756,15 @@ def test_admitted_eager_worker_failures_map_onto_the_job_lifecycle(
     expected_status: str,
     expected_error_code: str,
 ) -> None:
-    from haute._worker_isolation import (
-        IsolatedWorkerStoppedError,
-        IsolatedWorkerTimeoutError,
-    )
+    from haute._worker_failures import WorkerStoppedError, WorkerTimeoutError
 
     (tmp_path / "input.csv").write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
 
     def child(_request: Any, _budget: Any) -> Any:
         if failure_factory == "cancelled":
-            raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
+            raise WorkerStoppedError(terminal_reason="cancelled")
         if failure_factory == "timed_out":
-            raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
+            raise WorkerTimeoutError(timeout_seconds=1.0)
         raise RuntimeError("forced worker build failure")
 
     _worker_harness(monkeypatch, child)
@@ -867,17 +861,14 @@ def test_a_required_cap_the_host_cannot_install_fails_the_import_as_cap_unavaila
     refused_by: str,
 ) -> None:
     """It fails saying the host has no cap, not that it needed more memory."""
-    from haute._worker_isolation import (
-        IsolatedWorkerMemoryLimitUnsupportedError,
-        IsolatedWorkerRemoteError,
-    )
+    from haute._worker_failures import WorkerMemoryLimitUnsupportedError, WorkerRemoteError
 
     (tmp_path / "input.csv").write_text("id,value\n1,a\n", encoding="utf-8")
 
     def refusing_spawn(_request: Any, _budget: Any) -> Any:
         if refused_by == "spawn":
-            raise IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=64 * 1024 * 1024)
-        raise IsolatedWorkerRemoteError(
+            raise WorkerMemoryLimitUnsupportedError(memory_limit_bytes=64 * 1024 * 1024)
+        raise WorkerRemoteError(
             remote_type="NativeMemoryLimitUnsupportedError",
             remote_message="cannot locate unified cgroup v2 membership",
             remote_traceback="",
@@ -1614,11 +1605,11 @@ def test_api_input_worker_refused_a_path_for_its_length_says_so(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._worker_isolation import IsolatedWorkerRemoteError
+    from haute._worker_failures import WorkerRemoteError
 
     _write_quotes(tmp_path)
     worker = _ApiInputWorker(
-        failure=IsolatedWorkerRemoteError(
+        failure=WorkerRemoteError(
             remote_type="PathTooLongError",
             remote_message="Windows cannot use a path of 269 characters: C:\\private",
             remote_traceback="Traceback (most recent call last):\n",
@@ -1859,7 +1850,7 @@ def test_a_build_being_cancelled_accepts_no_new_joiners(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._worker_isolation import IsolatedWorkerStoppedError
+    from haute._worker_failures import WorkerStoppedError
     from haute.routes import input_cache
 
     entered, release = threading.Event(), threading.Event()
@@ -1871,7 +1862,7 @@ def test_a_build_being_cancelled_accepts_no_new_joiners(
         assert release.wait(timeout=5)
         reason = config.stop_reason()
         if reason is not None:
-            raise IsolatedWorkerStoppedError(terminal_reason=reason)
+            raise WorkerStoppedError(terminal_reason=reason)
         return function(*args, **kwargs)
 
     monkeypatch.setattr(input_cache, "run_isolated_worker", slow_to_stop)

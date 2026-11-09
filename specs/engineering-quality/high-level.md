@@ -185,6 +185,19 @@ Out of scope:
   the shared error-text, formatting and object-guard helpers as errors; the
   pre-existing file/rule pairs `frontend/eslint.config.js` lists remain visible
   as narrow config exceptions until their owning changes land.
+- Production code that nothing calls fails the build. In the frontend, knip
+  (`npm run lint:dead`, configured by `frontend/knip.json`) fails on an unused
+  file, dependency or export; an export used only inside its own module is not
+  reported, the generated contract bundle is the generator's to prune, and a
+  deliberate export no module imports carries a `@public` tag with its reason.
+  In the backend, `scripts/check_dead_code.py` runs vulture at 60% confidence
+  over `src/haute` and the Databricks app folder and fails on a function, method, class
+  or import nothing names; what a framework calls by convention is ignored by
+  decorator or name, and every other exception is listed with its reason in the
+  script's allowlist, which itself fails on an entry nothing reports any more.
+  Production modules hold no hooks for tests: the fixtures in
+  `tests/_process_state.py` reset or read each module's process-local state from
+  outside, under the owner's own lock.
 - Execution-strategy diagnostics, Explore chart configuration and the API
   responses of each converted module group use a two-stage, reviewed contract
   pipeline. Canonical domain Pydantic models emit one committed JSON Schema
@@ -255,6 +268,16 @@ Out of scope:
   both-direction allowlist ratchet, and an autouse runtime guard that runs
   strict for converted modules and observe-and-census elsewhere. The low-level
   specification states the modes, the known interception gaps, and the ratchet.
+- Tests are organised by component and behaviour. A backend module is
+  `tests/test_<component>[_<behaviour>].py` and covers one component's
+  behaviour; a frontend file sits beside what it tests as
+  `<Module>[.<behaviour>].test.ts(x)`. Helpers and fixtures several modules
+  share live in private modules (`tests/_<component>_helpers.py`), never copied.
+  No module is named after the coverage campaign or fix wave that produced it,
+  and none exceeds 5,000 lines; a module that grows past that is split by
+  behaviour. `tests/test_test_layout.py` holds both rules over the backend and
+  frontend test trees, with the few names that read as campaign words but name
+  behaviour listed with their reason.
 
 ## Design rationale
 

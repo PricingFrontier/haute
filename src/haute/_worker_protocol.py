@@ -34,16 +34,21 @@ from haute._parent_watch import exit_with_parent
 from haute._polars_environment import release_polars_spill_dir
 from haute._project_context import ProjectContext, current_project, project_scope
 from haute._sandbox import contained_path
+from haute._worker_failures import (
+    WorkerCrashedError,
+    WorkerError,
+    WorkerMemoryLimitUnsupportedError,
+    WorkerProtocolError,
+    WorkerRemoteError,
+    WorkerStartError,
+    WorkerStoppedError,
+    WorkerTerminalReason,
+    WorkerTerminationError,
+    WorkerTimeoutError,
+    exitcode_looks_memory_limited,
+)
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
-    IsolatedWorkerCrashedError,
-    IsolatedWorkerError,
-    IsolatedWorkerMemoryLimitUnsupportedError,
-    IsolatedWorkerRemoteError,
-    IsolatedWorkerStartError,
-    IsolatedWorkerStoppedError,
-    IsolatedWorkerTimeoutError,
-    WorkerTerminalReason,
     _create_worker_rss_watchdog,
     _terminate_process,
     _WorkerRssWatchdog,
@@ -96,14 +101,7 @@ _TERMINAL_REASONS = frozenset(
 )
 
 
-class WorkerProtocolError(IsolatedWorkerError):
-    """Raised when a worker violates the transport contract."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, terminal_reason="contract_error")
-
-
-class WorkerRemoteFailureError(IsolatedWorkerRemoteError):
+class WorkerRemoteFailureError(WorkerRemoteError):
     """A validated child failure, preserving protocol terminal details."""
 
     def __init__(self, payload: WorkerFailurePayload) -> None:
@@ -115,13 +113,6 @@ class WorkerRemoteFailureError(IsolatedWorkerRemoteError):
         )
         self.terminal_reason = cast(WorkerTerminalReason, payload.terminal_reason)
         self.fields = payload.fields
-
-
-class WorkerProcessTerminationError(IsolatedWorkerError):
-    """Raised when a terminated worker cannot be confirmed dead."""
-
-    def __init__(self) -> None:
-        super().__init__("worker process remained alive after termination", terminal_reason="error")
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -353,9 +344,7 @@ def run_worker_protocol(
         and worker_config.memory_limit_bytes is not None
         and not process_memory_caps_supported()
     ):
-        raise IsolatedWorkerMemoryLimitUnsupportedError(
-            memory_limit_bytes=worker_config.memory_limit_bytes
-        )
+        raise WorkerMemoryLimitUnsupportedError(memory_limit_bytes=worker_config.memory_limit_bytes)
     root = artifact_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     ctx = mp.get_context("spawn")
@@ -394,7 +383,7 @@ def run_worker_protocol(
         try:
             start_process_with_environment(process, worker_config.environment)
         except Exception as exc:  # pragma: no cover - multiprocessing dependent
-            raise IsolatedWorkerStartError(f"Failed to start isolated worker: {exc}") from exc
+            raise WorkerStartError(f"Failed to start isolated worker: {exc}") from exc
         startup, early = await_worker_ready(
             process,
             result_queue,
@@ -430,17 +419,17 @@ def run_worker_protocol(
                 and (reason := worker_config.stop_reason()) is not None
             ):
                 _terminate_and_confirm(process)
-                raise IsolatedWorkerStoppedError(terminal_reason=reason)
+                raise WorkerStoppedError(terminal_reason=reason)
             if deadline is not None and time.monotonic() >= deadline:
                 _terminate_and_confirm(process)
-                raise IsolatedWorkerTimeoutError(
-                    timeout_seconds=cast(float, worker_config.timeout_seconds)
-                )
+                raise WorkerTimeoutError(timeout_seconds=cast(float, worker_config.timeout_seconds))
             process.join(timeout=worker_config.stop_poll_interval_seconds)
         if process.exitcode not in (0, None):
-            raise IsolatedWorkerCrashedError(
-                exitcode=process.exitcode,
-                memory_limit_bytes=worker_config.memory_limit_bytes,
+            raise WorkerCrashedError(
+                process.exitcode,
+                memory_limited=exitcode_looks_memory_limited(
+                    process.exitcode, worker_config.memory_limit_bytes
+                ),
             )
         if not progress_ended:
             _drain_progress_until_end(progress_queue, expected_sequence, on_progress)
@@ -448,9 +437,11 @@ def run_worker_protocol(
             try:
                 queued_result = _validate_result_envelope(result_queue.get(timeout=1.0))
             except queue.Empty as exc:
-                raise IsolatedWorkerCrashedError(
-                    exitcode=process.exitcode,
-                    memory_limit_bytes=worker_config.memory_limit_bytes,
+                raise WorkerCrashedError(
+                    process.exitcode,
+                    memory_limited=exitcode_looks_memory_limited(
+                        process.exitcode, worker_config.memory_limit_bytes
+                    ),
                 ) from exc
         status, payload = queued_result
         if status == "ok":
@@ -509,8 +500,11 @@ def run_worker_protocol(
     if primary_error is not None:
         raise primary_error
     if result is None:
-        raise IsolatedWorkerCrashedError(
-            exitcode=process.exitcode, memory_limit_bytes=worker_config.memory_limit_bytes
+        raise WorkerCrashedError(
+            process.exitcode,
+            memory_limited=exitcode_looks_memory_limited(
+                process.exitcode, worker_config.memory_limit_bytes
+            ),
         )
     return result
 
@@ -873,10 +867,10 @@ def _sha256_file(path: Path) -> str:
 
 
 def _terminal_reason_for_exception(exc: BaseException) -> str:
-    if isinstance(exc, IsolatedWorkerError):
+    if isinstance(exc, WorkerError):
         return exc.terminal_reason
     if isinstance(exc, NativeMemoryLimitUnsupportedError):
-        # The same outcome as a parent-side IsolatedWorkerMemoryLimitUnsupportedError.
+        # The same outcome as a parent-side WorkerMemoryLimitUnsupportedError.
         return "contract_error"
     if isinstance(exc, MemoryError):
         return "memory_limited"
@@ -886,4 +880,4 @@ def _terminal_reason_for_exception(exc: BaseException) -> str:
 def _terminate_and_confirm(process: Any) -> None:
     _terminate_process(process)
     if process.is_alive():
-        raise WorkerProcessTerminationError()
+        raise WorkerTerminationError()

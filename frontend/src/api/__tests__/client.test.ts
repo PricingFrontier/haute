@@ -12,8 +12,6 @@ import {
   getPreviewProgress,
   HAUTE_SESSION_EXPIRED_EVENT,
   bootstrapHauteSession,
-  checkHauteSession,
-  isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
   estimateOptimiserSolve,
@@ -550,22 +548,6 @@ describe("request() core via loadPipeline", () => {
     expect(event.detail.reason).toBe("Missing or invalid Haute session token")
 
     window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
-  })
-
-  it("checks the protected session status endpoint without retrying expired tokens", async () => {
-    mockFetch.mockReturnValue(errorResponse(403, {
-      detail: "Missing or invalid Haute session token",
-    }))
-
-    try {
-      await checkHauteSession()
-      throw new Error("expected checkHauteSession to reject")
-    } catch (err) {
-      expect(isHauteSessionExpiredError(err)).toBe(true)
-    }
-
-    expect(mockFetch).toHaveBeenCalledTimes(1)
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/session")
   })
 
   it("throws ApiError with status and detail on 5xx response", async () => {

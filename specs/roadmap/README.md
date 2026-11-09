@@ -24,7 +24,6 @@ records corrections to that audit's claims and proposed remedies.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |
-| [Engineering quality](engineering-quality.md) | Dead code, test organisation, one worker primitive and failure family; mutation witnesses for the price-changing modules (a decision) | `ENGQ-R01` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample` | `WB-08` |
@@ -38,16 +37,6 @@ the order; the packages above own the work. The packages the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) added, and the
 documentation packages from that day's check of the deployment guides, are not yet placed
 in its rounds.
-
-## Codebase review — 23 September 2026
-
-The [codebase review](codebase-review-2026-09-23.md) is a whole-repository
-review for brittleness, over-engineering, weak areas with stronger standard
-solutions, and duplication, made at `main` `9319b11d`. It keeps its method and
-limits and the findings still open, each mapped to the package that tracks it;
-findings whose packages were delivered have been removed. It is a dated
-supporting report and owns no work; the packages in the component roadmaps
-above carry the plans.
 
 ## Codebase review — 25 October 2026
 
