@@ -8,8 +8,9 @@ specification](../mlflow-model-registry/high-level.md) describes it: the
 local copy of a run's artifact, the retry around loading it, and the list of
 runs the picker offers. The packages below come from the 9 November 2026
 codebase review. `MLR-01` was reproduced against `HEAD` on that day with the
-loader's collaborators replaced by stubs; `MLR-02` and `MLR-03` are read from
-the source.
+loader's collaborators replaced by stubs, and `MLR-04` by running the
+commands on a shipped example; `MLR-02` and `MLR-03` are read from the
+source.
 
 ## Priorities
 
@@ -18,6 +19,7 @@ the source.
 | MLR-01 | Planned | P2 | A model load that fails for a reason other than unreadable bytes keeps its error and leaves the local copy alone. |
 | MLR-02 | Planned | P3 | Clearing old model copies never fails a load that succeeded, and never removes a copy another process is reading. |
 | MLR-03 | Planned | P3 | The run picker says how many runs it could not check, and lists the runs the loader can load. |
+| MLR-04 | Planned | P3 | A Model Scoring node whose MLflow run does not exist is reported by node, run and destination, not as a traceback. |
 
 ## Planned improvements
 
@@ -119,3 +121,36 @@ fixture runs.
 `src/haute/_mlflow_io.py::_find_artifact_by_extension`;
 `src/haute/_mlflow_io.py::_find_model_artifact`;
 `frontend/src/panels/editors/MlflowModelPicker.tsx`.
+
+### MLR-04 — A missing MLflow run is reported as the node's configuration error
+**Why:** Reproduced. On the shipped `model_lifecycle` example, whose Model
+Scoring node names a run id that does not exist, `haute run` printed about
+120 lines of Python traceback ending
+"mlflow.exceptions.MlflowException: Run 'replace-with-training-run-id' not
+found", and `haute deploy --dry-run` did the same after its header. Neither
+names the node. A run deleted from the tracking store, a run id typed wrongly
+and a node pointed at the wrong destination all arrive this way. The run
+command names the failing node for failures the walker marks and keeps a
+traceback only for the unexpected; this one is neither marked nor in the
+expected list, although it is the analyst's configuration that is wrong.
+Both commands also print MLflow's own `mlflow.agent.hint` log line, an
+instruction addressed to coding agents, before their output.
+
+**Plan:** Convert a failed lookup of a run, a registered model, a version or
+an alias, at the point the model source is resolved, into Haute's
+configuration error naming the node, what it looked for and the destination
+it looked in, and mark the node. Both commands then print one line. Set the
+`mlflow.agent.hint` logger above INFO where Haute configures logging.
+
+**Acceptance:** `haute run` and `haute deploy --dry-run` on the example exit
+1 with one error line naming the Model Scoring node, the run id and the
+destination, and no traceback. A tracking server that cannot be reached is
+reported as that, not as a missing run. Neither command prints the agent
+hint.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_run.py`; `src/haute/errors.py::failing_node`;
+`src/haute/cli/_deploy.py::handle_deploy`;
+`src/haute/_mlflow_utils.py::resolve_mlflow_source`;
+`src/haute/assistant/assets/examples/model_lifecycle/pipeline.py`.

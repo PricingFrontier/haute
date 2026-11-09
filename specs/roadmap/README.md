@@ -29,7 +29,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Execution engine](execution-engine.md) | Pipelines with more than one non-live source under the optimiser and a write; the Constant node's number rule; preamble failure attribution | `EXE-01` |
 | [Frontend graph canvas](frontend-graph-canvas.md) | What one edit costs and what the undo history holds when the graph carries large tables | `FEG-01` |
 | [Frontend shared](frontend-shared.md) | Conditional writes the API client retries | `FES-01` |
-| [MLflow model registry](mlflow-model-registry.md) | The model-load retry that treats every failure as a corrupt artifact; eviction of local model copies; the run picker's silent omissions | `MLR-01` |
+| [MLflow model registry](mlflow-model-registry.md) | The model-load retry that treats every failure as a corrupt artifact; eviction of local model copies; the run picker's silent omissions; a missing run reported as a traceback | `MLR-01` |
 | [Modelling](modelling.md) | Temporal splits on a date column with gaps; tuning and rerun messages; evaluation planning cost; the constructor-only split seam | `MDL-01` |
 | [Pipeline config](pipeline-config.md) | One pointer form for a recovery issue on a nested setting | `PCF-01` |
 | [Pipeline parsing and code generation](codegen.md) | Constructor forms rewritten on save; two hand-written statements the parser cannot read; code generation's cost per edge | `CGEN-01` |
