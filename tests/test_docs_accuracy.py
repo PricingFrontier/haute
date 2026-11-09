@@ -149,12 +149,14 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
+    "caching",
     "codegen",
     "deploy",
     "engineering-quality",
     "execution-engine",
     "frontend-graph-canvas",
     "frontend-shared",
+    "mlflow-model-registry",
     "modelling",
     "pipeline-config",
     "polars-2",
