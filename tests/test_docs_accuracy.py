@@ -2087,6 +2087,107 @@ def test_deployment_docs_use_scaffolded_pipeline_path() -> None:
             )
 
 
+DATABRICKS_GUIDE = ROOT / "docs" / "deployment" / "targets" / "databricks.md"
+
+
+def _h2_section(text: str, heading_prefix: str) -> str:
+    """The body of the level-two section whose heading starts with *heading_prefix*."""
+    match = re.search(
+        rf"^## {re.escape(heading_prefix)}[^\n]*\n(.*?)(?=^## |\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"No '## {heading_prefix}' section"
+    return match.group(1)
+
+
+def _scaffolded_staging_suffix() -> str:
+    match = re.search(
+        r'^endpoint_suffix = "(.*)"$',
+        haute_toml("motor-pricing", "databricks", "github"),
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def test_databricks_guide_shows_the_haute_toml_init_writes() -> None:
+    step = _h2_section(DATABRICKS_GUIDE.read_text(encoding="utf-8"), "Step 7")
+    shown = re.search(r"```toml\n(.*?)```", step, flags=re.DOTALL)
+    assert shown is not None
+    assert shown.group(1) == haute_toml("motor-pricing", "databricks", "github")
+
+
+def test_databricks_guide_calls_the_endpoint_a_merge_deploys() -> None:
+    """A merge deploys staging only, so Step 9's examples call the staging endpoint."""
+    step = _h2_section(DATABRICKS_GUIDE.read_text(encoding="utf-8"), "Step 9")
+    called = re.findall(r"serving-endpoints/([^/\"]+)/invocations", step)
+    called += re.findall(r'\bname="([^"]+)"', step)
+    assert len(called) == 3
+    assert set(called) == {"motor-pricing" + _scaffolded_staging_suffix()}
+
+
+def test_databricks_guide_names_the_production_only_scale_to_zero_override() -> None:
+    from haute.deploy._config import _ENV_OVERRIDES
+
+    (override,) = (
+        name
+        for name, (attribute, _) in _ENV_OVERRIDES.items()
+        if attribute == "databricks.serving_scale_to_zero"
+    )
+    assert f"`{override}=false`" in DATABRICKS_GUIDE.read_text(encoding="utf-8")
+
+
+def _quoted_token_errors() -> list[str]:
+    section = _h2_section(DATABRICKS_GUIDE.read_text(encoding="utf-8"), "Troubleshooting")
+    token = re.search(r"^### Token expired\n(.*?)(?=^### |\Z)", section, re.M | re.S)
+    assert token is not None
+    return re.findall(r"^- `([^`]+)`", token.group(1), flags=re.MULTILINE)
+
+
+def test_databricks_guide_quotes_the_errors_an_expired_token_gives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+    import urllib.request
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    from databricks.sdk.errors import Unauthenticated
+
+    from haute.deploy import _mlflow
+    from haute.deploy._config import DeployConfig
+    from haute.errors import DeployError
+
+    host = "https://adb-1.azuredatabricks.net"
+    monkeypatch.setenv("DATABRICKS_RATING_HOST", host)
+    monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "dapi-expired")
+    refused = urllib.error.HTTPError(host, 401, "Unauthorized", {}, None)  # type: ignore[arg-type]
+    with (
+        patch.object(urllib.request, "urlopen", side_effect=refused),
+        pytest.raises(DeployError) as rating,
+    ):
+        _mlflow._check_databricks_connectivity(lambda _: None)
+
+    workspace = MagicMock()
+    workspace.schemas.get.side_effect = Unauthenticated("Invalid access token.")
+    config = DeployConfig(pipeline_file=Path("rating/main.py"), model_name="motor-pricing")
+    with (
+        patch.object(_mlflow, "pat_workspace_client", return_value=workspace),
+        patch(
+            "mlflow.utils.databricks_utils.get_databricks_host_creds",
+            return_value=SimpleNamespace(host=host, token="dapi-expired"),
+        ),
+        pytest.raises(DeployError) as registry,
+    ):
+        _mlflow._check_registry_schema(config, "databricks-uc")
+
+    quoted = _quoted_token_errors()
+    assert len(quoted) == 2
+    for message, shown in zip((str(rating.value), str(registry.value)), quoted, strict=True):
+        assert message.startswith(shown), (message, shown)
+
+
 def _marked_block(text: str, marker: str) -> str:
     """Return a marker-delimited documentation block without its markers."""
     match = re.search(

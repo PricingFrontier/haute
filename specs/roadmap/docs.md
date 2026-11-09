@@ -22,7 +22,6 @@ The site describes `main`, decided on 25 October 2026: the next release, due soo
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DOC-01 | Planned | P2 | The Databricks guide names the endpoints a merge creates, says what a finished deploy means, and changes staging and production settings where each applies. |
 | DOC-02 | Planned | P2 | The CI pages describe the workflows Haute generates: who can start production, each target's secrets, job limits and images, and what `haute ci update` rewrites. |
 | DOC-03 | Planned | P2 | A new project reaches a green first pull request and a staging deploy by following the guides from an empty folder. |
 | DOC-04 | Planned | P2 | The site publishes `main` again, with the other packages landed, before the next release. |
@@ -35,49 +34,6 @@ a page restates a fact the code owns (a secret name, a job's time limit, an imag
 endpoint name), a documentation parity test derives it from the code, as
 `tests/test_docs_accuracy.py` already does for the scaffold tree, so the page cannot drift
 from the generator again.
-
-### DOC-01 — The Databricks guide describes the deploy as it runs
-**Why:** `docs/deployment/targets/databricks.md` predates the deploy that waits for its
-endpoint and the staging deploy of its own, and four statements no longer hold:
-- Step 9 calls `motor-pricing` (:321, :345, :359), the production endpoint. A merge to `main`
-  deploys staging only, `motor-pricing-staging`; the production endpoint exists once the
-  production workflow has run, so a new user following Step 9 after the first merge is told
-  the endpoint does not exist.
-- "Endpoint not found" in Troubleshooting (:382-384) says the endpoint "can take 5–10 minutes
-  to provision" after deploying. That contradicts :287: `haute deploy` returns only once the
-  endpoint serves the new version, so after a finished deploy "not found" is a wrong name or
-  workspace, and waiting does not help.
-- "Token expired" (:388) says the error names the step that failed. Neither expired token is
-  named: the connectivity pre-check, on the rating pair, takes every HTTP error but 403 as
-  "reachable", and the MLflow pair is first used by the catalog check, whose SDK error
-  `handle_deploy` does not catch, so the user reads a traceback.
-- `serving_scale_to_zero = false` "for production endpoints" (:392) turns scale-to-zero off
-  for staging too: one `[deploy.databricks]` value serves both deploys.
-  `HAUTE_SERVING_SCALE_TO_ZERO` overrides it for one deploy.
-
-The `[ci.staging] endpoint_suffix` row (:273) holds, now that the generated staging deploy,
-smoke and impact steps pass the recorded suffix, but it does not say that a changed suffix
-reaches the workflows only through `haute ci update`.
-
-**Plan:** Step 9 calls `<name>-staging` and says the production name answers once the
-production workflow has run. "Endpoint not found" says a finished deploy's endpoint already
-serves, so the name or the workspace is wrong. "Token expired" quotes the message deploy's
-connectivity check gives an expired token. The scale-to-zero note sets `HAUTE_SERVING_SCALE_TO_ZERO=false` on the
-production job for a production-only setting. The suffix row says to run `haute ci update`
-after changing it.
-
-**Acceptance:** Following Step 9 right after the first merge calls an endpoint that exists.
-A parity test reads the staging suffix in the page's examples from `haute_toml`, and the
-scale-to-zero override's name from `_apply_env_overrides`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_mlflow.py::_create_or_update_serving_endpoint` (the endpoint
-named with the suffix, and the wait before it returns), `::_check_databricks_connectivity` and
-`::_check_registry_schema`; `src/haute/deploy/_databricks_serving.py::wait_for_endpoint`;
-`src/haute/cli/_deploy.py::handle_deploy` (the errors it catches);
-`src/haute/deploy/_config.py::_apply_env_overrides`; `src/haute/_scaffold.py::haute_toml` and
-`::_pin_staging_suffix`.
 
 ### DOC-02 — The CI pages describe the generated workflows
 **Why:** The three CI pages (`docs/deployment/ci/github-actions.md`, `gitlab.md` and
@@ -195,7 +151,7 @@ before the release ships. No workflow change: the site keeps tracking `main`.
 **Acceptance:** The published site matches `main` at the release commit, and a later docs
 change on `main` publishes without waiting on an older run.
 
-**Dependencies:** DOC-01, DOC-02, DOC-03 and DOC-05, which the site publishes.
+**Dependencies:** DOC-02, DOC-03 and DOC-05, which the site publishes.
 
 **Evidence:** `.github/workflows/docs.yml` (its triggers and `concurrency: pages`);
 `.github/workflows/release.yml`; the Deploy docs runs since 2 October 2026.

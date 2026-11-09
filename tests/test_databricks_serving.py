@@ -428,7 +428,7 @@ def test_a_profile_with_a_host_and_token_passes(monkeypatch: pytest.MonkeyPatch)
 # ---------------------------------------------------------------------------
 
 
-def _registry_check(ws: MagicMock) -> None:
+def _registry_check(ws: MagicMock, registry_uri: str = "databricks-uc") -> None:
     from haute.deploy import _mlflow
     from haute.deploy._config import DatabricksConfig
 
@@ -441,8 +441,38 @@ def _registry_check(ws: MagicMock) -> None:
             return_value=SimpleNamespace(host=_HOST, token="dapi-registry"),
         ),
     ):
-        _mlflow._check_registry_schema(config, "databricks-uc")
+        _mlflow._check_registry_schema(config, registry_uri)
     client.assert_called_once_with(_HOST, "dapi-registry")
+
+
+@pytest.mark.parametrize(
+    ("registry_uri", "named"),
+    [
+        ("databricks-uc", "DATABRICKS_MLFLOW_TOKEN"),
+        (
+            "databricks-uc://team",
+            "the token of the Databricks profile 'team' that MLFLOW_TRACKING_URI selects",
+        ),
+    ],
+)
+def test_a_refused_registry_token_is_named_before_the_model_uploads(
+    registry_uri: str, named: str
+) -> None:
+    from databricks.sdk.errors import Unauthenticated
+
+    from haute.errors import DeployError
+
+    ws = MagicMock()
+    ws.schemas.get.side_effect = Unauthenticated("Invalid access token.")
+
+    with pytest.raises(DeployError) as excinfo:
+        _registry_check(ws, registry_uri)
+
+    assert str(excinfo.value) == (
+        "Databricks returned 401 Unauthorized to the model registry. "
+        f"Check that {named} is valid and has not expired. Host: {_HOST}"
+    )
+    ws.catalogs.list.assert_not_called()
 
 
 def test_a_missing_registry_schema_is_refused_naming_the_catalogs_there_are() -> None:
