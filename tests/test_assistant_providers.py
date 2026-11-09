@@ -2509,9 +2509,9 @@ def _every_sdk_status_class() -> list[tuple[object, str, str]]:
     return [
         (sdk, name, _status_category(sdk, getattr(sdk, name)))
         for sdk in (anthropic, openai)
+        # By name first: an older SDK's module-level client proxies build a client when touched.
         for name in sorted(dir(sdk))
-        if isinstance(getattr(sdk, name), type)
-        and issubclass(getattr(sdk, name), sdk.APIStatusError)
+        if name.endswith("Error") and issubclass(getattr(sdk, name), sdk.APIStatusError)
     ]
 
 
@@ -2546,10 +2546,12 @@ def test_a_wrong_model_name_and_an_overloaded_endpoint_are_status_failures() -> 
             sdk.__name__, _sdk_error(sdk, name), api_key="sk-test-secret"
         )
         assert classified.failure_class == "status"
-    overloaded = _classify_sdk_error(
-        "anthropic", _sdk_error(anthropic, "OverloadedError"), api_key="sk-test-secret"
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    overloaded = anthropic.APIStatusError(
+        "overloaded", response=httpx.Response(529, request=request), body=None
     )
-    assert overloaded.failure_class == "status"
+    classified = _classify_sdk_error("anthropic", overloaded, api_key="sk-test-secret")
+    assert classified.failure_class == "status"
 
 
 @pytest.mark.parametrize(
