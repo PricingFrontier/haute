@@ -37,8 +37,9 @@ from haute._worker_protocol import (
 from haute.errors import BoundedMemoryUnsupportedError, PreambleError, RequestRefusedError
 from haute.projection import AllExcept
 from haute.routes._job_store import JobStore
-from haute.routes._train_service import TrainService
+from haute.routes._training_lifecycle import TrainService
 from tests._project import use_project
+from tests._training_helpers import join_training_preparation
 from tests.conftest import make_edge, make_graph, make_ram_estimate, make_ready_file_input_config
 from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
 
@@ -495,7 +496,7 @@ class TestStartGlmMergeAndKeepColumns:
             patch.object(service, "_launch_background", side_effect=fake_launch),
         ):
             resp = service.start(body)
-            service._join_preparation(resp.job_id)
+            join_training_preparation(resp.job_id)
 
         assert resp.status == "started"
         created_job = next(iter(store.list_jobs().values()))
@@ -539,7 +540,7 @@ class TestStartGlmMergeAndKeepColumns:
             patch.object(service, "_estimate_ram", side_effect=inspect_created_job),
         ):
             response = service.start(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         assert isinstance(observed["start_time"], float)
         assert observed["timeout"] == 30
@@ -565,7 +566,7 @@ class TestStartGlmMergeAndKeepColumns:
             ),
         ):
             response = service.start(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         # The single created job should be in error state, not left running.
         running = [j for j in store.list_jobs().values() if j["status"] == "running"]
@@ -1059,7 +1060,7 @@ class TestStartExecutionContextLifecycle:
             patch.object(service, "_execute_and_sink", side_effect=fake_execute),
         ):
             response = service.start(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         jobs = list(store.list_jobs().values())
         assert jobs and jobs[0]["status"] == "memory_limited"
@@ -1114,7 +1115,7 @@ class TestStartExecutionContextLifecycle:
             assert store.require_job(response.job_id)["status"] == "running"
             assert service.cancel(response.job_id)["status"] == "cancelled"
             release_preparation.set()
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         jobs = list(store.list_jobs().values())
         assert jobs and jobs[0]["status"] == "cancelled"
@@ -1179,7 +1180,7 @@ class TestStringListConfig:
 class TestRequiredMetadataColumns:
     def test_non_dict_evaluation_is_ignored(self):
         """A non-dict evaluation value skips the evaluation-column block."""
-        from haute.routes._train_service import _training_required_metadata_columns
+        from haute.routes._training_preparation import _training_required_metadata_columns
 
         cols = _training_required_metadata_columns(
             {"target": "y", "evaluation": "random", "id_columns": ["pid"]}
@@ -1189,7 +1190,7 @@ class TestRequiredMetadataColumns:
 
     def test_temporal_evaluation_adds_date_column(self):
         """A temporal evaluation contributes its date_column to the keep set."""
-        from haute.routes._train_service import _training_required_metadata_columns
+        from haute.routes._training_preparation import _training_required_metadata_columns
 
         cols = _training_required_metadata_columns(
             {
@@ -1203,7 +1204,7 @@ class TestRequiredMetadataColumns:
 class TestRequiredColumnsByNode:
     def test_missing_target_returns_none(self):
         """No target → no derivable column demand (line 247)."""
-        from haute.routes._train_service import _training_required_columns_by_node
+        from haute.routes._training_preparation import _training_required_columns_by_node
 
         assert _training_required_columns_by_node("n", {"algorithm": "catboost"}) is None
 
@@ -1211,13 +1212,13 @@ class TestRequiredColumnsByNode:
 class TestJobElapsedSeconds:
     def test_falls_back_to_elapsed_seconds_field(self):
         """Without start_time, the stored elapsed_seconds is used (348-349)."""
-        from haute.routes._train_service import _job_elapsed_seconds
+        from haute.routes._training_worker import _job_elapsed_seconds
 
         assert _job_elapsed_seconds({"elapsed_seconds": 12.5}) == 12.5
 
     def test_non_numeric_elapsed_uses_fallback(self):
         """A non-numeric elapsed_seconds yields the fallback (line 349 else)."""
-        from haute.routes._train_service import _job_elapsed_seconds
+        from haute.routes._training_worker import _job_elapsed_seconds
 
         assert _job_elapsed_seconds({"elapsed_seconds": "nope"}, fallback=3.0) == 3.0
 
@@ -1225,7 +1226,7 @@ class TestJobElapsedSeconds:
 class TestCheckGpuVramHelper:
     def test_zero_rows_returns_empty_check(self):
         """Non-positive rows/columns short-circuit to an empty check (line 368)."""
-        from haute.routes._train_service import _check_gpu_vram
+        from haute.routes._training_preparation import _check_gpu_vram
 
         check = _check_gpu_vram(0, 5, {})
         assert check.estimated_mb is None
@@ -1234,7 +1235,7 @@ class TestCheckGpuVramHelper:
 
     def test_sufficient_vram_yields_no_warning(self):
         """When estimated VRAM fits available VRAM, no warning (384->390)."""
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         with (
             patch(
@@ -1250,7 +1251,7 @@ class TestCheckGpuVramHelper:
                 return_value=8 * 1024**3,
             ),
         ):
-            check = _train_service._check_gpu_vram(1000, 10, {})
+            check = _training_lifecycle._check_gpu_vram(1000, 10, {})
 
         assert check.warning is None
         assert check.estimated_mb is not None
@@ -1258,7 +1259,7 @@ class TestCheckGpuVramHelper:
 
     def test_unknown_vram_warns_without_refusing(self):
         """Unknown VRAM is advisory: warning set, ``insufficient`` stays False."""
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         with (
             patch(
@@ -1270,7 +1271,7 @@ class TestCheckGpuVramHelper:
                 return_value=None,
             ),
         ):
-            check = _train_service._check_gpu_vram(1000, 10, {})
+            check = _training_lifecycle._check_gpu_vram(1000, 10, {})
 
         assert check.warning is not None
         assert "could not be detected" in check.warning
@@ -1280,7 +1281,7 @@ class TestCheckGpuVramHelper:
 
     def test_insufficient_vram_sets_blocking_flag(self):
         """Observed-too-small VRAM is the one state that refuses a launch."""
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         with (
             patch(
@@ -1292,7 +1293,7 @@ class TestCheckGpuVramHelper:
                 return_value=1 * 1024**3,
             ),
         ):
-            check = _train_service._check_gpu_vram(1000, 10, {})
+            check = _training_lifecycle._check_gpu_vram(1000, 10, {})
 
         assert check.warning is not None
         assert check.insufficient is True
@@ -1340,7 +1341,7 @@ class TestCheckGpuFallbackNoWarning:
     def test_gpu_task_with_feasible_vram_records_no_warning(self):
         """task_type=GPU but VRAM fits → no exception and no job warning."""
         from haute.routes._job_store import JobStore
-        from haute.routes._train_service import _VramCheck
+        from haute.routes._training_preparation import _VramCheck
 
         store = JobStore()
         service = TrainService(store)
@@ -1366,7 +1367,7 @@ class TestCheckGpuFallbackNoWarning:
     def test_gpu_task_with_unknown_vram_warns_and_proceeds(self):
         """Unknown VRAM attaches a job warning but does not refuse the launch."""
         from haute.routes._job_store import JobStore
-        from haute.routes._train_service import _VramCheck
+        from haute.routes._training_preparation import _VramCheck
 
         store = JobStore()
         service = TrainService(store)
@@ -1481,13 +1482,13 @@ class TestEvaluationPreviewFailures:
         lazy_outputs: dict[str, pl.LazyFrame],
         message: str,
     ) -> None:
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         context = _training_execution_context()
         service = TrainService(JobStore())
         with (
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "create_admitted_execution_context",
                 return_value=context,
             ),
@@ -1495,12 +1496,12 @@ class TestEvaluationPreviewFailures:
             # These cases are about the data the execution returns, so the
             # seed plan it runs under is not the subject here.
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "open_seed_plan",
                 return_value=contextlib.nullcontext(),
             ),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "execute_lazy_graph",
                 return_value=(lazy_outputs,),
             ),
@@ -1532,13 +1533,13 @@ class TestEvaluationPreviewFailures:
         code: str,
         message: str,
     ) -> None:
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         context = _training_execution_context()
         service = TrainService(JobStore())
         with (
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "create_admitted_execution_context",
                 return_value=context,
             ),
@@ -1611,18 +1612,6 @@ class TestPreparationTerminalPaths:
         assert job["status"] == "error"
         assert job["message"] == "preparation exploded"
 
-    def test_join_preparation_times_out_for_live_owner(self) -> None:
-        store = JobStore()
-        service = TrainService(store)
-        owner = MagicMock()
-        owner.is_alive.return_value = True
-        service._preparation_threads["job-1"] = owner
-
-        with pytest.raises(TimeoutError, match="still running"):
-            service._join_preparation("job-1", timeout=0.01)
-
-        owner.join.assert_called_once_with(timeout=0.01)
-
 
 class TestLaunchBackgroundWorker:
     def _service_and_job(self):
@@ -1645,8 +1634,7 @@ class TestLaunchBackgroundWorker:
         """A TrainingJob whose run() invokes progress + on_iteration (past the
         loss-history cap) drives the success closures and the thinning arm;
         the job ends completed and the temp parquet is unlinked."""
-        from haute.routes import _training_lifecycle as _train_service
-        from haute.routes import _training_worker
+        from haute.routes import _training_lifecycle, _training_worker
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
@@ -1668,7 +1656,7 @@ class TestLaunchBackgroundWorker:
         with (
             patch("haute.modelling.TrainingJob", FakeJob),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={"name": "train", "output_dir": str(tmp_path / "outputs")},
             ),
@@ -1700,8 +1688,7 @@ class TestLaunchBackgroundWorker:
         """The evaluation artifacts are read and validated before the store's lock is
         taken: a status poll made while they are read answers at once."""
 
-        from haute.routes import _training_artifacts
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_artifacts, _training_lifecycle
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
@@ -1721,7 +1708,7 @@ class TestLaunchBackgroundWorker:
         with (
             patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={"name": "train", "output_dir": str(tmp_path / "outputs")},
             ),
@@ -1749,7 +1736,7 @@ class TestLaunchBackgroundWorker:
     def test_execution_cancelled_marks_cancelled(self, tmp_path):
         """An ExecutionCancelledError from run() → job cancelled (1164-1169)."""
         from haute._execution_context import ExecutionCancelledError
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
@@ -1766,7 +1753,7 @@ class TestLaunchBackgroundWorker:
         with (
             patch("haute.modelling.TrainingJob", FakeJob),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={"name": "t", "output_dir": str(tmp_path / "outputs")},
             ),
@@ -1790,7 +1777,7 @@ class TestLaunchBackgroundWorker:
 
     def test_bounded_unsupported_marks_contract_error(self, tmp_path):
         """BoundedMemoryUnsupportedError from run() → contract_error (1185-1186)."""
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
@@ -1807,7 +1794,7 @@ class TestLaunchBackgroundWorker:
         with (
             patch("haute.modelling.TrainingJob", FakeJob),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={"name": "t", "output_dir": str(tmp_path / "outputs")},
             ),
@@ -1834,7 +1821,7 @@ class TestLaunchBackgroundWorker:
     def test_thread_start_failure_marks_error_and_raises_500(self, tmp_path):
         """If Thread.start() blows up, the job flips to error, admission is
         released, the temp file is removed, and a 500 is raised (1236-1250)."""
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         store, service, job_id = self._service_and_job()
         released: list[bool] = []
@@ -1853,7 +1840,7 @@ class TestLaunchBackgroundWorker:
 
         with (
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={"name": "t", "output_dir": str(tmp_path / "outputs")},
             ),
@@ -1884,7 +1871,7 @@ class TestLaunchBackgroundWorker:
 class TestProtocolCallbackValidation:
     @staticmethod
     def _capture_training_launch(tmp_path: Path):
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -1911,7 +1898,7 @@ class TestProtocolCallbackValidation:
         with (
             patch.object(service._supervisor, "launch_protocol", side_effect=capture_launch),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={
                     "name": "quoted",
@@ -1936,7 +1923,7 @@ class TestProtocolCallbackValidation:
 
     @staticmethod
     def _capture_dispersion_launch(tmp_path: Path):
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -1963,7 +1950,7 @@ class TestProtocolCallbackValidation:
         with (
             patch.object(service._supervisor, "launch_protocol", side_effect=capture_launch),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={"target": "y", "params": {}},
             ),
@@ -2411,7 +2398,7 @@ class TestProtocolLaunchCleanup:
         kind: str,
         job_type: str,
     ) -> None:
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         store, service, job_id, prepared, context, released = self._service_job_and_context(
             tmp_path, job_type=job_type
@@ -2419,9 +2406,9 @@ class TestProtocolLaunchCleanup:
         start_time = float(store.require_job(job_id)["start_time"])
         output_root = tmp_path / "outputs"
         with (
-            patch.object(_train_service.time, "monotonic", return_value=start_time + 2.0),
+            patch.object(_training_lifecycle.time, "monotonic", return_value=start_time + 2.0),
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 return_value={
                     "name": "quoted",
@@ -2451,14 +2438,14 @@ class TestProtocolLaunchCleanup:
         kind: str,
         job_type: str,
     ) -> None:
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         _store, service, job_id, prepared, context, released = self._service_job_and_context(
             tmp_path, job_type=job_type
         )
         with (
             patch.object(
-                _train_service,
+                _training_lifecycle,
                 "build_training_job_kwargs",
                 side_effect=ValueError("invalid worker request"),
             ),
@@ -2475,14 +2462,14 @@ class TestProtocolLaunchCleanup:
         self,
         tmp_path: Path,
     ) -> None:
-        from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_lifecycle
 
         _store, service, job_id, prepared, context, released = self._service_job_and_context(
             tmp_path, job_type="dispersion_estimate"
         )
         with (
             patch.object(
-                _train_service.tempfile,
+                _training_lifecycle.tempfile,
                 "mkdtemp",
                 side_effect=OSError("scratch unavailable"),
             ),
@@ -2618,7 +2605,7 @@ class TestTrainServiceLifecycles:
         with patch("haute.modelling.TrainingJob", FailingJob):
             resp1 = service.start(body)
             assert resp1.status == "started"
-            service._join_preparation(resp1.job_id)
+            join_training_preparation(resp1.job_id)
             launched[-1].join_and_raise(timeout=10)
 
         job1 = store.require_job(resp1.job_id)
@@ -2635,7 +2622,7 @@ class TestTrainServiceLifecycles:
             resp2 = service.start(body)
             assert resp2.status == "started"
             assert resp2.job_id != resp1.job_id
-            service._join_preparation(resp2.job_id)
+            join_training_preparation(resp2.job_id)
             launched[-1].join_and_raise(timeout=10)
 
         job2 = store.require_job(resp2.job_id)
@@ -2657,7 +2644,7 @@ class TestTrainServiceLifecycles:
             assert resp3.status == "started"
             assert resp3.job_id not in (resp1.job_id, resp2.job_id)
             cancel_job_id = resp3.job_id
-            service._join_preparation(resp3.job_id)
+            join_training_preparation(resp3.job_id)
             launched[-1].join_and_raise(timeout=10)
 
         job3 = store.require_job(resp3.job_id)
@@ -2676,7 +2663,7 @@ class TestTrainServiceLifecycles:
             resp4 = service.start(body)
             assert resp4.status == "started"
             assert resp4.job_id not in (resp1.job_id, resp2.job_id, resp3.job_id)
-            service._join_preparation(resp4.job_id)
+            join_training_preparation(resp4.job_id)
             launched[-1].join_and_raise(timeout=10)
 
         job4 = store.require_job(resp4.job_id)

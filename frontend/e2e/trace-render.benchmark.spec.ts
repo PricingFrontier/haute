@@ -203,13 +203,6 @@ async function installTraceBenchmarkRoutes(
       body: pipelineResponse(),
     })
   })
-  await page.route("**/api/session", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ ok: true }),
-    })
-  })
   await page.route("**/api/pipeline/preview", async (route) => {
     const body = route.request().postDataJSON() as { node_id?: unknown }
     if (typeof body.node_id !== "string") {

@@ -152,13 +152,6 @@ def _tolerance_problem(row: Mapping[str, Any]) -> str | None:
     return None
 
 
-def is_test_quote(rows: Any) -> bool:
-    """Whether a test-quote file's rows are one Preview test quote: its shape (one row, an
-    object ``input``, an ``expected`` in the price route's shape, beside them only
-    ``tolerance_pct`` and keys starting ``_``) with a tolerance deploy takes."""
-    return _shaped(rows) and _tolerance_problem(rows[0]) is None
-
-
 def read_test_quote(path: Path) -> TestQuoteFile:
     """The test quote at *path*, or, for a file that is not one, why."""
     data = path.read_bytes()

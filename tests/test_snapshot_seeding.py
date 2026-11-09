@@ -1603,7 +1603,7 @@ def test_training_ram_estimates_use_only_usable_snapshots(
     cache_state: str,
 ) -> None:
     from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
+    from haute.routes._training_lifecycle import TrainService
     from haute.routes.modelling import estimate_training
     from haute.schemas import TrainEstimateRequest
     from tests.job_store_support import seed_job

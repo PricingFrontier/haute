@@ -53,7 +53,6 @@ import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPolle
 import { apiErrorCode, apiErrorMessage, isStaleRevision } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
 import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
-export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
   selectedNode: Node | null

@@ -34,18 +34,12 @@ const PARSER = "parsePipelineEditorDocument"
 export type {
   PipelineDocumentCapabilities,
   PipelineNameViolation,
-  PipelineNameViolationParty,
   PipelineNodeCompleteness,
   PipelineRecoveryDiagnostic as PipelineDiagnostic,
-  RecoverySourceSpan as SourceSpan,
 } from "../generated/api-contracts.generated"
 
 export type PipelineLoadStatus = GeneratedPipelineEditorDocument["load_status"]
 export type PipelineElementAvailability = RecoveryPipelineNode["availability"]
-/** The editor setting that names a `reserved_input` or `support_input` violation's input. */
-export type PipelineNameViolationBinding = NonNullable<
-  GeneratedPipelineEditorDocument["name_violations"][number]["binding"]
->
 
 export type RecoveryNode = Omit<RecoveryPipelineNode, "display_position"> & {
   display_position: { x: number; y: number }

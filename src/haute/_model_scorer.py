@@ -23,7 +23,6 @@ from haute._cache import CacheConsumer, checked_cache_input_values
 from haute._chunked_writes import _budgeted_rows, part_name, part_paths, scan_parts, sliceable
 from haute._execution_context import current_execution_context
 from haute._file_ops import ensure_disk_headroom
-from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._model_flavors import is_registered_flavor, model_families, model_family
@@ -113,30 +112,6 @@ _feature_validation_cache: LRUCache[_FeatureValidationCacheKey, _FeatureValidati
     LRUCache(max_size=_MLFLOW_MODEL_CACHE_MAX_SIZE)
 )
 _feature_validation_last_entry: _FeatureValidationLastEntry | None = None
-
-
-def _compute_schema_hash(schema: pl.Schema) -> str:
-    """Stable 16-char xxh64 hex digest of the schema's ``(name, dtype)`` pairs.
-
-    Sensitive to:
-    * column order — CatBoost categorical indices are positional
-    * column rename — the pair tuple changes → new digest
-    * dtype change — the dtype repr changes → new digest
-
-    Uses the project's standard ``xxh64`` hasher so the digest is
-    consistent with every other content-addressed key in the codebase.
-
-    This digest is retained for stable diagnostics and tests. The hot
-    feature-validation path uses ``_schema_validation_cache_key`` instead
-    so repeated score calls do not pay stringification/hash work before
-    every LRU lookup.
-    """
-    # Polars dtypes have stable ``str(...)`` reprs (e.g. "Float64", "Int64",
-    # "Utf8") that differ per dtype — good enough as a lightweight equality
-    # proxy for cache keys.
-    pairs = [(name, str(dtype)) for name, dtype in schema.items()]
-    payload = "\n".join(f"{name}\0{dtype}" for name, dtype in pairs).encode("utf-8")
-    return content_hash_bytes(payload)
 
 
 def _schema_validation_cache_key(schema: pl.Schema) -> _SchemaValidationKey:

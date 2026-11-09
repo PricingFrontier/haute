@@ -164,6 +164,7 @@ dev = [
     "pytest-xdist==3.8.0",
     "ruff==0.15.0",
     "mypy==1.19.1",
+    "vulture==2.16",
     "mkdocs==1.6.1",
     "mkdocs-material==9.7.7",
     "haute[databricks]",
@@ -646,3 +647,8 @@ module = [
     "interpret.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The dead-code gate's scanner ships no type information.
+module = ["vulture", "vulture.*"]
+follow_untyped_imports = true

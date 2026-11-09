@@ -36,8 +36,10 @@ from haute.modelling._algorithms import CatBoostAlgorithm
 from haute.modelling._target_check import training_target_task_issue
 from haute.modelling._training_job import TrainingJob
 from haute.routes._background_jobs import IsolatedJobSupervisor
-from haute.routes._train_service import TrainService, _worker_failure_payload
+from haute.routes._training_lifecycle import TrainService
 from haute.routes._training_preparation import _validate_target_task_pairing
+from haute.routes._training_worker import _worker_failure_payload
+from tests._training_helpers import join_training_preparation
 from tests.conftest import make_ram_estimate
 
 if TYPE_CHECKING:
@@ -745,7 +747,7 @@ class TestPreDispatchServiceGate:
             ),
         ):
             response = service.start(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         job = store.require_job(response.job_id)
         assert job["status"] == "contract_error"
@@ -758,7 +760,7 @@ class TestPreDispatchServiceGate:
 class TestWorkerBoundaryUserMessage:
     def test_haute_validation_error_channel_is_stamped_user_facing(self) -> None:
         from haute.errors import HauteValidationError
-        from haute.routes._train_service import _known_training_worker_failure
+        from haute.routes._training_worker import _known_training_worker_failure
 
         payload = _known_training_worker_failure(
             HauteValidationError("Target column 'sev' not found. Available: ['x1']"),
@@ -773,7 +775,7 @@ class TestWorkerBoundaryUserMessage:
         ``ValueError`` is not vouched for, so it falls through to the
         entrypoint's ``_friendly_error`` fallback (a plain ``error``) instead
         of surfacing verbatim as a ``contract_error``."""
-        from haute.routes._train_service import _friendly_error, _known_training_worker_failure
+        from haute.routes._training_worker import _friendly_error, _known_training_worker_failure
 
         exc = ValueError("could not convert string to float: '/tmp/leaky/path'")
         assert (
@@ -795,7 +797,7 @@ class TestWorkerBoundaryUserMessage:
 
         from haute.errors import HauteValidationError
         from haute.modelling._training_job import TrainingJob
-        from haute.routes._train_service import _known_training_worker_failure
+        from haute.routes._training_worker import _known_training_worker_failure
 
         job = SimpleNamespace(
             evaluation_plan=None, metrics=["auc"], target="sev", task="regression"
@@ -816,7 +818,7 @@ class TestWorkerBoundaryUserMessage:
         assert payload.fields[WORKER_USER_MESSAGE_FIELD] == payload.message
 
     def test_memory_error_keeps_the_typed_wrapper_surface(self) -> None:
-        from haute.routes._train_service import _known_training_worker_failure
+        from haute.routes._training_worker import _known_training_worker_failure
 
         payload = _known_training_worker_failure(
             MemoryError(),
@@ -832,7 +834,7 @@ class TestWorkerBoundaryUserMessage:
         arbitrary third-party message body (which may carry internal paths)
         stays in the diagnostic ``error`` field, and the failure remains a
         plain system ``error``, never a ``contract_error``."""
-        from haute.routes._train_service import _friendly_error
+        from haute.routes._training_worker import _friendly_error
 
         exc = RuntimeError("failed to lock /var/lib/haute/internal/state.db")
         message = _friendly_error(exc, context="target 'sev' (objective 'Tweedie')")
@@ -851,7 +853,7 @@ class TestWorkerBoundaryUserMessage:
         assert payload.fields["error"] == "failed to lock /var/lib/haute/internal/state.db"
 
     def test_model_save_os_error_names_the_reason_not_the_staging_path(self) -> None:
-        from haute.routes._train_service import _friendly_error
+        from haute.routes._training_worker import _friendly_error
 
         exc = OSError(28, "No space left on device", "/tmp/.haute-training-j1/output/model.cbm")
         message = _friendly_error(exc)
@@ -861,7 +863,7 @@ class TestWorkerBoundaryUserMessage:
 
     def test_memory_limit_failure_names_budget_and_call_to_action(self) -> None:
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._train_service import _known_training_worker_failure
+        from haute.routes._training_worker import _known_training_worker_failure
 
         exc = ExecutionMemoryLimitExceededError(
             "training_job",
@@ -1036,7 +1038,7 @@ class TestWorkerBoundaryUserMessage:
         message (now or via a future to_payload change) cannot expose
         str(exc)."""
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._train_service import _memory_limit_refusal
+        from haute.routes._training_preparation import _memory_limit_refusal
 
         class PayloadMessageError(ExecutionMemoryLimitExceededError):
             def to_payload(self) -> dict[str, object]:
@@ -1119,7 +1121,7 @@ class TestWorkerBoundaryUserMessage:
         """The internal operation/job-id wording of the cancellation exception
         is diagnostics; the terminal message matches the preparation path."""
         from haute._execution_context import ExecutionCancelledError
-        from haute.routes._train_service import _known_training_worker_failure
+        from haute.routes._training_worker import _known_training_worker_failure
 
         payload = _known_training_worker_failure(
             ExecutionCancelledError("training_job", job_id="abc"),

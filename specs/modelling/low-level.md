@@ -50,7 +50,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | File | Responsibility |
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
-| `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
+| `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
 | `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry; `NativeModel`, the base of the four native wrappers (their `haute` record, scoring-facing feature names, offset baseline, served labels and class probabilities, and `record_fields`, which checks a stored record field by field), and `inverse_link`. |
 | `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
@@ -84,7 +84,6 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/routes/_export_receipts.py` | Export receipts on training jobs: `record_receipt` (append an MLflow or model-file receipt, keeping the newest `MAX_RECEIPTS_PER_KIND`), `export_receipts` (the wire shape the status route returns), `mlflow_receipt_for_operation` (idempotent retries) and `single_flight_mlflow_log` (one MLflow log per job at a time, else a `409` in-progress refusal). |
 | `src/haute/routes/_mlflow_log_errors.py` | The shared HTTP outcomes of the modelling and optimiser MLflow log routes: `require_mlflow_installed` (the shared `503`) and `mlflow_log_http_exception` (configuration `400`, classified remote `502` with an `mlflow_<category>` code and write-specific copy, unclassified `500`; logs category and error type only). |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow log, export, model-cache clear, and dispersion jobs. |
-| `src/haute/routes/_train_service.py` | Stable compatibility facade that re-exports `TrainService` and the established helper seams consumed by the router/tests. It owns no job state, worker entrypoint, preparation algorithm, or artifact mutation. |
 | `src/haute/routes/_training_preparation.py` | Training input preparation rules plus the hard-capped preparation worker: deterministic sampling, feature/metadata demand and projection, modelling-node lookup, row-limit and RAM/VRAM feasibility helpers, the picklable `TrainingPreparationRequest`/`TrainingPreparationOutcome`/`TrainingPreparationFailure` transport, the in-process core `prepare_training_data`, the spawn entrypoint `prepare_training_data_worker`, and the target/task gate `_validate_target_task_pairing`. |
 | `src/haute/routes/_training_evaluation.py` | Route-side evaluation and GLM-dispersion rules: family/link validation, dispersion parameter contracts, and immutable evaluation-preview projection. |
 | `src/haute/routes/_training_worker.py` | Spawn-picklable training/dispersion worker protocol: request validation, child execution context, curated failure taxonomy, bounded progress/result payloads, and the two process entrypoints. It publishes only staged manifests. |
@@ -343,8 +342,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   (job-based, like `/train`); the status response mirrors `TrainStatusResponse`'s
   progress/message/elapsed shape, including `worker_remote_traceback`, plus the resolved
   `param`/`value`/`llf`/`n_fits` once complete.
-- **`TrainService`** (`src/haute/routes/_training_lifecycle.py`, re-exported by
-  `src/haute/routes/_train_service.py`) — wraps a `JobStore`, `JobLifecycle`,
+- **`TrainService`** (`src/haute/routes/_training_lifecycle.py`) — wraps a `JobStore`, `JobLifecycle`,
   and `CancellableJobRegistry`; owns the HTTP-facing training lifecycle
   (`start`/`cancel`/`timeout`) and the dispersion-estimation lifecycle
   (`start_dispersion_estimate`/`dispersion_job`/`cancel_dispersion`), distinguished in
@@ -353,9 +351,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 
 - **Training service import direction** — `_training_preparation`,
   `_training_evaluation`, `_training_worker`, and `_training_artifacts` are cohesive
-  leaves and never import `_training_lifecycle` or `_train_service`.
-  `_training_lifecycle` is the only job-state owner and composes those leaves;
-  `_train_service` imports only to re-export the stable surface. The modelling package
+  leaves and never import `_training_lifecycle`.
+  `_training_lifecycle` is the only job-state owner and composes those leaves; the
+  router and tests import each name from the module that owns it. The modelling package
   remains below the route layer, and worker entrypoints retain their lazy `TrainingJob`
   import so no route/modelling cycle is introduced.
 

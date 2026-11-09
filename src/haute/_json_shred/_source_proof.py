@@ -470,16 +470,6 @@ def files_signature(files: Sequence[Path]) -> str:
     return f"{HASH_ALGO}-files:{digest}:{len(entries)}"
 
 
-def clear_file_signatures() -> None:
-    """Forget every in-process proof (a test seam; an active flight is kept).
-
-    Durable records are untouched, so a test clears the memo to stand in for a
-    new process.
-    """
-    _signatures().clear()
-    _UNAVAILABLE_WARNINGS.clear()
-
-
 # ---------------------------------------------------------- durable records
 
 _PROOF_RECORD_SCHEMA_VERSION = 2

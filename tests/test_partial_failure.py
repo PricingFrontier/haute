@@ -804,7 +804,7 @@ class TestOutOfMemoryDuringCollect:
         Catches: raw "MemoryError" shown to user with no guidance on
         how to fix it (e.g. reduce data, increase row_limit).
         """
-        from haute.routes._train_service import _friendly_error
+        from haute.routes._training_worker import _friendly_error
 
         err = MemoryError("cannot allocate memory")
         msg = _friendly_error(err)

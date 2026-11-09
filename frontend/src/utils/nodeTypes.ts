@@ -251,9 +251,6 @@ export const CONNECTION_DROP_TYPES: NodeTypeValue[] = [
 ]
 
 /** Derived lookups used by components that need one metadata field. */
-export const nodeTypeIcons: Record<string, React.ElementType> =
-  Object.fromEntries(Object.entries(NODE_TYPE_META).map(([k, v]) => [k, v.icon]))
-
 export const nodeTypeColors: Record<string, string> =
   Object.fromEntries(Object.entries(NODE_TYPE_META).map(([k, v]) => [k, v.color]))
 

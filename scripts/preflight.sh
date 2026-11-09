@@ -250,6 +250,13 @@ if [[ "$RUN_FRONTEND" == true ]]; then
     fail "ESLint errors - run 'cd frontend && npm run lint -- --fix' to auto-fix"
   fi
 
+  step "Unused files and exports (knip)"
+  if (cd frontend && npm run lint:dead); then
+    pass "knip"
+  else
+    fail "Unused files or exports - delete them, or tag a deliberate export @public (frontend/knip.json)"
+  fi
+
   if [[ "$QUICK" == false ]]; then
     step "Frontend build"
     if (cd frontend && npm run build); then

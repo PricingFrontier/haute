@@ -13,6 +13,7 @@ from haute.graph_utils import NodeType
 from haute.projection import (
     UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
     AllExcept,
+    ProjectionEdgeKey,
     ProjectionRequest,
     api_input_port_columns_by_node,
     builder_required_output_columns_by_node,
@@ -833,7 +834,7 @@ def test_edge_join_projection_keeps_parallel_frames_from_one_source_distinct():
     # their own identities and edge-join provenance.
     for edge in graph.edges:
         assert projection.demand_for_edge(edge) is None
-        reason = projection.reason_for_edge(edge)
+        reason = projection.diagnostics.edge_reasons.get(ProjectionEdgeKey.from_edge(edge))
         assert reason is not None
         assert reason.rule == "edge_join_fan_in"
     assert projection.needed_by_node["request"] is None
@@ -909,7 +910,7 @@ def test_ratebook_optimiser_projection_keeps_parallel_source_frames_distinct():
 
     for edge in graph.edges:
         assert projection.demand_for_edge(edge) is None
-        reason = projection.reason_for_edge(edge)
+        reason = projection.diagnostics.edge_reasons.get(ProjectionEdgeKey.from_edge(edge))
         assert reason is not None
         assert reason.rule == "optimiser_parent_demand"
     assert projection.needed_by_node["request"] is None

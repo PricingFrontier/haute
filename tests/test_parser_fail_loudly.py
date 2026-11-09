@@ -197,7 +197,8 @@ class TestItem18ConfigPathFailsLoudly:
         cfg_file.write_text(json.dumps(cfg))
 
         # Simulate a Windows-mangled path (\b → backspace).  The old code
-        # silently recovered from this via ``find_config_by_func_name``.
+        # silently recovered from this by looking the function name up in
+        # every config folder.
         mangled_path = "config/\x08anding/age_band.json"
 
         # Expected post-fix: either (a) raise ConfigError because the

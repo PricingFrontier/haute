@@ -35,20 +35,20 @@ from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
 from haute.routes._runtime_path_errors import runtime_path_http_exception
-from haute.routes._train_service import (
-    TrainService,
-    _assert_json_finite,
-    _check_gpu_vram,
-    _default_train_timeout,
-    _find_modelling_node,
-    _training_rows,
-    _VramCheck,
-)
 from haute.routes._training_artifacts import (
     hold_training_artifacts,
     require_training_artifacts,
 )
-from haute.routes._training_preparation import estimate_training_memory, training_row_plan
+from haute.routes._training_lifecycle import TrainService, _default_train_timeout
+from haute.routes._training_preparation import (
+    _check_gpu_vram,
+    _find_modelling_node,
+    _training_rows,
+    _VramCheck,
+    estimate_training_memory,
+    training_row_plan,
+)
+from haute.routes._training_worker import _assert_json_finite
 from haute.routes.pipeline import _prepare_runtime_graph
 from haute.schemas import (
     DispersionEstimateRequest,

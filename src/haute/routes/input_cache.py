@@ -1174,16 +1174,3 @@ def clear_input_cache(
         if body.node_type == "apiInput":
             return _api_input_status(source)
         return _status_for_config(config, identity)
-
-
-def _reset_for_tests() -> None:
-    """Reset process-local route coordination without touching snapshots."""
-    global _jobs, _singleflight, _active_builds
-
-    with _start_lock:
-        _store.clear_all()
-        _jobs = CancellableJobRegistry()
-        _singleflight = SingleFlightCoordinator()
-        _active_builds = 0
-        _building_tables.clear()
-        _source_store.cache_clear()

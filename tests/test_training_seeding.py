@@ -35,7 +35,7 @@ from haute._source_cache import SourceCacheIdentity
 from haute._types import PipelineGraph
 from haute.routes import _training_lifecycle, _training_preparation
 from haute.routes._job_store import JobStore
-from haute.routes._train_service import TrainService
+from haute.routes._training_lifecycle import TrainService
 from haute.routes._training_preparation import prepare_training_data_worker
 from haute.schemas import TrainRequest
 from tests._project import project_app, use_project
@@ -1127,7 +1127,7 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
 
     from haute.executor import write_data_output
     from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
+    from haute.routes._training_lifecycle import TrainService
     from haute.schemas import TrainEstimateRequest
     from tests.test_optimiser_seeding import _online_chain, _setup
 

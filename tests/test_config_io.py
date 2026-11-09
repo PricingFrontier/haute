@@ -13,12 +13,10 @@ import pytest
 from haute._config_io import (
     collect_node_configs,
     config_path_for_node,
-    find_config_by_func_name,
     has_config_folder,
     is_windows_reserved_filename,
     load_node_config,
     node_config_json,
-    remove_config_file,
 )
 from haute._node_specs import FOLDER_TO_NODE_TYPE, NODE_TYPE_TO_FOLDER
 from haute._types import NodeType
@@ -501,20 +499,6 @@ class TestSaveAndLoad:
             _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
 
 
-class TestRemoveConfigFile:
-    def test_remove_existing_file(self, tmp_path):
-        config = {"input_type": "file", "format": "parquet", "path": "data.parquet"}
-        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
-        assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path)
-        assert not (tmp_path / "config" / "data_input" / "src.json").exists()
-
-    def test_remove_nonexistent_returns_false(self, tmp_path):
-        assert not remove_config_file(NodeType.DATA_INPUT, "nope", tmp_path)
-
-    def test_remove_transform_returns_false(self, tmp_path):
-        assert not remove_config_file(NodeType.POLARS, "t", tmp_path)
-
-
 # ---------------------------------------------------------------------------
 # collect_node_configs
 # ---------------------------------------------------------------------------
@@ -718,113 +702,6 @@ def test_an_underscore_key_is_refused_at_the_sidecar_write(tmp_path):
     with pytest.raises(ConfigError, match="_steps_error"):
         _write_node_config_sidecar(NodeType.DATA_INPUT, "test", config, tmp_path)
     assert not (tmp_path / config_path_for_node(NodeType.DATA_INPUT, "test")).exists()
-
-
-# ---------------------------------------------------------------------------
-# find_config_by_func_name
-# ---------------------------------------------------------------------------
-
-
-class TestFindConfigByFuncName:
-    def _write_config(self, tmp_path: Path, folder: str, name: str, data: dict) -> Path:
-        p = tmp_path / "config" / folder / f"{name}.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data), encoding="utf-8")
-        return p
-
-    def test_recovers_config_for_valid_func_name(self, tmp_path):
-        cfg = {
-            "input_type": "file",
-            "format": "parquet",
-            "mode": "scan",
-            "path": "data.parquet",
-            "arguments": {},
-        }
-        self._write_config(tmp_path, "data_input", "my_source", cfg)
-        result = find_config_by_func_name("my_source", tmp_path)
-        assert result is not None
-        config_dict, node_type = result
-        assert config_dict == cfg
-        assert node_type is NodeType.DATA_INPUT
-
-    def test_recovers_banding_config_with_expanded_compact_rules(self, tmp_path):
-        compact_cfg = {
-            "factors": [
-                {
-                    "banding": "categorical",
-                    "column": "fuel_type",
-                    "output_column": "fuel_band",
-                    "rules": {"Petrol": "Standard", "Electric": "Green"},
-                }
-            ]
-        }
-        self._write_config(tmp_path, "banding", "fuel_band", compact_cfg)
-
-        result = find_config_by_func_name("fuel_band", tmp_path)
-
-        assert result is not None
-        config_dict, node_type = result
-        assert node_type is NodeType.BANDING
-        assert config_dict["factors"][0]["rules"] == [
-            {"value": "Petrol", "assignment": "Standard"},
-            {"value": "Electric", "assignment": "Green"},
-        ]
-
-    def test_returns_tuple_format(self, tmp_path):
-        self._write_config(tmp_path, "banding", "age_band", {"factors": []})
-        result = find_config_by_func_name("age_band", tmp_path)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], dict)
-        assert isinstance(result[1], NodeType)
-
-    def test_scans_all_14_config_folders(self, tmp_path):
-        for folder in FOLDER_TO_NODE_TYPE:
-            self._write_config(tmp_path, folder, f"func_{folder}", {"ok": True})
-        for folder, expected_nt in FOLDER_TO_NODE_TYPE.items():
-            result = find_config_by_func_name(f"func_{folder}", tmp_path)
-            assert result is not None, f"Failed to find config in folder {folder}"
-            assert result[1] is expected_nt
-
-    def test_returns_none_when_not_found(self, tmp_path):
-        (tmp_path / "config").mkdir()
-        assert find_config_by_func_name("nonexistent_func", tmp_path) is None
-
-    def test_returns_none_for_empty_func_name(self, tmp_path):
-        (tmp_path / "config").mkdir()
-        assert find_config_by_func_name("", tmp_path) is None
-
-    def test_rejects_path_traversal(self, tmp_path):
-        assert find_config_by_func_name("../etc/passwd", tmp_path) is None
-        assert find_config_by_func_name("foo/bar", tmp_path) is None
-        assert find_config_by_func_name("foo\\bar", tmp_path) is None
-
-    def test_returns_none_for_invalid_json(self, tmp_path):
-        p = tmp_path / "config" / "banding" / "bad.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("{not valid json", encoding="utf-8")
-        assert find_config_by_func_name("bad", tmp_path) is None
-
-    @pytest.mark.parametrize(
-        ("folder", "content"),
-        [
-            pytest.param("banding", b'{"factors": "\xff"}', id="invalid-utf8"),
-            pytest.param("optimisation", b'{"scored_input": "scored"}', id="removed-key"),
-            pytest.param("workbench_input", b'{"tables": []}', id="form-given-key"),
-        ],
-    )
-    def test_returns_none_for_a_config_error(self, tmp_path, folder, content):
-        """A sidecar the loader refuses with a ``ConfigError`` (not a ``ValueError``)
-        is logged as a failed recovery, like invalid JSON, instead of raising."""
-        import structlog
-
-        p = tmp_path / "config" / folder / "bad.json"
-        p.parent.mkdir(parents=True)
-        p.write_bytes(content)
-        with structlog.testing.capture_logs() as logs:
-            assert find_config_by_func_name("bad", tmp_path) is None
-        assert [entry["event"] for entry in logs] == ["config_recovery_failed"]
-        assert logs[0]["path"] == str(p)
 
 
 # ---------------------------------------------------------------------------
@@ -1117,29 +994,6 @@ class TestCollectNodeConfigsEdgeCases:
         configs = collect_node_configs(graph)
         for path in configs:
             assert "\\" not in path
-
-
-# ---------------------------------------------------------------------------
-# remove_config_file edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestRemoveConfigFileEdgeCases:
-    def test_remove_existing_returns_true(self, tmp_path):
-        _write_node_config_sidecar(
-            NodeType.DATA_INPUT,
-            "src",
-            {"input_type": "file", "format": "parquet", "path": "d"},
-            tmp_path,
-        )
-        assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path) is True
-        assert not (tmp_path / "config" / "data_input" / "src.json").exists()
-
-    def test_remove_nonexistent_returns_false(self, tmp_path):
-        assert remove_config_file(NodeType.BANDING, "nope", tmp_path) is False
-
-    def test_remove_transform_type_returns_false(self, tmp_path):
-        assert remove_config_file(NodeType.POLARS, "t", tmp_path) is False
 
 
 class TestRatingStepSidecars:

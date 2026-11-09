@@ -169,7 +169,7 @@ def test_preview_trace_perf_suite_uses_supersession_snapshot_contract() -> None:
         encoding="utf-8"
     )
 
-    assert "snapshot_for_tests()" in perf_test
+    assert "supersession_snapshot(coordinator)" in perf_test
     assert "._states" not in perf_test
 
 

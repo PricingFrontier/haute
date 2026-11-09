@@ -136,10 +136,6 @@ export const isOutputColumn = (table: Pick<SchemaTable, "outputs">, column: Pick
   return table.outputs.some((held) => held.name === name)
 }
 
-/** The block holding `table`'s column of that name: its inputs, else its outputs. */
-export const blockOf = (table: Pick<SchemaTable, "outputs">, column: Pick<SchemaColumn, "name"> | string): Block =>
-  isOutputColumn(table, column) ? "outputs" : "inputs"
-
 /** A table's inputs but the quote's identity Haute leads them with (`own_inputs`). */
 export const ownInputs = (table: Blocks): SchemaColumn[] => table.inputs.slice(blockIdentity(table.name, table.inputs))
 

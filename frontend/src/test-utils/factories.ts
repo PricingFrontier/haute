@@ -568,7 +568,6 @@ export function makeFrontierSelect(
 import type {
   ExploreColumnStat,
   NodeDataPointResponse,
-  NodeDataProfile,
   NodeDataStatusResponse,
 } from "../api/types"
 
@@ -641,23 +640,6 @@ export function makeExploreColumnStat(
     text_max_length: null,
     temporal_span: null,
     histogram: null,
-    ...overrides,
-  }
-}
-
-export function makeNodeDataProfile(
-  overrides: Partial<NodeDataProfile> = {},
-): NodeDataProfile {
-  return {
-    row_count: 0,
-    column_count: 0,
-    columns: [],
-    overview_summary: {
-      data_quality: { issue_count: 0, issues: [], duplicate_row_count: null, duplicate_ratio: null },
-      categorical_summary: [],
-    },
-    data_version: "v1",
-    generated_at: 0,
     ...overrides,
   }
 }

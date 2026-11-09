@@ -78,7 +78,7 @@ class TestAlgorithmLevelCancel:
                 fit_finished.set()
 
         def on_iteration(iteration: int, total: int, metrics: dict, row: dict | None) -> None:
-            # Mirrors _train_service._on_iteration observing a cancelled
+            # Mirrors TrainService's iteration callback observing a cancelled
             # job: the (CPU stand-in) fit becomes free to finish, then the
             # cancellation is raised into the polling loop.
             fit_release.set()

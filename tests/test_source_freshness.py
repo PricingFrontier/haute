@@ -23,11 +23,11 @@ from haute._json_shred._source_proof import (
     SourceChangedError,
     _proof_record_root,
     _StrongFileRevision,
-    clear_file_signatures,
     file_signature,
     freshness_record,
     observe_freshness,
 )
+from tests._process_state import clear_source_signatures
 
 _SECOND_NS = 1_000_000_000
 
@@ -149,7 +149,7 @@ def test_a_missing_revision_is_logged_once_per_path(
     assert {fields["action"] for _event, fields in without_native_revision} == {
         "stat_gate_after_settle"
     }
-    clear_file_signatures()
+    clear_source_signatures()
     observe_freshness(first)
     assert len(without_native_revision) == 3
 
@@ -194,7 +194,7 @@ def test_a_new_process_reuses_the_saved_proof_of_an_unchanged_file(
     path = _write(tmp_path / "a.csv")
     first = file_signature(path)
 
-    clear_file_signatures()  # a new process: nothing retained in memory
+    clear_source_signatures()  # a new process: nothing retained in memory
 
     assert file_signature(path) == first
     assert len(hashes) == 1
@@ -239,7 +239,7 @@ def test_without_a_native_revision_clearing_forgets_every_proof(
     file_signature(path)
     assert len(hashes) == 1
 
-    clear_file_signatures()
+    clear_source_signatures()
     file_signature(path)
 
     assert len(hashes) == 2
@@ -534,7 +534,7 @@ def test_a_new_process_hashes_a_rewritten_file_and_replaces_its_record(
         _write(path, "id,value\n2,b\n")
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
-    clear_file_signatures()
+    clear_source_signatures()
     second = file_signature(path)
 
     assert len(hashes) == 2
@@ -590,7 +590,7 @@ def test_an_invalid_record_is_rejected_and_replaced(
         raw = json.dumps(record).encode("utf-8")
     _replace_record(_record_path(path), raw)
 
-    clear_file_signatures()
+    clear_source_signatures()
 
     assert file_signature(path) == expected
     assert len(hashes) == 2
@@ -617,7 +617,7 @@ def test_an_unreadable_record_is_rejected_and_the_file_hashed(
         return real_read_bytes(self)
 
     monkeypatch.setattr(Path, "read_bytes", denied)
-    clear_file_signatures()
+    clear_source_signatures()
 
     assert file_signature(path) == expected
     assert len(hashes) == 2

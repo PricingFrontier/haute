@@ -25,10 +25,10 @@ from haute._price_contour import (
     REQUIRED_SPECIFIER,
     REQUIRED_SYMBOLS,
     PriceContourCompatibilityError,
-    clear_price_contour_cache,
     price_contour,
     price_contour_install,
 )
+from tests._process_state import clear_price_contour_verification
 
 CHECKOUT = "/work/price-contour"
 
@@ -75,10 +75,10 @@ def mp() -> Iterator[pytest.MonkeyPatch]:
     fixtures may already hold) guarantees the fakes are gone when the guard
     re-verifies the real install for the tests that run after this module.
     """
-    clear_price_contour_cache()
+    clear_price_contour_verification()
     with pytest.MonkeyPatch.context() as patcher:
         yield patcher
-    clear_price_contour_cache()
+    clear_price_contour_verification()
     price_contour()
 
 

@@ -31,9 +31,9 @@ The developer must expose, on ``haute._model_scorer``:
   feature contract and the input schema, so two instances of the same
   contract share one entry (object identity is intentionally *not* part
   of the key).
-* ``_compute_schema_hash(schema: pl.Schema) -> str`` — a stable xxh64
-  hex digest of the ordered ``(name, dtype_str)`` pairs, so that column
-  reorders, renames, and dtype changes produce different digests.
+* ``_schema_validation_cache_key(schema: pl.Schema)`` — the ordered
+  ``(name, dtype)`` pairs, so that column reorders, renames, and dtype
+  changes produce different keys.
 * ``_clear_feature_validation_cache()`` — drops every entry (used as the
   blanket cascade for ``clear_model_cache()``).
 * ``_invalidate_feature_validation_cache_for(scoring_model)`` —
@@ -398,46 +398,37 @@ class TestValidationCacheErrorHandling:
 # ---------------------------------------------------------------------------
 
 
-class TestSchemaHashStability:
-    """``_compute_schema_hash`` must be stable, collision-resistant, and pure."""
+class TestSchemaValidationKey:
+    """``_schema_validation_cache_key`` separates every schema the validation depends on."""
 
-    def test_identical_schemas_hash_identically(self) -> None:
-        from haute._model_scorer import _compute_schema_hash
+    def test_identical_schemas_share_a_key(self) -> None:
+        from haute._model_scorer import _schema_validation_cache_key
 
         a = _schema_for(["x", "y", "z"])
         b = _schema_for(["x", "y", "z"])
-        assert _compute_schema_hash(a) == _compute_schema_hash(b)
+        assert _schema_validation_cache_key(a) == _schema_validation_cache_key(b)
 
-    def test_column_rename_changes_hash(self) -> None:
-        from haute._model_scorer import _compute_schema_hash
+    def test_column_rename_changes_key(self) -> None:
+        from haute._model_scorer import _schema_validation_cache_key
 
-        assert _compute_schema_hash(_schema_for(["x", "y"])) != _compute_schema_hash(
-            _schema_for(["x2", "y"])
-        )
+        assert _schema_validation_cache_key(
+            _schema_for(["x", "y"])
+        ) != _schema_validation_cache_key(_schema_for(["x2", "y"]))
 
-    def test_dtype_change_changes_hash(self) -> None:
-        from haute._model_scorer import _compute_schema_hash
+    def test_dtype_change_changes_key(self) -> None:
+        from haute._model_scorer import _schema_validation_cache_key
 
         a = pl.Schema({"col": pl.Utf8})
         b = pl.Schema({"col": pl.Int64})
-        assert _compute_schema_hash(a) != _compute_schema_hash(b)
+        assert _schema_validation_cache_key(a) != _schema_validation_cache_key(b)
 
-    def test_column_order_changes_hash(self) -> None:
+    def test_column_order_changes_key(self) -> None:
         """Feature order is part of the scoring contract and cache key."""
-        from haute._model_scorer import _compute_schema_hash
+        from haute._model_scorer import _schema_validation_cache_key
 
         a = pl.Schema({"x": pl.Float64, "y": pl.Int64})
         b = pl.Schema({"y": pl.Int64, "x": pl.Float64})
-        assert _compute_schema_hash(a) != _compute_schema_hash(b)
-
-    def test_hash_is_hex_string(self) -> None:
-        """xxh64 hexdigest — 16 hex chars, all lowercase."""
-        from haute._model_scorer import _compute_schema_hash
-
-        h = _compute_schema_hash(_schema_for(["a", "b"]))
-        assert isinstance(h, str)
-        assert len(h) == 16
-        int(h, 16)  # raises ValueError on anything non-hex
+        assert _schema_validation_cache_key(a) != _schema_validation_cache_key(b)
 
 
 # ---------------------------------------------------------------------------
@@ -814,7 +805,7 @@ class TestAPIShape:
         import haute._model_scorer as ms
 
         assert hasattr(ms, "_feature_validation_cache")
-        assert hasattr(ms, "_compute_schema_hash")
+        assert hasattr(ms, "_schema_validation_cache_key")
         assert hasattr(ms, "_clear_feature_validation_cache")
         assert hasattr(ms, "_invalidate_feature_validation_cache_for")
         assert hasattr(ms, "_validate_features_uncached")

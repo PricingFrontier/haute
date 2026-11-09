@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._project_context import context_thread, current_project
+from tests._process_state import reset_input_cache_route
 from tests._project import project_app, use_project, work_elsewhere
 
 
@@ -131,10 +132,10 @@ def client(
     app = project_app()
     # Every explicit build runs in an isolated worker; here its entry point runs on a thread.
     monkeypatch.setattr(input_cache, "run_isolated_worker", _threaded_spawn)
-    input_cache._reset_for_tests()
+    reset_input_cache_route(monkeypatch)
     with TestClient(app) as test_client:
         yield test_client
-    input_cache._reset_for_tests()
+    reset_input_cache_route(monkeypatch)
 
 
 def test_build_job_publishes_snapshot_and_snapshot_status(

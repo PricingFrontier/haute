@@ -18,7 +18,6 @@ from haute.projection import (
     _build_preamble_facts,
     _materialising_calls_in_source_order,
     _node_selector_roots,
-    _preamble_imports,
     _shadowed_builtins,
     code_recompute_facts,
     recompute_facts_by_node,
@@ -31,8 +30,8 @@ def test_preamble_facts_refuse_syntax_and_record_import_roots() -> None:
     assert invalid.shadowed_builtins == frozenset()
     assert invalid.selector_aliases == frozenset()
     preamble = "import alpha.beta as ab\nfrom gamma import delta as d\nfrom omega import *"
-    assert _preamble_imports(preamble) == frozenset({"ab", "d"})
-    assert "*" not in _preamble_imports(preamble)
+    assert _build_preamble_facts(preamble).imports == frozenset({"ab", "d"})
+    assert "*" not in _build_preamble_facts(preamble).imports
 
 
 def test_shadowed_builtins_covers_binding_forms_and_preamble() -> None:

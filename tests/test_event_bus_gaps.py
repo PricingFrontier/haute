@@ -5,9 +5,7 @@ The decoupling-contract suite (``test_decoupling_contracts.py``) pins the
 implementation-detail gaps that those behaviour tests don't exercise:
 
 * the unsubscribe callable's idempotency / empty-list early returns,
-* ``__repr__`` formatting,
-* the test-isolation snapshot/restore hooks (including the ``if hs``
-  skip-empty branch in :meth:`EventBus._restore_handlers_for_testing`).
+* ``__repr__`` formatting.
 """
 
 from __future__ import annotations
@@ -89,51 +87,3 @@ def test_repr_reports_subscriber_counts_per_event_type() -> None:
     bus.subscribe("parse.error", lambda _p: None)
 
     assert repr(bus) == ("EventBus(subscribers={'pipeline.document.update': 2, 'parse.error': 1})")
-
-
-def test_snapshot_is_a_deep_copy_of_the_registry() -> None:
-    """The snapshot copies each handler list, so later mutation of the live
-    registry does not bleed into the captured snapshot."""
-    bus = EventBus()
-    bus.subscribe("a", lambda _p: None)
-
-    snapshot = bus._snapshot_handlers_for_testing()
-    assert list(snapshot) == ["a"]
-    assert len(snapshot["a"]) == 1
-
-    # Add another handler after snapshotting; snapshot stays at one.
-    bus.subscribe("a", lambda _p: None)
-    assert len(snapshot["a"]) == 1
-
-
-def test_restore_replaces_registry_and_skips_empty_lists() -> None:
-    """Restore clears the live registry then re-installs only the non-empty
-    handler lists from the snapshot (the ``if hs`` branch drops empties)."""
-    bus = EventBus()
-    delivered: list[object] = []
-    bus.subscribe("kept", delivered.append)
-    snapshot = bus._snapshot_handlers_for_testing()
-
-    # Mutate the live bus away from the snapshot.
-    bus.subscribe("transient", lambda _p: None)
-    assert "transient" in bus._handlers
-
-    # Snapshot carries an empty list for "empty"; restore must skip it.
-    snapshot["empty"] = []
-    bus._restore_handlers_for_testing(snapshot)
-
-    assert "transient" not in bus._handlers
-    assert "empty" not in bus._handlers
-    assert "kept" in bus._handlers
-
-    # The restored handler still works.
-    bus.publish("kept", {"ok": True})
-    assert delivered == [{"ok": True}]
-
-
-def test_restore_with_empty_snapshot_clears_everything() -> None:
-    """Restoring from an empty snapshot wipes the live registry."""
-    bus = EventBus()
-    bus.subscribe("a", lambda _p: None)
-    bus._restore_handlers_for_testing({})
-    assert bus._handlers == {}

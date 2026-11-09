@@ -727,10 +727,6 @@ def data_output_group(config: Mapping[str, Any]) -> str:
     return format_group(format_for_config(config))
 
 
-def _callable_owner(fmt_callable: str, *, owner: str) -> tuple[str, str]:
-    return owner, fmt_callable
-
-
 def input_callable_key(fmt: IoFormat, mode: InputMode) -> tuple[str, str]:
     name = fmt.scanner if mode == "scan" else fmt.reader
     if name is None:

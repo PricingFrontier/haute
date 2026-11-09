@@ -18,7 +18,7 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import ProjectionRequest, execute_lazy_graph, plan_execution_strategy
 from haute.executor import _build_node_fn
-from haute.routes._train_service import (
+from haute.routes._training_preparation import (
     _training_required_columns_by_node,
     build_training_feature_selection,
 )

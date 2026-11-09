@@ -26,7 +26,8 @@ from haute.errors import RequestRefusedError
 from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
 from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData, _SplitResult
 from haute.routes._job_store import JobStore
-from haute.routes._train_service import TrainService
+from haute.routes._training_lifecycle import TrainService
+from tests._training_helpers import join_training_preparation
 from tests.test_training_worker_protocol import (
     _inline_protocol_runner,
     _SuccessfulTrainingJob,
@@ -759,7 +760,7 @@ def test_start_releases_admission_when_prep_fails_before_launch(
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
         )
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     assert captured_contexts, "admitted context should have been created"
     assert captured_contexts[0].lease.released is True
@@ -813,7 +814,7 @@ def test_start_keeps_admission_held_after_successful_launch(
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"),
         )
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     assert response.status == "started"
     admitted = captured["context"]
@@ -889,7 +890,7 @@ def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
         )
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     execute_and_sink.assert_not_called()
     job = store.require_job(response.job_id)

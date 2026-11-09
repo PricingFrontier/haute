@@ -20,9 +20,6 @@ import useDocumentStatusStore, {
   type DocumentExecutionFence,
 } from "./useDocumentStatusStore"
 
-/** What a publish acts on: the job's own solve, or one frontier point. */
-export type PublishTarget = { pointIndex: number | null }
-
 export type SaveReceipt = SaveOptimiserResponse & { pointIndex: number | null }
 export type LogReceipt = MlflowLogResponse & { pointIndex: number | null }
 

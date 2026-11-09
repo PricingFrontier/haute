@@ -2661,8 +2661,6 @@ function defaultProblem(column: SchemaColumn): string | null {
 
 export { QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED }
 export { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, type QuoteDetailName } from "./quoteIdentity"
-/** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
-export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
 
 /** Why a table's own column keeps the quote's identity from it, in the server's words (`identity_clashes`). */
 const identityClash = (table: SchemaTable, column: SchemaColumn): string =>

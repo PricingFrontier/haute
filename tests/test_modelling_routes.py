@@ -20,14 +20,12 @@ from haute._ram_estimate import RamEstimate
 from haute.errors import HauteValidationError, RequestRefusedError, UnprocessableError
 from haute.modelling._descriptors import DESCRIPTORS
 from haute.projection import ProjectionRequest, plan
-from haute.routes._train_service import (
-    TrainService,
-    _clamp_row_limit,
-    _friendly_error,
-    _training_required_columns_by_node,
-    _validate_glm_config_values,
-)
+from haute.routes._training_evaluation import _validate_glm_config_values
+from haute.routes._training_lifecycle import TrainService
+from haute.routes._training_preparation import _clamp_row_limit, _training_required_columns_by_node
+from haute.routes._training_worker import _friendly_error
 from tests._project import use_project
+from tests._training_helpers import join_training_preparation
 from tests.conftest import (
     make_edge,
     make_file_input_config,
@@ -1120,15 +1118,15 @@ def test_live_loss_history_refuses_a_limit_too_small_for_its_extremes(
 
 
 def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() -> None:
-    from haute.routes import _train_service
+    from haute.routes import _training_worker
 
     # Rows count iterations from one; best_iteration is zero-based.
     history = [{"iteration": float(n), "train_rmse": 1.0 / n} for n in range(1, 1001)]
 
-    bounded, truncated = _train_service._bounded_loss_history(history, best_iteration=660)
+    bounded, truncated = _training_worker._bounded_loss_history(history, best_iteration=660)
 
     assert truncated is True
-    assert len(bounded) == _train_service._max_train_loss_history() == 200
+    assert len(bounded) == _training_worker._max_train_loss_history() == 200
     iterations = [row["iteration"] for row in bounded]
     assert iterations == sorted(set(iterations))
     assert {1.0, 661.0, 1000.0} <= set(iterations)
@@ -1138,11 +1136,11 @@ def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() ->
 
 
 def test_bounded_loss_history_keeps_a_short_history_whole() -> None:
-    from haute.routes import _train_service
+    from haute.routes import _training_worker
 
     history = [{"iteration": float(n), "train_rmse": 1.0} for n in range(1, 201)]
 
-    assert _train_service._bounded_loss_history(history, best_iteration=None) == (history, False)
+    assert _training_worker._bounded_loss_history(history, best_iteration=None) == (history, False)
 
 
 class TestExportEndpoint:
@@ -1349,7 +1347,7 @@ class TestTrainStatusEndpoint:
         """
         from pydantic import BaseModel
 
-        from haute.routes._train_service import _assert_json_finite
+        from haute.routes._training_worker import _assert_json_finite
 
         class Inner(BaseModel):
             metric: float
@@ -2697,7 +2695,7 @@ class TestBackgroundThreadErrors:
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
             assert data["status"] == "started"
-            service._join_preparation(data["job_id"])
+            join_training_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "contract_error"
@@ -2724,7 +2722,7 @@ class TestBackgroundThreadErrors:
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
             assert data["status"] == "started"
-            service._join_preparation(data["job_id"])
+            join_training_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
@@ -2752,7 +2750,7 @@ class TestBackgroundThreadErrors:
         with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
-            service._join_preparation(data["job_id"])
+            join_training_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
@@ -2783,7 +2781,7 @@ class TestBackgroundThreadErrors:
         with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
-            service._join_preparation(data["job_id"])
+            join_training_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
@@ -2823,7 +2821,7 @@ class TestBackgroundThreadErrors:
                     json={"graph": graph, "node_id": "train"},
                 )
                 data = resp.json()
-                service._join_preparation(data["job_id"])
+                join_training_preparation(data["job_id"])
                 launched[0].join_and_raise(timeout=10)
                 status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
                 # Whether it completed or errored, the warning should be set
@@ -2861,7 +2859,7 @@ class TestBackgroundThreadErrors:
                     json={"graph": graph, "node_id": "train"},
                 )
                 data = resp.json()
-                service._join_preparation(data["job_id"])
+                join_training_preparation(data["job_id"])
                 launched[0].join_and_raise(timeout=10)
                 status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
                 # RAM warning should be suppressed since user limit (30) < RAM limit (50)
@@ -4131,7 +4129,7 @@ class TestTrainingSinkProjection:
 
         with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
             response = service.start(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
             for thread in launched:
                 thread.join(timeout=10)
 
@@ -4161,7 +4159,7 @@ class TestTrainingSinkProjection:
 
         with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
             response = service.start(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
             for thread in launched:
                 thread.join(timeout=10)
 
@@ -4193,7 +4191,7 @@ class TestTrainingSinkProjection:
         service, launched = _inline_sink_service(monkeypatch)
 
         response = service.start_dispersion_estimate(body)
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
         for thread in launched:
             thread.join(timeout=10)
 
@@ -4594,7 +4592,7 @@ class TestDispersionErrorPaths:
             side_effect=UnprocessableError("missing column"),
         ):
             response = service.start_dispersion_estimate(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
         job = store.require_job(response.job_id)
         assert job["status"] == "contract_error"
         assert job["http_status_code"] == 422
@@ -4654,7 +4652,7 @@ class TestDispersionErrorPaths:
             patch.object(service, "_launch_dispersion_background", return_value=object()),
         ):
             response = service.start_dispersion_estimate(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         assert response.status == "started"
         assert captured["project_to_keep_columns"] is False
@@ -4674,7 +4672,7 @@ class TestDispersionErrorPaths:
             side_effect=RuntimeError("sink exploded"),
         ):
             response = service.start_dispersion_estimate(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
         job = store.require_job(response.job_id)
         assert job["status"] == "error"
         # Curated as training's are: the raw text stays in the diagnostic field.
@@ -4702,7 +4700,7 @@ class TestDispersionErrorPaths:
         )
         with patch.object(TrainService, "_execute_and_sink", side_effect=admission_error):
             response = service.start_dispersion_estimate(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
         job = store.require_job(response.job_id)
         assert job["status"] == "memory_limited"
         assert job["http_status_code"] == 507
@@ -4729,7 +4727,7 @@ class TestDispersionErrorPaths:
             patch.object(_training_lifecycle, "create_admitted_execution_context", recording),
         ):
             response = service.start_dispersion_estimate(body)
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         job = store.require_job(response.job_id)
         assert job["status"] == "error"
@@ -4790,7 +4788,7 @@ class TestDispersionErrorPaths:
             assert service.cancel_dispersion(response.job_id)["status"] == "cancelled"
             assert tokens and tokens[0].cancelled  # type: ignore[attr-defined]
             release_preparation.set()
-            service._join_preparation(response.job_id)
+            join_training_preparation(response.job_id)
 
         assert store.require_job(response.job_id)["status"] == "cancelled"
         assert released == [True]
@@ -4851,7 +4849,7 @@ class TestDispersionErrorPaths:
             patch("haute.routes._training_lifecycle._run_dispersion_process_job", standin_worker),
         ):
             resp = service.start_dispersion_estimate(body)
-            service._join_preparation(resp.job_id)
+            join_training_preparation(resp.job_id)
 
         assert resp.status == "started"
         job_id = resp.job_id

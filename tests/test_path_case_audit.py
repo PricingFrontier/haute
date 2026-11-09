@@ -21,7 +21,6 @@ import haute._path_case_audit as audit_mod
 from haute._path_case_audit import (
     case_equivalent_siblings,
     warn_if_case_ambiguous,
-    wrap_path_case_audit,
 )
 from tests._project import use_project
 
@@ -108,28 +107,6 @@ def test_warn_logs_once_per_path(tmp_path: Path) -> None:
 
     assert first != {}
     assert second == {}  # cached — no repeat warning for the same path
-
-
-def test_wrap_path_case_audit_positional_and_keyword(tmp_path: Path) -> None:
-    (tmp_path / "Foo.csv").write_text("x", encoding="utf-8")
-    seen: list[str] = []
-
-    def loader(kind: str, path: str) -> str:
-        seen.append(path)
-        return kind
-
-    wrapped_pos = wrap_path_case_audit(loader, 1, stop=tmp_path)
-    assert wrapped_pos("csv", str(tmp_path / "foo.csv")) == "csv"
-    assert audit_mod._warned == {str(tmp_path / "foo.csv")}
-
-    wrapped_kw = wrap_path_case_audit(loader, "path", stop=tmp_path)
-    assert wrapped_kw("csv", path=str(tmp_path / "Foo.csv")) == "csv"
-    assert seen == [str(tmp_path / "foo.csv"), str(tmp_path / "Foo.csv")]
-
-
-def test_wrap_path_case_audit_missing_argument_is_harmless() -> None:
-    wrapped = wrap_path_case_audit(lambda: "ok", 0)
-    assert wrapped() == "ok"
 
 
 def test_retained_input_resolver_seam_runs_the_audit(

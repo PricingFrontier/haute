@@ -273,6 +273,16 @@ if ($RunFrontend) {
         }
     } "ESLint errors - run 'cd frontend && npm run lint -- --fix' to auto-fix"
 
+    Invoke-Check "Unused files and exports (knip)" {
+        Push-Location frontend
+        try {
+            & npm run lint:dead
+        }
+        finally {
+            Pop-Location
+        }
+    } "Unused files or exports - delete them, or tag a deliberate export @public (frontend/knip.json)"
+
     if (-not $Quick) {
         Invoke-Check "Frontend build" {
             Push-Location frontend

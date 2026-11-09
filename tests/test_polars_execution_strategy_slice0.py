@@ -143,7 +143,7 @@ def test_catboost_avg_top_5_training_allows_contract_free_competitor_join(
     policies_path, competitor_path = _write_competitor_training_inputs(tmp_path)
     graph = _make_avg_top_5_competitor_join_graph(policies_path, competitor_path)
 
-    with patch("haute.routes._train_service.TrainService._launch_background"):
+    with patch("haute.routes._training_lifecycle.TrainService._launch_background"):
         resp = client.post(
             "/api/modelling/train",
             json={"graph": graph, "node_id": "avg_top_5"},

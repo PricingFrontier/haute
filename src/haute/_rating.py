@@ -1768,15 +1768,6 @@ def _rating_table_skip_reason(table: dict[str, Any]) -> str | None:
     return None
 
 
-def _rating_table_materialises(table: dict[str, Any]) -> bool:
-    """Whether :func:`_apply_rating_table` will add *table*'s output column.
-
-    Used so the rating-step loop never registers a phantom output column for
-    combining/reference when the table was skipped.
-    """
-    return _rating_table_skip_reason(table) is None
-
-
 def _apply_rating_step_outputs(
     lf: _Frame,
     tables: list[dict[str, Any]],

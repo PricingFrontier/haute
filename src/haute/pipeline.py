@@ -700,10 +700,6 @@ class Pipeline(NodeRegistry):
 
         return [self._node_map[name] for name in sorted_ids if name in self._node_map]
 
-    def _get_inputs(self, node_name: str) -> list[str]:
-        """Get the names of all nodes that feed into this node."""
-        return [edge.source for edge in self._get_input_edges(node_name)]
-
     def _get_input_edges(self, node_name: str) -> list[RegisteredEdge]:
         """Get inbound edges in the runtime argument order for *node_name*."""
         incoming = [edge for edge in self._edges if edge.target == node_name]

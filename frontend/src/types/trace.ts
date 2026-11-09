@@ -5,7 +5,6 @@
  */
 
 import type {
-  SchemaDiffResponse,
   TraceColumnDerivationResponse,
   TraceColumnReadResponse,
   TraceColumnSourceResponse,
@@ -13,19 +12,14 @@ import type {
   TraceOmissionResponse,
   TraceResultResponse,
   TraceStepResponse,
-  TraceWaterfallEntryResponse,
-  TraceWaterfallErrorResponse,
 } from "../generated/api-contracts.generated"
 
-export type TraceSchemaDiff = SchemaDiffResponse
 /** A node that computed a value a step read. */
 export type TraceColumnSource = TraceColumnSourceResponse
 /** A column a computed column read, and the nodes that computed the value read. */
 export type TraceColumnRead = TraceColumnReadResponse
 /** How a step computed one column the traced value depends on. */
 export type TraceColumnDerivation = TraceColumnDerivationResponse
-export type WaterfallEntry = TraceWaterfallEntryResponse
-export type WaterfallError = TraceWaterfallErrorResponse
 export type TraceCorrelationDiagnostic = TraceCorrelationDiagnosticResponse
 export type TraceOmission = TraceOmissionResponse
 

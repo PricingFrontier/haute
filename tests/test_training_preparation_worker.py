@@ -31,7 +31,7 @@ from haute._worker_isolation import (
 )
 from haute.routes import _training_lifecycle
 from haute.routes._job_store import JobStore
-from haute.routes._train_service import TrainService
+from haute.routes._training_lifecycle import TrainService
 from haute.routes._training_preparation import (
     TrainingPreparationFailure,
     TrainingPreparationOutcome,
@@ -40,6 +40,7 @@ from haute.routes._training_preparation import (
 )
 from haute.schemas import TrainRequest
 from tests._project import use_project
+from tests._training_helpers import join_training_preparation
 from tests.conftest import make_file_input_config
 
 _MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
@@ -934,7 +935,7 @@ class TestDispersionWorkerMemoryOperation:
 
         # The request returns the job; preparation's failure lands in it.
         response = service.start_dispersion_estimate(body)
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
         job = store.require_job(response.job_id)
         assert job["status"] == "memory_limited"

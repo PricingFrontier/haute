@@ -96,9 +96,6 @@ export interface QuotesQuery {
   sort: "saved" | "reference" | "insured"
 }
 
-/** How a quote is made from another. */
-export type QuoteRelation = WorkbenchAppQuoteSource["relation"]
-
 /** The quote a new quote is made from, by its reference and option, and how. */
 export type QuoteSource = WorkbenchAppQuoteSource
 

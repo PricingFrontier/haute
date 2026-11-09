@@ -20,15 +20,12 @@ import { expectGeneratedContract } from "../types/generatedContractValidation"
 // reads them in the shapes below.
 export type {
   AssistantBuildPlan,
-  AssistantBuildPlanChange,
   AssistantBuildPlanItem,
   AssistantChangeDataCheck,
-  AssistantChangeEdge,
   AssistantChangeNode,
   AssistantChangeRecord,
   AssistantDataFinding,
   AssistantStatusResponse as AssistantStatus,
-  AssistantUsage,
 } from "../generated/api-contracts.generated"
 import type {
   AssistantBuildPlan,

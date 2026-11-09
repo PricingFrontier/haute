@@ -12,9 +12,10 @@ from typing import TypeAlias
 import httpx
 import pytest
 
-from haute.routes._supersession import SupersessionCoordinator, SupersessionStateSnapshot
+from haute.routes._supersession import SupersessionCoordinator
 from haute.schemas import NodeResult
 from haute.trace import TraceResult
+from tests._process_state import SupersessionStateSnapshot, supersession_snapshot
 from tests._project import project_app
 from tests.conftest import make_graph, make_transform_node
 
@@ -81,7 +82,7 @@ async def _wait_for_coordinator_snapshot(
     deadline = loop.time() + timeout
     last_snapshot: _Snapshot = {}
     while True:
-        last_snapshot = await coordinator.snapshot_for_tests()
+        last_snapshot = await supersession_snapshot(coordinator)
         if predicate(last_snapshot):
             return
         remaining = deadline - loop.time()
@@ -106,7 +107,7 @@ def _snapshot_has_source(
 
 
 @pytest.mark.asyncio
-async def test_supersession_snapshot_for_tests_is_copied_and_immutable() -> None:
+async def test_supersession_snapshot_is_copied_and_immutable() -> None:
     coordinator = SupersessionCoordinator()
     worker_started = asyncio.Event()
     release_worker = asyncio.Event()
@@ -120,7 +121,7 @@ async def test_supersession_snapshot_for_tests_is_copied_and_immutable() -> None
     try:
         await asyncio.wait_for(worker_started.wait(), timeout=1)
 
-        snapshot = await coordinator.snapshot_for_tests()
+        snapshot = await supersession_snapshot(coordinator)
         assert set(snapshot) == {"key"}
         assert snapshot["key"].latest_generation == 1
         assert snapshot["key"].active is True
@@ -129,12 +130,12 @@ async def test_supersession_snapshot_for_tests_is_copied_and_immutable() -> None
         with pytest.raises(FrozenInstanceError):
             snapshot["key"].active = False
         snapshot.clear()
-        assert set(await coordinator.snapshot_for_tests()) == {"key"}
+        assert set(await supersession_snapshot(coordinator)) == {"key"}
     finally:
         release_worker.set()
 
     assert await task == "ok"
-    assert await coordinator.snapshot_for_tests() == {}
+    assert await supersession_snapshot(coordinator) == {}
 
 
 @pytest.mark.asyncio
@@ -847,7 +848,7 @@ async def test_repeated_aborted_preview_requests_do_not_start_worker_storm(
                 assert call_count == 1
                 assert max_active == 1
                 assert active == 0
-            assert await coordinator.snapshot_for_tests() == {}
+            assert await supersession_snapshot(coordinator) == {}
 
             success = asyncio.create_task(post("success"))
             await _wait_for_thread_event(started["success"], "success preview worker")
@@ -855,7 +856,7 @@ async def test_repeated_aborted_preview_requests_do_not_start_worker_storm(
             response = await success
 
         assert response.status_code == 200
-        assert await coordinator.snapshot_for_tests() == {}
+        assert await supersession_snapshot(coordinator) == {}
         await asyncio.wait_for(limiter.acquire(), timeout=0.1)
         limiter.release()
     finally:
@@ -1494,7 +1495,7 @@ async def test_aborted_trace_request_holds_limiter_until_worker_finishes(
                 assert call_count == 1
                 assert max_active == 1
                 assert active == 0
-            assert await coordinator.snapshot_for_tests() == {}
+            assert await supersession_snapshot(coordinator) == {}
 
             success = asyncio.create_task(post("success"))
             await _wait_for_thread_event(started["success"], "success trace worker")
@@ -1502,7 +1503,7 @@ async def test_aborted_trace_request_holds_limiter_until_worker_finishes(
             response = await success
 
         assert response.status_code == 200
-        assert await coordinator.snapshot_for_tests() == {}
+        assert await supersession_snapshot(coordinator) == {}
         await asyncio.wait_for(limiter.acquire(), timeout=0.1)
         limiter.release()
     finally:

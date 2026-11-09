@@ -41,6 +41,7 @@ from haute.modelling._feature_contract import (
     build_contract,
     save_contract,
 )
+from tests._process_state import clear_deploy_artifact_caches, clear_source_signatures
 from tests._project import use_project
 from tests.conftest import make_graph, make_output_config
 
@@ -58,9 +59,8 @@ def _fresh_artifact_caches():
     ``getattr`` keeps the module importable pre-fix so the RED runs fail
     on load counts, not on a missing helper.
     """
-    from haute.deploy import _scorer
 
-    clear = getattr(_scorer, "_clear_deploy_artifact_caches", lambda: None)
+    clear = clear_deploy_artifact_caches
     clear()
     yield
     clear()
@@ -426,7 +426,7 @@ class TestDeployArtifactPathFingerprints:
         from haute._json_shred import _source_proof
         from haute.deploy._scorer import artifact_identity_fingerprint
 
-        _source_proof.clear_file_signatures()
+        clear_source_signatures()
         artifact_path = tmp_path / "artifact.parquet"
         artifact_path.write_bytes(b"stable artifact bytes")
         real_hash_file = _source_proof._hash_file
@@ -613,7 +613,6 @@ class TestArtifactCacheUnit:
     def test_clear_resets_both_caches(self, tmp_path: Path) -> None:
         from haute._mlflow_io import load_local_model_cached
         from haute.deploy._scorer import (
-            _clear_deploy_artifact_caches,
             _load_feature_contract_cached,
         )
 
@@ -623,7 +622,7 @@ class TestArtifactCacheUnit:
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
             load_local_model_cached(str(cbm_path), "regression")
             first_contract = _load_feature_contract_cached(str(contract_path))
-            _clear_deploy_artifact_caches()
+            clear_deploy_artifact_caches()
             load_local_model_cached(str(cbm_path), "regression")
             second_contract = _load_feature_contract_cached(str(contract_path))
 
@@ -721,7 +720,6 @@ class TestArtifactCacheKeyCanonicalisation:
 
 class TestResponsesByteEqual:
     def test_cold_and_warm_responses_byte_equal(self, tmp_path: Path) -> None:
-        from haute.deploy import _scorer
 
         cbm_path, contract_path = _write_bundle(tmp_path)
         graph = _model_score_graph()
@@ -730,7 +728,7 @@ class TestResponsesByteEqual:
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
             cold = _score_once(graph, _remap(cbm_path, contract_path))
             warm = _score_once(graph, _remap(cbm_path, contract_path))
-            getattr(_scorer, "_clear_deploy_artifact_caches", lambda: None)()
+            clear_deploy_artifact_caches()
             cold_again = _score_once(graph, _remap(cbm_path, contract_path))
 
         assert cold.equals(warm)

@@ -60,16 +60,15 @@ from haute.modelling._tuning import (
 )
 from haute.routes import _training_artifacts
 from haute.routes._job_store import JobStore
-from haute.routes._train_service import (
-    TrainService,
-    _run_dispersion_process_job,
-    _run_training_process_job,
+from haute.routes._training_artifacts import (
+    _TRAINING_ARTIFACT_KINDS,
+    _max_training_artifact_bytes,
     _validate_evaluation_artifact_contents,
     _validate_training_artifacts,
     _validate_tuning_artifact_contents,
-    _worker_timing,
 )
-from haute.routes._training_artifacts import _TRAINING_ARTIFACT_KINDS, _max_training_artifact_bytes
+from haute.routes._training_lifecycle import TrainService, _worker_timing
+from haute.routes._training_worker import _run_dispersion_process_job, _run_training_process_job
 from haute.schemas import EvaluationReportPayload, TuningReportPayload
 
 _TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2

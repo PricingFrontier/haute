@@ -325,22 +325,6 @@ def _child_execution_context(
     )
 
 
-def _remove_gated_temp_parquet(tmp_parquet: str) -> None:
-    """Best-effort removal of the sunk training parquet at the gate.
-
-    An unlink failure (e.g. a permissions race) is logged, never raised — it
-    must not replace the gate's actionable 422 with a filesystem error.
-    """
-    try:
-        Path(tmp_parquet).unlink(missing_ok=True)
-    except OSError as exc:
-        logger.warning(
-            "training_target_gate_temp_cleanup_failed",
-            path=tmp_parquet,
-            error=str(exc),
-        )
-
-
 def _worker_failure_payload(
     exc: Exception,
     *,

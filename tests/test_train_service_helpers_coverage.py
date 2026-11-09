@@ -12,15 +12,15 @@ import pytest
 
 from haute.modelling._evaluation import EvaluationConfig, generate_evaluation_plan
 from haute.modelling._train_config import role_column_reasons, string_list_config
-from haute.routes._train_service import (
+from haute.routes._training_evaluation import _evaluation_preview_payload
+from haute.routes._training_preparation import (
     _check_gpu_vram,
-    _evaluation_preview_payload,
-    _job_elapsed_seconds,
     _training_required_columns_by_node,
     _training_required_metadata_columns,
     _VramCheck,
     build_training_feature_selection,
 )
+from haute.routes._training_worker import _job_elapsed_seconds
 
 
 class TestEvaluationPreviewPayload:

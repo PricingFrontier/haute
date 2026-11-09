@@ -565,17 +565,6 @@ class OptimiserFrontierService:
                 lock = self._parent_locks[parent_job_id] = threading.RLock()
             return lock
 
-    def _touch_heavy_objects_or_raise(
-        self,
-        job_id: str,
-        *,
-        required_keys: tuple[str, ...],
-        detail: str,
-    ) -> None:
-        """Reserve completed-job heavy runtime state before using it."""
-        if not self._store.touch_heavy_objects(job_id, required_keys=required_keys):
-            raise InvalidRequestError(detail)
-
     def select_point(self, body: OptimiserFrontierSelectRequest) -> dict[str, Any]:
         """Select a frontier summary point without re-solving; returns the result dict."""
         with self.parent_lock(body.job_id):

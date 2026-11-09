@@ -31,7 +31,7 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
-from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
+from haute._mlflow_io import load_local_model_cached
 from haute._model_source import model_score_output_column, model_score_task
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES
@@ -85,14 +85,6 @@ def _load_feature_contract_cached(path: str) -> FeatureContract:
     from haute.modelling._feature_contract import load_contract_cached
 
     return load_contract_cached(path)
-
-
-def _clear_deploy_artifact_caches() -> None:
-    """Drop every cached deploy artifact (test isolation / targeted resets)."""
-    from haute.modelling._feature_contract import _clear_contract_cache
-
-    clear_local_model_cache()
-    _clear_contract_cache()
 
 
 @dataclass(frozen=True, slots=True)

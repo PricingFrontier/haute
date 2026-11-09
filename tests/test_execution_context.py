@@ -52,7 +52,9 @@ from haute.execution import execute_lazy_graph
 from haute.graph_utils import NodeType
 from haute.schemas import ExecutionMetricsPayload
 from tests._execution_faults import ExecutionFaultPoint, FaultInjectingExecutionContext
+from tests._process_state import clear_execution_admission_reservations
 from tests._project import project_app, use_project
+from tests._training_helpers import join_training_preparation
 from tests.conftest import (
     make_edge,
     make_file_output_config,
@@ -86,7 +88,7 @@ def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
         for key, _multiplier in admission_mod._process_rss_env_candidates(profile):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("HAUTE_EXECUTION_MEMORY_POLICY", raising=False)
-    admission_mod._clear_in_flight_reservations_for_tests()
+    clear_execution_admission_reservations()
 
 
 def test_remaining_memory_bytes_samples_once_and_enforces_the_budget() -> None:
@@ -2958,7 +2960,8 @@ def test_execution_metrics_recorder_sums_node_stage_timings() -> None:
         )
     )
 
-    assert recorder.by_node_elapsed_ms() == {"a": 3.75}
+    summary = recorder.summary(operation="preview", profile=ExecutionProfile.PREVIEW_EAGER)
+    assert summary.node_elapsed_ms == {"a": 3.75}
 
 
 def test_execution_metrics_summary_preserves_order_and_rolls_up_totals() -> None:
@@ -5877,7 +5880,7 @@ def test_training_start_creates_admitted_training_context(
     tmp_path,
 ) -> None:
     from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
+    from haute.routes._training_lifecycle import TrainService
     from haute.schemas import TrainRequest
 
     monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", "1024")
@@ -5929,7 +5932,7 @@ def test_training_start_creates_admitted_training_context(
         patch.object(service, "_launch_background"),
     ):
         response = service.start(body)
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     assert response.status == "started"
     context = captured["execution_context"]
@@ -5945,7 +5948,7 @@ def test_training_start_maps_admission_failure_to_http_507(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
+    from haute.routes._training_lifecycle import TrainService
     from haute.schemas import TrainRequest
 
     monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", "512")
@@ -5990,7 +5993,7 @@ def test_training_start_maps_admission_failure_to_http_507(
         patch.object(service, "_execute_and_sink") as execute_and_sink,
     ):
         response = service.start(TrainRequest(graph=graph, node_id="model"))
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     execute_and_sink.assert_not_called()
     job = store.require_job(response.job_id)
@@ -6014,7 +6017,7 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute.routes._job_store import JobStore
-    from haute.routes._train_service import TrainService
+    from haute.routes._training_lifecycle import TrainService
     from haute.schemas import TrainRequest
 
     monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", "512")
@@ -6061,7 +6064,7 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
         patch.object(service, "_execute_and_sink", side_effect=memory_error),
     ):
         response = service.start(TrainRequest(graph=graph, node_id="model"))
-        service._join_preparation(response.job_id)
+        join_training_preparation(response.job_id)
 
     job = service._store.require_job(response.job_id)
     assert job["status"] == "memory_limited"

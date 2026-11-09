@@ -314,7 +314,7 @@ class TestFindTypedNode:
 
     def test_train_service_uses_find_typed_node(self) -> None:
         """_find_modelling_node should delegate to find_typed_node."""
-        from haute.routes._train_service import _find_modelling_node
+        from haute.routes._training_preparation import _find_modelling_node
 
         graph = self._make_graph_with_node("modelling")
         node = _find_modelling_node(graph, "n1")

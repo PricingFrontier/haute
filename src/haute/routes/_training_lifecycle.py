@@ -312,8 +312,6 @@ class TrainService:
         )
         self._training_jobs = CancellableJobRegistry()
         self._start_lock = threading.Lock()
-        self._preparation_threads_lock = threading.Lock()
-        self._preparation_threads: dict[str, threading.Thread] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -389,18 +387,11 @@ class TrainService:
                 # infrastructure races from escaping as an unhandled daemon-thread
                 # exception while still leaving a server-side diagnostic.
                 logger.exception(f"{kind}_preparation_thread_failed", job_id=job_id)
-            finally:
-                with self._preparation_threads_lock:
-                    self._preparation_threads.pop(job_id, None)
 
         thread = context_thread(run, name=f"haute-{kind}-prep-{job_id}", daemon=True)
-        with self._preparation_threads_lock:
-            self._preparation_threads[job_id] = thread
         try:
             start_job_thread(thread)
         except Exception as exc:
-            with self._preparation_threads_lock:
-                self._preparation_threads.pop(job_id, None)
             self._training_jobs.release(job_id)
             logger.exception(f"{kind}_preparation_thread_start_failed", job_id=job_id)
             message = (
@@ -576,16 +567,6 @@ class TrainService:
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)
-
-    def _join_preparation(self, job_id: str, *, timeout: float = 10.0) -> None:
-        """Wait for an in-flight preparation owner (used by shutdown/tests)."""
-        with self._preparation_threads_lock:
-            thread = self._preparation_threads.get(job_id)
-        if thread is None:
-            return
-        thread.join(timeout=timeout)
-        if thread.is_alive():
-            raise TimeoutError(f"Training preparation for job {job_id!r} is still running")
 
     def _prepare_and_launch_training(
         self,

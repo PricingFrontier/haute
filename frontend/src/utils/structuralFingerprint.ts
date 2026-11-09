@@ -67,4 +67,3 @@ export function structuralFingerprint(graph: StructuralFingerprintInput | null |
   return JSON.stringify({ nodes, edges, submodels })
 }
 
-export default structuralFingerprint

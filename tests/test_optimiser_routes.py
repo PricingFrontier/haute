@@ -40,6 +40,7 @@ from haute.routes._optimiser_service import (
 )
 from haute.routes._optimiser_solver import SolveContext, _as_solved_adjustments
 from haute.routes.optimiser import _build_artifact_payload
+from tests._process_state import clear_execution_admission_reservations
 from tests._project import use_project
 from tests._projection_helpers import pair_value
 from tests.conftest import build_test_input_snapshot, make_edge, make_graph
@@ -2627,12 +2628,11 @@ class TestEstimateRoute:
         monkeypatch,
     ):
         """Explicit cancellation stops stale workers from later completing the job."""
-        from haute import _execution_admission as admission_mod
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
-        admission_mod._clear_in_flight_reservations_for_tests()
+        clear_execution_admission_reservations()
         monkeypatch.setattr(
             "haute._execution_admission.current_rss_bytes",
             lambda: 1,
@@ -2676,7 +2676,6 @@ class TestEstimateRoute:
         monkeypatch,
     ):
         """A server shutdown cancels the job's token, not its route: the stop is recorded."""
-        from haute import _execution_admission as admission_mod
         from haute.routes._background_jobs import BackgroundJobStoppedError
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -2696,7 +2695,7 @@ class TestEstimateRoute:
         def stopped(_body, job_id, **_kwargs):
             raise BackgroundJobStoppedError(job_id, "cancelled")
 
-        admission_mod._clear_in_flight_reservations_for_tests()
+        clear_execution_admission_reservations()
         monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
         store = JobStore()
         service = OptimiserSolveService(store)

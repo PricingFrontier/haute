@@ -1384,10 +1384,6 @@ def capability_manifest() -> CapabilityManifest:
     return manifest
 
 
-def _clear_manifest_cache() -> None:
-    _MANIFEST_CACHE.clear()
-
-
 def validate_manifest_complete() -> None:
     """Fail loudly if an exported descriptor becomes incomplete or open."""
     if contradictory := SOURCE_NODE_TYPES & (SINK_ONLY_NODE_TYPES | STANDALONE_PASSTHROUGH_TYPES):

@@ -17,7 +17,7 @@ export function DatabaseChanges() {
   </DatabaseDisclosure>
 }
 
-export default function StorePlanReview({ answer }: { answer: WorkbenchStoreCompareResponse }) {
+function StorePlanReview({ answer }: { answer: WorkbenchStoreCompareResponse }) {
   const groups = new Map<string, Change[]>()
   for (const change of answer.changes) {
     const group = groups.get(change.table)

@@ -84,6 +84,8 @@
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/check_write_sandbox_census.py` | The coverage gate's census check: reads every coverage shard's write-sandbox census, classes each write by the deepest recorded root that holds it, sets the harness's own writes apart, and fails on a class missing from, or a class lingering in, the census table of `tests/write_sandbox.toml`; a missing or malformed shard record fails too. Writes a class table to the job summary. |
 | `scripts/write_sandbox_promotions.py` | The write-sandbox survey's verdict: from the strict run's JUnit reports, names each test module that ran a test and passed every one, and is neither strict already nor allowlisted by the lint, failing while any remain. |
+| `scripts/check_dead_code.py` | The backend dead-code gate: vulture at 60% confidence over `src/haute` and the Databricks app beside it (`databricks_app/bootstrap.py`), reporting each function, method, class or import nothing names, less the framework-called decorators and names it ignores and the reviewed `ALLOWLIST` of exceptions with their reasons; an allowlist entry nothing reports any more fails too. CI's backend lint job runs it after mypy. |
+| `frontend/knip.json` | The frontend dead-code gate's configuration: exports used inside their own module are not reported, `frontend/src/generated/` is left to the contract generator, and `uv` is a known binary. `npm run lint:dead` runs it in the frontend static job and both preflights. |
 | `scripts/lint_pins.py` | Enforces the asymmetric dependency-pinning doctrine against the declaration layer: published dependencies need an explicit floor and cap and may not be exact-pinned or prefix-matched, tooling dependencies must be exact with a concrete version, executable surfaces may not invoke `npx`, and every action a workflow or composite action uses names the 40-hex commit it runs, with its tag in a comment (local actions and container images aside). |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
@@ -318,7 +320,7 @@
    The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.
 5. Frontend CI runs two jobs after `npm ci`. The static job runs
-   `npm run check:contracts`, `typecheck`, `lint`, `build`, `check:bundle`,
+   `npm run check:contracts`, `typecheck`, `lint`, `lint:dead`, `build`, `check:bundle`,
    and `test:benchmark:pr` as separate steps in that order; the tests job runs
    `npm run test:coverage` (Vitest with its global thresholds, then the
    critical-coverage check). Together they run exactly the npm scripts of the

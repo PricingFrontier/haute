@@ -14,7 +14,6 @@ import { expectGeneratedContract } from "../types/generatedContractValidation"
 export type {
   ExploreKeyCheck,
   ExploreRelationship,
-  ExploreRelationshipLevel,
   ExploreRelationshipsResponse,
 } from "../generated/api-contracts.generated"
 

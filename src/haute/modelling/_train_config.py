@@ -3,7 +3,7 @@
 Both consumers of a modelling node's config MUST build their TrainingJob
 arguments here so they can never drift:
 
-- live training (``haute.routes._train_service.TrainService``), and
+- live training (``haute.routes._training_lifecycle.TrainService``), and
 - standalone script export (``haute.modelling._export.generate_training_script``).
 
 Historically each path assembled kwargs independently, which produced two

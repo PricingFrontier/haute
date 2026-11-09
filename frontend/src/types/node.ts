@@ -321,8 +321,6 @@ export interface UnavailableNodeData extends Omit<HauteNodeData, "nodeType" | "l
   nodeType: NodeTypeValue | string
 }
 
-export type HauteNode = PipelineFlowNode | SubmodelFlowNode | SubmodelPortFlowNode
-
 /**
  * Central boundary for parsed/API graph nodes whose data arrives through
  * React Flow's broad Record<string, unknown> type.

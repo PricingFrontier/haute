@@ -290,28 +290,6 @@ def _offline_dependency_resolver(
 
 
 @pytest.fixture(autouse=True)
-def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wait longer for a preparation thread than a production shutdown does.
-
-    ``TrainService._join_preparation``'s 10s default bounds a graceful
-    shutdown. Under ``-n auto`` the suite runs one worker per core against a
-    single CPU pool, and a preparation thread that finishes well inside a
-    second can still miss that bound, failing the test with "Training
-    preparation for job ... is still running" for a reason the code under test
-    is not answerable for. Only the default moves: a test that pins the
-    timeout itself (the expiry case passes 0.01s) is handed through unchanged.
-    """
-    from haute.routes._training_lifecycle import TrainService
-
-    original = TrainService._join_preparation
-
-    def join_patiently(self: TrainService, job_id: str, *, timeout: float = 120.0) -> None:
-        original(self, job_id, timeout=timeout)
-
-    monkeypatch.setattr(TrainService, "_join_preparation", join_patiently)
-
-
-@pytest.fixture(autouse=True)
 def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Give every test fresh MLflow fluent globals.
 
@@ -486,21 +464,21 @@ def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(autouse=True)
 def _clear_execution_admission_reservations():
     """Keep process-wide in-flight budget reservations isolated per test."""
-    from haute._execution_admission import _clear_in_flight_reservations_for_tests
+    from tests._process_state import clear_execution_admission_reservations
 
-    _clear_in_flight_reservations_for_tests()
+    clear_execution_admission_reservations()
     yield
-    _clear_in_flight_reservations_for_tests()
+    clear_execution_admission_reservations()
 
 
 @pytest.fixture(autouse=True)
 def _clear_materialisation_calibration():
     """Keep process-local estimate learning deterministic between tests."""
-    from haute._estimate_calibration import _reset_materialisation_calibration_for_tests
+    from haute._estimate_calibration import _forget_calibration
 
-    _reset_materialisation_calibration_for_tests()
+    _forget_calibration()
     yield
-    _reset_materialisation_calibration_for_tests()
+    _forget_calibration()
 
 
 @pytest.fixture(scope="session")
@@ -516,8 +494,9 @@ def _default_bus_baseline() -> dict:
     """
     import haute.server  # noqa: F401 — side effect: register subscribers
     from haute._event_bus import default_bus
+    from tests._process_state import event_bus_handlers
 
-    return default_bus._snapshot_handlers_for_testing()
+    return event_bus_handlers(default_bus)
 
 
 @pytest.fixture(autouse=True)
@@ -536,9 +515,10 @@ def _default_bus_test_isolation(_default_bus_baseline: dict):
     ``default_bus`` by accident.
     """
     from haute._event_bus import default_bus
+    from tests._process_state import restore_event_bus_handlers
 
     yield
-    default_bus._restore_handlers_for_testing(_default_bus_baseline)
+    restore_event_bus_handlers(default_bus, _default_bus_baseline)
 
 
 @pytest.fixture(autouse=True)
@@ -567,11 +547,11 @@ def _clear_source_signatures():
     The memo is process-wide and keyed by a file's freshness token, which a
     reused temporary path can repeat across tests.
     """
-    from haute._json_shred._source_proof import clear_file_signatures
+    from tests._process_state import clear_source_signatures
 
-    clear_file_signatures()
+    clear_source_signatures()
     yield
-    clear_file_signatures()
+    clear_source_signatures()
 
 
 @pytest.fixture(autouse=True)

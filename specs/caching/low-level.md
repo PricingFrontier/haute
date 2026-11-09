@@ -187,8 +187,7 @@ Without a revision it returns the stat tuple
 `("stat", dev, ino, size, mtime_ns, ctime_ns)`, reusable only when the mtime is at least
 `SETTLE_SECONDS` (2.0) old, and logs `source_revision_unavailable` once per path. A missing
 file raises `FileNotFoundError`. `file_signature(path)` is a `StatGatedCache` of
-`FileSignature` values keyed by the canonical path; `clear_file_signatures()` empties it
-(the in-process proofs only).
+`FileSignature` values keyed by the canonical path, held for the life of the process.
 
 ### Durable source proofs
 
