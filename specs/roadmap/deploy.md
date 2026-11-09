@@ -4,10 +4,13 @@
 
 Bundling a pipeline and serving it, as [the deploy
 specification](../deploy/high-level.md) describes it: which files a deploy
-ships for the paths a pipeline names, and how the served `/quote` route
-answers a quote it cannot price. The packages below come from the 9 November
+ships for the paths a pipeline names, how the served `/quote` route answers
+a quote it cannot price, what `haute deploy --dry-run` checks, and what a
+test quote can expect. The packages below come from the 9 November
 2026 codebase review. `DPL-01` was reproduced against `HEAD` on that day;
-`DPL-02` is read from the source and was not run against a built image.
+`DPL-02` is read from the source and was not run against a built image;
+`DPL-03` was reproduced by running the command, and `DPL-04` by calling the
+comparison a deploy's validation uses.
 
 ## Priorities
 
@@ -15,6 +18,8 @@ answers a quote it cannot price. The packages below come from the 9 November
 |---|---|---:|---|
 | DPL-01 | Planned | P1 | A relative path means the same file in the editor, in a run and in the deployed bundle. |
 | DPL-02 | Planned | P3 | An output value that is not a finite number is refused naming the output column and the quote. |
+| DPL-03 | Planned | P3 | A dry run refuses a deploy target that does not exist, and a missing pipeline file is reported without a traceback. |
+| DPL-04 | Planned | P3 | A test quote can expect a date or a date-time output, written as the response writes it. |
 
 ## Planned improvements
 
@@ -90,3 +95,65 @@ generated app's source.
 `src/haute/deploy/_container.py::_generate_app_source` holds the route, its
 `_DocumentResponse` and its catch-all;
 `src/haute/_output_assembler.py::render_output_document`.
+
+### DPL-03 — A dry run checks the target, and a missing pipeline is reported plainly
+**Why:** Reproduced by running the command. The command tells the analyst to
+"Use --dry-run to validate locally without deploying", and a dry run parses,
+prunes, infers the schemas, validates and scores the test quotes. It never
+looks at the target: with `target = "nowhere"` under `[deploy]`, a shipped
+example answered "Validation passed" and "Dry run complete" with exit code
+0. The target is checked only on the path that deploys, so the typo is found
+by the CI run. Separately, when `haute.toml` exists and names a pipeline file
+that does not, the command ends in a Python traceback whose last line is the
+(good) message; the same failure without a `haute.toml` is caught and printed
+as an error with a hint.
+
+**Plan:** Validate the target in the dry run with the check the deploy path
+uses, before any other work. Catch the pipeline file's resolution in the
+branch that loads `haute.toml` as the other branch does.
+
+**Acceptance:** `haute deploy --dry-run` with an unknown target exits 1
+naming the target and the targets that exist. With a `haute.toml` naming a
+missing pipeline file it prints one error line and the hint, with no
+traceback.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_deploy.py::handle_deploy`;
+`src/haute/deploy/__init__.py::_validate_target` is called by
+`src/haute/deploy/__init__.py::deploy_resolved` and
+`src/haute/deploy/__init__.py::deploy`, the two functions that deploy, and
+by nothing the dry run reaches.
+
+### DPL-04 — A test quote can expect a date output
+**Why:** Reproduced. A test quote's `expected` values come from a JSON file,
+where a date can only be text, and the served response writes a date as its
+ISO text. The validation compares each expected value with the scored
+frame's own Python value, so a date is compared with a `datetime.date`
+object and never matches. For a frame holding `valid_until` of 31 December
+2026, which the response serves as `"2026-12-31"`, expecting `"2026-12-31"`
+failed with "row 0 column 'valid_until' mismatch: expected='2026-12-31'
+actual=datetime.date(2026, 12, 31)"; a date-time failed the same way, while
+a number matched. The same leaf rule sits under the comparison of a priced
+response with an accepted one, which reported an unchanged date as changed
+when given the object. A pipeline that returns a date, such as how long a
+quote is valid, cannot have that output held by a test quote, and the
+message does not say why.
+
+**Plan:** Compare a date, date-time or time leaf by the text the response
+serves for it, with the encoder the response uses. Numbers, decimals
+included, stay numeric and keep their tolerance.
+
+**Acceptance:** A test quote expecting a date and a date-time output as the
+response writes them passes, and one expecting another day fails naming both
+days as text. A decimal output is still compared as a number within the
+tolerance. The accepted-response comparison reports no change for an equal
+date.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_validators.py::_expected_value_matches`;
+`src/haute/deploy/_validators.py::_validate_expected_outputs` and
+`src/haute/deploy/_validators.py::_score_test_quote_cases` pass the scored
+frame's rows; `src/haute/deploy/_validators.py::response_changes`;
+`src/haute/deploy/_response_json.py::_encode_value` is the served encoding.
