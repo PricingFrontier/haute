@@ -52,7 +52,12 @@ from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute.assistant._build_plan import BuildPlan
 from haute.assistant._ops import SourceEvidenceLedger
-from haute.assistant._render import TurnRecord, render_omitted_turns, render_turn_record
+from haute.assistant._render import (
+    TurnRecord,
+    one_line,
+    render_omitted_turns,
+    render_turn_record,
+)
 from haute.schemas import AssistantBuildPlan, AssistantChangeRecord, AssistantTurnOutcome
 
 logger = get_logger(component="assistant.session")
@@ -353,15 +358,6 @@ _PERSISTED_TOOL_EVIDENCE_KEYS = frozenset(
 _MAX_SESSION_TITLE_CHARS = 80
 
 
-def _session_title(text: str) -> str:
-    """Render one conversation title from its opening user message."""
-
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= _MAX_SESSION_TITLE_CHARS:
-        return collapsed
-    return collapsed[: _MAX_SESSION_TITLE_CHARS - 1].rstrip() + "…"
-
-
 @dataclass(frozen=True, slots=True)
 class SessionSummary:
     """One conversation as the chat list shows it, without its transcript.
@@ -583,18 +579,6 @@ class AssistantTurn:
 
         return len(self.messages)
 
-    def as_dict(self) -> dict[str, JSONValue]:
-        """Return the JSON-shaped turn record."""
-
-        return {
-            "messages": [message.as_dict() for message in self.messages],
-            "outcome": None if self.outcome is None else self.outcome.model_dump(),
-            "undone": [record.model_dump(mode="json") for record in self.undone],
-            "build_plan": (
-                None if self.build_plan is None else self.build_plan.model_dump(mode="json")
-            ),
-        }
-
     def record(self) -> TurnRecord:
         """This turn as a compact record for a later turn's provider history.
 
@@ -685,24 +669,8 @@ class AssistantSession:
         for turn in self.history:
             for message in turn.messages:
                 if message.role == "user" and isinstance(message.content, str):
-                    return _session_title(message.content)
+                    return one_line(message.content, _MAX_SESSION_TITLE_CHARS)
         return ""
-
-    def as_dict(self) -> dict[str, JSONValue]:
-        """Return the serializable session state, excluding the live lock."""
-
-        return {
-            "id": self.id,
-            "source_file": self.source_file,
-            "history": [turn.as_dict() for turn in self.history],
-            "build_plan": (
-                None
-                if self.build_plan.current is None
-                else self.build_plan.current.model_dump(mode="json")
-            ),
-            "created_at": self.created_at,
-            "last_used": self.last_used,
-        }
 
     def as_persisted_dict(self) -> dict[str, JSONValue]:
         """Return restartable history with provider-working payloads redacted."""

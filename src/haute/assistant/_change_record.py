@@ -17,6 +17,7 @@ from haute._polars_steps import STEP_KINDS
 from haute._types import GraphNode, PipelineGraph
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._ops import PlanReceipt, SemanticDiff
+from haute.assistant._render import one_line
 from haute.schemas import (
     ASSISTANT_MAX_DATA_FINDINGS,
     AssistantChangeDataCheck,
@@ -48,7 +49,7 @@ def _palette_names() -> Mapping[str, str]:
 def field_words(key: str) -> str:
     """A configuration key in plain lower-case words: `output_column` reads `output column`."""
 
-    return " ".join(_CAMEL_BOUNDARY.sub(" ", key).replace("_", " ").lower().split())
+    return one_line(_CAMEL_BOUNDARY.sub(" ", key).replace("_", " ").lower())
 
 
 def _step_kinds(node: GraphNode) -> list[str] | None:
@@ -407,7 +408,7 @@ def change_headline(summary: str) -> str:
     within the limit, or inside a single word longer than that.
     """
 
-    line = " ".join(summary.split())
+    line = one_line(summary)
     if len(line) <= CHANGE_HEADLINE_LIMIT:
         return line
     head = line[: CHANGE_HEADLINE_LIMIT - 1]

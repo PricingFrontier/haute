@@ -37,6 +37,7 @@ from haute.assistant._providers import (
     TurnStop,
     turn_deadline,
 )
+from haute.assistant._render import one_line
 from haute.assistant._session import AssistantSession, AssistantTurn, SessionStore
 from haute.errors import HauteError
 from haute.schemas import (
@@ -535,22 +536,9 @@ def build_system_prompt(*, source_file: str) -> str:
     )
 
 
-def _provider_tools(tools: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
-    """Return one stable structured tool contract for every request wording."""
-
-    return tuple(tools)
-
-
 _SUMMARY_LIMIT = 160
 #: A data check, or an inspection's data part, that did not fit in the tool result.
 _DATA_CHECK_TOO_LARGE = "data checked, result too large to show"
-
-
-def _bounded(text: str) -> str:
-    """*text* on one line, cut to the activity row's limit."""
-
-    line = " ".join(text.split())
-    return line if len(line) <= _SUMMARY_LIMIT else line[: _SUMMARY_LIMIT - 1] + "…"
 
 
 def _counted(count: int, noun: str) -> str:
@@ -776,7 +764,7 @@ def _started_summary(name: str, arguments: Mapping[str, Any]) -> str:
     """
 
     summarise = _STARTED_SUMMARIES.get(name)
-    return "" if summarise is None else _bounded(summarise(arguments))
+    return "" if summarise is None else one_line(summarise(arguments), _SUMMARY_LIMIT)
 
 
 def _result_summary(name: str, payload: Mapping[str, Any], is_error: bool) -> str:
@@ -799,7 +787,7 @@ def _result_summary(name: str, payload: Mapping[str, Any], is_error: bool) -> st
                 )
         return "tool error"
     summarise = _FINISHED_SUMMARIES.get(name)
-    return "" if summarise is None else _bounded(summarise(payload))
+    return "" if summarise is None else one_line(summarise(payload), _SUMMARY_LIMIT)
 
 
 def _stable_error_code(payload: Mapping[str, Any]) -> str | None:
@@ -1152,7 +1140,6 @@ async def run_turn(
         _resolved_limit(max_tool_calls, "HAUTE_ASSISTANT_MAX_TOOL_CALLS", DEFAULT_MAX_TOOL_CALLS)
     )
     deadline = time.monotonic() + timeout_seconds
-    provider_tools = _provider_tools(tools)
     user_message: dict[str, Any] = {"role": "user", "content": user_text}
     request_messages: list[Mapping[str, Any]] = [
         *store.provider_history(session),
@@ -1196,7 +1183,7 @@ async def run_turn(
             active_stream = provider.stream_turn(
                 system=system_prompt,
                 messages=request_messages,
-                tools=provider_tools,
+                tools=tools,
             )
             while True:
                 # This generator is suspended at each yield while its consumer

@@ -39,7 +39,6 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
-| ASSIST-56 | Planned | P3 | The assistant core carries no test-only methods, one one-line helper, one readiness resolution per message, and names that mean one thing. |
 | ASSIST-57 | Planned | P2 | A tool never stalls the server: `inspect_node` profiles outside the save lock, the capability manifest is built once per installed set, an example is loaded once, and the egress policy is resolved once per call. |
 | ASSIST-58 | Planned | P2 | What the model is told is true: a join's execution failure is kept unless the validation raised it, the brief's columns follow the data, Load File's summary names the three file types, and no rule is stated that the product does not enforce. |
 | ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
@@ -140,33 +139,6 @@ per configuration with run identifiers.
 **Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-56 — Core hygiene
-**Why:** `AssistantTurn.as_dict`, `AssistantSession.as_dict` and
-`current_turn_deadline` have no production caller while the specification names
-them; `_provider_tools` is a no-op left from the retired lexical router and its
-tests assert its signature; collapsing text to one bounded line is written five
-times with three rules, and the two copies in `_loop.py` disagree on newlines;
-every message send resolves `haute.toml` twice and runs a `git` subprocess whose
-answer decides nothing on that path; `AssistantProvider` names both a `Literal`
-of provider ids and the adapter `Protocol`; the project-knowledge "cache" is
-write-only yet reports `cache_hit`.
-
-**Plan:** Delete the test-only methods and the no-op; one `one_line(text,
-limit)` helper; one config resolution per message; rename the `Literal`; use
-the index or rename the field.
-
-**Acceptance:** The named symbols are gone; one helper collapses text; a message
-send runs no `git`; the field name says what the code does.
-
-**Dependencies:** `ENGQ-R01` owns dead code outside this component.
-
-**Evidence:** `src/haute/assistant/_session.py::as_dict`;
-`src/haute/assistant/_providers.py::current_turn_deadline`;
-`src/haute/assistant/_loop.py::_provider_tools`;
-`src/haute/assistant/_loop.py::_bounded`; `src/haute/routes/assistant.py`;
-`src/haute/assistant/_config.py`;
-`src/haute/assistant/_project_knowledge.py::_write_cache`.
 
 ### ASSIST-57 — Tools that never stall the server
 **Why:** `inspect_node` holds the process-wide, cross-process `save_lock` while

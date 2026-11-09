@@ -150,7 +150,7 @@ def _intent_shown(step: StepSummary, egress: EgressPolicy) -> str | None:
 
     if step.intent is None or not egress.allow_executable_source:
         return None
-    return _bounded(step.intent)
+    return one_line(step.intent, _LABEL_LIMIT)
 
 
 def _problem_message_shown(problem: StepsProblem, egress: EgressPolicy) -> str | None:
@@ -161,7 +161,7 @@ def _problem_message_shown(problem: StepsProblem, egress: EgressPolicy) -> str |
         return None
     if problem.free_code and not egress.allow_executable_source:
         return None
-    return " ".join(problem.message.split())
+    return one_line(problem.message)
 
 
 def render_authoring(authoring: Authoring, egress: EgressPolicy) -> dict[str, object]:
@@ -442,19 +442,19 @@ def render_egress_policy(egress: EgressPolicy) -> str:
     )
 
 
-def _bounded(text: str) -> str:
-    """Project-authored text collapsed to one line of at most `_LABEL_LIMIT` characters."""
+def one_line(text: str, limit: int | None = None) -> str:
+    """*text* collapsed to one line, cut with an ellipsis to at most *limit* characters."""
 
-    collapsed = " ".join(text.split())
-    if len(collapsed) > _LABEL_LIMIT:
-        collapsed = collapsed[: _LABEL_LIMIT - 1] + "…"
-    return collapsed
+    line = " ".join(text.split())
+    if limit is None or len(line) <= limit:
+        return line
+    return line[: limit - 1].rstrip() + "…"
 
 
-def _one_line(text: str) -> str:
+def _quoted_label(text: str) -> str:
     """A project-authored label as one bounded, quoted line."""
 
-    return json.dumps(_bounded(text), ensure_ascii=False)
+    return json.dumps(one_line(text, _LABEL_LIMIT), ensure_ascii=False)
 
 
 def _quoted(text: str | None) -> str:
@@ -495,7 +495,7 @@ def _columns(columns: tuple[str, ...]) -> str:
 def _brief_node_lines(
     node: BriefNode, display_names: Mapping[str, str], egress: EgressPolicy
 ) -> list[str]:
-    head = f"- `{node.id}` ({display_names[node.node_type]}) {_one_line(node.label)}"
+    head = f"- `{node.id}` ({display_names[node.node_type]}) {_quoted_label(node.label)}"
     if node.authoring is not None:
         head += f", {_brief_state(node.authoring, egress)}"
     lines = [head]
@@ -560,7 +560,7 @@ def _render_build_plan(plan: AssistantBuildPlan) -> str:
         saved = sum(not change.undone for change in item.changes)
         changes = _plan_item_changes(saved, len(item.changes) - saved)
         state = "complete" if item.complete else "open"
-        lines.append(f"- `{item.id}` {_one_line(item.title)}: {state}, {changes}")
+        lines.append(f"- `{item.id}` {_quoted_label(item.title)}: {state}, {changes}")
     return "\n".join(lines)
 
 
@@ -581,7 +581,7 @@ def render_turn_context(context: TurnContext) -> str:
             "version before each, as the graph below shows. Do not assume they are in "
             "place.\n"
             + "\n".join(
-                f"- `{change.id}`: {_one_line(change.summary)}" for change in context.undone
+                f"- `{change.id}`: {_quoted_label(change.summary)}" for change in context.undone
             )
         )
     plan = context.build_plan
@@ -600,7 +600,7 @@ def render_turn_context(context: TurnContext) -> str:
         "\n".join(
             (
                 "### Pipeline",
-                f"- Pipeline: {_one_line(graph.pipeline_name)}",
+                f"- Pipeline: {_quoted_label(graph.pipeline_name)}",
                 f"- Base revision: `{graph.revision}`",
                 f"- Selected on the canvas: {selected}",
             )
@@ -700,7 +700,7 @@ _RECORD_OUTCOMES = {
 def _one_line_quoted(text: str) -> str:
     """Model-written text as one JSON-quoted line, whatever its length."""
 
-    return json.dumps(" ".join(text.split()), ensure_ascii=False)
+    return json.dumps(one_line(text), ensure_ascii=False)
 
 
 def render_turn_record(record: TurnRecord) -> str:

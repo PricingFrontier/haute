@@ -25,7 +25,7 @@ from haute._project_context import current_project
 from haute.errors import ConfigError, HauteError
 from haute.schemas import GitWorkingBranchResponse
 
-AssistantProvider = Literal["anthropic", "openai", "databricks"]
+ProviderId = Literal["anthropic", "openai", "databricks"]
 ProviderTrust = Literal["local", "organization", "external"]
 Sensitivity = Literal["public", "internal", "restricted"]
 
@@ -34,12 +34,12 @@ _DEFAULT_MAX_OUTPUT_TOKENS = 8192
 DEFAULT_TURN_TIMEOUT = 600
 TURN_TIMEOUT_ENV = "HAUTE_ASSISTANT_TURN_TIMEOUT"
 _MAX_OUTPUT_TOKENS_ENV = "HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS"
-_PROVIDER_SDKS: dict[AssistantProvider, str] = {
+_PROVIDER_SDKS: dict[ProviderId, str] = {
     "anthropic": "anthropic",
     "openai": "openai",
     "databricks": "openai",
 }
-_PROVIDER_KEYS: dict[AssistantProvider, str] = {
+_PROVIDER_KEYS: dict[ProviderId, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "databricks": "DATABRICKS_TOKEN",
@@ -102,7 +102,7 @@ class EgressPolicy:
 class AssistantConfig:
     """A fully validated assistant provider configuration."""
 
-    provider: AssistantProvider
+    provider: ProviderId
     model: str
     base_url: str | None
     api_key: str = field(repr=False)
@@ -238,7 +238,7 @@ def _max_output_tokens() -> tuple[int | None, str | None]:
     return value, None
 
 
-def _sdk_importable(provider: AssistantProvider) -> bool:
+def _sdk_importable(provider: ProviderId) -> bool:
     """Probe the configured provider SDK without importing it at server start."""
 
     module_name = _PROVIDER_SDKS[provider]
@@ -331,7 +331,7 @@ def _databricks_base_url(raw_host: str) -> str:
     return f"{workspace_root}/serving-endpoints"
 
 
-def endpoint_url(provider: AssistantProvider, base_url: str | None) -> str:
+def endpoint_url(provider: ProviderId, base_url: str | None) -> str:
     """The URL the egress policy validates and the SDK client is built with.
 
     Passing it explicitly is what stops ``ANTHROPIC_BASE_URL`` or
@@ -344,7 +344,7 @@ def endpoint_url(provider: AssistantProvider, base_url: str | None) -> str:
     return base_url or "https://api.openai.com/v1"
 
 
-def _endpoint(provider: AssistantProvider, base_url: str | None) -> SplitResult:
+def _endpoint(provider: ProviderId, base_url: str | None) -> SplitResult:
     return urlsplit(endpoint_url(provider, base_url))
 
 
@@ -439,13 +439,13 @@ def _validate_table_keys(table: dict[str, object]) -> None:
         raise ConfigError(f"Unknown [assistant] configuration key(s): {paths}.")
 
 
-def _resolve_provider(raw_provider: object) -> AssistantProvider:
+def _resolve_provider(raw_provider: object) -> ProviderId:
     if not isinstance(raw_provider, str) or raw_provider not in _PROVIDER_SDKS:
         raise _UnresolvedConfigError(f"Unknown assistant provider: {raw_provider!r}.")
-    return cast(AssistantProvider, raw_provider)
+    return cast(ProviderId, raw_provider)
 
 
-def _resolve_base_url(table: dict[str, object], provider: AssistantProvider) -> str | None:
+def _resolve_base_url(table: dict[str, object], provider: ProviderId) -> str | None:
     raw_base_url = table.get("base_url")
     if provider in {"anthropic", "databricks"} and raw_base_url is not None:
         if provider == "databricks":
@@ -677,7 +677,7 @@ __all__ = [
     "ADAPTIVE_THINKING_MODELS",
     "AssistantConfig",
     "EgressPolicy",
-    "AssistantProvider",
+    "ProviderId",
     "AssistantReadiness",
     "DEFAULT_TURN_TIMEOUT",
     "ProviderTrust",

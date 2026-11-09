@@ -147,12 +147,6 @@ def turn_deadline(deadline: float) -> Iterator[None]:
         _TURN_DEADLINE.reset(token)
 
 
-def current_turn_deadline() -> float | None:
-    """The running turn's deadline while a provider stream step runs, else ``None``."""
-
-    return _TURN_DEADLINE.get()
-
-
 def _retry_after_seconds(error: Exception) -> float | None:
     """The wait a failed request's ``Retry-After`` response header asks for, in seconds.
 

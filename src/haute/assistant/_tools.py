@@ -2409,7 +2409,7 @@ def get_project_knowledge(
             "items": list(items),
             "excluded_by_policy_count": len(view.excluded_by_policy),
             "omitted_document_count": view.omitted_documents,
-            "cache_hit": view.cache_hit,
+            "index_unchanged": view.index_unchanged,
             "policy_hash": policy.policy_hash,
             "trust": policy.trust,
             "max_sensitivity": policy.max_sensitivity,

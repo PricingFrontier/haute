@@ -799,7 +799,7 @@ class TestBounds:
         assert f"- Saved `{'a' * 64}` at revision `{'e' * 16}`" in str(live[1]["content"])
         assert "redacted" not in json.dumps(live)
         assert revived.evidence.sources() == ()
-        assert "evidence" not in revived.as_dict()
+        assert "evidence" not in revived.as_persisted_dict()
 
 
 class TestDegradation:

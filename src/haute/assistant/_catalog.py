@@ -710,7 +710,7 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "items",
             "excluded_by_policy_count",
             "omitted_document_count",
-            "cache_hit",
+            "index_unchanged",
             "policy_hash",
             "trust",
             "max_sensitivity",

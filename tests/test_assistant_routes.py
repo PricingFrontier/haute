@@ -469,6 +469,38 @@ class TestMessageTurn:
         finally:
             session.lock.release()
 
+    def test_a_send_resolves_its_config_once_and_asks_git_nothing(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        configured: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.routes.assistant as assistant_routes
+        from haute import _git
+        from haute.assistant._providers import ProviderUsage
+
+        def no_git(*_args, **_kwargs):
+            raise AssertionError("a send must not run git")
+
+        monkeypatch.setattr(_git, "working_branch_status", no_git)
+        resolved: list[object] = []
+        original = assistant_routes.resolve_assistant_config
+
+        def counting():
+            config = original()
+            resolved.append(config)
+            return config
+
+        monkeypatch.setattr(assistant_routes, "resolve_assistant_config", counting)
+        _patch_provider(monkeypatch, [TextDelta("hello"), TurnStop("end", ProviderUsage(1, 1))])
+        session_id = self._session(client)
+
+        response = client.post("/api/assistant/message", json=_message(session_id))
+
+        assert response.status_code == 200, response.text
+        assert len(resolved) == 1
+
     def test_happy_path_streams_sse_events(
         self,
         client: TestClient,

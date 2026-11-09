@@ -2229,15 +2229,15 @@ class TestLimits:
 
         import time
 
-        from haute.assistant._providers import current_turn_deadline
+        from haute.assistant._providers import _TURN_DEADLINE
 
         seen: list[float | None] = []
 
         class DeadlineProvider:
             async def stream_turn(self, *, system, messages, tools):
-                seen.append(current_turn_deadline())
+                seen.append(_TURN_DEADLINE.get())
                 yield TextDelta("hi")
-                seen.append(current_turn_deadline())
+                seen.append(_TURN_DEADLINE.get())
                 yield TurnStop("end", _usage())
 
         started = time.monotonic()
@@ -2247,7 +2247,7 @@ class TestLimits:
         assert _assert_single_terminal(events).type == "completed"
         assert len(seen) == 2 and seen[0] == seen[1]
         assert seen[0] is not None and started + 30 <= seen[0] <= finished + 30
-        assert current_turn_deadline() is None
+        assert _TURN_DEADLINE.get() is None
 
     async def test_provider_error_becomes_failed_event(self, store, session_id):
         provider = ScriptedProvider(
@@ -2644,17 +2644,12 @@ class TestSystemPrompt:
         assert "natural-language hints" not in prompt
 
     def test_provider_tool_contract_has_no_request_text_input(self):
-        import inspect
-
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _provider_tools(TOOL_DEFINITIONS)
+        routed = TOOL_DEFINITIONS
         dry_run = next(tool for tool in routed if tool["name"] == "dry_run_graph_edits")
         branches = dry_run["input_schema"]["properties"]["ops"]["items"]["oneOf"]
 
-        assert tuple(inspect.signature(_provider_tools).parameters) == ("tools",)
-        assert routed == tuple(TOOL_DEFINITIONS)
         assert [tool["name"] for tool in routed] == [
             "get_pipeline",
             "inspect_node",
@@ -2821,11 +2816,10 @@ class TestSystemPrompt:
         each recipe's arguments, and the primitive edit and postcondition items keep
         their contracts."""
 
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import _compatible_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _compatible_tools(_provider_tools(TOOL_DEFINITIONS))
+        routed = _compatible_tools(TOOL_DEFINITIONS)
         schema = next(
             tool["input_schema"] for tool in routed if tool["name"] == "dry_run_graph_edits"
         )
@@ -2849,11 +2843,10 @@ class TestSystemPrompt:
         assert "kind" in schema["properties"]["postconditions"]["items"]["properties"]
 
     def test_dataset_tool_schema_is_the_same_for_every_request(self):
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import _compatible_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed = _compatible_tools(_provider_tools(TOOL_DEFINITIONS))
+        routed = _compatible_tools(TOOL_DEFINITIONS)
         schema = next(tool["input_schema"] for tool in routed if tool["name"] == "find_data")
 
         assert schema["properties"]["directory"]["type"] == "string"
@@ -3147,7 +3140,8 @@ class TestCompactedHistory:
         assert not any("provider_content" in message for message in provider.calls[2]["messages"])
         session = store.lookup(session_id)
         assert session is not None
-        assert "provider_content" not in str(session.as_dict())
+        stored = [message.as_dict() for turn in session.history for message in turn.messages]
+        assert "provider_content" not in str(stored)
 
     async def test_a_second_replay_in_one_round_fails_the_turn(self, store, session_id):
         from haute.assistant._providers import ReplayContent
@@ -3270,14 +3264,6 @@ class TestSessionStoreMisuse:
         assert len(store) == 1
         assert session.id in store
         assert "ghost" not in store
-
-    def test_session_as_dict_excludes_the_live_lock(self):
-        store = SessionStore()
-        session = store.create("a.py")
-        store.append(session, _turn("u", "a"))
-        dumped = store.lookup(session.id).as_dict()
-        assert "lock" not in dumped
-        assert dumped["history"][0]["messages"][0]["content"] == "u"
 
 
 class TestNeutralRecordValidationSweep:

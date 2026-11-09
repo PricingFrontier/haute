@@ -765,7 +765,7 @@ class TestAnthropicTurnPrefix:
         assert second_turn["messages"][0] == {"role": "user", "content": "What reads quotes?"}
         assert second_turn["messages"][1]["role"] == "assistant"
         assert second_turn["messages"][1]["content"].startswith("Done.\n\n## Turn record\n")
-        stored = json.dumps(store.lookup(session.id).as_dict())
+        stored = json.dumps(store.lookup(session.id).as_persisted_dict())
         assert "sig-1" not in stored and "provider_content" not in stored
 
 
@@ -1943,7 +1943,6 @@ class TestDatabricksProvider:
         built for the canonical_tools variant. Every lane's wire tools are its
         projection of the canonical definitions."""
 
-        from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import (
             _canonical_tools,
             _compatible_tools,
@@ -1951,7 +1950,7 @@ class TestDatabricksProvider:
         )
         from haute.assistant._tools import TOOL_DEFINITIONS
 
-        routed_tools = _provider_tools(TOOL_DEFINITIONS)
+        routed_tools = TOOL_DEFINITIONS
         canonical = {tool["name"]: tool["input_schema"] for tool in routed_tools}
         databricks = _config(
             "databricks", base_url="https://workspace.cloud.databricks.com/serving-endpoints"

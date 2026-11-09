@@ -864,9 +864,11 @@ the turn that follows.
 0. A message must hold non-whitespace text and at most `ASSISTANT_MESSAGE_CHAR_LIMIT`
    (256 KiB) characters, or the request is answered 422 before any stream opens: it would
    otherwise be sent to the provider in every round and persisted on every append.
-1. Readiness is checked before session lookup (400 before the stream opens if
-   unconfigured). This ordering means an unconfigured request reports the configuration
-   problem even when its session id is also unknown. The request's `source_file` is then
+1. The provider configuration is resolved once, before session lookup (400 before the
+   stream opens if unconfigured). This ordering means an unconfigured request reports the
+   configuration problem even when its session id is also unknown. A send runs no `git`:
+   the Git working-branch state only decides whether a mutation may save, and the
+   mutation tools check it themselves. The request's `source_file` is then
    resolved (see Source file binding); it needs no session, so it happens before the
    reservation.
 2. Look up the session (404) and atomically acquire its lock without waiting — held →
@@ -1631,7 +1633,7 @@ the turn that follows.
   once and classified as below, so the turn fails as `rate_limit` (or `connection`) rather
   than at its time limit. The deadline reaches the adapter through
   `turn_deadline(deadline)`, a context variable the loop sets around each `anext` of a
-  provider stream (read with `current_turn_deadline()`); outside a turn there is none and
+  provider stream; outside a turn there is none and
   only the schedule's count bounds the retries. Each retry is logged as
   `assistant_provider_request_retry` by provider identity, failure class, SDK exception class
   name, ordinal, delay and its source (`schedule` or `retry_after`) without the raw

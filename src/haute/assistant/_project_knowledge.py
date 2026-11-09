@@ -58,7 +58,8 @@ class ProjectKnowledgeView:
     excluded_by_policy: tuple[str, ...]
     #: Documents over the size limit or past the document limit, not read.
     omitted_documents: int
-    cache_hit: bool
+    #: Whether the derived index on disk already held this view's sources.
+    index_unchanged: bool
 
 
 def _digest(data: bytes) -> str:
@@ -225,13 +226,13 @@ def _write_cache(project_root: Path, payload: dict[str, object]) -> bool:
         previous = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         previous = None
-    hit = previous == rendered
-    if not hit:
+    unchanged = previous == rendered
+    if not unchanged:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(rendered, encoding="utf-8")
         os.replace(temporary, path)
-    return hit
+    return unchanged
 
 
 def build_project_knowledge(
@@ -249,7 +250,7 @@ def build_project_knowledge(
     documents, omitted_documents = _document_items(root)
     all_items.extend(documents)
     all_items.sort(key=lambda item: item.source)
-    cache_hit = _write_cache(root, _cache_payload(all_items))
+    index_unchanged = _write_cache(root, _cache_payload(all_items))
     included = tuple(item for item in all_items if _within_policy(item, policy))
     excluded = tuple(item.source for item in all_items if not _within_policy(item, policy))
     manifest = MappingProxyType({item.source: item.source_digest for item in included})
@@ -258,7 +259,7 @@ def build_project_knowledge(
         source_manifest=manifest,
         excluded_by_policy=excluded,
         omitted_documents=omitted_documents,
-        cache_hit=cache_hit,
+        index_unchanged=index_unchanged,
     )
 
 
