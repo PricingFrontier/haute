@@ -108,9 +108,6 @@ ALLOWLIST: dict[str, str] = {
     ),
     # Test seams on production state: each reads or resets the owner's state under
     # the owner's lock, which a test outside the module could not do safely.
-    "src/haute/_contracts.py::get_column_contract": (
-        "Contract lookup the column-contract tests read through."
-    ),
     "src/haute/_data_points.py::lease_point_frame": "Lease-holding read the resolver tests use.",
     "src/haute/_dedicated_workers.py::child_limit_evidence_counter": (
         "Child-side counter the memory-limit notification tests read."

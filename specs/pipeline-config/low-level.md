@@ -21,7 +21,7 @@
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
-| `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
+| `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_node_contract()` lookup used by parse-time validation and execution. |
 | `src/haute/_node_type.py` | `NodeType`, the node-type enum, alone in a standard-library-only leaf so the specification below can import it without the cycle through `haute._types` (which imports `haute._graph_utils` before it would define the enum); `haute._types` re-exports it. |
 | `src/haute/_node_specs.py` | The node specification: `NodeSpec`, `NODE_SPECS` (one entry per `NodeType`, validated at import), `node_spec` and `known_node_spec` (no entry for a value that is not a node type, which only recovery and unset string arguments meet), the derived category views (`REQUEST_INPUT_NODE_TYPES`, `RESPONSE_NODE_TYPES`, `SINK_ONLY_NODE_TYPES`, `SOURCE_NODE_TYPES`, `CODE_NODE_TYPES`, `STEPPED_NODE_TYPES`, `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`, `SINGLETON_NODE_GROUPS`, `SINGLETON_NODE_NAMES`, `REQUEST_INPUT_KINDS`, the decorator and sidecar-folder maps, `DEFAULT_NODE_TYPE`), `singleton_name_problem`, and `node_type_table` (a concern's exhaustive per-type table). Imports only `haute._node_type` and the standard library. |
 | `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen: each node type's callables (exec builder, code template, column contract). |
@@ -750,7 +750,7 @@ exec builder and — mutually exclusive — either a column-contract callback or
 sentinel into `NODE_REGISTRY`. `haute._contracts.get_node_contract(node_type, config)`, called from
 `_config_builder._derive_parse_time_contract` during the parse-time contract cross-check (and by
 the executor, codegen and projection), looks up and invokes the registered callback and returns a
-`Contract`; `get_column_contract` returns its tuple form. A `NodeType` with none registered raises
+`Contract`; `Contract.to_tuple()` gives its tuple form. A `NodeType` with none registered raises
 `KeyError` rather than silently falling back to opaque, so a new node type added without a
 contract registration is caught immediately.
 
@@ -1326,7 +1326,7 @@ it on the reading node instead of aborting the walk, and every other run propaga
 - **`FileNotFoundError`** — `resolve_pipeline_file`/`_resolve_default_in`: a configured-but-
   missing `[project].pipeline` path; a configured path that doesn't look like a pipeline file;
   ambiguous or absent auto-discovery, enumerating what was tried either way.
-- **`KeyError`** — `get_column_contract` when a `NodeType` has no registered contract callback
+- **`KeyError`** — `get_node_contract` when a `NodeType` has no registered contract callback
   (a registration bug, not a runtime/user-facing condition); a `NODE_REGISTRY` lookup miss in
   the exec-builder dispatcher.
 - **`TypeError`** — an invalid (non-`str`, non-`None`) `source_port`/`target_port` passed to

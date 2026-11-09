@@ -651,12 +651,12 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
 
 
 def test_only_a_haute_binary_contract_declares_the_probability_column(tmp_path: Path) -> None:
-    from haute._contracts import get_column_contract
+    from haute._contracts import get_node_contract
     from haute._types import NodeType
     from haute.modelling._feature_contract import build_contract, save_contract
 
     def produced(config: dict[str, str]) -> set[str] | None:
-        return get_column_contract(NodeType.MODEL_SCORE, config)[0]
+        return get_node_contract(NodeType.MODEL_SCORE, config).to_tuple()[0]
 
     result = train(
         tmp_path,

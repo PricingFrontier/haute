@@ -2152,6 +2152,7 @@ class TestParserApiInput:
         assert config["inputs"] == ["quotes", "batch_quotes"]
 
 
+@pytest.mark.sandbox_strict
 class TestProgressCallback:
     """The optional progress callback (line 76) must receive step messages."""
 
@@ -2180,6 +2181,7 @@ class TestProgressCallback:
         assert isinstance(result, DeployResult)
 
 
+@pytest.mark.sandbox_strict
 class TestArtifactCopy:
     """Resolved artifacts (line 109) must be merged into the log_model artifacts."""
 
@@ -2216,6 +2218,7 @@ class TestArtifactCopy:
         assert not Path(artifacts["my_model"]).exists()
 
 
+@pytest.mark.sandbox_strict
 class TestVersionSelection:
     """When the registry already has versions (line 138), the max is selected."""
 
@@ -2261,6 +2264,7 @@ class TestVersionSelection:
         assert "main.pricing.test-model" in str(exc_info.value)
 
 
+@pytest.mark.sandbox_strict
 class TestBuildDirCleanup:
     """DEP-R12A: a deploy stages in a directory of its own under the project's
     ``.haute_build`` and removes only that one, shipped or failed, unless kept."""
@@ -2306,6 +2310,7 @@ class TestBuildDirCleanup:
 # ===========================================================================
 
 
+@pytest.mark.sandbox_strict
 class TestHauteModelEdgeCases:
     """Additional tests for HauteModel."""
 
@@ -2418,6 +2423,7 @@ class TestHauteModelEdgeCases:
 # ===========================================================================
 
 
+@pytest.mark.sandbox_strict
 class TestFindNode:
     """Direct tests for _find_node."""
 
@@ -2468,6 +2474,7 @@ class TestFindNode:
         assert exc_info.value.context["node_id"] == "my_missing_node"
 
 
+@pytest.mark.sandbox_strict
 class TestInferOutputSchemaEdgeCases:
     """Edge cases for infer_output_schema."""
 
@@ -2566,6 +2573,7 @@ class TestInferOutputSchemaEdgeCases:
             infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
 
 
+@pytest.mark.sandbox_strict
 class TestInferInputSchemaEdgeCases:
     """Extra edge cases for infer_input_schema."""
 

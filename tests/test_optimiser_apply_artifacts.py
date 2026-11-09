@@ -50,6 +50,7 @@ def _handle(**overrides: object) -> dict[str, object]:
     return base
 
 
+@pytest.mark.sandbox_strict
 def test_persisted_apply_artifact_round_trips_through_validated_handle() -> None:
     df = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [1.05]})
     handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
@@ -64,6 +65,7 @@ def test_persisted_apply_artifact_round_trips_through_validated_handle() -> None
         _cleanup_apply_result_artifact(handle)
 
 
+@pytest.mark.sandbox_strict
 def test_apply_artifact_load_rejects_paths_outside_owned_root(tmp_path: Path) -> None:
     outside_dir = tmp_path / "outside"
     outside_dir.mkdir()
@@ -82,6 +84,7 @@ def test_apply_artifact_load_rejects_paths_outside_owned_root(tmp_path: Path) ->
     assert outside_path.exists()
 
 
+@pytest.mark.sandbox_strict
 def test_apply_artifact_cleanup_rejects_path_directory_mismatch(tmp_path: Path) -> None:
     outside_dir = tmp_path / "outside"
     outside_dir.mkdir()
@@ -103,6 +106,7 @@ def test_apply_artifact_cleanup_rejects_path_directory_mismatch(tmp_path: Path) 
         _cleanup_apply_result_artifact(handle)
 
 
+@pytest.mark.sandbox_strict
 def test_apply_artifact_load_rejects_relative_paths() -> None:
     with pytest.raises(RequestRefusedError) as exc_info:
         _scan_apply_result_artifact(
@@ -115,6 +119,7 @@ def test_apply_artifact_load_rejects_relative_paths() -> None:
     )
 
 
+@pytest.mark.sandbox_strict
 def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> None:
     handle = _persist_apply_result_artifact(
         SimpleNamespace(dataframe=pl.DataFrame({"quote_id": ["q1"]}))
@@ -137,6 +142,7 @@ def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> 
         _cleanup_apply_result_artifact(handle)
 
 
+@pytest.mark.sandbox_strict
 def test_a_corrupt_ratebook_factor_artifact_is_the_stable_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

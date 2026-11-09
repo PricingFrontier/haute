@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 from haute import errors as haute_errors
-from haute._contracts import get_column_contract
+from haute._contracts import get_node_contract
 from haute._registry import NODE_REGISTRY
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import (
@@ -124,7 +124,7 @@ class TestEveryBuilderHasContract:
             "NODE_REGISTRY with an explicit OPAQUE_CONTRACT registration, "
             "even though its columns cannot be determined statically."
         )
-        produced, referenced = get_column_contract(node_type, {})
+        produced, referenced = get_node_contract(node_type, {}).to_tuple()
         assert produced is None and referenced is None, (
             f"{node_type} is on the opaque allowlist and must return "
             "(None, None) — concrete contracts on these node types would "
@@ -145,7 +145,7 @@ class TestEveryBuilderHasContract:
             # Use minimal but representative config per type so the
             # contract function can produce concrete output.
             cfg = _minimal_config_for(nt)
-            produced, referenced = get_column_contract(nt, cfg)
+            produced, referenced = get_node_contract(nt, cfg).to_tuple()
             assert produced is not None and referenced is not None, (
                 f"{nt} is NOT on the opaque allowlist, so its contract "
                 "must be concrete (both sides non-None) when given a "
@@ -219,14 +219,14 @@ class TestModelScoreContractIsPartiallyAllowed:
     """
 
     def test_model_score_produced_always_concrete(self):
-        produced, _ = get_column_contract(NodeType.MODEL_SCORE, {"output_column": "score"})
+        produced, _ = get_node_contract(NodeType.MODEL_SCORE, {"output_column": "score"}).to_tuple()
         assert produced == {"score"}, (
             "model_score must always declare its produced column "
             "concretely — it is literally the output_column config value."
         )
 
     def test_model_score_unconfigured_referenced_is_opaque(self):
-        _, referenced = get_column_contract(NodeType.MODEL_SCORE, {})
+        _, referenced = get_node_contract(NodeType.MODEL_SCORE, {}).to_tuple()
         assert referenced is None, (
             "An unconfigured model_score node has no loadable model, so "
             "its referenced columns can only be honestly reported as "
@@ -283,7 +283,7 @@ class TestCodegenEmitsContractMetadata:
             sidecar.write_text(content, encoding="utf-8")
         parsed = parse_pipeline_source(code, source_file=str(tmp_path / "p.py"), _base_dir=tmp_path)
         band = next(n for n in parsed.nodes if n.data.label == "band")
-        produced, referenced = get_column_contract(band.data.nodeType, band.data.config)
+        produced, referenced = get_node_contract(band.data.nodeType, band.data.config).to_tuple()
         assert produced == {"age_band"}
         assert referenced == {"age"}
 
@@ -378,8 +378,8 @@ pipeline.connect("src", "band")
         # The banding node must have the same contract on both sides.
         band1 = next(n for n in g1.nodes if n.id.endswith("band") or n.data.label == "band")
         band2 = next(n for n in g2.nodes if n.id.endswith("band") or n.data.label == "band")
-        c1 = get_column_contract(band1.data.nodeType, band1.data.config)
-        c2 = get_column_contract(band2.data.nodeType, band2.data.config)
+        c1 = get_node_contract(band1.data.nodeType, band1.data.config).to_tuple()
+        c2 = get_node_contract(band2.data.nodeType, band2.data.config).to_tuple()
         assert c1 == c2, (
             f"Contract drifted through codegen round-trip: {c1!r} != {c2!r}. "
             "After adoption, the contract metadata in the generated file "
@@ -893,7 +893,10 @@ class TestExecutorAssertsContractsAtBoundaries:
             "rules": {},
             "default": None,
         }
-        assert get_column_contract(NodeType.BANDING, {"factors": [draft]}) == (set(), set())
+        assert get_node_contract(NodeType.BANDING, {"factors": [draft]}).to_tuple() == (
+            set(),
+            set(),
+        )
 
         graph = PipelineGraph(
             nodes=[
