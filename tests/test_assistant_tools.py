@@ -459,6 +459,16 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         assert (amount["min"], amount["max"]) == (0.0, 59.0)
         assert "values" not in amount
 
+    async def test_a_profile_refused_under_the_lock_is_the_calls_error(self, profile_project: Path):
+        import haute.assistant._tools as tools_module
+
+        result = await tools_module.build_tool_executor("main.py")(
+            "inspect_node", {"node": "totals", "parts": ["profile"], "input": "no_such_input"}
+        )
+
+        assert result["error"]["code"] == "unknown_input"
+        assert result["error"]["part"] == "profile"
+
     def test_unknown_input_names_the_available_inputs(self, profile_project: Path):
         result = _profile("main.py", "totals", "ghost")
 
@@ -5548,6 +5558,22 @@ class TestTurnContext:
         assert before.graph.revision == after.graph.revision
         assert "added_later" not in str(before.graph.nodes)
         assert "added_later" in str(after.graph.nodes)
+
+    def test_a_graph_whose_inputs_cannot_be_listed_is_briefed_uncached(
+        self, steps_first_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute.assistant import _tools
+
+        def unlistable(_graph: object) -> tuple[Path, ...]:
+            raise ValueError("a broken node")
+
+        monkeypatch.setattr(_tools, "runtime_input_signed_paths", unlistable)
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+
+        context = _tools.build_turn_context("main.py", _turn_policy())
+
+        assert context.graph is not None and context.graph.nodes
+        assert not _tools._BRIEF_CACHE
 
     def test_a_failing_node_is_unresolved_in_the_brief_without_its_error(
         self, egress_project: Path

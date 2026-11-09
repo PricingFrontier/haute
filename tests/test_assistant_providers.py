@@ -29,6 +29,7 @@ Authored test-first per CLAUDE.md TDD.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -2650,6 +2651,41 @@ class TestErrorClassification:
         body = "Error code: 404 - {'error': {'type': 'not_found', 'message': 'model: x'}}"
 
         assert redact_sensitive_text(body) == body
+
+    def test_an_sdk_that_is_not_loaded_classifies_nothing(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delitem(sys.modules, "anthropic")
+
+        classified = _classify_sdk_error(
+            "openai", _sdk_error(openai, "RateLimitError"), api_key="sk-test-secret"
+        )
+
+        assert classified.failure_class == "rate_limit"
+
+    @pytest.mark.parametrize(
+        ("provider", "adapter", "sdk", "client"),
+        [
+            ("anthropic", AnthropicProvider, anthropic, "AsyncAnthropic"),
+            ("openai", OpenAIProvider, openai, "AsyncOpenAI"),
+        ],
+    )
+    def test_a_client_that_cannot_be_built_is_a_provider_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        adapter: type,
+        sdk: object,
+        client: str,
+    ):
+        def refuse(**_kwargs: object) -> None:
+            raise ValueError("bad client option")
+
+        monkeypatch.setattr(sdk, client, refuse)
+
+        with pytest.raises(AssistantProviderError) as excinfo:
+            adapter(_config(provider))
+
+        assert excinfo.value.failure_class == "stream"
+        assert "bad client option" not in str(excinfo.value)
 
     def test_the_logged_provider_error_is_redacted(self):
         import structlog.testing

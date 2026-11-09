@@ -81,6 +81,28 @@ def test_undecodable_document_fails_with_the_project_relative_source(tmp_path: P
         build_project_knowledge(tmp_path, "main.py", policy=policy)
 
 
+def test_the_view_says_whether_the_index_changed_and_needs_no_haute_toml(tmp_path: Path):
+    from haute.assistant._config import EgressPolicy
+    from haute.assistant._project_knowledge import build_project_knowledge
+
+    _project(tmp_path)
+    (tmp_path / "haute.toml").unlink()
+    policy = EgressPolicy(
+        trust="organization",
+        max_sensitivity="restricted",
+        allow_project_knowledge=True,
+        allow_executable_source=False,
+        allow_row_samples=False,
+        allow_aggregate_statistics=False,
+    )
+
+    first = build_project_knowledge(tmp_path, "main.py", policy=policy)
+    second = build_project_knowledge(tmp_path, "main.py", policy=policy)
+
+    assert (first.index_unchanged, second.index_unchanged) == (False, True)
+    assert "haute.toml" not in first.source_manifest
+
+
 def test_a_document_too_large_or_past_the_limit_is_counted(tmp_path: Path):
     from haute.assistant._config import EgressPolicy
     from haute.assistant._project_knowledge import (

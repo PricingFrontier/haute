@@ -71,8 +71,6 @@ class OpValidationError(LocatedPlanError):
 def freeze_json(value: object) -> object:
     """Make a JSON-shaped value recursively immutable and equality-friendly."""
 
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
     if isinstance(value, Mapping):
         return MappingProxyType({str(key): freeze_json(item) for key, item in value.items()})
     if isinstance(value, list | tuple):

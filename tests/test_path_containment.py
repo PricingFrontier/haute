@@ -1099,7 +1099,9 @@ class TestProjectKnowledge:
         (outside / "secret.md").write_text("Sensitivity: public\n\nOUTSIDE", encoding="utf-8")
         (project / "docs" / "linked.md").symlink_to(outside / "secret.md")
 
-        assert [item.source for item in _document_items(project.resolve())] == ["docs/terms.md"]
+        items, omitted = _document_items(project.resolve())
+        assert [item.source for item in items] == ["docs/terms.md"]
+        assert omitted == 0
 
 
 class TestConfiguredPipelines:

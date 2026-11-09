@@ -470,6 +470,27 @@ class TestMessageTurn:
         finally:
             session.lock.release()
 
+    def test_an_unexpected_config_failure_is_a_sanitized_500(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        configured: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.routes.assistant as assistant_routes
+
+        session_id = self._session(client)
+
+        def broken() -> None:
+            raise RuntimeError("private path /srv/secret")
+
+        monkeypatch.setattr(assistant_routes, "resolve_assistant_config", broken)
+
+        response = client.post("/api/assistant/message", json=_message(session_id))
+
+        assert response.status_code == 500
+        assert "/srv/secret" not in response.text
+
     def test_a_send_resolves_its_config_once_and_asks_git_nothing(
         self,
         client: TestClient,

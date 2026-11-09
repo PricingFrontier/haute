@@ -874,6 +874,17 @@ class TestSessionListing:
         assert persisted["history"]
         assert sorted(path.name for path in sessions.glob("*.tmp")) == [f"{session.id}.json.tmp"]
 
+    async def test_an_unreadable_storage_directory_lists_nothing(self):
+        def unavailable() -> Path:
+            raise OSError("storage unavailable")
+
+        store = SessionStore(storage_dir=unavailable)
+
+        with structlog.testing.capture_logs() as logs:
+            assert await store.list_sessions("rating/main.py") == ()
+
+        assert any(e["event"] == "assistant_session_list_failed" for e in logs)
+
     async def test_the_list_reads_no_file_on_the_event_loop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

@@ -1682,6 +1682,29 @@ class TestTurnOutcome:
         }
         assert _stored_outcome(store, session_id) == terminal.outcome
 
+    async def test_an_unverified_save_without_a_record_still_ends_committed_unverified(
+        self, store, session_id
+    ):
+        provider = _dry_run_then(
+            [
+                ToolCallRequest("apply-1", "apply_graph_plan", {"plan_hash": "a" * 64}),
+                TurnStop("tool_use", _usage()),
+            ]
+        )
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            if name == "apply_graph_plan":
+                return {"error": {"code": "verification_failed", "message": "Unverified."}}
+            return {"plan_hash": "a" * 64}
+
+        events = await _run(
+            store, session_id, "build a pipeline", provider=provider, execute_tool=execute_tool
+        )
+
+        terminal = _assert_single_terminal(events)
+        assert terminal.outcome.kind == "committed_unverified"
+        assert terminal.outcome.changes == []
+
     async def test_a_save_that_fails_verification_ends_committed_unverified(
         self, store, session_id
     ):
@@ -2221,6 +2244,46 @@ class TestLimits:
         assert executed == []
         stored = store.lookup(session_id).history[-1].messages
         assert [message.tool_call_id for message in stored if message.role == "tool"] == ["t1"]
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            pytest.param([TextDelta("no stop follows")], id="stream-ends-without-a-stop"),
+            pytest.param([object()], id="unknown-event"),
+        ],
+    )
+    async def test_a_provider_breaking_the_event_contract_fails_the_turn(
+        self, store, session_id, script
+    ):
+        provider = ScriptedProvider([script])
+
+        events = await _run(store, session_id, "hi", provider=provider)
+
+        assert _assert_single_terminal(events).type == "failed"
+
+    async def test_a_tool_call_with_no_executor_fails_the_turn(self, store, session_id):
+        from haute.assistant._loop import run_turn
+
+        provider = ScriptedProvider(
+            [[ToolCallRequest("t1", "get_pipeline", {}), TurnStop("tool_use", _usage())]]
+        )
+
+        events = [
+            event
+            async for event in run_turn(
+                store,
+                session_id,
+                "hi",
+                provider=provider,
+                tools=[],
+                execute_tool=None,
+                system_prompt="system prompt under test",
+                turn_timeout=5.0,
+                max_tool_calls=8,
+            )
+        ]
+
+        assert _assert_single_terminal(events).type == "failed"
 
     async def test_a_provider_stream_runs_under_the_turns_deadline(self, store, session_id):
         """A provider's pre-stream retry waits only within the turn: each step of
