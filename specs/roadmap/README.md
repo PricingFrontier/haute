@@ -23,7 +23,6 @@ records corrections to that audit's claims and proposed remedies.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | The provider client as the policy describes it, bounded requests with a terminal event on every stream, tools that never stall the server, facts the model can trust, the core's and the tools' hygiene, the chat panel's failures and clicks; blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred); assistant apply retaining the authenticated revision through commit, and atomic session and knowledge-cache writes | `ASSIST-62` |
 | [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation, one worker primitive and failure family; mutation witnesses for the price-changing modules (a decision) | `ENGQ-R01` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
@@ -97,8 +96,7 @@ It combines an initial subsystem-wide pass and executed Python behavioural probe
 with a systematic batch-by-batch pass over all 961 authored production source files
 (`376,420` lines across `src/haute/` and `frontend/src/`, tracked in a scratch
 inventory ledger with `0` unread files remaining). It maps the verified findings to
-new component packages (`ASSIST-62`,
-`FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`,
+new component packages (`FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`,
 `GIT-R19`,
 `WB-41`) and extensions of `DEP-R12B` and
 `DEP-R13` (delivered, with the deploy roadmap retired); findings whose packages were

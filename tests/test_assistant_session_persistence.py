@@ -861,6 +861,19 @@ class TestSessionListing:
         # bound with live sessions and would evict them.
         assert len(restarted) == 0
 
+    def test_a_held_fixed_temporary_does_not_stop_a_session_persisting(self, tmp_path: Path):
+        """Two writers of one session once shared a temporary path; each now has its own."""
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        sessions = tmp_path / "sessions"
+        (sessions / f"{session.id}.json.tmp").mkdir()
+
+        store.append(session, _turn("after the temporary was taken"))
+
+        persisted = json.loads((sessions / f"{session.id}.json").read_text(encoding="utf-8"))
+        assert persisted["history"]
+        assert sorted(path.name for path in sessions.glob("*.tmp")) == [f"{session.id}.json.tmp"]
+
     async def test_the_list_reads_no_file_on_the_event_loop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

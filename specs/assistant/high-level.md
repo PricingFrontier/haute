@@ -1436,8 +1436,7 @@ evaluation of 2026-10-01 under an `internal` policy, 11 of 37 failing case-runs
 came from retyping such lists and six of them saved silent corruptions of a
 rating or the response contract; a second run that day, with configuration
 readable, replaced a response's mapping without reading it and dropped two of
-its rows. Item-level edits (ASSIST-52) remain the way to change one entry
-without reading the rest.
+its rows.
 
 Project knowledge is derived from a bounded saved-graph fact, a value-free
 `haute.toml` digest fact, and allowlisted ordinary documentation, never from an

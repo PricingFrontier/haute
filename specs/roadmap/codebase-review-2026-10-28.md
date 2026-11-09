@@ -174,14 +174,14 @@ adds a finding group or changes the 42-group count.
 | Candidate scope | Disposition |
 |---|---|
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |
-| assistant undo/state fencing | Duplicate **ASSIST-60**. |
+| assistant undo/state fencing | Delivered: the chat panel's failures and clicks (the retired assistant roadmap's ASSIST-60). |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
 | non-SQLite form insertion | Duplicate **WB-43** for non-SQLite form insertion (the scratch spelling WB-R10 is not another package). The note gives no additional concrete database defect. |
 | sandbox project globals | Delivered: one project context (the pipeline-config roadmap's PCFG-R04). |
-| Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Duplicates **ASSIST-55**, **ASSIST-57**, **ASSIST-58**, **ASSIST-59**, **ASSIST-54** respectively. The recipe-consolidation note names no additional behavior. |
+| Assistant bounds, blocking tools, factual context, tool hygiene and provider handling | Delivered: the retired assistant roadmap's ASSIST-55, ASSIST-57, ASSIST-58, ASSIST-59 and ASSIST-54 respectively. The recipe-consolidation note names no additional behavior. |
 | CLI/init/deploy existing gaps | Delivered: impact alignment, build ownership and dependency closure (the retired deploy roadmap's DEP-R11, DEP-R12A and DEP-R09), and init overwrite, TOML mutation and hook behavior (the retired CLI roadmap's CLI-R01, CLI-R04 and CLI-R06). Generic CLI errors/eager reads name no additional concrete case. |
 | Hosted sign-in headers | Duplicate **WB-25**. |
-| Asynchronous assistant tool blocking | Duplicate **ASSIST-57**. |
+| Asynchronous assistant tool blocking | Delivered: the retired assistant roadmap's ASSIST-57. |
 
 ### Pending notes resolved by accepted findings
 

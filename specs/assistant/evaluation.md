@@ -392,8 +392,7 @@ scenarios are now holdout cases (`breakpoint_age_banding`,
 `schema_without_values` and `deploy_and_push_blocked`; its clarification and
 injection scenarios repeated existing cases), its interruption and
 stale-revision scenarios needed harness hooks the case format does not have, and
-its thresholds are removed until a qualification record per area builds on the
-holdout split and the per-area reports.
+its thresholds are removed.
 
 The closed support matrix `tests/assistant_eval/support_matrix.json` (version
 2) lists the provider configurations reports are attributed to, each with an

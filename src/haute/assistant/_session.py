@@ -48,6 +48,7 @@ from typing import Any, TypeAlias, cast
 from uuid import uuid4
 
 from haute._credential_security import redact_sensitive_text
+from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute.assistant._build_plan import BuildPlan
@@ -826,9 +827,7 @@ class SessionStore:
         try:
             path = self._storage_dir() / f"{session.id}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(session.as_persisted_dict()), encoding="utf-8")
-            os.replace(tmp, path)
+            atomic_write_text(path, json.dumps(session.as_persisted_dict()))
         except OSError:
             logger.warning("assistant_session_persist_failed", session_id=session.id, exc_info=True)
 
@@ -839,6 +838,7 @@ class SessionStore:
             return
         try:
             base = self._storage_dir()
+            # What an earlier version's fixed temporary left behind.
             for path in base.glob("*.json.tmp"):
                 session_id = path.name.removesuffix(".json.tmp")
                 if _SESSION_ID_PATTERN.fullmatch(session_id) is not None:

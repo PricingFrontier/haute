@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -11,6 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
+from haute._file_ops import atomic_write_text
 from haute._sandbox import contained_path, is_contained
 from haute.assistant._config import EgressPolicy, Sensitivity
 from haute.errors import HauteError, PathOutsideProjectError
@@ -106,7 +106,13 @@ def _graph_fact(project_root: Path, source_file: str) -> KnowledgeItem:
     except PathOutsideProjectError:
         raise ValueError("pipeline source must resolve inside the project root") from None
     data = source.read_bytes()
-    graph = parse_pipeline_to_graph(source)
+    try:
+        graph = parse_pipeline_to_graph(source)
+    except (HauteError, SyntaxError) as exc:
+        # The cause by its type: the parser's message can quote the source.
+        raise ProjectKnowledgeError(
+            f"Pipeline source could not be parsed ({type(exc).__name__}): {source_file}."
+        ) from exc
     node_types: dict[str, int] = {}
     for node in graph.nodes:
         node_type = getattr(node.data.nodeType, "value", str(node.data.nodeType))
@@ -229,9 +235,7 @@ def _write_cache(project_root: Path, payload: dict[str, object]) -> bool:
     unchanged = previous == rendered
     if not unchanged:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(rendered, encoding="utf-8")
-        os.replace(temporary, path)
+        atomic_write_text(path, rendered)
     return unchanged
 
 

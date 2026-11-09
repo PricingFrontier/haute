@@ -111,6 +111,43 @@ def test_a_document_too_large_or_past_the_limit_is_counted(tmp_path: Path):
     assert view.omitted_documents == 3
 
 
+def test_a_pipeline_that_does_not_parse_is_a_typed_error_quoting_no_source(tmp_path: Path):
+    from haute.assistant._config import EgressPolicy
+    from haute.assistant._project_knowledge import ProjectKnowledgeError, build_project_knowledge
+
+    _project(tmp_path)
+    (tmp_path / "main.py").write_text("def broken(:\n    secret_rate = 1.2\n", encoding="utf-8")
+    policy = EgressPolicy(
+        trust="organization",
+        max_sensitivity="restricted",
+        allow_project_knowledge=True,
+        allow_executable_source=False,
+        allow_row_samples=False,
+        allow_aggregate_statistics=False,
+    )
+
+    with pytest.raises(ProjectKnowledgeError, match="main.py") as excinfo:
+        build_project_knowledge(tmp_path, "main.py", policy=policy)
+
+    assert "secret_rate" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is not None
+
+
+def test_a_held_fixed_temporary_does_not_stop_the_index_being_written(tmp_path: Path):
+    """A concurrent writer once shared one temporary path; each now has its own."""
+    from haute.assistant._project_knowledge import _write_cache
+
+    _project(tmp_path)
+    index = tmp_path / ".haute" / "assistant" / "knowledge" / "index-v1.json"
+    index.parent.mkdir(parents=True)
+    index.with_suffix(".json.tmp").mkdir()
+
+    _write_cache(tmp_path, {"schema_version": 1})
+
+    assert json.loads(index.read_text(encoding="utf-8")) == {"schema_version": 1}
+    assert [path.name for path in index.parent.glob("*.tmp")] == [index.name + ".tmp"]
+
+
 def test_changed_and_removed_sources_invalidate_metadata_cache(tmp_path: Path):
     from haute.assistant._config import EgressPolicy
     from haute.assistant._project_knowledge import build_project_knowledge

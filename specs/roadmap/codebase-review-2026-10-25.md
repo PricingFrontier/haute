@@ -122,11 +122,12 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the seventy-eight packages delivered or settled since (thirteen by 28
+The findings of the eighty-five packages delivered or settled since (thirteen by 28
 October 2026, twenty-five more on 29 October, two on 1 November, thirty more by 2 November,
 the deploy roadmap's nine, the CLI roadmap's six and the background-jobs roadmap's three
-among them, and the frontend-shared roadmap's six, `IO-R06` and the pipeline-config
-roadmap's `PCFG-R16` on 3 November) have been removed from the sections below; the
+among them, the frontend-shared roadmap's six, `IO-R06` and the pipeline-config
+roadmap's `PCFG-R16` on 3 November, and the assistant roadmap's seven on 9 November) have
+been removed from the sections below; the
 coverage table keeps the original counts.
 
 ## Validation — 25 October 2026
@@ -158,21 +159,6 @@ figures were not all remeasured. FGC-R03 remains measure-first. Maintenance pack
 are not automatically first-release blockers. Release priority is assessed per
 package, independently of the original finding count.
 
-## The open Majors
-
-Both Criticals, and the Majors whose packages were delivered, have been removed;
-these are the Majors still open.
-
-- **The assistant's SDK clients are built without the validated endpoint**
-  (Major, `ASSIST-54`): `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` in the
-  server's environment redirects the key, the prompt and project material to a
-  host the endpoint policy never checked.
-- **`inspect_node` holds the project's save lock while profiling up to a million
-  rows, and the capability manifest is rebuilt on every call** (two Majors,
-  `ASSIST-57`): every save, write and other server process on the project waits
-  for the profile; 47 ms of descriptor construction per tool result on the
-  event-loop thread.
-
 ## Design choices the review asks the owner to confirm
 
 One behaviour is specified and implemented as specified, and the review still
@@ -190,13 +176,6 @@ puts it in front of the owner because of what it can cost in production:
 
 | Area | Findings | Package |
 |---|---|---|
-| Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
-| Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
-| Assistant | ASA-5, ASA-8, ASA-10, ASA-11, ASA-12, ASA-14 | `ASSIST-56` |
-| Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
-| Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
-| Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
-| Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
 | Engineering quality | the campaign-named test modules recounted | `ENGQ-R05` (evidence added) |
@@ -208,9 +187,7 @@ Already tracked before this review and not repeated: the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the test-only
-`_compute_schema_hash` and the training facade (`ENGQ-R01`); the assistant
-catalog's whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the dead
+`_compute_schema_hash` and the training facade (`ENGQ-R01`); the test-only manifest cache reset (`ENGQ-R01`); the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
