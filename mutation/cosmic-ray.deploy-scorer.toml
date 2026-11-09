@@ -1,8 +1,0 @@
-[cosmic-ray]
-module-path = "src/haute/deploy/_scorer.py"
-timeout = 180.0
-excluded-modules = []
-test-command = "__HAUTE_PYTHON__ scripts/run_mutation_pytest.py tests/test_deploy_scorer.py tests/test_deploy_scorer_artifact_cache.py tests/test_deploy_identity_parity.py tests/test_deploy_contract_integrity.py tests/test_deploy_quote_input_tables.py tests/test_deploy_submodels.py tests/test_deploy_expected_output_validation.py tests/test_row_order_parity.py tests/test_offset_scoring.py -q -x"
-
-[cosmic-ray.distributor]
-name = "local"

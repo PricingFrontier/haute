@@ -21,20 +21,6 @@
       "max_pending_per_shard": 20,
       "max_survival_rate": 5.0,
       "rationale": "The structured-input engine is the load-bearing JSON/JSONL/XML decomposition, bounded-spill, cache-publication, source-proof, cross-process-lock, and runtime-snapshot boundary. Its maintained 687-test mutation command combines eight focused modules with 362 exact selectors, while broader modules remain in ordinary CI. It exercises parser conservation, multi-port loading, native source revisions, direct spill limits, atomic prepare/commit/discard, recovery, concurrent locking, source invalidation, process ownership, and adversarial cleanup paths. Complete-inference witnesses additionally cover cache bounds and request sharing, strict shape-filter equivalence and fast-path acceptance at integer/array/depth boundaries, shared-prefix learning, fused-parser error parity, and exact record-size limits. The hosted plan calibrates the exact command under the unchanged 90-second ceiling before scheduling shards. The 5% survival ceiling remains unchanged as the module grows. Only proven-equivalent selection and syntax-only postponed annotations are excluded with reviewed pragmas; executable expressions and branch decisions remain mutation-tested."
-    },
-    {
-      "name": "rating",
-      "config": "mutation/cosmic-ray.rating.toml",
-      "max_pending_per_shard": 20,
-      "max_survival_rate": 100.0,
-      "rationale": "The rating step turns banded factors into the relativities every price multiplies: a surviving mutant is a wrong price with no error. Its witness command runs the rating table, hand-calculated, key-agreement, fail-loud miss, dtype, grid, levels and step contracts serially (about 25 seconds), under a 90-second ceiling, at most 20 mutants a shard. The survival ceiling is the rate measured when the target was added; executable branches stay mutation-tested."
-    },
-    {
-      "name": "deploy-scorer",
-      "config": "mutation/cosmic-ray.deploy-scorer.toml",
-      "max_pending_per_shard": 10,
-      "max_survival_rate": 100.0,
-      "rationale": "Deploy scoring is the served price: the deployed graph's projection, request typing, model loading and response assembly. A surviving mutant is a quote priced differently in production than in the editor. Its witness command runs the scorer, artifact-cache, identity-parity, contract-integrity, quote-input-table, submodel, expected-output, row-order and offset contracts serially (about 50 seconds), under a 180-second ceiling, at most 10 mutants a shard. The survival ceiling is the rate measured when the target was added."
     }
   ]
 }

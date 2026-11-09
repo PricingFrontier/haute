@@ -101,8 +101,6 @@
 | `mutation/cosmic-ray.jsonpath.toml` | Cosmic Ray configuration for JSONPath mutation coverage. |
 | `mutation/cosmic-ray.json-shred.toml` | Cosmic Ray configuration for JSON-shredding mutation coverage. |
 | `mutation/cosmic-ray.output-assembler.toml` | Cosmic Ray configuration for output-assembler mutation coverage. |
-| `mutation/cosmic-ray.rating.toml` | Cosmic Ray configuration for the rating step (`src/haute/_rating.py`): the rating test modules as its witness command. |
-| `mutation/cosmic-ray.deploy-scorer.toml` | Cosmic Ray configuration for deploy scoring (`src/haute/deploy/_scorer.py`): the scorer, parity, contract and quote-input-table test modules as its witness command. |
 | `tests/` | Active Python unit, integration, property, regression, contract, E2E-support, and repository-hygiene test corpus. |
 | `tests/test_assistant_example_portfolio.py` | Ordinary specialist evidence for the packaged assistant portfolio: source parity, trace/dry-run, real training/scoring and optimisation/apply, deployment preflight, and adversarial rejection. |
 | `tests/test_api_contract_generation.py` | Backend contract-generation evidence: deterministic Pydantic-to-schema output, stale/read-only check behaviour, root/definition ownership, request groups read as their routes read a body (validation mode, a defaulted field optional), recursive finite JSON, safe-integer bounds, collection caps, and pinned frontend code-generation dependencies. |

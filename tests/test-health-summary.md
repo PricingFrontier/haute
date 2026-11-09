@@ -10,8 +10,6 @@ Generated deterministically from the live test-debt scanners and mutation target
 | Backend flaky | 0 | Backend AST scanner (zero-budget fingerprint ratchet) |
 | Frontend marker debt | 2 | Frontend source scanner |
 | Playwright CI retries | 2 | frontend/playwright.config.ts: process.env.CI ? 2 : 0 |
-| Mutation `deploy-scorer` | 100.00% | mutation/targets.json max_survival_rate |
 | Mutation `json-shred` | 5.00% | mutation/targets.json max_survival_rate |
 | Mutation `jsonpath` | 4.00% | mutation/targets.json max_survival_rate |
 | Mutation `output-assembler` | 10.00% | mutation/targets.json max_survival_rate |
-| Mutation `rating` | 100.00% | mutation/targets.json max_survival_rate |

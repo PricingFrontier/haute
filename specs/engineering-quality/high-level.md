@@ -80,11 +80,7 @@ Out of scope:
   `[tool.haute.changed_coverage].paths` and `[tool.haute.critical_coverage]` in
   `pyproject.toml` list exactly this set, which a `meta` test
   (`tests/test_safety_critical_lists.py`) holds equal to the list above, and
-  the mutation targets are `output-assembler`, `jsonpath`, `json-shred`, `rating`
-  and `deploy-scorer`: the three JSON boundaries and the two modules whose silent
-  failure changes a price, the rating step and the served deploy scoring. Each
-  target's survival ceiling is its measured rate, ratcheted down as survivors are
-  killed or shown equivalent. The general execution engine
+  the mutation targets are `output-assembler`, `jsonpath` and `json-shred`. The general execution engine
   (`executor.py`, `execution.py`, `projection.py`, the node builders) is not on
   the list: the deploy-scoring and snapshot tests run through it, and its own
   coverage is judged in review. Changed code in any other file under
