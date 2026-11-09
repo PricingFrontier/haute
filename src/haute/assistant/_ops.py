@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     # The data check imports this module, so only its type is named here.
     from haute.assistant._data_check import DataCheckResult
 
+from haute._cache import canonical_json
 from haute._code_extraction import normalise_user_code
 from haute._config_builder import _EXTRACTION_KIND_BY_CODE_TYPE
 from haute._config_io import palette_default_config
@@ -96,7 +97,9 @@ from haute.assistant._wire_ops import (
     StepReplace,
     UpdateNodeOp,
     UpdatePreambleOp,
+    freeze_json,
     parse_ops,
+    thaw_json,
 )
 from haute.schemas import ASSISTANT_MAX_ASSUMPTIONS, ASSISTANT_RECEIPT_TEXT_LIMIT
 
@@ -1618,38 +1621,10 @@ class RenameConsumersError(AssistantOperationError):
         )
 
 
-def _canonical_json(value: object) -> str:
-    """Render JSON with the one representation used for revisions and plans."""
-
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
 def _digest(value: object) -> str:
-    return sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
-def _frozen_json(value: object) -> object:
-    """Make a JSON-shaped value recursively immutable and equality-friendly."""
-
     if isinstance(value, BaseModel):
         value = value.model_dump(mode="json")
-    if isinstance(value, Mapping):
-        return MappingProxyType({str(key): _frozen_json(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_frozen_json(item) for item in value)
-    return value
-
-
-def _wire_json(value: object) -> object:
-    """Turn the immutable representation back into ordinary JSON values."""
-
-    if isinstance(value, Mapping):
-        return {key: _wire_json(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_wire_json(item) for item in value]
-    return value
+    return sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _project_relative_path(project_root: Path, path: Path) -> tuple[Path, str]:
@@ -1921,7 +1896,7 @@ _Identity = TypeVar("_Identity", bound=tuple[Any, ...])
 def _sorted_identities(values: set[_Identity]) -> tuple[_Identity, ...]:
     """Sort nullable tuple identities without comparing ``None`` to strings."""
 
-    return tuple(sorted(values, key=_canonical_json))
+    return tuple(sorted(values, key=canonical_json))
 
 
 def _semantic_node_id(raw_id: str, refs: Mapping[str, str]) -> str:
@@ -2091,9 +2066,7 @@ def _config_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[ob
         projection = _authored_config_projection(node.data.nodeType, node.data.config)
         if projection is not None:
             conditions.append(
-                _frozen_json(
-                    {"kind": "node_config", "node": node_id, "sha256": _digest(projection)}
-                )
+                freeze_json({"kind": "node_config", "node": node_id, "sha256": _digest(projection)})
             )
     return tuple(conditions)
 
@@ -2112,7 +2085,7 @@ def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple
     whole_graph: list[object] = []
     if diff.preamble_changed:
         whole_graph.append(
-            _frozen_json(
+            freeze_json(
                 {
                     "kind": "preamble_digest",
                     "sha256": sha256((graph.preamble or "").encode("utf-8")).hexdigest(),
@@ -2120,13 +2093,13 @@ def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple
             )
         )
     whole_graph.append(
-        _frozen_json({"kind": "graph_shape", "nodes": len(graph.nodes), "edges": len(graph.edges)})
+        freeze_json({"kind": "graph_shape", "nodes": len(graph.nodes), "edges": len(graph.edges)})
     )
     conditions: list[object] = [
-        _frozen_json({"kind": "node_exists", "node": node_id}) for node_id in changes.nodes_added
+        freeze_json({"kind": "node_exists", "node": node_id}) for node_id in changes.nodes_added
     ]
     conditions.extend(
-        _frozen_json(
+        freeze_json(
             {
                 "kind": "edge_exists",
                 "source": source,
@@ -2138,10 +2111,10 @@ def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple
         for source, target, source_handle, target_handle in changes.edges_added
     )
     conditions.extend(
-        _frozen_json({"kind": "node_absent", "node": node_id}) for node_id in changes.nodes_removed
+        freeze_json({"kind": "node_absent", "node": node_id}) for node_id in changes.nodes_removed
     )
     conditions.extend(
-        _frozen_json(
+        freeze_json(
             {
                 "kind": "edge_absent",
                 "source": source,
@@ -2167,7 +2140,7 @@ def verify_postconditions(
     for raw in postconditions:
         if not isinstance(raw, Mapping):
             raise AssistantOperationError("invalid_plan", "Postcondition must be an object")
-        condition = _wire_json(raw)
+        condition = thaw_json(raw)
         assert isinstance(condition, dict)
         kind = condition.get("kind")
         passed = False
@@ -2275,15 +2248,15 @@ class GraphEditPlan:
             "base_revision": self.base_revision,
             "capability_hash": self.capability_hash,
             "revision_sources": dict(self.source_manifest),
-            "normalized_operations": _wire_json(self.normalized_operations),
+            "normalized_operations": thaw_json(self.normalized_operations),
             "diff": self.diff.as_dict(),
             "affected_capabilities": self.affected_capabilities,
-            "postconditions": _wire_json(self.postconditions),
+            "postconditions": thaw_json(self.postconditions),
             "validation_warnings": self.validation_warnings,
             "resulting_graph_shape": dict(self.resulting_graph_shape),
             "egress": self.egress,
             "verification_tier": self.verification_tier,
-            "verification_evidence": _wire_json(self.verification_evidence),
+            "verification_evidence": thaw_json(self.verification_evidence),
             "plan_hash": self.plan_hash,
         }
 
@@ -3306,13 +3279,13 @@ def prepare_graph_edit(
     except LocatedPlanError as exc:
         locate_plan_error(exc, applied.writers, result)
         raise
-    normalized = tuple(_frozen_json(op.model_dump(mode="json")) for op in ops)
+    normalized = tuple(freeze_json(op.model_dump(mode="json")) for op in ops)
     _validate_postconditions(postconditions)
     resolved_conditions = tuple(
         _resolve_postcondition_refs(condition, refs) for condition in postconditions
     )
     _validate_postconditions(resolved_conditions)
-    supplied_conditions = tuple(_frozen_json(condition) for condition in resolved_conditions)
+    supplied_conditions = tuple(freeze_json(condition) for condition in resolved_conditions)
     base_conditions = supplied_conditions or _automatic_postconditions(result, diff)
     # A replayed plan's supplied list already holds its config digests.
     all_conditions = (
@@ -3348,7 +3321,7 @@ def finalize_graph_edit_plan(
     """Seal one prepared edit with application-layer verification facts."""
 
     snapshot = prepared.snapshot
-    frozen_evidence_values = tuple(_frozen_json(item) for item in verification_evidence)
+    frozen_evidence_values = tuple(freeze_json(item) for item in verification_evidence)
     if not all(isinstance(item, Mapping) for item in frozen_evidence_values):
         raise AssistantOperationError(
             "invalid_plan",
@@ -3372,9 +3345,9 @@ def finalize_graph_edit_plan(
         "base_revision": snapshot.revision,
         "capability_hash": snapshot.capability_hash,
         "revision_sources": dict(snapshot.source_manifest),
-        "normalized_operations": _wire_json(prepared.normalized_operations),
+        "normalized_operations": thaw_json(prepared.normalized_operations),
         "semantic_diff_hash": prepared.diff.complete_hash,
-        "postconditions": _wire_json(prepared.postconditions),
+        "postconditions": thaw_json(prepared.postconditions),
         "validation_warnings": list(validation_warnings),
         "resulting_graph_shape": {
             "nodes": len(prepared.result_graph.nodes),
@@ -3382,7 +3355,7 @@ def finalize_graph_edit_plan(
         },
         "egress": egress,
         "verification_tier": verification_tier,
-        "verification_evidence": _wire_json(frozen_evidence),
+        "verification_evidence": thaw_json(frozen_evidence),
         "affected_capabilities": prepared.affected_capabilities,
     }
     return GraphEditPlan(
@@ -3535,6 +3508,9 @@ class PlanStore:
                 elif existing.state == "applying" or monotonic() < existing.expires_at:
                     if existing.state == "validated":
                         existing.receipt = receipt
+                        # The dry-run proved the plan current just now, so its
+                        # hash is good for a whole TTL from here.
+                        existing.expires_at = monotonic() + self._ttl_seconds
                         # This dry-run's own check, or none when its policy
                         # attempts none, replaces the earlier one.
                         existing.data_check = None
@@ -3625,7 +3601,7 @@ class PlanStore:
             if record.state != "applying":
                 raise AssistantOperationError("plan_already_applied")
             record.state = "applied"
-            record.result = _frozen_json(result)
+            record.result = freeze_json(result)
             self._records.unpin(plan_hash)
 
     def abort_apply(self, plan_hash: str) -> None:
@@ -3640,7 +3616,7 @@ class PlanStore:
             record = self._record(plan_hash)
             if record.state == "applying":
                 record.state = "aborted"
-                record.result = _frozen_json({"error": "plan_aborted"})
+                record.result = freeze_json({"error": "plan_aborted"})
                 self._records.unpin(plan_hash)
 
 

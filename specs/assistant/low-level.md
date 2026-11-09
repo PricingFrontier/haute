@@ -377,7 +377,7 @@ orphaned halves).
   the `node_config` postconditions — so a change beyond the fiftieth in its
   category is verified like the first.
 - **`PlanStore`**: process-local, size- and TTL-bounded records keyed by plan
-  hash, held in the shared `LRUCache`. It owns validated/applying/applied/aborted state transitions under a
+  hash, held in the shared `LRUCache`. A dry-run that reissues a still-validated plan restarts its TTL. It owns validated/applying/applied/aborted state transitions under a
   lock. An applied record cannot return to validated. A failed pre-commit
   application becomes aborted and cannot be applied directly again; an
   identical fresh dry-run may replace that aborted record and reissue the same

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from types import MappingProxyType
 from typing import Annotated, Any, Literal, NoReturn, TypeAlias
 
 from pydantic import (
@@ -67,6 +68,28 @@ class OpValidationError(LocatedPlanError):
         super().__init__(message, where=where, fix=fix, did_you_mean=did_you_mean)
 
 
+def freeze_json(value: object) -> object:
+    """Make a JSON-shaped value recursively immutable and equality-friendly."""
+
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(freeze_json(item) for item in value)
+    return value
+
+
+def thaw_json(value: object) -> object:
+    """Turn the immutable representation back into ordinary JSON containers."""
+
+    if isinstance(value, Mapping):
+        return {key: thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [thaw_json(item) for item in value]
+    return value
+
+
 class _OpModel(BaseModel):
     """Shared wire-model policy for graph operations."""
 
@@ -78,6 +101,10 @@ def _reject_blank(value: str) -> str:
         raise ValueError("must not be blank")
     return value
 
+
+#: The bytes one tool call may send, and the bytes its result may put in the model's context.
+MAX_TOOL_PAYLOAD_BYTES = 1_000_000
+MAX_TOOL_CONTEXT_BYTES = 256_000
 
 #: Operations one plan may hold. Each adds or updates at most one node, so a
 #: plan also seals at most this many ``node_config`` postconditions.
@@ -431,6 +458,10 @@ __all__ = [
     "LocatedPlanError",
     "MAX_DECLARED_POSTCONDITIONS",
     "MAX_PLAN_OPERATIONS",
+    "MAX_TOOL_CONTEXT_BYTES",
+    "MAX_TOOL_PAYLOAD_BYTES",
+    "freeze_json",
+    "thaw_json",
     "OpValidationError",
     "RenameNodeOp",
     "StepEdit",

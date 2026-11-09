@@ -38,6 +38,11 @@ from haute.assistant._node_descriptions import (
     ASSISTANT_NODE_DESCRIPTIONS,
     _validate_descriptions,
 )
+from haute.assistant._wire_ops import (
+    MAX_PLAN_OPERATIONS,
+    MAX_TOOL_CONTEXT_BYTES,
+    MAX_TOOL_PAYLOAD_BYTES,
+)
 
 
 class TestNodeDescriptors:
@@ -399,10 +404,11 @@ class TestResolvedDescriptors:
             assert len(dumped["output_schema"]["oneOf"]) == 2
             assert all(branch.get("required") for branch in dumped["output_schema"]["oneOf"])
             assert dumped["version"] == "1.0"
-            assert dumped["limits"]["timeout_seconds"] > 0
-            assert dumped["limits"]["max_operations"] > 0
-            assert dumped["limits"]["max_payload_bytes"] > 0
-            assert dumped["limits"]["max_context_bytes"] > 0
+            assert dumped["limits"] == {
+                "max_operations": MAX_PLAN_OPERATIONS,
+                "max_payload_bytes": MAX_TOOL_PAYLOAD_BYTES,
+                "max_context_bytes": MAX_TOOL_CONTEXT_BYTES,
+            }
             assert dumped["errors"]
 
         by_id = {operation.id: operation for operation in capability_manifest().operations}

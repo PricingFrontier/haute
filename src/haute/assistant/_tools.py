@@ -131,6 +131,7 @@ from haute.assistant._render import (
     render_context_update,
     render_pipeline_graph,
 )
+from haute.assistant._wire_ops import MAX_TOOL_CONTEXT_BYTES, MAX_TOOL_PAYLOAD_BYTES
 from haute.errors import (
     ConfigSettingError,
     HauteError,
@@ -170,8 +171,8 @@ _DENIED_DATASET_NAMES = frozenset(
 )
 _DENIED_DATASET_DIRECTORIES = frozenset({"credentials", "secrets"})
 _PLAN_STORE = PlanStore()
-_MAX_TOOL_PAYLOAD_BYTES = 1_000_000
-_MAX_TOOL_CONTEXT_BYTES = 256_000
+_MAX_TOOL_PAYLOAD_BYTES = MAX_TOOL_PAYLOAD_BYTES
+_MAX_TOOL_CONTEXT_BYTES = MAX_TOOL_CONTEXT_BYTES
 _MAX_LISTED_DATASETS = 200
 _MAX_LISTED_DATASET_DIRECTORIES = 200
 _MAX_VISITED_DATASET_DIRECTORIES = 500

@@ -59,7 +59,15 @@ from haute._types import NodeType
 from haute.assistant._node_cards import node_card
 from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS, INPUT_NAMING_RULE
 from haute.assistant._recipes import recipe_manifest
-from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
+from haute.assistant._wire_ops import (
+    MAX_DECLARED_POSTCONDITIONS,
+    MAX_PLAN_OPERATIONS,
+    MAX_TOOL_CONTEXT_BYTES,
+    MAX_TOOL_PAYLOAD_BYTES,
+    freeze_json,
+    graph_edit_operations_schema,
+    thaw_json,
+)
 from haute.schemas import (
     ASSISTANT_BUILD_PLAN_ID_PATTERN,
     ASSISTANT_BUILD_PLAN_TITLE_LIMIT,
@@ -248,28 +256,10 @@ def _config_schema(node_type: NodeType) -> dict[str, object]:
     return schema
 
 
-def _freeze(value: object) -> object:
-    """Recursively freeze cached material without changing its JSON shape."""
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, list | tuple):
-        return tuple(_freeze(item) for item in value)
-    return value
-
-
-def _thaw(value: object) -> object:
-    """Return ordinary JSON-compatible containers from frozen descriptor material."""
-    if isinstance(value, Mapping):
-        return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw(item) for item in value]
-    return value
-
-
 def materialise_json(value: object) -> object:
     """Copy immutable manifest material into ordinary JSON containers."""
 
-    return _thaw(value)
+    return thaw_json(value)
 
 
 def _schema_enums(schema: Mapping[str, object]) -> dict[str, object]:
@@ -314,7 +304,7 @@ class NodeCapabilityDescriptor:
     card: Mapping[str, object]
 
     def as_dict(self) -> dict[str, object]:
-        return _thaw({name: getattr(self, name) for name in self.__dataclass_fields__})  # type: ignore[return-value]
+        return thaw_json({name: getattr(self, name) for name in self.__dataclass_fields__})  # type: ignore[return-value]
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,7 +332,7 @@ class OperationCapabilityDescriptor:
     errors: tuple[Mapping[str, str], ...]
 
     def as_dict(self) -> dict[str, object]:
-        return _thaw({name: getattr(self, name) for name in self.__dataclass_fields__})  # type: ignore[return-value]
+        return thaw_json({name: getattr(self, name) for name in self.__dataclass_fields__})  # type: ignore[return-value]
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,7 +347,7 @@ class CapabilityManifest:
     recipes: tuple[Mapping[str, object], ...]
 
     def as_dict(self) -> dict[str, object]:
-        return _thaw(
+        return thaw_json(
             {
                 "schema_version": self.schema_version,
                 "haute_version": self.haute_version,
@@ -366,7 +356,7 @@ class CapabilityManifest:
                 "feature_flags": self.feature_flags,
                 "nodes": [node.as_dict() for node in self.nodes],
                 "operations": [operation.as_dict() for operation in self.operations],
-                "recipes": [_thaw(recipe) for recipe in self.recipes],
+                "recipes": [thaw_json(recipe) for recipe in self.recipes],
             }
         )  # type: ignore[return-value]
 
@@ -582,11 +572,11 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         node_type.value,
         node_spec(node_type).display_name,
         NODE_TYPE_TO_DECORATOR.get(node_type),
-        cast(Mapping[str, object], _freeze(schema)),
+        cast(Mapping[str, object], freeze_json(schema)),
         required,
         tuple(key for key in fields if key not in required),
-        cast(Mapping[str, object], _freeze(palette_default_config(node_type))),
-        cast(Mapping[str, object], _freeze(_schema_enums(schema))),
+        cast(Mapping[str, object], freeze_json(palette_default_config(node_type))),
+        cast(Mapping[str, object], freeze_json(_schema_enums(schema))),
         branches,
         (branch_constraints,),
         config_folder,
@@ -597,7 +587,7 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
             else "Inline graph configuration."
         ),
         description.summary,
-        cast(Mapping[str, object], _freeze(_node_ports(node_type))),
+        cast(Mapping[str, object], freeze_json(_node_ports(node_type))),
         _input_cardinality(node_type),
         _wiring_rules(node_type),
         _schema_effect(node_type),
@@ -608,15 +598,15 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         description.examples,
         description.recipes,
         (
-            _freeze(
+            freeze_json(
                 {
                     "code": "invalid_config",
                     "remediation": "Inspect the descriptor schema and correct the graph edit.",
                 }
             ),
         ),  # type: ignore[arg-type]
-        cast(Mapping[str, object] | None, _freeze(_step_authoring(node_type))),
-        cast(Mapping[str, object], _freeze(node_card(node_type))),
+        cast(Mapping[str, object] | None, freeze_json(_step_authoring(node_type))),
+        cast(Mapping[str, object], freeze_json(node_card(node_type))),
     )
 
 
@@ -884,7 +874,7 @@ def _recipe_operation_branches(ref_schema: Mapping[str, object]) -> list[dict[st
             raw_schema.get("required"), (list, tuple)
         ):
             raise TypeError("Recipe argument schema must have properties and required fields")
-        arguments = cast(dict[str, object], _thaw(raw_schema))
+        arguments = cast(dict[str, object], thaw_json(raw_schema))
         arguments["description"] = _recipe_arguments_description(recipe_id, raw_schema)
         branches.append(
             _closed_object(
@@ -1313,8 +1303,8 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         name,
         "1.0",
         descriptions[name],
-        _freeze(input_schemas[name]),  # type: ignore[arg-type]
-        _freeze(_operation_output_schema(name)),  # type: ignore[arg-type]
+        freeze_json(input_schemas[name]),  # type: ignore[arg-type]
+        freeze_json(_operation_output_schema(name)),  # type: ignore[arg-type]
         "write" if mutation else ("session" if session else "read"),
         (
             "ready branch required"
@@ -1341,15 +1331,14 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         not (mutation or session),
         "pipeline-save" if mutation else ("assistant-session" if session else "assistant-read"),
         "ordered" if mutation or session else "independent",
-        _freeze(
+        freeze_json(
             {
-                "timeout_seconds": 30,
-                "max_operations": 100,
-                "max_payload_bytes": 1_000_000,
-                "max_context_bytes": 256_000,
+                "max_operations": MAX_PLAN_OPERATIONS,
+                "max_payload_bytes": MAX_TOOL_PAYLOAD_BYTES,
+                "max_context_bytes": MAX_TOOL_CONTEXT_BYTES,
             }
         ),  # type: ignore[arg-type]
-        tuple(cast(Mapping[str, str], _freeze(error)) for error in errors),
+        tuple(cast(Mapping[str, str], freeze_json(error)) for error in errors),
     )
 
 
@@ -1379,13 +1368,13 @@ def capability_manifest() -> CapabilityManifest:
         "feature_flags": feature_flags,
         "nodes": [node.as_dict() for node in nodes],
         "operations": [operation.as_dict() for operation in operations],
-        "recipes": [_thaw(recipe) for recipe in recipes],
+        "recipes": [thaw_json(recipe) for recipe in recipes],
     }
     manifest = CapabilityManifest(
         schema_version=MANIFEST_SCHEMA_VERSION,
         haute_version=haute_version,
         capability_hash=hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest(),
-        installed_capabilities=cast(Mapping[str, object], _freeze(installed)),
+        installed_capabilities=cast(Mapping[str, object], freeze_json(installed)),
         feature_flags=MappingProxyType(feature_flags),
         nodes=nodes,
         operations=operations,
@@ -1470,8 +1459,8 @@ def compact_manifest(manifest: CapabilityManifest | None = None) -> dict[str, ob
         "schema_version": manifest.schema_version,
         "haute_version": manifest.haute_version,
         "capability_hash": manifest.capability_hash,
-        "installed_capabilities": _thaw(manifest.installed_capabilities),
-        "feature_flags": _thaw(manifest.feature_flags),
+        "installed_capabilities": thaw_json(manifest.installed_capabilities),
+        "feature_flags": thaw_json(manifest.feature_flags),
         "node_index": [
             {
                 "id": node.id,

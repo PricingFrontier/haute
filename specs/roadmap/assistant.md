@@ -39,7 +39,6 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
-| ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
 | ASSIST-60 | Planned | P3 | The chat panel recognises the server's "still finishing" answer by a code, shows the server's detail for every other failure, never throws from a click, and keeps a draft the store refused to send. |
 | ASSIST-62 | Planned | P2 | Session/knowledge caches write atomically without fixed `.json.tmp` collisions, and `_graph_fact` handles unparseable pipelines cleanly. |
 
@@ -137,30 +136,6 @@ per configuration with run identifiers.
 **Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-59 — Tool hygiene
-**Why:** A repeated identical dry run keeps the first dry run's expiry:
-`PlanStore.put` on a still-`validated` record replaces the receipt but never
-refreshes `expires_at`, so a plan re-validated late in its ten minutes is
-reported valid with a hash that expires seconds later and the apply answers
-`plan_expired`. `_ops._canonical_json` is a second canonical JSON encoder beside
-`haute._cache.canonical_json`, whose docstring forbids a second one, and three
-recursive freeze helpers exist with two thaw helpers. Every operation descriptor
-declares the same hand-written limits as literals duplicating the tool module's
-constants, and the 30-second timeout they state is true of the data part alone.
-
-**Plan:** Refresh `expires_at` on a re-put of a `validated` plan with a test;
-import the one encoder and move one freeze/thaw pair into `_wire_ops.py`;
-declare the limits once and state the timeout per operation or drop it.
-
-**Acceptance:** A plan re-validated at `ttl - ε` stays applicable for a full
-TTL; one encoder, one freeze pair; the limits have one definition.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_ops.py::PlanStore`;
-`src/haute/assistant/_ops.py::_canonical_json`; `src/haute/_cache.py::canonical_json`;
-`src/haute/assistant/_catalog.py::_freeze`; `src/haute/assistant/_wire_ops.py`.
 
 ### ASSIST-60 — The chat panel's failures and clicks
 **Why:** The send-time 409 notice is chosen by comparing `error.detail` with the
