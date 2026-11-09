@@ -149,7 +149,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
-    "docs",
     "polars-2",
     "polars-node-clarity",
     "workbench",
