@@ -5532,6 +5532,23 @@ class TestTurnContext:
         _tools.build_turn_context("main.py", _turn_policy())
         assert len(calls) == 2, "a changed revision resolves the brief again"
 
+    def test_a_column_added_to_a_data_file_appears_in_the_next_brief(
+        self, steps_first_project: Path
+    ):
+        from haute.assistant import _tools
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        before = _tools.build_turn_context("main.py", _turn_policy())
+        path = steps_first_project / "proposer_claims.parquet"
+        pl.read_parquet(path).with_columns(pl.lit(1).alias("added_later")).write_parquet(path)
+
+        after = _tools.build_turn_context("main.py", _turn_policy())
+
+        assert before.graph is not None and after.graph is not None
+        assert before.graph.revision == after.graph.revision
+        assert "added_later" not in str(before.graph.nodes)
+        assert "added_later" in str(after.graph.nodes)
+
     def test_a_failing_node_is_unresolved_in_the_brief_without_its_error(
         self, egress_project: Path
     ):

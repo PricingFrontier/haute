@@ -29,7 +29,7 @@ When a request matches one of these summaries, write it as a recipe operation in
 - `ratingStep` (Rating Step): Look up rating factors from tables and combine them.
 - `output` (Quote Response): Assemble the quote's JSON response from upstream columns.
 - `explore` (Explore): Analyse an upstream frame with summaries, pivots and charts.
-- `externalFile` (Load File): Load a pickle, JSON, joblib or CatBoost file for use in steps.
+- `externalFile` (Load File): Load a pickle, JSON or joblib file for use in steps.
 - `liveSwitch` (Source Switch): Route the live request or a batch source by scenario.
 - `modelling` (Model Training): Train a gradient boosting, t-boost, EBM or GLM model.
 - `optimiser` (Optimisation): Optimise prices under an objective and constraints.

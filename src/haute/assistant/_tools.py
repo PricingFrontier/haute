@@ -56,6 +56,7 @@ from haute._interactive_workers import (
     resolve_interactive_execution_mode,
     run_in_interactive_worker,
 )
+from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._node_specs import STRUCTURAL_NODE_TYPES, WORKBENCH_NODE_TYPES, node_spec
 from haute._pipeline_settings import project_pipeline_settings
@@ -137,7 +138,7 @@ from haute.errors import (
     PathOutsideProjectError,
     PreambleError,
 )
-from haute.execution import execute_lazy_graph
+from haute.execution import execute_lazy_graph, runtime_input_signed_paths
 from haute.executor import (
     _build_node_fn,
     _compile_preamble,
@@ -1228,8 +1229,9 @@ class TurnContextError(HauteError):
 
 # The brief's resolved facts for the latest project revisions. A revision covers
 # the pipeline file, `haute.toml` and the capability hash, so an edit always
-# misses; a data file's header is read again only when the revision changes. The
-# tables the workbench nodes take from the form join the key (`_cached_brief_nodes`).
+# misses. The revision does not cover the data files the schemas are read from or
+# the tables the workbench nodes take from the form, so both join the key
+# (`_cached_brief_nodes`).
 _BRIEF_CACHE: OrderedDict[str, tuple[BriefNode, ...]] = OrderedDict()
 _BRIEF_CACHE_SIZE = 8
 _BRIEF_CACHE_LOCK = threading.Lock()
@@ -1418,12 +1420,38 @@ def _brief_flat(graph: PipelineGraph) -> PipelineGraph:
         return flatten_graph(graph)
 
 
+def _freshness_token(path: str) -> object:
+    """A file's freshness record, never its content; ``None`` when it cannot be read."""
+
+    try:
+        return freshness_record(Path(path))
+    except OSError:
+        return None
+
+
+def _brief_input_freshness(flat: PipelineGraph) -> dict[str, object] | None:
+    """The freshness of each file the brief's schemas come from, or None if unlistable.
+
+    A node too broken to name its files is not a failure of the brief, which
+    marks that node unresolved; the brief is then resolved afresh, uncached.
+    """
+
+    try:
+        paths = runtime_input_signed_paths(flat)
+    except Exception as exc:  # noqa: BLE001 - a broken node only marks itself unresolved
+        logger.info("assistant_turn_context_inputs_unlisted", error=type(exc).__name__)
+        return None
+    return {str(path): _freshness_token(str(path)) for path in paths}
+
+
 def _cached_brief_nodes(graph: PipelineGraph, revision: str) -> tuple[BriefNode, ...]:
     flat = _brief_flat(graph)
-    # The project revision does not cover the form folder the workbench nodes take their
-    # tables from, so the tables they were given key the brief beside it.
-    given = [node.data.config for node in flat.nodes if node.data.nodeType in WORKBENCH_NODE_TYPES]
-    key = f"{revision}:{content_hash_bytes(canonical_json(given).encode('utf-8'))}"
+    inputs = _brief_input_freshness(flat)
+    if inputs is None:
+        return _brief_nodes(graph, flat)
+    tables = [node.data.config for node in flat.nodes if node.data.nodeType in WORKBENCH_NODE_TYPES]
+    material = canonical_json({"inputs": inputs, "tables": tables})
+    key = f"{revision}:{content_hash_bytes(material.encode('utf-8'))}"
     with _BRIEF_CACHE_LOCK:
         cached = _BRIEF_CACHE.get(key)
         if cached is not None:

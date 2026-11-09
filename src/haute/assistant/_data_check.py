@@ -80,7 +80,6 @@ from haute._json_shred._snapshots import (
     api_input_source_signature,
     api_input_table_statuses,
 )
-from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
 from haute._node_specs import SINK_ONLY_NODE_TYPES, STRUCTURAL_NODE_TYPES
@@ -105,7 +104,12 @@ from haute.assistant._application import diff_seed_nodes
 from haute.assistant._config import EgressPolicy
 from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS
 from haute.assistant._ops import SemanticDiff
-from haute.assistant._tools import _MAX_PROFILE_ROWS, _json_size, execution_error_record
+from haute.assistant._tools import (
+    _MAX_PROFILE_ROWS,
+    _freshness_token,
+    _json_size,
+    execution_error_record,
+)
 from haute.errors import MlflowConfigError, PreambleError
 from haute.execution import (
     dataframe_graph_input_identity,
@@ -1386,13 +1390,6 @@ def identity_components(lineage: PipelineGraph) -> dict[str, Any]:
     return {"paths": sorted(paths), "backends": backends}
 
 
-def _freshness_token(path: str) -> object:
-    try:
-        return freshness_record(Path(path))
-    except OSError:
-        return None
-
-
 def read_binding(lineage: PipelineGraph, scenario: str) -> BindingRead:
     """Read a lineage's source generation, freshness tokens and identity components.
 
@@ -1943,12 +1940,17 @@ class _Judgement:
         return min(reporters, default=len(position))
 
     def _replaced(self, root: str, failure: AttributedFailure) -> bool:
-        """Whether a join's validation or a rating miss guard explains the failure instead."""
+        """Whether a join's validation or a rating miss guard explains the failure instead.
+
+        A join's duplicates explain only the ``ComputeError`` its ``validate`` raises. Any
+        other failure, such as key dtypes that differ between the sides, stays reported, or
+        the model would fix the duplicates while the join still fails.
+        """
         detail = self.details.get(root)
         if detail is None or failure.node_id != root or failure.at_or_upstream:
             return False
         if detail.join is not None and detail.validation_side() is not None:
-            return True
+            return isinstance(failure.error, pl.exceptions.ComputeError)
         return isinstance(failure.error, RatingTableMissError) and any(
             table["missed"] for table in detail.guarded_tables()
         )

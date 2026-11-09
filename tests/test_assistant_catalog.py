@@ -52,6 +52,7 @@ class TestNodeDescriptors:
         assert set(nodes) == {node_type.value for node_type in NodeType}
         for node_id, descriptor in nodes.items():
             assert descriptor.usage.strip(), f"{node_id} has no usage note"
+            assert descriptor.summary.strip(), f"{node_id} has no summary"
 
     def test_a_type_without_a_description_fails_at_import(self):
         descriptions = dict(ASSISTANT_NODE_DESCRIPTIONS)
@@ -548,6 +549,16 @@ class TestResolvedDescriptors:
         assert "node index" in branches["add_node"]["properties"]["node_type"]["description"]
         update_config = branches["update_node"]["properties"]["config"]["description"]
         assert "replaces" in update_config and "null" in update_config
+
+
+def test_load_file_names_exactly_the_file_types_it_loads() -> None:
+    from haute._io import EXTERNAL_FILE_TYPES
+
+    load_file = _descriptors()["externalFile"]
+
+    for text in (load_file.summary.lower(), load_file.usage.lower()):
+        assert all(file_type in text for file_type in EXTERNAL_FILE_TYPES)
+        assert "catboost" not in text
 
 
 def test_polars_usage_names_inputs_by_edge_without_input_mapping() -> None:

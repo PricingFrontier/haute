@@ -39,7 +39,6 @@ hygiene; `ASSIST-60` from its pass over the chat panel.
 | ASSIST-51 | Deferred | P3 | Banding and rating are authored in one closed, model-friendly form. |
 | ASSIST-52 | Deferred | P3 | The model extends banding, rating, response and request nodes item by item. |
 | ASSIST-53 | Deferred | P2 | Each served model has an attributable qualification record per area. |
-| ASSIST-58 | Planned | P2 | What the model is told is true: a join's execution failure is kept unless the validation raised it, the brief's columns follow the data, Load File's summary names the three file types, and no rule is stated that the product does not enforce. |
 | ASSIST-59 | Planned | P3 | A re-validated plan keeps a full TTL, the assistant imports the one canonical JSON encoder and one freeze helper, and its limits are declared once. |
 | ASSIST-60 | Planned | P3 | The chat panel recognises the server's "still finishing" answer by a code, shows the server's detail for every other failure, never throws from a click, and keeps a draft the store refused to send. |
 | ASSIST-62 | Planned | P2 | Session/knowledge caches write atomically without fixed `.json.tmp` collisions, and `_graph_fact` handles unparseable pipelines cleanly. |
@@ -138,41 +137,6 @@ per configuration with run identifiers.
 **Dependencies:** Reachable configured endpoints and a representative holdout case portfolio.
 
 **Evidence:** `tests/assistant_eval/support_matrix.json`.
-
-### ASSIST-58 — Facts the model can trust
-**Why:** A data check suppresses an Edge Join's `execution_failed` finding
-whenever its validated side holds duplicate keys, whatever the join raised, so a
-join that fails for another reason (key dtypes that differ between the sides;
-Polars raises `SchemaError`, distinguishable from the `ComputeError` a
-`validate` breach raises) reports only `join_validation_failed`, and the model
-fixes the duplicates while the join still fails. The graph brief's resolved
-columns are cached per project revision, which covers the pipeline file,
-`haute.toml` and the ledger but not the data files, so a column added to a
-parquet between turns leaves the turn context showing the old columns while
-`inspect_node`'s schema part shows the new ones. The prompt's node index tells
-the model Load File loads "a pickle, JSON, joblib or CatBoost file" while the
-product accepts three types and the same node's usage note says so. The Source
-Switch note states "use at most one switch per pipeline" as a rule the product
-does not enforce. The low-level module map still describes a request-text router
-in `_recipes.py` that the high-level specification says does not exist.
-
-**Plan:** Replace the execution finding only when the failure is the
-`ComputeError` the validation raises; key the brief cache on the revision plus
-the lineage's input identity (or a short TTL); derive the Load File summary from
-`EXTERNAL_FILE_TYPES` and add the summaries to the usage-note test; reword the
-switch note as guidance; delete the module-map sentence.
-
-**Acceptance:** A join with duplicates on its join side and mismatched key
-dtypes reports both findings; a column added to a data file appears in the next
-turn's brief; the summary and the loader agree on the file types.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_data_check.py::_replaced`;
-`src/haute/assistant/_tools.py::_brief_nodes`;
-`src/haute/assistant/_node_descriptions.py::ASSISTANT_NODE_DESCRIPTIONS` (the summaries and
-usage notes); `src/haute/_io.py::EXTERNAL_FILE_TYPES`;
-`specs/assistant/low-level.md`.
 
 ### ASSIST-59 — Tool hygiene
 **Why:** A repeated identical dry run keeps the first dry run's expiry:

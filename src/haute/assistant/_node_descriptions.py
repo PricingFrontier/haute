@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from haute._io import EXTERNAL_FILE_TYPES
 from haute._node_specs import NODE_SPECS, node_type_table
 from haute._node_type import NodeType
 
@@ -30,6 +31,10 @@ __all__ = [
     "AssistantNodeDescription",
     "recipe_node_type",
 ]
+
+#: The types a Load File accepts, in words, derived so the prompt cannot disagree with the loader.
+_LOAD_FILE_TYPE_NAMES = ["JSON" if name == "json" else name for name in EXTERNAL_FILE_TYPES]
+_LOAD_FILE_TYPES = f"{', '.join(_LOAD_FILE_TYPE_NAMES[:-1])} or {_LOAD_FILE_TYPE_NAMES[-1]}"
 
 #: How an incoming edge names the input it gives, in the words of
 #: ``haute._graph_utils.executable_input_name``. The Polars descriptor, the
@@ -312,9 +317,9 @@ ASSISTANT_NODE_DESCRIPTIONS = node_type_table(
             pivot_step_fix=_EXPLORE_PIVOT_FIX,
         ),
         NodeType.EXTERNAL_FILE: AssistantNodeDescription(
-            summary="Load a pickle, JSON, joblib or CatBoost file for use in steps.",
+            summary=f"Load a {_LOAD_FILE_TYPES} file for use in steps.",
             usage=(
-                "Load a pickle, JSON or joblib file and expose the loaded object as `obj`; "
+                f"Load a {_LOAD_FILE_TYPES} file and expose the loaded object as `obj`; "
                 "the first input is `df` and further inputs are named by their edges. "
                 "Without steps or code the node returns its first input unchanged. Set "
                 "file_type. A model Haute trains is scored with Model Scoring, not loaded here."
@@ -337,8 +342,8 @@ ASSISTANT_NODE_DESCRIPTIONS = node_type_table(
         NodeType.LIVE_SWITCH: AssistantNodeDescription(
             summary="Route the live request or a batch source by scenario.",
             usage=(
-                "Route one of several connected frames by scenario; use at most one "
-                "switch per pipeline and name the scenario map unambiguously."
+                "Route one of several connected frames by scenario. A pipeline normally "
+                "needs only one switch; name the scenario map unambiguously."
             ),
             schema_effect="requires compatible schemas across selected scenarios",
             input_ports="one per configured scenario",

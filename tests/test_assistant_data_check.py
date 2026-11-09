@@ -334,6 +334,31 @@ def test_a_many_to_one_join_on_duplicate_keys_reports_its_validation(project: Pa
     assert (validation["validate"], validation["side"]) == ("m:1", "join")
 
 
+def test_a_join_failing_for_another_reason_keeps_its_execution_failure(project: Path) -> None:
+    pl.DataFrame({"region": [1, 1, 2], "loading": [1.1, 1.2, 0.9]}).write_parquet(
+        project / "data" / "regions.parquet"
+    )
+    graph = _graph(
+        project,
+        [
+            _parquet("quotes"),
+            _parquet("regions"),
+            _node(
+                "joined",
+                "edgeJoin",
+                {"how": "left", "maintain_order": "left_right", "on": "region", "validate": "m:1"},
+            ),
+        ],
+        [_edge("quotes", "joined", role="base"), _edge("regions", "joined", role="join")],
+    )
+
+    outcome = _measure(graph, "joined")
+
+    assert {"join_validation_failed", "execution_failed"} <= {
+        finding["kind"] for finding in outcome.findings
+    }
+
+
 def test_a_rating_miss_guard_that_raises_keeps_its_measurements(project: Path) -> None:
     """One miss in twenty is informational, but a guard that raised makes it advisory
     and replaces the node's execution failure."""
