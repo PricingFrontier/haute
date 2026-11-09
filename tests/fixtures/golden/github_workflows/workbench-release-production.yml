@@ -1,0 +1,40 @@
+# Run by hand from the Actions tab: rolls production out to the release staging runs,
+# refusing when staging runs another commit than the one given (main's head when blank).
+name: Release → Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: >
+          The commit staging runs, which production is rolled out to.
+          Leave blank for the head of main.
+        required: false
+        type: string
+
+concurrency:
+  group: haute-app-prod
+  cancel-in-progress: false
+
+jobs:
+  production:
+    name: Staging → Production
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      # Set up here, not through the shared action: this commit may predate it.
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Roll production out to the release staging runs
+        run: uv run haute app rollout prod --from staging

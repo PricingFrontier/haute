@@ -875,8 +875,35 @@ workbench.
 Every action a generated GitHub workflow runs is pinned to a 40-hex commit with its tag in a
 comment (`_CHECKOUT`, `_SETUP_UV`, `_UPLOAD_ARTIFACT`, the commits Haute's own CI runs), so
 a tag moved to other code never runs in a job holding the deploy's secrets;
-`scripts/lint_pins.py`'s action rule holds the generated workflows to it. `pre_commit_hook`
-runs each staged Python file's staged content through ruff's standard input: the fixes ruff
+`scripts/lint_pins.py`'s action rule holds the generated workflows to it.
+
+A project's GitHub workflows say each thing once, so a reviewer reads it once and a change is
+made in one place:
+
+- **Setup.** `<project>/.github/actions/setup/action.yml` (`github_setup_action_yml`), a
+  composite action, installs uv with its cache and runs `uv sync --frozen`. Every job that runs
+  the project's code checks the project out and uses it. The one exception is `release-production.yml`: its job checks out the commit staging runs, which may
+  predate the action, so it runs those two steps itself.
+- **Python.** No GitHub job names a Python. uv reads the project's `.python-version`, which
+  `haute init` writes when the project has none and `haute ci update` writes for a GitHub
+  project that has none. So that CI sees it, the first commit takes it
+  (`src/haute/_git_setup.py::_SEED_PATHSPECS`), and on a GitHub project a re-run of `haute init`
+  and `haute ci update` record it when Git does not track it yet, leaving its content alone.
+- **Checks.** `ci.yml` holds them, in the jobs `lint`, `typecheck`, `test` and
+  `pipeline-validate`. It runs on a pull request and, through `workflow_call`, as the `validate`
+  job of `deploy-staging.yml` and `release.yml`, which is `uses: ./.github/workflows/ci.yml`
+  and nothing else, passing no secrets. The job that deploys or publishes `needs: validate`, so
+  a failure in any of `ci.yml`'s jobs stops it. A called workflow can hold no more than its
+  caller gives it, so `ci.yml` asks for `contents: read` alone.
+- **Secrets.** A job that reads the target's secrets declares them once, in a job-level `env:`
+  (`_github_secrets_env`), and all its steps have them. No step declares its own, and no other
+  job holds them.
+
+These replace the `env:` on each step, the `python-version` on each setup-uv step, and the
+copies of the checks in the merge-to-main workflows. Nothing reads a workflow back, so `haute
+ci update` is the whole conversion.
+
+`pre_commit_hook` runs each staged Python file's staged content through ruff's standard input: the fixes ruff
 makes safely (`ruff check --fix --exit-zero`), then `ruff format`, and writes the result back
 to the index (`git update-index --cacheinfo`), so an unstaged hunk of a partially staged file
 stays out of the commit; a file with nothing unstaged takes the result in the working tree
@@ -888,9 +915,9 @@ commit` (specs/git-integration), and a milestone refusal says its problems node 
 lists the staged files with `core.quotePath=false`, so a non-ASCII name is read as it is, and
 refuses a name git still quotes (one holding a quote, a backslash or a control character),
 asking for a rename.
-Every CI generator also takes `python_version`
+GitLab's and Azure DevOps' CI generators also take `python_version`
 (default `DEFAULT_CI_PYTHON`, `haute._project_python.DEFAULT_PYTHON`, 3.11):
-`_pin_ci_python` moves each job's Python pin (setup-uv's `python-version`, Azure's
+`_pin_ci_python` moves each job's Python pin (Azure's
 `versionSpec`, GitLab's job `image`) to it, and `haute_toml` takes the same
 `python_version` for a container target's `base_image` (`container_base_image`, a
 patch-pinned `python:<x.y.z>-slim`). `handle_init` passes the project's own Python
@@ -929,7 +956,7 @@ update` and a re-run of `handle_init` first calling `_prune_stale_ci_files(proje
 keep=...)` (defined in `src/haute/cli/_init_cmd.py`) with the set about to be written (a new
 project's `handle_init` prunes nothing: its folder's workflows are the team's own),
 which deletes every other generated path (from that module's `GENERATED_CI_FILES`)
-and removes the resulting empty `.github/workflows/`/`.github` directories, before writing the new provider's files.
+and removes the folders that leaves empty under `.github/`, and `.github/` itself, before writing the new provider's files.
 Every generator result must parse as one complete YAML document for every
 `TARGETS` entry. Structural tests locate the actual validate, staging, smoke,
 impact, and production jobs/stages, assert their branch/manual conditions, and

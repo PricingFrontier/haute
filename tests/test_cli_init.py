@@ -1098,6 +1098,21 @@ class TestInitAgain:
         assert (tmp_path / ".gitlab-ci.yml").exists()
         assert not (tmp_path / ".github").exists()
 
+    def test_a_re_run_keeps_the_teams_own_github_actions(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        use_project(tmp_path)
+        runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
+        own = tmp_path / ".github" / "actions" / "notify" / "action.yml"
+        own.parent.mkdir(parents=True)
+        own.write_text("name: notify\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["init", "--ci", "gitlab"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert own.is_file()
+        assert not (tmp_path / ".github" / "actions" / "setup").exists()
+
     def test_a_re_run_records_the_new_files_it_writes_for_the_next_commit(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -1123,6 +1138,32 @@ class TestInitAgain:
         assert "haute.toml" not in saved.splitlines()
         assert git_run(tmp_path, "status", "--porcelain", "--", "haute.toml") == "M haute.toml"
         assert "Recorded in version history: .gitlab-ci.yml" in result.output
+
+    def test_a_re_run_records_a_python_version_nobody_committed(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # GitHub's jobs name no Python: without the pin in the repository uv picks one.
+        from haute._git_setup import set_working_branch
+
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False).exit_code == 0
+        pin = tmp_path / ".python-version"
+        kept = pin.read_text(encoding="utf-8")
+        pin.unlink()
+        git_run(tmp_path, "init", "-b", "main")
+        git_run(tmp_path, "config", "user.name", "Test Actuary")
+        git_run(tmp_path, "config", "user.email", "test@example.com")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "commit", "-m", "The project")
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+        pin.write_text(kept, encoding="utf-8")
+
+        result = runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        saved = git_run(tmp_path, "show", "--name-only", "--format=", "pricing-dev-save")
+        assert ".python-version" in saved.splitlines()
+        assert pin.read_text(encoding="utf-8") == kept
 
     def test_a_re_run_prunes_stale_gitlab_and_azure_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1793,7 +1834,7 @@ class TestInitCiRunsTheProjectsPython:
     )
     @pytest.mark.parametrize("ci_option", ["github", "gitlab", "azure-devops"])
     @pytest.mark.parametrize("workbench", [False, True], ids=["automated", "workbench"])
-    def test_every_job_pins_the_projects_python(
+    def test_every_job_runs_the_projects_python(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -1811,6 +1852,7 @@ class TestInitCiRunsTheProjectsPython:
         result = runner.invoke(cli, ["init", *kind, "--ci", ci_option], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
+        assert (tmp_path / ".python-version").read_text(encoding="utf-8") == f"{expected}\n"
         released = "release.yml" if workbench else "deploy-staging.yml"
         generated = {
             "github": [".github/workflows/ci.yml", f".github/workflows/{released}"],
@@ -1822,6 +1864,10 @@ class TestInitCiRunsTheProjectsPython:
             pins = re.findall(
                 r'python-version: "([\d.]+)"|versionSpec: "([\d.]+)"|image: python:([\d.]+)\n', text
             )
+            if ci_option == "github":
+                # GitHub's jobs name no Python: uv reads .python-version.
+                assert not pins, relative
+                continue
             assert pins, relative
             assert {next(v for v in pin if v) for pin in pins} == {expected}, relative
 

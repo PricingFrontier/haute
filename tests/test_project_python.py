@@ -1,7 +1,7 @@
 """One Python for a project: local development, CI, and the deployed model.
 
-``haute init`` writes ``.python-version`` when the project has none and pins every CI
-job and a container's base image to it; deploy refuses an interpreter or a ``python``
+``haute init`` writes ``.python-version`` when the project has none and every CI job and
+a container's base image run it; deploy refuses an interpreter or a ``python``
 base image that differs, and a Databricks model's conda environment takes the same
 version (``haute._project_python``).
 """
@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from haute._project_python import (
-    DEFAULT_PYTHON,
     ProjectPythonError,
     base_image_python_version,
     container_base_image,
@@ -194,9 +193,9 @@ def test_init_gives_local_ci_and_deploy_one_python(
     assert result.exit_code == 0, result.output
     # Local: uv reads .python-version.
     assert (tmp_path / ".python-version").read_text(encoding="utf-8") == "3.13\n"
-    # CI: every job.
+    # CI: every job runs the Python uv reads there, naming none of its own.
     workflow = (tmp_path / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert 'python-version: "3.13"' in workflow and DEFAULT_PYTHON + '"' not in workflow
+    assert "python-version:" not in workflow
     # Deploy: the model's Python, and a container's base image.
     assert deployed_python_version(tmp_path) == "3.13"
     toml = tomllib.loads((tmp_path / "haute.toml").read_text(encoding="utf-8"))
@@ -214,8 +213,6 @@ def test_init_pins_the_lowest_release_a_range_splitting_a_minor_admits(
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / ".python-version").read_text(encoding="utf-8") == "3.13.5\n"
-    workflow = (tmp_path / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert 'python-version: "3.13.5"' in workflow
     toml = tomllib.loads((tmp_path / "haute.toml").read_text(encoding="utf-8"))
     assert toml["deploy"]["container"]["base_image"] == "python:3.13.5-slim"
 
@@ -244,8 +241,6 @@ def test_init_keeps_an_existing_python_version(
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / ".python-version").read_text(encoding="utf-8") == "3.12.8\n"
-    workflow = (tmp_path / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert 'python-version: "3.12.8"' in workflow
 
 
 def test_an_unpinned_projects_base_image_is_its_own(tmp_path: Path) -> None:

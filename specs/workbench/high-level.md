@@ -159,7 +159,8 @@ Out of scope:
   `release.yml` and `release-production.yml`, or the one `.gitlab-ci.yml` or
   `azure-pipelines.yml`) validate, publish and roll out the underwriter app; none deploys a
   scoring endpoint. On a pull request, and again on a
-  push to the default branch that changes a release input, the validate job lints,
+  push to the default branch that changes a release input, the validate job (on GitHub, `ci.yml`, which `release.yml`
+  calls, so the two run the same checks) lints,
   type-checks and tests the project, lints the pipeline and runs `haute app build`, which
   resolves, validates and bundles the pipeline as a deploy does, with the form, its test
   quotes priced and compared (Test quotes, below) and their report kept as the job's

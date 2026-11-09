@@ -336,11 +336,6 @@ class TestGithubCiYml:
         assert "pull_request:" in result
         assert "branches: [main]" in result
 
-    def test_uses_uv(self) -> None:
-        result = github_ci_yml()
-        assert "astral-sh/setup-uv@" in result
-        assert "uv sync --frozen" in result
-
 
 class TestGithubDeployYml:
     """github_deploy_yml() generates valid deploy workflow with correct secrets."""
@@ -420,12 +415,6 @@ class TestGithubDeployProdYml:
         result = github_deploy_prod_yml("databricks")
         assert "timeout-minutes:" in result
 
-    def test_python_version_pinned(self) -> None:
-        from haute._scaffold import github_deploy_prod_yml
-
-        result = github_deploy_prod_yml("databricks")
-        assert 'python-version: "3.11"' in result
-
 
 class TestGithubDeployYmlImprovements:
     """Verify engineering improvements in deploy-staging workflow."""
@@ -441,12 +430,9 @@ class TestGithubDeployYmlImprovements:
         assert "GITHUB_STEP_SUMMARY" in result
 
     def test_timeouts_on_all_jobs(self) -> None:
+        # The validate job runs ci.yml, whose jobs carry their own.
         result = github_deploy_yml("databricks")
-        assert result.count("timeout-minutes:") == 4
-
-    def test_python_version_pinned(self) -> None:
-        result = github_deploy_yml("databricks")
-        assert 'python-version: "3.11"' in result
+        assert result.count("timeout-minutes:") == 3
 
 
 class TestGithubCiYmlImprovements:
@@ -455,10 +441,6 @@ class TestGithubCiYmlImprovements:
     def test_timeouts_on_all_jobs(self) -> None:
         result = github_ci_yml()
         assert result.count("timeout-minutes:") == 4
-
-    def test_python_version_pinned(self) -> None:
-        result = github_ci_yml()
-        assert 'python-version: "3.11"' in result
 
 
 class TestGitlabCiYml:
@@ -811,7 +793,7 @@ class TestCompleteYamlParity:
             assert isinstance(yaml.safe_load(document), dict)
 
     @pytest.mark.parametrize("target", TARGETS)
-    def test_github_release_structure_and_secret_consumers(self, target: str) -> None:
+    def test_github_release_structure(self, target: str) -> None:
         ci = yaml.safe_load(github_ci_yml())
         assert isinstance(ci, dict)
         assert _github_trigger(ci)["pull_request"] == {"branches": ["main"]}
@@ -825,33 +807,17 @@ class TestCompleteYamlParity:
         verifies = target not in BUILD_AND_PUSH_ONLY_TARGETS
         verification = {"smoke-test", "impact-analysis"} if verifies else set()
         assert set(jobs) == {"validate", "deploy-staging"} | verification
-        expected = _target_secrets(target, "${{{{ secrets.{secret} }}}}")
         logs_in = target in _CONTAINER_BASED_TARGETS
-        secret_steps = [("deploy-staging", "Deploy to staging")]
-        if logs_in:
-            secret_steps.append(("deploy-staging", "Log in to the registry"))
-        if verifies:
-            secret_steps += [
-                ("smoke-test", "Score test quotes against staging endpoint"),
-                ("impact-analysis", "Compare staging vs production predictions"),
-            ]
-        for job_name, step_name in secret_steps:
-            step = next(step for step in jobs[job_name]["steps"] if step.get("name") == step_name)
-            assert step["env"] == expected
+        staging_steps = [step.get("name") for step in jobs["deploy-staging"]["steps"]]
+        assert ("Log in to the registry" in staging_steps) is logs_in
 
         production = yaml.safe_load(github_deploy_prod_yml(target))
         assert isinstance(production, dict)
         assert "workflow_dispatch" in _github_trigger(production)
-        production_names = ["Deploy to production"]
-        if logs_in:
-            production_names.append("Log in to the registry")
-        for step_name in production_names:
-            production_step = next(
-                step
-                for step in production["jobs"]["deploy-production"]["steps"]
-                if step.get("name") == step_name
-            )
-            assert production_step["env"] == expected, step_name
+        production_steps = [
+            step.get("name") for step in production["jobs"]["deploy-production"]["steps"]
+        ]
+        assert ("Log in to the registry" in production_steps) is logs_in
 
     @pytest.mark.parametrize("target", TARGETS)
     def test_gitlab_release_structure_and_secret_consumers(self, target: str) -> None:
@@ -1216,10 +1182,6 @@ class TestGithubCiYamlValidation:
         result = github_ci_yml()
         assert "pull_request:" in result
         assert "branches: [main]" in result
-
-    def test_python_version_pinned(self) -> None:
-        result = github_ci_yml()
-        assert '"3.11"' in result
 
     def test_yaml_parses(self) -> None:
         doc = yaml.safe_load(github_ci_yml())
@@ -1685,10 +1647,10 @@ class TestDatabricksReleaseAndDeployJobs:
 
     def test_the_tag_step_reads_the_registry_with_the_secrets(self) -> None:
         workflow = yaml.safe_load(github_deploy_prod_yml("databricks"))
-        steps = workflow["jobs"]["deploy-production"]["steps"]
-        [tag] = [step for step in steps if step.get("name") == "Tag release"]
-        assert tag["env"]["DATABRICKS_MLFLOW_HOST"] == "${{ secrets.DATABRICKS_MLFLOW_HOST }}"
-        assert tag["env"]["DATABRICKS_MLFLOW_TOKEN"] == "${{ secrets.DATABRICKS_MLFLOW_TOKEN }}"
+        job = workflow["jobs"]["deploy-production"]
+        assert job["env"]["DATABRICKS_MLFLOW_HOST"] == "${{ secrets.DATABRICKS_MLFLOW_HOST }}"
+        assert job["env"]["DATABRICKS_MLFLOW_TOKEN"] == "${{ secrets.DATABRICKS_MLFLOW_TOKEN }}"
+        [tag] = [step for step in job["steps"] if step.get("name") == "Tag release"]
         assert "unknown" not in tag["run"]
 
         azure = yaml.safe_load(azure_devops_yml("databricks"))
@@ -1709,12 +1671,6 @@ class TestDatabricksReleaseAndDeployJobs:
         [impact] = [s for s in azure["stages"] if s["stage"] == "ImpactAnalysis"]
         steps = impact["jobs"][0]["steps"]
         assert steps[0] == {"checkout": "self", "persistCredentials": True}
-
-    def test_a_container_tag_step_is_given_no_secrets(self) -> None:
-        workflow = yaml.safe_load(github_deploy_prod_yml("container"))
-        steps = workflow["jobs"]["deploy-production"]["steps"]
-        [tag] = [step for step in steps if step.get("name") == "Tag release"]
-        assert "env" not in tag
 
     @pytest.mark.parametrize(("target", "minutes"), [("databricks", 60), ("container", 15)])
     def test_a_deploy_job_outlasts_the_wait_for_its_endpoint(
@@ -1752,6 +1708,7 @@ class TestWorkbenchCiFiles:
             ".github/workflows/ci.yml",
             ".github/workflows/release.yml",
             ".github/workflows/release-production.yml",
+            ".github/actions/setup/action.yml",
         ]
         checks = files[".github/workflows/ci.yml"]
         steps = checks["jobs"]["pipeline-validate"]["steps"]
@@ -1768,12 +1725,6 @@ class TestWorkbenchCiFiles:
         }
 
         release = files[".github/workflows/release.yml"]
-        assert release["jobs"]["validate"]["steps"][-1] == {
-            "name": "Upload test quotes report",
-            "if": "always()",
-            "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
-            "with": {"name": "test-quotes-report", "path": "test_quotes_report.md"},
-        }
         # PyYAML reads the bare key "on" as True.
         assert release[True]["push"]["branches"] == ["main"]
         publish = release["jobs"]["publish"]
@@ -1787,16 +1738,14 @@ class TestWorkbenchCiFiles:
             "cancel-in-progress": False,
         }
         assert publish["timeout-minutes"] == 60
+        assert set(publish["env"]) == self._SECRETS
         steps = publish["steps"]
-        login = next(step for step in steps if step.get("name") == "Log in to the registry")
-        assert set(login["env"]) == self._SECRETS
+        assert any(step.get("name") == "Log in to the registry" for step in steps)
         staged, measured, kept = steps[-3:]
-        assert set(staged["env"]) == self._SECRETS
         assert "uv run haute app build --push" in staged["run"]
         assert 'uv run haute app rollout staging --image "$image"' in staged["run"]
         # The impact runs once staging is rolled out, and its report is kept whatever happens.
         assert measured["run"] == "uv run haute app impact"
-        assert set(measured["env"]) == self._SECRETS
         assert kept["if"] == "always()"
         assert kept["uses"] == "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
         assert kept["with"] == {"name": "impact-report", "path": "impact_report.md"}
@@ -1809,7 +1758,7 @@ class TestWorkbenchCiFiles:
         assert job["timeout-minutes"] == 45
         assert job["steps"][0]["with"]["ref"] == "${{ inputs.commit || github.sha }}"
         assert job["steps"][-1]["run"] == "uv run haute app rollout prod --from staging"
-        assert set(job["steps"][-1]["env"]) == self._SECRETS
+        assert set(job["env"]) == self._SECRETS
 
     def test_the_validate_jobs_keep_the_report_the_build_writes(self) -> None:
         from haute._scaffold import _TEST_QUOTES_REPORT
@@ -2085,3 +2034,173 @@ class TestCiFiles:
         placeholders = env_example_placeholders("aws-ecs")
         assert "AWS_DEFAULT_REGION" not in placeholders
         assert placeholders == {}
+
+
+GOLDEN_WORKFLOWS = Path(__file__).parent / "fixtures" / "golden" / "github_workflows"
+SETUP_ACTION = ".github/actions/setup/action.yml"
+CI_WORKFLOW = ".github/workflows/ci.yml"
+
+
+def _automated_github_files(target: str = "databricks") -> dict[str, str]:
+    return ci_files(target, "github")
+
+
+def _workbench_github_files() -> dict[str, str]:
+    return workbench_ci_files("azure-container-apps", "github")
+
+
+def _every_github_set() -> list[dict[str, str]]:
+    return [*(_automated_github_files(target) for target in TARGETS), _workbench_github_files()]
+
+
+def _walk_needs(jobs: dict[str, Any], name: str) -> list[str]:
+    """The jobs *name* waits for, nearest first."""
+    needs = jobs[name].get("needs")
+    return [needs, *_walk_needs(jobs, needs)] if needs else []
+
+
+class TestGithubWorkflowsSayEachThingOnce:
+    """A project's GitHub workflows: setup, Python, checks and secrets each written once
+    (specs/pipeline-config/low-level.md). Each golden is written from that specification."""
+
+    @pytest.mark.parametrize(
+        ("golden", "files", "path"),
+        [
+            ("setup-action.yml", _automated_github_files, SETUP_ACTION),
+            ("automated-ci.yml", _automated_github_files, CI_WORKFLOW),
+            (
+                "automated-deploy-staging.yml",
+                _automated_github_files,
+                ".github/workflows/deploy-staging.yml",
+            ),
+            (
+                "automated-deploy-production.yml",
+                _automated_github_files,
+                ".github/workflows/deploy-production.yml",
+            ),
+            ("workbench-ci.yml", _workbench_github_files, CI_WORKFLOW),
+            ("workbench-release.yml", _workbench_github_files, ".github/workflows/release.yml"),
+            (
+                "workbench-release-production.yml",
+                _workbench_github_files,
+                ".github/workflows/release-production.yml",
+            ),
+        ],
+    )
+    def test_each_file_is_its_golden(self, golden: str, files: Any, path: str) -> None:
+        assert files()[path] == (GOLDEN_WORKFLOWS / golden).read_text(encoding="utf-8")
+
+    def test_no_job_names_a_python(self) -> None:
+        for files in _every_github_set():
+            for path, text in files.items():
+                assert "python-version:" not in text, path
+
+    def test_setup_is_written_in_the_action_alone(self) -> None:
+        for files in _every_github_set():
+            for path, text in files.items():
+                # The production rollout checks out a commit that may predate the action.
+                once = path in (SETUP_ACTION, ".github/workflows/release-production.yml")
+                assert text.count("astral-sh/setup-uv@") == (1 if once else 0), path
+                assert text.count("uv sync --frozen") == (1 if once else 0), path
+
+    def test_every_other_job_with_steps_uses_the_action_after_its_checkout(self) -> None:
+        for files in _every_github_set():
+            for path, text in files.items():
+                if path in (SETUP_ACTION, ".github/workflows/release-production.yml"):
+                    continue
+                for name, job in yaml.safe_load(text)["jobs"].items():
+                    if "steps" not in job:
+                        continue
+                    uses = [step.get("uses", "") for step in job["steps"]]
+                    assert uses[0].startswith("actions/checkout@"), (path, name)
+                    assert "./.github/actions/setup" in uses, (path, name)
+
+    @pytest.mark.parametrize(
+        ("files", "check", "caller", "publisher"),
+        [
+            *(
+                (
+                    lambda target=target: _automated_github_files(target),
+                    "uv run haute deploy --dry-run",
+                    ".github/workflows/deploy-staging.yml",
+                    "deploy-staging",
+                )
+                for target in TARGETS
+            ),
+            (
+                _workbench_github_files,
+                "uv run haute app build",
+                ".github/workflows/release.yml",
+                "publish",
+            ),
+        ],
+    )
+    def test_publishing_needs_every_check(
+        self, files: Any, check: str, caller: str, publisher: str
+    ) -> None:
+        generated = files()
+        ci = yaml.safe_load(generated[CI_WORKFLOW])
+        # PyYAML reads the bare key "on" as True.
+        assert set(ci[True]) == {"pull_request", "workflow_call"}
+        assert ci["permissions"] == {"contents": "read"}
+        runs = [
+            step["run"] for job in ci["jobs"].values() for step in job["steps"] if "run" in step
+        ]
+        assert runs == [
+            "uv run ruff check .",
+            "uv run ruff format --check .",
+            "uv run mypy .",
+            "uv run pytest -v",
+            "uv run haute lint",
+            check,
+        ]
+
+        jobs = yaml.safe_load(generated[caller])["jobs"]
+        # The checks are ci.yml's alone, and it is given no secret.
+        assert jobs["validate"] == {"name": "Validate", "uses": "./.github/workflows/ci.yml"}
+        assert jobs[publisher]["needs"] == "validate"
+        for name, job in jobs.items():
+            if name == "validate":
+                continue
+            assert _walk_needs(jobs, name)[-1] == "validate", name
+            # A job that runs whatever its needs did would publish past a failed check.
+            condition = str(job.get("if", ""))
+            for bypass in ("always()", "failure()", "cancelled()"):
+                assert bypass not in condition, name
+
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_a_deploy_to_production_is_run_by_hand_on_the_staged_commit(self, target: str) -> None:
+        workflow = yaml.safe_load(
+            _automated_github_files(target)[".github/workflows/deploy-production.yml"]
+        )
+        assert set(workflow[True]) == {"workflow_dispatch"}
+        names = [step.get("name") for step in workflow["jobs"]["deploy-production"]["steps"]]
+        assert names.index("Verify commit matches staged SHA") < names.index("Deploy to production")
+
+    def test_a_production_rollout_is_run_by_hand_from_what_staging_runs(self) -> None:
+        workflow = yaml.safe_load(
+            _workbench_github_files()[".github/workflows/release-production.yml"]
+        )
+        assert set(workflow[True]) == {"workflow_dispatch"}
+        steps = workflow["jobs"]["production"]["steps"]
+        assert steps[-1]["run"] == "uv run haute app rollout prod --from staging"
+
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_each_job_that_reads_the_secrets_declares_them_once(self, target: str) -> None:
+        expected = _target_secrets(target, "${{{{ secrets.{secret} }}}}")
+        files = _automated_github_files(target)
+        reading = {
+            ".github/workflows/deploy-staging.yml": {"deploy-staging"}
+            | (
+                set()
+                if target in BUILD_AND_PUSH_ONLY_TARGETS
+                else {"smoke-test", "impact-analysis"}
+            ),
+            ".github/workflows/deploy-production.yml": {"deploy-production"},
+            CI_WORKFLOW: set(),
+        }
+        for path, names in reading.items():
+            for name, job in yaml.safe_load(files[path])["jobs"].items():
+                assert job.get("env") == (expected if name in names else None), (path, name)
+                assert not any("env" in step for step in job.get("steps", [])), (path, name)
+        assert "secrets." not in files[CI_WORKFLOW]

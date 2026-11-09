@@ -60,6 +60,8 @@ _SEED_PATHSPECS: tuple[str, ...] = (
     "haute.toml",
     "pyproject.toml",
     "uv.lock",
+    # The Python uv runs, in a project's GitHub jobs as on the analyst's machine.
+    ".python-version",
     ".gitignore",
     ".env.example",
     # The connections the team shares (specs/workbench), which hold no secret.

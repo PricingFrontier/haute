@@ -181,6 +181,7 @@ GENERATED_CI_FILES: tuple[str, ...] = (
     ".github/workflows/deploy-production.yml",
     ".github/workflows/release.yml",
     ".github/workflows/release-production.yml",
+    ".github/actions/setup/action.yml",
     ".gitlab-ci.yml",
     "azure-pipelines.yml",
 )
@@ -190,9 +191,9 @@ def _prune_stale_ci_files(project_dir: Path, keep: Collection[str]) -> list[str]
     """Remove each of :data:`GENERATED_CI_FILES` that *keep*, the set about to be written,
     does not hold; return those removed.
 
-    Only touches the specific files Haute generates. When no GitHub workflow is kept, the
-    now-empty ``.github/workflows`` and ``.github`` directories are cleaned up (but only if
-    empty, so a user's other GitHub config is left untouched).
+    Only touches the specific files Haute generates. When no GitHub file is kept, the
+    now-empty directories under ``.github``, and ``.github`` itself, are cleaned up (but only
+    if empty, so a user's other GitHub config is left untouched).
     """
     removed: list[str] = []
     for rel in GENERATED_CI_FILES:
@@ -204,12 +205,15 @@ def _prune_stale_ci_files(project_dir: Path, keep: Collection[str]) -> list[str]
             removed.append(rel)
 
     if not any(rel.startswith(".github/") for rel in keep):
-        workflows = project_dir / ".github" / "workflows"
-        if workflows.is_dir() and not any(workflows.iterdir()):
-            workflows.rmdir()
-        github = project_dir / ".github"
-        if github.is_dir() and not any(github.iterdir()):
-            github.rmdir()
+        for folder in (
+            ".github/workflows",
+            ".github/actions/setup",
+            ".github/actions",
+            ".github",
+        ):
+            path = project_dir / folder
+            if path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
     return removed
 
 
@@ -1040,7 +1044,8 @@ def handle_init(config: InitConfig) -> None:
         written = [
             "haute.toml",
             *(["pyproject.toml"] if pyproject_changed else []),
-            *([".python-version"] if wrote_python_version else []),
+            # GitHub's jobs name no Python, so an existing pin must reach the repository too.
+            *([".python-version"] if wrote_python_version or ci == "github" else []),
             *(f"rating/{FORM_FOLDER}/{rel}" for rel in form_files),
             *([CONNECTIONS_FILE] if write_connections else []),
             *generated,
