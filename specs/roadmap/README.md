@@ -23,9 +23,19 @@ records corrections to that audit's claims and proposed remedies.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
+| [Deploy](deploy.md) | One rule for which file a relative path means in the editor and in the bundle; a non-finite output refused by name | `DPL-01` |
+| [Engineering quality](engineering-quality.md) | Promise rules in the frontend lint gate; a test that never runs in CI; dead branches and unused suppressions | `EQ-01` |
+| [Execution engine](execution-engine.md) | Pipelines with more than one non-live source under the optimiser and a write; the Constant node's number rule; preamble failure attribution | `EXE-01` |
+| [Frontend graph canvas](frontend-graph-canvas.md) | What one edit costs and what the undo history holds when the graph carries large tables | `FEG-01` |
+| [Frontend shared](frontend-shared.md) | Conditional writes the API client retries | `FES-01` |
+| [Modelling](modelling.md) | Temporal splits on a date column with gaps; tuning and rerun messages; evaluation planning cost; the constructor-only split seam | `MDL-01` |
+| [Pipeline config](pipeline-config.md) | One pointer form for a recovery issue on a nested setting | `PCF-01` |
+| [Pipeline parsing and code generation](codegen.md) | Constructor forms rewritten on save; two hand-written statements the parser cannot read; code generation's cost per edge | `CGEN-01` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample` | `WB-08` |
+| [Sandbox and local security](sandbox-security.md) | The hosted editor's cross-site checks; NumPy 1 pickles and the refusal's wording; temporary folders shared between users | `SBS-01` |
+| [Server API](server-api.md) | Node failures answered "check the server logs" (a decision); live sync on the event loop; a landed save answered as failed | `SRV-02` |
+| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample`; from the 9 November 2026 review: the quote store's missing timeouts, a release built with outputs nothing fills (a decision), typed numbers with a misplaced comma, the hosted check's single probes, and a save priced before it is refused | `WB-08` |
 
 ## Delivery plan
 

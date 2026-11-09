@@ -22,6 +22,10 @@ that fill the sheets from databases and APIs.
 review](codebase-review-2026-10-25.md): what the review found in the Workbench view's
 Allowed field.
 
+`WB-46` to `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
+it was confirmed by running the code or read from the source; none was run against a
+hosted app or a server database.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -35,6 +39,11 @@ Allowed field.
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
+| WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
+| WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
+| WB-48 | Planned | P3 | A typed number with a comma out of place is kept as typed and flagged, on the sheet and on the server alike. |
+| WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
+| WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
 
 ## Planned improvements
 
@@ -468,3 +477,145 @@ missing-folder rule.
 `frontend/src/workbench/priceSample.ts::priceSample`;
 `frontend/src/utils/submodelRuntimeTarget.ts::qualifiedRuntimeNodeId`;
 `specs/workbench/high-level.md`.
+
+### WB-46 — The quote store's connections and the gate have deadlines
+**Why:** Read from the source. The server-database engine is created with a
+pre-ping only: no connect timeout, no statement timeout and the default pool,
+and the URL builder adds none. A sweep of the quote store, the workbench
+modules and the database IO for a connect, login, statement or pool timeout
+found none. The driver's default is to wait as long as the operating system
+does, which is minutes for a host that drops packets. The store's gate runs
+its opener (connect, catalogue read, privilege probe) while holding its lock,
+and every quote route, the price route and the release route take that lock
+on a worker thread. So when the database stops answering, each request parks
+a worker thread behind the gate, or on a statement with no deadline, instead
+of getting the 503 "cannot reach its quote store" the module promises; after
+the refusal's ten seconds the next request blocks them all again. An
+exhausted pool surfaces as SQLAlchemy's timeout, which the quote routes
+answer as a 500.
+
+**Plan:** Give each provider an explicit connect timeout and statement
+timeout, and the pool a bounded wait that is answered as the 503. Have the
+gate hand waiters the check already in flight instead of the lock, so one
+slow open delays one answer.
+
+**Acceptance:** With the database made to accept connections and never
+answer, a quote read is answered 503 within the configured deadline, twenty
+concurrent requests are all answered within it, and no worker thread is left
+waiting. A statement that outlives its deadline is cancelled and reported as
+the store being unreachable.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_providers.py::make_server_engine`;
+`src/haute/_quote_store/_providers.py::server_url`;
+`src/haute/_workbench_app_store.py::StoreGate`;
+`src/haute/_workbench_app_quotes.py::_call`.
+
+### WB-47 — A release with a Workbench Output column nothing fills
+**Why:** Read from the source. While an analyst edits, a declared output
+column the connected frame lacks, or holds with a type that does not fit, is
+filled with nulls, and a table nothing is connected to likewise; the
+specification says none of these stops a run and the panel flags each. No
+check looks on the way to a release: the deploy's form validation tests
+identity clashes, key collisions and unresolved references only, and the
+functions that judge whether a frame's column fits are used by trace alone.
+Building a release treats a test quote whose answer moved, a price that
+became null included, as a change to report, not a failure, and a project
+need not hold a test quote that covers the column. So a rename or a type
+change upstream ships an app that answers a blank price; only a column
+marked required stops such a quote, and only at Mark final.
+
+**Plan:** Decide whether a release may be built in that state. The
+recommended rule: refuse a release whose Workbench Output declares a column
+no connected frame fills with a fitting type, naming the table, the column
+and the node, unless the form marks the column as allowed to be empty. The
+deploy's dry run already holds the schemas the check needs.
+
+**Acceptance:** With an output column renamed upstream, building a release
+stops and names the table, the column and the Workbench Output; restoring
+the name, or marking the column as allowed to be empty, lets it build. The
+editor's behaviour while editing is unchanged.
+
+**Dependencies:** The decision above; it changes what a release accepts.
+
+**Evidence:** `src/haute/_workbench_output.py::_filled`;
+`src/haute/_workbench_output.py::_unconnected`;
+`src/haute/deploy/_validators.py::_workbench_form_errors`;
+`src/haute/_workbench_app.py::build_release`;
+`src/haute/_quote_store/_book.py::_missing`; `specs/workbench/high-level.md`.
+
+### WB-48 — A comma out of place is not dropped from a typed number
+**Why:** Confirmed on both sides by reading and by calling the two parsers.
+A typed number is read after every currency sign, space and comma is
+removed, wherever the comma sits. `1,234.50` reads as intended, but `1,5`
+reads as 15, `1,00` as 100 and `1 000,50` as 100050. The sheet and the server
+share the rule deliberately, so they agree with each other, and both are
+wrong for a decimal comma or a slip of the key. A column shown in the general
+format keeps the text as typed on the sheet, so the underwriter sees `1,5`
+while the pipeline prices 15.
+
+**Plan:** Accept a comma only as a thousands separator in its place: groups
+of three digits after the first group, before any decimal point. Text with a
+comma anywhere else is not a number: the sheet marks the cell and the server
+keeps the text as typed, as both already do for other text in a number
+column. Change the two parsers and their shared cases together.
+
+**Acceptance:** `1,234`, `1,234.5` and `£12,000` read as numbers; `1,5`,
+`1,00`, `12,34,567` and `1 000,50` are marked on the sheet and kept as text
+by the server. The cases live in the fixture both test suites read.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_tables.py::_typed`;
+`frontend/src/utils/sheetValues.ts::parseTypedNumber`;
+`frontend/src/utils/sheetValues.ts::parseTypedWhole`.
+
+### WB-49 — The hosted check retries its probes
+**Why:** Read from the source. After a rollout, the hosted check polls the
+app's health with retries, then sends two more requests once each: one
+forging a signed-in principal, which the app must refuse, and one signed in,
+which must be answered. A request that gets no answer, or a 5xx, counts as
+"not refused", so a single dropped request raises "The app answered a
+request that forged a signed-in principal (no answer: ...)" and the rollout
+puts the previous release back. Failing closed is right; the wording is
+wrong for a request that was never answered, and one dropped packet undoes a
+good release.
+
+**Plan:** Retry a probe that got no answer or a 5xx within the health
+check's deadline. Word a probe that never got an answer as that, separately
+from one the app answered wrongly.
+
+**Acceptance:** With the first forged-principal request dropped and the
+second refused, the rollout completes. With every attempt unanswered, the
+rollout rolls back and says the app did not answer, not that it accepted a
+forged principal.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_rollout.py::hosted_check`;
+`src/haute/_workbench_rollout.py::_refused`;
+`src/haute/_workbench_rollout.py::rollout`.
+
+### WB-50 — A save that cannot land is refused before pricing
+**Why:** Read from the source. Saving a quote reads the quote, prices the
+values (up to the price timeout, in one of four pricing places) and only
+then calls the store, whose compare-and-swap refuses a save over a version
+that moved on, a final quote or an archived one. The quote just read already
+holds its version, its stage and whether it is archived, so the refusal is
+known before the pricing starts. An underwriter saving over a quote a
+colleague just changed waits for a price that is then thrown away, and holds
+a pricing place while they wait.
+
+**Plan:** Check the version, the stage and the archive flag from the quote
+just read and refuse before pricing. Keep the store's own check, which still
+decides a race between the read and the write.
+
+**Acceptance:** A save over a stale version is refused without a pricing
+call, asserted by a counter on the pricing function; a save that races a
+concurrent change after the read is still refused by the store.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py::save_quote`;
+`src/haute/_quote_store/_book.py::QuoteBook`.

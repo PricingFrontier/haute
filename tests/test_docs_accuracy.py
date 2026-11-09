@@ -149,8 +149,18 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
+    "codegen",
+    "deploy",
+    "engineering-quality",
+    "execution-engine",
+    "frontend-graph-canvas",
+    "frontend-shared",
+    "modelling",
+    "pipeline-config",
     "polars-2",
     "polars-node-clarity",
+    "sandbox-security",
+    "server-api",
     "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
