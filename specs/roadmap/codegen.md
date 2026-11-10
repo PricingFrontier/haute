@@ -15,9 +15,10 @@ named functions on a small pipeline source; the entry says which.
 wrongly or cannot read; they share no code and can be taken in any order.
 `CGEN-04` is a cost, not a wrong result.
 
-`CGEN-05` and `CGEN-06` were reproduced on 10 November 2026 through the
-parser, the preview and `haute run`. Each is a hand-written form the parser
-accepts and then drops.
+`CGEN-05` to `CGEN-07` were reproduced on 10 November 2026 through the
+parser, the preview and `haute run`. `CGEN-05` and `CGEN-06` are each a
+hand-written form the parser accepts and then drops; `CGEN-07` is one the
+naming check cannot see.
 
 ## Priorities
 
@@ -29,6 +30,7 @@ accepts and then drops.
 | CGEN-04 | Planned | P3 | Code generation reads each node function's parameters once per save, not once per edge. |
 | CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
+| CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
 
 ## Planned improvements
 
@@ -212,3 +214,36 @@ those two outcomes each.
 `src/haute/_ast_helpers.py::unkept_module_statements`;
 `src/haute/_user_exec.py::_exec_user_code`;
 `src/haute/_polars_call_shapes.py::is_pl_dtype_reference`.
+
+### CGEN-07 — A dynamic binding in support code is refused by name
+**Why:** Reproduced on 10 November 2026. The naming check refuses two
+support-code sources that bind one name to different things, because once a
+submodel's preamble is appended to the root's only the last would be seen.
+It reads the bindings from the source without running it. A submodel
+preamble that binds through `globals()["RATE"] = 2` or `exec("RATE = 2")`,
+beside a root preamble's `RATE = 3`, passes the strict parse, and a root
+node that reads `RATE` then computes with 2: its preview showed 2 on both
+rows, where Python running the two files as modules gives 3. The same
+collision written as an assignment is refused. The specification refuses
+whatever keeps the inventory of names incomplete, naming the statement, and
+lists the `__all__` and star-import cases; a module-level `exec`, or a write
+through `globals()`, `vars()` or `locals()`, is not among them and is not
+refused. Project code is trusted, so this is no hole in a sandbox. It is a
+check for honest mistakes that one unusual but legal line switches off. The
+28 October audit recorded the lead without a witness.
+
+**Plan:** Count a module-level `exec` or `eval` call, and a write through
+`globals()`, `vars()` or `locals()`, in support code as a statement that
+keeps the inventory incomplete. Refuse it naming the statement and the
+file, as a computed `__all__` is refused, and say to bind the name with an
+ordinary assignment.
+
+**Acceptance:** Each of the two submodel preambles above is refused wherever
+the naming rule already runs, naming the line. A preamble that only reads
+`globals()` is not refused. A test holds each dynamic form to the refusal.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_support_code_names.py::support_code_inventory`;
+`src/haute/_support_code_names.py::support_code_violations`;
+`specs/codegen/high-level.md`.

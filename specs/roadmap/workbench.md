@@ -26,8 +26,8 @@ Allowed field.
 it was confirmed by running the code or read from the source; none was run against a
 hosted app or a server database.
 
-`WB-51` and `WB-52` were reproduced on 10 November 2026 through the editor's routes. Both
-come from leads the October reviews left unverified.
+`WB-51` to `WB-53` were reproduced on 10 November 2026 through the editor's and the app's
+routes. All three come from leads the October reviews left unverified; `WB-53` is a decision.
 
 ## Priorities
 
@@ -49,6 +49,7 @@ come from leads the October reviews left unverified.
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
 | WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
+| WB-53 | Decision | P2 | A pricing failure in the underwriter app gives the underwriter a fixed message and an id, and keeps the exception's text for the log. |
 
 ## Planned improvements
 
@@ -682,3 +683,43 @@ runs one list of names through the save, the tables route and the editor's
 `src/haute/_workbench_tables.py::check_tables`;
 `src/haute/_graph_utils.py::is_frame_label`;
 `frontend/src/utils/workbenchForm.ts::columnNameProblem`.
+
+### WB-53 — What a failed pricing tells the underwriter (a decision)
+**Why:** Reproduced. When the pipeline fails on a quote, the underwriter app
+answers HTTP 500 with the exception's own text after "The pipeline failed on
+this quote:". A node that raised "connection failed: password=hunter2
+token=sk-live-123 at C:/Users/analyst/secrets/db.ini" was answered with all of
+it; a missing file with its absolute path; a missing column with Polars' message
+and its resolved plan; a `KeyError` with the bare key. The workbench
+specification prescribes this answer and says it is how the deployed pricing API
+answers one. It no longer is: the deploy specification says a 500 "never carries
+the exception's text, which can hold file paths and internal names", and the
+deployed API answers a fixed message with a request id that the log carries. The
+app's own test asserts the exception's text. The app's readers are underwriters,
+a wider audience than the API's clients, and the app has no sign-in yet
+(`WB-25`). `haute app impact` reads the same answer to name why each quote
+failed, so the reason has one reader who needs it: the analyst. The 28 October
+audit recorded the lead without a payload.
+
+**Plan:** Decide what an underwriter is shown, and where the analyst then reads
+the reason. The review's proposal: answer as the deployed API does, with a fixed
+sentence that says the pipeline failed on this quote and asks the underwriter to
+pass on the id shown; put that id and the exception's text in the log; and give
+the impact command the reason by a way an underwriter's browser does not have.
+Keep the 422 answers as they are: they name what the underwriter can correct.
+Then make the two specifications say the same.
+
+**Acceptance:** Each of the five failures above is answered 500 with the fixed
+sentence and an id, and with none of the exception's text, path or key; the log
+holds the exception under that id. A quote a contract error refuses is still
+answered 422 with its message. `haute app impact` still names why a quote
+failed. The app's test and the impact command's test are changed to match.
+
+**Dependencies:** The decision. `WB-25` settles who can reach the app at all.
+
+**Evidence:** `src/haute/_workbench_app.py::create_app` builds the answer in its
+`price_values`; `tests/test_workbench_app.py::test_a_pipeline_failing_on_the_quote_answers_why`;
+`tests/test_workbench_impact.py::test_each_quote_outcome_is_named_and_a_staging_failure_fails_the_run`;
+`src/haute/deploy/_container.py` generates the deployed API's `_internal_error`,
+the answer to match;
+`specs/workbench/low-level.md`; `specs/deploy/high-level.md`.
