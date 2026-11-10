@@ -69,7 +69,12 @@ where the cause is logged.
 byte-order mark is refused as malformed ("unexpected character: line 1
 column 1"), with the fixed text of `IOL-01` as all the analyst sees. Windows
 PowerShell 5.1 and some exports write that mark by default, and the JSON
-standard lets a reader ignore it. A file of no bytes at all, which is not
+standard lets a reader ignore it. Haute's own readers disagree among
+themselves, each with a test that holds it: the pipeline settings file, the
+editor's sidecar and the workbench parameters are read through the mark; a
+node's config file is refused with a message that names the mark; and a
+JSON Lines input is asserted to fail exactly as the JSON library does, with
+a message that does not. A file of no bytes at all, which is not
 JSON, is read as no quotes: the run succeeds with an empty table, where a
 truncated file is refused and an empty CSV is refused for having no header.
 A failed export that left a zero-byte file therefore looks like a day with
@@ -82,7 +87,8 @@ way to say no quotes. Record the two rules in the JSON shredding
 specification.
 
 **Acceptance:** A request file with a byte-order mark gives the same tables
-as the file without it. A zero-byte file is refused naming the file and
+as the file without it, and the JSON Lines test that asserts the refusal
+changes with the rule. A zero-byte file is refused naming the file and
 saying it is empty; a file holding `[]` still gives an empty table.
 
 **Dependencies:** The decision above; `IOL-01` carries the refusal's text
@@ -91,4 +97,13 @@ to the analyst.
 **Evidence:** `src/haute/_io.py` refuses an empty CSV;
 `src/haute/assistant/assets/examples/minimal_live_quote/pipeline.py` and its
 `src/haute/assistant/assets/examples/minimal_live_quote/config/request.json`
-are the example the files were given to; `specs/json-shredding/high-level.md`.
+are the example the files were given to; `specs/json-shredding/high-level.md`;
+`tests/test_pipeline_settings.py::test_a_file_saved_with_a_byte_order_mark_reads`,
+`tests/test_pipeline_recovery.py::test_an_editor_sidecar_with_a_byte_order_mark_still_reads`
+and
+`tests/test_workbench_params.py::test_a_file_saved_with_a_byte_order_mark_reads_as_written`
+hold the readers that accept the mark;
+`tests/test_config_io.py::test_config_file_with_bom_raises` the one that
+names it;
+`tests/test_scalar_array_and_inference.py::test_fused_json_range_preserves_orjson_error_evidence_for_known_shapes`
+asserts the refusal for a JSON Lines input.
