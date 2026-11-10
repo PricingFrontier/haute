@@ -19,12 +19,46 @@ function optionTexts(): string[] {
 describe("column-name completion", () => {
   afterEach(cleanup)
 
-  it("matches by prefix regardless of case, leaves out the exact match, and caps the list", () => {
+  it("matches by prefix regardless of case, leaves out the exact match, and lists every match", () => {
     expect(completionMatches(COLUMNS, "pre")).toEqual(["premium", "premium_net"])
     expect(completionMatches(COLUMNS, "PRE")).toEqual(["premium", "premium_net"])
     expect(completionMatches(COLUMNS, "premium")).toEqual(["premium_net"])
     expect(completionMatches(COLUMNS, "", ["region"])).toEqual(["premium", "premium_net", "Rate"])
-    expect(completionMatches(Array.from({ length: 20 }, (_, i) => `c${i}`), "c")).toHaveLength(8)
+    const many = Array.from({ length: 40 }, (_, i) => `c${i}`)
+    expect(completionMatches(many, "c")).toEqual(many)
+  })
+
+  it("lists every column and scrolls the list itself to a row arrowed out of its view", () => {
+    const many = Array.from({ length: 40 }, (_, i) => `col_${i}`)
+    render(<ColumnPicker value="" onCommit={vi.fn()} suggestions={many} ariaLabel="Probe" />)
+    const input = screen.getByRole("combobox", { name: "Probe" })
+    fireEvent.focus(input)
+    expect(optionTexts()).toEqual(many)
+    // jsdom lays nothing out: give the list a 100px view over 20px rows.
+    const list = screen.getByRole("listbox")
+    const ROW = 20
+    let scrollTop = 0
+    Object.defineProperty(list, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value } })
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 100 })
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      const row = this.getAttribute("role") === "option" ? Number(this.id.split("-").pop()) : null
+      const top = row === null ? 0 : row * ROW - scrollTop
+      const height = row === null ? 100 : ROW
+      return { top, bottom: top + height, height, left: 0, right: 0, width: 0, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+    })
+    try {
+      fireEvent.keyDown(input, { key: "ArrowUp" })
+      expect(within(list).getByRole("option", { name: "col_39" })).toHaveAttribute("aria-selected", "true")
+      expect(scrollTop).toBe(40 * ROW - 100)
+      fireEvent.keyDown(input, { key: "ArrowUp" })
+      expect(scrollTop).toBe(40 * ROW - 100)
+      fireEvent.keyDown(input, { key: "ArrowDown" })
+      fireEvent.keyDown(input, { key: "ArrowDown" })
+      expect(within(list).getByRole("option", { name: "col_0" })).toHaveAttribute("aria-selected", "true")
+      expect(scrollTop).toBe(0)
+    } finally {
+      rect.mockRestore()
+    }
   })
 
   it("a column picker lists matches while typing, moves with the arrows and completes with Tab", () => {

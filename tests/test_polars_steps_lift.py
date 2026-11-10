@@ -372,7 +372,7 @@ def expressions(variables: tuple[str, ...], depth: int) -> Strategy:
         annotated(
             st.fixed_dictionaries(
                 {
-                    "type": st.just("sum_horizontal"),
+                    "type": st.sampled_from(("sum_horizontal", "coalesce")),
                     "parts": st.lists(operands(variables, depth), min_size=2, max_size=3),
                 }
             )

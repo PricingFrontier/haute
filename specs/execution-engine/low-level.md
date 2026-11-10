@@ -1640,7 +1640,8 @@ present a structural or schema result as execution evidence.
   column name and expands to zero or many columns on the lazy path, so it never
   proves one literal column: every bare-string column read (`select`/`with_columns`
   names, `drop`, `drop_nulls`, `sort`, `unique`, `explode`, `unpivot`, group-by keys
-  and aggregate names, `filter` predicates, and horizontal helpers) returns the
+  and aggregate names, `filter` predicates, and horizontal helpers, the `*_horizontal`
+  calls and `pl.coalesce`, each named after its first argument) returns the
   operation's dynamic reason for it, exactly as `pl.col('^...$')` already did.
   Expression methods are attributable only when their bare string arguments are
   provably literals. The closed `_LITERAL_STRING_ARGUMENT_METHODS` registry names,

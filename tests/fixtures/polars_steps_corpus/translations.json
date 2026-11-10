@@ -2700,54 +2700,22 @@
         "kind": "with_column",
         "name": "imputed_premium",
         "expr": {
-          "type": "conditional",
-          "branches": [
+          "type": "coalesce",
+          "parts": [
             {
-              "match": "all",
-              "conditions": [
-                {
-                  "column": "region_filled_premium",
-                  "operator": "is_null"
-                }
-              ],
-              "then": {
-                "kind": "column",
-                "name": "_portfolio_median"
-              }
-            }
-          ],
-          "otherwise": {
-            "kind": "column",
-            "name": "region_filled_premium"
-          }
-        }
-      },
-      {
-        "id": "s269",
-        "kind": "with_column",
-        "name": "imputed_premium",
-        "expr": {
-          "type": "conditional",
-          "branches": [
+              "kind": "column",
+              "name": "region_filled_premium"
+            },
             {
-              "match": "all",
-              "conditions": [
-                {
-                  "column": "imputed_premium",
-                  "operator": "is_null"
-                }
-              ],
-              "then": {
-                "kind": "literal",
-                "type": "number",
-                "value": 500.0
-              }
+              "kind": "column",
+              "name": "_portfolio_median"
+            },
+            {
+              "kind": "literal",
+              "type": "number",
+              "value": 500.0
             }
-          ],
-          "otherwise": {
-            "kind": "column",
-            "name": "imputed_premium"
-          }
+          ]
         }
       },
       {
@@ -2759,7 +2727,7 @@
         ]
       }
     ],
-    "note": "coalesce chain as successive conditionals; whole-frame median is a window with no partition"
+    "note": "the coalesce is a first non-missing; whole-frame median is a window with no partition"
   },
   "regional_channel_pivot": {
     "steps": [

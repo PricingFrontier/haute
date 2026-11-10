@@ -1,4 +1,4 @@
-import { FoldVertical, ListFilter, Calculator, CaseSensitive } from "lucide-react"
+import { FoldVertical, ListFilter, ListStart, Calculator, CaseSensitive } from "lucide-react"
 import { describe, expect, it } from "vitest"
 
 import { CALCULATIONS, UNLISTED_FUNCTIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, stepIcon, stepTitle } from "../calculations"
@@ -44,6 +44,8 @@ describe("the Computed as calculations", () => {
     const replace: Expr = { type: "function", fn: "replace", operand: col("code"), args: [literal("text", "-"), literal("text", "")] }
     expect(calculationExpr("replace_all", replace)).toEqual({ ...replace, fn: "replace_all" })
     expect(calculationExpr("sum_across", { type: "window", agg: "sum", of: col("premium"), over: ["policy_id"] })).toEqual({ type: "sum_horizontal", parts: [col("premium"), col("")] })
+    expect(calculationExpr("coalesce", { type: "sum_horizontal", parts: [col("premium"), col("fee")] })).toEqual({ type: "coalesce", parts: [col("premium"), col("")] })
+    expect(calculationExpr("value", { type: "coalesce", parts: [col("premium"), col("fee")] })).toEqual({ type: "operand", operand: col("premium") })
     expect(calculationExpr("window", { type: "operand", operand: literal("number", 5) })).toEqual({ type: "window", agg: "sum", of: col(""), over: [] })
     expect(calculationExpr("formula", clip)).toEqual({ ...clip, text: "clip(load, 0.8, 1.2)" })
     expect(calculationExpr("formula", calculationExpr("if_then"))).toEqual(calculationExpr("formula"))
@@ -58,6 +60,9 @@ describe("the Computed as calculations", () => {
     expect(stepIcon(withColumn(parseFormula("premium * 2")))).toBe(Calculator)
     expect(stepTitle(withColumn(calculationExpr("strip")))).toBe("Trim whitespace")
     expect(stepIcon(withColumn(calculationExpr("strip")))).toBe(CaseSensitive)
+    expect(stepTitle(withColumn(calculationExpr("coalesce")))).toBe("First non-missing")
+    expect(stepIcon(withColumn(calculationExpr("coalesce")))).toBe(ListStart)
+    expect(stepTitle(withColumn(parseFormula("coalesce(premium, 0)")))).toBe("Formula")
     const filter: Step = { id: "f", kind: "filter", match: "all", conditions: [] }
     expect(stepTitle(filter)).toBe("Filter rows")
     expect(stepIcon(filter)).toBe(ListFilter)

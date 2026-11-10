@@ -1107,6 +1107,10 @@ def sum_across(*parts: dict[str, Any]) -> dict[str, Any]:
     return {"type": "sum_horizontal", "parts": list(parts)}
 
 
+def first_non_missing(*parts: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "coalesce", "parts": list(parts)}
+
+
 #: The IRPM clip as an if-then: the cap above, its negative below, the value between.
 _CAPPED = branches(
     branch([cond("irpm", "gt", value=col("cap"))], col("cap")),
@@ -1228,6 +1232,17 @@ _CAPPED = branches(
             '    pl.sum_horizontal(pl.col("a"), pl.col("b"), pl.col("c") * 2).alias("t")\n'
             ")",
         ),
+        (
+            step(
+                "fm",
+                "with_column",
+                name="t",
+                expr=first_non_missing(col("a"), ex(binary(col("c"), "*", num(2))), num(0)),
+            ),
+            "df = df.with_columns(\n"
+            '    pl.coalesce(pl.col("a"), pl.col("c") * 2, pl.lit(0)).alias("t")\n'
+            ")",
+        ),
     ],
     ids=[
         "filtered-sum",
@@ -1243,6 +1258,7 @@ _CAPPED = branches(
         "divide-by-a-formula",
         "if-then-with-two-branches",
         "sum-across",
+        "first-non-missing",
     ],
 )
 def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -> None:
@@ -1343,6 +1359,19 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
             ),
             "Expression formula text must be a string",
         ),
+        (
+            step("fm", "with_column", name="t", expr=first_non_missing(col("a"))),
+            "Expression first non-missing needs at least two parts",
+        ),
+        (
+            step(
+                "fm",
+                "with_column",
+                name="t",
+                expr={**first_non_missing(col("a"), col("b")), "text": 3},
+            ),
+            "Expression formula text must be a string",
+        ),
     ],
     ids=[
         "positional-aggregate",
@@ -1362,6 +1391,8 @@ def test_expression_additions_render(kind_step: dict[str, Any], expected: str) -
         "if-then-later-branch-names-itself",
         "sum-across-one-part",
         "sum-across-with-malformed-text",
+        "first-non-missing-one-part",
+        "first-non-missing-with-malformed-text",
     ],
 )
 def test_expression_additions_reject(kind_step: dict[str, Any], fragment: str) -> None:
@@ -1492,6 +1523,25 @@ def test_a_sum_across_skips_missing_parts() -> None:
     assert out["t"].to_list() == [3.0, 0.0, 3.0]
 
 
+def test_a_first_non_missing_takes_each_rows_first_present_part() -> None:
+    frame = pl.DataFrame(
+        {"a": [1.0, None, None, None], "b": [2.0, 5.0, None, None], "c": [9.0, 9.0, 7.0, None]}
+    )
+    tried = [col("a"), col("b"), col("c")]
+    out = _run_steps(
+        [
+            source(),
+            step("fm", "with_column", name="t", expr=first_non_missing(*tried)),
+            step("fz", "with_column", name="z", expr=first_non_missing(*tried, num(0))),
+        ],
+        frame,
+    )
+    # Parts are tried in order; a row with every part missing stays missing unless a
+    # value is the last part.
+    assert out["t"].to_list() == [1.0, 5.0, 7.0, None]
+    assert out["z"].to_list() == [1.0, 5.0, 7.0, 0.0]
+
+
 def test_a_constant_in_an_operand_argument_is_checked_against_the_argument_types() -> None:
     rendered = render_polars_steps(
         [source(), step("c", "with_column", name="t", expr=fn("fill_null", col("a"), _CAP))],
@@ -1544,6 +1594,15 @@ def test_generated_expression_additions_stay_inside_the_lineage_model() -> None:
                 "with_column",
                 name="t",
                 expr=sum_across(col("premium"), ex(binary(col("qid"), "*", num(2)))),
+            ),
+            {"premium", "qid"},
+        ),
+        "first non-missing": (
+            step(
+                "fm",
+                "with_column",
+                name="t",
+                expr=first_non_missing(col("premium"), col("qid"), num(0)),
             ),
             {"premium", "qid"},
         ),

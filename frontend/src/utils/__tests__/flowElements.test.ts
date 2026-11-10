@@ -86,12 +86,16 @@ describe("flowElements", () => {
 describe("a new node's name (READ-13, READ-46)", () => {
   it("is its type in snake_case, as its decorator spells it", () => {
     expect(freshNodeLabel(NODE_TYPES.WORKBENCH_OUTPUT, [])).toBe("workbench_output")
-    expect(freshNodeLabel(NODE_TYPES.POLARS, ["quotes"])).toBe("polars")
+    expect(freshNodeLabel(NODE_TYPES.EDGE_JOIN, ["quotes"])).toBe("edge_join")
+  })
+
+  it("is transform for a Transform, as the palette names it, though its decorator is polars", () => {
+    expect(freshNodeLabel(NODE_TYPES.POLARS, ["quotes", "polars"])).toBe("transform")
   })
 
   it("takes the next free number only when the name is taken, ignoring case", () => {
-    expect(freshNodeLabel(NODE_TYPES.POLARS, ["Polars"])).toBe("polars_2")
-    expect(freshNodeLabel(NODE_TYPES.POLARS, ["polars", "polars_2", "polars_4"])).toBe("polars_3")
+    expect(freshNodeLabel(NODE_TYPES.POLARS, ["Transform"])).toBe("transform_2")
+    expect(freshNodeLabel(NODE_TYPES.POLARS, ["transform", "transform_2", "transform_4"])).toBe("transform_3")
   })
 
   it("is a request input's or response node's one name, never numbered (READ-46)", () => {

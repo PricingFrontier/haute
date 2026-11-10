@@ -142,7 +142,7 @@ test.describe("Transform step builder journey", () => {
     await page.getByTestId("node-palette-item-polars").dragTo(canvas, {
       targetPosition: { x: 250, y: 150 },
     })
-    const newNode = page.getByLabel(/Transform node: polars\b/i)
+    const newNode = page.getByLabel(/Transform node: transform\b/i)
     await expect(newNode).toBeVisible()
     await newNode.click()
     const panel = page.getByTestId("node-panel")

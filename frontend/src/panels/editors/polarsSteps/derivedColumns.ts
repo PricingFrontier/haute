@@ -202,6 +202,7 @@ export function exprColumns(expr: Expr): string[] {
       ]
     case "concat":
     case "sum_horizontal":
+    case "coalesce":
       return expr.parts.flatMap(operandColumns)
   }
 }

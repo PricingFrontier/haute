@@ -750,7 +750,9 @@ function ExprEditor({ expr, onChange, ctx, depth = 1, unfinished }: { expr: Expr
     case "concat":
       return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "sum_horizontal":
-      return <SumAcrossEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+      return <PartsEditor label="Sum of" expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+    case "coalesce":
+      return <PartsEditor label="First non-missing of" expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
 }
 
@@ -963,11 +965,23 @@ function ConcatEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
   )
 }
 
-/** A sum across two or more parts, each a column or any expression. */
-function SumAcrossEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "sum_horizontal" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+/** A sum across, or a first non-missing, of two or more parts in order, each a column, a value or any expression. */
+function PartsEditor({
+  label,
+  expr,
+  onChange,
+  ctx,
+  depth,
+}: {
+  label: string
+  expr: Extract<Expr, { type: "sum_horizontal" | "coalesce" }>
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  depth: number
+}) {
   const operandProps = anyOperand(ctx, depth + 1)
   return (
-    <Field label="Sum of">
+    <Field label={label}>
       <RowList
         rows={expr.parts}
         onChange={(parts) => onChange({ ...expr, parts })}

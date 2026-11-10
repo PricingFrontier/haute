@@ -235,9 +235,13 @@ _SCHEMA_DEPENDENT_PL_CALLS = frozenset(
         "selectors",
     }
 )
+#: ``pl`` calls over several values that read bare strings as column names and
+#: are named after their first argument (``pl.coalesce`` takes each row's first
+#: non-null value, so it is one too).
 _HORIZONTAL_PL_CALL_OUTPUTS = {
     "all_horizontal",
     "any_horizontal",
+    "coalesce",
     "cum_sum_horizontal",
     "max_horizontal",
     "mean_horizontal",

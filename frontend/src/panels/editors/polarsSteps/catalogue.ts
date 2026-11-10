@@ -281,12 +281,16 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
   { value: "try_to_datetime", label: "text to date and time (null on failure)", args: ["format"] },
 ]
 
-/** The format a text column's dates start from: ISO dates, and ISO date and time. */
-/** The sum across columns, a formula function of two or more values that is its own expression type. */
-export const SUM_HORIZONTAL = { value: "sum_horizontal", label: "sum across columns, skipping missing values" } as const
-/** Every function a formula can call: the catalogue's, then the sum across. */
-export const FORMULA_FUNCTIONS: ReadonlyArray<{ value: string; label: string }> = [...FUNCTIONS, SUM_HORIZONTAL]
+/** The formula functions of two or more values, each its own expression type of the same name. */
+export const VARIADIC_FUNCTIONS = [
+  { value: "sum_horizontal", label: "sum across columns, skipping missing values" },
+  { value: "coalesce", label: "first value that isn't missing" },
+] as const
+export type VariadicType = (typeof VARIADIC_FUNCTIONS)[number]["value"]
+/** Every function a formula can call: the catalogue's, then the variadic ones. */
+export const FORMULA_FUNCTIONS: ReadonlyArray<{ value: string; label: string }> = [...FUNCTIONS, ...VARIADIC_FUNCTIONS]
 
+/** The format a text column's dates start from: ISO dates, and ISO date and time. */
 export const DATE_FORMAT_DEFAULTS: Record<"Date" | "Datetime", string> = {
   Date: "%Y-%m-%d",
   Datetime: "%Y-%m-%d %H:%M:%S",
@@ -382,6 +386,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
       return expr.branches.map((b) => operandProblem(b.then)).find((problem) => problem !== null) ?? operandProblem(expr.otherwise)
     case "concat":
     case "sum_horizontal":
+    case "coalesce":
       return expr.parts.map(operandProblem).find((problem) => problem !== null) ?? null
     case "window": {
       if (expr.of?.kind !== "column") return expr.of ? operandProblem(expr.of) : null
@@ -463,6 +468,7 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
     case "concat":
       return { type, parts: [operand, { kind: "column", name: "" }], separator: " " }
     case "sum_horizontal":
+    case "coalesce":
       return { type, parts: [operand, { kind: "column", name: "" }] }
   }
 }
@@ -706,6 +712,7 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
       }
       return null
     case "sum_horizontal":
+    case "coalesce":
       if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
       if (!Array.isArray(expr.parts)) return `${where} is missing its parts.`
       for (const [index, part] of expr.parts.entries()) {
@@ -900,6 +907,7 @@ function canonicalExpr(expr: Expr): Expr {
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }
     case "sum_horizontal":
+    case "coalesce":
       return { ...expr, parts: expr.parts.map(canonicalOperand) }
     case "conditional":
       return {

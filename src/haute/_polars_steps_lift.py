@@ -985,12 +985,13 @@ class _Reader:
                 "parts": [self._operand(part, expr=True) for part in call.args[0].elts],
                 "separator": _text(call.keywords["separator"]),
             }
-        if _is_method(node, "sum_horizontal"):
-            call = _pl(node, "sum_horizontal")
-            if call.keywords:
-                raise _NoMatchError
-            parts = [self._operand(part, expr=True) for part in call.args]
-            return {"type": "sum_horizontal", "parts": parts}
+        for variadic in ("sum_horizontal", "coalesce"):
+            if _is_method(node, variadic):
+                call = _pl(node, variadic)
+                if call.keywords:
+                    raise _NoMatchError
+                parts = [self._operand(part, expr=True) for part in call.args]
+                return {"type": variadic, "parts": parts}
         if _is_method(node, "otherwise"):
             return self._conditional(node)
         function = self._function(node)
@@ -1366,7 +1367,9 @@ def _normal_expr(expr: Mapping[str, Any]) -> Step:
     parts = [_normal_operand(part, "expr") for part in expr["parts"]]
     if kind == "concat":
         return {"type": "concat", "parts": parts, "separator": expr.get("separator", "")}
-    return {"type": "sum_horizontal", "parts": parts}
+    if kind in ("sum_horizontal", "coalesce"):
+        return {"type": kind, "parts": parts}
+    raise ValueError(f"Unknown expression type {kind!r}.")
 
 
 def _normal_window(expr: Mapping[str, Any]) -> Step:
