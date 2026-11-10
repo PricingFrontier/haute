@@ -22,6 +22,7 @@ together. `MDL-05` removes code and has no behaviour of its own.
 | MDL-03 | Planned | P3 | An exported training script can be run again; when it cannot write, it says which files stand in the way before it prepares any data. |
 | MDL-04 | Planned | P3 | Building a group or stratified evaluation plan no longer walks the key column row by row in Python. |
 | MDL-05 | Planned | P3 | Training has one split pipeline: the constructor-only `split` seam and its code are gone. |
+| MDL-06 | Planned | P3 | `haute train` runs any script that plain Python runs: a script's own classes can be dataclasses and can be pickled. |
 
 ## Planned improvements
 
@@ -166,3 +167,27 @@ tests moved.
 **Evidence:** `src/haute/modelling/_split.py::_group_mask`;
 `src/haute/modelling/_split.py::SplitConfig`;
 `src/haute/modelling/_training_job.py::TrainingJob`.
+
+### MDL-06 — A training script is loaded as an ordinary module
+**Why:** Reproduced on 10 November 2026. `haute train` loads the script as a
+module named `training_script` and runs it without registering that module,
+so code that looks its own module up fails. A script holding
+`from __future__ import annotations` and one `@dataclass` ran under plain
+Python and, under `haute train`, ended in a traceback: "AttributeError:
+'NoneType' object has no attribute '__dict__'", raised inside the standard
+library's `dataclasses`. A class the script defines also cannot be pickled,
+which a worker process needs, because its module cannot be imported by name.
+The exported script holds neither, so this reaches a script an analyst has
+extended by hand. The 28 October audit recorded it as an unverified lead.
+
+**Plan:** Register the module under its name before running it, and remove
+it afterwards, as the import system does for any file it loads.
+
+**Acceptance:** The script above runs under `haute train` as it does under
+Python. A script whose `job` is built from a dataclass it defines trains. A
+script that raises still reports its own error, and nothing of it is left in
+`sys.modules` after the command.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_train.py::handle_train`.

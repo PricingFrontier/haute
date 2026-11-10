@@ -8,8 +8,8 @@ counts as covered. Remove a phase when it has run and its findings are
 written up. Delete the file, its section in the [index](README.md) and its
 entry in `_ROADMAP_SUPPORTING_REPORTS` when no phase remains.
 
-Not started. It needs the owner's go-ahead and the [decisions](#decisions)
-at the end.
+Phases 1 to 3 have the owner's go-ahead and are under way. Phases 4 and 5
+wait on the [decisions](#decisions) at the end.
 
 ## Where the review stands on 10 November 2026
 
@@ -149,7 +149,8 @@ project alone does not contain a sweep.
   measured or read from the source, as the 9 November packages do.
 - Sweeps, scratch projects and probe files live outside the repository.
 - Only targeted tests are run, never a full suite.
-- The main session judges every finding.
+- The main session judges every finding. A worker may build and run a
+  sweep; it reports outcomes and reproductions, and judges none.
 
 ## Phase 1: leads already on file
 
@@ -355,7 +356,7 @@ and the providers and environments that were not run.
 | Decision | Recommendation |
 |---|---|
 | A second model family (Codex) over the diff since the last audit and over each sweep's candidates | Yes, for the diff. It costs quota. |
-| A local server, a browser, a local MLflow server, and small training and optimiser runs on the development machine, one at a time | Yes. Phases 1 to 3 need nothing else. |
+| A local server, a browser, a local MLflow server, and small training and optimiser runs on the development machine, one at a time | Agreed for phases 1 to 3, which need nothing else. |
 | A clone and a Linux environment inside WSL, which downloads public packages and never touches the Windows `.venv` | Yes. |
 | Docker Desktop, for the container items in phase 4 and for a SQL Server | Decide when phase 4 comes up. PostgreSQL can be installed inside WSL without it. |
 | Two public tools run without installing them: schemathesis and pyright | Yes. |

@@ -8,7 +8,8 @@ run reads, how a node's settings become the frame it produces, and how a
 failure before any node runs is reported. The packages below come from the
 9 November 2026 codebase review. `EXE-01` and `EXE-02` were reproduced against
 `HEAD` on that day by calling the named functions; `EXE-03` is read from the
-source and was not run.
+source and was not run. `EXE-04` was reproduced on 10 November 2026 through
+the editor's preview route, `haute run` and the deploy scorer.
 
 `EXE-01` also changes what the optimiser runs on, so it is read together with
 [the optimiser specification](../optimiser/high-level.md).
@@ -20,6 +21,7 @@ source and was not run.
 | EXE-01 | Planned | P2 | A pipeline with more than one non-live source can be optimised and written from, on the source the analyst chose. |
 | EXE-02 | Planned | P2 | A Constant's value runs as the type its settings file holds: one rule decides what reads as a number. |
 | EXE-03 | Planned | P3 | A preamble failure is reported at the preamble's own line, wherever the project folder is. |
+| EXE-04 | Planned | P2 | A join that previews in the editor runs from the command line and in a deployment, whatever Polars options it carries. |
 
 ## Planned improvements
 
@@ -121,3 +123,52 @@ module's line.
 **Evidence:** `src/haute/executor.py::_exec_preamble_namespace`;
 `src/haute/_sandbox.py::compile_project_code` compiles the preamble as
 `<string>`.
+
+### EXE-04 — A join option the planner does not read does not stop a run
+**Why:** Reproduced. A Polars node whose join carries `coalesce=True` or
+`nulls_equal=True`, both ordinary Polars options, previews in the editor and
+cannot be run anywhere else. With a two-row request and a two-row lookup,
+the editor's preview route answered the node's two rows. `haute run` on the
+same file exited 1: "Materialisation of 'join' could not be admitted for
+this execution ... remediation=Provide readable source/schema metadata so
+Haute can estimate the full 'join' materialisation boundary before
+execution. Estimator reported:
+joined:row_cardinality_unavailable:joined:unsupported_join_option". A deploy
+to the default target refused it too, in words that call the join "the
+group-by at node 'joined' (operator 'join')". For a container target the
+dry run answered "Validation passed", and scoring one quote through the
+deploy scorer was then refused. The specification prescribes the refusal
+where a row count cannot be bounded and the surface has no hard memory cap;
+the editor's worker has one, which is why the preview runs. The defect is
+what counts as unbounded. The planner's reading of a join accepts seven
+keywords and fails on any other, so `coalesce`, which cannot change how many
+rows a join returns, makes the row count "unavailable". The remedy the
+message gives cannot help: no metadata makes the option readable, and the
+cause appears only as the code at the message's end.
+
+**Plan:** Where the planner reads a join for its row count alone, accept the
+options that cannot change the count: `coalesce` and the two parallelism
+switches. Bound `nulls_equal` as a join that also matches null keys, or
+refuse it by name. Where a join is still refused, say which option the
+planner cannot read and what works instead: dropping it, or running on a
+surface with a memory cap. Make the deploy refusal name the operator it is
+about. Keep the column-lineage reading strict, since `coalesce` does change
+the columns.
+
+**Acceptance:** `haute run` on a pipeline whose join carries `coalesce=True`
+returns the rows the editor previews, for a left and for a full join. A join
+carrying an option the planner cannot bound is refused in one message naming
+the node, the option and the two remedies, by `haute run`, by the deploy and
+by scoring. The deploy refusal of a join does not say "group-by". A test
+holds one pipeline to the same outcome in the editor's preview, `haute run`
+and the deploy scorer for each join option Polars accepts.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_column_lineage.py::_parse_join` fails on any
+keyword it does not list;
+`src/haute/execution.py::_plan_unproven_materialisation` raises the refusal;
+`src/haute/errors.py::GroupByExecutionUnsupportedError`;
+`src/haute/deploy/_schema.py::infer_deploy_execution_policy` words the
+deploy refusal; `tests/test_column_lineage.py` holds the parse failure for
+an unknown option.
