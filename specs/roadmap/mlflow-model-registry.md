@@ -134,7 +134,11 @@ command names the failing node for failures the walker marks and keeps a
 traceback only for the unexpected; this one is neither marked nor in the
 expected list, although it is the analyst's configuration that is wrong.
 Both commands also print MLflow's own `mlflow.agent.hint` log line, an
-instruction addressed to coding agents, before their output.
+instruction addressed to coding agents, before their output. The editor
+hides the same failure, reproduced on 10 November 2026: previewing the Model
+Scoring node of that example, or the output after it, answers HTTP 500 with
+"Operation failed. Check the server logs for details.", so an analyst who
+opens the example before training sees neither the node nor the run id.
 
 **Plan:** Convert a failed lookup of a run, a registered model, a version or
 an alias, at the point the model source is resolved, into Haute's
@@ -144,9 +148,10 @@ it looked in, and mark the node. Both commands then print one line. Set the
 
 **Acceptance:** `haute run` and `haute deploy --dry-run` on the example exit
 1 with one error line naming the Model Scoring node, the run id and the
-destination, and no traceback. A tracking server that cannot be reached is
-reported as that, not as a missing run. Neither command prints the agent
-hint.
+destination, and no traceback. The editor's preview of that node shows the
+same message on the node and answers no 500. A tracking server that cannot
+be reached is reported as that, not as a missing run. Neither command prints
+the agent hint.
 
 **Dependencies:** None.
 

@@ -8,8 +8,8 @@ run reads, how a node's settings become the frame it produces, and how a
 failure before any node runs is reported. The packages below come from the
 9 November 2026 codebase review. `EXE-01` and `EXE-02` were reproduced against
 `HEAD` on that day by calling the named functions; `EXE-03` is read from the
-source and was not run. `EXE-04` was reproduced on 10 November 2026 through
-the editor's preview route, `haute run` and the deploy scorer.
+source and was not run. `EXE-04` and `EXE-05` were reproduced on 10 November
+2026 through the editor's preview route, `haute run` and the deploy.
 
 `EXE-01` also changes what the optimiser runs on, so it is read together with
 [the optimiser specification](../optimiser/high-level.md).
@@ -22,6 +22,7 @@ the editor's preview route, `haute run` and the deploy scorer.
 | EXE-02 | Planned | P2 | A Constant's value runs as the type its settings file holds: one rule decides what reads as a number. |
 | EXE-03 | Planned | P3 | A preamble failure is reported at the preamble's own line, wherever the project folder is. |
 | EXE-04 | Planned | P2 | A join that previews in the editor runs from the command line and in a deployment, whatever Polars options it carries. |
+| EXE-05 | Planned | P2 | The Constant page's own example, a Transform that cross-joins a Constant, runs from the command line and deploys. |
 
 ## Planned improvements
 
@@ -172,3 +173,51 @@ keyword it does not list;
 `src/haute/deploy/_schema.py::infer_deploy_execution_policy` words the
 deploy refusal; `tests/test_column_lineage.py` holds the parse failure for
 an unknown option.
+
+### EXE-05 — A Transform that cross-joins a Constant runs outside the editor
+**Why:** Reproduced. The Constant's page gives two ways to use one: an Edge
+Join set to Cross, or a Transform with a "Join another input" step set to
+cross. Its worked example is the second. With two quotes and a one-value
+Constant, both previewed two rows in the editor. The Edge Join then ran from
+`haute run`, and `haute deploy --dry-run` passed it as "one row per quote in
+request order". The Transform exited 1 from `haute run`: "Materialisation of
+'join' could not be admitted for this execution ... Estimator reported:
+with_rate:cross_join_unmeasured". The deploy dry run exited 1 as well:
+"Resolution failed: Deployed batch scoring cannot be admitted". The
+execution-engine specification prescribes that refusal for every cross join
+in a Transform: nobody has measured what a cross join costs, so it is warned
+under a worker's memory cap and refused without one. The deploy
+specification and the deployment guide say the opposite of this one: a cross
+join with a single-row Constant in a "Join another input" step keeps one row
+per quote. The low-level specification keeps the Edge Join out of the
+planner's boundaries so that a Constant's cross join is not refused on a
+host without a cap; the Transform has no such exemption. The refusal's
+remedy, "Provide readable source/schema metadata", cannot help, and the
+deploy text calls the join a group-by, both as in `EXE-04`.
+
+**Plan:** Read a cross join whose other side is proved to hold one row, as a
+Constant is, as what it is: the dominant side's rows with the constant's
+columns added. Admit it on every surface without the unmeasured-cross-join
+rule. Keep that rule for a cross join whose other side may hold more rows,
+and make its message name the join, say that a cross join's memory cannot be
+estimated, and give what works instead: an Edge Join set to Cross, or a
+surface with a memory cap. Bring the two specifications and the Constant
+page into agreement.
+
+**Acceptance:** The Constant page's example (quotes, a Constant, a Transform
+with a cross "Join another input" step and a formula that uses the constant)
+gives the same rows in the editor's preview, from `haute run` and from the
+deploy scorer, and its deploy dry run passes. A Transform that cross-joins
+two many-row inputs is still refused where there is no memory cap, in one
+message naming the node, the join and the remedies. A test runs the page's
+example through all three.
+
+**Dependencies:** None. `EXE-04` rewords the same refusal.
+
+**Evidence:**
+`src/haute/_ram_estimate.py::_estimate_materialisation_boundary_from_index`
+answers `cross_join_unmeasured` for any cross join; `tests/test_ram_estimate.py`
+and `tests/test_polars_backend_strategy_contract.py` hold that answer;
+`docs/building-models/nodes/constant.md` (Connecting to other nodes, and its
+example); `docs/deployment/index.md`; `specs/deploy/high-level.md`;
+`specs/execution-engine/low-level.md`.
