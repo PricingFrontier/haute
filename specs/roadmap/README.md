@@ -25,7 +25,7 @@ records corrections to that audit's claims and proposed remedies.
 |---|---|---|
 | [Caching](caching.md) | Node outputs stored by one version of Haute's node code and read as current by the next | `CCH-01` |
 | [Deploy](deploy.md) | One rule for which file a relative path means in the editor and in the bundle; a non-finite output refused by name; what a dry run checks; date outputs in test quotes | `DPL-01` |
-| [Engineering quality](engineering-quality.md) | Promise rules in the frontend lint gate; a test that never runs in CI; dead branches and unused suppressions | `EQ-01` |
+| [Engineering quality](engineering-quality.md) | Promise rules in the frontend lint gate; a test that never runs in CI; dead branches and unused suppressions; the commands run whole on the shipped examples by a test | `EQ-01` |
 | [Execution engine](execution-engine.md) | Pipelines with more than one non-live source under the optimiser and a write; the Constant node's number rule; preamble failure attribution | `EXE-01` |
 | [Frontend graph canvas](frontend-graph-canvas.md) | What one edit costs and what the undo history holds when the graph carries large tables | `FEG-01` |
 | [Frontend shared](frontend-shared.md) | Conditional writes the API client retries | `FES-01` |
