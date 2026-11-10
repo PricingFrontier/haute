@@ -5,10 +5,15 @@
 The local server's routes and live sync, as [the server API
 specification](../server-api/high-level.md) describes them: what a route
 answers when a node of the analyst's own fails, what the file watcher does on
-the event loop, and what a save answers once its files are written. The
-packages below come from the 9 November 2026 codebase review. `SRV-02`
-carries a measurement taken on that day; the others are read from the source
-and were not run end to end.
+the event loop, what a save answers once its files are written or when it
+cannot write them, and what it leaves when the server dies in the middle.
+`SRV-01` to `SRV-03` come from the 9 November 2026 codebase review:
+`SRV-02` carries a measurement taken on that day and `SRV-01` is read from
+the source. `SRV-03` was read from the source then and reproduced on 10
+November by the review plan's sweep of failed writes, which failed every
+step of 17 writing operations in turn, held their files open and killed the
+server at three points. `SRV-04` and `SRV-05` come from that sweep and were
+reproduced on that day.
 
 `SRV-01` changes an accepted decision, [the optimiser's error-detail
 policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
@@ -19,7 +24,9 @@ policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
 |---|---|---:|---|
 | SRV-01 | Decision | P2 | A write, a training run or a solve stopped by one of the analyst's own nodes says which node and why, as preview and trace do. |
 | SRV-02 | Planned | P2 | Live sync watches only what it reads and does its parsing off the event loop. |
-| SRV-03 | Planned | P2 | A save whose files are written answers as saved even when clearing a stale settings file fails. |
+| SRV-03 | Planned | P2 | A save whose files are written answers as saved even when clearing a stale settings file fails, and the next save clears it. |
+| SRV-04 | Planned | P2 | A save or a settings change that cannot write its file answers naming the file and why, as the utility editor and the Pipeline files routes do. |
+| SRV-05 | Planned | P3 | A save the server died in is reported at the next load, and no staging file is left to reach version history. |
 
 ## Planned improvements
 
@@ -104,30 +111,136 @@ still broadcast.
 and `src/haute/routes/pipeline.py::_preview_supersession_key`.
 
 ### SRV-03 — A save that landed answers as saved
-**Why:** Read from the source, not run. After a save's files are written
-transactionally and the result is parsed back to verify it, the service
-removes settings files the graph no longer uses, with no error handling: an
-unlink of each stale file, then a remove of each emptied folder. An `OSError`
-there (on Windows, a sidecar another program holds open; anywhere, a file
-appearing between the emptiness check and the remove) leaves the function
-after every file was written. The route answers an error, the save is never
-recorded as committed, so it is not broadcast and the ledger never captures
-it, and the editor keeps its old base revision: its next save is refused as
-stale and tells the analyst to reload, over work that is in fact on disk.
+**Why:** Reproduced on 10 November 2026; first read from the source on 9
+November. After a save's files are written transactionally and the result is
+parsed back to verify it, the service removes settings files the graph no
+longer uses, with no error handling: an unlink of each stale file, then a
+remove of each emptied folder. An `OSError` there leaves the function after
+every file was written. Run with a node removed while another program held
+its settings file open, the save answered 500 "Operation failed. Check the
+server logs for details." with the new pipeline file, the new sidecar and
+the other node's new settings on disk, and no save on the ledger. The route
+records a save as committed only after the service returns, so this one is
+not broadcast, and the editor keeps its old base revision: its next save is
+refused as stale and tells the analyst to reload, over work that is in fact
+on disk (this last step read from the source, not run).
+
+The removal is never tried again. A later save answered 200 and the removed
+node's settings file was still on disk, still in the ledger's tree, and
+still in the milestone after a Commit. Stale files are found by comparing
+the graph on disk before the save with the graph being saved, and after the
+failed save the graph on disk no longer names the file. The service
+deliberately does not scan the settings folders for files it does not
+recognise, so nothing else finds it.
 
 **Plan:** Treat the removal as housekeeping after the commit: catch the
 failure, leave the stale file, and return the committed revision with a
-warning naming the file that could not be removed. The next save tries the
-removal again.
+warning naming the file that could not be removed. Record the files a save
+could not remove, in the clone's state under `.haute`, and have the next
+save remove them and capture the removal. Do not bring back the folder scan.
 
 **Acceptance:** With the unlink of a stale sidecar made to raise
 `PermissionError`, the save answers success with the new revision and a
 warning naming the file; the commit is recorded and broadcast; a second save
-from the same editor is accepted.
+from the same editor is accepted, removes the file once it is free, and the
+ledger records the removal.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/routes/_save_pipeline.py::SavePipelineService._save`;
 `src/haute/routes/_save_pipeline.py::_remove_stale_config_files`;
+`src/haute/routes/_save_pipeline.py::_compute_disk_prev_config_files`;
 `src/haute/routes/pipeline.py::save_pipeline` records the commit only after
 the service returns.
+
+### SRV-04 — A save that cannot write its file says which file and why
+**Why:** Reproduced on 10 November 2026, with a second handle holding the
+file open as most Windows programs hold one, and nothing injected. A
+pipeline save while another program holds `main.py` or its sidecar, a change
+to the pipeline settings, a change to the MLflow settings (`haute.toml`
+held) and a change to the git preferences each answer 500 "Operation
+failed. Check the server logs for details." The held file is unchanged, and
+in the sweep every other file of the save was rolled back, so nothing is
+lost, but the analyst is told nothing they can act on. A save whose staging
+write is refused for a full disk answers the
+same (run with the write made to raise "No space left on device"). The
+words for both cases exist. The utility editor's save, run beside the others
+with its file held, answered 409 "utility/helpers.py is open in Haute or
+another program. Try again once it's closed.", and the Pipeline files
+routes answer a full disk with 507 "There isn't room on disk for" and the
+file's name (read from the source). The shared atomic writer already retries
+a file held for a moment, so what reaches the analyst is a file held for
+longer: a script reading it, a sync or backup client, a virus scan.
+
+**Plan:** Translate the two failures once, where the save and the settings
+routes can share it: a `PermissionError` from the atomic writer becomes the
+409 naming the file relative to the project, and a write refused for space
+becomes the 507 naming it, in the words the utility and Pipeline files
+routes use. Other `OSError`s keep the generic answer.
+
+**Acceptance:** With its file held open by a real second handle on Windows,
+each of the pipeline save, the pipeline settings, the MLflow settings and
+the git preferences answers 409 naming the file, and the file is unchanged.
+With the staging write refused for space, each answers 507 naming the file.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/pipeline.py::save_pipeline`;
+`src/haute/routes/pipeline.py::patch_pipeline_settings`;
+`src/haute/routes/mlflow.py::put_mlflow_settings`;
+`src/haute/routes/git.py::git_set_prefs`;
+`src/haute/_file_ops.py::atomic_path`;
+`src/haute/routes/utility.py::_replace_or_remove`;
+`src/haute/routes/project_files.py::_publish_write`.
+
+### SRV-05 — A save the server died in is noticed and its leftovers collected
+**Why:** Reproduced on 10 November 2026. A save replaces its files one after
+another: the pipeline file, each node's settings file, then the layout
+sidecar. Every file is rewritten on every save, and what a rollback needs
+is held in memory. Measured on this machine, the replaces of one save span
+24 ms for a pipeline of 3 nodes and 221 ms for one of 31, about 7 ms a file.
+A server process that dies inside that span (killed here as the third file
+was about to be replaced) leaves three things. The pipeline file is the new one while a node
+whose settings changed in the same save keeps its old settings. The settings
+file of a node the save removed stays. And the staged copy of the file being
+replaced, `band_x.0aa46832.tmp`, stays beside the settings. After a restart
+the pipeline loads `ready` with no diagnostic, so nothing says it is a mix
+of two saves.
+
+The next save brings the settings up to date, and leaves the other two.
+The removed node's settings file is never looked for again (`SRV-03`). The
+milestone's sweep takes every new file in the pipeline folder, so the next
+Commit put both into version history: the milestone's tree held
+`rating/config/banding/band_x.0aa46832.tmp` and
+`rating/config/constant/rates.json`. A settings write killed at its rename
+leaves `.haute/pipeline-settings.3b78e6a0.tmp` in the same way, though the
+settings themselves read back whole. Two writers already collect their own
+leftovers: the upload route removes staging files older than the server's
+start, noting that "a server stopped mid-upload leaves its file, and nothing
+else would ever remove it", and the assistant's session store prunes its
+own. The shared atomic writer, which the save and the settings writes use,
+has no collector.
+
+**Plan:** Collect first: when the server starts and before a save, remove
+the atomic writer's staging files older than the server's start in the
+folders Haute owns (beside the pipeline file, its `config` and `modules`
+folders, and `.haute`), as the upload route does, and keep the pattern out
+of the milestone's sweep. Then make a cut-short save visible: write a small
+mark under `.haute` naming the save's files before the first replace and
+remove it after the last; a mark found when the pipeline is loaded becomes
+a diagnostic naming the files, and its list feeds the removal `SRV-03`
+records.
+
+**Acceptance:** After a save killed between two replaces, the next load
+says the save was cut short and names the files; after the next start no
+staging file remains; a Commit records no staging file; and the removed
+node's settings file is gone after the next save.
+
+**Dependencies:** `SRV-03` for the record of files a save could not remove.
+
+**Evidence:** `src/haute/routes/_save_pipeline.py::_stage_artifact_write_bytes`;
+`src/haute/routes/_save_pipeline.py::_rollback_artifacts`;
+`src/haute/_file_ops.py::atomic_path`;
+`src/haute/_file_ops.py::_temp_path_for`;
+`src/haute/routes/project_files.py::_remove_stale_staging`;
+`src/haute/_git_transactions.py::_pipeline_folder_new_files`.
