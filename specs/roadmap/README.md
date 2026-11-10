@@ -104,6 +104,16 @@ delivered have been removed.
 It is a supporting report and owns no work; the packages in the component roadmaps
 above carry the plans.
 
+## Codebase review plan — 10 November 2026
+
+The [codebase review plan](codebase-review-plan.md) is the method and the
+order for finding defects in the part of the backend and frontend that the
+9 November 2026 review did not reach: wrong inputs made by machine, injected
+failures, one answer computed more than one way, the editor in a real
+browser, and environments not yet run. It is a supporting report and owns
+no work; a reproduced finding becomes a package in its component's roadmap
+above, and a phase leaves the plan when it has run.
+
 ## Working protocol
 
 1. Pick one package from its owning component, in the order the

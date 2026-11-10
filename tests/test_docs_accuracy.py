@@ -170,6 +170,7 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-2026-10-25.md",
     "codebase-review-2026-10-28.md",
     "codebase-review-2026-10-31.md",
+    "codebase-review-plan.md",
     "delivery-plan.md",
     "price-contour-polars-2.md",
 )
