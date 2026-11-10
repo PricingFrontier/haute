@@ -15,6 +15,10 @@ named functions on a small pipeline source; the entry says which.
 wrongly or cannot read; they share no code and can be taken in any order.
 `CGEN-04` is a cost, not a wrong result.
 
+`CGEN-05` and `CGEN-06` were reproduced on 10 November 2026 through the
+parser, the preview and `haute run`. Each is a hand-written form the parser
+accepts and then drops.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -23,6 +27,8 @@ wrongly or cannot read; they share no code and can be taken in any order.
 | CGEN-02 | Planned | P3 | A decimal membership test with text that is not a number stays code; it no longer makes the whole file unreadable. |
 | CGEN-03 | Planned | P3 | A closing `return` after a semicolon is rewritten correctly when the line holds non-ASCII text. |
 | CGEN-04 | Planned | P3 | Code generation reads each node function's parameters once per save, not once per edge. |
+| CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
+| CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 
 ## Planned improvements
 
@@ -132,3 +138,77 @@ text is byte-identical to today's for the existing golden pipelines.
 
 **Evidence:** `src/haute/codegen.py::_render_module`;
 `src/haute/codegen.py::_positional_parameters`.
+
+### CGEN-05 — A Transform's decorator refuses a keyword it does not know
+**Why:** Reproduced on 10 November 2026. `@pipeline.polars(selected_colums=["k"])`,
+with `selected_columns` misspelt, parses without a word. The node then passes
+every column: its preview showed `k` and `x`, where the correctly spelt
+keyword showed `k`. The next save from the editor writes the decorator back
+as `@pipeline.polars`, so the misspelt setting disappears from the file. Any
+unknown keyword goes the same way, `cache=True` or `description="..."`
+included. Every other node type refuses this by name: an Edge Join answers
+"Node 'j' has edgeJoin config keys the node type does not declare", and a
+node with a settings file refuses extra decorator keywords. A Transform reads
+its code from the function body and copies only `selected_columns` and
+`input_mapping` from the decorator; nothing looks at the rest. Running the
+file on its own keeps the unknown keywords in the node's settings, so the
+two readings of one file differ. One accepted value is lost as well: an Edge
+Join's `suffix=""` parses as an empty suffix and is written back without the
+keyword, which then reads as the default `_right`. The 28 October audit
+recorded the lead without naming a keyword.
+
+**Plan:** Refuse a Transform keyword outside its declared set when the file
+is parsed, naming the node and the keyword, in the words the Edge Join uses.
+Write an Edge Join's empty suffix back as it was given, or refuse it by
+name.
+
+**Acceptance:** The misspelt file is refused naming node `t` and
+`selected_colums`. A file holding only declared keywords parses and
+regenerates to itself. An Edge Join with `suffix=""` reads the same after
+parse, generate and parse, or is refused by name. A test gives every node
+type one unknown decorator keyword and expects a refusal that names it.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_config_builder.py::_build_node_config`;
+`src/haute/_config_builder.py::_transform_decorator_config`;
+`src/haute/_node_config_models.py::COLUMN_CONFIG_KEYS`;
+`src/haute/_edge_join.py::edge_join_config_to_decorator_kwargs`.
+
+### CGEN-06 — Polars imported under another name is kept, or refused by name
+**Why:** Reproduced on 10 November 2026. A pipeline file that starts
+`import polars` or `import polars as plr`, and whose nodes use that name, is
+valid Python and imports under plain Python. Haute parses it with no
+diagnostic, then every node that uses the name fails: the preview shows
+"name 'plr' is not defined", and `haute run` and the deploy dry run exit 1
+on the same `NameError`. A save from the editor writes the header back as
+`import polars as pl` and leaves the nodes using a name nothing binds. The
+reader treats any `import polars`, whatever its alias, as the standard
+import that the generated `import polars as pl` stands in for, so the alias
+is dropped and the check for statements a save would drop does not report
+it. The specification's rule works for the neighbouring case:
+`from polars import col` above `import haute` is reported as a statement a
+save would drop, naming its lines and the two fixes, and the same line below
+`import haute` is kept as preamble and runs. The 28 October audit recorded
+the `pl`-only recognisers as a lead; a data type spelt
+`pl.datatypes.String` gave the same rows everywhere and only cost the
+deployment its one-frame proof, which the specification allows.
+
+**Plan:** Count only `import polars as pl` as the standard import. Keep any
+other import of Polars as preamble where it sits below the standard imports,
+and report it as a statement a save would drop where it sits above, as the
+`from` form is.
+
+**Acceptance:** A file starting `import polars as plr` either runs in the
+editor's preview and from `haute run` with the rows plain Python gives, and
+keeps its import through a save, or is reported when it is opened, naming
+the line and the fix. A test holds `import polars`, `import polars as plr`
+and `from polars import col`, above and below `import haute`, to one of
+those two outcomes each.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_ast_helpers.py::_is_standard_import`;
+`src/haute/_ast_helpers.py::unkept_module_statements`;
+`src/haute/_user_exec.py::_exec_user_code`;
+`src/haute/_polars_call_shapes.py::is_pl_dtype_reference`.

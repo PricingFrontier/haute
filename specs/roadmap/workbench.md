@@ -26,6 +26,9 @@ Allowed field.
 it was confirmed by running the code or read from the source; none was run against a
 hosted app or a server database.
 
+`WB-51` and `WB-52` were reproduced on 10 November 2026 through the editor's routes. Both
+come from leads the October reviews left unverified.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -44,6 +47,8 @@ hosted app or a server database.
 | WB-48 | Planned | P3 | A typed number with a comma out of place is kept as typed and flagged, on the sheet and on the server alike. |
 | WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
+| WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
+| WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
 
 ## Planned improvements
 
@@ -619,3 +624,61 @@ concurrent change after the read is still refused by the store.
 
 **Evidence:** `src/haute/_workbench_app_quotes.py::save_quote`;
 `src/haute/_quote_store/_book.py::QuoteBook`.
+
+### WB-51 — A form whose column name is not text is refused, not answered 500
+**Why:** Reproduced. `PUT /api/workbench/form` with a `quote_details` table
+whose column carries a list or an object as its `name` answers HTTP 500,
+"Operation failed. Check the server logs for details."; the log holds
+`TypeError: unhashable type: 'list'`. The form brings an earlier Haute's
+`quote_details` columns up to date before the model checks anything: it
+looks each name up in a set of retired names and builds a set of the names,
+and neither works on a value that cannot be hashed. A `TypeError` raised
+there is not turned into a validation answer. The same body with an unknown
+key on the column is answered 422 naming it, and the same column in the form
+file on disk is refused when the form loads, with a 409 naming the file and
+the column. Every route whose body carries a form runs the same step; only
+the save was called. The editor never builds such a body, so this reaches a
+hand-made or damaged request. The 28 October audit recorded the lead for a
+column's `id`, which the model now refuses by name.
+
+**Plan:** Leave a table whose column names are not all text for the model's
+own check, as the step already leaves a column that is not an object.
+
+**Acceptance:** The two bodies are answered 422 naming the column's name,
+and nothing is written. A test sends each JSON type as a column's name to
+each route whose body carries a form and expects no 500.
+
+**Dependencies:** None. Haute has no users, so the step that upgrades an
+earlier form could instead be removed without a migration.
+
+**Evidence:** `src/haute/_workbench_form.py::FormSpec._brings_quote_details_up_to_date`;
+`src/haute/routes/workbench.py::put_workbench_form`.
+
+### WB-52 — The form's save refuses a column name the pipeline cannot use
+**Why:** Reproduced. Saving a form with a column named `class` or `None`
+succeeds: `PUT /api/workbench/form` answers 200 and writes the form. The
+tables route then refuses the form that was just saved:
+`GET /api/workbench/tables` answers 422, "The Workbench Input's table
+'policy' has a column 'class', which cannot name a frame's column: a column's
+name is letters, digits and underscores, not starting with a digit and not a
+Python keyword." The save holds a column's name to the identifier pattern
+alone. The tables route and the editor's own check also refuse a Python
+keyword. So the server accepts and stores a form its own pipeline cannot
+read, and the refusal comes later from another route. `class`, `in`, `is`,
+`as` and `or` are all names a form's author might choose. The 25 October
+audit recorded the difference without running it.
+
+**Plan:** Hold a column's name to the one rule, `is_frame_label`, when the
+form is saved, with the tables route's wording.
+
+**Acceptance:** A save with a column named `class` is refused naming the
+table, the column and the rule, and the form on disk is unchanged. A test
+runs one list of names through the save, the tables route and the editor's
+`columnNameProblem` and expects one verdict from all three.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_folder.py::folder_name_problems`;
+`src/haute/_workbench_tables.py::check_tables`;
+`src/haute/_graph_utils.py::is_frame_label`;
+`frontend/src/utils/workbenchForm.ts::columnNameProblem`.

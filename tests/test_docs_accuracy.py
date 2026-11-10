@@ -156,6 +156,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "execution-engine",
     "frontend-graph-canvas",
     "frontend-shared",
+    "git-integration",
     "io-layer",
     "mlflow-model-registry",
     "modelling",
