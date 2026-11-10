@@ -14,7 +14,8 @@ November by the review plan's sweep of failed writes, which failed every
 step of 17 writing operations in turn, held their files open and killed the
 server at three points. `SRV-04` and `SRV-05` come from that sweep and were
 reproduced on that day; the main session added the Data Output's case to
-`SRV-04`.
+`SRV-04`, the sweep of the frontend's logic added the too-long path, and
+`SRV-06` comes from the main session's own runs of that day.
 
 `SRV-01` changes an accepted decision, [the optimiser's error-detail
 policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
@@ -28,6 +29,7 @@ policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
 | SRV-03 | Planned | P2 | A save whose files are written answers as saved even when clearing a stale settings file fails, and the next save clears it. |
 | SRV-04 | Planned | P2 | A save, a settings change or a Data Output's Write that cannot replace its file answers naming the file and why, as the utility editor and the Pipeline files routes do. |
 | SRV-05 | Planned | P3 | A save the server died in is reported at the next load, and no staging file is left to reach version history. |
+| SRV-06 | Planned | P2 | A pipeline file that is missing is reported in one line naming the file and the remedy, when the editor starts and while it runs. |
 
 ## Planned improvements
 
@@ -179,18 +181,34 @@ a file held for a moment, so what reaches the analyst is a file held for
 longer: a spreadsheet left open, a script reading it, a sync or backup
 client, a virus scan.
 
+A third cause has its own error and still no answer: a path too long for
+the file system. A node's settings file is named from the node's name, with
+every character outside ASCII written as six or seven (a Cyrillic or Greek
+letter as six, a Japanese or Chinese character as seven). A name of 36
+Japanese characters is accepted by the editor's rename rule, which allows
+200 characters and looks only at their shape, and makes a file name of 257
+characters; some 42 Cyrillic or Greek letters do the same by that
+arithmetic (measured on the encoding, not saved). The save answers the same
+500. The writer raised its own `PathTooLongError`, which no route
+translates. On Windows without long paths the whole path counts, so fewer
+characters are already too many.
+
 **Plan:** Translate the two failures once, where the save, the settings
 routes and the Data Output's write can share it: a destination another
 program holds becomes the 409 naming the file relative to the project, and
 a write refused for space becomes the 507 naming it, in the words the
-utility and Pipeline files routes use. Other `OSError`s keep the generic
-answer.
+utility and Pipeline files routes use. Translate the writer's too-long-path
+error as well, naming the node whose name makes the path too long, and have
+the rename rule count a name as its file will hold it. Other `OSError`s
+keep the generic answer.
 
 **Acceptance:** With its file held open by a real second handle on Windows,
 each of the pipeline save, the pipeline settings, the MLflow settings, the
 git preferences and a Data Output's Write answers 409 naming the file, and
 the file is unchanged. With the staging write refused for space, each
-answers 507 naming the file.
+answers 507 naming the file. A node name that makes its settings file's
+path too long is refused when it is typed, or by the save, in a message
+naming the node and the limit.
 
 **Dependencies:** None.
 
@@ -200,6 +218,8 @@ answers 507 naming the file.
 `src/haute/routes/mlflow.py::put_mlflow_settings`;
 `src/haute/routes/git.py::git_set_prefs`;
 `src/haute/_file_ops.py::atomic_path`;
+`src/haute/_file_ops.py::PathTooLongError`;
+`src/haute/_graph_utils.py::_sanitize_func_name`;
 `src/haute/routes/utility.py::_replace_or_remove`;
 `src/haute/routes/project_files.py::_publish_write`.
 
@@ -254,3 +274,52 @@ node's settings file is gone after the next save.
 `src/haute/_file_ops.py::_temp_path_for`;
 `src/haute/routes/project_files.py::_remove_stale_staging`;
 `src/haute/_git_transactions.py::_pipeline_folder_new_files`.
+
+### SRV-06 — A missing pipeline file is reported in one line, at start-up and while running
+**Why:** Reproduced on 10 November 2026, in two forms.
+
+While the editor is running, the pipeline file is renamed or deleted in the
+file manager (or by a branch switched in a terminal). Loading the pipeline
+then answers 500 "Operation failed. Check the server logs for details.",
+every time. A save from the open editor answers "stale_document_revision:
+The pipeline changed on disk after this document was loaded. Reload it
+before saving.", and the reload it asks for fails with the same 500. The
+analyst is sent round a loop, and the one sentence that would end it stays
+in the log.
+
+At start-up, with `haute.toml` naming a pipeline file that is not there (a
+mistyped path, or the file renamed while the editor was closed), the server
+does not start: it prints 123 lines, 115 of them a Python traceback through
+the application's start-up, then that sentence, "Pipeline file configured in
+haute.toml [project].pipeline does not exist: ... Fix the path in haute.toml
+or create the file.", then "Application startup failed. Exiting." A file
+that is there but holds no pipeline, such as an empty one, ends the same way
+with "does not look like a Haute pipeline". The server was started as the
+serve command's production mode starts it, since inside this checkout the
+command picks its development mode; the command makes no check of the
+pipeline file before it starts the server (read).
+
+The message is good and names the remedy in both forms; it is the last thing
+an analyst will find. The same resolver's error reaches the deploy dry run
+uncaught as well (`DPL-03`). Without a `haute.toml` the editor starts and
+the first save creates the file.
+
+**Plan:** Give the resolver's refusal a place in the answers: loading the
+pipeline answers it as a refusal with its own code and the resolver's
+sentence, and the editor shows it with the file's name instead of an empty
+canvas. Resolve the pipeline in the serve command before the server is
+started, and print the sentence as the command prints its other errors, with
+exit code 1; keep the start-up check for a server started any other way,
+caught there and logged as one line.
+
+**Acceptance:** With the pipeline file renamed away under a running editor,
+loading the pipeline answers a 4xx naming the file and the remedy, and the
+editor shows that sentence. `haute serve` on a project whose `haute.toml`
+names a missing file, or a file with no pipeline in it, prints one error
+line naming the file and the remedy, with no traceback, and exits 1.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/discovery.py::discover_pipelines`;
+`src/haute/routes/_helpers.py::_ensure_pipeline_index`;
+`src/haute/cli/_serve.py::handle_serve`.
