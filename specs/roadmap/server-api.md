@@ -251,11 +251,23 @@ else would ever remove it", and the assistant's session store prunes its
 own. The shared atomic writer, which the save and the settings writes use,
 has no collector.
 
+A Data Output's Write leaves a second kind of leftover, run for CSV and for
+Parquet with the server killed as the Write publishes its file. The output
+itself stays the old, whole file. Its staged copy, a full copy of the new
+output named `.result.haute-stage-` and 32 hex digits, stays in the
+analyst's output folder after a restart and after a later Write that
+succeeds. Nothing removes it, the Files panel hides it as a dot-name, and
+each Write that is cut short adds another. The sweep's second run saw the
+atomic writer's leftovers from two more operations killed at their rename,
+an undelete and a branch-away (`.haute/trash.<hex>.tmp`,
+`.haute/state.<hex>.tmp`).
+
 **Plan:** Collect first: when the server starts and before a save, remove
 the atomic writer's staging files older than the server's start in the
 folders Haute owns (beside the pipeline file, its `config` and `modules`
 folders, and `.haute`), as the upload route does, and keep the pattern out
-of the milestone's sweep. Then make a cut-short save visible: write a small
+of the milestone's sweep. Before a Data Output's Write, remove the staged
+copies of the same destination that an earlier Write left. Then make a cut-short save visible: write a small
 mark under `.haute` naming the save's files before the first replace and
 remove it after the last; a mark found when the pipeline is loaded becomes
 a diagnostic naming the files, and its list feeds the removal `SRV-03`
@@ -264,7 +276,9 @@ records.
 **Acceptance:** After a save killed between two replaces, the next load
 says the save was cut short and names the files; after the next start no
 staging file remains; a Commit records no staging file; and the removed
-node's settings file is gone after the next save.
+node's settings file is gone after the next save. After a Write cut short,
+the next Write to that destination leaves the output file alone in its
+folder.
 
 **Dependencies:** `SRV-03` for the record of files a save could not remove.
 
@@ -273,9 +287,11 @@ node's settings file is gone after the next save.
 `src/haute/_file_ops.py::atomic_path`;
 `src/haute/_file_ops.py::_temp_path_for`;
 `src/haute/routes/project_files.py::_remove_stale_staging`;
-`src/haute/_git_transactions.py::_pipeline_folder_new_files`.
+`src/haute/_git_transactions.py::_pipeline_folder_new_files`;
+`src/haute/executor.py::new_data_output_staging_path`;
+`src/haute/executor.py::commit_prepared_data_output`.
 
-### SRV-06 — A missing pipeline file is reported in one line, at start-up and while running
+### SRV-06 — A missing pipeline file is reported in one line
 **Why:** Reproduced on 10 November 2026, in two forms.
 
 While the editor is running, the pipeline file is renamed or deleted in the
