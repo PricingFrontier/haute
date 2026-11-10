@@ -32,8 +32,8 @@ records corrections to that audit's claims and proposed remedies.
 | [Frontend shared](frontend-shared.md) | Conditional writes the API client retries | `FES-01` |
 | [Git integration](git-integration.md) | A catch-up that cannot remove an open file and leaves the branch moved | `VCS-01` |
 | [IO layer](io-layer.md) | Inputs whose file is wrong and the fixed text the analyst is given; byte-order marks and empty files in JSON inputs (a decision) | `IOL-01` |
-| [MLflow model registry](mlflow-model-registry.md) | The model-load retry that treats every failure as a corrupt artifact; eviction of local model copies; the run picker's silent omissions; a missing run reported as a traceback | `MLR-01` |
-| [Modelling](modelling.md) | Temporal splits on a date column with gaps; tuning and rerun messages; evaluation planning cost; the constructor-only split seam; how `haute train` loads a script | `MDL-01` |
+| [MLflow model registry](mlflow-model-registry.md) | The model-load retry that treats every failure as a corrupt artifact; eviction of local model copies; the run picker's silent omissions; a missing run reported as a traceback; a load that waits minutes on a server that cannot be reached | `MLR-01` |
+| [Modelling](modelling.md) | Temporal splits on a date column with gaps; tuning and rerun messages; evaluation planning cost; the constructor-only split seam; how `haute train` loads a script; a GLM asked to classify; nulls and infinities a model family cannot take | `MDL-01` |
 | [Pipeline config](pipeline-config.md) | One pointer form for a recovery issue on a nested setting | `PCF-01` |
 | [Pipeline parsing and code generation](codegen.md) | Constructor forms rewritten on save; two hand-written statements the parser cannot read; code generation's cost per edge; decorator keywords a Transform drops; Polars imported under another name; names bound through `exec` or `globals()` | `CGEN-01` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |

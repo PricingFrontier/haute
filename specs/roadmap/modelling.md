@@ -13,6 +13,12 @@ from the source against `HEAD` on that day.
 "unexpected internal error"; they share the worker's failure mapping and go
 together. `MDL-05` removes code and has no behaviour of its own.
 
+`MDL-07` and `MDL-08` come from the review plan's sweep of 10 November 2026,
+which trained each model family through Haute and compared every way of
+scoring it with the family's own library. Where a family scored at all,
+every way agreed with the library row for row; these two are the places
+where it did not score.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -23,6 +29,8 @@ together. `MDL-05` removes code and has no behaviour of its own.
 | MDL-04 | Planned | P3 | Building a group or stratified evaluation plan no longer walks the key column row by row in Python. |
 | MDL-05 | Planned | P3 | Training has one split pipeline: the constructor-only `split` seam and its code are gone. |
 | MDL-06 | Planned | P3 | `haute train` runs any script that plain Python runs: a script's own classes can be dataclasses and can be pickled. |
+| MDL-07 | Planned | P3 | A GLM asked to classify is refused by name, when it is trained from a script and when a Model Scoring node scores it. |
+| MDL-08 | Planned | P2 | A null in a GLM's numeric feature, or an infinity reaching an XGBoost model, is refused naming the column instead of failing the whole run with the library's own error. |
 
 ## Planned improvements
 
@@ -191,3 +199,89 @@ script that raises still reports its own error, and nothing of it is left in
 **Dependencies:** None.
 
 **Evidence:** `src/haute/cli/_train.py::handle_train`.
+
+### MDL-07 — A GLM asked to classify is refused by name
+**Why:** Reproduced on 10 November 2026. The specification says the GLM
+trains regression only, and that a task a family does not support fails
+before data is read. The node's settings are held to that: "GLM does not
+support the classification task." `TrainingJob` itself is not: built with
+`algorithm="glm"` and `task="classification"`, as a hand-edited training
+script can build it, it trains a binomial GLM without a word. Scoring has
+the same gap. A Model Scoring node whose task disagrees with a CatBoost
+model is refused well: "This CatBoost model was trained for regression (loss
+RMSE) but the node scores it as classification. Set the node's task to
+regression." Set to classification over a binomial GLM trained the ordinary
+way, the node's preview fails with RustyStats' own text: "Prediction
+produced non-finite linear predictors. nonfinite_eta_count=1. Use
+predict_linear() or predict_diagnostics() to inspect eta." A binomial GLM is
+the model an analyst is most likely to think of as a classifier.
+
+**Plan:** Check the task against the family's list where `TrainingJob` is
+built, with the message the settings check gives. Give the Model Scoring
+node the same task check for a GLM that the tree families have, saying that
+a binomial GLM predicts a probability and the node's task is regression.
+
+**Acceptance:** `TrainingJob(algorithm="glm", task="classification")` is
+refused before any data is read, naming the family and its tasks. A Model
+Scoring node set to classification over a GLM file is refused in the
+preview, in a run and in the deploy check with a message that names the
+node and says to set its task to regression. A test holds every family to a
+named refusal for each task it does not support, at training and at
+scoring.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_descriptors.py::GLM` lists regression
+alone; `src/haute/modelling/_train_config.py::build_training_job_kwargs`
+makes the check the constructor lacks;
+`src/haute/modelling/_training_job.py::TrainingJob`;
+`src/haute/_model_scorer.py::ModelScorer`.
+
+### MDL-08 — A null or an infinity a family cannot take is refused by column
+**Why:** Reproduced on 10 November 2026. The specification and the Model
+Scoring page promise that a missing value never stops scoring: "every family
+scores it through its own missing-value handling". A GLM has none for a
+numeric term. One null in a numeric feature made the whole frame fail with
+RustyStats' own error, "Prediction produced non-finite linear predictors.
+nonfinite_eta_count=1", naming neither the column nor the row; the same
+frame without that row scored. NaN and the infinities do the same. An
+XGBoost model does it for an infinity: one `inf` in a float feature fails
+the whole frame with "XGBoostError: ... data.cc:1196: Check failed: valid:
+Input data contains `inf` or a value too large", a C++ source path included,
+while CatBoost, LightGBM and EBM score the same row. A ratio whose
+denominator is zero is enough to make one. The sweep met both on all ten
+scoring paths it ran, the deploy scorer among them, where the caller of a
+deployed model is told only that the request failed. Training has the same
+gap for a GLM: nulls in a numeric feature raise RustyStats' "design matrix
+(X) contains 8 NaN values (0.7%)", which names no column, and the training
+worker passes on only Haute's own validation messages, so by the source the
+analyst is told "failed with an unexpected internal error
+(ValidationError)". The route was not run.
+
+**Plan:** Before a GLM is fitted or scored, count the nulls and non-finite
+values in each numeric feature its terms use and refuse naming the column,
+the number of rows and what to do: fill or drop them upstream. Before an
+XGBoost model is scored, do the same for infinities, or pass them as the
+missing value the model was trained with; decide which. Say in the
+specification and on the Model Scoring page what a GLM does with a null in
+a numeric term.
+
+**Acceptance:** A GLM scored on a frame with one null in a numeric feature
+is refused before prediction in a message that names the node, the column
+and the count, in the preview, a run and the deploy scorer. GLM training on
+such data is refused the same way, as a contract error and not an internal
+one. An XGBoost model scored on a frame holding an infinity either scores it
+or is refused by column; no scoring path shows a library's source path. The
+specification's sentence on nulls is true of every family or names the
+exception.
+
+**Dependencies:** A decision on a GLM's null in a numeric term: refuse by
+name, as proposed, or answer null for that row and carry on.
+
+**Evidence:** `src/haute/_mlflow_io.py::native_predictions`;
+`src/haute/modelling/_xgboost.py::XGBoostModel.matrix`;
+`src/haute/modelling/_rustystats.py::_rustystats_call`;
+`src/haute/routes/_training_worker.py::_friendly_error`;
+`specs/modelling/high-level.md` (Unseen categorical values);
+`docs/building-models/nodes/model-score.md` (Values the model was not
+trained on).

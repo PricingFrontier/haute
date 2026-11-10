@@ -10,7 +10,8 @@ runs the picker offers. The packages below come from the 9 November 2026
 codebase review. `MLR-01` was reproduced against `HEAD` on that day with the
 loader's collaborators replaced by stubs, and `MLR-04` by running the
 commands on a shipped example; `MLR-02` and `MLR-03` are read from the
-source.
+source. `MLR-05` was reproduced on 10 November 2026 against a local address
+where nothing listens.
 
 ## Priorities
 
@@ -20,6 +21,7 @@ source.
 | MLR-02 | Planned | P3 | Clearing old model copies never fails a load that succeeded, and never removes a copy another process is reading. |
 | MLR-03 | Planned | P3 | The run picker says how many runs it could not check, and lists the runs the loader can load. |
 | MLR-04 | Planned | P3 | A Model Scoring node whose MLflow run does not exist is reported by node, run and destination, not as a traceback. |
+| MLR-05 | Planned | P2 | A model load from an MLflow server that cannot be reached fails within seconds and says so, instead of holding a preview for four and a half minutes. |
 
 ## Planned improvements
 
@@ -138,10 +140,14 @@ instruction addressed to coding agents, before their output. The editor
 hides the same failure, reproduced on 10 November 2026: previewing the Model
 Scoring node of that example, or the output after it, answers HTTP 500 with
 "Operation failed. Check the server logs for details.", so an analyst who
-opens the example before training sees neither the node nor the run id.
+opens the example before training sees neither the node nor the run id. A
+version that does not exist and an artifact path the run does not hold
+arrive as MLflow's own exception too, in the scorer and on the node in the
+preview ("Model Version (name=freq, version=99) not found"); a missing
+alias or registered model is already reported by name.
 
-**Plan:** Convert a failed lookup of a run, a registered model, a version or
-an alias, at the point the model source is resolved, into Haute's
+**Plan:** Convert a failed lookup of a run, a registered model, a version,
+an alias or an artifact path, where the model source is resolved, into Haute's
 configuration error naming the node, what it looked for and the destination
 it looked in, and mark the node. Both commands then print one line. Set the
 `mlflow.agent.hint` logger above INFO where Haute configures logging.
@@ -159,3 +165,43 @@ the agent hint.
 `src/haute/cli/_deploy.py::handle_deploy`;
 `src/haute/_mlflow_utils.py::resolve_mlflow_source`;
 `src/haute/assistant/assets/examples/model_lifecycle/pipeline.py`.
+
+### MLR-05 — A model load from an unreachable MLflow server gives up in seconds
+**Why:** Reproduced on 10 November 2026. With the project's MLflow
+destination set to a server address where nothing listens, loading a Model
+Scoring node's model from a run blocked for 269 seconds and then raised
+MLflow's own exception: "API request to
+http://127.0.0.1:9/api/2.0/mlflow/runs/get failed ... Max retries exceeded".
+The address refused every connection at once; the time is MLflow's client
+trying again with a growing pause between tries. The sweep then asked for
+the node's preview, which began the wait again and was still waiting when
+its 300 second limit ended it. The connection test on the settings page
+already avoids this. It makes one attempt with a short timeout, and its
+comment gives the reason: "MLflow's client defaults (120 s timeout, 7
+retries, exponential backoff) would keep an abandoned worker ... busy for
+minutes". A model load makes its calls with those defaults. A tracking
+server that is stopped, a VPN that is down or an address typed wrongly
+therefore holds each preview, each `haute run` and each deploy check for
+four and a half minutes and ends in a library's message. `MLR-04` is about
+what is said; this is about the wait.
+
+**Plan:** Give the calls a model load makes, to read the run, the version
+or the alias and to download the file, a bounded number of tries and a
+total time fit for someone waiting at the editor, as the connection test
+has. Report a destination that cannot be reached as that, with its address
+and what to check, through the error `MLR-04` introduces. Let a batch run
+and a deployment's start-up ask for a longer wait.
+
+**Acceptance:** With the destination pointed at a closed local port, the
+preview of a Model Scoring node fails in under fifteen seconds with a
+message naming the node and the address, and a second preview waits no
+longer than the first. A server that answers slowly but within the allowed
+time still loads. A test with a refused connection holds the bound.
+
+**Dependencies:** None. `MLR-04` words the message. `MLR-01` removes the
+second wait where its retry stops treating every failure as a damaged file.
+
+**Evidence:** `src/haute/_mlflow_io.py::_resolve_artifact_local_in_use`;
+`src/haute/_mlflow_utils.py::resolve_mlflow_source`;
+`src/haute/routes/mlflow.py::_search_experiments_probe` is the bounded call
+to follow.
