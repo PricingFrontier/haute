@@ -383,11 +383,11 @@ describe("step forms only build schema-valid payloads", () => {
     expect(summarizeStep(latest)).toBe("total = sum_horizontal(premium, region)")
   })
 
-  it("a first non-missing tries two or more parts in order, as a structured expression or typed as a formula", () => {
+  it("a coalesce tries two or more parts in order, as a structured expression or typed as a formula", () => {
     const spy = vi.fn()
     const step: Step = { id: "f", kind: "with_column", name: "best_premium", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "literal", type: "number", value: 1 }, text: "" } }
     render(<Stateful initial={{ ...step, expr: calculationExpr("coalesce") }} spy={spy} />)
-    expect(screen.getByText("First non-missing of")).toBeInTheDocument()
+    expect(screen.getByText("Parts, in order")).toBeInTheDocument()
     expect(screen.queryByLabelText("Function")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Remove part 1" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Add part" }))
@@ -1462,7 +1462,7 @@ describe("Computed as", () => {
     const select = screen.getByLabelText("Part 1 expression type")
     const sections = within(select).getAllByRole("group")
     expect(sections.map((section) => section.getAttribute("label"))).toEqual(["General", "Number", "Text", "Dates"])
-    expect(within(sections[0]).getAllByRole("option").map((o) => o.textContent)).toEqual(["Formula", "If-then", "Window", "First non-missing", "Sum across", "Join text", "Value"])
+    expect(within(sections[0]).getAllByRole("option").map((o) => o.textContent)).toEqual(["Formula", "If-then", "Window", "Coalesce", "Sum across", "Join text", "Value"])
     expect(within(sections[1]).getByRole("option", { name: "Divide (missing where the divisor is zero)" })).toBeInTheDocument()
     for (const unlisted of ["cast", "try_cast", "to_date", "to_datetime", "try_to_date", "try_to_datetime", "fill_null"]) expect(optionValues(select)).not.toContain(unlisted)
     expect(select).toHaveValue("clip")

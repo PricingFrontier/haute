@@ -752,7 +752,7 @@ function ExprEditor({ expr, onChange, ctx, depth = 1, unfinished }: { expr: Expr
     case "sum_horizontal":
       return <PartsEditor label="Sum of" expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "coalesce":
-      return <PartsEditor label="First non-missing of" expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+      return <PartsEditor label="Parts, in order" expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
 }
 
@@ -965,7 +965,7 @@ function ConcatEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
   )
 }
 
-/** A sum across, or a first non-missing, of two or more parts in order, each a column, a value or any expression. */
+/** A sum across, or a coalesce, of two or more parts in order, each a column, a value or any expression. */
 function PartsEditor({
   label,
   expr,

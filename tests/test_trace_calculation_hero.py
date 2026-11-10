@@ -680,7 +680,7 @@ class TestHorizontalFunctions:
         assert step.calculation["result_value"] == 12
 
     def test_coalesce(self, tmp_path):
-        """pl.coalesce(a, b, 0), as a First non-missing step renders it."""
+        """pl.coalesce(a, b, 0), as a Coalesce step renders it."""
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {"a": [None], "b": [7.0]}, schema={"a": pl.Float64, "b": pl.Float64}

@@ -60,7 +60,7 @@ describe("the Computed as calculations", () => {
     expect(stepIcon(withColumn(parseFormula("premium * 2")))).toBe(Calculator)
     expect(stepTitle(withColumn(calculationExpr("strip")))).toBe("Trim whitespace")
     expect(stepIcon(withColumn(calculationExpr("strip")))).toBe(CaseSensitive)
-    expect(stepTitle(withColumn(calculationExpr("coalesce")))).toBe("First non-missing")
+    expect(stepTitle(withColumn(calculationExpr("coalesce")))).toBe("Coalesce")
     expect(stepIcon(withColumn(calculationExpr("coalesce")))).toBe(ListStart)
     expect(stepTitle(withColumn(parseFormula("coalesce(premium, 0)")))).toBe("Formula")
     const filter: Step = { id: "f", kind: "filter", match: "all", conditions: [] }

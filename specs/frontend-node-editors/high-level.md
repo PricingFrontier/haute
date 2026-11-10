@@ -346,8 +346,8 @@ whatever control has focus: Delete and Backspace outside a text box, and the gra
 Ctrl+C, Ctrl+V, Ctrl+A and Ctrl+G; save, undo and redo, node search, fit view, help and
 Escape (once no open card has handled it) stay global. An `Add step` button under the last
 card (under the start card while there are no steps) opens, in place, a chooser of
-entries by icon and name in five sections: Add column (Formula, If-then, Window, First
-non-missing, Number function, Text function and Date function, each adding an Add column step of that kind,
+entries by icon and name in five sections: Add column (Formula, If-then, Window,
+Coalesce, Number function, Text function and Date function, each adding an Add column step of that kind,
 Number function as Round, Text function as Trim whitespace and Date function as Shift
 date), Rows (Filter
 rows, Sort rows, Remove duplicates, Limit rows), Columns (Keep columns, Drop columns,
@@ -410,8 +410,8 @@ column), an optional in-group order
 quantile, and, for the plain aggregates, a row filter under More options ("Only rows
 where…", which adds a "When" condition list with "Aggregate every row" to remove it),
 dropped when the aggregate changes to a positional one; a text-join expression lists two
-or more parts and a separator, a sum across lists two or more parts, and a first
-non-missing lists two or more parts in the order they are tried ("First non-missing of",
+or more parts and a separator, a sum across lists two or more parts, and a coalesce
+lists two or more parts in the order they are tried ("Parts, in order",
 each a column, a value, a constant or an expression), each row taking the first part that
 isn't missing there, and missing where every part is; a group-by
 aggregation reads as `[name] = [function] of [column]`, wrapping after the `=` when narrow,
@@ -462,7 +462,7 @@ sentence. An if-then lists its branches, each a condition list and a Then value,
 and removable ("Remove branch 2") while there are several, then "Add branch" (a new
 branch's condition starting from the previous branch's first column), and its
 Otherwise value last; a row takes the first branch whose conditions hold. The
-calculations are the General ones (Formula, If-then, Window, First non-missing, Sum
+calculations are the General ones (Formula, If-then, Window, Coalesce, Sum
 across, Join text, Value) and the functions in three sections: Number (Round, Clip, Divide, Absolute value,
 Round down, Round up, Square root, Natural log, Exponential), Text (Trim whitespace,
 Lower case, Upper case, Replace first match, Replace all matches, Replace by pattern,
@@ -474,7 +474,7 @@ name as a card title. A function's form is its value ("Of") and its labelled arg
 An Add column step keeps the kind it was added as, read from its expression with nothing
 stored for it: a Number, Text or Date function step offers, in a "Function" select, the
 functions of its own section only; a Formula (a function typed in the formula box
-included), If-then, Window, First non-missing, Sum across, Join text or Value step shows that calculation's
+included), If-then, Window, Coalesce, Sum across, Join text or Value step shows that calculation's
 form alone, with no select, and so does a step holding a conversion a formula cannot
 express. An operand's "Expression" source instead offers every calculation, in one
 "Computed as" select of four sections, General, Number, Text and Dates. While the
@@ -485,7 +485,7 @@ and Fill missing values being where they are chosen, but stay functions a formul
 a saved one is shown as its formula, or, where a formula cannot express it, keeps its
 own entry. A new column starts in Formula, its name field taking focus first. Changing
 the "Function" or "Computed as" select never discards work and never wraps it: the value being computed (a
-function's Of, a window's value, a first non-missing's, a sum across's or a text join's first part, a Value's
+function's Of, a window's value, a coalesce's, a sum across's or a text join's first part, a Value's
 value) carries into the new calculation's value where it has one, a function's arguments
 carry to a function taking the same kinds of argument, Formula shows the expression being
 left as its formula where a formula can express it, and going back to a calculation

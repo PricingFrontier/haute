@@ -568,7 +568,7 @@ and is refused in membership lists and variables. An operand may itself be a nes
 expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
 accepted, except in membership lists, variable values and the plain-value function
 arguments, which stay plain values; a value, formula, function, sum-across or
-first-non-missing expression may carry a `text` annotation (the
+coalesce expression may carry a `text` annotation (the
 formula exactly as the editor's user typed it, kept for display and never rendered); a
 nested formula is bracketed only where Python's left-to-right
 evaluation needs it (a left operand only when its operator is weaker than the
@@ -607,8 +607,8 @@ divisor)` renders `pl.when(divisor != 0).then(value / divisor)`, which is null w
 the divisor is zero or missing, while `/` stays Polars' division (`x / 0` is infinite
 and `0 / 0` is NaN). A sum across columns (`{"type": "sum_horizontal", "parts":
 [...]}`, two or more operands in expression position) renders `pl.sum_horizontal(...)`,
-which skips missing values, so a row whose parts are all missing sums to 0. A first
-non-missing value (`{"type": "coalesce", "parts": [...]}`, two or more operands in
+which skips missing values, so a row whose parts are all missing sums to 0. A coalesce
+(`{"type": "coalesce", "parts": [...]}`, two or more operands in
 expression position, in the order they are tried) renders `pl.coalesce(...)`: each row
 takes its first part that is not null, and is null where every part is (NaN is a value,
 not a missing one), in the parts' common Polars type. Two reshaping steps

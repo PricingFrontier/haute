@@ -1534,7 +1534,7 @@ class _Renderer:
             return f"pl.sum_horizontal({self._variadic_parts(expr, label, 'sum across')})"
         if kind == "coalesce":
             # Each row takes its first part that is not null, in the order given.
-            return f"pl.coalesce({self._variadic_parts(expr, label, 'first non-missing')})"
+            return f"pl.coalesce({self._variadic_parts(expr, label, 'coalesce')})"
         raise self.fail(f"Unknown expression type {kind!r}.")
 
     def _variadic_parts(self, expr: Mapping[str, Any], label: str, name: str) -> str:

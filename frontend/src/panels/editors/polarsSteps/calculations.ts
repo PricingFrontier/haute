@@ -21,7 +21,7 @@ export const CALCULATIONS: readonly Calculation[] = [
   { id: "formula", section: "General", name: "Formula" },
   { id: "if_then", section: "General", name: "If-then" },
   { id: "window", section: "General", name: "Window" },
-  { id: "coalesce", section: "General", name: "First non-missing" },
+  { id: "coalesce", section: "General", name: "Coalesce" },
   { id: "sum_across", section: "General", name: "Sum across" },
   { id: "join_text", section: "General", name: "Join text" },
   { id: "value", section: "General", name: "Value" },
@@ -84,7 +84,7 @@ export type FunctionSection = "Number" | "Text" | "Dates"
 /**
  * The section an Add column step computed as `id` keeps, so its Function list
  * offers that section's functions, or null for a step that keeps its one
- * calculation (a Formula, If-then, Window, First non-missing, Sum across, Join text or Value, or
+ * calculation (a Formula, If-then, Window, Coalesce, Sum across, Join text or Value, or
  * an unlisted function).
  */
 export function stepSection(id: CalculationId): FunctionSection | null {
@@ -105,7 +105,7 @@ export function calculationLabel(calculation: Calculation): string {
   return calculation.qualifier ? `${calculation.name} (${calculation.qualifier})` : calculation.name
 }
 
-/** The value an expression computes from: a function's Of, a window's value, a first non-missing's, sum across's or text join's first part, a Value's value. */
+/** The value an expression computes from: a function's Of, a window's value, a coalesce's, sum across's or text join's first part, a Value's value. */
 export function computedValue(expr: Expr): Operand | undefined {
   switch (expr.type) {
     case "function":
