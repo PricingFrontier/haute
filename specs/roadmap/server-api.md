@@ -13,7 +13,8 @@ the source. `SRV-03` was read from the source then and reproduced on 10
 November by the review plan's sweep of failed writes, which failed every
 step of 17 writing operations in turn, held their files open and killed the
 server at three points. `SRV-04` and `SRV-05` come from that sweep and were
-reproduced on that day.
+reproduced on that day; the main session added the Data Output's case to
+`SRV-04`.
 
 `SRV-01` changes an accepted decision, [the optimiser's error-detail
 policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
@@ -25,7 +26,7 @@ policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
 | SRV-01 | Decision | P2 | A write, a training run or a solve stopped by one of the analyst's own nodes says which node and why, as preview and trace do. |
 | SRV-02 | Planned | P2 | Live sync watches only what it reads and does its parsing off the event loop. |
 | SRV-03 | Planned | P2 | A save whose files are written answers as saved even when clearing a stale settings file fails, and the next save clears it. |
-| SRV-04 | Planned | P2 | A save or a settings change that cannot write its file answers naming the file and why, as the utility editor and the Pipeline files routes do. |
+| SRV-04 | Planned | P2 | A save, a settings change or a Data Output's Write that cannot replace its file answers naming the file and why, as the utility editor and the Pipeline files routes do. |
 | SRV-05 | Planned | P3 | A save the server died in is reported at the next load, and no staging file is left to reach version history. |
 
 ## Planned improvements
@@ -153,39 +154,48 @@ ledger records the removal.
 `src/haute/routes/pipeline.py::save_pipeline` records the commit only after
 the service returns.
 
-### SRV-04 — A save that cannot write its file says which file and why
-**Why:** Reproduced on 10 November 2026, with a second handle holding the
-file open as most Windows programs hold one, and nothing injected. A
-pipeline save while another program holds `main.py` or its sidecar, a change
-to the pipeline settings, a change to the MLflow settings (`haute.toml`
-held) and a change to the git preferences each answer 500 "Operation
-failed. Check the server logs for details." The held file is unchanged, and
-in the sweep every other file of the save was rolled back, so nothing is
-lost, but the analyst is told nothing they can act on. A save whose staging
-write is refused for a full disk answers the
-same (run with the write made to raise "No space left on device"). The
-words for both cases exist. The utility editor's save, run beside the others
-with its file held, answered 409 "utility/helpers.py is open in Haute or
-another program. Try again once it's closed.", and the Pipeline files
+### SRV-04 — A write that cannot replace its file says which file and why
+**Why:** Reproduced on 10 November 2026 with real second handles holding
+the files, and nothing injected. The commonest case first: a Data Output
+writes its results to a CSV file, the analyst opens the file in Excel, and
+presses Write again with Replace existing file. The answer is 500 "Operation
+failed. Check the server logs for details.", for CSV and for Parquet (run
+with the file held as Excel holds a workbook: others may read it, nobody may
+write or replace it). A pipeline save while another program holds `main.py`
+or its sidecar, a change to the pipeline settings, a change to the MLflow
+settings (`haute.toml` held) and a change to the git preferences answer the
+same. In every case the held file is unchanged and nothing is left beside
+it, and in the sweep a save rolled its other files back, so nothing is lost.
+But the analyst is told nothing they can act on. A save whose staging write
+is refused for a full disk answers the same (run with the write made to
+raise "No space left on device").
+
+The words for both cases exist. The utility editor's save, run beside the
+others with its file held, answered 409 "utility/helpers.py is open in Haute
+or another program. Try again once it's closed.", and the Pipeline files
 routes answer a full disk with 507 "There isn't room on disk for" and the
 file's name (read from the source). The shared atomic writer already retries
 a file held for a moment, so what reaches the analyst is a file held for
-longer: a script reading it, a sync or backup client, a virus scan.
+longer: a spreadsheet left open, a script reading it, a sync or backup
+client, a virus scan.
 
-**Plan:** Translate the two failures once, where the save and the settings
-routes can share it: a `PermissionError` from the atomic writer becomes the
-409 naming the file relative to the project, and a write refused for space
-becomes the 507 naming it, in the words the utility and Pipeline files
-routes use. Other `OSError`s keep the generic answer.
+**Plan:** Translate the two failures once, where the save, the settings
+routes and the Data Output's write can share it: a destination another
+program holds becomes the 409 naming the file relative to the project, and
+a write refused for space becomes the 507 naming it, in the words the
+utility and Pipeline files routes use. Other `OSError`s keep the generic
+answer.
 
 **Acceptance:** With its file held open by a real second handle on Windows,
-each of the pipeline save, the pipeline settings, the MLflow settings and
-the git preferences answers 409 naming the file, and the file is unchanged.
-With the staging write refused for space, each answers 507 naming the file.
+each of the pipeline save, the pipeline settings, the MLflow settings, the
+git preferences and a Data Output's Write answers 409 naming the file, and
+the file is unchanged. With the staging write refused for space, each
+answers 507 naming the file.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/routes/pipeline.py::save_pipeline`;
+**Evidence:** `src/haute/routes/pipeline.py::write_output_node`;
+`src/haute/routes/pipeline.py::save_pipeline`;
 `src/haute/routes/pipeline.py::patch_pipeline_settings`;
 `src/haute/routes/mlflow.py::put_mlflow_settings`;
 `src/haute/routes/git.py::git_set_prefs`;
