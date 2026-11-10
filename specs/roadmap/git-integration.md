@@ -8,8 +8,8 @@ branch and its save ledger, catching up from a remote, and what a failed git
 command leaves behind. The packages below come from the review plan's runs
 of 10 November 2026. Each was reproduced on Windows in a scratch
 repository: `VCS-01` with a real open file and a local remote, `VCS-02` and
-`VCS-03` with nothing injected into Haute, and `VCS-04` by killing the
-server process.
+`VCS-03` with nothing injected into Haute, `VCS-04` by killing the server
+process, and `VCS-05` in a browser with two pages open on one project.
 
 ## Priorities
 
@@ -19,6 +19,7 @@ server process.
 | VCS-02 | Planned | P2 | Commit and Restore succeed when a deletion or a rename is already staged, instead of failing every time with "Check the server logs". |
 | VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "see server log". |
 | VCS-04 | Planned | P3 | A restore the server died in reads as interrupted at the next start, and Retry finishes it. |
+| VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
 
 ## Planned improvements
 
@@ -223,3 +224,40 @@ leaves no mark.
 **Evidence:** `src/haute/_git_transactions.py::restore_version`;
 `src/haute/_git_transactions.py::retry_interrupted`;
 `src/haute/_git_state.py::record_interrupted`.
+
+### VCS-05 — A branch delete names what was confirmed
+**Why:** Reproduced on 10 November 2026 in a browser, with two pages open on
+one project. Page one opens the branch manager's confirmation for a branch
+that is not the current one: "Delete scratch? It goes to Deleted and can be
+restored from there." Page two switches the project onto that branch (and,
+in the sweep's second run, saves work there). Page one's confirmation keeps
+its text, and its Delete removes the branch the project is now on: HEAD is
+left detached at the last milestone, page one reads "Viewing an earlier
+version", and the work saved from page two is in Deleted. Nothing is lost,
+since Deleted keeps the branch and an undelete restores it. But the analyst
+confirmed something else: the current branch is normally deleted behind a
+further sentence, "You'll be returned to the branch chooser.", and a check
+for unsaved edits.
+
+The specification has the server refuse a delete over unmerged saves, or
+over the active branch's changes, "unless `confirm=True`". The editor sends
+that flag with every delete, on the strength of a dialog that described the
+branch as it was when it opened. A file delete in the Files panel names the
+revision it was confirmed against, and is refused when the file moved
+("changed since you chose to delete it. Look again, then retry."). A branch
+delete names nothing.
+
+**Plan:** Send with the delete what the confirmation showed: the branch's
+two tips and whether it was the current one. Refuse when either differs, in
+the Files panel's words, and let the manager show the branch as it now is.
+
+**Acceptance:** With a branch switched onto, or saved to, after its
+confirmation opened, Delete is refused naming the change and the branch is
+as it was; an unchanged branch is deleted as now. A browser test drives two
+pages on one project.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/components/BranchManager.tsx`;
+`src/haute/_git_archive.py::delete_working_pair`;
+`src/haute/routes/project_files.py::_delete`.

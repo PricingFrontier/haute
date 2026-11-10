@@ -561,15 +561,30 @@ wrong for a decimal comma or a slip of the key. A column shown in the general
 format keeps the text as typed on the sheet, so the underwriter sees `1,5`
 while the pipeline prices 15.
 
+At the edge of what counts as a space the two halves are not one rule at
+all, reproduced on 10 November 2026 by running both on the same texts:
+JavaScript and Python strip different characters. A typed 5 with a
+byte-order mark before it (U+FEFF, which text copied out of a file can
+carry) shows on the sheet as the number 5, unmarked, while the server keeps
+the text as typed; a cell holding only that character counts as filled on
+the server and as empty on the sheet. The separator controls U+001C to
+U+001F, and U+0085, go the other way: the sheet marks a 1 and a 2 with one
+of them between as "Not a number", and the server reads 12. The server's
+comment gives the reason for the shared rule as "a cell the view marks is
+one the server would keep as typed"; for these seven texts it is not.
+
 **Plan:** Accept a comma only as a thousands separator in its place: groups
 of three digits after the first group, before any decimal point. Text with a
 comma anywhere else is not a number: the sheet marks the cell and the server
 keeps the text as typed, as both already do for other text in a number
-column. Change the two parsers and their shared cases together.
+column. Change the two parsers and their shared cases together. Name the
+characters both sides strip in one list beside those cases, in place of
+each language's own notion of whitespace.
 
 **Acceptance:** `1,234`, `1,234.5` and `£12,000` read as numbers; `1,5`,
 `1,00`, `12,34,567` and `1 000,50` are marked on the sheet and kept as text
-by the server. The cases live in the fixture both test suites read.
+by the server. A 5 behind U+FEFF, and a 1 and a 2 around U+001C, read the
+same on both sides. The cases live in the fixture both test suites read.
 
 **Dependencies:** None.
 
