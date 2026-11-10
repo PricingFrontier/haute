@@ -17,7 +17,7 @@ server process.
 |---|---|---:|---|
 | VCS-01 | Planned | P2 | A catch-up that cannot remove an open file leaves the branches and the files as they were, and removes the file on the retry. |
 | VCS-02 | Planned | P2 | Commit and Restore succeed when a deletion or a rename is already staged, instead of failing every time with "Check the server logs". |
-| VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust and a damaged git config are each reported with their cause, not as "Not a git repository" or a missing identity. |
+| VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "see server log". |
 | VCS-04 | Planned | P3 | A restore the server died in reads as interrupted at the next start, and Retry finishes it. |
 
 ## Planned improvements
@@ -115,7 +115,7 @@ did not happen is recorded by the next Commit.
 `src/haute/routes/project_files.py::_delete`.
 
 ### VCS-03 — A git command that git refuses is reported with git's reason
-**Why:** Reproduced on 10 November 2026 with three everyday causes, none
+**Why:** Reproduced on 10 November 2026 with four everyday causes, none
 injected into Haute.
 
 - A `.git/index.lock` left by a git command that crashed, or held by one
@@ -136,6 +136,14 @@ injected into Haute.
   identity prompt, although an identity is set.
 - A damaged line in `.git/config`. Git says "bad config line 29 in file
   .git/config". Haute answers exactly as for the untrusted folder.
+- A git set to sign every commit (`commit.gpgsign`, usual where signed
+  commits are required) whose signing program fails, as a gpg with no key
+  or one that cannot ask for its passphrase does (run with a program that
+  exits at once). Git says "error: gpg failed to sign the data". Every
+  save answers the "see server log" warning, and Commit and Restore answer
+  "Operation failed. Check the server logs for details.", so version
+  history stops and nothing mentions signing. Each failed save leaves its
+  files staged, which for a deleted file is the state `VCS-02` describes.
 
 In the second and third cases the repository exists and holds the project's
 history, and `git init` repairs neither. The readiness check asks git
@@ -150,20 +158,24 @@ the message. The specification already separates `git-unavailable` from
 `no-repository` "so the UI does not offer init".
 
 **Plan:** Tell a refusal from a "no". When `rev-parse` or `config` ends with
-git's fatal exit code, match the message against a short list (a lock file
-present, an untrusted folder, a config file git cannot read) and carry the
-reason. Readiness then answers a state other than `no-repository`, with the
+git's fatal exit code, or a commit fails, match the message against a short
+list (a lock file present, an untrusted folder, a config file git cannot
+read, a commit that could not be signed) and carry the reason. Readiness then answers a state other than `no-repository`, with the
 reason in its errors. The capture warning and Commit's refusal use sentences
 written for each cause, with what to do: wait, or delete `.git/index.lock`
 when no git command is running; the `safe.directory` command with the
-folder; the config file and the line. A failure outside the list keeps the
-generic text.
+folder; the config file and the line; that the commit could not be signed.
+A failure outside the list keeps the generic text. Whether an automatic save
+should be signed at all is worth deciding with this: saves already skip the
+project's hooks, which run at the milestone.
 
 **Acceptance:** With a `.git/index.lock` present, a save's warning and
 Commit's refusal name the lock and what to do. With
 `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, and with a damaged `.git/config`,
 readiness is not `no-repository`, no answer mentions `git init`, the
-identity prompt does not open, and the message names the cause.
+identity prompt does not open, and the message names the cause. With
+`commit.gpgsign` on and a signing program that fails, a save's warning and
+Commit's refusal say the commit could not be signed.
 
 **Dependencies:** None.
 
@@ -173,6 +185,7 @@ identity prompt does not open, and the message names the cause.
 `src/haute/_git_setup.py::get_identity`;
 `src/haute/_git_read_models.py::working_branch_status`;
 `src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
+`src/haute/_git_transactions.py::commit_save`;
 `frontend/src/components/BranchIndicator.tsx`.
 
 ### VCS-04 — A restore cut short is found at the next start
