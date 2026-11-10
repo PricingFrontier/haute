@@ -160,9 +160,10 @@ the message. The specification already separates `git-unavailable` from
 **Plan:** Tell a refusal from a "no". When `rev-parse` or `config` ends with
 git's fatal exit code, or a commit fails, match the message against a short
 list (a lock file present, an untrusted folder, a config file git cannot
-read, a commit that could not be signed) and carry the reason. Readiness then answers a state other than `no-repository`, with the
-reason in its errors. The capture warning and Commit's refusal use sentences
-written for each cause, with what to do: wait, or delete `.git/index.lock`
+read, a commit that could not be signed) and carry the reason. Readiness
+then answers a state other than `no-repository`, with the reason in its
+errors. The capture warning and Commit's refusal use sentences written for
+each cause, with what to do: wait, or delete `.git/index.lock`
 when no git command is running; the `safe.directory` command with the
 folder; the config file and the line; that the commit could not be signed.
 A failure outside the list keeps the generic text. Whether an automatic save
