@@ -9,14 +9,14 @@ packages below come from the review plan's browser sweep of 10 November 2026
 ("state that outlives its moment"). Each was reproduced in a real browser
 against a local server, first by the sweep and then by the main session on
 the scaffolded test project, with a data file replaced on disk while the
-editor was open.
+editor was open. The main session added the Banding editor's case.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FEP-01 | Planned | P2 | After a data file's columns change, one Refresh previews the file as it is, instead of failing on the columns the editor remembered. |
-| FEP-02 | Planned | P2 | The Explore node's Refresh brings its Overview up to date with the data, as it does the Preview tab. |
+| FEP-02 | Planned | P2 | A node's Refresh brings the Explore overview, and the Banding editor's counts and values, up to date with the data, as it does the preview. |
 
 ## Planned improvements
 
@@ -62,7 +62,7 @@ browser test replaces the file under a previewed node.
 **Evidence:** `frontend/src/hooks/usePipelineAPI.ts::previewColumnNamesForNode`;
 `src/haute/executor.py::_preview_projection_columns`.
 
-### FEP-02 — The Explore node's Refresh reaches its Overview
+### FEP-02 — A Refresh reaches the data the Explore panes and the editors read
 **Why:** Reproduced on 10 November 2026 in the editor. An Explore node's
 Overview over a Data Input of 30 rows reads "ROWS 30", with the `value`
 column running from 11 to 129. The file is replaced by a new extract with
@@ -77,6 +77,18 @@ rows. It is the same over a Parquet file read directly and over a CSV file
 that Haute snapshots, and with changed columns the schema card keeps listing
 the old ones (60 where the file has 10).
 
+The Banding editor reads the same shared data and is left behind in the same
+way. With its data cached, its basis line reads "All rows · 30" and its
+categorical factor knows the column's two values. After the file is replaced
+by 12 rows that hold a third value, two Refreshes leave the line at "All
+rows · 30" and the editor without the new value, while the preview table
+beside it shows the 12 rows and the new value falling to the factor's
+default. Selecting another node and coming back turns the line into "Cached
+data is out of date · Refresh this node to count all rows". An analyst who
+refreshes to map a new level is shown the old levels as the whole data. The
+Rating Step's level list and Explore's Relationships pane read the data
+through the same hook (read, not run).
+
 The specification says Explore "renders statistics only from the shared
 profile of the data version that point currently holds", and that the node's
 Refresh is what deals with data that is "missing, stale, partial or
@@ -88,16 +100,27 @@ new one.
 
 **Plan:** On Refresh, resolve the node's data point again before deciding.
 When its data version has moved, fetch the profile for the new version and
-let the cards, pivots and charts follow it as they do after a reload.
+let the cards, pivots and charts follow it as they do after a reload, and
+let the editors' whole-data answers do the same. One thing then needs care:
+the schema card keeps its search text in state and filters by it even when
+the schema is too short to show the search box, so a long schema searched
+and then refreshed to a short one would hide columns with no control left to
+clear the search (read from the source; today the card is remounted before
+its schema can change under it). Clear the search when the box goes.
 
 **Acceptance:** After the file under an Explore node is replaced, one
 Refresh makes the Overview's dataset, numeric and schema cards show the new
-data, for a Parquet and for a CSV input; a Refresh on unchanged data still
-starts no rebuild. Pivots, Charts and Relationships, which this run did not
-exercise, are held by the same test.
+data, for a Parquet and for a CSV input; the Banding editor's basis line and
+values follow the new file after the same one Refresh; a Refresh on
+unchanged data still starts no rebuild. Pivots, Charts, Relationships and
+the Rating Step's levels, which this run did not exercise, are held by the
+same test. A schema refreshed from long to short shows every column.
 
 **Dependencies:** None.
 
 **Evidence:** `frontend/src/panels/ExplorePreview.tsx`;
 `frontend/src/hooks/useNodeDataCache.ts::refreshNodeDataCache`;
-`frontend/src/hooks/useNodeDataProfile.ts`.
+`frontend/src/hooks/useNodeDataProfile.ts`;
+`frontend/src/panels/editors/shared/useWholeDataAnswer.ts`;
+`frontend/src/panels/editors/banding/useBandingStats.ts`;
+`frontend/src/panels/explore/SchemaTableCard.tsx`.
