@@ -794,6 +794,40 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
         )
 
 
+@pytest.mark.parametrize("order", [["premium", "audit"], ["audit", "premium"]])
+def test_a_definition_keeps_its_output_order_through_a_save(
+    tmp_path: Path, order: list[str]
+) -> None:
+    """The owner's panel reorders the outputs; the definition file writes and reads them so."""
+    ports = {
+        "premium": SubmodelOutputPort(
+            name="premium", source=SubmodelEndpoint(node_id="local_output")
+        ),
+        "audit": SubmodelOutputPort(name="audit", source=SubmodelEndpoint(node_id="local_input")),
+    }
+    graph = PipelineGraph(
+        nodes=[_node("root_source"), _instance("scoring_a", "scoring_a")],
+        edges=[
+            GraphEdge(
+                id="feed", source="root_source", target="scoring_a", targetHandle="in__policy"
+            )
+        ],
+        submodels={"definition_scoring": _definition(output_ports=[ports[name] for name in order])},
+    )
+
+    files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+    for relative_path, source in files.items():
+        output = tmp_path / relative_path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(source, encoding="utf-8")
+    reparsed = parse_pipeline_source(
+        files["main.py"], source_file=str(tmp_path / "main.py"), _base_dir=tmp_path
+    )
+
+    definition = (reparsed.submodels or {})["definition_scoring"]
+    assert [port.name for port in definition.output_ports] == order
+
+
 def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:
     port = SubmodelInputPort(name="policy", targets=[])
     definition = _definition(input_ports=[port])

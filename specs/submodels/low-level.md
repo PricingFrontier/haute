@@ -883,7 +883,12 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `frontend/src/__tests__/editors/SubmodelEditor.test.tsx` — every declared input
   in the live occurrence panel, moving a connection onto a bound input, Undo and Redo;
   missing columns grouped by input, unavailable schema errors, and clearing the
-  warning section when a later preview reports no warnings.
+  warning section when a later preview reports no warnings; an owner's outputs moved
+  by Alt+arrows and by dragging (`moveSubmodelOutput` in
+  `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts`) in one undoable definition
+  edit, and an instance's listed in the same order without moving them.
+  `tests/test_submodel_instances.py::test_a_definition_keeps_its_output_order_through_a_save`
+  holds that order through the definition file's `output_ports`.
 - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — authoritative instance output labels,
   including an occurrence committed by Create Instance after identity resolution,
   with one or several declared outputs and no outgoing connections.

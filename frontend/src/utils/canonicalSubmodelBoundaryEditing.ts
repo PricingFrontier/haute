@@ -834,3 +834,27 @@ export function removeCanonicalSubmodelInputPort(
       !occurrenceIds.has(edge.target) || edge.targetHandle !== parentHandle),
   }, omitted)
 }
+
+/**
+ * The submodels with definition `definitionId`'s public output at `from` moved to `to`.
+ * Every occurrence draws its output rows in this order and a preview opens on the first;
+ * edges follow their outputs by name, so nothing else changes.
+ */
+export function moveSubmodelOutput(
+  submodels: Record<string, unknown>,
+  definitionId: string,
+  from: number,
+  to: number,
+): Record<string, unknown> {
+  const definition = submodels[definitionId]
+  if (!isSubmodelDefinition(definition, definitionId)) {
+    throw new Error(`Submodel definition ${definitionId} is missing or malformed`)
+  }
+  const outputPorts = [...definition.outputPorts]
+  if (outputPorts[from] === undefined || outputPorts[to] === undefined) {
+    throw new Error(`Cannot move output ${from} to ${to}: ${definitionId} has ${outputPorts.length} outputs`)
+  }
+  const [moved] = outputPorts.splice(from, 1)
+  outputPorts.splice(to, 0, moved)
+  return { ...submodels, [definitionId]: { ...definition, outputPorts } }
+}

@@ -28,7 +28,7 @@ A submodel's panel has no tabs. It shows:
 - **Submodel** and the number of nodes inside it.
 - **FILE**: the definition's file, `modules/<name>.py`.
 - **INPUTS**: every public input, with a selector of this occurrence's incoming connections or **not connected**. Choosing a connection moves it to that input. If another connection already feeds the input, that connection is removed. The edit takes one Undo.
-- **OUTPUTS**: the definition's public output ports.
+- **OUTPUTS**: the definition's public output ports, in the order the node shows them. On the occurrence that owns the definition, drag an output to move it, or select it and press Alt+Up or Alt+Down. The new order applies to every occurrence, and the first output is the one a preview opens on. Connections stay with their outputs. The move takes one Undo.
 - **MISSING COLUMNS**, on an instance after preview: the columns its inputs lack compared with the owner's, listed by public input. Only inputs connected on both occurrences are compared. If an input's schema cannot be resolved, its error appears instead. The section is absent when there are no warnings.
 
 Double-click the node on the canvas to step inside. The input selectors remain editable on an instance; its internal definition is read-only. These selectors are the instance's input mapping: each public input can receive any incoming frame, even when their names differ. The bindings belong to the occurrence and do not change the shared definition.
