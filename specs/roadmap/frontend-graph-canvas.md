@@ -4,14 +4,17 @@
 
 The graph store behind the canvas, as [the frontend graph canvas
 specification](../frontend-graph-canvas/high-level.md) describes it: what one
-edit costs, what the undo history holds and which connections the canvas
-takes. `FEG-01` comes from the
+edit costs, what the undo history holds, which connections the canvas
+takes and what a save does when its answer never comes. `FEG-01` comes
+from the
 9 November 2026 codebase review and was measured against `HEAD` on that day
 by bundling the store and driving it under Node. `FEG-02` comes from the
 review plan's sweep of the frontend's logic on 10 November 2026 and was
 confirmed in a real browser. `FEG-03` comes from the plan's browser sweep
 of the editors' fields on 11 November and was re-run by the main session
-in a browser and through the save route.
+in a browser and through the save route. `FEG-04` comes from the plan's
+browser sweep of failed calls on the same day; the main session ran it
+again with a dropped connection and with a gateway's answer.
 
 ## Priorities
 
@@ -20,6 +23,7 @@ in a browser and through the save route.
 | FEG-01 | Planned | P2 | An edit's cost and the undo history's size follow what changed, not the size of every table in the graph. |
 | FEG-02 | Planned | P2 | Deleting a node with Backspace is one undo step, as with Delete: one Undo brings back the node and its edges. |
 | FEG-03 | Planned | P2 | A connection that closes a loop is refused at the canvas, and a save that meets a loop names its nodes instead of failing every later save with "Check the server logs". |
+| FEG-04 | Planned | P2 | After a save whose answer never came, the next Save repeats it under the same operation: the analyst's own save is not refused as a change on disk, and the work done since is kept. |
 
 ## Planned improvements
 
@@ -145,3 +149,61 @@ the loop.
 `src/haute/_topo.py::CycleError`;
 `src/haute/_topo.py::UnknownEdgeEndpointError`;
 `src/haute/routes/pipeline.py::save_pipeline`.
+
+### FEG-04 — A lost answer to a save does not lock the editor against itself
+**Why:** Reproduced in a browser on 11 November 2026, by the review plan's
+sweep of failed calls and again by the main session. A pipeline save reaches
+the server and is written, and its answer never reaches the browser. Two
+ordinary causes were run. The connection drops while the save is in flight,
+so the one repeat the client sends cannot reach the server either. Or a
+gateway in front of a hosted editor answers 504 for a save the server went
+on to finish. The screen says "Failed to save pipeline: Failed to fetch", or
+"Failed to save pipeline: Gateway Timeout", and the file holds the save.
+
+The analyst works on and presses Save again with the network back. The
+answer is "Save rejected: the pipeline changed on disk. Reload the file or
+discard local edits first.", under the banner "Pipeline changed on disk
+while you have unsaved changes. Reload the file or discard local edits
+first." Nothing changed on disk but their own save. The editor now reads
+"READ-ONLY", the Save button is off, Ctrl+S repeats the banner, and no
+control offers either remedy the message names. Reloading the page is the
+way out, and it shows the file as the lost save left it. In the run, a
+second rename made after the failed save was on the canvas, never reached
+the file, and was gone after the reload: everything done since the save is
+lost.
+
+The server is right to refuse: the second save is a new operation on the
+revision the first one replaced. The client had what it needed to avoid
+asking. Every save "names a fresh `operation`", and the server "answers a
+repeat of a save that committed with that save's response". The client uses
+that for one immediate repeat after a network failure and then lets the
+request go: "a second lost answer, or any other failure, is reported as a
+failed save". After an answer of 500 or more, or one it cannot read, it
+does not repeat at all. The underwriter app keeps such a save, "so the next
+Save repeats it exactly before saving anything typed since", and the same
+fault there cost nothing (run the same day: one version, "Saved").
+`SRV-03` names a third cause, a save the server itself answers 500 after
+writing it.
+
+**Plan:** Keep a save whose fate is unknown, with its operation key: no
+answer, an answer of 500 or more, or an answer that does not parse. Before
+the next Save sends anything new, repeat the kept one. When it had
+committed, its answer is the first request's: take the committed revision,
+keep the later edits as unsaved, and save them on that revision. When it
+had not, it is made now. Only an answer the server words, a status below
+500, lets the kept save go. The conflict banner stays for a revision
+another writer made.
+
+**Acceptance:** In a browser test, a save the server wrote whose answer is
+dropped twice, and one answered by a gateway's 504 page, are each followed
+by a further edit and a Save: that Save answers "Saved", the file holds both
+edits, no conflict banner shows and the editor stays editable. A save
+refused because another writer saved in between still shows the banner.
+
+**Dependencies:** None. `SRV-03` removes one cause on the server.
+
+**Evidence:** `frontend/src/hooks/usePipelineAPI.ts::isLostAnswer`;
+`frontend/src/hooks/usePipelineAPI.ts::usePipelineAPI`;
+`frontend/src/app/useOpenQuoteStore.ts`;
+`src/haute/routes/pipeline.py::save_pipeline`;
+`specs/frontend-graph-canvas/low-level.md`; `specs/workbench/high-level.md`.

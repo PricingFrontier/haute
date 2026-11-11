@@ -5,12 +5,15 @@
 The on-disk store of input and node-output snapshots, as [the caching
 specification](../caching/high-level.md) describes it: what a node-output
 snapshot's signature covers, and so when a stored output stops being
-current, and how a finished snapshot is published. `CCH-01` comes from the
+current, how a finished snapshot is published, and what the check after it
+costs. `CCH-01` comes from the
 9 November 2026 codebase review. It follows from the signature's fields as
 written and from the repository's history; no stale read was staged to
 show it. `CCH-02` comes from the review plan's sweep of pairs of operations
 and was reproduced on 11 November with a second process holding one of the
-snapshot's new files open.
+snapshot's new files open. `CCH-03` comes from the plan's sweep of sizes
+on the same day, measured again by the main session with a timer around
+the check.
 
 ## Priorities
 
@@ -18,6 +21,7 @@ snapshot's new files open.
 |---|---|---:|---|
 | CCH-01 | Planned | P2 | A node output stored by one version of Haute's node code is not read as current by another. |
 | CCH-02 | Planned | P3 | A snapshot is published while a scanner or an indexer still has one of its new files open, instead of the build failing with no reason given. |
+| CCH-03 | Planned | P3 | A preview that stores many node outputs checks the store's budget once, not with a walk of the whole store after each one. |
 
 ## Planned improvements
 
@@ -103,3 +107,51 @@ another program has the files open, and the next build succeeds.
 `src/haute/_node_snapshots.py::publish_node_output`;
 `src/haute/routes/input_cache.py::_build_failure`;
 `src/haute/_workbench_app.py`.
+
+### CCH-03 — A stored node output does not cost a walk of the whole store
+**Why:** Measured on 11 November 2026, by the review plan's sweep of sizes
+and again by the main session. A preview stores the output of each join it
+crosses, a capture, so that later runs can read it. Each capture ends with
+a check that the automatic captures still fit their budget, and that check
+walks the whole store: every identity and generation, each one's files
+sized and its facts, slot index and pointer read. One walk took 47, 91 and
+195 ms on stores of 25, 50 and 100 generations. So a preview below k joins
+pays k walks of a store that holds k captures.
+
+The fixture is one 1,000-row input, k branches of it and k - 1 left joins
+declared many-to-one, with a preview of 100 rows of the last join. Run as
+the editor runs it, that preview took 4.8, 10.8 and 29.6 seconds below 24,
+49 and 99 joins, while the first branch took half a second each time. With
+a timer around the check, and the previews run in the server process:
+
+| Joins | First preview | In the check | After an edit above | In the check |
+|---:|---:|---:|---:|---:|
+| 24 | 7.3 s | 1.0 s | 7.0 s | 2.5 s |
+| 49 | 14.0 s | 3.5 s | 15.5 s | 7.6 s |
+| 99 | 32.1 s | 12.8 s | 47.4 s | 29.3 s |
+
+The check ran once per join each time. After an edit to the first branch
+every join is captured again, each against a full store, so the check is
+36, 49 and 62 per cent of the preview. A third preview with nothing changed
+took 0.9, 1.3 and 3.8 seconds and captured nothing. The budget is 20 GiB or
+a tenth of the free disk unless the project sets one, so on small data the
+check finds nothing to evict and its whole cost is the walk. What is left
+after the check, about a fifth of a second per captured join, is the cost
+of the capture itself and is not this package's subject.
+
+**Plan:** Check the budget once for a run, after its captures, instead of
+after each. Or keep the automatic captures' total with the store's own
+state, moved on a publish, an eviction and a Clear, and walk the store only
+when that total is missing or passes the budget. Either way the walk stays
+the source of truth for an eviction.
+
+**Acceptance:** A preview that captures 99 node outputs walks the store at
+most once, asserted by counting the walks. After it the automatic captures
+are within their budget, and the existing eviction tests pass unchanged.
+
+**Dependencies:** None.
+
+**Evidence:**
+`src/haute/_node_snapshots.py::NodeSnapshotStore.publish_node_output`;
+`src/haute/_node_snapshots.py::NodeSnapshotStore.enforce_automatic_budget`;
+`src/haute/_node_snapshots.py::NodeSnapshotStore._scan_usage`.

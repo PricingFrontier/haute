@@ -132,7 +132,9 @@ the other node's new settings on disk, and no save on the ledger. The route
 records a save as committed only after the service returns, so this one is
 not broadcast, and the editor keeps its old base revision: its next save is
 refused as stale and tells the analyst to reload, over work that is in fact
-on disk (this last step read from the source, not run).
+on disk. That last step was read from the source here. Reached through a
+lost answer instead, it was run in a browser on 11 November (`FEG-04`): the
+editor turns read-only, and the reload drops the work done since the save.
 
 The removal is never tried again. A later save answered 200 and the removed
 node's settings file was still on disk, still in the ledger's tree, and
