@@ -8,7 +8,8 @@ it, where it looks for the project, and what the commands of the generated
 CI jobs say. The packages below come from the review plan's sweep of 11
 November 2026, which ran the commands 499 times with wrong arguments, wrong
 paths, a damaged `haute.toml` and awkward folders. The main session ran
-each reproduction again in a fresh folder.
+each reproduction again in a fresh folder. `CLI-05` comes from the main
+session's run, that day, of a submodel's whole life through the routes.
 
 ## Priorities
 
@@ -18,6 +19,7 @@ each reproduction again in a fresh folder.
 | CLI-02 | Planned | P3 | Every command finds the project from a folder inside it, as `run`, `lint`, `deploy` and `serve` do. |
 | CLI-03 | Planned | P3 | `haute ci registry-host` refuses an empty registry by name, and a mistyped deploy target or table is named where it is. |
 | CLI-04 | Planned | P3 | The project `haute init` makes passes the lint step of the CI it generates. |
+| CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 
 ## Planned improvements
 
@@ -157,3 +159,33 @@ refuses the same file. Either way lint and the save agree.
 
 **Evidence:** `src/haute/cli/_lint.py`; `src/haute/_scaffold.py`;
 `specs/cli/high-level.md`.
+
+### CLI-05 — `haute run --node` finds a node that was grouped into a submodel
+**Why:** Reproduced on 11 November 2026. In a pipeline of four nodes,
+`haute run --node capped` prints that node's rows. The analyst groups the
+nodes `loaded` and `capped` as the submodel `loading` and saves. From then
+on `haute run --node capped` exits 1 with "Error: The pipeline has no node
+'capped'." `--node loaded` answers the same, and so does `--node loading`,
+the name of the box itself. The run still walks those nodes: `haute lint`
+counts four, and the specification says a run is "parsed and flattened as
+the editor's runs are (each submodel occurrence runs as its definition's
+nodes". One spelling works, the flattened graph's own id,
+`--node submodel_runtime/loading/capped`, which no screen, message or page
+shows. So tidying a canvas into submodels takes `--node` away for every
+node inside them, and the message says the node is not there.
+
+**Plan:** Resolve `--node` against the names an analyst sees. A node inside
+a submodel is found by its name when one occurrence holds it, and a submodel
+occurrence by its own name, as its first declared output, which is what the
+editor previews. A name that fits nodes in several occurrences is refused
+listing them, and a name that fits nothing lists the names there are.
+
+**Acceptance:** After the grouping, `haute run --node capped` prints the
+rows it printed before. `haute run --node loading` prints the occurrence's
+first output, and for a submodel without outputs says so and names the
+nodes inside it. A name held by two occurrences is refused naming both.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_run.py::_handle_run_in_project`;
+`specs/cli/high-level.md`; `docs/building-models/nodes/submodel.md`.

@@ -18,7 +18,8 @@ reproduced on that day; the main session added the Data Output's case to
 main session's run of 11 November added the read-only file, and `SRV-06`
 comes from the main session's own runs of 10 November. `SRV-07`
 comes from the plan's sweep of damaged requests and the main session's
-runs behind it on 11 November.
+runs behind it on 11 November. `SRV-08` comes from the main session's own
+run, that day, of a submodel's whole life through the routes.
 
 `SRV-01` changes an accepted decision, [the optimiser's error-detail
 policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
@@ -34,6 +35,7 @@ policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
 | SRV-05 | Planned | P3 | A save the server died in is reported at the next load, and no staging file is left to reach version history. |
 | SRV-06 | Planned | P2 | A pipeline file that is missing is reported in one line naming the file and the remedy, when the editor starts and while it runs. |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
+| SRV-08 | Planned | P2 | A save deletes a dissolved submodel's file only when no pipeline beside the saved one still uses it, as the submodel specification says. |
 
 ## Planned improvements
 
@@ -195,7 +197,10 @@ characters; some 42 Cyrillic or Greek letters do the same by that
 arithmetic (measured on the encoding, not saved). The save answers the same
 500. The writer raised its own `PathTooLongError`, which no route
 translates. On Windows without long paths the whole path counts, so fewer
-characters are already too many.
+characters are already too many. A submodel's name reaches the same error
+through its module file: a name of 200 letters makes the box, the create
+route answering 200, and the Save then answers this 500 with the box still
+on the canvas (run on 11 November).
 
 A fourth cause is a file marked read-only: a rates file protected on
 purpose, or a project unpacked from an archive. Run on 11 November with
@@ -236,10 +241,12 @@ git preferences, a Data Output's Write, the optimiser's save and the model
 save answers 409 naming the file, and the file is unchanged. With the
 staging write refused for space, each answers 507 naming the file. A node
 name that makes its settings file's path too long is refused when it is
-typed, or by the save, in a message naming the node and the limit. With its
-file marked read-only and nothing holding it, each of those writes, the
-utility editor's save and delete and the Pipeline files' replace and delete
-answer naming the file and saying that it is read-only.
+typed, or by the save, in a message naming the node and the limit, and a
+submodel's name that does so to its module file is refused when the
+submodel is made. With its file marked read-only and nothing holding it,
+each of those writes, the utility editor's save and delete and the Pipeline
+files' replace and delete answer naming the file and saying that it is
+read-only.
 
 **Dependencies:** None.
 
@@ -254,7 +261,8 @@ answer naming the file and saying that it is read-only.
 `src/haute/routes/utility.py::_replace_or_remove`;
 `src/haute/routes/project_files.py::_publish_write`;
 `src/haute/routes/optimiser.py::save_result`;
-`src/haute/routes/modelling.py::save_model`.
+`src/haute/routes/modelling.py::save_model`;
+`src/haute/routes/submodel.py::create_submodel`.
 
 ### SRV-05 — A save the server died in is noticed and its leftovers collected
 **Why:** Reproduced on 10 November 2026. A save replaces its files one after
@@ -443,3 +451,59 @@ for a Commit that names the file it could not add.
 `src/haute/routes/project_files.py::_delete`;
 `src/haute/_git_transactions.py::_pipeline_folder_new_files`;
 `frontend/src/panels/optimiser/OptimiserPublishSection.tsx`.
+
+### SRV-08 — A save keeps a submodel's file that a pipeline beside it uses
+**Why:** Reproduced on 11 November 2026 through the editor's routes and
+`haute run`, twice each way. A project made by `haute init` keeps its
+pipeline in `rating/main.py`. Two of its nodes are grouped as the submodel
+`loading` and saved, which writes `rating/modules/loading.py`. A second
+pipeline beside the first, `rating/renewal.py`, uses the same definition by
+the import the submodel page shows, `from modules import loading`; a copy of
+`main.py` kept under another name does the same without a line being
+written. `haute run rating/renewal.py` prices with it. In the first pipeline
+the analyst then dissolves the box, or deletes it, and presses Save. The save
+answers "saved" and nothing more, deletes `rating/modules/loading.py` with
+its layout file, and records that as "Updated main, loading". The second
+pipeline no longer loads: "Error parsing pipeline: Referenced submodel
+file(s) do not exist. (missing_paths=['modules/loading.py'])". After a
+delete, as opposed to a dissolve, no file in the project holds the
+definition any more; it has to be found in version history.
+
+The submodel specification rules this out. A definition's file is deleted
+only when "no other parseable pipeline references the same resolved file",
+and "a child referenced by another healthy pipeline" is kept: "Uncertainty
+never authorises deletion." The submodel page offers the reuse under "Reuse
+across pipelines" and warns only that changes are shared.
+
+The check exists, and works in one layout. With both pipelines in the
+project folder itself, the same steps keep `modules/loading.py` and the
+second pipeline still prices (run the same day). The save asks
+`discover_pipelines` which other pipelines there are, and that looks at the
+configured pipeline and at the `.py` files of the project folder only. A
+definition is imported from the `modules` folder beside its pipeline. So in
+the layout `haute init` makes, the pipelines that can share a definition are
+exactly the ones the check never sees. Three more checks read the same list
+(read from the source, not run): the check that a utility module's edit
+breaks no other pipeline's names, the index of which pipelines import a
+module, and the notice a save sends to other open documents.
+
+**Plan:** Give the reference check the pipeline files that can import the
+definition: every pipeline file in the folder of the pipeline being saved,
+besides what discovery returns. One of them that cannot be parsed keeps
+every definition, as an unreadable pipeline does now. Decide in the same
+change whether the three other checks take that list too.
+
+**Acceptance:** With `rating/main.py` and `rating/renewal.py` both using
+`modules/loading.py`, dissolving the box in `main.py`, or deleting it, and
+saving keeps `rating/modules/loading.py`, and `haute run rating/renewal.py`
+prices as before. With no other pipeline using the definition, the same save
+deletes the file as it does today. A regression test covers both layouts:
+the pipelines in a folder of the project, and in the project folder.
+
+**Dependencies:** None.
+
+**Evidence:**
+`src/haute/routes/_save_pipeline.py::SavePipelineService._definition_files_declared_elsewhere`;
+`src/haute/discovery.py::discover_pipelines`;
+`src/haute/routes/utility.py`; `specs/submodels/high-level.md`;
+`docs/building-models/nodes/submodel.md`.
