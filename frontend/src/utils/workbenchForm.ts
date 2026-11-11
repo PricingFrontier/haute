@@ -808,43 +808,98 @@ export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: st
         settleBlocks(draft, tableId)
       })
 
-/** The widgets showing a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
-export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): Widget[] =>
-  allWidgets(spec).filter(showsFields).filter((widget) =>
-    [...widget.fields, ...(widget.type === "chart" && widget.category !== null ? [widget.category] : [])].some(
-      (field) => field.table === tableId && (columnId === undefined || field.column === columnId),
-    ),
+/** Whether a component shows a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
+const showsColumn = (widget: Widget, tableId: string, columnId: string | undefined): boolean =>
+  showsFields(widget) &&
+  [...widget.fields, ...(widget.type === "chart" && widget.category !== null ? [widget.category] : [])].some(
+    (field) => field.table === tableId && (columnId === undefined || field.column === columnId),
   )
 
-/**
- * The Imports and Exports using a schema table: filling it, giving a parameter one of its
- * columns or exporting it; or, given one of its columns, reading it, by its own name or
- * another, giving a parameter it or exporting it with its table.
- */
-export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): ButtonWidget[] => {
+/** The widgets showing a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
+export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): Widget[] =>
+  allWidgets(spec).filter((widget) => showsColumn(widget, tableId, columnId))
+
+/** The names of the columns an Import of a schema table reads by their own names. */
+const importRead = (spec: FormSpec, tableId: string): ReadonlySet<string> => {
   const table = spec.schema.tables.find((candidate) => candidate.name === tableId)
-  const read = new Set(table === undefined ? [] : importColumns(table).map((column) => column.name))
-  return allWidgets(spec)
-    .filter(isButton)
-    .filter((widget) => {
-      if (widget.type === "export") return widget.tables.includes(tableId)
-      const reads =
-        widget.table === tableId &&
-        (columnId === undefined || read.has(columnId) || widget.column_names.some((named) => named.column === columnId))
-      const gives = widget.source.format === "sql" && widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
-      return reads || gives
-    })
+  return new Set(table === undefined ? [] : importColumns(table).map((column) => column.name))
 }
 
-/** The sheets, sections and widgets whose conditions, or whose fields' conditions, are on a schema table, or test just one of its columns. */
-export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] => {
+/** How an Import or an Export uses a schema table or one of its columns. */
+type ButtonWay = "imports" | "parameter" | "exports"
+
+/**
+ * How a button uses a schema table: filling it, giving a parameter one of its columns or
+ * exporting it; or, given one of its columns, reading it, by its own name (`read`) or
+ * another, giving a parameter it or exporting it with its table.
+ */
+const buttonWays = (widget: ButtonWidget, tableId: string, columnId: string | undefined, read: ReadonlySet<string>): ButtonWay[] => {
+  if (widget.type === "export") return widget.tables.includes(tableId) ? ["exports"] : []
+  const reads =
+    widget.table === tableId && (columnId === undefined || read.has(columnId) || widget.column_names.some((named) => named.column === columnId))
+  const gives =
+    widget.source.format === "sql" && widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
+  return [...(reads ? (["imports"] as const) : []), ...(gives ? (["parameter"] as const) : [])]
+}
+
+/** The Imports and Exports using a schema table, or one of its columns (`buttonWays`). */
+export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): ButtonWidget[] => {
+  const read = importRead(spec, tableId)
+  return allWidgets(spec)
+    .filter(isButton)
+    .filter((widget) => buttonWays(widget, tableId, columnId, read).length > 0)
+}
+
+/** Whether a sheet's, a section's or a widget's conditions, or its fields', are on a schema table, or test just one of its columns. */
+const testsColumn = (holder: Page | Section | Widget, tableId: string, columnId: string | undefined): boolean => {
   const uses = (showWhen: ShowWhen): boolean =>
     leafConditions(showWhen).some((condition) =>
       columnId === undefined ? conditionTables(condition).includes(tableId) : conditionColumns(condition).some((field) => field.table === tableId && field.column === columnId),
     )
-  return [...spec.pages, ...allSections(spec), ...allWidgets(spec)].filter(
-    (holder) => uses(holder.show_when) || ("column_looks" in holder && holder.column_looks.some((look) => uses(look.show_when))),
-  )
+  return uses(holder.show_when) || ("column_looks" in holder && holder.column_looks.some((look) => uses(look.show_when)))
+}
+
+/** The sheets, sections and widgets whose conditions, or whose fields' conditions, are on a schema table, or test just one of its columns. */
+export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string): (Page | Section | Widget)[] =>
+  [...spec.pages, ...allSections(spec), ...allWidgets(spec)].filter((holder) => testsColumn(holder, tableId, columnId))
+
+/** A way a component uses a schema column, in the order its uses list them. */
+export type ColumnWay = "shows" | "showWhen" | ButtonWay
+
+/** A component using a schema column, and the ways it does. */
+export interface ComponentUse {
+  widget: Widget
+  ways: ColumnWay[]
+}
+
+/** A sheet using a schema column: whether its own conditions test it, its sections whose own conditions do, and its components using it. */
+export interface SheetUse {
+  page: Page
+  tested: boolean
+  sections: Section[]
+  components: ComponentUse[]
+}
+
+/**
+ * The sheets using a schema column, in their order, each with what on it does, its
+ * components section by section in their drawing order: the holders `fieldUses`,
+ * `conditionUses` and `buttonUses` give, sheet by sheet, each component once.
+ */
+export const columnUses = (spec: FormSpec, tableId: string, columnId: string): SheetUse[] => {
+  const read = importRead(spec, tableId)
+  const ways = (widget: Widget): ColumnWay[] => [
+    ...(showsColumn(widget, tableId, columnId) ? (["shows"] as const) : []),
+    ...(testsColumn(widget, tableId, columnId) ? (["showWhen"] as const) : []),
+    ...(isButton(widget) ? buttonWays(widget, tableId, columnId, read) : []),
+  ]
+  return spec.pages.flatMap((page) => {
+    const tested = testsColumn(page, tableId, columnId)
+    const sections = page.sections.filter((section) => testsColumn(section, tableId, columnId))
+    const components = pageWidgets(page)
+      .map((widget) => ({ widget, ways: ways(widget) }))
+      .filter((use) => use.ways.length > 0)
+    return tested || sections.length > 0 || components.length > 0 ? [{ page, tested, sections, components }] : []
+  })
 }
 
 /** The schema table and column a field names, or null when it is no longer in the schema: of a form, or of the schema alone. */

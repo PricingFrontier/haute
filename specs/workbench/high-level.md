@@ -1120,7 +1120,15 @@ Out of scope:
   Keys follows
   the same name-or-label search as other fields and is hidden when none of its columns match;
   it remains visible in Preview with its controls read only. Label and rules is shown
-  for configurable fields; fixed identity keys have no configuration button. Remove
+  for configurable fields; fixed identity keys have no configuration button. Where
+  it's used, an eye beside it on every field, keys and quote_details' included and in
+  Preview too, opens under the field the sheets that use it, in the sheets' order, each
+  with what on it does: the components that show it, a Chart labelling its rows by it
+  among them, those whose Show when tests it, and the Imports and Exports that read it,
+  give a parameter it or export its table, each by its name and kind, and the sheet's
+  and its sections' own Show when testing it; what Remove counts, sheet by sheet. A
+  field nothing uses says so. Opening it closes the field's other details, and it
+  changes nothing. Remove
   is shown only for removable columns, never for keys or quote_details fields.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it

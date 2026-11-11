@@ -15,7 +15,7 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { answerQuestion, asked } from "../../test-utils/question"
-import { BLANK_THEME, COLLECTION_OPTIONS, createWidget, TABLE_OPTIONS, tablePorts, updateSchemaColumn } from "../../utils/workbenchForm"
+import { BLANK_THEME, buttonUses, COLLECTION_OPTIONS, conditionUses, createWidget, fieldUses, TABLE_OPTIONS, tablePorts, updateSchemaColumn } from "../../utils/workbenchForm"
 import SchemaEditor from "../SchemaEditor"
 import { detailsTable } from "./fixtures"
 
@@ -959,6 +959,85 @@ describe("SchemaEditor", () => {
     expect(asked()?.text).toBe("Its columns are used by 2 Imports and Exports; deleting it takes them out of them too.")
     await answerQuestion("confirm")
     expect(current().pages[0].sections[0].widgets).toMatchObject([{ table: null }, { tables: [] }])
+  })
+
+  it.each([false, true])("lists where a column is used, sheet by sheet, as Remove counts it (readOnly=%s)", (readOnly) => {
+    const spec = form(POLICY, LAYERS)
+    const tests = { match: "all" as const, conditions: [{ table: "policy_details", column: "state", op: "filled" as const, values: [], field: null, days: 0 }] }
+    const always = { match: "all" as const, conditions: [] }
+    const rect = { x: 0, y: 0, w: 160, h: 40 }
+    spec.pages[0].sections[0].widgets = [
+      { ...createWidget("heading", rect, spec), name: "title_1" },
+      { name: "policy_box", id: "w_box", type: "collection", x: 0, y: 48, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy_details", column: "state" }], show_when: tests },
+      { ...createWidget("import", rect, spec), id: "w_in", name: "import_policy", table: "policy_details" },
+    ]
+    spec.pages.push(
+      {
+        id: "page_2",
+        title: "Rating",
+        width: 1280,
+        show_when: tests,
+        sections: [
+          {
+            id: "section_2",
+            title: "Extras",
+            height: 560,
+            show_when: tests,
+            widgets: [
+              {
+                ...createWidget("import", rect, spec),
+                id: "w_sql",
+                name: "import_layers",
+                table: "layers",
+                source: { format: "sql", connection: "rating", query: "select 1", parameters: [{ name: "st", table: "policy_details", column: "state" }] },
+              },
+              { ...createWidget("export", rect, spec), id: "w_out", name: "export_all", tables: ["policy_details"] },
+            ],
+          },
+        ],
+      },
+      { id: "page_3", title: "Notes", width: 1280, show_when: always, sections: [{ id: "section_3", title: "Section 3", height: 560, show_when: always, widgets: [] }] },
+    )
+    load(spec)
+    render(<SchemaEditor readOnly={readOnly} />)
+    const eye = screen.getByRole("button", { name: "Where state is used" })
+    const uses = () => screen.queryByTestId("schema-column-state-uses")
+    /** Each line of a sheet's uses: the holder's name, then its kind and ways. */
+    const lines = (sheet: string) =>
+      within(within(uses()!).getByRole("list", { name: `Uses on ${sheet}` }))
+        .getAllByRole("listitem")
+        .map((item) => [...item.querySelectorAll("span")].map((part) => part.textContent).join(" | "))
+    const heading = (sheet: string) => within(uses()!).getByText(sheet).closest("p")?.textContent
+
+    expect(eye).toHaveAttribute("aria-expanded", "false")
+    fireEvent.click(eye)
+    expect(eye).toHaveAttribute("aria-expanded", "true")
+    // Sheets in their order, a sheet nothing on uses it left out; each component once, with all its ways.
+    expect(heading("Sheet 1")).toBe("Sheet 1")
+    expect(lines("Sheet 1")).toEqual(["policy_box | Collection · Shows it, Show when", "import_policy | Import · Imports it"])
+    expect(heading("Rating")).toBe("RatingShow when")
+    expect(lines("Rating")).toEqual(["Extras | Section · Show when", "import_layers | Import · Gives a parameter", "export_all | Export · Exports it"])
+    expect(within(uses()!).queryByText("Notes")).toBeNull()
+    // What it lists is what removing the column takes it out of.
+    const f = current()
+    const removed = new Set([...fieldUses(f, "policy_details", "state"), ...conditionUses(f, "policy_details", "state"), ...buttonUses(f, "policy_details", "state")])
+    expect(removed.size).toBe(lines("Sheet 1").length + lines("Rating").length + 1)
+
+    // One row's details at a time: Label and rules closes it, and it closes Label and rules.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
+    expect(uses()).toBeNull()
+    expect(eye).toHaveAttribute("aria-expanded", "false")
+    fireEvent.click(eye)
+    expect(screen.queryByRole("textbox", { name: "Label of state" })).toBeNull()
+    expect(uses()).not.toBeNull()
+    fireEvent.click(eye)
+    expect(uses()).toBeNull()
+    expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+
+    // Every column has one, the index's too; one nothing uses says so.
+    expect(screen.getByRole("button", { name: "Where layer is used" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Where limit is used" }))
+    expect(screen.getByTestId("schema-column-limit-uses")).toHaveTextContent(/^Not used on any sheet$/)
   })
 
   it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", async () => {

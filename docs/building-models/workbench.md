@@ -133,6 +133,12 @@ or the default it shows as typed, and what is typed is what is saved and priced.
 right of each column's name, a line sums up what is set: required, its range and default,
 shown in its format, its allowed values, and a number's format and decimal places.
 
+**Where it's used**, the eye beside a column, lists the sheets that use it, each with the
+components on it that do, by name: those that show the column, those whose **Show when**
+tests it, and the Imports and Exports that read it, give it as a parameter or export its
+table. A sheet or a section whose own Show when tests the column is listed too. It is what
+removing the column would take it out of.
+
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
 **quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
 quotes are put together, in the app's saved quotes, in exports and in joins. They come
