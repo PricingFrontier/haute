@@ -155,7 +155,7 @@ describe("stepProblem", () => {
     const steps: Step[] = [
       { id: "s", kind: "select", columns: ["region"], dtypes: ["Float64", "Int64"] },
       { id: "d", kind: "drop", columns: [], dtypes: ["String"] },
-      { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "", agg: "len", name: "n" }, { dtype: "Float64", agg: "mean", suffix: "_mean" }] },
+      { id: "g", kind: "group_by", keys: [], aggregations: [{ agg: "len", name: "n" }, { dtype: "Float64", agg: "mean", suffix: "_mean" }] },
       { id: "p", kind: "pivot", index: ["region"], on: "channel", columns: [{ value: { kind: "literal", type: "text", value: "web" }, name: "web" }], values: "premium", agg: "mean" },
       { id: "u", kind: "unpivot", on: ["premium", "sum_insured"], index: ["quote_id"], variable_name: "measure", value_name: "value" },
     ]
@@ -169,7 +169,7 @@ describe("stepProblem", () => {
     expect(namesBefore([steps[2]], 1)).toEqual(["n"])
     expect(namesBefore([steps[3]], 1)).toEqual(["region", "web"])
     expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ dtype: "Float64", agg: "mean", suffix: "_m", name: "x" }] })).toMatch(/mixes a column type/)
-    expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ agg: "mean", name: "x" }] })).toMatch(/missing "column"/)
+    expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ agg: "mean", name: "x" }] })).toMatch(/missing its column/)
     expect(stepProblem({ id: "p", kind: "pivot", index: [], on: "c", columns: [{ value: col("c"), name: "n" }], values: "a", agg: "sum" })).toMatch(/plain value/)
     expect(stepProblem({ id: "p", kind: "pivot", index: [], on: "c", columns: [], values: "a", agg: "std" })).toMatch(/unsupported aggregate/)
     expect(stepProblem({ id: "u", kind: "unpivot", on: "premium", index: [], variable_name: "m", value_name: "v" })).toMatch(/missing its "on" setting/)
@@ -218,7 +218,9 @@ describe("stepProblem", () => {
     ["conditional without branches", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [], otherwise: col("b") } }, /missing its branches/],
     ["conditional in the old shape", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", match: "all", conditions: [], then: col("a"), otherwise: col("b") } }, /missing its branches/],
     ["later branch without a match", { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "all", conditions: [], then: col("a") }, { conditions: [], then: col("a") }], otherwise: col("b") } }, /branch 2 is missing its match mode/],
-    ["aggregation without name", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum" }] }, /missing "column" or "name"/],
+    ["aggregation without name", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum" }] }, /missing its name/],
+    ["row count without name", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ agg: "len" }] }, /missing its name/],
+    ["aggregation without column", { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ agg: "sum", name: "t" }] }, /missing its column/],
     ["filter without conditions", { id: "f", kind: "filter", match: "all" }, /conditions/],
     [
       "membership with an unsupported literal type",

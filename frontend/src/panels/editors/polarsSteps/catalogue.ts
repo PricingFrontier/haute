@@ -474,7 +474,7 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
 }
 
 /** The name an aggregation takes from its function and column, until one is typed. */
-export function suggestedAggregationName(entry: { column: string; agg: Aggregation }): string {
+export function suggestedAggregationName(entry: { column?: string; agg: Aggregation }): string {
   if (entry.agg === "len") return "row_count"
   return entry.column ? `${entry.column}_${entry.agg}` : ""
 }
@@ -844,7 +844,10 @@ function aggregationsProblem(entries: Array<Record<string, unknown>>, where: str
       if (entry.column !== undefined || entry.name !== undefined || entry.where !== undefined) return `${label} mixes a column type with a column.`
       continue
     }
-    if (typeof entry.column !== "string" || typeof entry.name !== "string") return `${label} is missing "column" or "name".`
+    if (typeof entry.name !== "string") return `${label} is missing its name.`
+    // A row count reads no column; the backend ignores one left on it.
+    if (entry.agg !== "len" && typeof entry.column !== "string") return `${label} is missing its column.`
+    if (entry.column !== undefined && typeof entry.column !== "string") return `${label} has a malformed column.`
     if (entry.where !== undefined) {
       const problem = rowFilterProblem(entry.where, label)
       if (problem) return problem

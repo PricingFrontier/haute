@@ -131,7 +131,8 @@ export type SortStep = StatementStep & {
 }
 export type UniqueStep = StatementStep & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" | "none" }
 export type ColumnAggregation = {
-  column: string
+  /** The column aggregated. A row count (`len`) reads none: `pl.len()` is read back from code without one. */
+  column?: string
   agg: Aggregation
   name: string
   /** The quantile in [0, 1] (`quantile` only). */

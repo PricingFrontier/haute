@@ -486,6 +486,24 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "total" })
   })
 
+  it("a group-by row count has no column, as the backend reads pl.len() back", () => {
+    const spy = vi.fn()
+    // A row count as `pl.len().alias("n")` is read back from code: no column.
+    const step: Step = { id: "g", kind: "group_by", keys: [], aggregations: [{ agg: "len", name: "n" }] }
+    expect(stepProblem(step)).toBeNull()
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByLabelText("Aggregation 1 column")).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Aggregation 1 function"), { target: { value: "sum" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ column: "", agg: "sum", name: "n" })
+    fireEvent.change(screen.getByLabelText("Aggregation 1 column"), { target: { value: "premium" } })
+    fireEvent.blur(screen.getByLabelText("Aggregation 1 column"))
+    fireEvent.change(screen.getByLabelText("Aggregation 1 function"), { target: { value: "len" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[0]).toEqual({ agg: "len", name: "n" })
+    expect(stepProblem(latest)).toBeNull()
+  })
+
   it("join validation is optional and cleared for a cross join; the row order is always stated", () => {
     const spy = vi.fn()
     const step: Step = { id: "j", kind: "join", input: "rates", how: "left", left_on: ["region"], right_on: ["region"], suffix: "_r", maintain_order: "left_right" }

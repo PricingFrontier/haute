@@ -233,7 +233,7 @@ export function columnsReadBy(step: Step): string[] {
       case "group_by":
         return [
           ...step.keys,
-          ...step.aggregations.flatMap((a) => ("dtype" in a ? [] : [...(a.agg === "len" ? [] : [a.column]), ...conditionColumns(a.where?.conditions ?? [])])),
+          ...step.aggregations.flatMap((a) => ("dtype" in a ? [] : [...(a.agg === "len" || a.column === undefined ? [] : [a.column]), ...conditionColumns(a.where?.conditions ?? [])])),
         ]
       case "join":
         return step.left_on

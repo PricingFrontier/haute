@@ -229,7 +229,7 @@ describe("unknown columns", () => {
   })
 
   it("reads the columns a step names, leaving out blanks", () => {
-    expect(columnsReadBy({ id: "g", kind: "group_by", keys: ["region", ""], aggregations: [{ column: "premium", agg: "sum", name: "t" }, { column: "", agg: "len", name: "n" }] })).toEqual(["region", "premium"])
+    expect(columnsReadBy({ id: "g", kind: "group_by", keys: ["region", ""], aggregations: [{ column: "premium", agg: "sum", name: "t" }, { agg: "len", name: "n" }] })).toEqual(["region", "premium"])
   })
 
   it("reads the columns in an operand argument, never a plain-value one", () => {

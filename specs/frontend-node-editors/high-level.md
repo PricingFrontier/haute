@@ -416,7 +416,9 @@ each a column, a value, a constant or an expression), each row taking the first 
 isn't missing there, and missing where every part is; a group-by
 aggregation reads as `[name] = [function] of [column]`, wrapping after the `=` when narrow,
 takes an optional quantile and an optional row filter, and an empty key list summarises the
-whole frame. An aggregation names itself `<column>_<function>` (`row_count` for a row count)
+whole frame. A row count reads as `[name] = row count` and has no column, as the backend reads
+`pl.len()` back from code: choosing it drops the column, and choosing another function after
+it starts an empty one. An aggregation names itself `<column>_<function>` (`row_count` for a row count)
 while its name is empty or still the name suggested for its previous function and column,
 never replacing a typed name; a new aggregation starts from the previous row's column; the
 function list says what the two counts do ("count of values (skips missing values)", "row

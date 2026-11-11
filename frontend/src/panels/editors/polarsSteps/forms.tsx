@@ -1222,6 +1222,13 @@ function renamed(previous: ColumnAggregation, next: ColumnAggregation): ColumnAg
   return untouched ? { ...next, name: suggestedAggregationName(next) } : next
 }
 
+/** `entry` with function `agg`: a row count drops its column, and another function after one starts an empty column. */
+function withColumnAggregate(entry: ColumnAggregation, agg: ColumnAggregation["agg"]): ColumnAggregation {
+  const next = withAggregate(entry, agg)
+  if (agg === "len") return omitKeys(next, ["column"])
+  return next.column === undefined ? { ...next, column: "" } : next
+}
+
 /** The common column types an aggregation can take every column of, offered after the column names. */
 /** The column types an aggregation can take every column of: one list for the column box and the type select. */
 const TYPE_WIDE_TARGETS = DTYPE_OPTIONS.map((option) => ({ dtype: option.value, label: `every ${option.value} column` }))
@@ -1257,7 +1264,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
             <SelectField
               value={entry.agg}
               options={AGGREGATION_OPTIONS.filter((a) => a.value === entry.agg || aggregationTakes(a.value, entry.column ? schema.typeOf(entry.column) : null))}
-              onChange={(agg) => onChange(renamed(entry, withAggregate(entry, agg)))}
+              onChange={(agg) => onChange(renamed(entry, withColumnAggregate(entry, agg)))}
               ariaLabel={`${label} function`}
             />
           </span>
@@ -1266,7 +1273,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
               <Words>of</Words>
               <span className="flex-1 min-w-0">
                 <ColumnPicker
-                  value={entry.column}
+                  value={entry.column ?? ""}
                   onCommit={(column) => onChange(renamed(entry, { ...entry, column }))}
                   suggestions={ctx.columns}
                   ariaLabel={`${label} column`}

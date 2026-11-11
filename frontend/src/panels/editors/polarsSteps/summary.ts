@@ -107,7 +107,7 @@ function exprParts(expr: Expr): SummaryPart[] {
 function aggregationParts(entry: AggregationSpec): SummaryPart[] {
   const label = AGGREGATIONS.find((a) => a.value === entry.agg)?.label ?? entry.agg
   if ("dtype" in entry) return [entry.suffix ? code(`*${entry.suffix}`) : missing("suffix"), op("="), text(label), op("of every"), text(entry.dtype)]
-  const subject = entry.agg === "len" ? [text(label)] : [text(label), op("of"), column(entry.column)]
+  const subject = entry.agg === "len" ? [text(label)] : [text(label), op("of"), column(entry.column ?? "")]
   return [column(entry.name, "name"), op("="), ...subject, ...(entry.where ? [op("where …")] : [])]
 }
 
