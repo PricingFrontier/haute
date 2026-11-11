@@ -14,8 +14,9 @@ November by the review plan's sweep of failed writes, which failed every
 step of 17 writing operations in turn, held their files open and killed the
 server at three points. `SRV-04` and `SRV-05` come from that sweep and were
 reproduced on that day; the main session added the Data Output's case to
-`SRV-04`, the sweep of the frontend's logic added the too-long path, and
-`SRV-06` comes from the main session's own runs of that day. `SRV-07`
+`SRV-04`, the sweep of the frontend's logic added the too-long path, the
+main session's run of 11 November added the read-only file, and `SRV-06`
+comes from the main session's own runs of 10 November. `SRV-07`
 comes from the plan's sweep of damaged requests and the main session's
 runs behind it on 11 November.
 
@@ -196,14 +197,27 @@ arithmetic (measured on the encoding, not saved). The save answers the same
 translates. On Windows without long paths the whole path counts, so fewer
 characters are already too many.
 
+A fourth cause is a file marked read-only: a rates file protected on
+purpose, or a project unpacked from an archive. Run on 11 November with
+nothing holding any file. A pipeline save with the pipeline file or its
+layout file read-only, a change to the pipeline settings and a change to
+the MLflow settings answer the same 500. The two routes that have words
+use the wrong ones: saving or deleting a utility module, and replacing or
+deleting a Pipeline file, answer 409 naming the file and saying that it "is
+open in Haute or another program. Try again once it's closed." Nothing has
+it open, so trying again never works. A Restore over a read-only pipeline
+file succeeds.
+
 **Plan:** Translate the two failures once, where the save, the settings
 routes and the Data Output's write can share it: a destination another
 program holds becomes the 409 naming the file relative to the project, and
 a write refused for space becomes the 507 naming it, in the words the
 utility and Pipeline files routes use. Translate the writer's too-long-path
 error as well, naming the node whose name makes the path too long, and have
-the rename rule count a name as its file will hold it. Other `OSError`s
-keep the generic answer.
+the rename rule count a name as its file will hold it. Tell a read-only
+file apart from a held one before answering (its attribute says which),
+on these routes and on the two that word the held file already, and say
+that the file is read-only. Other `OSError`s keep the generic answer.
 
 **Acceptance:** With its file held open by a real second handle on Windows,
 each of the pipeline save, the pipeline settings, the MLflow settings, the
@@ -211,7 +225,10 @@ git preferences and a Data Output's Write answers 409 naming the file, and
 the file is unchanged. With the staging write refused for space, each
 answers 507 naming the file. A node name that makes its settings file's
 path too long is refused when it is typed, or by the save, in a message
-naming the node and the limit.
+naming the node and the limit. With its file marked read-only and nothing
+holding it, each of those writes, the utility editor's save and delete and
+the Pipeline files' replace and delete answer naming the file and saying
+that it is read-only.
 
 **Dependencies:** None.
 

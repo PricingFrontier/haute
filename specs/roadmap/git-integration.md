@@ -13,6 +13,8 @@ process, and `VCS-05` in a browser with two pages open on one project.
 `VCS-06` and `VCS-07` come from the main session's runs of 11 November
 behind the plan's sweep of damaged requests: folders and files renamed on
 disk, and branch names typed through the routes, with nothing injected.
+`VCS-08` comes from the main session's runs of the same day: a tracked
+file edited by hand, then each operation that replaces working files.
 
 ## Priorities
 
@@ -25,6 +27,7 @@ disk, and branch names typed through the routes, with nothing injected.
 | VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
 | VCS-06 | Planned | P2 | A save, an upload and a replace reach version history after their folder or file is renamed to another letter case, and a capture that records nothing for a changed file says so. |
 | VCS-07 | Planned | P2 | A branch name that cannot exist beside another branch is refused naming the clash, when a branch is created, restored or brought back from Deleted. |
+| VCS-08 | Planned | P2 | A switch, a catch-up, an archive and a new branch that meet a file edited by hand name it and offer to record it or put it back, instead of "Operation failed" or advice that does not apply. |
 
 ## Planned improvements
 
@@ -374,3 +377,59 @@ same, and the branch manager offers another name. None of them answers
 `src/haute/_git_archive.py::restore_working_pair`;
 `src/haute/_git_archive.py::undelete_working_pair`;
 `frontend/src/components/BranchManager.tsx`.
+
+### VCS-08 — A file edited by hand does not strand the analyst
+**Why:** Reproduced on 11 November 2026 through the routes, with nothing
+injected. An analyst opens `rating/files/data/rates.csv` in Excel, changes a
+rate and saves it. Git now shows the file as modified, and the operations
+that replace working files treat it in four ways.
+
+A switch to a branch where the file is the same succeeds and carries the
+edit across. A switch to a branch where the file differs answers "Operation
+failed. Check the server logs for details."; git's words, "Your local
+changes to the following files would be overwritten by checkout", stay in
+the log. Catch up answers "You have unsaved changes. Save or discard them
+before catching up.", archiving the current branch answers "You have unsaved
+changes on this branch. Save or discard them before archiving it.", and
+creating and opening a new branch answers the same about "opening the new
+branch". Spinning off a copy holds the same sentence (read from the source).
+A Restore records the file first, as the specification says: "It records
+everything on disk first, with the milestone's sweep".
+
+The advice does not work for this file. The editor counts as unsaved only
+what is on its canvas or in the workbench form, and its Save and its Discard
+act on those (read from the source). The editor's Save was run next, with a
+real change on the canvas: it answered 200 with a commit, the hand-edited
+file stayed modified, and Catch up refused again. A Commit would record the
+file, but with a colleague's push waiting it answers the fork warning,
+"Saving a milestone now will fork 'origin'". So the analyst can neither
+catch up nor commit without forking, and none of the refusals names the
+file.
+
+**Plan:** One rule for every operation that replaces working files (a
+switch, create and open, catch up, archive, spin off): where tracked files
+differ from version history, answer naming them and offer the two things an
+analyst can want. Record them as one save, with the sweep a Restore already
+uses, or put them back as version history has them. Carry on with the
+operation after either. Drop "Save" from the advice, since the editor's Save
+does not record a file edited by hand.
+
+**Acceptance:** With a tracked data file edited by hand, a switch to a
+branch where the file differs, a catch-up, an archive of the current branch
+and a create-and-open each answer naming the file and offering to record it
+or to put it back. After recording, the operation completes and the edit is
+among the branch's saves. After putting back, the file is as version history
+has it and the operation completes. None answers "Operation failed." and
+none advises Save.
+
+**Dependencies:** None. `VCS-06` reaches the same failed switch by another
+road.
+
+**Evidence:** `src/haute/_git_setup.py::set_working_branch`;
+`src/haute/_git_remote.py::fast_forward_pair_from_tracking`;
+`src/haute/_git_remote.py::branch_away`;
+`src/haute/_git_archive.py::_switch_away_if_active`;
+`src/haute/_git_transactions.py::create_working_branch`;
+`src/haute/_git_transactions.py::restore_version`;
+`frontend/src/hooks/useProjectDirty.ts`;
+`frontend/src/components/RemotePushControl.tsx`.
