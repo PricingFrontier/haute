@@ -4,11 +4,14 @@
 
 The graph store behind the canvas, as [the frontend graph canvas
 specification](../frontend-graph-canvas/high-level.md) describes it: what one
-edit costs and what the undo history holds. `FEG-01` comes from the
+edit costs, what the undo history holds and which connections the canvas
+takes. `FEG-01` comes from the
 9 November 2026 codebase review and was measured against `HEAD` on that day
 by bundling the store and driving it under Node. `FEG-02` comes from the
 review plan's sweep of the frontend's logic on 10 November 2026 and was
-confirmed in a real browser.
+confirmed in a real browser. `FEG-03` comes from the plan's browser sweep
+of the editors' fields on 11 November and was re-run by the main session
+in a browser and through the save route.
 
 ## Priorities
 
@@ -16,6 +19,7 @@ confirmed in a real browser.
 |---|---|---:|---|
 | FEG-01 | Planned | P2 | An edit's cost and the undo history's size follow what changed, not the size of every table in the graph. |
 | FEG-02 | Planned | P2 | Deleting a node with Backspace is one undo step, as with Delete: one Undo brings back the node and its edges. |
+| FEG-03 | Planned | P2 | A connection that closes a loop is refused at the canvas, and a save that meets a loop names its nodes instead of failing every later save with "Check the server logs". |
 
 ## Planned improvements
 
@@ -96,3 +100,48 @@ one Redo removes them again.
 key; `frontend/src/hooks/useGraphCanvasState.ts`;
 `frontend/src/hooks/useKeyboardShortcuts.ts`;
 `frontend/src/stores/useGraphStore.ts`.
+
+### FEG-03 — A connection that closes a loop is refused at the canvas
+**Why:** Reproduced on 11 November 2026 in a browser by the plan's sweep of
+the editors' fields, and again by the main session. With Transforms in a
+chain, `enriched` to `loop_a` to `loop_b`, the analyst drags `loop_b`'s
+output onto `loop_a`'s input. The canvas takes the edge without a word. A
+node connected to itself is refused ("Self-connections are not allowed"),
+and the Edge Join gesture refuses a loop ("Edge join rejected: that
+connection would create a cycle"), but an ordinary connection is not
+checked. Save then answers 500 and the screen reads "Failed to save
+pipeline: Operation failed. Check the server logs for details." The server
+log holds the sentence the analyst needs, in the form "Cycle detected in
+pipeline graph involving nodes: a, b. Remove one of the edges to break the
+cycle."
+
+From then on nothing can be saved. Another node was renamed and Save
+pressed: 500 again, the same text, and the pipeline file without the new
+name. The editor does not try again by itself. After two presses of Undo,
+the first for the rename and the second for the edge, the next save
+succeeds. The sweep saw a loop of three behave the same, and the preview's
+request for a node's inputs answer the same 500 for the nodes in the loop.
+A request whose edge names a node that is not there gets the same generic
+answer through the route ("Edges reference unknown node IDs: ghost." in the
+log); no way to make one on the canvas was found.
+
+**Plan:** Refuse a connection that would close a loop in the canvas's
+connection rule, with the Edge Join's check and its words. Answer the graph
+errors that the save and the preview routes can meet, a loop and an edge
+without its node, as refusals that carry the error's own sentence, which
+already names the nodes and the remedy.
+
+**Acceptance:** Dragging a connection that closes a loop of two or of three
+is refused at the canvas with a message, and the number of edges does not
+change. A save or a preview request whose graph holds a loop answers 4xx
+naming the nodes. Neither answers "Operation failed." A browser test drags
+the loop.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/hooks/useEdgeHandlers.ts`;
+`frontend/src/utils/connectionValidation.ts::validatePipelineConnection`;
+`frontend/src/utils/edgeJoinGraph.ts::hasDirectedCycle`;
+`src/haute/_topo.py::CycleError`;
+`src/haute/_topo.py::UnknownEdgeEndpointError`;
+`src/haute/routes/pipeline.py::save_pipeline`.

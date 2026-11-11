@@ -396,6 +396,11 @@ branch". Spinning off a copy holds the same sentence (read from the source).
 A Restore records the file first, as the specification says: "It records
 everything on disk first, with the milestone's sweep".
 
+A file that git does not track blocks a switch in the same way. A file
+copied into the pipeline folder by hand, with the name of a file the other
+branch holds, makes the switch answer the same generic text (git: "The
+following untracked working tree files would be overwritten by checkout").
+
 The advice does not work for this file. The editor counts as unsaved only
 what is on its canvas or in the workbench form, and its Save and its Discard
 act on those (read from the source). The editor's Save was run next, with a
@@ -408,7 +413,8 @@ file.
 
 **Plan:** One rule for every operation that replaces working files (a
 switch, create and open, catch up, archive, spin off): where tracked files
-differ from version history, answer naming them and offer the two things an
+differ from version history, or a file git does not track sits where the
+destination has one, answer naming them and offer the two things an
 analyst can want. Record them as one save, with the sweep a Restore already
 uses, or put them back as version history has them. Carry on with the
 operation after either. Drop "Save" from the advice, since the editor's Save
@@ -419,7 +425,8 @@ branch where the file differs, a catch-up, an archive of the current branch
 and a create-and-open each answer naming the file and offering to record it
 or to put it back. After recording, the operation completes and the edit is
 among the branch's saves. After putting back, the file is as version history
-has it and the operation completes. None answers "Operation failed." and
+has it and the operation completes. A switch that an untracked file is in
+the way of answers naming the file. None answers "Operation failed." and
 none advises Save.
 
 **Dependencies:** None. `VCS-06` reaches the same failed switch by another

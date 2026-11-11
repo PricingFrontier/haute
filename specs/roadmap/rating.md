@@ -4,10 +4,12 @@
 
 Banding and Rating Step, as [the rating specification](../rating/high-level.md)
 describes them: how a rule's or an entry's value is matched to a column's
-values, and what a mismatch tells the analyst. The packages below come from
-the review plan's sweep of 10 November 2026, which ran every node type on a
-fixed set of awkward values, and were reproduced on that day through the
-node's preview.
+values, what a mismatch tells the analyst, and what a typed number becomes.
+`RTG-01` and `RTG-02` come from the review plan's sweep of 10 November
+2026, which ran every node type on a fixed set of awkward values, and were
+reproduced on that day through the node's preview. `RTG-03` and `RTG-04`
+come from the plan's browser sweep of the editors' fields on 11 November;
+the main session re-ran them in a browser and from the command line.
 
 ## Priorities
 
@@ -15,6 +17,8 @@ node's preview.
 |---|---|---:|---|
 | RTG-01 | Planned | P2 | A categorical Banding rule written `true`, `True` or `1` for a Boolean column matches it or is refused; it no longer sends every row to the default in silence. |
 | RTG-02 | Planned | P3 | A Rating Step entry whose key is not a value of its factor's type is refused naming the table, the factor and the key. |
+| RTG-03 | Planned | P2 | A decimal comma typed into a Rating Step's Default or a Banding breakpoint is kept or refused in words, the same in every browser, never saved ten times too large. |
+| RTG-04 | Planned | P3 | A Rating table with a Default and no entries prices the Default, instead of stopping the run for a column it did not create. |
 
 ## Planned improvements
 
@@ -80,3 +84,75 @@ well as the output.
 **Evidence:** `src/haute/_rating.py::_rating_key_expr`;
 `src/haute/_rating.py::banding_comparison_expr` words the Banding refusal;
 `specs/rating/high-level.md`.
+
+### RTG-03 — A decimal comma is not dropped from a relativity or a boundary
+**Why:** Reproduced on 11 November 2026 in a browser by the plan's sweep of
+the editors' fields, and again by the main session. In a browser set to
+English, an analyst who writes decimals with a comma types `1,5` into a
+Rating Step table's Default. The box shows `15`, with no message, and Save
+writes `"default_value": "15"`. The saved files were then run from the
+command line with one entry in the table: the rows that entry matched were
+priced at 1.2 and every other row at 15.0. A Banding breakpoint typed `40,5`
+is saved as 405 the same way. In a browser set to German the same keystrokes
+give 1.5 and 40.5, so the result depends on the browser's language and not
+on the project. Both boxes are the browser's own number fields, which
+discard a character their language does not use. `WB-48` records the same
+fault on the workbench's sheet.
+
+Two smaller things from the same runs. The Default is written as text,
+`"15"`, where the file held the number 1; the sweep saw an edit to any cell
+of the table do the same to an untouched Default. And a relativity cell
+typed `1,2` is marked with a hover title only, while Save reports success
+and the cell still shows `1,2`; a reload shows the earlier value (seen by
+the sweep, not re-run).
+
+**Plan:** Take these numbers through one text field that reads a number by a
+stated rule, the one `WB-48` plans for the sheet: a comma is refused in
+words at the field, or read as the decimal mark, the same in every browser.
+Write the Default as a number.
+
+**Acceptance:** In a browser set to English and in one set to German, `1,5`
+typed into a Rating Step's Default and `40,5` into a Banding breakpoint are
+either kept as 1.5 and 40.5 or refused at the field in words. Neither is
+saved as 15 or 405, and the settings file holds the Default as a number. A
+browser test types the comma.
+
+**Dependencies:** `WB-48` for the rule.
+
+**Evidence:** `frontend/src/panels/editors/RatingStepEditor.tsx`;
+`frontend/src/panels/editors/banding/BreakpointGrid.tsx`;
+`frontend/src/components/form/CommittedTextField.tsx`;
+`src/haute/_rating.py::_apply_rating_table`.
+
+### RTG-04 — A Rating table with a Default and no entries prices the Default
+**Why:** Reproduced on 11 November 2026 from the command line, on the
+project the repository's own browser tests scaffold. Its Rating Step has
+three factors, an output column and a Default of 1.0, and no entries yet.
+`haute run` stops at it: "'browser_rating' did not create the column
+'browser_relativity', which its contract says it outputs." It was the same
+with the Default set to 15. With one entry typed, the node runs and every
+row without an entry takes the Default.
+
+Two parts of the engine disagree about the empty table. The rating code
+treats it as a documented no-op and logs that the table was skipped for "no
+entries"; the node's contract then refuses the missing column. Neither
+tells the analyst that the table needs an entry. The editor says of a
+Default, "The default fills every miss"; with no entries every row is a
+miss, and none is filled.
+
+**Plan:** Let a table with factors, an output column and a usable Default
+produce its column from the Default when it has no entries. Keep the skip
+for a table that has neither, and have its refusal say that the table has no
+entries and no Default.
+
+**Acceptance:** A Rating Step whose table has a Default and no entries runs,
+in the preview and from the command line, and every row holds the Default. A
+table with no entries and no Default is refused naming the table and saying
+what it lacks.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_rating.py::_rating_table_skip_reason`;
+`src/haute/_rating.py::_apply_rating_table`;
+`frontend/src/panels/editors/RatingStepEditor.tsx`;
+`scripts/run_frontend_e2e_server.py`.
