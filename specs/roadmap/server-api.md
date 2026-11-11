@@ -363,13 +363,16 @@ emptied to nothing (run on 11 November).
 The page then hides even that. The client gives every failed response the
 message `HTTP 500`, with the server's words kept beside it, and the page's
 own load is the one caller that shows the message instead of the words:
-after twelve seconds of "Loading pipeline..." the screen reads "Haute
-could not open this pipeline", an explanation, and "HTTP 500", under the
-toast "Failed to load pipeline: HTTP 500" (seen in a browser by the
-review plan's sweep of failed calls on 11 November; the twelve seconds
-and the first lines were run again by the main session, the last line is
-read from the source). Whatever sentence the load route is given will not
-reach the analyst until the page shows it.
+after twelve to fourteen seconds of "Loading pipeline..." the screen reads
+"Haute could not open this pipeline", an explanation, and "HTTP 500",
+under the toast "Failed to load pipeline: HTTP 500" (seen in a browser on
+11 November by the review plan's sweep of failed calls, with the failure
+injected, and by the main session with a `haute.toml` left half-edited and
+with the pipeline file emptied). With the half-edited `haute.toml` a second
+toast, from the call that reads the workbench's status, names the cause the
+load does not: "haute.toml is malformed and could not be parsed". Whatever
+sentence the load route is given will not reach the analyst until the page
+shows it.
 
 At start-up, with `haute.toml` naming a pipeline file that is not there (a
 mistyped path, or the file renamed while the editor was closed), the server

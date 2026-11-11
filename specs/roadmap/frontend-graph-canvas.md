@@ -5,8 +5,8 @@
 The graph store behind the canvas, as [the frontend graph canvas
 specification](../frontend-graph-canvas/high-level.md) describes it: what one
 edit costs, what the undo history holds, which connections the canvas
-takes and what a save does when its answer never comes. `FEG-01` comes
-from the
+takes, what a save does when its answer never comes, and what a tab with
+unsaved work does when the file changes under it. `FEG-01` comes from the
 9 November 2026 codebase review and was measured against `HEAD` on that day
 by bundling the store and driving it under Node. `FEG-02` comes from the
 review plan's sweep of the frontend's logic on 10 November 2026 and was
@@ -14,7 +14,10 @@ confirmed in a real browser. `FEG-03` comes from the plan's browser sweep
 of the editors' fields on 11 November and was re-run by the main session
 in a browser and through the save route. `FEG-04` comes from the plan's
 browser sweep of failed calls on the same day; the main session ran it
-again with a dropped connection and with a gateway's answer.
+again with a dropped connection and with a gateway's answer. `FEG-05`
+comes from the plan's browser sweep of what happens around an open editor,
+also on 11 November; the main session ran it again with a slip in a code
+editor and with a branch checked out and back.
 
 ## Priorities
 
@@ -24,6 +27,7 @@ again with a dropped connection and with a gateway's answer.
 | FEG-02 | Planned | P2 | Deleting a node with Backspace is one undo step, as with Delete: one Undo brings back the node and its edges. |
 | FEG-03 | Planned | P2 | A connection that closes a loop is refused at the canvas, and a save that meets a loop names its nodes instead of failing every later save with "Check the server logs". |
 | FEG-04 | Planned | P2 | After a save whose answer never came, the next Save repeats it under the same operation: the analyst's own save is not refused as a change on disk, and the work done since is kept. |
+| FEG-05 | Planned | P2 | A tab with unsaved work that a change on disk locked is editable again once the file is back as the tab loaded it, and the banner offers the reload it names. |
 
 ## Planned improvements
 
@@ -207,3 +211,66 @@ refused because another writer saved in between still shows the banner.
 `frontend/src/app/useOpenQuoteStore.ts`;
 `src/haute/routes/pipeline.py::save_pipeline`;
 `specs/frontend-graph-canvas/low-level.md`; `specs/workbench/high-level.md`.
+
+### FEG-05 — A tab locked by a change on disk unlocks when the change is gone
+**Why:** Reproduced in a browser on 11 November 2026, by the review plan's
+sweep of what happens around an open editor and again by the main session.
+A tab with unsaved work is never overwritten by an edit to the pipeline
+file: the specification says "a banner asks them to reload or discard
+first", and the tab turns read-only. Two everyday cases leave it read-only
+when nothing on disk differs from what the tab loaded.
+
+- A slip in a code editor that saves as it goes: a stray character typed
+  into `rating/main.py` and taken out again.
+- A look at a colleague's work: `git checkout colleague` in a terminal,
+  then `git checkout` back.
+
+In both runs the file was byte for byte what the tab had loaded, and the tab
+still showed "Pipeline changed on disk (rating/main.py) while you have
+unsaved changes. Reload the file or discard local edits before applying
+external changes." It read "READ-ONLY", its Save button was off, and Ctrl+S
+answered with the same sentence. It was the same thirty seconds later, and
+nothing in the source lifts it. The banner names two remedies and has one
+control, a close button, which hides the banner and leaves the tab
+read-only. Reloading the page is the only way on, and the page has no
+unload guard: the rename made before the slip was on the canvas, never
+reached the file, and was gone.
+
+The node's panel adds a sentence that points the wrong way: "This node is
+valid and available for inspection. Resolve the pipeline load diagnostics
+before editing or running it." There are no load diagnostics.
+
+The cause is in what the tab remembers. Each document the server sends
+replaces the tab's record of the file's revision and fingerprint before the
+check for unsaved work. Once one changed document has arrived, the tab no
+longer knows which document its edits were made on, and the document that
+arrives when the file comes back is treated as one more change.
+
+The sweep saw the same lock after the file was saved again with Windows
+line ends, and with a byte-order mark, neither of which changes a node (not
+run again). `FEG-04` reaches the locked tab by another road, the lost
+answer to the tab's own save.
+
+**Plan:** Keep, while a tab has unsaved work, the revision and fingerprint
+of the document it was last in step with. When a document arrives with that
+fingerprint, put the tab back in step: the revision is that one again, the
+banner goes and Save works. Decide with it whether a rewrite that changes
+only the file's bytes should lock at all, since the document it parses to
+is the one the tab holds. Give the banner the control its sentence names, a
+button that reloads the file and drops the local edits. In the node's panel
+use the reason `documentReadOnlyReason` already words for this state.
+
+**Acceptance:** In a browser test, a tab with an unsaved rename sees the
+pipeline file changed and changed back: the banner goes, the editor is
+editable, and Save writes the rename. With the file left changed, the
+banner has a control that reloads the file, and the node's panel names the
+change on disk, not load diagnostics.
+
+**Dependencies:** None. `FEG-04` reaches the same locked tab through a lost
+answer.
+
+**Evidence:** `frontend/src/hooks/useWebSocketSync.ts`;
+`frontend/src/stores/useDocumentStatusStore.ts::documentReadOnlyReason`;
+`frontend/src/panels/NodePanel.tsx`; `frontend/src/App.tsx`;
+`specs/frontend-graph-canvas/high-level.md`;
+`specs/frontend-shared/high-level.md`.
