@@ -574,7 +574,7 @@ def reshaping_cases() -> list[tuple[str, list[Step]]]:
         }
         for v in ("web", "phone")
     ]
-    cases.append(("group-by-read-back-as-pivot", program(group_by(*cells))))
+    cases.append(("group-by-pivot-shaped", program(group_by(*cells))))
     for agg in PIVOT_AGGREGATIONS:
         pivot_columns = [
             {"value": lit("text", "web"), "name": "web"},

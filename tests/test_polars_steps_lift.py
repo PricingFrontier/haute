@@ -100,8 +100,7 @@ def rebuild_or_reject(node_type: NodeType, steps: list[Step]) -> list[Step]:
     if all(step["kind"] != "free_code" for step in steps):
         assert len(lifted) == len(steps)
         for step, lifted_step in zip(steps, lifted, strict=True):
-            as_pivot = step["kind"] == "group_by" and lifted_step["kind"] == "pivot"
-            assert lifted_step["kind"] == step["kind"] or as_pivot
+            assert lifted_step["kind"] == step["kind"]
     return lifted
 
 
@@ -446,7 +445,7 @@ def pivot_cells(draw: st.DrawFn) -> list[Step]:
 
 @st.composite
 def pivot_shaped_group_bys(draw: st.DrawFn, keys: list[str]) -> Step:
-    """A group-by of one ``on`` value's cell per aggregate, which a pivot renders too."""
+    """A group-by of one ``on`` value's cell per aggregate, which a pivot expresses too."""
     values, on = draw(columns), draw(columns)
     agg = draw(st.sampled_from([a for a in PIVOT_AGGREGATIONS if a != "len"]))
     entries = [
@@ -775,7 +774,7 @@ def test_rebuilt_steps_carry_ids_from_kind_and_place_only() -> None:
     assert [step["id"] for step in lifted] == ["source-1", "limit-2"]
 
 
-def test_a_filtered_group_by_that_a_pivot_renders_is_the_pivot() -> None:
+def test_a_pivot_and_the_group_by_it_lowers_to_each_read_back_as_themselves() -> None:
     def cell(value: str, name: str, match: str = "all") -> Step:
         condition = {"column": "region", "operator": "eq", "value": literal("text", value)}
         return {
@@ -801,14 +800,24 @@ def test_a_filtered_group_by_that_a_pivot_renders_is_the_pivot() -> None:
         "keys": ["channel"],
         "aggregations": [cell("north", "north"), cell("south", "south", "any")],
     }
-    assert rebuilt([SOURCE, group_by])[1] == pivot
+    # The pivot names its index as one list and the group-by its keys one by one, so
+    # the code tells them apart and neither becomes the other on a round trip.
+    pivot_code = render_node_steps(NodeType.POLARS, numbered([SOURCE, pivot])).code
+    group_by_code = render_node_steps(NodeType.POLARS, numbered([SOURCE, group_by])).code
+    assert 'df.group_by(["channel"], maintain_order=True)' in pivot_code
+    assert 'df.group_by("channel", maintain_order=True)' in group_by_code
     assert rebuilt([SOURCE, pivot])[1] == pivot
-    # Two values columns cannot be one pivot, so that group-by stays a group-by.
-    mixed = {
-        **group_by,
-        "aggregations": [cell("north", "north"), {**cell("south", "south"), "column": "a"}],
+    one_condition = {
+        "match": "all",
+        "conditions": group_by["aggregations"][1]["where"]["conditions"],
     }
-    assert rebuilt([SOURCE, mixed])[1]["kind"] == "group_by"
+    assert rebuilt([SOURCE, group_by])[1] == {
+        **group_by,
+        "aggregations": [
+            cell("north", "north"),
+            {**cell("south", "south"), "where": one_condition},
+        ],
+    }
 
 
 def test_adjacent_code_steps_rebuild_as_one() -> None:

@@ -1831,11 +1831,16 @@ class _Renderer:
             rendered.append(f"{aggregate}.alias({name!r})")
         return self._group_and_aggregate(keys, rendered)
 
-    def _group_and_aggregate(self, keys: list[str], rendered: list[str]) -> str:
+    def _group_and_aggregate(
+        self, keys: list[str], rendered: list[str], *, keys_as_list: bool = False
+    ) -> str:
+        """A group-by of *keys*; a pivot names them as one list, so its code reads back as it."""
         if not keys:
             # A whole-frame summary: one row of aggregates.
             return f"df = df.select({', '.join(rendered)})"
         by = ", ".join(repr(k) for k in keys)
+        if keys_as_list:
+            by = f"[{by}]"
         return f"df = df.group_by({by}, maintain_order=True).agg({', '.join(rendered)})"
 
     def _dtype_aggregate(self, entry: Mapping[str, Any], label: str) -> str:
@@ -1895,7 +1900,7 @@ class _Renderer:
             rendered.append(f"{cell}{call}.alias({name!r})")
         if len(types) != 1:
             raise self.fail("Pivot column values must all be the same type.")
-        return self._group_and_aggregate(index, rendered)
+        return self._group_and_aggregate(index, rendered, keys_as_list=True)
 
     def _render_unpivot(self, step: Mapping[str, Any]) -> str:
         on = self._str_list(step["on"], "Unpivot columns", allow_empty=False)

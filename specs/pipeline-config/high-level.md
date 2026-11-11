@@ -617,7 +617,10 @@ values spread out, one entry per output column pairing a plain literal value wit
 output name, the values column, and an aggregate among sum, mean, min, max, median,
 first, last, count of non-null values and row count) is lowered to a maintain-order
 group-by of filtered aggregates rather than Polars' own `pivot`, so the lineage and
-cardinality models prove it and its output schema is fixed by the step (each cell
+cardinality models prove it and its output schema is fixed by the step. It names its
+index as one list (`group_by(["region"], maintain_order=True)`), where a Group and
+aggregate step names its keys one by one, so each reads back from its code as the step
+it was (each cell
 matches `pivot(on_columns=...)` value for value: an empty cell is 0 for sum and the
 counts and null otherwise); duplicate values, duplicate or index-colliding names,
 mixed value types and null values are refused; and `unpivot` renders the native

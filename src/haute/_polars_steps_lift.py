@@ -121,7 +121,7 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
         step = owner[unit.first]
         if step["kind"] == "free_code":
             return _recognised(reader, unit, context)
-        normal = _with_comment(_normal_step(step, context), unit)
+        normal = _with_comment(_normal_step(step), unit)
         return normal if context.rendering(normal) == unit.text else None
 
     return _assemble(node_type, _units(rendered.code), choose)
@@ -723,8 +723,12 @@ class _Reader:
             "value_name": _text(keywords["value_name"]),
         }
 
-    def _grouping(self, value: ast.expr) -> tuple[list[str], list[ast.expr]]:
-        """The keys and aggregate nodes of ``df.group_by(...).agg(...)``."""
+    def _grouping(self, value: ast.expr, *, keys_as_list: bool) -> tuple[list[str], list[ast.expr]]:
+        """The keys and aggregate nodes of ``df.group_by(...).agg(...)``.
+
+        A group-by names its keys one by one and a pivot its index as one list
+        (``group_by(["region"], ...)``), so each reads back as the step it was.
+        """
         agg = _method(value, "agg")
         group = _method(agg.receiver, "group_by")
         if (
@@ -735,10 +739,14 @@ class _Reader:
             or _name(group.receiver) != "df"
         ):
             raise _NoMatchError
-        return [_text(key) for key in group.args], agg.args
+        if not keys_as_list:
+            return [_text(key) for key in group.args], agg.args
+        if len(group.args) != 1 or not isinstance(group.args[0], ast.List):
+            raise _NoMatchError
+        return _texts(group.args[0]), agg.args
 
     def _group_by(self, value: ast.expr) -> Step:
-        keys, nodes = self._grouping(value)
+        keys, nodes = self._grouping(value, keys_as_list=False)
         return {"kind": "group_by", "keys": keys, "aggregations": self._aggregations(nodes)}
 
     def _summary(self, call: _Call) -> Step:
@@ -748,8 +756,8 @@ class _Reader:
         return {"kind": "group_by", "keys": [], "aggregations": self._aggregations(call.args)}
 
     def _pivot(self, value: ast.expr) -> Step:
-        """A group-by whose every aggregate is one ``on`` value's cell, read as a pivot."""
-        keys, nodes = self._grouping(value)
+        """A group-by of one index list whose every aggregate is one ``on`` value's cell."""
+        keys, nodes = self._grouping(value, keys_as_list=True)
         shapes: set[tuple[str, str, str]] = set()
         columns: list[Step] = []
         for node in nodes:
@@ -1228,7 +1236,7 @@ def _assemble(
 _Position = Literal["expr", "value", "window", "plain"]
 
 
-def _normal_step(step: Mapping[str, Any], context: _Context) -> Step:
+def _normal_step(step: Mapping[str, Any]) -> Step:
     kind = step["kind"]
     # The comment comes from the lines above the statement (``_with_comment``).
     dropped = ("id", COMMENT_FIELD)
@@ -1249,11 +1257,6 @@ def _normal_step(step: Mapping[str, Any], context: _Context) -> Step:
         ]
     elif kind == "group_by":
         normal["aggregations"] = [_normal_aggregation(entry) for entry in step["aggregations"]]
-        pivot = _as_pivot(normal)
-        if pivot is not None:
-            as_group_by = context.rendering(normal)
-            if as_group_by is not None and context.rendering(pivot) == as_group_by:
-                return pivot
     return normal
 
 
@@ -1404,34 +1407,3 @@ def _normal_aggregation(entry: Mapping[str, Any]) -> Step:
     if agg == "quantile":
         normal["quantile"] = entry["quantile"]
     return normal
-
-
-def _as_pivot(group_by: Mapping[str, Any]) -> Step | None:
-    """The pivot a group-by reads as when each aggregate is one ``on`` value's cell."""
-    if not group_by["keys"]:
-        return None
-    shapes: set[tuple[str, str, str]] = set()
-    columns: list[Step] = []
-    for entry in group_by["aggregations"]:
-        where = entry.get("where")
-        if "dtype" in entry or entry["agg"] == "len" or where is None:
-            return None
-        if len(where["conditions"]) != 1:
-            return None
-        condition = where["conditions"][0]
-        value = condition.get("value")
-        if condition["operator"] != "eq" or value is None or value["kind"] != "literal":
-            return None
-        shapes.add((entry["column"], condition["column"], entry["agg"]))
-        columns.append({"value": value, "name": entry["name"]})
-    if len(shapes) != 1:
-        return None
-    ((values, on, agg),) = shapes
-    return {
-        "kind": "pivot",
-        "index": list(group_by["keys"]),
-        "on": on,
-        "values": values,
-        "agg": agg,
-        "columns": columns,
-    }

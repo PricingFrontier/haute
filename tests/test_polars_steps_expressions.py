@@ -548,7 +548,7 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
                 values="premium",
                 agg="mean",
             ),
-            'df = df.group_by("region", maintain_order=True).agg(\n'
+            'df = df.group_by(["region"], maintain_order=True).agg(\n'
             '    pl.col("premium").filter(pl.col("channel") == "web").mean().alias("web"),\n'
             '    pl.col("premium").filter(pl.col("channel") == "phone").mean().alias("by_phone"),\n'
             ")",
@@ -563,7 +563,7 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
                 values="premium",
                 agg="len",
             ),
-            'df = df.group_by("region", "fuel", maintain_order=True).agg(\n'
+            'df = df.group_by(["region", "fuel"], maintain_order=True).agg(\n'
             '    pl.col("premium").filter(pl.col("year") == 2024).len().alias("y2024")\n'
             ")",
         ),
