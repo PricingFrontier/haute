@@ -566,7 +566,7 @@ def free_codes(draw: st.DrawFn) -> Step:
     return {"kind": "free_code", "code": "\n".join(lines)}
 
 
-def commented(draw: st.DrawFn, step: Step) -> Step:
+def commented(draw: Callable[[st.SearchStrategy[Any]], Any], step: Step) -> Step:
     """*step*, a structured one sometimes with a comment above it."""
     if step["kind"] == "free_code" or draw(st.integers(0, 2)):
         return step
@@ -705,7 +705,7 @@ def test_step_chains_rebuild_from_their_code(program: tuple[NodeType, list[Step]
 @given(data=st.data())
 def test_every_function_rebuilds_from_its_code(fn: str, data: st.DataObject) -> None:
     expr = data.draw(functions(("rate",), 1, fn))
-    steps = [
+    steps: list[Step] = [
         {"kind": "source", "input": "quotes"},
         {"kind": "variable", "name": "rate", "value": literal("number", 2)},
         {"kind": "with_column", "name": "out", "expr": expr},
@@ -718,7 +718,7 @@ def test_every_function_rebuilds_from_its_code(fn: str, data: st.DataObject) -> 
 @given(data=st.data())
 def test_every_window_aggregate_rebuilds_from_its_code(agg: str, data: st.DataObject) -> None:
     expr = data.draw(windows((), 1, agg))
-    steps = [
+    steps: list[Step] = [
         {"kind": "source", "input": "quotes"},
         {"kind": "with_column", "name": "out", "expr": expr},
     ]
@@ -732,7 +732,7 @@ def test_every_condition_operator_rebuilds_from_its_code(
     operator: str, data: st.DataObject
 ) -> None:
     condition = data.draw(conditions((), 1, False, operator))
-    steps = [
+    steps: list[Step] = [
         {"kind": "source", "input": "quotes"},
         {"kind": "filter", "match": "all", "conditions": [condition]},
     ]
@@ -795,7 +795,7 @@ def test_a_pivot_and_the_group_by_it_lowers_to_each_read_back_as_themselves() ->
             {"value": literal("text", "south"), "name": "south"},
         ],
     }
-    group_by = {
+    group_by: Step = {
         "kind": "group_by",
         "keys": ["channel"],
         "aggregations": [cell("north", "north"), cell("south", "south", "any")],
@@ -1158,7 +1158,7 @@ def test_a_body_ending_in_newlines_rebuilds_as_without_them() -> None:
 
 def test_a_frame_surface_rebuilds_its_start_as_code() -> None:
     """A frame surface has no start step, so ``df = <name>`` there is code."""
-    steps = [{"kind": "free_code", "code": "df = quotes"}, {"kind": "limit", "n": 2}]
+    steps: list[Step] = [{"kind": "free_code", "code": "df = quotes"}, {"kind": "limit", "n": 2}]
     assert rebuilt(steps, NodeType.EXTERNAL_FILE) == steps
     assert lift_steps(NodeType.DATA_INPUT, "") == []
 

@@ -37,7 +37,7 @@ def test_preview_inputs_invalid_flattening_is_advisory(
     import haute.routes.pipeline as pipeline
     from haute.errors import ConfigError, ParseError
 
-    def invalid_graph(_graph: Any) -> Any:
+    def invalid_graph(_graph: Any, **_options: Any) -> Any:
         raise (ParseError if kind == "parse" else ConfigError)("invalid authored graph")
 
     monkeypatch.setattr(pipeline, "flatten_executable_graph", invalid_graph)

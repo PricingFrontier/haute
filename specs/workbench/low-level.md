@@ -137,7 +137,7 @@ filtering or opening this view. Grey backgrounds and fixed structure remain unch
 
 The schema review UI stays in the lazy workbench, with its response validation in the
 workbench validator module. Its measured production bundle is 1,788.3 KiB gzip, with
-293.9 KiB initially loaded. The aggregate allowance is 1,790 KiB, 1 KiB of it for the chunked GLM's training contracts; the initial 300 KiB,
+293.9 KiB initially loaded. The aggregate allowance is 1,795 KiB: 1 KiB of it for the chunked GLM's training contracts, 2 KiB for a frontier point's convergence trace (OPT-PC04), and 3 KiB for the Coalesce step, the step editor's round-trip fixes, a submodel's output reorder, the schema pane's Where it's used and the live workbench sample (1,793.1 KiB measured, 294.3 KiB initially); the initial 300 KiB,
 single-chunk 650 KiB and chart-vendor 205 KiB limits stay unchanged. The 1 KiB allowance increase covers connection-bound comparisons, deferred clipboard validation, and global/retention diagnostics after removing unused comparison metadata and shared-view duplication.
 
 | File | Responsibility |

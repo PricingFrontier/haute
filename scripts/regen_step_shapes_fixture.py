@@ -424,7 +424,7 @@ def filter_cases() -> list[tuple[str, list[Step]]]:
         for index, entry in enumerate(condition(operator)):
             cases.append((f"filter-{operator}-{index + 1}", program(filter_on(entry))))
     for match in MATCH_MODES:
-        both = [
+        both: list[Step] = [
             {"column": "premium", "operator": "gt", "value": lit("number", 1)},
             {"column": "region", "operator": "is_not_null"},
         ]
