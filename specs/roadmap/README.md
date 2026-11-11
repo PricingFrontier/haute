@@ -24,7 +24,7 @@ records corrections to that audit's claims and proposed remedies.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Assistant](assistant.md) | The shipped examples refused on a copy of Haute that pip installed; an applied or undone change that says nothing when its version capture fails | `AST-01` |
-| [Caching](caching.md) | Node outputs stored by one version of Haute's node code and read as current by the next | `CCH-01` |
+| [Caching](caching.md) | Node outputs stored by one version of Haute's node code and read as current by the next; a snapshot build that fails when another program has one of its new files open for a moment | `CCH-01` |
 | [Deploy](deploy.md) | One rule for which file a relative path means in the editor and in the bundle; a non-finite output refused by name; what a dry run checks; date outputs in test quotes | `DPL-01` |
 | [Engineering quality](engineering-quality.md) | Promise rules in the frontend lint gate; a test that never runs in CI; dead branches and unused suppressions; the commands run whole on the shipped examples by a test | `EQ-01` |
 | [Execution engine](execution-engine.md) | Pipelines with more than one non-live source under the optimiser and a write; the Constant node's number rule; preamble failure attribution; a join option the planner does not read; a Transform that cross-joins a Constant | `EXE-01` |

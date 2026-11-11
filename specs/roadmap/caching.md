@@ -2,18 +2,22 @@
 
 ## Scope
 
-The on-disk store of node outputs, as [the caching
+The on-disk store of input and node-output snapshots, as [the caching
 specification](../caching/high-level.md) describes it: what a node-output
 snapshot's signature covers, and so when a stored output stops being
-current. The package below comes from the 9 November 2026 codebase review.
-It follows from the signature's fields as written and from the repository's
-history; no stale read was staged to show it.
+current, and how a finished snapshot is published. `CCH-01` comes from the
+9 November 2026 codebase review. It follows from the signature's fields as
+written and from the repository's history; no stale read was staged to
+show it. `CCH-02` comes from the review plan's sweep of pairs of operations
+and was reproduced on 11 November with a second process holding one of the
+snapshot's new files open.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CCH-01 | Planned | P2 | A node output stored by one version of Haute's node code is not read as current by another. |
+| CCH-02 | Planned | P3 | A snapshot is published while a scanner or an indexer still has one of its new files open, instead of the build failing with no reason given. |
 
 ## Planned improvements
 
@@ -58,3 +62,44 @@ has no users to migrate.
 `src/haute/_cache.py::ALGO_VERSION` moves for canonicalisation changes;
 `src/haute/_json_shred/_snapshots.py::SHRED_SEMANTICS_VERSION` is the
 counterpart that has moved; `specs/caching/high-level.md`.
+
+### CCH-02 — A snapshot is published through the rename that waits
+**Why:** Reproduced on 11 November 2026 with nothing patched. On Windows a
+folder cannot be renamed while any program has a file inside it open.
+Haute's own helper for renaming a folder says so, "as an antivirus scanner
+or indexer does for a while after the file is written", and retries for
+about four seconds; the workbench app's release build uses it. The
+publication of an input snapshot does not: it renames its staging folder
+once. A second process that opens one of the snapshot's new files, with full
+sharing so that it refuses nothing, and holds it for one second makes the
+build end "Input snapshot build failed." with nothing more. The server log
+holds the `PermissionError` on the rename. The earlier snapshot stays
+current, no staging folder is left, and the same build succeeds once the
+file is let go. The plan's sweep of pairs of operations met the same failure
+with no stand-in, once in 18 rebuilds started straight after a cancelled
+build, which is why this is rated P3 on this machine; a machine whose
+scanner is slower would meet it more often.
+
+A node-output snapshot is published by the same bare rename, and a retired
+generation is moved aside by another; both were read from the source and
+not run. A Data Output's Write, run the same way against its staged copy,
+waited the second out and succeeded.
+
+**Plan:** Publish and retire snapshots through the shared folder rename, so
+that a scanner's moment on a new file is waited out. Where the wait runs
+out, say that another program has the snapshot's files open and that the
+build can be run again (`IOL-01` owns the wording of a failed build).
+
+**Acceptance:** With one of the staged files held open for one second by
+another process, an input snapshot build and a node-output publication
+complete. Held for longer than the wait, the build's message says that
+another program has the files open, and the next build succeeds.
+
+**Dependencies:** None. `IOL-01` for the message of a failed build.
+
+**Evidence:** `src/haute/_file_ops.py::rename_directory`;
+`src/haute/_source_cache.py::SourceCacheStore.build`;
+`src/haute/_source_cache.py::_retire_generation_locked`;
+`src/haute/_node_snapshots.py::publish_node_output`;
+`src/haute/routes/input_cache.py::_build_failure`;
+`src/haute/_workbench_app.py`.
