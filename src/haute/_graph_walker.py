@@ -52,6 +52,7 @@ from haute._execute_lazy import (
     _declared_api_input_frame_schema_items,
     _edge_join_recipe,
     _extract_error_line,
+    _failure_message,
     _is_plain_model_score,
     _located_step,
     _pick_source_frame,
@@ -1968,7 +1969,8 @@ class _Walk:
         self.failed.add(node_id)
         self.frames.pop(node_id, None)
         self.collected[node_id] = None
-        self.errors[node_id] = str(exc)
+        message = _failure_message(exc)
+        self.errors[node_id] = message
         error_line = _extract_error_line(exc)
         inputs = self.failed_inputs.pop(node_id, None)
         if error_line is None and inputs is not None:
@@ -1978,7 +1980,7 @@ class _Walk:
                 error_line = located.line
                 if located.remedy is not None:
                     # What to change comes first: the card's badge shows the first line.
-                    self.errors[node_id] = f"{located.remedy}\n{exc}"
+                    self.errors[node_id] = f"{located.remedy}\n{message}"
         if error_line is not None:
             self.error_lines[node_id] = error_line
 

@@ -147,6 +147,10 @@ its text as code. The rebuilt steps never take authority over Python they cannot
   the caller adds back.
 - **Ids.** Original step ids are dropped. Each rebuilt step's id is its kind and its
   one-based place in the list, such as `filter-3`, so the list renders as it stands.
+- **A step keeps its kind.** No two step kinds render the same statement. A pivot names
+  its index as one list (`group_by(["region"], maintain_order=True)`) and a group-by
+  names its keys one by one, so a group-by of filtered aggregates that a pivot could
+  also express reads back as the group-by, and a pivot as the pivot.
 - **Display-only text.** A formula's `text` is dropped.
 - **Settings the code writes out are written out.**
   - A null literal carries `"value": null`.
@@ -170,7 +174,6 @@ its text as code. The rebuilt steps never take authority over Python they cannot
 
 | Code | Steps that render it | Chosen step |
 |---|---|---|
-| A group-by whose every aggregate is `pl.col(v).filter(pl.col(on) == <literal>).<agg>()`, with one `v`, one `on` and one `agg` | a filtered group-by, or a pivot | the pivot |
 | Two code steps side by side | either split, or one | one `free_code` step |
 | `pl.when(d != 0).then(r / d)`, with no `otherwise` | the `divide` function (an if-then always ends in `otherwise`) | `divide` |
 | One condition in a filter, a row filter or an if-then branch | `match: all` or `match: any` | `match: all` |

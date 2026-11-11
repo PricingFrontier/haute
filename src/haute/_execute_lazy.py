@@ -1731,6 +1731,41 @@ def _extract_error_line(exc: Exception) -> int | None:
     return None
 
 
+#: What Polars appends to a lazy plan's failure, in this order: the plan it resolved
+#: (whose scans print absolute cache paths), then the operations it was resolving.
+_POLARS_PLAN_DUMPS = (
+    "\n\nResolved plan until failure:",
+    "\n\nThis error occurred with the following context stack:",
+)
+
+
+#: The two ways Polars words a missing column, as the first part of its message.
+_MISSING_COLUMN_WORDINGS = (
+    re.compile(r'unable to find column "(?P<name>.*?)"; valid columns: \[.*\]', re.DOTALL),
+    re.compile(r'"(?P<name>.*)" not found', re.DOTALL),
+)
+
+
+def _failure_message(exc: Exception) -> str:
+    """A node failure's message as the node records it: a Polars error's without its plan.
+
+    A missing column reads ``Column "x" does not exist.``, without the frame's other
+    columns; any other Polars sentence is kept as it is. The log keeps the whole text,
+    and any other exception's message is unchanged.
+    """
+    message = str(exc)
+    if not isinstance(exc, pl.exceptions.PolarsError):
+        return message
+    for dump in _POLARS_PLAN_DUMPS:
+        message = message.split(dump, 1)[0]
+    if isinstance(exc, pl.exceptions.ColumnNotFoundError):
+        for wording in _MISSING_COLUMN_WORDINGS:
+            missing = wording.fullmatch(message)
+            if missing is not None:
+                return f'Column "{missing["name"]}" does not exist.'
+    return message
+
+
 def _located_step(
     fn: Callable[..., Any], inputs: Sequence[_Frame], exc: Exception
 ) -> StepFailure | None:

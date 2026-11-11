@@ -24,7 +24,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react"
-import { useId, useState, type ReactNode } from "react"
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 
 import { CommittedTextField, IconSelect, QuietAction, ValidatedTextField } from "../../../components/form"
 import { getDtypeColor } from "../../../utils/dtypeColors"
@@ -441,8 +441,10 @@ function noteClass(note: string): string {
 
 /**
  * The dropdown of completions under a text box; the box owns the keyboard.
- * The active entry is tinted with an accent bar at its left; `matched` names
- * text that is already an exact name, shown ticked so Tab visibly keeps it.
+ * The active entry is tinted with an accent bar at its left, and the list
+ * scrolls itself (never the panel around it) to keep that entry in view;
+ * `matched` names text that is already an exact name, shown ticked so Tab
+ * visibly keeps it.
  */
 export function CompletionList({
   id,
@@ -463,9 +465,22 @@ export function CompletionList({
   onHover: (index: number) => void
   label?: string
 }) {
+  const listRef = useRef<HTMLUListElement | null>(null)
+  useLayoutEffect(() => {
+    const list = listRef.current
+    const option = activeIndex === null ? null : document.getElementById(`${id}-${activeIndex}`)
+    if (!list || !option) return
+    // The option's place in the list's scrolled content, which starts inside its border.
+    const box = option.getBoundingClientRect()
+    const top = box.top - list.getBoundingClientRect().top - list.clientTop + list.scrollTop
+    const bottom = top + box.height
+    if (top < list.scrollTop) list.scrollTop = top
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
+  }, [activeIndex, id])
   if (matches.length === 0 && matched === null) return null
   return (
     <ul
+      ref={listRef}
       id={id}
       role="listbox"
       aria-label={label}

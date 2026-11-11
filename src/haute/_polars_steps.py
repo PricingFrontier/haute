@@ -1530,18 +1530,23 @@ class _Renderer:
             ]
             return f"pl.concat_str([{', '.join(rendered_parts)}], separator={separator!r})"
         if kind == "sum_horizontal":
-            self._keys(expr, ("type", "parts", "text"), label)
-            self._formula_text(expr, label)
-            parts = expr.get("parts")
-            if not isinstance(parts, list) or len(parts) < 2:
-                raise self.fail(f"{label} sum across needs at least two parts.")
-            rendered_parts = [
-                self._operand(part, f"{label} part {i + 1}", expr=True)
-                for i, part in enumerate(parts)
-            ]
             # Polars skips missing parts, so a row with every part missing sums to 0.
-            return f"pl.sum_horizontal({', '.join(rendered_parts)})"
+            return f"pl.sum_horizontal({self._variadic_parts(expr, label, 'sum across')})"
+        if kind == "coalesce":
+            # Each row takes its first part that is not null, in the order given.
+            return f"pl.coalesce({self._variadic_parts(expr, label, 'coalesce')})"
         raise self.fail(f"Unknown expression type {kind!r}.")
+
+    def _variadic_parts(self, expr: Mapping[str, Any], label: str, name: str) -> str:
+        """The two or more parts of a call over values, rendered in expression position."""
+        self._keys(expr, ("type", "parts", "text"), label)
+        self._formula_text(expr, label)
+        parts = expr.get("parts")
+        if not isinstance(parts, list) or len(parts) < 2:
+            raise self.fail(f"{label} {name} needs at least two parts.")
+        return ", ".join(
+            self._operand(part, f"{label} part {i + 1}", expr=True) for i, part in enumerate(parts)
+        )
 
     def _window(self, expr: Mapping[str, Any], label: str) -> str:
         self._keys(
@@ -1826,11 +1831,16 @@ class _Renderer:
             rendered.append(f"{aggregate}.alias({name!r})")
         return self._group_and_aggregate(keys, rendered)
 
-    def _group_and_aggregate(self, keys: list[str], rendered: list[str]) -> str:
+    def _group_and_aggregate(
+        self, keys: list[str], rendered: list[str], *, keys_as_list: bool = False
+    ) -> str:
+        """A group-by of *keys*; a pivot names them as one list, so its code reads back as it."""
         if not keys:
             # A whole-frame summary: one row of aggregates.
             return f"df = df.select({', '.join(rendered)})"
         by = ", ".join(repr(k) for k in keys)
+        if keys_as_list:
+            by = f"[{by}]"
         return f"df = df.group_by({by}, maintain_order=True).agg({', '.join(rendered)})"
 
     def _dtype_aggregate(self, entry: Mapping[str, Any], label: str) -> str:
@@ -1890,7 +1900,7 @@ class _Renderer:
             rendered.append(f"{cell}{call}.alias({name!r})")
         if len(types) != 1:
             raise self.fail("Pivot column values must all be the same type.")
-        return self._group_and_aggregate(index, rendered)
+        return self._group_and_aggregate(index, rendered, keys_as_list=True)
 
     def _render_unpivot(self, step: Mapping[str, Any]) -> str:
         on = self._str_list(step["on"], "Unpivot columns", allow_empty=False)

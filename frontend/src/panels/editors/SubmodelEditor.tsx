@@ -1,10 +1,12 @@
-import { Package } from "lucide-react"
+import { GripVertical, Package } from "lucide-react"
 import { apiErrorMessage } from "../../api/errors"
 import { EditorLabel } from "../../components/form"
 import useGraphStore from "../../stores/useGraphStore"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../../types/node"
 import { withAlpha } from "../../utils/color"
-import { retargetSubmodelInput } from "../../utils/canonicalSubmodelBoundaryEditing"
+import { moveSubmodelOutput, retargetSubmodelInput } from "../../utils/canonicalSubmodelBoundaryEditing"
+import useListReorder from "../../hooks/useListReorder"
+import useRefocusAfterMove, { altArrowMove } from "../../hooks/useRefocusAfterMove"
 import { edgeInputName } from "../../utils/apiInputPorts"
 import type { SimpleNode } from "./_shared"
 import useToastStore from "../../stores/useToastStore"
@@ -30,6 +32,54 @@ function PortBadge({ name, accentColor }: PortBadgeProps) {
     >
       {name}
     </span>
+  )
+}
+
+/**
+ * The owner's outputs in order: drag one, or Alt+Up and Alt+Down on it, to move it. The order
+ * is the definition's, so every occurrence's output rows move with it, in one undoable edit.
+ */
+function OutputOrder({ definitionId, names, accentColor }: { definitionId: string; names: string[]; accentColor: string }) {
+  const move = (from: number, to: number) => {
+    const state = useGraphStore.getState()
+    state.setNodesAndEdgesAndSubmodels(state.nodes, state.edges, moveSubmodelOutput(state.submodels, definitionId, from, to))
+  }
+  const dragFor = useListReorder(move)
+  // An output moved by Alt+arrows takes the focus again in its new place.
+  const refocus = useRefocusAfterMove<HTMLDivElement>()
+  return (
+    <div role="list" aria-label="Outputs" className="mt-1 flex flex-col gap-0.5">
+      {names.map((name, place) => {
+        const drag = dragFor(place)
+        return (
+          <div
+            key={name}
+            ref={refocus.register(name)}
+            role="listitem"
+            aria-label={name}
+            aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+            tabIndex={0}
+            draggable
+            onDragStart={drag.onStart}
+            onDragOver={drag.onOver}
+            onDrop={drag.onDrop}
+            onDragEnd={drag.onEnd}
+            onKeyDown={(event) => {
+              const to = altArrowMove(event, "vertical", place, names.length)
+              if (to === null) return
+              refocus.moved(name)
+              move(place, to)
+            }}
+            data-drop-target={drag.target ? "true" : undefined}
+            className="focus-ring flex cursor-grab items-center gap-1.5 rounded px-1 py-0.5 hover-bg active:cursor-grabbing"
+            style={{ opacity: drag.dragging ? 0.5 : 1, boxShadow: drag.target ? "0 -2px 0 0 var(--accent)" : undefined }}
+          >
+            <GripVertical size={12} aria-hidden="true" className="shrink-0" style={{ color: "var(--text-muted)" }} />
+            <PortBadge name={name} accentColor={accentColor} />
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -148,11 +198,15 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
       {definition.outputPorts.length > 0 && (
         <div>
           <EditorLabel>Outputs</EditorLabel>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {definition.outputPorts.map((port) => (
-              <PortBadge key={port.name} {...port} accentColor={accentColor} />
-            ))}
-          </div>
+          {!readOnly && !config.instance_of && definition.outputPorts.length > 1 ? (
+            <OutputOrder definitionId={config.definition_id} names={definition.outputPorts.map((port) => port.name)} accentColor={accentColor} />
+          ) : (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {definition.outputPorts.map((port) => (
+                <PortBadge key={port.name} {...port} accentColor={accentColor} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

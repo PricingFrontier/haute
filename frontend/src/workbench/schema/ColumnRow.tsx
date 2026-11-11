@@ -1,9 +1,9 @@
 /**
  * A schema column's row under Keys, Inputs or Outputs: its type and name, its
  * summary to their right, dragged or moved within its block or into the other, removed and opened
- * for its details (specs/workbench).
+ * for its details or where it is used (specs/workbench).
  */
-import { SlidersHorizontal, X } from "lucide-react"
+import { Eye, SlidersHorizontal, X } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
@@ -31,6 +31,7 @@ import {
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { ColumnDatabaseDetails, ColumnDatabaseStatus } from "../ColumnDatabaseDetails"
 import { ColumnDetails } from "./ColumnDetails"
+import { ColumnUses } from "./ColumnUses"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
@@ -179,6 +180,15 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, d
             style={{ color: details === "config" ? "var(--text-primary)" : "var(--text-muted)" }}
           />
         )}
+        <IconButton
+          icon={Eye}
+          onClick={() => onToggleDetails("uses")}
+          aria-expanded={details === "uses"}
+          aria-label={`Where ${column.name} is used`}
+          title="Where it's used"
+          className="self-center"
+          style={{ color: details === "uses" ? "var(--text-primary)" : "var(--text-muted)" }}
+        />
         {fixed || column.index ? (
           // The index has no remove: the operations give it and take it away.
           <span className="size-5 shrink-0" aria-hidden="true" />
@@ -205,6 +215,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, d
       </div>
       {details === "database" && <ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} />}
       {details === "config" && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
+      {details === "uses" && <ColumnUses form={form} table={table} column={column} />}
     </div>
   )
 }

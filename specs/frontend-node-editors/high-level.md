@@ -346,8 +346,8 @@ whatever control has focus: Delete and Backspace outside a text box, and the gra
 Ctrl+C, Ctrl+V, Ctrl+A and Ctrl+G; save, undo and redo, node search, fit view, help and
 Escape (once no open card has handled it) stay global. An `Add step` button under the last
 card (under the start card while there are no steps) opens, in place, a chooser of
-entries by icon and name in five sections: Add column (Formula, If-then, Window, Number
-function, Text function and Date function, each adding an Add column step of that kind,
+entries by icon and name in five sections: Add column (Formula, If-then, Window,
+Coalesce, Number function, Text function and Date function, each adding an Add column step of that kind,
 Number function as Round, Text function as Trim whitespace and Date function as Shift
 date), Rows (Filter
 rows, Sort rows, Remove duplicates, Limit rows), Columns (Keep columns, Drop columns,
@@ -410,12 +410,19 @@ column), an optional in-group order
 quantile, and, for the plain aggregates, a row filter under More options ("Only rows
 where…", which adds a "When" condition list with "Aggregate every row" to remove it),
 dropped when the aggregate changes to a positional one; a text-join expression lists two
-or more parts and a separator, and a sum across lists two or more parts; a group-by
+or more parts and a separator, a sum across lists two or more parts, and a coalesce
+lists two or more parts in the order they are tried ("Parts, in order",
+each a column, a value, a constant or an expression), each row taking the first part that
+isn't missing there, and missing where every part is; a group-by
 aggregation reads as `[name] = [function] of [column]`, wrapping after the `=` when narrow,
 takes an optional quantile and an optional row filter, and an empty key list summarises the
-whole frame. An aggregation names itself `<column>_<function>` (`row_count` for a row count)
+whole frame. A row count reads as `[name] = row count` and has no column, as the backend reads
+`pl.len()` back from code: choosing it drops the column, and choosing another function after
+it starts an empty one. An aggregation names itself `<column>_<function>` (`row_count` for a row count)
 while its name is empty or still the name suggested for its previous function and column,
-never replacing a typed name; a new aggregation starts from the previous row's column; the
+never replacing a typed name, and a suggestion another aggregation or a group column of the
+step already has takes the next free number (`amount_std_2`); a new aggregation starts from
+the previous row's column; the
 function list says what the two counts do ("count of values (skips missing values)", "row
 count (every row, missing values included)"). A join reads as `[kind] join [input]`, each
 kind giving its Polars name and the rows it keeps ("left: every row here, with matches
@@ -459,8 +466,8 @@ sentence. An if-then lists its branches, each a condition list and a Then value,
 and removable ("Remove branch 2") while there are several, then "Add branch" (a new
 branch's condition starting from the previous branch's first column), and its
 Otherwise value last; a row takes the first branch whose conditions hold. The
-calculations are the General ones (Formula, If-then, Window, Sum across, Join text,
-Value) and the functions in three sections: Number (Round, Clip, Divide, Absolute value,
+calculations are the General ones (Formula, If-then, Window, Coalesce, Sum
+across, Join text, Value) and the functions in three sections: Number (Round, Clip, Divide, Absolute value,
 Round down, Round up, Square root, Natural log, Exponential), Text (Trim whitespace,
 Lower case, Upper case, Replace first match, Replace all matches, Replace by pattern,
 Substring, Split and take part, Extract pattern group, Text length) and Dates (Shift
@@ -471,7 +478,7 @@ name as a card title. A function's form is its value ("Of") and its labelled arg
 An Add column step keeps the kind it was added as, read from its expression with nothing
 stored for it: a Number, Text or Date function step offers, in a "Function" select, the
 functions of its own section only; a Formula (a function typed in the formula box
-included), If-then, Window, Sum across, Join text or Value step shows that calculation's
+included), If-then, Window, Coalesce, Sum across, Join text or Value step shows that calculation's
 form alone, with no select, and so does a step holding a conversion a formula cannot
 express. An operand's "Expression" source instead offers every calculation, in one
 "Computed as" select of four sections, General, Number, Text and Dates. While the
@@ -482,8 +489,10 @@ and Fill missing values being where they are chosen, but stay functions a formul
 a saved one is shown as its formula, or, where a formula cannot express it, keeps its
 own entry. A new column starts in Formula, its name field taking focus first. Changing
 the "Function" or "Computed as" select never discards work and never wraps it: the value being computed (a
-function's Of, a window's value, a sum across's or a text join's first part, a Value's
-value) carries into the new calculation's value where it has one, a function's arguments
+function's Of, a window's value, a coalesce's, a sum across's or a text join's first part, a Value's
+value) carries into the new calculation's value where it has one (a Value holding an
+expression reads, on its card and as a formula, as that expression, which is how it reads
+back once saved), a function's arguments
 carry to a function taking the same kinds of argument, Formula shows the expression being
 left as its formula where a formula can express it, and going back to a calculation
 already used in the open card restores it as it was left, a formula's unfinished text
@@ -507,7 +516,8 @@ and the catalogue's functions, their names read in any case and kept in the cata
 spelling, with plain-value arguments except clip's bounds, fill_null's value and
 divide's divisor, which take any formula (`clip(irpm_total, -irpm_cap, irpm_cap)`,
 `divide(premium, limit)`, missing where the divisor is zero or missing), and
-`sum_horizontal(a, b, …)` over two or more formulas, which skips missing values); the text is parsed into the
+`sum_horizontal(a, b, …)` over two or more formulas, which skips missing values, and
+`coalesce(a, b, …)`, the first of two or more formulas that isn't missing); the text is parsed into the
 nested expression schema on commit and kept on the expression as typed, so brackets and
 spacing survive collapsing and reopening the card and the card summary shows the same
 text (text that no longer describes the expression is replaced by a fresh rendering);
@@ -552,7 +562,9 @@ included), conditionals (every branch) and text joins in words; a group-by
 aggregation's or a window's row filter offers no nested expressions. The Combine group also offers
 "Pivot to columns" (index chips, the spread column, aggregate and values column, and
 one row per output column pairing a typed value with a name the value suggests, all
-rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
+rows sharing the first row's type; a row added, and every row when the first row's type
+changes, takes a value no other row has while one is left: the next whole number, the day
+after, the other true/false value, or empty text) and "Unpivot to rows" (stacked columns, index
 chips that exclude them, name and value column fields, and a note that row order is
 not guaranteed: ordering an unpivot's rows costs three times its time and memory, so a sort
 step after it orders them where that matters). Select and drop take column types beside named columns, and an

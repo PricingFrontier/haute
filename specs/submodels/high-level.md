@@ -448,6 +448,13 @@ across a rewire.
   output previews its source node, and that node's frame, run on this
   occurrence's inputs as a qualified runtime target. An occurrence with no
   public output has nothing to preview.
+- **Output order.** The definition's public outputs are ordered, and every
+  occurrence draws its output rows in that order. The owner's panel lists them in
+  order and moves one by dragging it, or with Alt+Up and Alt+Down: one undoable
+  definition edit, saved as the order of the definition file's `output_ports`, which
+  moves every occurrence's rows and so which output a preview opens on. Edges follow
+  their outputs by name. An instance's panel lists the outputs in the same order
+  without moving them.
 - **Create Instance.** On a submodel occurrence it places another occurrence
   of the definition, as described above. On a plain node it wraps the node in
   place in a one-node definition: the definition and its module take the

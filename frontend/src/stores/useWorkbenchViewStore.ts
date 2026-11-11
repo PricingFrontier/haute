@@ -38,11 +38,11 @@ export interface MovingSection {
 /** A Table's or a Collection's properties pane: the data it shows, or how it shows it. */
 export type WidgetPane = "config" | "display"
 
-/** The schema row's open configuration or database details, never both. */
+/** The schema row's open details, one at a time: its configuration, its database's or where it is used. */
 export interface SchemaDetails {
   table: string
   column: string
-  view: "config" | "database"
+  view: "config" | "database" | "uses"
 }
 
 /** A component copied, as it was then, and the section it was in. */

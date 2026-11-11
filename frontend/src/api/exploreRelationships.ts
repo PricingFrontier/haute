@@ -7,6 +7,7 @@
  */
 
 import { post } from "./client"
+import { workbenchSampleField } from "./workbenchSample"
 import type { GraphPayload } from "./types"
 import type { ExploreRelationshipsResponse } from "../generated/api-contracts.generated"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
@@ -34,7 +35,7 @@ export function getExploreRelationships(
 ): Promise<ExploreRelationshipsResponse> {
   const { signal, ...payload } = args
   // Up to 50 features over the whole dataset can outlast the default 30 s.
-  return post<unknown>("/api/explore/relationships", payload, { signal, timeout: 300_000 }).then(
+  return post<unknown>("/api/explore/relationships", { ...payload, ...workbenchSampleField() }, { signal, timeout: 300_000 }).then(
     async (data) => expectGeneratedContract(
       "ExploreRelationshipsResponse",
       (await import("../generated/api-contracts.explore.validators.mjs")).validateExploreRelationshipsResponse,

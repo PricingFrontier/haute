@@ -8,6 +8,7 @@
  * - Consistent error handling via ApiError
  */
 
+import { workbenchSampleField } from "./workbenchSample"
 import type { GlobalConstant } from "../utils/globalConstants"
 import { REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type {
@@ -882,7 +883,8 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
       ...(portLabels !== undefined ? { port_labels: portLabels } : {}),
-      ...(workbenchForm !== undefined ? { workbench_form: workbenchForm } : {}),
+      // The form Preview prices, or else the sample the workbench view holds (specs/workbench).
+      ...(workbenchForm !== undefined ? { workbench_form: workbenchForm } : workbenchSampleField()),
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
@@ -942,6 +944,7 @@ export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsRes
         ? { requested_preview_columns: args.requestedPreviewColumns }
         : {}),
       ...(args.portLabel !== undefined ? { port_label: args.portLabel } : {}),
+      ...workbenchSampleField(),
     },
     // Bounded by the server's pipeline time limit, which answers 504.
     { signal: args.signal, timeout: null },
@@ -1124,6 +1127,7 @@ export function outputAssembleDryRun(
       output_mapping: outputMapping,
       ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
       source: source ?? "live",
+      ...workbenchSampleField(),
     },
     { signal, timeout },
   ).then(async (data) => expectGeneratedContract(
@@ -1153,7 +1157,7 @@ export interface TraceCellArgs {
 
 export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
   const { signal, timeout = null, ...payload } = args
-  return post<unknown>("/api/pipeline/trace", payload, { signal, timeout }).then(async (data) =>
+  return post<unknown>("/api/pipeline/trace", { ...payload, ...workbenchSampleField() }, { signal, timeout }).then(async (data) =>
     traceFromContract(expectGeneratedContract("TraceResponse", (await traceValidators()).validateTraceResponse, data)))
 }
 
@@ -1360,7 +1364,7 @@ export function fetchCacheNodes(
   payload: { graph: unknown; source: string },
   options?: { signal?: AbortSignal },
 ): Promise<CacheNodesResponse> {
-  return post<unknown>("/api/cache/nodes", payload, options).then(async (data) =>
+  return post<unknown>("/api/cache/nodes", { ...payload, ...workbenchSampleField() }, options).then(async (data) =>
     expectGeneratedContract("CacheNodesResponse", (await cacheValidators()).validateCacheNodesResponse, data),
   )
 }
@@ -1432,6 +1436,7 @@ export function getNodeDataPoint(args: NodeDataArgs): Promise<NodeDataPointRespo
     {
       ...payload,
       source: payload.source ?? "live",
+      ...workbenchSampleField(),
     },
     { signal },
   ).then(async (data) => expectGeneratedContract("NodeDataPointResponse", (await nodeDataValidators()).validateNodeDataPointResponse, data))
@@ -1446,6 +1451,7 @@ export function runNodeData(
     {
       ...payload,
       source: payload.source ?? "live",
+      ...workbenchSampleField(),
     },
     { signal, timeout },
   ).then(async (data) => expectGeneratedContract("NodeDataRunResponse", (await nodeDataValidators()).validateNodeDataRunResponse, data))
@@ -1488,6 +1494,7 @@ export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileR
     {
       ...payload,
       source: payload.source ?? "live",
+      ...workbenchSampleField(),
     },
     { signal },
   ).then(async (data) => expectGeneratedContract("NodeDataProfileResponse", (await exploreValidators()).validateNodeDataProfileResponse, data))
@@ -1507,6 +1514,7 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
     {
       ...payload,
       source: payload.source ?? "live",
+      ...workbenchSampleField(),
       factor,
       ...(histogramBins === undefined ? {} : { histogram_bins: histogramBins }),
       ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
@@ -1531,6 +1539,7 @@ export function getRatingLevels(args: RatingLevelsArgs): Promise<RatingLevelsRes
     {
       ...payload,
       source: payload.source ?? "live",
+      ...workbenchSampleField(),
       columns,
       ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
     },
@@ -1545,6 +1554,7 @@ export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse
     {
       ...payload,
       source: payload.source ?? "live",
+      ...workbenchSampleField(),
     },
     { signal },
   ).then(async (data) => expectGeneratedContract("NodeDataClearResponse", (await nodeDataValidators()).validateNodeDataClearResponse, data))
@@ -1577,6 +1587,7 @@ export function runExplorePivot(args: RunExplorePivotArgs): Promise<ExplorePivot
   return post<unknown>("/api/explore/pivots/run", {
     ...payload,
     source: payload.source ?? "live",
+    ...workbenchSampleField(),
   }, { signal, timeout }).then(async (data) => explorePivotRunFromContract(
     expectGeneratedContract("ExplorePivotRunResponse", (await exploreValidators()).validateExplorePivotRunResponse, data),
     await metricsValidator(),
@@ -1626,6 +1637,7 @@ export function fetchExplorePivotMembers(
   return post<unknown>("/api/explore/pivots/members", {
     ...payload,
     source: payload.source ?? "live",
+    ...workbenchSampleField(),
   }, { signal, timeout }).then(async (data) => explorePivotMembersFromContract(
     expectGeneratedContract("ExplorePivotMembersResponse", (await exploreValidators()).validateExplorePivotMembersResponse, data),
   ))

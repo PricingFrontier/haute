@@ -281,12 +281,16 @@ export const FUNCTIONS: Array<{ value: FunctionName; label: string; args: Functi
   { value: "try_to_datetime", label: "text to date and time (null on failure)", args: ["format"] },
 ]
 
-/** The format a text column's dates start from: ISO dates, and ISO date and time. */
-/** The sum across columns, a formula function of two or more values that is its own expression type. */
-export const SUM_HORIZONTAL = { value: "sum_horizontal", label: "sum across columns, skipping missing values" } as const
-/** Every function a formula can call: the catalogue's, then the sum across. */
-export const FORMULA_FUNCTIONS: ReadonlyArray<{ value: string; label: string }> = [...FUNCTIONS, SUM_HORIZONTAL]
+/** The formula functions of two or more values, each its own expression type of the same name. */
+export const VARIADIC_FUNCTIONS = [
+  { value: "sum_horizontal", label: "sum across columns, skipping missing values" },
+  { value: "coalesce", label: "first value that isn't missing" },
+] as const
+export type VariadicType = (typeof VARIADIC_FUNCTIONS)[number]["value"]
+/** Every function a formula can call: the catalogue's, then the variadic ones. */
+export const FORMULA_FUNCTIONS: ReadonlyArray<{ value: string; label: string }> = [...FUNCTIONS, ...VARIADIC_FUNCTIONS]
 
+/** The format a text column's dates start from: ISO dates, and ISO date and time. */
 export const DATE_FORMAT_DEFAULTS: Record<"Date" | "Datetime", string> = {
   Date: "%Y-%m-%d",
   Datetime: "%Y-%m-%d %H:%M:%S",
@@ -382,6 +386,7 @@ export function exprTypeProblem(expr: Expr, typeOf: (name: string) => string | n
       return expr.branches.map((b) => operandProblem(b.then)).find((problem) => problem !== null) ?? operandProblem(expr.otherwise)
     case "concat":
     case "sum_horizontal":
+    case "coalesce":
       return expr.parts.map(operandProblem).find((problem) => problem !== null) ?? null
     case "window": {
       if (expr.of?.kind !== "column") return expr.of ? operandProblem(expr.of) : null
@@ -424,6 +429,34 @@ export function defaultLiteral(type: LiteralType): LiteralOperand {
   }
 }
 
+/**
+ * A value of `type` that none of `used` has, while one is left: the lowest whole number
+ * not in use, the day after the latest date, the other true/false value. Text starts
+ * empty, for the user to type. A pivot's cells must differ, or the step is refused.
+ */
+export function freshLiteral(type: LiteralType, used: readonly LiteralOperand[]): LiteralOperand {
+  const taken = used.filter((operand) => operand.type === type).map((operand) => operand.value)
+  switch (type) {
+    case "number": {
+      let next = 0
+      while (taken.includes(next)) next += 1
+      return literal("number", next)
+    }
+    case "boolean":
+      return literal("boolean", taken.includes(true) && !taken.includes(false) ? false : true)
+    case "date": {
+      const dates = taken.filter((value): value is string => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)).sort()
+      const latest = dates.at(-1)
+      if (latest === undefined) return defaultLiteral("date")
+      const next = new Date(`${latest}T00:00:00Z`)
+      next.setUTCDate(next.getUTCDate() + 1)
+      return literal("date", next.toISOString().slice(0, 10))
+    }
+    default:
+      return defaultLiteral(type)
+  }
+}
+
 export function defaultCondition(column = ""): Condition {
   return { column, operator: "eq", value: literal("number", 0) }
 }
@@ -463,12 +496,13 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
     case "concat":
       return { type, parts: [operand, { kind: "column", name: "" }], separator: " " }
     case "sum_horizontal":
+    case "coalesce":
       return { type, parts: [operand, { kind: "column", name: "" }] }
   }
 }
 
 /** The name an aggregation takes from its function and column, until one is typed. */
-export function suggestedAggregationName(entry: { column: string; agg: Aggregation }): string {
+export function suggestedAggregationName(entry: { column?: string; agg: Aggregation }): string {
   if (entry.agg === "len") return "row_count"
   return entry.column ? `${entry.column}_${entry.agg}` : ""
 }
@@ -706,6 +740,7 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
       }
       return null
     case "sum_horizontal":
+    case "coalesce":
       if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
       if (!Array.isArray(expr.parts)) return `${where} is missing its parts.`
       for (const [index, part] of expr.parts.entries()) {
@@ -837,7 +872,10 @@ function aggregationsProblem(entries: Array<Record<string, unknown>>, where: str
       if (entry.column !== undefined || entry.name !== undefined || entry.where !== undefined) return `${label} mixes a column type with a column.`
       continue
     }
-    if (typeof entry.column !== "string" || typeof entry.name !== "string") return `${label} is missing "column" or "name".`
+    if (typeof entry.name !== "string") return `${label} is missing its name.`
+    // A row count reads no column; the backend ignores one left on it.
+    if (entry.agg !== "len" && typeof entry.column !== "string") return `${label} is missing its column.`
+    if (entry.column !== undefined && typeof entry.column !== "string") return `${label} has a malformed column.`
     if (entry.where !== undefined) {
       const problem = rowFilterProblem(entry.where, label)
       if (problem) return problem
@@ -900,6 +938,7 @@ function canonicalExpr(expr: Expr): Expr {
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }
     case "sum_horizontal":
+    case "coalesce":
       return { ...expr, parts: expr.parts.map(canonicalOperand) }
     case "conditional":
       return {

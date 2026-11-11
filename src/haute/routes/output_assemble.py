@@ -114,7 +114,7 @@ async def output_assemble_dry_run(
     except OutputMappingSchemaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
     node = graph.node_map.get(body.node_id)

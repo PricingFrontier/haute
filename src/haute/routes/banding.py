@@ -24,7 +24,7 @@ async def banding_stats(body: BandingStatsRequest, request: Request) -> BandingS
     cancelled rather than left scanning the whole dataset for an answer nobody
     will read.
     """
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     prepared = body.model_copy(update={"graph": graph})

@@ -335,6 +335,41 @@ def test_a_display_walk_records_node_failures_when_the_policy_says_so(
         walk_graph(graph, _build_node_fn, policy=CollectPolicy.display())
 
 
+@pytest.mark.parametrize(
+    "code",
+    ["df = src.with_columns(y=pl.col('missing'))", "df = src.unpivot(on=['x'], index=['missing'])"],
+    ids=["expression", "unpivot"],
+)
+def test_a_missing_column_reads_as_one_sentence_naming_it(haute_scratch: Path, code: str) -> None:
+    graph = _chain_graph(haute_scratch)
+    graph.nodes[1] = _node("double", NodeType.POLARS, code=code)
+
+    walked = walk_graph(graph, _build_node_fn, policy=CollectPolicy.display(record_failures=True))
+
+    # Polars words it `unable to find column "missing"; valid columns: [...]` or
+    # `"missing" not found`, then appends the plan it resolved (whose scan prints the
+    # source's path) and the operations it was resolving.
+    assert walked.errors["double"] == 'Column "missing" does not exist.'
+    assert (
+        walked.errors["shaped"]
+        == 'Upstream node(s) failed: double: Column "missing" does not exist.'
+    )
+
+
+def test_any_other_recorded_polars_failure_is_its_sentence_without_the_plan(
+    haute_scratch: Path,
+) -> None:
+    graph = _chain_graph(haute_scratch)
+    graph.nodes[1] = _node(
+        "double", NodeType.POLARS, code="df = src.with_columns(y=pl.col('x') + 'a')"
+    )
+
+    walked = walk_graph(graph, _build_node_fn, policy=CollectPolicy.display(record_failures=True))
+
+    assert walked.errors["double"].startswith("arithmetic on dtypes i64 and str is not allowed")
+    assert "\n" not in walked.errors["double"]
+
+
 def _expander_graph(root: Path, *consumers: GraphNode, **shaping: object) -> PipelineGraph:
     """A Scenario Expander whose builder contract promises price_adjustment."""
     return PipelineGraph(

@@ -567,8 +567,8 @@ above it already assigns its name); a null literal renders as `pl.lit(None)` in 
 and is refused in membership lists and variables. An operand may itself be a nested
 expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
 accepted, except in membership lists, variable values and the plain-value function
-arguments, which stay plain values; a value, formula, function or sum-across expression
-may carry a `text` annotation (the
+arguments, which stay plain values; a value, formula, function, sum-across or
+coalesce expression may carry a `text` annotation (the
 formula exactly as the editor's user typed it, kept for display and never rendered); a
 nested formula is bracketed only where Python's left-to-right
 evaluation needs it (a left operand only when its operator is weaker than the
@@ -607,13 +607,20 @@ divisor)` renders `pl.when(divisor != 0).then(value / divisor)`, which is null w
 the divisor is zero or missing, while `/` stays Polars' division (`x / 0` is infinite
 and `0 / 0` is NaN). A sum across columns (`{"type": "sum_horizontal", "parts":
 [...]}`, two or more operands in expression position) renders `pl.sum_horizontal(...)`,
-which skips missing values, so a row whose parts are all missing sums to 0. Two reshaping steps
+which skips missing values, so a row whose parts are all missing sums to 0. A coalesce
+(`{"type": "coalesce", "parts": [...]}`, two or more operands in
+expression position, in the order they are tried) renders `pl.coalesce(...)`: each row
+takes its first part that is not null, and is null where every part is (NaN is a value,
+not a missing one), in the parts' common Polars type. Two reshaping steps
 complete the vocabulary: a fixed-column `pivot` (index columns, the column whose
 values spread out, one entry per output column pairing a plain literal value with an
 output name, the values column, and an aggregate among sum, mean, min, max, median,
 first, last, count of non-null values and row count) is lowered to a maintain-order
 group-by of filtered aggregates rather than Polars' own `pivot`, so the lineage and
-cardinality models prove it and its output schema is fixed by the step (each cell
+cardinality models prove it and its output schema is fixed by the step. It names its
+index as one list (`group_by(["region"], maintain_order=True)`), where a Group and
+aggregate step names its keys one by one, so each reads back from its code as the step
+it was (each cell
 matches `pivot(on_columns=...)` value for value: an empty cell is 0 for sum and the
 counts and null otherwise); duplicate values, duplicate or index-colliding names,
 mixed value types and null values are refused; and `unpivot` renders the native
