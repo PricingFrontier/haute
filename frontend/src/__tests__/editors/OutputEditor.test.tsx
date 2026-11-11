@@ -18,6 +18,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { act, render as rtlRender, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
@@ -1263,6 +1264,26 @@ describe("OutputEditor - assembled-output preview", () => {
     await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
     act(() => useSettingsStore.setState({ activeSource: "batch" }))
     expect(screen.queryByTestId("output-preview-json")).toBeNull()
+  })
+
+  it("drops an assembled document once the pipeline's data changes, and assembles it again on reopening", async () => {
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [{ premium: 100 }], row_count: 1 }))
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+
+    // A workbench sample changed, as the pipeline editor's reads take it, raises the epoch.
+    act(() => useNodeDataStore.getState().bumpEpoch())
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
+    expect(screen.getByText("Refresh to assemble the response from the current mapping.")).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+    expect(mockOutputAssembleDryRun).toHaveBeenCalledTimes(2)
   })
 
   it("sends the CURRENT (unsaved) mapping + node id to the dry-run route", async () => {

@@ -10,6 +10,7 @@ import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel, ValidatedTextField } from "../../components/form"
 import { useGraph } from "../useGraph"
 import { buildGraph } from "../../utils/buildGraph"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { outputAssembleDryRun, previewNode, ApiError } from "../../api/client"
@@ -341,12 +342,17 @@ export default function OutputEditor({
   // saved file. Capped to PREVIEW_ROW_LIMIT source rows; document rows beyond
   // the cap render with a "showing N of M" note rather than silently truncating.
   const [outputPreviewOpen, setOutputPreviewOpen] = useState(false)
-  // A preview is of one mapping read from one data source: it is shown only
-  // while both are still the editor's, so an edit or a source switch never
-  // leaves an earlier document beside the current rows.
+  // A preview is of one mapping read from one data source at one node-data
+  // epoch: it is shown only while all three are still the editor's, so an
+  // edit, a source switch or new data (a workbench sample changed, an input
+  // replaced) never leaves an earlier document beside the current rows.
   const activeSource = useSettingsStore((s) => s.activeSource)
+  const dataEpoch = useNodeDataStore((s) => s.epoch)
   const persistedMapping = useMemo(() => writeV2(v2).output_mapping as Array<Record<string, unknown>>, [v2])
-  const previewKey = useMemo(() => JSON.stringify([persistedMapping, activeSource]), [persistedMapping, activeSource])
+  const previewKey = useMemo(
+    () => JSON.stringify([persistedMapping, activeSource, dataEpoch]),
+    [persistedMapping, activeSource, dataEpoch],
+  )
   const [assembled, setAssembled] = useState<
     | { key: string; status: "loading" }
     | { key: string; status: "ok"; doc: unknown[]; total: number }

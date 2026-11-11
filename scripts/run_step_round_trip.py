@@ -17,7 +17,10 @@ weekly and wider, what that fixture cannot enumerate:
    but does not read back as one step is a finding.
 4. The editor's lane test ``roundTripCheck.lane.test.ts`` requires the editor to
    take every read-back of steps 1 and 3, a round trip as the same kind of step
-   with the same card summary (``editor_report.json``).
+   with the same settings and the same card summary (``editor_report.json``).
+   Set aside are only what the code cannot hold and no result depends on: an
+   expression's typed formula text, an operand wrapping a plain operand, and the
+   match of a group of one condition.
 
 The report goes to standard output, ``report.md`` in the work directory and the
 GitHub job summary; the lane fails on any finding::
