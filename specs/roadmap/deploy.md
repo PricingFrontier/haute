@@ -10,7 +10,9 @@ test quote can expect. The packages below come from the 9 November
 2026 codebase review. `DPL-01` was reproduced against `HEAD` on that day;
 `DPL-02` is read from the source and was not run against a built image;
 `DPL-03` was reproduced by running the command, and `DPL-04` by calling the
-comparison a deploy's validation uses.
+comparison a deploy's validation uses. `DPL-05` comes from the review
+plan's sweep of the commands on 11 November 2026 and was reproduced on
+fresh copies of the shipped examples.
 
 ## Priorities
 
@@ -20,6 +22,7 @@ comparison a deploy's validation uses.
 | DPL-02 | Planned | P3 | An output value that is not a finite number is refused naming the output column and the quote. |
 | DPL-03 | Planned | P3 | A dry run refuses a deploy target that does not exist, and a missing pipeline file is reported without a traceback. |
 | DPL-04 | Planned | P3 | A test quote can expect a date or a date-time output, written as the response writes it. |
+| DPL-05 | Planned | P2 | `haute deploy --dry-run` passes on a clean checkout of a pipeline whose input is a CSV Data Input, as a CI job runs it, without `haute run` first. |
 
 ## Planned improvements
 
@@ -157,3 +160,44 @@ date.
 `src/haute/deploy/_validators.py::_score_test_quote_cases` pass the scored
 frame's rows; `src/haute/deploy/_validators.py::response_changes`;
 `src/haute/deploy/_response_json.py::_encode_value` is the served encoding.
+
+### DPL-05 — A dry run on a clean checkout reads its input's schema
+**Why:** Reproduced on 11 November 2026 by the plan's sweep of the commands,
+and again by the main session on fresh copies of the shipped examples. A
+pipeline whose input is a Data Input reading a CSV file is checked out
+clean, as a CI job has it, and `haute deploy --dry-run` runs. It exits 1:
+"Resolution failed: Failed to read schema from 'data/synthetic.csv' for
+input node 'quotes': input_snapshot_missing: This Data Input runs from a
+snapshot that has not been built yet. Build the snapshot (or run a preview,
+which builds it automatically) and try again." A CI job has no editor to
+preview in. After one `haute run`, which builds the snapshot under the
+ignored cache folder, the same dry run passes: "Dry run complete - no model
+was deployed."
+
+Five of the eight shipped examples tried fail this way on a fresh copy
+(`minimal_batch`, `rating_step`, `linear_pricing`, `trace_audit`,
+`reusable_submodel`); the three whose input is an API input pass. The CI
+workflows that `haute init` generates run `uv run haute deploy --dry-run`
+as their check, "Dry-run deploy (score test quotes)", and `haute deploy`
+after it, each on a clean checkout. The real deploy was not run; it reads
+the schema through the same function (read from the source).
+
+The engine already has the way round this: a caller that wants only the
+schema can ask for it to be inferred from the file when no snapshot exists.
+The deploy's schema read does not ask.
+
+**Plan:** Have the deploy's schema read use the inferred schema when the
+input's snapshot is missing, as the engine's other schema-only callers do;
+or build the snapshot first, as `haute run` does. Where neither is possible,
+say what a CI job can run.
+
+**Acceptance:** On a fresh copy of each shipped example with a Data Input,
+`haute deploy --dry-run` passes without any command run before it. A test
+runs the dry run on clean copies of the examples (`EQ-04`).
+
+**Dependencies:** None. `EQ-04` plans the test that would have caught it.
+
+**Evidence:** `src/haute/deploy/_schema.py::infer_input_schema`;
+`src/haute/_input_providers.py::resolve_data_input`;
+`src/haute/_input_providers.py::recording_schema_tiers`;
+`src/haute/_scaffold.py::_DRY_RUN_CHECK`.

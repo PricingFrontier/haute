@@ -151,6 +151,7 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
     "caching",
+    "cli",
     "codegen",
     "deploy",
     "engineering-quality",
