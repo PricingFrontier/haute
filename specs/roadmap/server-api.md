@@ -233,13 +233,13 @@ that the file is read-only. Other `OSError`s keep the generic answer.
 **Acceptance:** With its file held open by a real second handle on Windows,
 each of the pipeline save, the pipeline settings, the MLflow settings, the
 git preferences, a Data Output's Write, the optimiser's save and the model
-save answers 409 naming the file, and the file is unchanged. With the staging write refused for space, each
-answers 507 naming the file. A node name that makes its settings file's
-path too long is refused when it is typed, or by the save, in a message
-naming the node and the limit. With its file marked read-only and nothing
-holding it, each of those writes, the utility editor's save and delete and
-the Pipeline files' replace and delete answer naming the file and saying
-that it is read-only.
+save answers 409 naming the file, and the file is unchanged. With the
+staging write refused for space, each answers 507 naming the file. A node
+name that makes its settings file's path too long is refused when it is
+typed, or by the save, in a message naming the node and the limit. With its
+file marked read-only and nothing holding it, each of those writes, the
+utility editor's save and delete and the Pipeline files' replace and delete
+answer naming the file and saying that it is read-only.
 
 **Dependencies:** None.
 
