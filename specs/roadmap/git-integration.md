@@ -10,6 +10,9 @@ of 10 November 2026. Each was reproduced on Windows in a scratch
 repository: `VCS-01` with a real open file and a local remote, `VCS-02` and
 `VCS-03` with nothing injected into Haute, `VCS-04` by killing the server
 process, and `VCS-05` in a browser with two pages open on one project.
+`VCS-06` and `VCS-07` come from the main session's runs of 11 November
+behind the plan's sweep of damaged requests: folders and files renamed on
+disk, and branch names typed through the routes, with nothing injected.
 
 ## Priorities
 
@@ -20,6 +23,8 @@ process, and `VCS-05` in a browser with two pages open on one project.
 | VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "see server log". |
 | VCS-04 | Planned | P3 | A restore the server died in reads as interrupted at the next start, and Retry finishes it. |
 | VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
+| VCS-06 | Planned | P2 | A save, an upload and a replace reach version history after their folder or file is renamed to another letter case, and a capture that records nothing for a changed file says so. |
+| VCS-07 | Planned | P2 | A branch name that cannot exist beside another branch is refused naming the clash, when a branch is created, restored or brought back from Deleted. |
 
 ## Planned improvements
 
@@ -261,3 +266,111 @@ pages on one project.
 **Evidence:** `frontend/src/components/BranchManager.tsx`;
 `src/haute/_git_archive.py::delete_working_pair`;
 `src/haute/routes/project_files.py::_delete`.
+
+### VCS-06 — A save is captured after its folder's letter case changes
+**Why:** Reproduced on 11 November 2026 with nothing injected. An analyst
+renames a folder in Explorer from `rating` to `Rating`. Windows allows it,
+and git on Windows, which `git init` sets to ignore letter case, does not
+notice: `git status` stays clean and git keeps the old spelling. Haute names
+files as the disk spells them, so the editor's document now carries
+`Rating/main.py`. From then on every save answers 200 with a null commit, no
+warning and an empty list of files left out: the same answer as a save that
+changed nothing. It was run four ways with the same result: the pipeline
+folder renamed, with `haute.toml` left alone and with it edited to match; a
+data folder under Pipeline files renamed, then a new upload and a replace
+through the names the Files panel lists; and one data file renamed, then
+replaced. The files on disk are right. Version history is not: the save
+ledger keeps the content from before the rename, the panel's pending saves
+list one save, and `git status` shows the files modified or staged.
+
+Three things follow, each of them run. A Commit records the content, and
+the next save is left out again, so the saves between milestones are never
+kept. A Restore records what is on disk first, so nothing is lost by it. A
+switch to another branch is refused with "Operation failed. Check the server
+logs for details.": git will not overwrite changes that Haute believes are
+on the ledger.
+
+The capture hands git the request's spelling as a literal path, and git
+compares it with its own spelling letter for letter. For a file git already
+tracks, the first check, whether the path has changed, sees nothing. A new
+file is found on disk and staged under git's spelling of the folder, and the
+list of staged names, asked for under the request's spelling, comes back
+empty. Either way the capture concludes that nothing changed. The plan's
+sweep of damaged requests found the same answer for a request that spells
+an existing folder in other capitals (`DATA/b.csv` into `data`).
+
+**Plan:** Have the capture ask git for its own spelling of each path first:
+the tracked name for a file git knows, and for a new file the spelling git
+has for its nearest tracked folder. Use that spelling in every command.
+Then, as a net under any other mismatch: where a write changed a file and
+the capture recorded nothing for it, compare the file with the ledger's
+copy before answering, and answer as a failed capture does when they
+differ, with the save's warning and the file in the list the editor keeps
+for the next capture.
+
+**Acceptance:** With the pipeline folder, a data folder and a data file each
+renamed to another letter case after a first capture, the next save, upload
+and replace each answer a commit whose tree holds the new content, and a
+switch to another branch then succeeds. A capture that records nothing for
+a file whose content differs from the ledger's answers the save's warning
+and names the file.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_git_transactions.py::commit_save`;
+`src/haute/_git_transactions.py::_literal`;
+`src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
+`src/haute/_git_setup.py::set_working_branch`.
+
+### VCS-07 — A branch name that clashes with another is refused in words
+**Why:** Reproduced on 11 November 2026 through the routes, with nothing
+injected. Git keeps each branch as a file, so a branch named `motor` and one
+named `motor/renewal` cannot both exist: `motor` would have to be a file and
+a folder at once. Haute's own advice for a branch name is "Use letters,
+numbers, dashes and slashes." With a branch `motor`, creating
+`motor/renewal` answers "Operation failed. Check the server logs for
+details." So does creating `team` beside `team/home`, and creating `archive`
+once any branch has been archived. Git's own words stay in the server log:
+"cannot lock ref 'refs/heads/motor/renewal': 'refs/heads/motor' exists;
+cannot create 'refs/heads/motor/renewal'". Nothing changes in the
+repository, and the analyst is not told why, or that another name would
+work.
+
+Bringing a branch back fails the same way, and there it stands between the
+analyst and their work. `squad/home` is archived, a branch `squad` is made,
+and Restore of the archived branch answers the generic text. `grp/x` is
+deleted, a branch `grp` is made, and bringing `grp/x` back from Deleted
+answers the generic text, as does bringing it back as `grp/y`; as `grp-x`
+it works. The branch manager offers to bring a branch back under another
+name only when the refusal says "another name" (read from the source), so
+here it offers nothing.
+
+A name Windows keeps for a device (`con`, `aux.v2`) is answered the same
+way; git's words there are "cannot lock ref 'refs/heads/con'" and "Invalid
+argument". The same name in another letter case is refused well: "Branch
+'Motor' already exists." The check that runs before a branch is made
+promises more than it does: "a name the in-process rules let through is
+still refused, in words, if git would not take it". It asks git whether the
+name is well formed, which says nothing about the branches that exist.
+
+**Plan:** Before creating, restoring or bringing back a branch, compare its
+name and its ledger's name with the branches that exist. Refuse a name that
+has a branch above it or beneath it, naming that branch and saying that the
+two cannot both exist, and refuse the device names by name as the file
+routes do. Word the two refusals for bringing a branch back so that the
+branch manager offers another name.
+
+**Acceptance:** Creating `motor/renewal` beside `motor`, `team` beside
+`team/home` and `con` each answer naming the clash or the rule. Restoring an
+archived branch and bringing back a deleted one into such a name answer the
+same, and the branch manager offers another name. None of them answers
+"Operation failed."
+
+**Dependencies:** None. `VCS-03` words git's other refusals.
+
+**Evidence:** `src/haute/_git_core.py::_assert_new_branch_name`;
+`src/haute/_git_core.py::_branch_name_problem`;
+`src/haute/_git_transactions.py::create_working_branch`;
+`src/haute/_git_archive.py::restore_working_pair`;
+`src/haute/_git_archive.py::undelete_working_pair`;
+`frontend/src/components/BranchManager.tsx`.
