@@ -17,7 +17,7 @@ the main session re-ran them in a browser and from the command line.
 |---|---|---:|---|
 | RTG-01 | Planned | P2 | A categorical Banding rule written `true`, `True` or `1` for a Boolean column matches it or is refused; it no longer sends every row to the default in silence. |
 | RTG-02 | Planned | P3 | A Rating Step entry whose key is not a value of its factor's type is refused naming the table, the factor and the key. |
-| RTG-03 | Planned | P2 | A decimal comma typed into a Rating Step's Default or a Banding breakpoint is kept or refused in words, the same in every browser, never saved ten times too large. |
+| RTG-03 | Planned | P2 | A decimal comma typed into a number box of the editor (a Rating Step's Default, a Banding breakpoint, a model's validation share, an optimiser's bounds and tolerance) is kept or refused in words, the same in every browser, never saved ten times too large. |
 | RTG-04 | Planned | P3 | A Rating table with a Default and no entries prices the Default, instead of stopping the run for a column it did not create. |
 
 ## Planned improvements
@@ -99,6 +99,12 @@ on the project. Both boxes are the browser's own number fields, which
 discard a character their language does not use. `WB-48` records the same
 fault on the workbench's sheet.
 
+The same kind of field serves the rest of the editor: 23 boxes in 12 files
+(read). More were typed into on the same day, `0,5` each time, in a
+browser set to English, and each was saved with no message. A model's
+validation share became 5 per cent. An optimiser's swept bound became 5
+where 7.5 stood, and its tolerance 5 where 0.0001 stood.
+
 Two smaller things from the same runs. The Default is written as text,
 `"15"`, where the file held the number 1; the sweep saw an edit to any cell
 of the table do the same to an untouched Default. And a relativity cell
@@ -106,22 +112,27 @@ typed `1,2` is marked with a hover title only, while Save reports success
 and the cell still shows `1,2`; a reload shows the earlier value (seen by
 the sweep, not re-run).
 
-**Plan:** Take these numbers through one text field that reads a number by a
-stated rule, the one `WB-48` plans for the sheet: a comma is refused in
-words at the field, or read as the decimal mark, the same in every browser.
-Write the Default as a number.
+**Plan:** Take every number box of the editor through one text field that
+reads a number by a stated rule, the one `WB-48` plans for the sheet: a
+comma is refused in words at the field, or read as the decimal mark, the
+same in every browser. Write the Default as a number.
 
 **Acceptance:** In a browser set to English and in one set to German, `1,5`
 typed into a Rating Step's Default and `40,5` into a Banding breakpoint are
 either kept as 1.5 and 40.5 or refused at the field in words. Neither is
-saved as 15 or 405, and the settings file holds the Default as a number. A
-browser test types the comma.
+saved as 15 or 405, and the settings file holds the Default as a number.
+The same holds for a model's validation share and an optimiser's bounds
+and tolerance. A browser test types the comma.
 
 **Dependencies:** `WB-48` for the rule.
 
 **Evidence:** `frontend/src/panels/editors/RatingStepEditor.tsx`;
 `frontend/src/panels/editors/banding/BreakpointGrid.tsx`;
 `frontend/src/components/form/CommittedTextField.tsx`;
+`frontend/src/panels/modelling/NumberField.tsx`;
+`frontend/src/panels/modelling/SplitAndMetricsConfig.tsx`;
+`frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx`;
+`frontend/src/panels/OptimiserConfig.tsx`;
 `src/haute/_rating.py::_apply_rating_table`.
 
 ### RTG-04 — A Rating table with a Default and no entries prices the Default
