@@ -486,6 +486,23 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.aggregations[0]).toEqual({ column: "premium", agg: "sum", name: "total" })
   })
 
+  it("a suggested aggregation name another aggregation or a group column has takes the next free number", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "g", kind: "group_by", keys: ["amount_max"], aggregations: [{ column: "amount", agg: "std", name: "amount_std" }] }
+    render(<Stateful initial={step} spy={spy} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add aggregation" }))
+    fireEvent.change(screen.getByLabelText("Aggregation 2 function"), { target: { value: "std" } })
+    let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[1]).toEqual({ column: "amount", agg: "std", name: "amount_std_2" })
+    // Still the suggestion, so the next function renames it; a group column is taken too.
+    fireEvent.change(screen.getByLabelText("Aggregation 2 function"), { target: { value: "max" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[1]).toEqual({ column: "amount", agg: "max", name: "amount_max_2" })
+    fireEvent.change(screen.getByLabelText("Aggregation 2 function"), { target: { value: "min" } })
+    latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "group_by" }>
+    expect(latest.aggregations[1]).toEqual({ column: "amount", agg: "min", name: "amount_min" })
+  })
+
   it("a group-by row count has no column, as the backend reads pl.len() back", () => {
     const spy = vi.fn()
     // A row count as `pl.len().alias("n")` is read back from code: no column.

@@ -1217,9 +1217,17 @@ function UniqueForm({ step, onChange, ctx }: FormProps<UniqueStep>) {
  * `next` named from its function and column when the name was still empty or
  * the one suggested for `previous`; a typed name is never replaced.
  */
-function renamed(previous: ColumnAggregation, next: ColumnAggregation): ColumnAggregation {
-  const untouched = previous.name === "" || previous.name === suggestedAggregationName(previous)
-  return untouched ? { ...next, name: suggestedAggregationName(next) } : next
+function renamed(previous: ColumnAggregation, next: ColumnAggregation, taken: ReadonlySet<string>): ColumnAggregation {
+  const untouched = previous.name === "" || previous.name === freeName(suggestedAggregationName(previous), taken)
+  return untouched ? { ...next, name: freeName(suggestedAggregationName(next), taken) } : next
+}
+
+/** `name`, or the first `name_2`, `name_3`… the step does not already use. */
+function freeName(name: string, taken: ReadonlySet<string>): string {
+  if (!name || !taken.has(name)) return name
+  let n = 2
+  while (taken.has(`${name}_${n}`)) n += 1
+  return `${name}_${n}`
 }
 
 /** `entry` with function `agg`: a row count drops its column, and another function after one starts an empty column. */
@@ -1238,9 +1246,11 @@ const TYPE_WIDE_ENTRIES: Completion[] = TYPE_WIDE_TARGETS.map(({ dtype, label })
   note: "type",
 }))
 
-function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilter, firstId }: {
+function AggregationRow({ entry, index, taken, onChange, onRemove, ctx, boxed, showFilter, firstId }: {
   entry: ColumnAggregation
   index: number
+  /** The names the step's other aggregations and its group columns already use. */
+  taken: ReadonlySet<string>
   onChange: (next: AggregationSpec) => void
   onRemove?: () => void
   ctx: StepFormContext
@@ -1264,7 +1274,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
             <SelectField
               value={entry.agg}
               options={AGGREGATION_OPTIONS.filter((a) => a.value === entry.agg || aggregationTakes(a.value, entry.column ? schema.typeOf(entry.column) : null))}
-              onChange={(agg) => onChange(renamed(entry, withColumnAggregate(entry, agg)))}
+              onChange={(agg) => onChange(renamed(entry, withColumnAggregate(entry, agg), taken))}
               ariaLabel={`${label} function`}
             />
           </span>
@@ -1274,7 +1284,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
               <span className="flex-1 min-w-0">
                 <ColumnPicker
                   value={entry.column ?? ""}
-                  onCommit={(column) => onChange(renamed(entry, { ...entry, column }))}
+                  onCommit={(column) => onChange(renamed(entry, { ...entry, column }, taken))}
                   suggestions={ctx.columns}
                   ariaLabel={`${label} column`}
                   placeholder="column"
@@ -1440,6 +1450,8 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
     onChange({ ...step, aggregations: step.aggregations.map((a, i) => (i === index ? next : a)) })
   const many = step.aggregations.length > 1
   const lastColumn = [...step.aggregations].reverse().find((a): a is ColumnAggregation => !("dtype" in a))?.column ?? ""
+  const namesBesides = (index: number): ReadonlySet<string> =>
+    new Set([...step.keys, ...step.aggregations.flatMap((a, i) => (i === index || "dtype" in a ? [] : [a.name]))])
   return (
     <>
       <Field label="Group by" note="empty = summarise the whole frame" htmlFor={ctx.firstFieldId}>
@@ -1452,7 +1464,7 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
             return "dtype" in entry ? (
               <DtypeAggregationRow key={index} entry={entry} index={index} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} />
             ) : (
-              <AggregationRow key={index} entry={entry} index={index} ctx={ctx} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} showFilter={filters} />
+              <AggregationRow key={index} entry={entry} index={index} taken={namesBesides(index)} ctx={ctx} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} showFilter={filters} />
             )
           })}
           <QuietAction

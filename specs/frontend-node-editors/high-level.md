@@ -420,7 +420,9 @@ whole frame. A row count reads as `[name] = row count` and has no column, as the
 `pl.len()` back from code: choosing it drops the column, and choosing another function after
 it starts an empty one. An aggregation names itself `<column>_<function>` (`row_count` for a row count)
 while its name is empty or still the name suggested for its previous function and column,
-never replacing a typed name; a new aggregation starts from the previous row's column; the
+never replacing a typed name, and a suggestion another aggregation or a group column of the
+step already has takes the next free number (`amount_std_2`); a new aggregation starts from
+the previous row's column; the
 function list says what the two counts do ("count of values (skips missing values)", "row
 count (every row, missing values included)"). A join reads as `[kind] join [input]`, each
 kind giving its Polars name and the rows it keeps ("left: every row here, with matches
