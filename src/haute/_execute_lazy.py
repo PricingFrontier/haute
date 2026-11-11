@@ -1731,6 +1731,27 @@ def _extract_error_line(exc: Exception) -> int | None:
     return None
 
 
+#: What Polars appends to a lazy plan's failure, in this order: the plan it resolved
+#: (whose scans print absolute cache paths), then the operations it was resolving.
+_POLARS_PLAN_DUMPS = (
+    "\n\nResolved plan until failure:",
+    "\n\nThis error occurred with the following context stack:",
+)
+
+
+def _failure_message(exc: Exception) -> str:
+    """A node failure's message as the node records it: a Polars error's without its plan.
+
+    Polars' own sentence is kept as it is (a missing column's ``"x" not found``);
+    the log keeps the whole text. Any other exception's message is unchanged.
+    """
+    message = str(exc)
+    if isinstance(exc, pl.exceptions.PolarsError):
+        for dump in _POLARS_PLAN_DUMPS:
+            message = message.split(dump, 1)[0]
+    return message
+
+
 def _located_step(
     fn: Callable[..., Any], inputs: Sequence[_Frame], exc: Exception
 ) -> StepFailure | None:

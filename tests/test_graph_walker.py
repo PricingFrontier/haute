@@ -335,6 +335,31 @@ def test_a_display_walk_records_node_failures_when_the_policy_says_so(
         walk_graph(graph, _build_node_fn, policy=CollectPolicy.display())
 
 
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (
+            "df = src.with_columns(y=pl.col('missing'))",
+            'unable to find column "missing"; valid columns: ["x"]',
+        ),
+        ("df = src.unpivot(on=['x'], index=['missing'])", '"missing" not found'),
+    ],
+    ids=["expression", "unpivot"],
+)
+def test_a_recorded_polars_failure_is_its_message_without_the_plan(
+    haute_scratch: Path, code: str, message: str
+) -> None:
+    graph = _chain_graph(haute_scratch)
+    graph.nodes[1] = _node("double", NodeType.POLARS, code=code)
+
+    walked = walk_graph(graph, _build_node_fn, policy=CollectPolicy.display(record_failures=True))
+
+    # Polars appends the plan it resolved, whose scan prints the source's path, and the
+    # operations it was resolving; the node and the one below it show only its sentence.
+    assert walked.errors["double"] == message
+    assert walked.errors["shaped"] == f"Upstream node(s) failed: double: {message}"
+
+
 def _expander_graph(root: Path, *consumers: GraphNode, **shaping: object) -> PipelineGraph:
     """A Scenario Expander whose builder contract promises price_adjustment."""
     return PipelineGraph(
