@@ -35,7 +35,9 @@ permissions:
 
 jobs:
   update-snapshots:
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04: ubuntu-latest became 26.04 in November 2026, and Playwright 1.59
+    # cannot install its browsers there ("does not support chromium on ubuntu26.04-x64").
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
       run:
