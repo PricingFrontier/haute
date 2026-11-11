@@ -1123,10 +1123,11 @@ Out of scope:
   for configurable fields; fixed identity keys have no configuration button. Where
   it's used, an eye beside it on every field, keys and quote_details' included and in
   Preview too, opens under the field the sheets that use it, in the sheets' order, each
-  with what on it does: the components that show it, a Chart labelling its rows by it
-  among them, those whose Show when tests it, and the Imports and Exports that read it,
-  give a parameter it or export its table, each by its name and kind, and the sheet's
-  and its sections' own Show when testing it; what Remove counts, sheet by sheet. A
+  by its title over what on it does: the sections whose own Show when tests it and the
+  components that show it, a Chart labelling its rows by it among them, those whose
+  Show when tests it, and the Imports and Exports that read it, give a parameter it or
+  export its table, each by its name beside its kind's mark alone; a sheet whose own
+  Show when tests it is listed too; what Remove counts, sheet by sheet. A
   field nothing uses says so. Opening it closes the field's other details, and it
   changes nothing. Remove
   is shown only for removable columns, never for keys or quote_details fields.

@@ -1002,23 +1002,20 @@ describe("SchemaEditor", () => {
     render(<SchemaEditor readOnly={readOnly} />)
     const eye = screen.getByRole("button", { name: "Where state is used" })
     const uses = () => screen.queryByTestId("schema-column-state-uses")
-    /** Each line of a sheet's uses: the holder's name, then its kind and ways. */
+    /** Each line of a sheet's uses, as it reads. */
     const lines = (sheet: string) =>
       within(within(uses()!).getByRole("list", { name: `Uses on ${sheet}` }))
         .getAllByRole("listitem")
-        .map((item) => [...item.querySelectorAll("span")].map((part) => part.textContent).join(" | "))
-    const heading = (sheet: string) => within(uses()!).getByText(sheet).closest("p")?.textContent
+        .map((item) => item.textContent)
 
     expect(eye).toHaveAttribute("aria-expanded", "false")
     fireEvent.click(eye)
     expect(eye).toHaveAttribute("aria-expanded", "true")
-    // Sheets in their order, a sheet nothing on uses it left out; each component once, with all its ways.
-    expect(heading("Sheet 1")).toBe("Sheet 1")
-    expect(lines("Sheet 1")).toEqual(["policy_box | Collection · Shows it, Show when", "import_policy | Import · Imports it"])
-    expect(heading("Rating")).toBe("RatingShow when")
-    expect(lines("Rating")).toEqual(["Extras | Section · Show when", "import_layers | Import · Gives a parameter", "export_all | Export · Exports it"])
-    expect(within(uses()!).queryByText("Notes")).toBeNull()
-    // What it lists is what removing the column takes it out of.
+    // Sheets in their order, a sheet nothing on uses it left out; each component once, by its name alone.
+    expect(within(uses()!).getAllByText(/^(Sheet 1|Rating|Notes)$/).map((title) => title.textContent)).toEqual(["Sheet 1", "Rating"])
+    expect(lines("Sheet 1")).toEqual(["policy_box", "import_policy"])
+    expect(lines("Rating")).toEqual(["Extras", "import_layers", "export_all"])
+    // What it lists is what removing the column takes it out of, the Rating sheet, whose own Show when tests it, among them.
     const f = current()
     const removed = new Set([...fieldUses(f, "policy_details", "state"), ...conditionUses(f, "policy_details", "state"), ...buttonUses(f, "policy_details", "state")])
     expect(removed.size).toBe(lines("Sheet 1").length + lines("Rating").length + 1)
