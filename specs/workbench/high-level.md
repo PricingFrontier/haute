@@ -15,7 +15,8 @@ inputs, the columns an underwriter types, and outputs, the columns pricing fills
 them alone or both, so an equipment schedule and its premiums are one table, row by row. The
 pipeline reads the inputs through a Workbench Input, a node type of its own beside the Quote
 Input, which takes them, and the sample quote its previews run on, from the form folder
-wherever the pipeline runs, each table's as a port named `<table>_input`. The outputs are
+wherever the pipeline runs (the editor's previews take the sample as the view holds it,
+saved or not), each table's as a port named `<table>_input`. The outputs are
 what a priced quote fills in: the pipeline fills them through a Workbench Output, a node type
 of its own beside the Quote Response, whose input ports are each table's outputs, named
 `<table>_output`, read from the form folder alike.
@@ -2390,8 +2391,10 @@ Out of scope:
     Input's tables and sample are those the form folder of its project defines, as
     `GET /api/workbench/tables` answers them, the tables checked as the pipeline takes them:
     in the editor's previews, runs and traces, each request reading the folder anew, so an
-    edit made outside the view reaches the next one (Preview's pricing gives the form the
-    view holds instead, above); in the pipeline file's own `run()` and `score()`, from the
+    edit made outside the view reaches the next one, the sample the view holds taking the
+    saved sample's place once the form is read into the view (Live sample, below), and
+    Preview's pricing giving the whole form the view holds instead (above); in the pipeline
+    file's own `run()` and `score()`, from the
     project the file is in, `score()`, which gives the Workbench Input the frames it is
     given, still reading its config file and the form and refusing a connection to a table
     the form does not have; and in `haute deploy` and `haute app build`, which read the
@@ -2399,6 +2402,30 @@ Out of scope:
     the sample, below), so a deployed pipeline and a release run on the tables they were built
     with and never read a folder. A Workbench Input inside a submodel reads the same form.
     Its config holds neither: `tables` or `sample` in it is refused (Failure model).
+  - **Live sample.** The pipeline editor previews what the sheets hold, saved or not: a
+    value typed into Preview reaches the Workbench Input's previews with no save. Once the
+    form is read into the view, each of the editor's reads of the pipeline's data sends the
+    sample the view holds, and the Workbench Input takes it in place of the saved sample,
+    over the saved form: the schema, the sheets and their Shown when rules stay as saved,
+    so a table or column added, renamed or removed in the view reaches the pipeline only
+    with a save, and a value held under a name the saved schema does not have reads as
+    nothing typed until then. The reads that send it are a node's preview and the request
+    that prepares it, a trace, the Rating Step's levels, Banding's statistics, the data a
+    node reads (its point, run, profile and clear), the cache report, Explore's pivots,
+    members and relationships, and the Quote Response's assembly dry run, so each answers
+    for the same quote; Preview's pricing sends the whole form instead (above), and a
+    request sends one or the other, never both. Every other run reads the folder alone, the
+    sample as saved: a data output written, a model trained, an optimiser run, a recovery
+    document's preview, the Assistant's reads, test quotes, `haute run`, deploy and the
+    app's build. Nothing is written: the sample reaches the folder with the next save, as
+    before. The pipeline editor stays mounted behind the workbench, so the sample changing
+    there runs nothing; when the pipeline editor shows again, or at once when the sample
+    changes while it shows, a sample unlike the one the editor's reads last took raises the
+    node-data epoch: the preview on screen runs again in automatic calculation, and is
+    marked out of date until Refresh in manual, and every other reader of node data asks
+    again when it next shows. A sample changed and changed back raises nothing, and the
+    graph's structural version never moves for it: the sample is no part of the pipeline,
+    and no job reads it.
   - **Shown in the editor.** The editor fetches the tables, with the sample, when it finds
     the workbench enabled, each time it adopts a pipeline document (opening one, or reloading
     it after a branch switch or a change on disk), whenever the form folder changes on disk
@@ -2954,8 +2981,17 @@ Out of scope:
   pipeline's answer for the values entered.
 - **The form as it stands.** Pricing asks the server for the tables of the unsaved form
   rather than reading the saved file, so a Collection shows the pipeline's answer for what
-  is on the sheet now, as a rater's cell would; every other run reads the saved folder, so
-  a save is still what changes the pipeline.
+  is on the sheet now, as a rater's cell would.
+- **The sample as it stands, the schema as saved.** The pipeline editor's reads send the
+  sample the view holds, laid over the saved form, so a value typed on the sheets shows in
+  every node's preview with no save to remember, as a rater's cell shows on every sheet
+  that reads it, and the server stays without state of the view's: the sample travels with
+  each request, as the graph the editor holds does. Only the sample travels: the
+  pipeline's ports and connections follow the saved tables, so an unsaved table or column
+  would reach a Workbench Input whose connections do not follow it yet. Saving on each
+  value instead would put a step on the save ledger for every number typed and write the
+  pipeline with it. Every other run reads the saved folder, so a save is still what changes
+  what a job, a test quote or a release prices.
 - **Test quotes priced as saved.** Pricing the sample asks for the unsaved form's tables, so
   the sheets answer what is typed now; test quotes are priced on the project as saved, as
   `haute app build` prices them in CI, through the scorer the app prices with, so a quote
@@ -3558,7 +3594,12 @@ Out of scope:
   stands where a many-row table's rows belong, when something other than an object stands
   where a one-row table's belongs, or when a many-row table's list holds anything but rows (a
   value, `null` or a list). Resolving a table point and the cache report read the tables
-  alone, so a misfit sample never stops them.
+  alone, so a misfit sample never stops them. A sample the view holds that does not fit
+  fails the editor's previews alike, before it is saved.
+- A preview request giving both a form and a sample is refused with 422, "Give
+  workbench_form for a whole form or workbench_sample for a sample over the saved one,
+  not both.", and a sample whose cells are not text or ticks, or past the request's
+  bounds, with the request's standard 422.
 - A request whose rows of a many-row input table do not each hold its index's value, or
   hold one twice, is refused before it is priced: "ce_equipment's rows 2 and 5 hold item_number 3;
   each row's item_number is its own." A deployed `/quote` answers it as a quote that does

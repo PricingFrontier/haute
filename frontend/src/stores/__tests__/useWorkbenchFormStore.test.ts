@@ -407,6 +407,29 @@ describe("useWorkbenchFormStore", () => {
     expect(useWorkbenchStore.getState().formDirty).toBe(false)
   })
 
+  it("gives the workbench store its sample as it changes, unsaved, for the pipeline editor's reads", async () => {
+    const real = useWorkbenchStore.getState().noteSample
+    const noteSample = vi.fn()
+    useWorkbenchStore.setState({ noteSample })
+    try {
+      server({ form: blank, revision: "rev-0" })
+      const store = useWorkbenchFormStore.getState
+      await store().load()
+      expect(noteSample).toHaveBeenLastCalledWith({})
+
+      store().change((form) => withSampleCell(form, "t1", 1, "c1", "100"))
+      expect(noteSample).toHaveBeenLastCalledWith({ t1: [{}, { c1: "100" }] })
+      expect(store().dirty).toBe(true)
+
+      // An edit that leaves the sample as it was gives nothing.
+      const calls = noteSample.mock.calls.length
+      store().change((form) => ({ ...form, name: "home" }))
+      expect(noteSample).toHaveBeenCalledTimes(calls)
+    } finally {
+      useWorkbenchStore.setState({ noteSample: real })
+    }
+  })
+
   it("flushes only what there is to save: unsaved edits", async () => {
     const api = server({ form: blank, revision: "rev-0" })
     const store = useWorkbenchFormStore.getState

@@ -147,7 +147,7 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
     they are cached — individually — rather than as the one node the canvas
     draws at this depth.
     """
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
 

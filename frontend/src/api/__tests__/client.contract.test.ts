@@ -4,6 +4,7 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { ApiResponseValidationError } from "../responseValidation"
 import type { FormSpec, OptimiserApplyQuery, WorkbenchCatalogueTable, WorkbenchStoreCompareResponse, WorkbenchStoreRename } from "../types"
 import { fetchStoreCatalogue, fetchStoreCompare } from "../workbench"
+import { setWorkbenchSample } from "../workbenchSample"
 import {
   applyOptimiser,
   cancelExplorePivot,
@@ -562,6 +563,47 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
     await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("workbench_form")
+  })
+
+  describe("the sample the workbench view holds", () => {
+    const sample = { policy: [{ state: "TX", limit: "7" }] }
+    afterEach(() => setWorkbenchSample(null))
+
+    it("goes with a preview while one is held, and never beside the form Preview prices", async () => {
+      mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+      await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+      expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("workbench_sample")
+
+      setWorkbenchSample(sample)
+      mockFetch.mockClear()
+      mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+      await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+      expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({ workbench_sample: sample })
+
+      const form = { name: "Commercial property" } as unknown as FormSpec
+      mockFetch.mockClear()
+      mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+      await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, workbenchForm: form })
+      const priced = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
+      expect(priced).toMatchObject({ workbench_form: form })
+      expect(priced).not.toHaveProperty("workbench_sample")
+    })
+
+    it("goes with a trace and with the Rating Step's levels", async () => {
+      setWorkbenchSample(sample)
+      mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
+      await getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] })
+      expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({ workbench_sample: sample })
+
+      // The trace's answer does not matter here, only what was asked.
+      mockFetch.mockClear()
+      mockFetch.mockReturnValue(jsonResponse({ status: "ok", trace: { row_index: 0 } }))
+      await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] }).catch(() => undefined)
+      expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+        target_node_id: "n1",
+        workbench_sample: sample,
+      })
+    })
   })
 
   it("previewNode honours a custom timeout and sends no streaming_chunk_size", async () => {

@@ -38,7 +38,7 @@ def node_data_service() -> NodeDataService:
 
 
 def _prepared(body: RequestT) -> RequestT:
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     return body.model_copy(update={"graph": graph})

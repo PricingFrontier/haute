@@ -442,6 +442,18 @@ RequestWorkbenchPricedTables = dict[
 ]
 
 
+class EditorSampleRequest(BaseModel):
+    """A pipeline editor's read of the pipeline's data, which carries the sample the workbench
+    view holds (specs/workbench, Live sample)."""
+
+    #: The sample the view holds, saved or not: the Workbench Input takes it in place of the
+    #: saved sample, over the saved form. None reads the form folder's. In the cache identity
+    #: through the node's config.
+    workbench_sample: RequestWorkbenchValues | None = Field(
+        default=None, max_length=MAX_REQUEST_ITEMS
+    )
+
+
 class WorkbenchTestQuoteSummary(BaseModel):
     """A file of the test-quote folder: its name, its file's name, its revision (a digest of
     its bytes) and, for one the panel cannot open, why."""
@@ -1977,7 +1989,7 @@ class PolarsFreeCodeColumnsResponse(BaseModel):
 PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
 
 
-class PreviewNodeRequest(BaseModel):
+class PreviewNodeRequest(EditorSampleRequest):
     graph: Graph
     node_id: BoundedName
     row_limit: int = Field(default=100, ge=1, le=10000)
@@ -2000,13 +2012,23 @@ class PreviewNodeRequest(BaseModel):
     request_id: BoundedName | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
     # The form the workbench view holds, saved or not: the workbench nodes run on its
     # tables and sample in this request rather than the form folder's (the workbench's
-    # Preview pricing its sample). In the cache identity through the nodes' configs.
+    # Preview pricing its sample). In the cache identity through the nodes' configs. Not
+    # with ``workbench_sample``.
     workbench_form: FormSpec | None = None
 
     @model_validator(mode="after")
     def _one_frame_or_several(self) -> PreviewNodeRequest:
         if self.port_label is not None and self.port_labels is not None:
             raise ValueError("Give port_label for one frame or port_labels for several, not both.")
+        return self
+
+    @model_validator(mode="after")
+    def _one_form_or_a_sample(self) -> PreviewNodeRequest:
+        if self.workbench_form is not None and self.workbench_sample is not None:
+            raise ValueError(
+                "Give workbench_form for a whole form or workbench_sample for a sample over "
+                "the saved one, not both."
+            )
         return self
 
 
@@ -2109,7 +2131,7 @@ class PreviewNodeResponse(NodeResult):
     seed_plan: list[PreviewSeedPlanEntry] = Field(default_factory=list)
 
 
-class PreviewInputsRequest(BaseModel):
+class PreviewInputsRequest(EditorSampleRequest):
     """Which inputs a preview would read, so the browser prepares only those."""
 
     graph: Graph
@@ -2141,7 +2163,7 @@ class TraceSeedPlanEntry(BaseModel):
     generation_id: BoundedName = Field(min_length=1)
 
 
-class TraceRequest(BaseModel):
+class TraceRequest(EditorSampleRequest):
     graph: Graph
     row_index: int = Field(default=0, ge=0)
     target_node_id: BoundedName | None = None
@@ -2389,7 +2411,7 @@ class WriteOutputResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class OutputAssembleDryRunRequest(BaseModel):
+class OutputAssembleDryRunRequest(EditorSampleRequest):
     graph: Graph
     node_id: BoundedName
     #: The in-progress (volatile, unsaved) output_mapping to preview.
@@ -2637,7 +2659,7 @@ NodeDataPointState = Literal["current", "stale", "partial", "missing", "building
 NodeDataColumns = list[str] | Literal["all"]
 
 
-class NodeDataRequest(BaseModel):
+class NodeDataRequest(EditorSampleRequest):
     """Name a consumer node; the service resolves the data point it reads."""
 
     graph: Graph
@@ -2742,7 +2764,7 @@ class NodeDataClearResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CacheNodesRequest(BaseModel):
+class CacheNodesRequest(EditorSampleRequest):
     """The graph whose nodes to report on, and the source they are read for."""
 
     model_config = ConfigDict(extra="forbid")
@@ -2939,7 +2961,7 @@ class ExplorePivotResult(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class ExplorePivotRunRequest(BaseModel):
+class ExplorePivotRunRequest(EditorSampleRequest):
     graph: Graph
     node_id: BoundedName
     pivot: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
@@ -2970,7 +2992,7 @@ class ExplorePivotStatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class BandingStatsRequest(BaseModel):
+class BandingStatsRequest(EditorSampleRequest):
     """Statistics for one banding factor over the whole dataset its node reads.
 
     The factor is the one in the editor rather than the one in the saved graph,
@@ -3028,7 +3050,7 @@ class BandingStatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RatingLevelsRequest(BaseModel):
+class RatingLevelsRequest(EditorSampleRequest):
     """The levels of raw rating factor columns over the whole dataset.
 
     The node says which data point to read; the columns are the ones the editor
@@ -3130,7 +3152,7 @@ class ExploreRelationshipsResponse(BaseModel):
     key_check: ExploreKeyCheck | None = None
 
 
-class ExplorePivotMembersRequest(BaseModel):
+class ExplorePivotMembersRequest(EditorSampleRequest):
     graph: Graph
     node_id: BoundedName
     field: BoundedName

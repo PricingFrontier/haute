@@ -675,8 +675,9 @@ sits in its section, with no section bars and nothing to move or lay out. The la
 the sheets stays as it was while building, with the palette's components and the toolbar's
 building controls greyed out. It is where you
 type the **sample**, a quote you key in as an underwriter would: it is saved with the
-sheets, and it is what the [Workbench Input](nodes/workbench-input.md)'s previews run on
-once saved.
+sheets, and it is what the [Workbench Input](nodes/workbench-input.md)'s previews run on,
+saved or not: switch back to **Pricing** and the pipeline's previews show what you typed,
+over the schema as saved.
 
 A Collection's boxes hold its tables' one row, and a Table's grid holds its tables' rows.
 Unless its rows are fixed, right-click a row for its menu: **Insert** opens **Insert Row

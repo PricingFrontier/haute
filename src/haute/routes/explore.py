@@ -31,7 +31,7 @@ _explore_relationships_service = ExploreRelationshipsService(_node_data_service)
 @router.post("/pivots/run", response_model=ExplorePivotRunResponse)
 def run_pivot(body: ExplorePivotRunRequest) -> ExplorePivotRunResponse:
     """Calculate one pivot from an already materialised Explore dataframe."""
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     return _pivot_service.start(body.model_copy(update={"graph": graph}))
@@ -52,7 +52,7 @@ async def pivot_members(
     body: ExplorePivotMembersRequest, request: Request
 ) -> ExplorePivotMembersResponse:
     """List one dimension's members; a client that leaves cancels the scan."""
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     prepared = body.model_copy(update={"graph": graph})
@@ -66,7 +66,7 @@ async def explore_relationships(
     body: ExploreRelationshipsRequest, request: Request
 ) -> ExploreRelationshipsResponse:
     """Relate features to a target and check a key; a client that leaves cancels the scan."""
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     prepared = body.model_copy(update={"graph": graph})

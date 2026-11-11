@@ -1644,7 +1644,7 @@ def _execute_trace_worker(
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> JSONResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
@@ -1749,7 +1749,9 @@ async def _preview_canonical_graph(
                 # A graph the flattener refuses (a name collision, an undeclared
                 # handle) is shown on the node, as a graph-shape issue the run meets
                 # is; every other route that takes a graph answers it 400.
-                graph = flatten_executable_graph(body.graph, form=body.workbench_form)
+                graph = flatten_executable_graph(
+                    body.graph, form=body.workbench_form, sample=body.workbench_sample
+                )
                 _ensure_source_file(graph)
                 if not graph.nodes:
                     raise HTTPException(status_code=400, detail="Empty graph")
@@ -1857,7 +1859,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     and the preview itself reports that error at the node, as it always has.
     """
     try:
-        graph = flatten_executable_graph(body.graph)
+        graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     except (ParseError, ConfigError, WorkbenchError, WorkbenchTablesError) as e:
         # A form the workbench nodes cannot read is the preview's to report, as a shape is.
         logger.info("preview_inputs_graph_invalid", error=str(e))
