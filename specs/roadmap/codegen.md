@@ -20,6 +20,9 @@ parser, the preview and `haute run`. `CGEN-05` and `CGEN-06` are each a
 hand-written form the parser accepts and then drops; `CGEN-07` is one the
 naming check cannot see.
 
+`CGEN-08` was reproduced on 11 November 2026 through the editor's load and
+the commands: a syntax error the loader reports as a fault of its own.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -31,6 +34,7 @@ naming check cannot see.
 | CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 | CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
+| CGEN-08 | Planned | P3 | A line indented with a tab, or a space too far, is reported as a syntax error at its line, not as an internal error with an incident id. |
 
 ## Planned improvements
 
@@ -247,3 +251,43 @@ the naming rule already runs, naming the line. A preamble that only reads
 **Evidence:** `src/haute/_support_code_names.py::support_code_inventory`;
 `src/haute/_support_code_names.py::support_code_violations`;
 `specs/codegen/high-level.md`.
+
+### CGEN-08 — A mis-indented line is a syntax error, not an internal error
+**Why:** Reproduced on 11 November 2026 through the editor's load,
+`haute lint` and `haute run`. One line of a node's code is indented with a
+tab where its neighbours have four spaces, as Notepad's Tab key leaves it,
+or by five spaces after a paste. Python says where: "unindent does not match
+any outer indentation level", at line 22. For the tab, `haute lint` and
+`haute run` say "Pipeline source contains invalid Python syntax." with that
+line. The editor shows the source alone under the diagnostic
+`pipeline_recovery_internal_error`: "The pipeline source could not be
+reconstructed because of an internal error.", with the remedy "Check the
+server logs with the incident id and report the defect." and no line. Other
+slips in the same file are reported as they should be, each as
+`python_syntax_error` at its line: a missing bracket, a line not indented at
+all, a non-breaking space pasted from a web page.
+
+The cause is the diagnostic's span, not the parse. For "unexpected indent"
+and for "unindent does not match any outer indentation level" Python gives
+an end offset of -1. The loader turns the error's offsets into a span and
+clamps each to zero, so the span ends at column 0 of the line it starts on
+at column 4 or later, and the span's own rule, "Recovery source span must
+end at or after its start.", raises inside the handler of the syntax error.
+The loader's outer catch then reports an internal error.
+
+**Plan:** Build the syntax error's span so that it cannot end before it
+starts: when Python gives no end, or a negative one, the span ends where it
+starts. Keep the internal-error diagnostic for failures that are Haute's.
+
+**Acceptance:** A pipeline file with a tab-indented line among
+space-indented ones, and one with a line indented by five spaces, each load
+as source only with `python_syntax_error` at the line Python names and no
+incident id. A test runs each indentation error Python raises through the
+loader.
+
+**Dependencies:** None.
+
+**Evidence:**
+`src/haute/_pipeline_recovery.py::_load_readable_pipeline_editor_document`;
+`src/haute/_pipeline_recovery.py::_span`;
+`src/haute/schemas.py::RecoverySourceSpan`.

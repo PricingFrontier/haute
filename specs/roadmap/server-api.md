@@ -355,7 +355,21 @@ every time. A save from the open editor answers "stale_document_revision:
 The pipeline changed on disk after this document was loaded. Reload it
 before saving.", and the reload it asks for fails with the same 500. The
 analyst is sent round a loop, and the one sentence that would end it stays
-in the log.
+in the log. A `haute.toml` left half-edited while the editor runs, with a
+table header not yet closed, makes every load answer the same 500, and so
+do a `haute.toml` that names a file which is not there and a pipeline file
+emptied to nothing (run on 11 November).
+
+The page then hides even that. The client gives every failed response the
+message `HTTP 500`, with the server's words kept beside it, and the page's
+own load is the one caller that shows the message instead of the words:
+after twelve seconds of "Loading pipeline..." the screen reads "Haute
+could not open this pipeline", an explanation, and "HTTP 500", under the
+toast "Failed to load pipeline: HTTP 500" (seen in a browser by the
+review plan's sweep of failed calls on 11 November; the twelve seconds
+and the first lines were run again by the main session, the last line is
+read from the source). Whatever sentence the load route is given will not
+reach the analyst until the page shows it.
 
 At start-up, with `haute.toml` naming a pipeline file that is not there (a
 mistyped path, or the file renamed while the editor was closed), the server
@@ -377,22 +391,29 @@ the first save creates the file.
 **Plan:** Give the resolver's refusal a place in the answers: loading the
 pipeline answers it as a refusal with its own code and the resolver's
 sentence, and the editor shows it with the file's name instead of an empty
-canvas. Resolve the pipeline in the serve command before the server is
-started, and print the sentence as the command prints its other errors, with
-exit code 1; keep the start-up check for a server started any other way,
-caught there and logged as one line.
+canvas. A `haute.toml` that cannot be read is answered the same way, naming
+its line. The page's load takes its text from the one error-text helper, as
+every other caller does, so that it shows the answer's words. Resolve the
+pipeline in the serve command before the server is started, and print the
+sentence as the command prints its other errors, with exit code 1; keep the
+start-up check for a server started any other way, caught there and logged
+as one line.
 
 **Acceptance:** With the pipeline file renamed away under a running editor,
 loading the pipeline answers a 4xx naming the file and the remedy, and the
-editor shows that sentence. `haute serve` on a project whose `haute.toml`
-names a missing file, or a file with no pipeline in it, prints one error
-line naming the file and the remedy, with no traceback, and exits 1.
+editor shows that sentence, in a browser test, where it shows "HTTP 500"
+today. With `haute.toml` left half-edited the load names the file and the
+line. `haute serve` on a project whose `haute.toml` names a missing file, or
+a file with no pipeline in it, prints one error line naming the file and the
+remedy, with no traceback, and exits 1.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/discovery.py::discover_pipelines`;
 `src/haute/routes/_helpers.py::_ensure_pipeline_index`;
-`src/haute/cli/_serve.py::handle_serve`.
+`src/haute/cli/_serve.py::handle_serve`;
+`frontend/src/api/client.ts::throwApiError`;
+`frontend/src/hooks/usePipelineAPI.ts::usePipelineAPI`.
 
 ### SRV-07 — A file name Windows cannot hold is refused by name
 **Why:** Reproduced on 11 November 2026 on three paths an analyst types:

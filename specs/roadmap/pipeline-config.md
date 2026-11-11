@@ -16,7 +16,7 @@ again by the main session.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PCF-01 | Planned | P3 | A recovery issue points at a nested setting the same way whichever check found it. |
-| PCF-02 | Planned | P3 | Every command reads `haute.toml` by one rule: a byte-order mark and a misspelt key are treated, and named, the same by all of them. |
+| PCF-02 | Planned | P3 | Every command, and the editor, reads `haute.toml` by one rule: a byte-order mark and a misspelt key are treated, and named, the same by all of them. |
 | PCF-03 | Planned | P3 | A configured pipeline file with a trailing space, an upper-case extension or a moment's lock is run or refused for that cause, not called "not a pipeline". |
 | PCF-04 | Planned | P2 | `haute run` in a project that is not yet a git repository runs, or names the missing repository as `haute serve` does, instead of calling an existing data file unavailable. |
 
@@ -68,22 +68,35 @@ key 'pipline'". An unknown key that changes nothing for a run, `version`
 under `[project]`, passes `haute run` and `haute lint` with exit 0; the
 sweep saw the dry run refuse it.
 
+The editor says nothing at all. Opened on the file with `pipline`, or with
+the table's own name misspelt `[projct]`, it shows an empty canvas: the
+load answers `ready` with no nodes and no issue, and the list of pipelines
+is empty, beside a pipeline file with two nodes in it (run through the
+routes on 11 November). To the analyst the pipeline is gone, and nothing
+on the screen points at the one letter that hid it.
+
 **Plan:** One reader for `haute.toml`, used by every command: it accepts or
 refuses a byte-order mark by one stated rule and names it when it refuses,
 and it checks the keys it knows, so that a misspelt key is named by every
-command that reads the file.
+command that reads the file. The editor's load reports what that reader
+refuses as an issue of the document, in the place where it shows a
+pipeline file's own faults.
 
 **Acceptance:** A `haute.toml` with a byte-order mark is treated the same
 by every command, and a refusal names the mark. `pipline` under `[project]`
 is named as an unknown key by `haute run` and `haute lint` as it is by the
-dry run.
+dry run. The editor opened on that file, or on one whose `[project]` table
+is misspelt, names the key or the table instead of showing an empty
+canvas.
 
 **Dependencies:** None. `CLI-01` covers the traceback that precedes some of
 these messages.
 
 **Evidence:** `src/haute/_project.py::_toml_configured_pipeline`;
 `src/haute/deploy/_config.py::_validate_toml_keys`;
-`src/haute/cli/_serve.py::_load_toml_server_host`.
+`src/haute/cli/_serve.py::_load_toml_server_host`;
+`src/haute/routes/pipeline.py::get_first_pipeline`;
+`src/haute/discovery.py::discover_pipelines`.
 
 ### PCF-03 — A configured pipeline file is not misread as "not a pipeline"
 **Why:** Reproduced on 11 November 2026. `[project].pipeline` names a file
