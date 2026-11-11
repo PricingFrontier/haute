@@ -30,7 +30,7 @@ policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
 | SRV-01 | Decision | P2 | A write, a training run or a solve stopped by one of the analyst's own nodes says which node and why, as preview and trace do. |
 | SRV-02 | Planned | P2 | Live sync watches only what it reads and does its parsing off the event loop. |
 | SRV-03 | Planned | P2 | A save whose files are written answers as saved even when clearing a stale settings file fails, and the next save clears it. |
-| SRV-04 | Planned | P2 | A save, a settings change or a Data Output's Write that cannot replace its file answers naming the file and why, as the utility editor and the Pipeline files routes do. |
+| SRV-04 | Planned | P2 | A save, a settings change, a Data Output's Write, an optimiser's save or a model save that cannot replace its file answers naming the file and why, as the utility editor and the Pipeline files routes do. |
 | SRV-05 | Planned | P3 | A save the server died in is reported at the next load, and no staging file is left to reach version history. |
 | SRV-06 | Planned | P2 | A pipeline file that is missing is reported in one line naming the file and the remedy, when the editor starts and while it runs. |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
@@ -208,8 +208,19 @@ open in Haute or another program. Try again once it's closed." Nothing has
 it open, so trying again never works. A Restore over a read-only pipeline
 file succeeds.
 
+The optimiser's save and the model save answer in the same way, in their
+own words. Run on 11 November by the third sweep of failed writes and again
+by the main session. After a real solve, the optimiser's save with Replace
+onto a file open in another program, or marked read-only, answers 500
+"Filesystem error saving optimiser result. Check the server logs for
+details."; the file is unchanged. The model save's copy onto a model file
+open in another program fails in the same way, and its route answers
+"Filesystem error saving the model. Check the server logs for details."
+(the copy was run directly; the answer is read from the route).
+
 **Plan:** Translate the two failures once, where the save, the settings
-routes and the Data Output's write can share it: a destination another
+routes, the Data Output's write, the optimiser's save and the model save
+can share it: a destination another
 program holds becomes the 409 naming the file relative to the project, and
 a write refused for space becomes the 507 naming it, in the words the
 utility and Pipeline files routes use. Translate the writer's too-long-path
@@ -221,8 +232,8 @@ that the file is read-only. Other `OSError`s keep the generic answer.
 
 **Acceptance:** With its file held open by a real second handle on Windows,
 each of the pipeline save, the pipeline settings, the MLflow settings, the
-git preferences and a Data Output's Write answers 409 naming the file, and
-the file is unchanged. With the staging write refused for space, each
+git preferences, a Data Output's Write, the optimiser's save and the model
+save answers 409 naming the file, and the file is unchanged. With the staging write refused for space, each
 answers 507 naming the file. A node name that makes its settings file's
 path too long is refused when it is typed, or by the save, in a message
 naming the node and the limit. With its file marked read-only and nothing
@@ -241,7 +252,9 @@ that it is read-only.
 `src/haute/_file_ops.py::PathTooLongError`;
 `src/haute/_graph_utils.py::_sanitize_func_name`;
 `src/haute/routes/utility.py::_replace_or_remove`;
-`src/haute/routes/project_files.py::_publish_write`.
+`src/haute/routes/project_files.py::_publish_write`;
+`src/haute/routes/optimiser.py::save_result`;
+`src/haute/routes/modelling.py::save_model`.
 
 ### SRV-05 — A save the server died in is noticed and its leftovers collected
 **Why:** Reproduced on 10 November 2026. A save replaces its files one after
@@ -282,12 +295,21 @@ atomic writer's leftovers from two more operations killed at their rename,
 an undelete and a branch-away (`.haute/trash.<hex>.tmp`,
 `.haute/state.<hex>.tmp`).
 
+A model save leaves a third kind, with no crash at all. Saved over a model
+file that is marked read-only, the save succeeds and leaves the old model
+beside the new one, named `.motor.cbm.`, 32 hex digits and `.backup`: one
+more full copy at every save (run three times: three copies). The copy
+step's own note says that "a backup that cannot be deleted then is logged
+and left as a hidden sibling, because the copy has already committed". For
+a read-only file that is every time, and nothing removes them later.
+
 **Plan:** Collect first: when the server starts and before a save, remove
 the atomic writer's staging files older than the server's start in the
 folders Haute owns (beside the pipeline file, its `config` and `modules`
 folders, and `.haute`), as the upload route does, and keep the pattern out
 of the milestone's sweep. Before a Data Output's Write, remove the staged
-copies of the same destination that an earlier Write left. Then make a
+copies of the same destination that an earlier Write left. Make a backup
+writable before deleting it, so that a model save leaves none. Then make a
 cut-short save visible: write a small mark under `.haute` naming the save's
 files before the first replace and remove it after the last; a mark found
 when the pipeline is loaded becomes a diagnostic naming the files, and its
@@ -298,7 +320,8 @@ says the save was cut short and names the files; after the next start no
 staging file remains; a Commit records no staging file; and the removed
 node's settings file is gone after the next save. After a Write cut short,
 the next Write to that destination leaves the output file alone in its
-folder.
+folder. A model saved three times over a read-only model file leaves the
+model and its contract alone in theirs.
 
 **Dependencies:** `SRV-03` for the record of files a save could not remove.
 
@@ -309,7 +332,8 @@ folder.
 `src/haute/routes/project_files.py::_remove_stale_staging`;
 `src/haute/_git_transactions.py::_pipeline_folder_new_files`;
 `src/haute/executor.py::new_data_output_staging_path`;
-`src/haute/executor.py::commit_prepared_data_output`.
+`src/haute/executor.py::commit_prepared_data_output`;
+`src/haute/_file_ops.py::atomic_copy_files`.
 
 ### SRV-06 — A missing pipeline file is reported in one line
 **Why:** Reproduced on 10 November 2026, in two forms.

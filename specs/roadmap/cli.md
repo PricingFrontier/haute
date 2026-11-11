@@ -43,6 +43,10 @@ sentence as its last line:
   denied" and the path.
 - A port out of range, `haute serve --port 70000`: an `OverflowError`
   (seen by the sweep, not run again).
+- A file of the built release open in another program when
+  `haute app build` runs again: "Access is denied", once the folder
+  rename's four seconds of waiting are over. The old release is kept and
+  the next build succeeds.
 
 The specification lets some errors reach the terminal with their traceback,
 and names where a command turns the expected ones into one line: Haute's
@@ -67,7 +71,8 @@ branch of `haute deploy`.
 `src/haute/deploy/_config.py::_validate_toml_keys`;
 `src/haute/cli/_serve.py::_load_toml_server_host`;
 `src/haute/_scaffold_files.py::write_lf`; `src/haute/cli/_impact.py`;
-`src/haute/cli/_deploy.py`.
+`src/haute/cli/_deploy.py`; `src/haute/cli/_app.py`;
+`src/haute/_file_ops.py::rename_directory`.
 
 ### CLI-02 — Every command finds the project from a folder inside it
 **Why:** Reproduced on 11 November 2026. With the shell in the project's
@@ -132,7 +137,10 @@ and a mistyped `[workbench]` table are each named as they are written.
 **Why:** Reproduced on 11 November 2026. `haute init` writes a pipeline file
 with no nodes and a CI workflow whose first check is `haute lint`. On that
 project `haute lint` exits 1: "✗ No nodes found in pipeline." So the first
-push of every new project fails its CI, with no remedy named. The editor
+push of every new project fails its CI, with no remedy named. The
+workflow's next check, the dry run, fails on the same project too
+("Resolution failed: No nodes found in" the file); its four other checks
+pass. The editor
 loads the same file as ready and saves it (run through the save route). The
 specification says lint "checks a pipeline as the editor's save does ... so
 the generated CI's lint step refuses what the editor would refuse to save".

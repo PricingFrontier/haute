@@ -29,6 +29,10 @@ hosted app or a server database.
 `WB-51` to `WB-53` were reproduced on 10 November 2026 through the editor's and the app's
 routes. All three come from leads the October reviews left unverified; `WB-53` is a decision.
 
+`WB-54` and `WB-55` come from the review plan's third sweep of failed writes on 11 November
+2026. Both were reproduced on a SQLite quote store with a second process holding the file,
+as a database browser or a backup does; no server database was used.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -50,6 +54,8 @@ routes. All three come from leads the October reviews left unverified; `WB-53` i
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
 | WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
 | WB-53 | Decision | P2 | A pricing failure in the underwriter app gives the underwriter a fixed message and an id, and keeps the exception's text for the log. |
+| WB-54 | Planned | P2 | A write the quote store refuses is answered in words, with a code and an id, not with a bare "Internal Server Error". |
+| WB-55 | Planned | P3 | A SQLite quote store that is busy, damaged or missing is reported as that, not as unreachable "just now" or as a journal mode. |
 
 ## Planned improvements
 
@@ -738,3 +744,78 @@ failed. The app's test and the impact command's test are changed to match.
 `src/haute/deploy/_container.py` generates the deployed API's `_internal_error`,
 the answer to match;
 `specs/workbench/low-level.md`; `specs/deploy/high-level.md`.
+
+### WB-54 — The underwriter app says why its store refused a write
+**Why:** Reproduced on 11 November 2026 on a SQLite quote store, with
+nothing patched. While a second program holds a write transaction on the
+store's file, as a database browser with an unsaved edit does, a write the
+app makes answers 500 with the plain text "Internal Server Error": no JSON,
+no message, no id. The main session archived a quote and added a note; the
+review plan's sweep ran create, save, final, amend, archive, restore, assign
+and note, each with the same answer after about six seconds. The same answer
+comes from a store file that is read-only when the app starts, while
+`GET /api/app/release` reports the quotes open. The sweep saw it too for a
+folder that refuses new files and for an administrator's trigger, whose own
+message is lost. Nothing is lost: the same request succeeds once the cause
+is gone.
+
+The specification says a statement the database refuses "fails as it would
+have" when the store's check finds its tables in order. What it fails as is
+an unhandled error: the app has no handler of its own, where the editor
+answers a structured 500 with an id. The case is not SQLite's alone, since a
+server database refuses statements too: a lock wait, a permission, a
+trigger.
+
+**Plan:** Answer a refused statement as the app answers its other store
+failures: JSON with an error code and a sentence saying that the store
+refused the change and that the quote's values are kept, with the
+database's own message in the log under an id. For SQLite, name the two
+cases an owner can act on: the file is held by another program, and the
+file is read-only. Have the release route report a store it cannot write
+to.
+
+**Acceptance:** With the SQLite store held in a write transaction by a
+second process, and with the file read-only, a save answers JSON naming the
+cause. With the file read-only the release route does not report the quotes
+open. A refusal raised by a trigger answers JSON with an id, and the log
+holds the trigger's message under it.
+
+**Dependencies:** None. `WB-53` decides how much of an exception's text the
+app shows.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py`;
+`src/haute/_workbench_app.py::create_app`;
+`src/haute/_workbench_app_store.py`; `specs/workbench/high-level.md`.
+
+### WB-55 — A busy or damaged SQLite store is called what it is
+**Why:** Reproduced on 11 November 2026, with nothing patched. While a
+second program holds a read transaction on the store's file, as a backup or
+a report does, a save's commit is refused and the app answers 503 "The app
+cannot reach its quote store just now." It then closes every quote for ten
+seconds, reads included, though the file is readable throughout. A store
+file cut to half its length gets the same sentence at every start: nothing
+says that the file is damaged, and "just now" suggests waiting. While a
+second program holds the file exclusively, the app answers after 14
+seconds: "The quote store's database is in 'database is locked' mode and
+could not be put back to a rollback journal: close whatever else has it
+open and try again." The lock's error text sits where a journal mode's name
+belongs. The sweep saw a store file deleted between runs come back empty
+and be refused as a mismatch, with nothing saying that the file was gone.
+
+The specification keeps "cannot reach" for "a server database the app
+cannot reach or that refuses its sign-in".
+
+**Plan:** Tell the SQLite cases apart before answering. Busy: another
+program holds the file; say so, and do not close the quotes for a commit
+that was only refused. Not a database: name the file as damaged. Missing:
+say that the file is gone before making an empty one.
+
+**Acceptance:** With a reader's transaction open on the file, a save answers
+that another program holds the store, and reads carry on. With the file cut
+short the app says at start that the store's file is damaged, and names it.
+With an exclusive lock held, the answer names the lock, not a journal mode.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_store.py`;
+`src/haute/_workbench_app_quotes.py`; `src/haute/_workbench_app_store.py`.
