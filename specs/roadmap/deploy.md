@@ -20,7 +20,7 @@ fresh copies of the shipped examples.
 |---|---|---:|---|
 | DPL-01 | Planned | P1 | A relative path means the same file in the editor, in a run and in the deployed bundle. |
 | DPL-02 | Planned | P3 | An output value that is not a finite number is refused naming the output column and the quote. |
-| DPL-03 | Planned | P3 | A dry run refuses a deploy target that does not exist, and a missing pipeline file is reported without a traceback. |
+| DPL-03 | Planned | P3 | A dry run refuses a deploy target, a model name and a target setting that no deploy can use, and a missing pipeline file is reported without a traceback. |
 | DPL-04 | Planned | P3 | A test quote can expect a date or a date-time output, written as the response writes it. |
 | DPL-05 | Planned | P2 | `haute deploy --dry-run` passes on a clean checkout of a pipeline whose input is a CSV Data Input, as a CI job runs it, without `haute run` first. |
 
@@ -111,14 +111,22 @@ that does not, the command ends in a Python traceback whose last line is the
 (good) message; the same failure without a `haute.toml` is caught and printed
 as an error with a hint.
 
+Run again on 11 November 2026 on a project made by `haute init`, the dry
+run passes more settings that no deploy can use: an empty model name, in
+`haute.toml` and as `--model-name ""`; `min_approvers = -1`; and a serving
+workload size that does not exist, `serving_workload_size = "Enormous"`.
+Each answered "Dry run complete - no model was deployed." with exit code 0.
+
 **Plan:** Validate the target in the dry run with the check the deploy path
-uses, before any other work. Catch the pipeline file's resolution in the
-branch that loads `haute.toml` as the other branch does.
+uses, before any other work, and with it the model name and the target's
+own settings. Catch the pipeline file's resolution in the branch that loads
+`haute.toml` as the other branch does.
 
 **Acceptance:** `haute deploy --dry-run` with an unknown target exits 1
-naming the target and the targets that exist. With a `haute.toml` naming a
-missing pipeline file it prints one error line and the hint, with no
-traceback.
+naming the target and the targets that exist. With an empty model name, a
+negative number of approvers or an unknown workload size it exits 1 naming
+the setting. With a `haute.toml` naming a missing pipeline file it prints
+one error line and the hint, with no traceback.
 
 **Dependencies:** None.
 

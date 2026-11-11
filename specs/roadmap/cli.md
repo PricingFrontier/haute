@@ -41,6 +41,8 @@ sentence as its last line:
 - A `haute.toml` marked read-only when `haute init` runs again, and a
   workflow file marked read-only under `haute ci update`: "Permission
   denied" and the path.
+- A port out of range, `haute serve --port 70000`: an `OverflowError`
+  (seen by the sweep, not run again).
 
 The specification lets some errors reach the terminal with their traceback,
 and names where a command turns the expected ones into one line: Haute's
@@ -78,7 +80,9 @@ haute.toml found."; `haute ci update` answers "No haute.toml found: run this
 in a Haute project."; and `haute app build`, in a workbench project, answers
 "This project has no workbench: add [workbench] enabled = true to
 haute.toml.", which is false. The sweep saw `haute smoke` and
-`haute ci registry-host` answer as `impact` and `ci update` do.
+`haute ci registry-host` answer as `impact` and `ci update` do, and saw
+`haute init`, run from that folder, make a second project inside the
+first.
 
 **Plan:** Have every command resolve the project as `run` does, walking up
 from the shell's folder to the `haute.toml`, and read its settings from
