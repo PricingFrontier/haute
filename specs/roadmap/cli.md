@@ -170,9 +170,11 @@ the name of the box itself. The run still walks those nodes: `haute lint`
 counts four, and the specification says a run is "parsed and flattened as
 the editor's runs are (each submodel occurrence runs as its definition's
 nodes". One spelling works, the flattened graph's own id,
-`--node submodel_runtime/loading/capped`, which no screen, message or page
-shows. So tidying a canvas into submodels takes `--node` away for every
-node inside them, and the message says the node is not there.
+`--node submodel_runtime/loading/capped`. An analyst meets it only in the
+progress lines of a run that passes through the box, and here no run does:
+the box holds the pipeline's last node. So tidying a canvas into submodels
+takes `--node` away for every node inside them, and the message says the
+node is not there.
 
 **Plan:** Resolve `--node` against the names an analyst sees. A node inside
 a submodel is found by its name when one occurrence holds it, and a submodel
