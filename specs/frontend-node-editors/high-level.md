@@ -490,7 +490,9 @@ a saved one is shown as its formula, or, where a formula cannot express it, keep
 own entry. A new column starts in Formula, its name field taking focus first. Changing
 the "Function" or "Computed as" select never discards work and never wraps it: the value being computed (a
 function's Of, a window's value, a coalesce's, a sum across's or a text join's first part, a Value's
-value) carries into the new calculation's value where it has one, a function's arguments
+value) carries into the new calculation's value where it has one (a Value holding an
+expression reads, on its card and as a formula, as that expression, which is how it reads
+back once saved), a function's arguments
 carry to a function taking the same kinds of argument, Formula shows the expression being
 left as its formula where a formula can express it, and going back to a calculation
 already used in the open card restores it as it was left, a formula's unfinished text
@@ -560,7 +562,9 @@ included), conditionals (every branch) and text joins in words; a group-by
 aggregation's or a window's row filter offers no nested expressions. The Combine group also offers
 "Pivot to columns" (index chips, the spread column, aggregate and values column, and
 one row per output column pairing a typed value with a name the value suggests, all
-rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
+rows sharing the first row's type; a row added, and every row when the first row's type
+changes, takes a value no other row has while one is left: the next whole number, the day
+after, the other true/false value, or empty text) and "Unpivot to rows" (stacked columns, index
 chips that exclude them, name and value column fields, and a note that row order is
 not guaranteed: ordering an unpivot's rows costs three times its time and memory, so a sort
 step after it orders them where that matters). Select and drop take column types beside named columns, and an

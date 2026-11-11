@@ -46,6 +46,7 @@ import {
   defaultLiteral,
   exprProblem,
   exprTypeProblem,
+  freshLiteral,
   functionTakes,
   joinOrderAfterHowChange,
   literal,
@@ -1385,7 +1386,7 @@ function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
           label="Pivot column"
           addLabel="Add column"
           min={0}
-          create={() => ({ value: defaultLiteral(type), name: "" })}
+          create={() => ({ value: freshLiteral(type, step.columns.map((c) => c.value)), name: "" })}
           renderRow={(entry, set, index) => (
             <>
               <div className="flex-1 basis-28 min-w-0">
@@ -1394,8 +1395,15 @@ function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
                   onChange={(value) => {
                     if (value.kind !== "literal") return
                     if (value.type !== type) {
-                      // The rows share one type: convert every value, keep every name.
-                      onChange({ ...step, columns: step.columns.map((c, i) => ({ ...c, value: i === index ? value : defaultLiteral(value.type) })) })
+                      // The rows share one type: convert every value to one no other row has, keep every name.
+                      const used: LiteralOperand[] = [value]
+                      const columns = step.columns.map((c, i) => {
+                        if (i === index) return { ...c, value }
+                        const fresh = freshLiteral(value.type, used)
+                        used.push(fresh)
+                        return { ...c, value: fresh }
+                      })
+                      onChange({ ...step, columns })
                       return
                     }
                     const name = entry.name || (value.type === "text" ? String(value.value) : entry.name)

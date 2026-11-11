@@ -544,6 +544,8 @@ function operandText(
 function exprText(expr: Expr, variables: ReadonlySet<string>, constants: ReadonlySet<string> = NO_NAMES): string | null {
   switch (expr.type) {
     case "operand":
+      // A Value holding an expression is that expression, as it reads back once saved.
+      if (expr.operand.kind === "expr") return exprText(expr.operand.expr, variables, constants)
       return operandText(expr.operand, variables, null, constants)
     case "binary": {
       const left = operandText(expr.left, variables, { op: expr.op, side: "left" }, constants)

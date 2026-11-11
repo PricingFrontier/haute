@@ -663,6 +663,22 @@ describe("step forms only build schema-valid payloads", () => {
     expect(latest.aggregations[0]).toEqual({ column: "", agg: "quantile", name: "", quantile: 0.9 })
   })
 
+  it("a pivot column added takes a value no other column has", () => {
+    const spy = vi.fn()
+    const cell = (type: "number" | "boolean" | "date", value: number | boolean | string, name: string) => ({ value: { kind: "literal" as const, type, value }, name })
+    const pivot = (columns: Array<ReturnType<typeof cell>>): Step => ({ id: "p", kind: "pivot", index: ["region"], on: "year", columns, values: "premium", agg: "sum" })
+    const added = (columns: Array<ReturnType<typeof cell>>) => {
+      cleanup()
+      render(<Stateful initial={pivot(columns)} spy={spy} />)
+      fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+      return (spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "pivot" }>).columns.at(-1)?.value
+    }
+    expect(added([cell("number", 0, "a"), cell("number", 1, "b")])).toEqual({ kind: "literal", type: "number", value: 2 })
+    expect(added([cell("boolean", true, "yes")])).toEqual({ kind: "literal", type: "boolean", value: false })
+    expect(added([cell("date", "2026-01-01", "a"), cell("date", "2026-01-05", "b")])).toEqual({ kind: "literal", type: "date", value: "2026-01-06" })
+    expect(stepProblem(spy.mock.calls.at(-1)?.[0])).toBeNull()
+  })
+
   it("changing the pivot value type converts every row and keeps the names", () => {
     const spy = vi.fn()
     const step: Step = {
@@ -682,7 +698,8 @@ describe("step forms only build schema-valid payloads", () => {
     const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "pivot" }>
     expect(latest.columns).toEqual([
       { value: { kind: "literal", type: "number", value: 0 }, name: "y2024" },
-      { value: { kind: "literal", type: "number", value: 0 }, name: "y2025" },
+      // Each row takes a value no other row has, so the step is not refused for repeating one.
+      { value: { kind: "literal", type: "number", value: 1 }, name: "y2025" },
     ])
   })
 

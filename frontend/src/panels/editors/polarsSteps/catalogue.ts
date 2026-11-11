@@ -429,6 +429,34 @@ export function defaultLiteral(type: LiteralType): LiteralOperand {
   }
 }
 
+/**
+ * A value of `type` that none of `used` has, while one is left: the lowest whole number
+ * not in use, the day after the latest date, the other true/false value. Text starts
+ * empty, for the user to type. A pivot's cells must differ, or the step is refused.
+ */
+export function freshLiteral(type: LiteralType, used: readonly LiteralOperand[]): LiteralOperand {
+  const taken = used.filter((operand) => operand.type === type).map((operand) => operand.value)
+  switch (type) {
+    case "number": {
+      let next = 0
+      while (taken.includes(next)) next += 1
+      return literal("number", next)
+    }
+    case "boolean":
+      return literal("boolean", taken.includes(true) && !taken.includes(false) ? false : true)
+    case "date": {
+      const dates = taken.filter((value): value is string => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)).sort()
+      const latest = dates.at(-1)
+      if (latest === undefined) return defaultLiteral("date")
+      const next = new Date(`${latest}T00:00:00Z`)
+      next.setUTCDate(next.getUTCDate() + 1)
+      return literal("date", next.toISOString().slice(0, 10))
+    }
+    default:
+      return defaultLiteral(type)
+  }
+}
+
 export function defaultCondition(column = ""): Condition {
   return { column, operator: "eq", value: literal("number", 0) }
 }

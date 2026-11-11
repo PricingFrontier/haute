@@ -39,6 +39,14 @@ describe("formula text", () => {
     expect(formulaText(parseFormula(text))).toBe(text)
   })
 
+  it("prints a Value holding an expression as that expression, as it reads back once saved", () => {
+    const scaled = binary(col("claims"), "*", num(0.1))
+    const value: Expr = { type: "operand", operand: ex(scaled) }
+    expect(formulaText(value)).toBe("claims * 0.1")
+    expect(formulaText({ type: "function", fn: "clip", operand: ex(value), args: [num(0), col("cap")] })).toBe("clip(claims * 0.1, 0, cap)")
+    expect(formulaText(binary(ex(value), "+", num(1)))).toBe("claims * 0.1 + 1")
+  })
+
   it("keeps the text exactly as typed, brackets and spacing included", () => {
     const parsed = parseFormula("  premium + (tax * 2)  ")
     expect(parsed).toMatchObject({ type: "binary", text: "premium + (tax * 2)" })
