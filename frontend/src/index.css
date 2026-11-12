@@ -2,6 +2,8 @@
 /* The test folders do not feed the stylesheet: the classes a test names as fixtures are
    not the app's. Every test file vitest runs is under a __tests__ folder. */
 @source not "./**/__tests__";
+/* Nor does the kit's catalogue, a developer's page outside the product (../catalogue). */
+@source not "../catalogue";
 /* The toolbar's, the button's, the palette's, the right-hand panels' and native
    dropdowns' styles, shared by the pipeline editor, the workbench and the underwriter
    app (haute-ui, specs/frontend-shared).

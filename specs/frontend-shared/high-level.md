@@ -404,6 +404,19 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   kit, so a new button is one of the kit's and cannot start another copy; the eight
   files that wrote the surface class with sizes of their own before that are listed as
   excused until they move.
+- **A catalogue of the kit, outside the product.** `frontend/catalogue/` is a page that
+  draws the kit's pieces, a level to a page, each in every variant and state, with the
+  app's own stylesheet, so what it shows is what the screens show. It draws the
+  controls so far (the button, the link drawn as one, the toolbar's button); the
+  toolbar's other controls, the palette and the side panel are not drawn yet, and a
+  test lists them, so a piece of the kit is drawn or is named as not yet drawn. It is a
+  developer's tool: it sits beside `src/`, not in it, so it is no input to the packaged
+  frontend; it is its own TypeScript project, which the type check reads and the
+  production build does not, so nothing in it can fail or stale a release build; its
+  build goes to a dist folder nothing packages; and its text is kept out of the scan
+  that decides which utility classes the app ships. It is linted and tested with the
+  source, held to the kit's own rules, and a test holds that every piece it draws is
+  one a product file imports, so it cannot keep an unused piece looking alive.
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't

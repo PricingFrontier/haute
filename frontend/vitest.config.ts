@@ -22,7 +22,7 @@ export default defineConfig({
     // The webstoragePin meta-test gates this entry's presence, since on
     // CI's default-off Node deleting it would go unnoticed.
     execArgv: ["--no-experimental-webstorage"],
-    include: ["src/**/__tests__/**/*.test.{ts,tsx}", "e2e/__tests__/**/*.test.ts"],
+    include: ["src/**/__tests__/**/*.test.{ts,tsx}", "catalogue/__tests__/**/*.test.{ts,tsx}", "e2e/__tests__/**/*.test.ts"],
     // A lane test runs on its own schedule (`npm run test:lanes`, vitest.lanes.config.ts).
     exclude: [...configDefaults.exclude, "**/*.lane.test.{ts,tsx}"],
     setupFiles: ["./src/setupStorageCanary.ts", "./src/setupTests.ts"],

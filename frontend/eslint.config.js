@@ -148,8 +148,8 @@ const KIT_BUTTON_SELECTORS = [
     message: "Draw a button with Button, ButtonLink or ToolbarButton from haute-ui: the kit's button classes are written only inside it (specs/frontend-shared).",
   },
 ]
-const SOURCE_FILES = ['src/**/*.{ts,tsx}']
-const TEST_FILES = ['src/**/__tests__/**', 'src/**/*.test.{ts,tsx}']
+const SOURCE_FILES = ['src/**/*.{ts,tsx}', 'catalogue/**/*.{ts,tsx}']
+const TEST_FILES = ['src/**/__tests__/**', 'src/**/*.test.{ts,tsx}', 'catalogue/__tests__/**']
 function restrictedSyntax(...groups) {
   return { 'no-restricted-syntax': ['error', ...groups.flat()] }
 }

@@ -1,0 +1,146 @@
+/* The catalogue's own frame (specs/frontend-shared): its header, its pages' headings and
+   the stage each sample stands on. Plain CSS under its own prefix, so nothing here can
+   land on a kit element, and colours only from index.css's tokens. The samples themselves
+   are drawn by the app's stylesheet alone, as the app draws them. */
+.catalogue {
+  min-height: 100%;
+  overflow-y: auto;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+.catalogue-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 24px;
+  padding: 16px 24px 0;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--chrome-border);
+}
+.catalogue-name {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+.catalogue-nav {
+  display: flex;
+  gap: 4px;
+}
+.catalogue-nav a {
+  padding: 6px 10px 10px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.catalogue-nav a:hover,
+.catalogue-nav a:focus-visible {
+  color: var(--text-primary);
+}
+.catalogue-nav a[aria-current="page"] {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+}
+.catalogue-page {
+  max-width: 960px;
+  padding: 24px;
+}
+/* Focused by a change of page, not by the keyboard: no ring round the whole page. */
+.catalogue-page:focus {
+  outline: none;
+}
+.catalogue-page h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.catalogue-page h3 {
+  margin: 20px 0 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.catalogue-page p {
+  max-width: 68ch;
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.catalogue-page section + section {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-subtle);
+}
+.catalogue-levels {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.catalogue-levels li {
+  padding: 10px 0;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.catalogue-levels a {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+/* A row of samples, each on its stage with what draws it underneath. */
+.catalogue-samples {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+.catalogue-sample {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+}
+.catalogue-stage {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+  padding: 16px;
+}
+/* A stage whose sample shows how its caller lays it out: the full width, from the left. */
+.catalogue-stage-wide {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 64px;
+  padding: 16px;
+}
+.catalogue-stage-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 64px;
+  padding: 16px;
+}
+/* Room for two lines, so a row's stages are one height whether or not a caption wraps. */
+.catalogue-sample figcaption {
+  box-sizing: content-box;
+  min-height: 2.8em;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-data);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.catalogue-samples-wide {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
