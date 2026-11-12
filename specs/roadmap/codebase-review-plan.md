@@ -8,12 +8,12 @@ counts as covered. Remove a phase when it has run and its findings are
 written up. Delete the file, its section in the [index](README.md) and its
 entry in `_ROADMAP_SUPPORTING_REPORTS` when no phase remains.
 
-Phases 1 to 3 ran on 10 and 11 November 2026 and are removed from this
+Phases 1 to 3 ran from 10 to 12 November 2026 and are removed from this
 file. Their findings are packages in the component roadmaps; what they did
 not finish is under [Left from phases 1 to 3](#left-from-phases-1-to-3).
 Phases 4 and 5 wait on the [decisions](#decisions) at the end.
 
-## Where the review stands on 11 November 2026
+## Where the review stands on 12 November 2026
 
 | | Size | Lines changed since the 31 October audit |
 |---|---:|---:|
@@ -130,7 +130,7 @@ project alone does not contain a sweep.
 
 ## Left from phases 1 to 3
 
-Phases 1 to 3 ran on 10 and 11 November 2026: 19 sweeps by workers, each
+Phases 1 to 3 ran from 10 to 12 November 2026: 20 sweeps by workers, each
 candidate run again by the main session before it was written up, and the
 main session's own runs where no sweep reached. Their findings are packages
 in the component roadmaps. What they did not finish is here, with what each
@@ -157,10 +157,10 @@ item lacks.
   logic sweep; the modelling, optimiser and quote-list stores; the pipeline
   repair's node-scoped save and its recovery preview; MLflow logging to a
   local store under failure; the caches under failed writes; every Excel
-  case (no reader package on the review's machine); t-boost beyond two fits;
-  random sequences of editor and git operations against a model; sizes
-  beyond 400 nodes, 100 columns and 800 commits, and any size of rows,
-  rating entries or form fields.
+  case (no reader package on the review's machine); random sequences of
+  editor and git operations against a model; sizes beyond 400 nodes, 100
+  columns and 800 commits, and any size of rows, rating entries or form
+  fields.
 - **Answers computed a second way.** The trace's derivations on the shipped
   examples; a ratebook's frontier points; the Quotes explorer's sort, search
   and filters; the optimiser's MLflow log; ratio constraints, which the
@@ -215,10 +215,11 @@ item lacks.
 
 ## Order, budget and stopping
 
-Phases 1 to 3 took about 77 hours of agent time over two days, against a
-first budget of twenty to thirty: each sweep's cost came from its list of
-cases and its pilot, as this plan said it would, and every candidate was
-run a second time by the main session before it was written up.
+Phases 1 to 3 took about 80 hours of agent time over two days and a
+morning, against a first budget of twenty to thirty: each sweep's cost came
+from its list of cases and its pilot, as this plan said it would, and every
+candidate was run a second time by the main session before it was written
+up.
 
 Of what is left, the items under [Left from phases 1 to
 3](#left-from-phases-1-to-3) need nothing new and can be taken first, in
