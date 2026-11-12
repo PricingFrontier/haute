@@ -94,6 +94,25 @@ describe("Toolbar", () => {
     expect(screen.getByText("v999.0.0-test")).toBeInTheDocument()
   })
 
+  it("opens the build's details from the version and closes them on Escape", () => {
+    render(<Toolbar {...makeProps()} />)
+    expect(screen.queryByTestId("toolbar-brand-details")).toBeNull()
+
+    const version = screen.getByRole("button", { name: "v999.0.0-test" })
+    fireEvent.click(version)
+    const details = screen.getByTestId("toolbar-brand-details")
+    expect(version).toHaveAttribute("aria-expanded", "true")
+    expect(details).toHaveTextContent("Version999.0.0-test")
+    // The setup file's build: built 12 November 2026, from commit 0123456789… of 10 November.
+    expect(details).toHaveTextContent(/Built.*November.*2026.*Commit0/)
+    expect(details).toHaveTextContent("Commit0123456789")
+    expect(details).not.toHaveTextContent("0123456789a")
+    expect(details).toHaveTextContent(/Commit date.*November.*2026/)
+
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(screen.queryByTestId("toolbar-brand-details")).toBeNull()
+  })
+
   it("clicking Save calls onSave", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)

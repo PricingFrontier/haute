@@ -29,6 +29,7 @@
   user-select: none;
 }
 .toolbar-brand-mark {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -49,6 +50,42 @@
   font-size: 10px;
   letter-spacing: -0.025em;
   line-height: 1;
+}
+/* The version as a button, when it opens the build's details. */
+button.toolbar-brand-version {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+button.toolbar-brand-version:hover,
+button.toolbar-brand-version[aria-expanded="true"] {
+  color: var(--text-primary);
+}
+.toolbar-brand-details {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 12px;
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: var(--node-shadow);
+  font-size: 11px;
+  white-space: nowrap;
+  user-select: text;
+}
+.toolbar-brand-details dt {
+  color: var(--text-muted);
+}
+.toolbar-brand-details dd {
+  margin: 0;
+  color: var(--text-primary);
 }
 
 /* Two controls stacked: the bar's two rows. */
