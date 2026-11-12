@@ -447,8 +447,9 @@ a sheet per table.
   **Header**: the columns' **Labels**, their **Names**, or **None**, which starts the rows
   at that cell. Pick its columns under **Add a column**, the index among them, and drag
   them, or use Alt+Up and Alt+Down, into the order they go in, left to right. A table of
-  many rows writes the rows the quote has, each output beside the inputs of its row; a
-  one-row table writes its one row. As a quote can have any number of rows, a table takes
+  many rows writes the rows the quote has (a table with a row for each value, every
+  value's row), each output beside the inputs of its row; a one-row table writes its one
+  row. As a quote can have any number of rows, a table takes
   its columns from its top row to the foot of the sheet: put anything else above it,
   beside it, or on another sheet.
 - Removing a column or a table from the schema leaves it in an Export of cells, named as
@@ -472,7 +473,7 @@ pastes what you copied onto the sheet showing, another sheet too: into the secti
 have selected (or the selected component's, else the section it came from, else the
 sheet's first), where the original sat, moved down and right past one already there, and
 selected so you can drag it into place; a column deleted from the schema since you copied
-it is left out of the copy. Ctrl+1 fits the sheet to the
+it is left out of the copy, but for an Export of cells, which keeps it as a problem. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
 Heading with no text, a column no longer in the schema, a table of the other kind, a
 Chart's field that is not a number or is a numbered index, tables whose rows do not line up, a pie

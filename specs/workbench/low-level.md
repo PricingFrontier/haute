@@ -1962,7 +1962,8 @@ no longer has; and `InputSource` in
     under it a row for each of `_table_rows`, each value as a cell's is, its column's type
     and format its own. `_table_rows` gives a one-row table one row, its inputs from the
     typed sample and its outputs from the first priced row; an input table its typed rows
-    in order, each with the priced row whose index, as text, is its own, so the rows line
+    in order (a table with a row for each value every value's, as `sample_quote` gives
+    them), each with the priced row whose index, as text, is its own, so the rows line
     up by index and never by place, as `pricedRows` lines them up in the view; and a table
     of outputs alone its priced rows in their order. A block whose last row would fall past
     1,048,576 is an `ExportRefusedError` naming it, the only problem of a block the form
@@ -2484,8 +2485,9 @@ no longer has; and `InputSource` in
   kept as text in the sheet's XML (no `<f>`, an inline string), a label written to its
   label cell as text, `=` and all, its name made readable while it has no label, a
   block's header of labels, names or none over its rows in its own order of columns, each
-  row's outputs those of the priced row of its index whatever their order, a one-row
-  table's block and one of outputs alone, a table with no rows writing its header alone, a
+  row's outputs those of the priced row of its index whatever their order, a table with
+  a row for each value writing every value's row in their order, a one-row table's block
+  and one of outputs alone, a table with no rows writing its header alone, a
   block whose rows run past the last row refused and one ending on it written, each
   `number_format` rule,
   each of `cells_problems` refused with the view's words, a block's among them, and a

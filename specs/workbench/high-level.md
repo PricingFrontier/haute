@@ -1553,7 +1553,8 @@ Out of scope:
   inside its section, a nudge or resize that cannot change it recording nothing. Selected or not,
   Ctrl/Cmd+V pastes a copy of the component copied, as it was when copied but for the
   columns and tables the schema has lost since, which it no longer shows, tests, reads,
-  gives a parameter or exports, as removing them takes them from it, onto the sheet
+  gives a parameter or exports, as removing them takes them from it (an Export of cells
+  keeping them, as removing them leaves them in it), onto the sheet
   showing: into the section selected, else the selected component's, else the section it
   was copied from while it is on that sheet, else the sheet's first; where it sat, moved
   16px down and to the right while a component there sits at exactly that place, kept
@@ -1789,9 +1790,9 @@ Out of scope:
   column's label as a label cell holds it, or its name, as text, and under it a row for
   each of its table's rows in the quote, its columns in turn rightward, each value as a
   cell holds it: a one-row table's one row; an input table's rows as the server typed the
-  sample, the rows the sheets hold anything typed in, in their order, each output that of
-  the priced row of the same index; a table of outputs alone its priced rows in their
-  order. A many-row table with no rows writes its header alone. A block whose rows would
+  sample, the rows the sheets hold anything typed in, in their order, or, for a table with
+  a row for each value, every value's row in the values' order, each output that of the
+  priced row of the same index; a table of outputs alone its priced rows in their order. A many-row table with no rows writes its header alone. A block whose rows would
   run past row 1,048,576 is refused, naming it. A number cell
   takes its column's format as the sheets show it (decimal places fixed when set, a
   percent shown as the value times 100, a currency's sign before it, thousands grouped

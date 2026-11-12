@@ -684,6 +684,56 @@ def test_a_block_of_a_one_row_table_writes_its_row_and_of_outputs_alone_its_pric
     ]
 
 
+def test_a_block_of_a_table_with_a_row_for_each_value_writes_each_value_s_row_in_order() -> None:
+    form = with_blocks(
+        block("perils", ["peril", "covered", "limit", "peril_premium"], "Perils", "A1")
+    )
+    form["schema"]["tables"].append(
+        {
+            "name": "perils",
+            "rows": "many",
+            "inputs": [
+                column(
+                    "peril",
+                    index="values",
+                    options=["Fire", "Flood", "Storm"],
+                    options_source={"file": "perils.csv", "column": "peril"},
+                ),
+                column("covered", "bool"),
+                column("limit", "float"),
+            ],
+            "outputs": [column("peril_premium", "float")],
+        }
+    )
+    form["sample"]["perils"] = [{"peril": "Flood", "covered": True, "limit": "500"}]
+    priced = [("Storm", 3.0), ("Fire", 1.0), ("Flood", 2.0)]
+    tables = {
+        **ITEMS_PRICED,
+        "perils": [
+            {
+                "quote_reference": "PREVIEW",
+                "quote_option": 1,
+                "peril": name,
+                "peril_premium": premium,
+            }
+            for name, premium in priced
+        ],
+    }
+
+    _, data = export(form, tables)
+
+    perils = load_workbook(io.BytesIO(data))["Perils"]
+    # Every value's row, typed in or not, in the values' order, as pricing prices them,
+    # each with the priced row of its value.
+    assert values_of(perils, "A1:D5") == [
+        ["Peril", "Covered", "Limit", "Peril premium"],
+        ["Fire", False, None, 1.0],
+        ["Flood", True, 500.0, 2.0],
+        ["Storm", False, None, 3.0],
+        [None, None, None, None],
+    ]
+
+
 def test_a_block_of_a_table_with_no_rows_writes_its_header_alone() -> None:
     form = with_blocks(block("items", ["item", "value"], "Slip", "A1"))
     form["sample"]["items"] = []
