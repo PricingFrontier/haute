@@ -31,12 +31,13 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { changeAppQuote, type QuotesQuery } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
+import { Button, ButtonLink } from "../haute-ui"
 import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
 import { relativeTime } from "../utils/relativeTime"
 import { fullTime, listColumns, listValue } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
-import { BUTTON, Collapsible, FILL_BUTTON, ICON_BUTTON, Menu, StageChip, type MenuItem } from "./ui"
+import { Collapsible, Menu, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useQuoteListStore from "./useQuoteListStore"
@@ -285,13 +286,13 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                 </option>
               ))}
             </select>
-            <button type="button" className={ICON_BUTTON} onClick={() => void load(query, true)} title="Refresh the list" aria-label="Refresh the list">
+            <Button iconOnly onClick={() => void load(query, true)} title="Refresh the list" aria-label="Refresh the list">
               <RotateCw size={12} />
-            </button>
+            </Button>
             {editor && (
-              <a href={newQuotePath()} onClick={openNewQuote} className={FILL_BUTTON} title="Start a new quote (N)" data-testid="new-quote">
+              <ButtonLink href={newQuotePath()} onClick={openNewQuote} variant="fill" title="Start a new quote (N)" data-testid="new-quote">
                 <Plus size={13} aria-hidden="true" /> New quote
-              </a>
+              </ButtonLink>
             )}
           </div>
         </div>
@@ -328,9 +329,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     <span role="alert" style={{ color: "var(--danger-text)" }}>
                       The quotes could not be read: {error}
                     </span>{" "}
-                    <button type="button" className={BUTTON} onClick={() => void load(query, true)}>
+                    <Button onClick={() => void load(query, true)}>
                       <RotateCw size={12} /> Retry
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               )}
@@ -340,17 +341,17 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     {filtered ? (
                       <>
                         No quotes match.{" "}
-                        <button type="button" className={BUTTON} onClick={() => { setTyped(""); go({ search: "", stage: null, assignee: null }) }}>
+                        <Button onClick={() => { setTyped(""); go({ search: "", stage: null, assignee: null }) }}>
                           Clear search
-                        </button>
+                        </Button>
                       </>
                     ) : (
                       <>
                         {view.empty}{" "}
                         {query.view !== "archived" && editor && (
-                          <a href={newQuotePath()} onClick={openNewQuote} className={BUTTON}>
+                          <ButtonLink href={newQuotePath()} onClick={openNewQuote}>
                             <Plus size={12} /> New quote
-                          </a>
+                          </ButtonLink>
                         )}
                       </>
                     )}
@@ -395,9 +396,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                     </td>
                     <td className="px-2" onClick={(event) => event.stopPropagation()}>
                       <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100 has-[[aria-expanded=true]]:opacity-100">
-                        <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.reference, quote.option))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
+                        <Button iconOnly onClick={() => void navigate(quotePath(quote.reference, quote.option))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
                           <FolderOpen size={12} />
-                        </button>
+                        </Button>
                         <Menu label={`Actions for ${quote.label}`} icon={MoreHorizontal} items={actions(quote)} testId={`quote-actions-${quote.label}`} />
                       </span>
                     </td>
@@ -410,9 +411,9 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               <FileText size={12} aria-hidden="true" />
               {next === null ? `${quotes.length} ${quotes.length === 1 ? "quote" : "quotes"}` : `First ${quotes.length}`}
               {next !== null && (
-                <button type="button" className={BUTTON} onClick={() => void more()} disabled={loadingMore}>
+                <Button onClick={() => void more()} disabled={loadingMore}>
                   {loadingMore ? "Loading…" : "Load more"}
-                </button>
+                </Button>
               )}
               {error !== null && <span style={{ color: "var(--danger-text)" }}>{error}</span>}
             </div>

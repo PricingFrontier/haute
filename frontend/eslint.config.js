@@ -94,7 +94,7 @@ const HELPER_SELECTORS = [
 // index.css's own class, not the kit's. The check reads the source as written: it sees
 // a kit class and a colour class in one string, one template, one class-name call or
 // array, or one concatenation, and does not follow a class through a variable.
-const KIT_CLASS = String.raw`/(^|\s)(toolbar(?!-number-input)|palette|side-panel|panel-drag-handle)(-[a-z-]+)?(\s|$)/`
+const KIT_CLASS = String.raw`/(^|\s)(toolbar(?!-number-input)|btn|palette|side-panel|panel-drag-handle)(-[a-z-]+)?(\s|$)/`
 const PALETTE = 'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose'
 // One class that sets a colour, behind any variants and either spelling of important:
 // a colour utility whose value is a token, a literal or named colour, a palette shade or
@@ -132,7 +132,7 @@ const KIT_SELECTORS = [
     message: KIT_COLOUR_MESSAGE,
   },
   {
-    selector: `JSXOpeningElement[name.name=/^(ToolbarButton|ToolbarColumn)$/] > JSXAttribute[name.name="className"] :matches(Literal[value=${COLOUR_UTILITY}], TemplateElement[value.raw=${COLOUR_UTILITY}])`,
+    selector: `JSXOpeningElement[name.name=/^(Button|ButtonLink|ToolbarButton|ToolbarColumn)$/] > JSXAttribute[name.name="className"] :matches(Literal[value=${COLOUR_UTILITY}], TemplateElement[value.raw=${COLOUR_UTILITY}])`,
     message: KIT_COLOUR_MESSAGE,
   },
 ]

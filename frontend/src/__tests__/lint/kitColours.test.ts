@@ -63,6 +63,9 @@ describe("colour utilities beside a haute-ui class", () => {
     ['export const a = (on: boolean) => <ToolbarButton className={classNames("w-auto", on && "hover:bg-red-500/50")}>Run</ToolbarButton>'],
     ['export const a = (on: boolean) => <span className={["toolbar-btn px-2", on && "text-[var(--text-muted)]"].join(" ")}>Git</span>'],
     ['export const a = <ToolbarButton className="focus-ring shrink-0">Refresh</ToolbarButton>'],
+    ['export const a = <Button className="ml-auto bg-[var(--danger-soft)]">Delete</Button>'],
+    ['export const a = <ButtonLink href="/" className="text-white">Quotes</ButtonLink>'],
+    ['export const a = <span className="toolbar-btn btn hover:bg-[var(--bg-hover)]">Open</span>'],
   ])("rejects %s", async (code) => {
     const messages = await restrictedMessages(code, "src/panels/probe.tsx")
     expect(messages).toHaveLength(1)
@@ -101,6 +104,8 @@ describe("colour utilities beside a haute-ui class", () => {
       'export const a = <ToolbarButton className="w-auto">Run</ToolbarButton>',
       'export const b = <ToolbarColumn className="ml-2 min-w-[136px]" />',
       'export const c = <button className="bg-[var(--accent)]">Run</button>',
+      'export const f = <Button className="ml-auto self-start">Save note</Button>',
+      'export const g = <ButtonLink href="/" variant="fill" className="ml-2">New quote</ButtonLink>',
       // A kit class and a colour on different elements of one component.
       'export const d = [1, 2].map((n) => <header key={n} className="toolbar"><span className="text-[var(--text-muted)]">{n}</span></header>)',
       'export const e = memo(() => <div className="toolbar-column"><p className="bg-[var(--bg-hover)]">x</p></div>)',

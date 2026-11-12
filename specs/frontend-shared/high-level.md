@@ -60,9 +60,9 @@ In scope:
   Zoom In/Zoom Out and Save/Commit), the palette's shell (its column, its
   header with the minimiser, the strip that reveals it again, and its items, with
   their stylesheet), the frame of a right-hand panel (resized from its left edge,
-  with a header and Close), and the native dropdowns' colours. Haute's `Toolbar`
-  and node palette render these components, as the workbench's toolbar and palette
-  do.
+  with a header and Close), the button a surface draws outside its toolbar, and the
+  native dropdowns' colours. Haute's `Toolbar` and node palette render these
+  components, as the workbench's toolbar and palette do.
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
@@ -394,6 +394,13 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   would one of `index.css`'s own unlayered state classes (`focus-ring`, `hover-*`), so
   ESLint rejects either. The native dropdowns' colours are for every `select`, so that
   stylesheet stays unlayered and wins over utility classes.
+- **One button outside the toolbars.** `Button`, and `ButtonLink` for somewhere to go,
+  are the toolbar button's raised surface and states in the shape a use needs: as wide
+  as its label, an icon alone, or a page's main action filled in the accent. The
+  underwriter app and the workbench's Test quotes panel draw every such button through
+  it, where each had kept its own copy of the same class strings, so the size, the
+  disabled look and the states are decided once. The caller lays the button out with a
+  `className` and never colours it.
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't

@@ -3,6 +3,7 @@ import { fetchAppForm, fetchAppRelease, watchQuotesClosed } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import QuestionDialog from "../components/QuestionDialog"
 import ToastContainer from "../components/Toast"
+import { ButtonLink } from "../haute-ui"
 import { waitForJob } from "../hooks/jobPollingController"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import AppHeader from "./AppHeader"
@@ -13,7 +14,7 @@ import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
 import type { WorkbenchAppQuoteStore } from "../api/types"
 import { followLink, quotesQueryOf, useAppRoute, type AppRoute } from "./route"
-import { BUTTON, Notice } from "./ui"
+import { Notice } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 
@@ -139,9 +140,9 @@ function RoutedPage({ route }: { route: AppRoute }) {
         <AppHeader label="Quotes toolbar" />
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
           There is no page at this address.
-          <a href="/" onClick={(event) => followLink(event, "/")} className={BUTTON}>
+          <ButtonLink href="/" onClick={(event) => followLink(event, "/")}>
             Go to Quotes
-          </a>
+          </ButtonLink>
         </div>
       </>
     )

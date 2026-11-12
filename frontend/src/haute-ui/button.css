@@ -1,0 +1,37 @@
+/* haute-ui: a button outside the toolbar (Button.tsx, specs/frontend-shared). It takes
+   the toolbar button's raised surface and states (.toolbar-btn) or the filled accent
+   (.toolbar-fill), both in toolbar.css, and adds only a shape. Lengths are in rem, as
+   the utility classes these shapes replaced were. Imported after toolbar.css, so the
+   fill's flex outranks the toolbar's stretch. */
+
+/* As wide as its label, with any icon before it. The line is a third taller than the
+   text. The ratio is four thirds rounded up at the fifth decimal, all a build keeps:
+   rounded down, 12px text gets a line a fraction of a pixel under 16px. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.33334;
+}
+/* An icon alone, in square padding. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem;
+  border-radius: 0.375rem;
+}
+.btn:disabled,
+.btn-icon:disabled {
+  opacity: 0.5;
+}
+/* The toolbar's fill shares its row equally; outside the toolbar it is as wide as its label. */
+.btn-fill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+}

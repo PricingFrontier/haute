@@ -1,7 +1,6 @@
 import type { ButtonHTMLAttributes, HTMLAttributes } from "react"
 import { Redo2, Undo2, ZoomIn, ZoomOut, type LucideIcon } from "lucide-react"
-
-const classNames = (...names: (string | false | undefined)[]) => names.filter(Boolean).join(" ")
+import { classNames } from "./classNames"
 
 /** The product's name, lowercase, over its version: the toolbar's first column. */
 export function ToolbarBrand({ name, version }: { name: string; version: string }) {

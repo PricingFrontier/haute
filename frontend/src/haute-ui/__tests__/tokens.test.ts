@@ -15,6 +15,7 @@ const read = (file: string) =>
 const INDEX_CSS = read("../index.css")
 const STYLESHEETS = {
   "toolbar.css": read("toolbar.css"),
+  "button.css": read("button.css"),
   "palette.css": read("palette.css"),
   "side-panel.css": read("side-panel.css"),
   "dropdowns.css": read("dropdowns.css"),
@@ -58,6 +59,8 @@ describe("haute-ui's stylesheets", () => {
     ["toolbar.css", ".toolbar-action", "width", "100%"],
     ["toolbar.css", ".toolbar-save-commit", "width", "100%"],
     ["toolbar.css", ".toolbar-fill", "flex", "1 1 0%"],
+    // Outside the toolbar the fill is as wide as its label.
+    ["button.css", ".btn-fill", "flex", "none"],
     ["palette.css", ".palette", "width", "180px"],
     ["palette.css", ".palette-reveal", "width", "40px"],
     ["palette.css", ".palette-item-icon", "width", "24px"],

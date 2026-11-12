@@ -6,12 +6,12 @@
 import { History } from "lucide-react"
 import { useState } from "react"
 import type { WorkbenchAppQuote } from "../api/types"
-import { halfWindowWidth, SidePanel } from "../haute-ui"
+import { Button, halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { relativeTime } from "../utils/relativeTime"
 import { RELATION_TEXT as RELATION, activityText, fullTime } from "./quoteValues"
 import { followLink, quotePath } from "./route"
-import { BUTTON, Collapsible } from "./ui"
+import { Collapsible } from "./ui"
 import useOpenQuoteStore, { busy, canEdit } from "./useOpenQuoteStore"
 
 const MIN_WIDTH = 300
@@ -43,9 +43,9 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
       />
       <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
         {quote.note_by !== null && quote.note_at !== null && <span title={fullTime(quote.note_at)}>By {quote.note_by}, {relativeTime(new Date(quote.note_at))}</span>}
-        <button type="button" className={`${BUTTON} ml-auto`} disabled={locked || working || note.trim() === quote.note} onClick={() => void change("note", { note: note.trim() }, quote)}>
+        <Button className="ml-auto" disabled={locked || working || note.trim() === quote.note} onClick={() => void change("note", { note: note.trim() }, quote)}>
           Save note
-        </button>
+        </Button>
       </div>
     </div>
   )

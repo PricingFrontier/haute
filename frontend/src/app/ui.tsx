@@ -7,13 +7,9 @@ import { AlertTriangle, ChevronDown, ChevronRight, Info, X, type LucideIcon } fr
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import type { WorkbenchAppQuote } from "../api/types"
+import { Button } from "../haute-ui"
 import { useMenuKeyboard } from "../hooks/useMenuKeyboard"
 import { STAGE_LABEL } from "./quoteValues"
-
-export const BUTTON = "toolbar-btn inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
-export const ICON_BUTTON = "toolbar-btn inline-flex items-center rounded-md p-1 disabled:opacity-50"
-/** The toolbar's fill shares its row equally; a fill button outside the toolbar is as wide as its label. */
-export const FILL_BUTTON = "toolbar-fill toolbar-fill-save inline-flex flex-none items-center gap-1"
 
 const STAGE_STYLE: Record<WorkbenchAppQuote["stage"] | "archived", { color: string; background: string; border: string }> = {
   draft: { color: "var(--text-secondary)", background: "transparent", border: "var(--border-bright)" },
@@ -63,9 +59,9 @@ export function Notice({
       <span className="min-w-0 flex-1">{children}</span>
       {actions}
       {onDismiss !== undefined && (
-        <button type="button" className={ICON_BUTTON} onClick={onDismiss} aria-label="Dismiss" title="Dismiss">
+        <Button iconOnly onClick={onDismiss} aria-label="Dismiss" title="Dismiss">
           <X size={12} />
-        </button>
+        </Button>
       )}
     </div>
   )
@@ -78,9 +74,9 @@ export function ReleaseNotice({ kept }: { kept: boolean }) {
       tone="danger"
       testId="notice-release"
       actions={
-        <button type="button" className={BUTTON} onClick={() => window.location.reload()}>
+        <Button onClick={() => window.location.reload()}>
           Reload
-        </button>
+        </Button>
       }
     >
       This page was drawn for an earlier release of the app.{" "}
@@ -172,10 +168,9 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
 
   return (
     <>
-      <button
+      <Button
         ref={button}
-        type="button"
-        className={ICON_BUTTON}
+        iconOnly
         aria-label={label}
         title={label}
         aria-haspopup="menu"
@@ -184,7 +179,7 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
         onClick={() => setOpen((was) => !was)}
       >
         <Icon size={12} aria-hidden="true" />
-      </button>
+      </Button>
       {open &&
         createPortal(
           <div

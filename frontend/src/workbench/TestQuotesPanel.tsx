@@ -9,7 +9,7 @@
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, FolderOpen, Play, Replace, Save, Square, Trash2 } from "lucide-react"
 import { useState, type FormEvent } from "react"
 import type { WorkbenchTestQuoteMove } from "../api/types"
-import { SidePanel } from "../haute-ui"
+import { Button, SidePanel } from "../haute-ui"
 import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchTestQuotesStore, { type QuoteRun } from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
@@ -17,8 +17,6 @@ import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 const MIN_WIDTH = 320
 /** At most half the window, so the sheet stays in view. */
 const maxWidth = () => Math.max(MIN_WIDTH, Math.floor(window.innerWidth / 2))
-const BUTTON = "toolbar-btn inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
-const ICON_BUTTON = "toolbar-btn inline-flex items-center rounded-md p-1 disabled:opacity-50"
 
 type Outcome = Extract<QuoteRun, { status: "done" }>["outcome"]
 const OUTCOME_TEXT: Record<Outcome, string> = {
@@ -120,29 +118,29 @@ export default function TestQuotesPanel() {
             className="focus-ring min-w-0 flex-1 rounded-md px-1.5 py-1 text-xs"
             style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
           />
-          <button type="submit" className={BUTTON} disabled={waiting || name.trim() === ""}>
+          <Button type="submit" disabled={waiting || name.trim() === ""}>
             <Save size={12} /> Save as test quote
-          </button>
+          </Button>
         </form>
         {opened !== null && (
-          <button type="button" className={`${BUTTON} self-start`} disabled={waiting} onClick={() => { void onReplace() }}>
+          <Button className="self-start" disabled={waiting} onClick={() => { void onReplace() }}>
             <Replace size={12} /> Replace {opened}
-          </button>
+          </Button>
         )}
 
         <div className="flex flex-wrap items-center gap-1.5">
           {running === null ? (
-            <button type="button" className={BUTTON} disabled={busy || openable.length === 0} onClick={() => { void run() }}>
+            <Button disabled={busy || openable.length === 0} onClick={() => { void run() }}>
               <Play size={12} /> {ticked.length > 0 ? `Run ${ticked.length} ticked` : "Run all"}
-            </button>
+            </Button>
           ) : (
-            <button type="button" className={BUTTON} disabled={running.stopping} onClick={stop}>
+            <Button disabled={running.stopping} onClick={stop}>
               <Square size={12} /> Stop
-            </button>
+            </Button>
           )}
-          <button type="button" className={BUTTON} disabled={waiting || acceptable === 0} onClick={() => { void acceptAll() }}>
+          <Button disabled={waiting || acceptable === 0} onClick={() => { void acceptAll() }}>
             <Check size={12} /> Accept all
-          </button>
+          </Button>
           <span role="status" style={{ color: "var(--text-secondary)" }}>
             {running !== null
               ? `Running ${Math.min(running.done + 1, running.of)} of ${running.of}`
@@ -202,19 +200,18 @@ export default function TestQuotesPanel() {
                       </span>
                     )}
                     {quote.problem === null && (
-                      <button type="button" className={ICON_BUTTON} onClick={() => { void openQuote(quote.file) }} aria-label={`Open ${quote.name}`}>
+                      <Button iconOnly onClick={() => { void openQuote(quote.file) }} aria-label={`Open ${quote.name}`}>
                         <FolderOpen size={12} />
-                      </button>
+                      </Button>
                     )}
                     {(done?.outcome === "moved" || done?.outcome === "no_longer_compares") && (
-                      <button type="button" className={ICON_BUTTON} disabled={waiting} onClick={() => { void accept(quote.file) }} aria-label={`Accept ${quote.name}`}>
+                      <Button iconOnly disabled={waiting} onClick={() => { void accept(quote.file) }} aria-label={`Accept ${quote.name}`}>
                         <Check size={12} />
-                      </button>
+                      </Button>
                     )}
                     {quote.problem === null && (
-                      <button
-                        type="button"
-                        className={ICON_BUTTON}
+                      <Button
+                        iconOnly
                         disabled={waiting}
                         onClick={() => void (async () => {
                           if (await confirmed({ title: `Delete the test quote '${quote.name}'?`, confirm: "Delete", danger: true })) await remove(quote.file)
@@ -222,7 +219,7 @@ export default function TestQuotesPanel() {
                         aria-label={`Delete ${quote.name}`}
                       >
                         <Trash2 size={12} />
-                      </button>
+                      </Button>
                     )}
                   </div>
                   {open && (

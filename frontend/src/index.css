@@ -2,12 +2,14 @@
 /* The test folders do not feed the stylesheet: the classes a test names as fixtures are
    not the app's. Every test file vitest runs is under a __tests__ folder. */
 @source not "./**/__tests__";
-/* The toolbar's, the palette's, the right-hand panels' and native dropdowns' styles,
-   shared by the pipeline editor and the workbench (haute-ui, specs/frontend-shared).
+/* The toolbar's, the button's, the palette's, the right-hand panels' and native
+   dropdowns' styles, shared by the pipeline editor, the workbench and the underwriter
+   app (haute-ui, specs/frontend-shared).
    The kit's components sit in Tailwind's components layer, under the utilities, so a
    layout utility written beside a kit class takes effect. The dropdowns' colours are for
    every native select, so they stay unlayered and win over utility classes. */
 @import "./haute-ui/toolbar.css" layer(components);
+@import "./haute-ui/button.css" layer(components);
 @import "./haute-ui/palette.css" layer(components);
 @import "./haute-ui/side-panel.css" layer(components);
 @import "./haute-ui/dropdowns.css";

@@ -10,7 +10,7 @@ import { ArrowLeft, BadgeCheck, History, LockOpen } from "lucide-react"
 import { Fragment, useEffect, useRef, useState } from "react"
 import type { QuoteSource } from "../api/app"
 import { CommittedTextField } from "../components/form"
-import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
+import { Button, ButtonLink, ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
 import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
@@ -26,7 +26,7 @@ import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
 import { fullTime, valuesKey } from "./quoteValues"
 import { followLink, navigate, quotePath, setLeaveGuard, type AppRoute } from "./route"
-import { BUTTON, Notice, ReleaseNotice, StageChip } from "./ui"
+import { Notice, ReleaseNotice, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
@@ -158,9 +158,9 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
       {status === "error" && (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-[13px]" style={{ color: "var(--danger-text)" }}>
           The quote could not be opened: {loadError}
-          <a href="/" onClick={(event) => followLink(event, "/")} className={BUTTON}>
+          <ButtonLink href="/" onClick={(event) => followLink(event, "/")}>
             <ArrowLeft size={12} /> Back to Quotes
-          </a>
+          </ButtonLink>
         </div>
       )}
       {status === "ready" && (
@@ -439,12 +439,12 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
           testId="notice-conflict"
           actions={
             <>
-              <button type="button" className={BUTTON} onClick={() => void openNewest()}>
+              <Button onClick={() => void openNewest()}>
                 Open the newest
-              </button>
-              <button type="button" className={BUTTON} onClick={() => useNewQuoteStore.getState().openSaveAsNew()} disabled={working}>
+              </Button>
+              <Button onClick={() => useNewQuoteStore.getState().openSaveAsNew()} disabled={working}>
                 Save mine as a new quote
-              </button>
+              </Button>
             </>
           }
           onDismiss={() => dismiss("conflict")}
@@ -474,12 +474,12 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
           testId="notice-recovered"
           actions={
             <>
-              <button type="button" className={BUTTON} onClick={restoreDraft}>
+              <Button onClick={restoreDraft}>
                 Restore them
-              </button>
-              <button type="button" className={BUTTON} onClick={discardDraft}>
+              </Button>
+              <Button onClick={discardDraft}>
                 Discard
-              </button>
+              </Button>
             </>
           }
         >
@@ -488,7 +488,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
         </Notice>
       )}
       {reason === "archived" && quote !== null && (
-        <Notice tone="info" testId="notice-archived" actions={canEdit() && <button type="button" className={BUTTON} onClick={() => void change("restore", {}, quote)} disabled={working}>Restore</button>}>
+        <Notice tone="info" testId="notice-archived" actions={canEdit() && <Button onClick={() => void change("restore", {}, quote)} disabled={working}>Restore</Button>}>
           Archived{quote.archived_by !== null && ` by ${quote.archived_by}`}{quote.archived_at !== null && ` ${relativeTime(new Date(quote.archived_at))}`}, read only. Restore it to change it.
         </Notice>
       )}
