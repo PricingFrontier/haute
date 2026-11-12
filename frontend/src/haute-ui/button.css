@@ -24,9 +24,11 @@
   padding: 0.25rem;
   border-radius: 0.375rem;
 }
+/* Disabled, the surface goes flat (toolbar.css) and the button fades by a third: by
+   half, an icon alone on that flat surface was too faint to make out. */
 .btn:disabled,
 .btn-icon:disabled {
-  opacity: 0.5;
+  opacity: 0.67;
 }
 /* The toolbar's fill shares its row equally; outside the toolbar it is as wide as its
    label, which stays centred where a caller's layout stretches the button. */

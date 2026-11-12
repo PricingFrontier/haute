@@ -65,6 +65,8 @@ describe("haute-ui's stylesheets", () => {
     ["toolbar.css", ".toolbar-action svg", "flex-shrink", "0"],
     ["toolbar.css", ".toolbar-save-commit", "width", "100%"],
     ["toolbar.css", ".toolbar-fill", "flex", "1 1 0%"],
+    // Disabled, a button fades by a third and no further, so an icon alone stays legible.
+    ["button.css", ".btn:disabled, .btn-icon:disabled", "opacity", "0.67"],
     // Outside the toolbar the fill is as wide as its label.
     ["button.css", ".btn-fill", "flex", "none"],
     // Its label stays centred where a caller's layout stretches it.
