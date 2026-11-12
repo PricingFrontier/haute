@@ -40,6 +40,9 @@ function declarations(body: string): Map<string, string> {
 
 const tokens = declarations(ruleBody(INDEX_CSS, ":root"))
 
+/** The surface's keyboard-focus rule: at rest, and again for a focused button under the pointer. */
+const FOCUS = '.toolbar-btn:focus-visible, .toolbar-btn:focus-visible:hover:not(:disabled):not([aria-disabled="true"])'
+
 describe("haute-ui's stylesheets", () => {
   it("use only tokens index.css declares", () => {
     expect(tokens.size).toBeGreaterThan(0)
@@ -57,6 +60,11 @@ describe("haute-ui's stylesheets", () => {
     ["toolbar.css", ".toolbar-brand", "width", "165px"],
     ["toolbar.css", ".toolbar-column", "flex-direction", "column"],
     ["toolbar.css", ".toolbar-action", "width", "100%"],
+    // Keyboard focus as the app's text fields draw it. The outline is unseen unless a
+    // forced-colours mode, which drops the ring, colours it.
+    ["toolbar.css", FOCUS, "outline", "2px solid transparent"],
+    ["toolbar.css", FOCUS, "border-color", "var(--accent-ring)"],
+    ["toolbar.css", FOCUS, "box-shadow", "0 0 0 2px var(--accent-soft)"],
     // The size the toolbar's buttons, links and statuses share.
     ["toolbar.css", ".toolbar-action", "font-size", "12px"],
     ["toolbar.css", ".toolbar-action", "padding", "4px 10px"],
@@ -81,5 +89,27 @@ describe("haute-ui's stylesheets", () => {
     ["side-panel.css", ".side-panel-close", "color", "var(--text-on-accent)"],
   ] as const)("%s: %s keeps %s: %s", (file, selector, property, value) => {
     expect(declarations(ruleBody(STYLESHEETS[file], selector)).get(property)).toBe(value)
+  })
+
+  it("draws a kit button's keyboard focus as index.css's focus-ring draws a text field's", () => {
+    const field = declarations(ruleBody(INDEX_CSS, ".focus-ring:focus-visible"))
+    const button = declarations(ruleBody(STYLESHEETS["toolbar.css"], FOCUS))
+    // The helper names an override first and falls back to the token the kit names.
+    expect(field.get("border-color")).toBe(`var(--focus-ring-border, ${button.get("border-color")})`)
+    expect(field.get("box-shadow")).toBe("0 0 0 2px var(--focus-ring-shadow, var(--accent-soft))")
+    expect(button.get("box-shadow")).toBe("0 0 0 2px var(--accent-soft)")
+  })
+
+  // Equal in weight to the unavailable look, the focus rule wins by coming after it, so a
+  // button that is unavailable but still focusable shows where the keyboard is.
+  it("keeps the focus rule after the surface's other rules", () => {
+    const css = STYLESHEETS["toolbar.css"]
+    const focus = css.indexOf(".toolbar-btn:focus-visible,")
+    const unavailable = css.indexOf('.toolbar-btn[aria-disabled="true"] {')
+    const pressed = css.indexOf('.toolbar-btn[aria-pressed="true"]')
+    // Each rule is found, or the comparison below would hold for a rule that is not there.
+    expect(Math.min(focus, unavailable, pressed)).toBeGreaterThanOrEqual(0)
+    expect(focus).toBeGreaterThan(unavailable)
+    expect(focus).toBeGreaterThan(pressed)
   })
 })

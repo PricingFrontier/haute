@@ -72,10 +72,14 @@
   color: var(--text-primary);
   transition: background 150ms, border-color 150ms, color 150ms;
 }
-.toolbar-btn:hover:not(:disabled):not([aria-disabled="true"]),
-.toolbar-btn:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+.toolbar-btn:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--btn-surface-hover);
   border-color: var(--btn-border-hover);
+}
+/* Focused from the keyboard it takes the pointer-over fill; its border is the focus
+   ring's, below. */
+.toolbar-btn:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--btn-surface-hover);
 }
 .toolbar-btn:active:not(:disabled):not([aria-disabled="true"]) {
   background: var(--btn-surface-pressed);
@@ -97,6 +101,18 @@
   border-color: var(--border-subtle);
   color: var(--text-disabled);
   cursor: not-allowed;
+}
+/* Keyboard focus, drawn as the app's text fields draw it (index.css's .focus-ring): the
+   border in the accent and a soft ring around it, in place of the browser's outline,
+   which is near-black on this chrome in some browsers. It is the last of the surface's
+   rules and is spelt a second time for a focused button under the pointer, so it holds
+   over the hover border and for a button that is unavailable but still focusable. The
+   outline stays, transparent: a forced-colours mode drops the ring and draws the outline. */
+.toolbar-btn:focus-visible,
+.toolbar-btn:focus-visible:hover:not(:disabled):not([aria-disabled="true"]) {
+  outline: 2px solid transparent;
+  border-color: var(--accent-ring);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 /* A labelled toolbar button: icon and label centred, as wide as its column so

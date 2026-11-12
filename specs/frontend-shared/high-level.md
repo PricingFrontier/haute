@@ -407,6 +407,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   kit, so a new button is one of the kit's and cannot start another copy. No file
   outside the kit is excused: a toast's action, the pipeline settings' Refresh and
   reset, and the workbench's Try again are the same `Button`.
+- **One look for keyboard focus.** Every button on the kit's raised surface shows
+  keyboard focus as the app's text fields do, an accent border and a soft ring, drawn
+  by the kit in place of the browser's outline, which differs between browsers and is
+  near-black on this chrome in some. No caller adds a focus class of its own. The
+  filled buttons keep the browser's outline: they have no border to colour.
 - **The toolbars' controls are the kit's.** A toolbar's button is `ToolbarButton`, a
   link drawn as one `ToolbarLink`, and a status that stands among them `ToolbarStatus`,
   a label in the same shape so it lines up. Where a control needs a layout of its own
