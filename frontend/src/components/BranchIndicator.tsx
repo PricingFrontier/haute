@@ -7,6 +7,9 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import Tooltip from "./Tooltip"
 
+/** A status that is not pressed (checking, no Git, no repository) reads muted beside the bar's buttons. */
+const MUTED = { color: "var(--text-muted)" } as const
+
 /** The sync/storage chip shown beside the branch indicator once a working
  *  branch is ready (S28 durable-storage surface). Hidden entirely when this
  *  deployment cannot remember a binding ("unsupported", e.g. every local
@@ -201,6 +204,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
           data-testid="toolbar-branch-indicator"
           data-branch-state="checking"
           className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+          style={MUTED}
         >
           Checking Git…
         </span>
@@ -219,6 +223,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
           data-branch-state="git-unavailable"
           title="No git executable is available in this environment."
           className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+          style={MUTED}
         >
           Git unavailable
         </span>
@@ -257,6 +262,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
           data-branch-state="no-repository"
           title="Run git init in this project to enable version control."
           className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+          style={MUTED}
         >
           Git not initialised
         </span>

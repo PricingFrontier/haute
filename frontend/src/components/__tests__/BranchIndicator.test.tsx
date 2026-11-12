@@ -58,7 +58,9 @@ describe("BranchIndicator", () => {
   it("shows a checking state while Git status is loading", () => {
     useGitStore.setState({ loading: true })
     render(<BranchIndicator />)
-    expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Checking Git")
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveTextContent("Checking Git")
+    expect(indicator.style.color).toBe("var(--text-muted)")
   })
 
   it("keeps full Git errors readable on hover and Retry focus", () => {
@@ -93,12 +95,15 @@ describe("BranchIndicator", () => {
     const indicator = screen.getByTestId("toolbar-branch-indicator")
     expect(indicator).toHaveTextContent("Git unavailable")
     expect(indicator).toHaveAttribute("data-branch-state", "git-unavailable")
+    expect(indicator.style.color).toBe("var(--text-muted)")
   })
 
   it("shows that Git has not been initialised when there is no repository", () => {
     useGitStore.setState({ status: status({ state: "no-repository", working_branch: null }) })
     render(<BranchIndicator />)
-    expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Git not initialised")
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveTextContent("Git not initialised")
+    expect(indicator.style.color).toBe("var(--text-muted)")
   })
 
   it("labels detached, invalid, and divergent Git states distinctly", () => {
