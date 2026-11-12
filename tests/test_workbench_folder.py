@@ -1914,6 +1914,73 @@ def test_each_reference_is_written_and_read_by_name_an_unknown_one_kept_as_writt
         assert any(_word(name).search(entry) for name in unknown), entry
 
 
+def _cells_form() -> dict[str, Any]:
+    """FORM with its Export writing an Excel workbook of cells: the insured's name and the
+    state on a Slip sheet, the state again on a Summary, its address as typed."""
+    form = copy.deepcopy(FORM)
+    exporter = widget_of(form, EXPORTER)
+    exporter["tables"] = []
+    exporter["target"] = {
+        "format": "excel_cells",
+        "file_name": "{insured}",
+        "cells": [
+            {"table": "quote_details", "column": "insured", "sheet": "Slip", "cell": "B3"},
+            {"table": "policy", "column": "state", "sheet": "Slip", "cell": "B4"},
+            {"table": "policy", "column": "state", "sheet": "Summary", "cell": "a1"},
+        ],
+    }
+    return form
+
+
+def test_an_export_of_cells_writes_each_cell_s_column_by_name_and_reads_it_back(
+    project: Path,
+) -> None:
+    files = write_form(project, _cells_form())
+
+    # Each cell's column as `table.column`, then its sheet and its address as typed.
+    assert json.loads(files["components/export.json"])["target"] == {
+        "format": "excel_cells",
+        "file_name": "{insured}",
+        "cells": [
+            {"field": "quote_details.insured", "sheet": "Slip", "cell": "B3"},
+            {"field": "policy.state", "sheet": "Slip", "cell": "B4"},
+            {"field": "policy.state", "sheet": "Summary", "cell": "a1"},
+        ],
+    }
+    document = read_form_document(config(project))
+    assert document.spec == spec_of(_cells_form())
+    assert form_files(document.spec, form_folder(project)) == files
+
+
+def test_an_export_of_cells_keeps_a_column_the_schema_does_not_hold_and_names_it(
+    project: Path,
+) -> None:
+    form = _cells_form()
+    widget_of(form, EXPORTER)["target"]["cells"][1]["column"] = "stat"
+    files = write_form(project, form)
+
+    spec = read_form_document(config(project)).spec
+
+    assert [(cell.table, cell.column) for cell in component(spec, EXPORTER).target.cells] == [
+        ("quote_details", "insured"),
+        ("policy", "stat"),
+        ("policy", "state"),
+    ]
+    assert form_files(spec, form_folder(project)) == files
+    found = unresolved_references(spec)
+    assert len(found) == 1
+    assert found[0].startswith("components/export.json names ")
+    assert _word("stat").search(found[0])
+
+
+def test_an_export_of_cells_exporting_tables_too_is_refused_as_the_form_is_read() -> None:
+    form = _cells_form()
+    widget_of(form, EXPORTER)["tables"] = ["layers"]
+
+    with pytest.raises(ValidationError, match="writes cells, so it exports no tables"):
+        FormSpec.model_validate(form)
+
+
 def test_a_test_against_another_field_is_written_by_name_with_its_days_and_read_back(
     project: Path,
 ) -> None:

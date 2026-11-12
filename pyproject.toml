@@ -108,6 +108,10 @@ dependencies = [
     # One reader for process and host memory on every platform: resident, private and
     # virtual bytes for worker caps and supervision, and host available RAM.
     "psutil>=7.0,<8",
+    # Direct dependency (not just transitive via databricks-sql-connector): the workbench's
+    # Export writes an Excel workbook of cells through it (haute._workbench_export), and a
+    # template, filled in place, will need it too. Floor: the version the lock has exercised.
+    "openpyxl>=3.1.5,<4",
 ]
 
 [project.urls]
@@ -645,6 +649,7 @@ module = [
     "sklearn.*",
     "price_contour.*",
     "interpret.*",
+    "openpyxl.*",
 ]
 ignore_missing_imports = true
 

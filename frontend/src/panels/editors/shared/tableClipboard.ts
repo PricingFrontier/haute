@@ -51,6 +51,11 @@ export function downloadTextFile(
   filename: string,
   mime: string,
 ): boolean {
+  return downloadBlob(new Blob([text], { type: mime }), filename)
+}
+
+/** Trigger a browser download of `blob` as a file named `filename`, as `downloadTextFile` does. */
+export function downloadBlob(blob: Blob, filename: string): boolean {
   if (
     typeof document === "undefined" ||
     typeof URL === "undefined" ||
@@ -58,7 +63,6 @@ export function downloadTextFile(
   ) {
     return false
   }
-  const blob = new Blob([text], { type: mime })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement("a")
   anchor.href = url

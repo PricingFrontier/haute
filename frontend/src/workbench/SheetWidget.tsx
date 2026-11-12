@@ -102,7 +102,7 @@ export default memo(function SheetWidget({
         data-hidden={hidden ? "true" : undefined}
         style={hidden ? { opacity: HIDDEN_OPACITY } : undefined}
       >
-        <WidgetBody widget={widget} drawn={drawn} />
+        <WidgetBody widget={widget} drawn={drawn} problem={problem} />
       </div>
       <div className={`pointer-events-none absolute -inset-1 rounded-md border ${frame}`} />
       {conditions !== null && (

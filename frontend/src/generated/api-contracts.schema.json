@@ -5296,6 +5296,35 @@
       "title": "EvaluationSummaryPayload",
       "type": "object"
     },
+    "ExcelCellsExport": {
+      "additionalProperties": false,
+      "description": "An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, under\na file name made as a ``_FileExport``'s is. Its cells say what it writes, so the Export\nexports no tables.",
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/ExportCell"
+          },
+          "title": "Cells",
+          "type": "array"
+        },
+        "file_name": {
+          "title": "File Name",
+          "type": "string"
+        },
+        "format": {
+          "const": "excel_cells",
+          "title": "Format",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "file_name",
+        "cells"
+      ],
+      "title": "ExcelCellsExport",
+      "type": "object"
+    },
     "ExcelExport": {
       "additionalProperties": false,
       "description": "An Excel workbook of a sheet per table an Export exports, each named by its table.",
@@ -9920,9 +9949,39 @@
       "title": "ExploreRelationshipsResponse",
       "type": "object"
     },
+    "ExportCell": {
+      "additionalProperties": false,
+      "description": "A cell an Excel workbook of cells holds: the value of a one-row table's column, by\n``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the\nsheet named ``sheet``. The address and the name are the form's as typed: their problems\nare the view's to show and the export's to refuse (:mod:`haute._workbench_export`).",
+      "properties": {
+        "cell": {
+          "title": "Cell",
+          "type": "string"
+        },
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "sheet": {
+          "title": "Sheet",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "sheet",
+        "cell"
+      ],
+      "title": "ExportCell",
+      "type": "object"
+    },
     "ExportWidget": {
       "additionalProperties": false,
-      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file\nor a database. It shows no schema columns and takes nothing typed; nothing runs it yet,\nso it is drawn disabled where the sheets are used.",
+      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file\nor a database. It shows no schema columns and takes nothing typed. Only an Excel\nworkbook of cells runs yet, in Preview; every other is drawn disabled where the sheets\nare used.",
       "properties": {
         "h": {
           "exclusiveMinimum": 0,
@@ -9958,6 +10017,9 @@
             },
             {
               "$ref": "#/$defs/ExcelExport"
+            },
+            {
+              "$ref": "#/$defs/ExcelCellsExport"
             },
             {
               "$ref": "#/$defs/SqlExport"

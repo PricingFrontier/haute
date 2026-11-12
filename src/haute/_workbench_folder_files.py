@@ -36,6 +36,7 @@ from haute._workbench_form import (
     CsvExport,
     CsvImport,
     Days,
+    ExcelCellsExport,
     ExcelExport,
     ExcelImport,
     ExportWidget,
@@ -118,6 +119,15 @@ def _derived(
             fields[field_name] = (info.annotation, info)
     model: type[BaseModel] = create_model(name, __base__=_File, **fields)
     return model
+
+
+class ExportCellFile(_File):
+    """A cell of an Excel workbook of cells: its column, as ``table.column``, and the sheet
+    and the address it is written to, as typed."""
+
+    field: Dotted
+    sheet: str
+    cell: str
 
 
 class ConditionFile(_File):
@@ -246,6 +256,7 @@ if TYPE_CHECKING:
     ImportComponentFile = Any
     TableNameFile = Any
     SqlExportFile = Any
+    ExcelCellsExportFile = Any
     ExportComponentFile = Any
     ComponentFile = Any
     ColumnFile = Any
@@ -325,6 +336,9 @@ else:
     SqlExportFile = _derived(
         "SqlExportFile", SqlExport, replace={"table_names": (list[TableNameFile], ...)}
     )
+    ExcelCellsExportFile = _derived(
+        "ExcelCellsExportFile", ExcelCellsExport, replace={"cells": (list[ExportCellFile], ...)}
+    )
     ExportComponentFile = _derived(
         "ExportComponentFile",
         ExportWidget,
@@ -332,7 +346,10 @@ else:
         replace={
             "show_when": _SHOW_WHEN,
             "target": (
-                Annotated[CsvExport | ExcelExport | SqlExportFile, Field(discriminator="format")],
+                Annotated[
+                    CsvExport | ExcelExport | ExcelCellsExportFile | SqlExportFile,
+                    Field(discriminator="format"),
+                ],
                 ...,
             ),
             "tables": (list[Name], ...),

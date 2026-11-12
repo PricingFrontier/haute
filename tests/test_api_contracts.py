@@ -1005,6 +1005,13 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WorkbenchStatusResponse"},
         },
     },
+    # The workbook's bytes, not JSON.
+    "/api/workbench/export": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchExportRequest",
+            "success_schema": None,
+        },
+    },
     "/api/workbench/form": {
         "GET": {
             "request_ref": None,

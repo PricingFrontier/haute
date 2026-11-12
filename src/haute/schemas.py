@@ -231,6 +231,18 @@ class WorkbenchTablesResponse(BaseModel):
     store_columns: dict[str, list[WorkbenchStoreColumn]] = Field(default_factory=dict)
 
 
+class WorkbenchExportRequest(BaseModel):
+    """An Export of a form the Workbench view holds, saved or not, run on what Preview's last
+    pricing gave: the Export by its id (``component``), the sample as the server typed it for
+    that pricing (``WorkbenchTablesResponse.sample``) and the priced rows of each table, by
+    its name (``tables``)."""
+
+    form: FormSpec
+    component: str
+    sample: dict[str, Any]
+    tables: dict[str, list[dict[str, Any]]]
+
+
 class WorkbenchStoreSqlRequest(BaseModel):
     """A form the Workbench view holds, saved or not, and where the SQL that brings an
     environment's tables to it starts: the form as the project's default branch holds it, or

@@ -668,6 +668,29 @@ class ExcelExport(_FileExport):
     format: Literal["excel"]
 
 
+class ExportCell(_Strict):
+    """A cell an Excel workbook of cells holds: the value of a one-row table's column, by
+    ``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the
+    sheet named ``sheet``. The address and the name are the form's as typed: their problems
+    are the view's to show and the export's to refuse (:mod:`haute._workbench_export`)."""
+
+    table: str
+    column: str
+    sheet: str
+    cell: str
+
+
+class ExcelCellsExport(_Strict):
+    """An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, under
+    a file name made as a ``_FileExport``'s is. Its cells say what it writes, so the Export
+    exports no tables."""
+
+    format: Literal["excel_cells"]
+    file_name: str
+    #: In the order chosen; a column may be written into more than one cell.
+    cells: list[ExportCell]
+
+
 class TableName(_Strict):
     """A table an Export writes to a database, by name, and the name of the table it is
     written to there."""
@@ -687,13 +710,16 @@ class SqlExport(_Strict):
     table_names: list[TableName]
 
 
-ExportTarget = Annotated[CsvExport | ExcelExport | SqlExport, Field(discriminator="format")]
+ExportTarget = Annotated[
+    CsvExport | ExcelExport | ExcelCellsExport | SqlExport, Field(discriminator="format")
+]
 
 
 class ExportWidget(_Placed):
     """An Export: a button an underwriter presses to take the quote's tables out to a file
-    or a database. It shows no schema columns and takes nothing typed; nothing runs it yet,
-    so it is drawn disabled where the sheets are used."""
+    or a database. It shows no schema columns and takes nothing typed. Only an Excel
+    workbook of cells runs yet, in Preview; every other is drawn disabled where the sheets
+    are used."""
 
     type: Literal["export"]
     #: The text on the button.
@@ -706,6 +732,8 @@ class ExportWidget(_Placed):
     @model_validator(mode="after")
     def _exports_each_table_once(self) -> ExportWidget:
         _check_once(self.id, "tables", self.tables)
+        if isinstance(self.target, ExcelCellsExport) and self.tables:
+            raise ValueError(f"widget {self.id} writes cells, so it exports no tables")
         if isinstance(self.target, SqlExport):
             named = [entry.table for entry in self.target.table_names]
             _check_once(self.id, "table names", named)

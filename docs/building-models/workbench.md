@@ -348,11 +348,14 @@ one:
 - An **Import** is a button that fills an input table from a CSV or an Excel workbook the
   underwriter picks, or from a database.
 - An **Export** is a button that takes the quote's tables out to a CSV, an Excel workbook
-  or a database.
+  or a database, or writes chosen fields into the cells of an Excel workbook.
 
-For now you can lay Imports and Exports out and set what they will do, but nothing runs
-them yet: in Preview and the underwriter app they are greyed out and pressing one does
-nothing.
+For now you can lay Imports and Exports out and set what they will do, but most do not
+run yet: in Preview and the underwriter app they are greyed out and pressing one does
+nothing. The exception is an Export to Excel laid out as **Cells**, which runs in Preview:
+press it and your browser downloads the workbook of the sample as it was last priced. It is
+greyed out from the moment you change the sample until its new price arrives, and while the
+Export has a problem. In the underwriter app it is greyed out too, for now.
 
 While building, **Display** in the toolbar opens the sheets' colours: the **Sheet
 background**, the **Component background** of framed Tables, Collections and Charts, their
@@ -401,7 +404,8 @@ shows, its layout and its look. A Heading's properties are its **Text** and
 An Import's and an Export's properties are in the same two panes: **Display** holds its
 **Label**, the text on the button, and when it shows; **Config** starts with its
 **Format**, CSV, Excel or SQL. Changing the format starts that format's settings afresh,
-though an Export keeps its file name, headers and values between CSV and Excel.
+though an Export keeps its file name, and its headers and values between CSV and Excel with
+a sheet per table.
 
 - An Import from a **CSV** has a **Delimiter** (Auto finds it from the file); from
   **Excel**, the **Sheet** to read (blank for the first) and the **Header row** that names
@@ -423,6 +427,20 @@ though an Export keeps its file name, headers and values between CSV and Excel.
   sheets show them), and a CSV a **Delimiter**. To **SQL** it has a **Connection**, and
   beside each table you tick, the name of the database table it is written to (blank for
   the table's own name).
+- An Export to **Excel** has a **Layout**: **Sheet per table**, above, or **Cells**, which
+  writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, each
+  row is a field of a one-row table, the **Sheet** it goes on and the **Cell** it goes in,
+  such as `B3`; pick a field under **Add a cell** to add one, which goes on the last row's
+  sheet in the cell below it. A field can go in more than one cell, but a cell takes one
+  field. Sheets are made in the order the rows first name them. Each cell holds the
+  field's value as the sheets hold it: numbers stay numbers in the field's number format,
+  dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
+  `=`. A field that holds nothing, or that only the underwriter app sets, leaves its cell
+  empty; in Preview the quote's reference and option are `PREVIEW` and 1. The workbook's
+  name is the file **Name**, with `.xlsx`; a character a file name cannot hold becomes `_`.
+  The Export's problems include a sheet name Excel refuses (blank, over 31 characters,
+  holding `[ ] : * ? / \`, starting or ending with `'`, or `History`), an address that is
+  not a cell, two fields in one cell, and two sheet names that differ only in case.
 
 Drag a component to move it and any of its eight handles to resize it; everything snaps
 to the grid. A component stays inside its section: it stops at the section's edges, and

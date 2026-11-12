@@ -264,7 +264,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // fixes, a submodel's output reorder, the schema pane's Where it's used and the live
 // workbench sample bring the total to 1,793.1 KiB (initial 294.3 KiB); 1,795 KiB restores
 // about 1.9 KiB headroom. The other limits are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1795
+// Excel cells export (12 November 2026): an Export's workbook of cells, its panel, its
+// problems and its run in Preview bring the total to 1,795.6 KiB (initial 294.5 KiB);
+// 1,798 KiB restores about 2.4 KiB headroom. The other limits are unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1798
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

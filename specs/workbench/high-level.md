@@ -89,7 +89,8 @@ Out of scope:
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - Running an Import or an Export: reading a file or a database into a table
   ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
-  quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)).
+  quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)), but
+  for an Export to an Excel workbook of cells in Preview.
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -490,12 +491,17 @@ Out of scope:
   `column` with that `name`, never blank, one each at most and none while it fills no
   table) or an Export (`export`, a button an underwriter presses to take the quote's tables
   out: its `label`; the `tables` it exports, by name, in the order chosen, none twice; and its
-  `target`, by `format`, a CSV (`csv`) or an Excel workbook (`excel`), each with its
+  `target`, by `format`, a CSV (`csv`) or an Excel workbook of a sheet per table (`excel`),
+  each with its
   `file_name`, its extension left out, `{name}` in it standing for the value of that column
   of `quote_details`, whether a column is headed by its name or its label (`headers`,
   `names` or `labels`) and whether its values are as the quote holds them or as the sheets
   show them, in their columns' formats (`values`, `raw` or `formatted`), and a CSV with the
-  `delimiter` that splits its fields (`comma`, `semicolon` or `tab`); or a database (`sql`,
+  `delimiter` that splits its fields (`comma`, `semicolon` or `tab`); or an Excel workbook
+  of cells (`excel_cells`), with its `file_name` and its `cells`, each a column of a
+  one-row table by `table` and `column`, written into the cell `cell` (an address such as
+  `B3`) of the sheet named `sheet`, in the order chosen, a column in as many cells as it is
+  given, and no `tables`, since its cells say what it writes; or a database (`sql`,
   its `connection` and its `table_names`, the tables written to a table named otherwise,
   each by `table`, one it exports, with that `name`, never blank, one each at most)),
   each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
@@ -1083,9 +1089,12 @@ Out of scope:
   rows on it alone, the list's condition going with it once it has no test while it needs
   one (in any or every row) or when it totals the column; a group left with none goes with
   them; a table takes every condition on its rows; a column takes the name an Import
-  read it from and the parameters it gave a value; and a table leaves the Import that
+  read it from, the parameters it gave a value and the cells it was written into; and a
+  table leaves the Import that
   filled it filling none, its column names gone too, takes the parameters its columns
-  gave, and stops being exported, with the name it was written to. The editor says what would stop
+  gave and the cells they were written into, and stops being exported, with the name it
+  was written to. Renaming a table or a column renames it wherever it is used, an
+  Export's cells too. The editor says what would stop
   the schema being the pipeline's tables: a table's name is an identifier, unique whatever
   its case, and its ports, the name with `_input` and with `_output`, are held to the port
   rules the Quote Input's labels are held to (an identifier, none of the document's
@@ -1399,7 +1408,9 @@ Out of scope:
   **Config**, what it does, and **Display**, its Label, committed on blur or Enter, and its
   Show when. Config starts with its Format, CSV, Excel or SQL, three toggles the arrow keys
   also move between, a format chosen starting with a new component's settings for it but
-  for an Export's file name, headers and values, which a CSV and an Excel workbook share.
+  for an Export's file name, which every file keeps, and its headers and values, which a
+  CSV and an Excel workbook of a sheet per table share. An Export's Excel holds either
+  layout; choosing Excel from another format starts a sheet per table.
   An Import's then holds its format's settings: a CSV's Delimiter (Auto, Comma, Semicolon
   or Tab); a workbook's Sheet, blank for its first, and Header row, a whole number from 1
   to 100 otherwise refused at the field; or a database's Connection and Query, each
@@ -1419,8 +1430,19 @@ Out of scope:
   committed on blur or Enter, a blank one taking the column's name away, and a name given
   a column it cannot fill a row of its own, the column's label or "Missing column", with a
   cross that takes the name away. An Export's then
-  holds a file's File name, a CSV's Delimiter (Comma, Semicolon or Tab), Headers (Names or
-  Labels) and Values (Raw or Formatted), or a database's Connection; then Tables, a
+  holds, to Excel, its Layout, Sheet per table or Cells, a select, a layout chosen keeping
+  the file name and starting the other's settings afresh; a file's File name, a CSV's
+  Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
+  Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: under a
+  heading row naming Field, Sheet and Cell, a row for each cell in order, with a select of
+  the columns of the one-row tables, by table, each by its label (as a Collection's fields
+  are offered), the sheet's name and the cell's address, each in a text field committed on
+  blur or Enter, the address trimmed and taken in capitals, and a cross that takes the cell away; a
+  cell whose column is no longer in the schema, or no longer of a one-row table, shows it
+  first, as "Missing column" or the column's label, disabled. Under them Add a cell, a
+  select of the same columns, a column chosen adding a cell of it on the last cell's sheet
+  in the cell under the last cell's, or `Sheet1` and `A1` for the first, the select
+  showing Add a cell again. Otherwise Tables, a
   checkbox per schema table, ticked in order, and, to a database, beside
   each one ticked the name of the table it is written to, showing the table's own while
   it has none; unticking a table drops its name; and a table it exports that is no longer
@@ -1726,7 +1748,30 @@ Out of scope:
   table is [WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)'s and
   writing the quote's tables out [WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)'s,
   so in Preview and in the underwriter app each is drawn disabled, faded, and a press does
-  nothing. What its settings say it is for: an Import reads the file the underwriter
+  nothing, but for an Export to an Excel workbook of cells in Preview, which runs. It can
+  be pressed while it has no problems and the sample's price is the price of the sample as
+  it stands, not out of date; otherwise, and while a
+  press is answered, it is drawn disabled. A press sends the form as the view holds it,
+  the Export and what that pricing gave (the sample as the server typed it and the priced
+  tables), and the browser downloads the workbook the server writes, named by its file
+  name with `.xlsx`; a refusal shows as an error naming why, as when the sample changed
+  meanwhile. The workbook holds a sheet for each sheet name its cells give, in the order
+  first given, Excel holding two names that differ only in case as one (a problem,
+  below), and each cell its column's value as that pricing's quote holds it: an input as
+  the server typed the sample, which leaves out an input the sheets hide but in
+  `quote_details`, held whole; an output as priced; and nothing for one holding no value
+  or one only the app sets, which Preview's sample holds none of (the quote's reference
+  and option are Preview's stand-in, `PREVIEW` and 1). A number
+  is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, and text is always
+  text, never read as a formula or an error value, whatever it starts with. A number cell
+  takes its column's format as the sheets show it (decimal places fixed when set, a
+  percent shown as the value times 100, a currency's sign before it, thousands grouped
+  unless the column says not), the value itself written unrounded; where the sheets trim
+  a value's trailing zeros, which Excel's formats cannot, the cell shows the places its
+  value has: a number's own, a percent's up to two, a currency always two. The file
+  name's `{name}` is the value of that column of `quote_details` as text (a whole number
+  without a point, a date `yyyy-mm-dd`, nothing for none), and each character a file name
+  cannot hold (`\ / : * ? " < > |` and control characters) is written `_`. What its settings say it is for: an Import reads the file the underwriter
   picks as they press it, a CSV split by its delimiter, found from the file while Auto, or
   a workbook's sheet under its header row, or runs its query on its connection, each
   parameter given the value its column holds, and fills its table, each column from the
@@ -1747,10 +1792,17 @@ Out of scope:
   each allowed value, which only Update by key keeps; and, from a database, no
   connection, no query, a parameter given no column, a column no longer in the schema or
   not an input of a one-row table, or a column given to a parameter its query does not hold.
-  And an Export's: no label; no tables; a table no longer in the schema; more than one
+  And an Export's: no label; no tables, but to a workbook of cells; a table no longer in
+  the schema; more than one
   table to a CSV, which holds one; a file with no name or naming a column `quote_details`
-  does not have; and, to a database, no connection. None is refused: the form is saved as
-  it is.
+  does not have; to a database, no connection; and to a workbook of cells, no cells, a
+  cell's column no longer in the schema or of a many-row table, which holds a value per
+  row, a sheet name Excel refuses (blank, longer than 31 characters, holding one of
+  `[ ] : * ? / \`, starting or ending with `'`, or `History` in any case), an address that
+  is not a cell (a column from `A` to `XFD` then a row from 1 to 1,048,576, as `B3`), two
+  cells at one address of one sheet, and two sheet names that differ only in case. None
+  is refused: the form is saved as it is. The server refuses an export whose file name or
+  cells have any of these problems, naming each.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
   the sheets as an underwriter uses them: the same sheets, their sections that show stacked
   one under the next and each component where it sits in its section, read and
@@ -3364,6 +3416,19 @@ Out of scope:
   connection is a name the environment resolves, never a credential, as a Data Input's
   is. Until they run, a press does nothing and the button is drawn disabled, rather than
   hidden, so a sheet is laid out as it will be used.
+- **An Excel workbook of cells, made by Haute, run in Preview first.** A workbook a
+  system reads, or a person checks, at fixed cells is the first export WB-11 takes on:
+  each field written where its reader looks for it. Haute makes the workbook, so nothing
+  but the form is kept for it; a template, the analyst's styled workbook filled in place,
+  is a later slice, and the cells it fills are given the same way. Its own `format`,
+  `excel_cells`, rather than a layout of `excel`, keeps every target holding only the
+  settings it uses: a workbook of cells has no headers, raw or formatted values, or
+  tables. The server writes it (openpyxl, a direct dependency, which a template will
+  also need), so the app's run, the next slice, writes the same file from a kept quote.
+  Preview sends what its last pricing gave, so a workbook holds the values the sheets
+  show beside it; the server types the sample again from the form and refuses the export
+  when that sample is not the one priced. Values are written typed, text as text, so an
+  underwriter's typing never becomes a formula in the file.
 
 ## Interactions
 
@@ -3533,6 +3598,16 @@ Out of scope:
   its tables or the preview route's failure, shows as the toolbar's reason and empties the
   output columns, never as a toast; an answer that arrives after the view has left is
   dropped.
+- `POST /api/workbench/export` answers 404 while the workbench is not enabled and
+  FastAPI's 422 for a body that is not a form with an Export's id, a sample and priced
+  tables. It refuses with 422, naming why: an id no component of the form has, or one
+  that is not an Export to an Excel workbook of cells; the Export's file name or cells
+  with a problem, each named; a value not of its column's type, naming the field; and
+  text holding a character Excel cannot hold, naming the field. It refuses with 409, "The
+  sample changed after it was priced: export once it is priced again.", a sample that is
+  not the form's as the server types it. It writes nothing to disk: the workbook is made
+  in memory and answered. The view shows a refusal as an error toast, and the Export can
+  be pressed again.
 - A quote that breaks a column's rule is priced all the same: its cells are marked once
   anything is typed, and nothing is refused. A pricing of the app's quote that fails shows
   "Pricing failed: …" in its bar and empties the output columns, as the sample's does, and

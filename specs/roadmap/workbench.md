@@ -206,14 +206,24 @@ exports a quote; the sheets show it and Preview's results stay in the browser. T
 Export, a button on the sheets, holds what an export would be, kept in the form: the
 tables, a CSV of one or a workbook of a sheet each under a file name made of the quote's
 details, headed by names or labels, its values raw or formatted, or a database's named
-connection and the tables each is written to; it is drawn disabled in Preview and the
-app, since nothing runs it.
+connection and the tables each is written to; it is drawn disabled in the app, and in
+Preview but for an Excel workbook of cells (below).
+
+**Decided (12 November 2026):** the first format is an Excel workbook of cells: chosen
+fields of the one-row tables, each written into a cell of a sheet, `Slip!B3` say, of a
+workbook Haute makes, its values typed and formatted as their columns' formats show them.
+Its first run is Preview's: pressing the Export downloads the workbook of the sample as
+it was last priced. Still to come, each its own slice: the app's run of it (below); a
+template, the analyst's own workbook filled in place of one Haute makes; a many-row
+table's rows written as a block from a cell; a cell for each row of a table with a row
+for each value; and cells named in a template in place of an address.
 
 **Plan:** Decision first, recorded here before the first slice: which formats the first
 release needs (the quote's tables as CSV or a spreadsheet, an import file for another
 system, a document from a template), whether the Export on the sheets is how the app
 exports or the quote's bar offers exports beside it, and whether a quote exported again
-later reproduces the template it was first exported with or uses the current one. Then exports of a final
+later reproduces the template it was first exported with or uses the current one; the
+first format is decided above. Then exports of a final
 quote, which the store's stages gate them behind, never of a draft, so every export is of a quote
 that does not change while it is final and names the release that priced it; run on the
 app's server for the signed-in underwriter and recorded in the quote's activity log. The
@@ -233,6 +243,8 @@ the workflow, and the template's output for the test quotes is checked in CI.
 
 **Evidence:** `src/haute/_workbench_form.py::ExportWidget` (the Export's settings, read
 strictly); `frontend/src/workbench/panel/ExportSettings.tsx` (where they are chosen);
+`src/haute/_workbench_export.py` (an Excel workbook of cells written, and Preview's
+route to it, `POST /api/workbench/export`);
 `frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
 show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);
 `src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
