@@ -55,7 +55,7 @@
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. For a chunk-load failure (`isChunkLoadError`), which no retry in the page can recover because the lazy import's rejection is cached and a rebuild has replaced the chunk it names, the fallback reads "Haute has been updated" and its Reload button reloads the page; while `useGraphStore`'s `dirty` is set it asks for a save first and the button reads "Reload without saving". |
 | `frontend/src/components/UpdatedNotice.tsx` | The chunk-load fallback's body for the error boundary: the reload explanation and a button that reloads the page, reading "Reload without saving" beside a save request while `useGraphStore`'s `dirty` is set, and the shared fallback button style. |
-| `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss, and a toast's action, such as Undo, as a button that runs it and dismisses the toast. |
+| `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss, and a toast's action, such as Undo, as the kit's `Button` in the accent text colour, which runs it and dismisses the toast. |
 | `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount; the panel is centred, or top-aligned with `placement="top"` (the node-search palette). |
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, using `useMenuKeyboard` for arrow-key/Home/End roving focus and Escape dismissal. |
@@ -1231,12 +1231,9 @@ template literal, a class name or not, that names `toolbar-btn`, `toolbar-fill`,
 or `btn`, each alone or with any suffix: a button is drawn with `Button`, `ButtonLink`,
 `ToolbarButton` or `ToolbarLink`, and a toolbar's status with `ToolbarStatus`. The kit's other
 classes (`toolbar`, `toolbar-column`, `toolbar-brand*`, `side-panel-title`) may still be
-written. Three files that wrote `toolbar-btn` with sizes of their own before the ban are listed
-in `frontend/eslint.config.js` as excused from it alone, as the kit's own files are
-(`components/PipelineSettingsModal.tsx`, `components/Toast.tsx`, `workbench/WorkbenchView.tsx`);
-each leaves the list when its buttons move onto the kit's, which changes them by a pixel or
-two. The toolbars' own, the Git branch indicator's and the view switcher's have moved. Every
-other override block keeps the ban; test files are not policed.
+written. Only the kit's own files are excused: the eight files that wrote `toolbar-btn` with
+sizes of their own before the ban have each moved onto the kit's components. Every other
+override block keeps the ban; test files are not policed.
 
 ## Runtime response contracts
 

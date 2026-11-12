@@ -403,10 +403,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   underwriter app and the workbench's Test quotes panel draw every such button through
   it, where each had kept its own copy of the same class strings, so the size, the
   disabled look and the states are decided once. The caller lays the button out with a
-  `className` and never colours it. ESLint keeps the kit's button classes inside the
-  kit, so a new button is one of the kit's and cannot start another copy; the three
-  files that still write the surface class with sizes of their own are listed as
-  excused until they move.
+  `className` and never colours it with one. ESLint keeps the kit's button classes inside the
+  kit, so a new button is one of the kit's and cannot start another copy. No file
+  outside the kit is excused: a toast's action, the pipeline settings' Refresh and
+  reset, and the workbench's Try again are the same `Button`.
 - **The toolbars' controls are the kit's.** A toolbar's button is `ToolbarButton`, a
   link drawn as one `ToolbarLink`, and a status that stands among them `ToolbarStatus`,
   a label in the same shape so it lines up. Where a control needs a layout of its own

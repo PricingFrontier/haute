@@ -2,8 +2,8 @@
  * The kit's button classes are written only inside haute-ui (specs/frontend-shared):
  * elsewhere a button is a `Button`, a `ButtonLink`, a `ToolbarButton` or a `ToolbarLink`,
  * and a toolbar's status a `ToolbarStatus`, so a new button cannot start another copy of
- * its size and states. The buttons that wrote the surface class before the ban are listed
- * in the config. These probes lint snippets through the real config.
+ * its size and states. No file outside the kit is excused. These probes lint snippets
+ * through the real config.
  */
 import { describe, expect, it } from "vitest"
 import { restrictedMessages, restrictedSelectorMessages } from "./probe"
@@ -72,21 +72,9 @@ describe("the kit's button classes outside haute-ui", () => {
     expect(await restrictedSelectorMessages("src/haute-ui/probe.ts")).toEqual(ordinary.filter((message) => !message.includes(USE_THE_KIT)))
   })
 
-  // The buttons that predate the ban: each leaves the list when it moves onto the kit's button.
-  it.each([
-    ["src/components/PipelineSettingsModal.tsx"],
-    ["src/components/Toast.tsx"],
-    ["src/workbench/WorkbenchView.tsx"],
-  ])("excuses %s from this ban alone", async (filePath) => {
-    expect(await restrictedMessages('export const a = "toolbar-btn px-2"', filePath)).toEqual([])
-    // Every selector an ordinary file is held to, but the button classes'.
-    const ordinary = await restrictedSelectorMessages("src/panels/probe.ts")
-    const excused = await restrictedSelectorMessages(filePath)
-    expect(ordinary.filter((message) => message.includes(USE_THE_KIT))).toHaveLength(1)
-    expect(excused).toEqual(ordinary.filter((message) => !message.includes(USE_THE_KIT)))
-  })
-
-  // Files with an override block of their own keep the ban, as do the files whose buttons have moved.
+  // Files with an override block of their own keep the ban, as do the eight files that
+  // wrote the surface class with sizes of their own before it and were excused until
+  // their buttons moved onto the kit's.
   it.each([
     ["src/hooks/useTracing.ts"],
     ["src/api/errors.ts"],
@@ -98,6 +86,9 @@ describe("the kit's button classes outside haute-ui", () => {
     ["src/components/SourcePipelineControls.tsx"],
     ["src/components/Toolbar.tsx"],
     ["src/workbench/ViewSwitcher.tsx"],
+    ["src/components/PipelineSettingsModal.tsx"],
+    ["src/components/Toast.tsx"],
+    ["src/workbench/WorkbenchView.tsx"],
   ])(
     "keeps the ban in %s",
     async (filePath) => {

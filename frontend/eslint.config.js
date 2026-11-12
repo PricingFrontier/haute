@@ -244,17 +244,6 @@ export default defineConfig([
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
   },
   {
-    // Buttons that wrote the kit's surface class with sizes of their own before the
-    // ban. Moving one onto the kit's button changes it by a pixel or two, so each
-    // leaves this list with that choice.
-    files: [
-      'src/components/PipelineSettingsModal.tsx',
-      'src/components/Toast.tsx',
-      'src/workbench/WorkbenchView.tsx',
-    ],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
-  },
-  {
     files: ['e2e/persistence/api-input-v2-native.spec.ts'],
     rules: {
       'no-useless-assignment': 'warn',

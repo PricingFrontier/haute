@@ -1,5 +1,6 @@
 import { useEffect } from "react"
 import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from "lucide-react"
+import { Button } from "../haute-ui"
 import useToastStore from "../stores/useToastStore"
 import { STATUS_COLORS } from "../theme/colors"
 
@@ -49,17 +50,16 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
       <Icon size={14} style={{ color: accent }} className="shrink-0" />
       <span className="flex-1 whitespace-pre-line" style={{ color: "var(--text-primary)" }}>{toast.text}</span>
       {toast.action !== undefined && (
-        <button
-          type="button"
+        <Button
           onClick={() => {
             onDismiss(toast.id)
             toast.action?.run()
           }}
-          className="toolbar-btn shrink-0 rounded px-1.5 py-0.5 text-[12px] font-semibold"
+          className="shrink-0"
           style={{ color: "var(--text-accent)" }}
         >
           {toast.action.label}
-        </button>
+        </Button>
       )}
       <button
         onClick={() => onDismiss(toast.id)}

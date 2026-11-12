@@ -14,6 +14,7 @@ import ModalShell from "./ModalShell"
 import ToggleButtonGroup from "./ToggleButtonGroup"
 import { clearCacheIdentities, fetchCacheNodes } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
+import { Button } from "../haute-ui"
 import type { CacheNodeEntry, CacheNodesResponse } from "../api/types"
 import { formatByteSize } from "../utils/formatBytes"
 import { formatDuration } from "../utils/formatValue"
@@ -299,12 +300,12 @@ function PipelineSettingField({
         />
         <span className="w-6 text-[11px]" style={{ color: "var(--text-muted)" }}>{unit}</span>
         {set !== null ? (
-          <button
-            type="button"
+          <Button
+            iconOnly
             data-testid={`${id}-reset`}
             onClick={() => void save(settingKey, null)}
             disabled={unavailable}
-            className="toolbar-btn w-9 h-[22px] rounded flex items-center justify-center"
+            className="h-[22px] w-9 justify-center"
             aria-label={`Use automatic ${label}`}
             title={
               automatic === null
@@ -313,7 +314,7 @@ function PipelineSettingField({
             }
           >
             <RotateCcw size={11} aria-hidden="true" />
-          </button>
+          </Button>
         ) : (
           <span
             data-testid={`${id}-auto`}
@@ -674,18 +675,18 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
                 store's size again. */}
             <CacheStoreSize refreshKey={nodes} />
           </div>
-          <button
+          <Button
             data-testid="cache-usage-refresh"
             onClick={refresh}
             disabled={loading}
-            className="toolbar-btn shrink-0 px-2 py-1 text-[11px] font-medium rounded-md flex items-center gap-1"
+            className="shrink-0"
             title="Refresh cached data"
           >
             {loading
               ? <Loader2 size={12} className="animate-spin" aria-hidden="true" />
               : <RefreshCw size={12} aria-hidden="true" />}
             Refresh
-          </button>
+          </Button>
         </div>
 
         {error && (

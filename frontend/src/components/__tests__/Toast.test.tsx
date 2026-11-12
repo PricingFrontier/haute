@@ -37,7 +37,11 @@ describe("ToastContainer", () => {
     const run = vi.fn()
     useToastStore.getState().addToast("success", "Archived Q-000001", { label: "Undo", run })
     render(<ToastContainer />)
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }))
+    // The kit's button, in the accent text colour.
+    const action = screen.getByRole("button", { name: "Undo" })
+    expect(action).toHaveClass("toolbar-btn", "btn")
+    expect(action.style.color).toBe("var(--text-accent)")
+    fireEvent.click(action)
     expect(run).toHaveBeenCalledTimes(1)
     expect(screen.queryByText("Archived Q-000001")).not.toBeInTheDocument()
   })

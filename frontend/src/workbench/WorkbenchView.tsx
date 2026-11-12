@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect } from "react"
 import type { GraphPayload } from "../api/types"
 import { ErrorBoundary } from "../components/ErrorBoundary"
+import { Button } from "../haute-ui"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
@@ -135,13 +136,7 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
             style={{ color: "var(--danger)" }}
           >
             <span>Could not read the workbench: {loadError}</span>
-            <button
-              type="button"
-              onClick={() => { void reload() }}
-              className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md"
-            >
-              Try again
-            </button>
+            <Button onClick={() => { void reload() }}>Try again</Button>
           </div>
         ) : (
           <div role="status" className="flex flex-1 items-center justify-center text-[13px]" style={{ color: "var(--text-muted)" }}>
