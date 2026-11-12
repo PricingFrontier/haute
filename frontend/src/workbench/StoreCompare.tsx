@@ -9,6 +9,13 @@ import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { schemaColumns } from "./schema/schemaText"
 import StoreSqlWindow from "./StoreSqlWindow"
 
+/**
+ * The ring these toolbar buttons draw on keyboard focus, over the kit's own focus border.
+ * It is spelt out rather than taken from `focus-ring`, whose border colour would replace
+ * the kit's.
+ */
+const RING_ON_FOCUS = "focus-visible:[outline:none] focus-visible:[box-shadow:0_0_0_2px_var(--accent-soft)]"
+
 export function CompareControls() {
   const environments = useWorkbenchStore((s) => s.environments)
   const { state, form } = useDatabaseComparison()
@@ -37,13 +44,13 @@ export function CompareControls() {
           {state.environment !== null && <span id="schema-database-status" role="status" className="sr-only"
             title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>}
           <ToolbarButton onClick={state.readAgain} disabled={state.environment === null || busy} aria-busy={busy}
-            className="focus-ring shrink-0" style={{ width: "auto" }} title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : "Refresh database status"}>
+            className={`${RING_ON_FOCUS} w-auto shrink-0`} title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : "Refresh database status"}>
             {busy ? <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
             Refresh
           </ToolbarButton>
         </>}
         <ToolbarButton icon={Code2} onClick={() => setSqlOpen(true)} aria-haspopup="dialog"
-          className="focus-ring shrink-0" style={{ width: "auto" }} title="View and copy generated SQL">Export SQL</ToolbarButton>
+          className={`${RING_ON_FOCUS} w-auto shrink-0`} title="View and copy generated SQL">Export SQL</ToolbarButton>
       </div>
       {failure !== null && <p role="alert" className="w-full break-words text-[11px]" style={{ color: "var(--danger-text)" }}>{failure}</p>}
       {sqlOpen && <StoreSqlWindow onClose={() => setSqlOpen(false)} />}

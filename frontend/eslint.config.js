@@ -87,6 +87,55 @@ const HELPER_SELECTORS = [
     message: "Numbers and dates follow the browser's locale: pass undefined.",
   },
 ]
+// haute-ui's component stylesheets sit in Tailwind's components layer, under the
+// utilities, so a utility written beside a kit class wins: that is how a caller lays a
+// kit element out. A colour utility would win too, over the kit's hover, pressed and
+// disabled colours as well, so colour stays the kit's. `.toolbar-number-input` is
+// index.css's own class, not the kit's. The check reads the source as written: it sees
+// a kit class and a colour class in one string, one template, one class-name call or
+// array, or one concatenation, and does not follow a class through a variable.
+const KIT_CLASS = String.raw`/(^|\s)(toolbar(?!-number-input)|palette|side-panel|panel-drag-handle)(-[a-z-]+)?(\s|$)/`
+const PALETTE = 'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose'
+// One class that sets a colour, behind any variants and either spelling of important:
+// a colour utility whose value is a token, a literal or named colour, a palette shade or
+// a colour keyword (alone, or with an opacity); an arbitrary property that sets one; or
+// one of index.css's own state classes, which are unlayered and so outrank the kit too.
+const COLOUR_UTILITY = String.raw`/(^|\s)!?(\S*:)?!?((bg|text|border(-[xytrblse])?|outline|ring|ring-offset|inset-ring|divide|placeholder|shadow|inset-shadow|text-shadow|drop-shadow|fill|stroke|decoration|accent|caret|from|via|to)-(\[(color:|var\(|#|rgb|hsl|oklch|oklab|lab\(|lch\(|color-mix|(red|blue|green|white|black|gr[ae]y|yellow|orange|purple|pink|transparent|currentColor)\])|\(--|(inherit|current|transparent|black|white|(${PALETTE})-\d{2,3})(\s|$|!|\x2f))|\[(background|[a-z-]*color|fill|stroke):|(focus-ring|hover-[a-z-]+)(\s|$))/`
+const KIT_COLOUR_MESSAGE = 'Write layout utilities beside a haute-ui class or on a haute-ui component, never a colour: the kit draws its own colours and states (specs/frontend-shared).'
+const KIT_TEMPLATE = `TemplateLiteral:has(> TemplateElement[value.raw=${KIT_CLASS}])`
+const KIT_STRING = `:matches(Literal[value=${KIT_CLASS}], ${KIT_TEMPLATE})`
+// A colour class in a string that does not itself name a kit class: one that does is
+// reported by the first selector, once.
+const COLOUR_STRING = `:matches(Literal[value=${COLOUR_UTILITY}]:not([value=${KIT_CLASS}]), TemplateLiteral:not(${KIT_TEMPLATE}):has(> TemplateElement[value.raw=${COLOUR_UTILITY}]))`
+// A string as one member of a class-name call or array, or one operand of a
+// concatenation: bare, or up to two `wrapper`s down. Only members are looked at, so a
+// kit class and a colour on different elements inside one call are left alone.
+const within = (string, wrapper) => `:matches(${string}, ${wrapper}:has(> ${string}), ${wrapper}:has(> ${wrapper}:has(> ${string})))`
+const CHOICE = ':matches(LogicalExpression, ConditionalExpression)'
+const CONCATENATION = 'BinaryExpression[operator="+"]'
+const KIT_MEMBER = within(KIT_STRING, CHOICE)
+const COLOUR_MEMBER = within(COLOUR_STRING, CHOICE)
+const CLASS_LIST = ':matches(CallExpression, ArrayExpression)'
+const KIT_SELECTORS = [
+  {
+    selector: `Literal[value=${KIT_CLASS}][value=${COLOUR_UTILITY}], ${KIT_TEMPLATE}:has(:matches(TemplateElement[value.raw=${COLOUR_UTILITY}], Literal[value=${COLOUR_UTILITY}]))`,
+    message: KIT_COLOUR_MESSAGE,
+  },
+  {
+    // classNames("toolbar-btn", danger && "bg-...") and [on && "toolbar-btn", "bg-..."].join(" "), in either order.
+    selector: `${CLASS_LIST} > ${KIT_MEMBER} ~ ${COLOUR_MEMBER}, ${CLASS_LIST} > ${COLOUR_MEMBER} ~ ${KIT_MEMBER}`,
+    message: KIT_COLOUR_MESSAGE,
+  },
+  {
+    // "toolbar-btn " + width + (on ? "bg-..." : "")
+    selector: `${CONCATENATION}:not(${CONCATENATION} > ${CONCATENATION}):has(> ${within(KIT_MEMBER, CONCATENATION)}):has(> ${within(COLOUR_MEMBER, CONCATENATION)})`,
+    message: KIT_COLOUR_MESSAGE,
+  },
+  {
+    selector: `JSXOpeningElement[name.name=/^(ToolbarButton|ToolbarColumn)$/] > JSXAttribute[name.name="className"] :matches(Literal[value=${COLOUR_UTILITY}], TemplateElement[value.raw=${COLOUR_UTILITY}])`,
+    message: KIT_COLOUR_MESSAGE,
+  },
+]
 const SOURCE_FILES = ['src/**/*.{ts,tsx}']
 const TEST_FILES = ['src/**/__tests__/**', 'src/**/*.test.{ts,tsx}']
 function restrictedSyntax(...groups) {
@@ -129,24 +178,24 @@ export default defineConfig([
   {
     files: SOURCE_FILES,
     ignores: TEST_FILES,
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
   },
   {
     // The helpers' own homes.
     files: ['src/utils/isoDate.ts', 'src/api/types.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, KIT_SELECTORS),
   },
   {
     files: ['src/api/errors.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
   },
   {
     files: ['src/utils/formatBytes.ts', 'src/utils/formatValue.ts', 'src/utils/relativeTime.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
   },
   {
     files: ['src/types/guards.ts', 'src/utils/objectLiteral.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
   },
   // Exact file/rule debt that predates the blocking severities. New instances
   // elsewhere fail lint; remove each override with its owning-stream fix.
@@ -174,7 +223,7 @@ export default defineConfig([
       'src/utils/connectionValidation.ts',
       'src/workbench/ChartBody.tsx',
     ],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
   },
   {
     files: ['e2e/persistence/api-input-v2-native.spec.ts'],

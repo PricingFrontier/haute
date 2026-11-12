@@ -83,6 +83,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs"
 import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { compileIndexCss } from "../test-utils/compiledIndexCss"
 
 // ---------------------------------------------------------------------------
 // File location
@@ -872,24 +873,7 @@ describe("Tailwind-provided tokens", () => {
     // assertion runs on comment-stripped output and anchors the token name
     // so neither a stray comment nor a longer token (--font-mono-x) can
     // satisfy it.
-    let compile: typeof import("tailwindcss").compile
-    try {
-      ;({ compile } = await import("tailwindcss"))
-    } catch {
-      throw new Error("Cannot import tailwindcss - is frontend/node_modules installed? (npm ci --prefix frontend)")
-    }
-    const twEntry = path.resolve(HERE, "..", "..", "node_modules", "tailwindcss", "index.css")
-    const compiled = await compile(CSS, {
-      base: path.dirname(CSS_PATH),
-      async loadStylesheet(id: string, base: string) {
-        // `@import "tailwindcss"` resolves to the package entry; the
-        // package's internal imports (theme/preflight/utilities.css)
-        // resolve relative to the importing file.
-        const file = id === "tailwindcss" ? twEntry : path.resolve(base, id)
-        return { path: file, base: path.dirname(file), content: readFileSync(file, "utf8") }
-      },
-    })
-    const output = stripComments(compiled.build([]))
+    const output = stripComments(await compileIndexCss())
     for (const token of TAILWIND_PROVIDED_TOKENS.keys()) {
       const declRe = new RegExp(`(^|[^-\\w])${token}\\s*:`, "m")
       expect(

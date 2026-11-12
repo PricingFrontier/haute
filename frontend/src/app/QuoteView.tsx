@@ -261,7 +261,6 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         href="/"
         onClick={(event) => followLink(event, "/")}
         className="toolbar-btn toolbar-action w-auto"
-        style={{ width: "auto" }}
         title="Back to Quotes"
         data-testid="back-to-quotes"
       >

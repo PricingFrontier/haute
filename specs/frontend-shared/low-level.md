@@ -97,7 +97,7 @@
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). Each read is keyed by its path and reader settings and only the latest request's reply lands; the schema, error and loading state it gives are the current path's and settings' only (none for a cleared path), and `fetchForPath` retries the current read. |
 | `frontend/src/hooks/useParamsFiles.ts` | `useParamsFiles(file, onHeaderProblem)`, the pipeline's params folder as Banding's Import from params (node-editors) and the Workbench's Allowed values ([workbench](../workbench/low-level.md)) read it: its CSV files, whatever the case of the extension, listed through `listProjectFiles("pipeline", "params")` as the caller mounts (`files`, null until listed), why the listing failed (`unlisted`, through `apiErrorMessage`, "The params files could not be listed." when the error says nothing) and `retry`, which clears it and lists the folder again; and the header of `file` ("" for none) through `fetchParamFile`, read while it is not held and then kept per file while the caller is mounted (`header`), with `keepHeader` for a header a read of a column's values brought back. A header read that fails hands its message to `onHeaderProblem` only while `file` is still the one it was read for and its header is still unread. |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. A refused estimate keeps the server's message and its `error_code` (`errorCode`), so a caller tells failures apart without reading their words. |
-| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, scrollbar defaults, React Flow interaction overrides, canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components, and typography role tokens (`--font-data`) that alias Tailwind theme tokens rather than redeclaring them (no Tailwind theme token may be redeclared in the file's plain blocks — they are unlayered and would shadow `@layer theme`; a deliberate override belongs in an `@theme` block, which the gate exempts automatically; and components conventionally reference the role token rather than the raw Tailwind name — adoption and emission both pinned by `frontend/src/__tests__/cssColorTokenization.test.ts`). Imports `haute-ui/toolbar.css`, `haute-ui/palette.css`, `haute-ui/side-panel.css` and `haute-ui/dropdowns.css` for the toolbar's, the palette's, the right-hand panels' and native dropdowns' styles, including the `.toolbar-btn` surface, and owns the `.toolbar-number-input` spinner suppression. |
+| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, scrollbar defaults, React Flow interaction overrides, canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components, and typography role tokens (`--font-data`) that alias Tailwind theme tokens rather than redeclaring them (no Tailwind theme token may be redeclared in the file's plain blocks — they are unlayered and would shadow `@layer theme`; a deliberate override belongs in an `@theme` block, which the gate exempts automatically; and components conventionally reference the role token rather than the raw Tailwind name — adoption and emission both pinned by `frontend/src/__tests__/cssColorTokenization.test.ts`). Imports `haute-ui/toolbar.css`, `haute-ui/palette.css` and `haute-ui/side-panel.css` into Tailwind's `components` layer (`layer(components)`) for the toolbar's, the palette's and the right-hand panels' styles, including the `.toolbar-btn` surface, so a utility written beside a kit class outranks the kit's rule, and `haute-ui/dropdowns.css` unlayered for native dropdowns' colours; owns the `.toolbar-number-input` spinner suppression. `@source not "./**/__tests__"` keeps the `__tests__` folders, which hold every test file vitest runs, out of Tailwind's class scan, so a class a test names as a fixture is not shipped. |
 | `frontend/src/haute-ui/index.ts` | Entry of `haute-ui`, the chrome kit the pipeline editor and the workbench's view are built from: exports the toolbar components, the palette shell and the side panel. The stylesheets are imported by `index.css`. |
 | `frontend/src/haute-ui/ToolbarControls.tsx` | The toolbar's controls. `ToolbarBrand` (the lowercase product name as a heading over its version, test id `toolbar-brand`), `ToolbarColumn` (two controls stacked as the toolbar's two rows), `ToolbarButton` (a labelled `.toolbar-btn` with an optional 13px icon; `compact` narrows its side padding; other props pass through), `UndoRedo` (Undo over Redo, disabled unless `canUndo`/`canRedo`; test ids `toolbar-undo-redo`, `toolbar-undo`, `toolbar-redo`), `ZoomInOut` (Zoom In over Zoom Out, compact; `toolbar-zoom-in`, `toolbar-zoom-out`) and `SaveCommit` (filled, equal-width Save and Commit, `toolbar-save` and `toolbar-save-commit`; Commit renders only when `onCommit` is given, for a host with nothing to commit to; `disabled` disables both). |
 | `frontend/src/haute-ui/toolbar.css` | The toolbar's styles, plain CSS so they apply in any consumer, a shadow root included: the frame (`.toolbar`: chrome background and border, 44px minimum height), the brand (`.toolbar-brand`, 165px wide so what follows it starts over the node palette's edge), `.toolbar-column`, the `.toolbar-btn` surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable), the labelled-button shape (`.toolbar-action`, `.toolbar-action-compact`) and the filled Save and Commit buttons (`.toolbar-save-commit`, `.toolbar-fill`), which brighten on hover and fade while disabled. Colours come only from `index.css`'s tokens. |
@@ -1010,6 +1010,12 @@ same Vitest config.
   the layout the toolbar, palette and side panel rely on: the 165px brand, stacked
   columns, full-width actions, equal-width filled buttons, the 180px palette column, the
   40px reveal strip, the 24px item icon, the 4px drag handle and the header's padding),
+  `frontend/src/haute-ui/__tests__/layers.test.ts` (on the stylesheet as Tailwind compiles
+  it, through `frontend/src/test-utils/compiledIndexCss.ts`, which the colour-token test's
+  compiled-emission guard shares: the utilities layer is ordered after the components
+  layer, the toolbar's, the palette's and the side panel's rules are emitted in the
+  components layer and the native dropdowns' rules unlayered; and `index.css` imports
+  every kit stylesheet but the dropdowns' with `layer(components)`),
   `frontend/src/haute-ui/__tests__/SidePanel.test.tsx` (the header shows and closes;
   a left-hand panel's handle on its right edge, a drag right widening it;
   a drag reports its width once, when it ends, clamped to the minimum and maximum, and
@@ -1166,6 +1172,30 @@ JSON config needs (a plain object literal, not a class instance); the Explore ch
 configs, `utils/banding.ts` and the rating table utilities use it.
 `frontend/src/__tests__/semanticColorTokenization.test.ts` enforces that live components obtain
 fixed colour literals from `frontend/src/theme/colors.ts` instead of redeclaring them locally.
+
+**Colour beside a kit class** (`frontend/src/__tests__/lint/kitColours.test.ts` runs ESLint on
+probes, through the `restrictedMessages` probe in `frontend/src/__tests__/lint/probe.ts` that the
+helper bans share). ESLint's `no-restricted-syntax` rejects a `haute-ui` class (`toolbar*` other
+than `index.css`'s own `toolbar-number-input`, `palette*`, `side-panel*`, `panel-drag-handle`)
+written together with a class that sets a colour, whether or not that kit class sets one itself,
+so the rule stays one sentence: a kit element is laid out from outside and never coloured. A
+class sets a colour when it is a colour utility (`bg-`, `text-`, `border-`, `outline-`, `ring-`,
+`ring-offset-`, `divide-`, `placeholder-`, `shadow-`, `fill-`, `stroke-`, `decoration-`,
+`accent-`, `caret-`, `from-`, `via-` or `to-` followed by a token such as `[var(--x)]` or `(--x)`,
+a literal or named colour, a palette shade or a colour keyword, alone or with an opacity), an
+arbitrary property that sets one (`[color:...]`, `[background:...]`), or one of `index.css`'s own
+state classes (`focus-ring`, `hover-*`), which are unlayered and so outrank the kit as a utility
+does; behind any variant (`hover:`, `2xl:`, `data-[...]:`, `[&:hover]:`) and with either
+spelling of important; a border colour may name a side (`border-x-`, `border-t-`). The two are
+found together in one string, one template literal, the arguments of one call or the members of
+one array, the kit class bare or behind a condition (`classNames(on && "toolbar-btn", tone)`),
+or one `+` concatenation; and a colour class anywhere in the `className` of `ToolbarButton` or
+`ToolbarColumn` is rejected too. Sizes (`text-[12px]`, `text-xs`, `text-[length:...]`), widths
+(`border-x-2`), `border-spacing-*`, `ring-offset-2`, a shadow given as lengths and every other
+layout utility pass, as does a colour class where no kit class is named, a kit class and a
+colour class on different elements included. The check reads the source as written
+and does not follow a class through a variable. Every override block keeps the ban; test files
+are not policed.
 
 ## Runtime response contracts
 

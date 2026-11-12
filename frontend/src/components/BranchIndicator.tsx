@@ -200,7 +200,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
         <span
           data-testid="toolbar-branch-indicator"
           data-branch-state="checking"
-          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] min-w-[136px] max-w-[220px] w-full"
+          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
         >
           Checking Git…
         </span>
@@ -218,7 +218,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
           data-testid="toolbar-branch-indicator"
           data-branch-state="git-unavailable"
           title="No git executable is available in this environment."
-          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] min-w-[136px] max-w-[220px] w-full"
+          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
         >
           Git unavailable
         </span>
@@ -256,7 +256,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
           data-testid="toolbar-branch-indicator"
           data-branch-state="no-repository"
           title="Run git init in this project to enable version control."
-          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium text-[var(--text-muted)] min-w-[136px] max-w-[220px] w-full"
+          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
         >
           Git not initialised
         </span>

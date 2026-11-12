@@ -385,7 +385,15 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   editor's utilities, and kept so now that the builder has landed in Haute: they read as
   one unit, and `frontend/src/haute-ui/__tests__/tokens.test.ts` pins that they draw
   colours only from `index.css`'s tokens and keep the layout the toolbar, palette and
-  side panel rely on.
+  side panel rely on. `index.css` imports the toolbar's, the palette's and the side
+  panel's stylesheets into Tailwind's `components` layer, which the `utilities` layer
+  outranks whatever a selector's specificity, so a layout utility written beside a kit
+  class (a width, a padding, a line height) takes effect and a caller needs no inline
+  style to move a kit element. Colour stays the kit's: a colour utility beside a kit
+  class would outrank the kit's hover, pressed and disabled colours as well, and so
+  would one of `index.css`'s own unlayered state classes (`focus-ring`, `hover-*`), so
+  ESLint rejects either. The native dropdowns' colours are for every `select`, so that
+  stylesheet stays unlayered and wins over utility classes.
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't

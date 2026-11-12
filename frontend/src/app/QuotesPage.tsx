@@ -36,7 +36,7 @@ import useToastStore from "../stores/useToastStore"
 import { relativeTime } from "../utils/relativeTime"
 import { fullTime, listColumns, listValue } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
-import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, Menu, StageChip, type MenuItem } from "./ui"
+import { BUTTON, Collapsible, FILL_BUTTON, ICON_BUTTON, Menu, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useQuoteListStore from "./useQuoteListStore"
@@ -289,7 +289,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               <RotateCw size={12} />
             </button>
             {editor && (
-              <a href={newQuotePath()} onClick={openNewQuote} className={FILL_BUTTON} style={FILL_STYLE} title="Start a new quote (N)" data-testid="new-quote">
+              <a href={newQuotePath()} onClick={openNewQuote} className={FILL_BUTTON} title="Start a new quote (N)" data-testid="new-quote">
                 <Plus size={13} aria-hidden="true" /> New quote
               </a>
             )}
