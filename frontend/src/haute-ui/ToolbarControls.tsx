@@ -59,12 +59,13 @@ export function ToolbarLink({
 }
 
 /**
- * A status drawn as a toolbar button is, so it lines up with the buttons beside it: a label,
- * not a control. It brightens under the pointer as the buttons do, which is the only answer
- * something to press inside it gives.
+ * A status in a toolbar button's shape, so it lines up with the buttons beside it: a label,
+ * not a control. It is plain text, with no fill or outline and nothing under the pointer, so
+ * it is not taken for a button. Something to press inside it shows that itself, as an
+ * underlined word does.
  */
 export function ToolbarStatus({ className, ...props }: HTMLAttributes<HTMLSpanElement>) {
-  return <span {...props} className={action(false, className)} />
+  return <span {...props} className={classNames("toolbar-status toolbar-action", className)} />
 }
 
 interface UndoRedoProps {

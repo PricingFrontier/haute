@@ -270,8 +270,16 @@
   --btn-surface: var(--chrome-active);
   --btn-surface-hover: #262c3d;
   --btn-surface-pressed: #2b3145;
-  --btn-border: rgba(255,255,255,.10);
+  --btn-border: rgba(255,255,255,.14);
   --btn-border-hover: rgba(255,255,255,.16);
+  /* What says "this can be pressed": a small shadow below the button and a lighter line
+     along its top edge. On this near-black chrome the shadow alone hardly shows; the lit
+     edge is what lifts the button. Anything that cannot be pressed has neither. */
+  --btn-raise: 0 1px 2px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.08);
+  /* A filled button's edge, a little darker than its fill. */
+  --btn-fill-edge: inset 0 0 0 1px rgba(0,0,0,.3);
+  /* The ring round an unavailable button the keyboard is on: grey, not the accent. */
+  --btn-focus-muted: rgba(255,255,255,.05);
   /* Unavailable-control text.  ~3.2:1 on the chrome — clearly recessive but
      still readable, unlike the ~1.5:1 that `opacity-30` on --text-secondary
      produced (illegible, so a disabled control could not even be identified). */

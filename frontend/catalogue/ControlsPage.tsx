@@ -168,8 +168,9 @@ export function ControlsPage() {
       <section aria-labelledby="toolbar-status">
         <h2 id="toolbar-status">Toolbar status</h2>
         <p>
-          A status drawn in a toolbar button's shape, so it lines up with the buttons beside it. It is a label: it says
-          what is so, and anything to press sits inside it.
+          A status in a toolbar button's shape, so it lines up with the buttons beside it. It is a label: plain text,
+          with no fill or outline, so it is not taken for a button. Anything to press sits inside it and shows that
+          itself, as an underlined word does.
         </p>
         <div className="catalogue-samples">
           <Sample code="<ToolbarStatus> over a <ToolbarButton>">

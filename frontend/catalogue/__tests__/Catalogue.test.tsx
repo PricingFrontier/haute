@@ -90,7 +90,7 @@ describe("the haute-ui catalogue", () => {
 
     const label = status.getByText("Checking Git…")
     expect(label.tagName).toBe("SPAN")
-    expect(label.className).toBe("toolbar-btn toolbar-action")
+    expect(label.className).toBe("toolbar-status toolbar-action")
     expect(status.getByRole("button", { name: "Retry" }).parentElement).toHaveClass("toolbar-action")
   })
 

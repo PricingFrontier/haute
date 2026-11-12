@@ -408,13 +408,23 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   outside the kit is excused: a toast's action, the pipeline settings' Refresh and
   reset, and the workbench's Try again are the same `Button`.
 - **One look for keyboard focus.** Every button on the kit's raised surface shows
-  keyboard focus as the app's text fields do, an accent border and a soft ring, drawn
-  by the kit in place of the browser's outline, which differs between browsers and is
-  near-black on this chrome in some. No caller adds a focus class of its own. The
-  filled buttons keep the browser's outline: they have no border to colour.
+  keyboard focus as the app's text fields do, an accent border and a soft ring round
+  the button's own raise, drawn by the kit in place of the browser's outline, which differs between browsers and is
+  near-black on this chrome in some. No caller adds a focus class of its own. A
+  filled button takes a ring in the accent outside its edge.
+- **Pressable and not pressable look different in every way that is practical.** What
+  can be pressed is raised: a fill, an outline, a small shadow below and a lighter line
+  along its top edge, and it brightens under the pointer. What cannot be pressed has
+  none of these. An unavailable button is flat and still, keeps only a faint outline so
+  that a button can be seen to be there, fades by half where it stands outside a
+  toolbar, and under keyboard focus takes a grey ring, fainter than the accent one. A
+  status is not a button of either kind and is drawn as plain text. Not everything
+  that can be pressed is a button: the raised look is for the fixed controls of the
+  interface, and an action on one piece of information, such as Retry inside a status,
+  may be an underlined word.
 - **The toolbars' controls are the kit's.** A toolbar's button is `ToolbarButton`, a
   link drawn as one `ToolbarLink`, and a status that stands among them `ToolbarStatus`,
-  a label in the same shape so it lines up. Where a control needs a layout of its own
+  plain text in the same shape so it lines up. Where a control needs a layout of its own
   (the Source selector's chevron pinned right, Submodel's two labels in one grid cell,
   the view switcher's labels at the left), the caller writes a layout class on the
   kit's component, where each had spelled out the whole button to get it.

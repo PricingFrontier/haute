@@ -61,7 +61,7 @@ describe("haute-ui toolbar controls", () => {
     expect(link.querySelector("svg")).toHaveAttribute("aria-hidden", "true")
   })
 
-  it("draws a status in a toolbar button's shape as a label, not a control", () => {
+  it("draws a status in a toolbar button's shape, off the raised surface: a label, not a control", () => {
     render(
       <ToolbarStatus data-testid="status" title="No git executable is available." className="min-w-[136px]">
         Git unavailable
@@ -70,7 +70,7 @@ describe("haute-ui toolbar controls", () => {
     const status = screen.getByTestId("status")
 
     expect(status.tagName).toBe("SPAN")
-    expect(status.className).toBe("toolbar-btn toolbar-action min-w-[136px]")
+    expect(status.className).toBe("toolbar-status toolbar-action min-w-[136px]")
     expect(status).toHaveAttribute("title", "No git executable is available.")
     expect(status).toHaveTextContent("Git unavailable")
     expect(screen.queryByRole("button")).toBeNull()

@@ -64,7 +64,8 @@ describe("BranchIndicator", () => {
   })
 
   // Whatever it shows, the indicator is the kit's toolbar button or its status, so it is the
-  // size and shape of the bar's buttons: a label where there is nothing to press.
+  // size and shape of the bar's buttons: a label, off the raised surface, where there is
+  // nothing to press.
   it.each([
     ["checking", { loading: true }, "toolbar-branch-indicator", "SPAN"],
     ["a status error", { statusError: "No project directory." }, "toolbar-branch-indicator", "SPAN"],
@@ -79,7 +80,8 @@ describe("BranchIndicator", () => {
     const drawn = screen.getByTestId(testId)
 
     expect(drawn.tagName).toBe(tag)
-    expect(drawn).toHaveClass("toolbar-btn", "toolbar-action", "min-w-[136px]", "max-w-[220px]")
+    expect(drawn).toHaveClass(tag === "SPAN" ? "toolbar-status" : "toolbar-btn", "toolbar-action", "min-w-[136px]", "max-w-[220px]")
+    expect(drawn.classList.contains("toolbar-btn")).toBe(tag === "BUTTON")
   })
 
   it("keeps full Git errors readable on hover and Retry focus", () => {

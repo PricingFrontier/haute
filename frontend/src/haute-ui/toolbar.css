@@ -65,10 +65,13 @@
    read as a row of words rather than a row of controls.
    Three tiers deliberately remain distinct: Save stays a filled accent button
    (primary), these are the recessive-but-visible default, and the numeric
-   fields keep their inset input styling. */
+   fields keep their inset input styling.
+   What can be pressed is raised: a fill, an outline, and a small shadow with a lit top
+   edge (--btn-raise). What cannot be pressed has none of the three it can lose. */
 .toolbar-btn {
   background: var(--btn-surface);
   border: 1px solid var(--btn-border);
+  box-shadow: var(--btn-raise);
   color: var(--text-primary);
   transition: background 150ms, border-color 150ms, color 150ms;
 }
@@ -94,25 +97,35 @@
 /* Unavailable.  Losing the raised surface is the signal — a flat control next
    to raised ones reads as "not right now" without any colour knowledge. The
    label stays readable so you can still tell what it is and why you might
-   want it; hover and press feedback are withheld, and the cursor says so. */
+   want it, and a faint outline still shows a button is there; hover and press
+   feedback are withheld, and the cursor says so. */
 .toolbar-btn:disabled,
 .toolbar-btn[aria-disabled="true"] {
   background: transparent;
   border-color: var(--border-subtle);
+  box-shadow: none;
   color: var(--text-disabled);
   cursor: not-allowed;
 }
 /* Keyboard focus, drawn as the app's text fields draw it (index.css's .focus-ring): the
    border in the accent and a soft ring around it, in place of the browser's outline,
-   which is near-black on this chrome in some browsers. It is the last of the surface's
-   rules and is spelt a second time for a focused button under the pointer, so it holds
-   over the hover border and for a button that is unavailable but still focusable. The
-   outline stays, transparent: a forced-colours mode drops the ring and draws the outline. */
+   which is near-black on this chrome in some browsers. A pressable button keeps its raise.
+   The rule follows the surface's other states and is spelt a second time for a focused
+   button under the pointer, so it holds over the hover border; only the unavailable
+   button's fainter ring, below, comes after it. The outline stays, transparent: a
+   forced-colours mode drops the ring and draws the outline. */
 .toolbar-btn:focus-visible,
 .toolbar-btn:focus-visible:hover:not(:disabled):not([aria-disabled="true"]) {
   outline: 2px solid transparent;
   border-color: var(--accent-ring);
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft), var(--btn-raise);
+}
+/* On a button that is unavailable but still focusable the ring is grey and fainter: it
+   shows where the keyboard is without saying the button can be pressed. */
+.toolbar-btn:disabled:focus-visible,
+.toolbar-btn[aria-disabled="true"]:focus-visible {
+  border-color: var(--btn-border-hover);
+  box-shadow: 0 0 0 2px var(--btn-focus-muted);
 }
 
 /* A labelled toolbar button: icon and label centred, as wide as its column so
@@ -139,6 +152,15 @@
 .toolbar-action svg {
   flex-shrink: 0;
 }
+/* A status among the toolbar's buttons: plain text in a button's shape, so it lines up
+   with them, with no fill, outline or shadow and nothing under the pointer, so it is not
+   taken for a button, available or not. It has no border at all, since a forced-colours
+   mode draws even a transparent one; a pixel more padding stands in for a button's. */
+.toolbar-status {
+  padding: 5px 11px;
+  color: var(--text-primary);
+  cursor: default;
+}
 
 /* Save and Commit: filled, side by side and of equal width. */
 .toolbar-save-commit {
@@ -154,6 +176,8 @@
   padding: 4px 8px;
   border: 0;
   border-radius: 6px;
+  /* An edge a little darker than the fill, and the raise every pressable button has. */
+  box-shadow: var(--btn-fill-edge), var(--btn-raise);
   color: var(--text-on-accent);
   font-family: inherit;
   font-size: 12px;
@@ -176,5 +200,12 @@
 }
 .toolbar-fill:disabled {
   opacity: 0.5;
+  box-shadow: var(--btn-fill-edge);
   cursor: not-allowed;
+}
+/* Keyboard focus: a ring in the accent outside the edge, the raise kept, in place of the browser's outline,
+   kept transparent for a forced-colours mode to draw. */
+.toolbar-fill:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: var(--btn-fill-edge), 0 0 0 2px var(--accent-outline), var(--btn-raise);
 }

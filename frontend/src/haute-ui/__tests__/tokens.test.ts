@@ -43,6 +43,9 @@ const tokens = declarations(ruleBody(INDEX_CSS, ":root"))
 /** The surface's keyboard-focus rule: at rest, and again for a focused button under the pointer. */
 const FOCUS = '.toolbar-btn:focus-visible, .toolbar-btn:focus-visible:hover:not(:disabled):not([aria-disabled="true"])'
 
+const UNAVAILABLE = '.toolbar-btn:disabled, .toolbar-btn[aria-disabled="true"]'
+const UNAVAILABLE_FOCUS = '.toolbar-btn:disabled:focus-visible, .toolbar-btn[aria-disabled="true"]:focus-visible'
+
 describe("haute-ui's stylesheets", () => {
   it("use only tokens index.css declares", () => {
     expect(tokens.size).toBeGreaterThan(0)
@@ -64,7 +67,20 @@ describe("haute-ui's stylesheets", () => {
     // forced-colours mode, which drops the ring, colours it.
     ["toolbar.css", FOCUS, "outline", "2px solid transparent"],
     ["toolbar.css", FOCUS, "border-color", "var(--accent-ring)"],
-    ["toolbar.css", FOCUS, "box-shadow", "0 0 0 2px var(--accent-soft)"],
+    ["toolbar.css", FOCUS, "box-shadow", "0 0 0 2px var(--accent-soft), var(--btn-raise)"],
+    // What can be pressed is raised; what cannot has no shadow and, focused, a grey ring.
+    ["toolbar.css", ".toolbar-btn", "box-shadow", "var(--btn-raise)"],
+    ["toolbar.css", UNAVAILABLE, "box-shadow", "none"],
+    ["toolbar.css", UNAVAILABLE_FOCUS, "border-color", "var(--btn-border-hover)"],
+    ["toolbar.css", UNAVAILABLE_FOCUS, "box-shadow", "0 0 0 2px var(--btn-focus-muted)"],
+    // A status is plain text in a button's box: no border, which a forced-colours mode would
+    // draw, and a pixel more padding than a button's 4px 10px in its place.
+    ["toolbar.css", ".toolbar-status", "padding", "5px 11px"],
+    // A filled button: a darker edge and the raise; flat while disabled; a ring in the accent on focus.
+    ["toolbar.css", ".toolbar-fill", "box-shadow", "var(--btn-fill-edge), var(--btn-raise)"],
+    ["toolbar.css", ".toolbar-fill:disabled", "box-shadow", "var(--btn-fill-edge)"],
+    ["toolbar.css", ".toolbar-fill:focus-visible", "outline", "2px solid transparent"],
+    ["toolbar.css", ".toolbar-fill:focus-visible", "box-shadow", "var(--btn-fill-edge), 0 0 0 2px var(--accent-outline), var(--btn-raise)"],
     // The size the toolbar's buttons, links and statuses share.
     ["toolbar.css", ".toolbar-action", "font-size", "12px"],
     ["toolbar.css", ".toolbar-action", "padding", "4px 10px"],
@@ -73,8 +89,8 @@ describe("haute-ui's stylesheets", () => {
     ["toolbar.css", ".toolbar-action svg", "flex-shrink", "0"],
     ["toolbar.css", ".toolbar-save-commit", "width", "100%"],
     ["toolbar.css", ".toolbar-fill", "flex", "1 1 0%"],
-    // Disabled, a button fades by a third and no further, so an icon alone stays legible.
-    ["button.css", ".btn:disabled, .btn-icon:disabled", "opacity", "0.67"],
+    // Disabled, a button fades by half, which tells it from a text field beside it.
+    ["button.css", ".btn:disabled, .btn-icon:disabled", "opacity", "0.5"],
     // Outside the toolbar the fill is as wide as its label.
     ["button.css", ".btn-fill", "flex", "none"],
     // Its label stays centred where a caller's layout stretches it.
@@ -97,7 +113,8 @@ describe("haute-ui's stylesheets", () => {
     // The helper names an override first and falls back to the token the kit names.
     expect(field.get("border-color")).toBe(`var(--focus-ring-border, ${button.get("border-color")})`)
     expect(field.get("box-shadow")).toBe("0 0 0 2px var(--focus-ring-shadow, var(--accent-soft))")
-    expect(button.get("box-shadow")).toBe("0 0 0 2px var(--accent-soft)")
+    // The button's ring is the field's, with the raise every pressable button keeps.
+    expect(button.get("box-shadow")).toBe("0 0 0 2px var(--accent-soft), var(--btn-raise)")
   })
 
   // Equal in weight to the unavailable look, the focus rule wins by coming after it, so a
@@ -111,5 +128,14 @@ describe("haute-ui's stylesheets", () => {
     expect(Math.min(focus, unavailable, pressed)).toBeGreaterThanOrEqual(0)
     expect(focus).toBeGreaterThan(unavailable)
     expect(focus).toBeGreaterThan(pressed)
+    // And the unavailable button's fainter ring after that, so it is the one drawn.
+    const muted = css.indexOf(".toolbar-btn:disabled:focus-visible,")
+    expect(muted).toBeGreaterThan(focus)
+    // A status's padding stands over the shape's, equal in weight, by coming after it.
+    const shape = css.indexOf(".toolbar-action {")
+    expect(shape).toBeGreaterThanOrEqual(0)
+    expect(css.indexOf(".toolbar-status {")).toBeGreaterThan(shape)
+    // Nothing of a button's surface: only its size, its text colour and a plain cursor.
+    expect([...declarations(ruleBody(css, ".toolbar-status")).keys()].sort()).toEqual(["color", "cursor", "padding"])
   })
 })
