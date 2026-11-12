@@ -48,9 +48,16 @@ def cell(field: str, sheet: str, address: str, label: str = "") -> dict[str, str
     return {"table": table, "column": name, "sheet": sheet, "cell": address, "label_cell": label}
 
 
+def block(
+    table: str, columns: list[str], sheet: str, address: str, header: str = "labels"
+) -> dict[str, Any]:
+    return {"table": table, "columns": columns, "sheet": sheet, "cell": address, "header": header}
+
+
 #: A form whose Export writes the insured's details, the policy's limit and tick, and its
 #: price into a Slip and a Summary, the insured's name on both; a note the sheets hide; a
-#: detail only the app sets; and a schedule of many rows, which no cell may take.
+#: detail only the app sets; a schedule of many rows, which no cell may take, each item
+#: priced; and the layers pricing gives, a table of outputs alone.
 FORM: dict[str, Any] = {
     "version": 1,
     "name": "x",
@@ -85,6 +92,15 @@ FORM: dict[str, Any] = {
                 "name": "items",
                 "rows": "many",
                 "inputs": [column("item", "int", index="numbered"), column("value", "float")],
+                "outputs": [column("item_premium", "float", number_format="currency_gbp")],
+            },
+            {
+                "name": "layers",
+                "rows": "many",
+                "outputs": [
+                    column("layer", "int", index="numbered"),
+                    column("layer_rate", "float"),
+                ],
             },
         ]
     },
@@ -142,6 +158,7 @@ FORM: dict[str, Any] = {
                                     cell("quote_details.quote_reference", "Summary", "A2"),
                                     cell("quote_details.quote_option", "Summary", "A3"),
                                 ],
+                                "blocks": [],
                             },
                         },
                         {
@@ -199,12 +216,42 @@ def target_of(form: dict[str, Any]) -> dict[str, Any]:
     return found
 
 
-def with_cells(*cells: dict[str, str], file_name: str = "slip") -> dict[str, Any]:
+def with_cells(
+    *cells: dict[str, str], file_name: str = "slip", blocks: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     form = copy.deepcopy(FORM)
     target = target_of(form)
     target["cells"] = list(cells)
     target["file_name"] = file_name
+    target["blocks"] = blocks or []
     return form
+
+
+#: Two items typed and priced, the priced rows in another order than the typed ones, and
+#: the layers pricing gives.
+ITEMS_SAMPLE = [{"value": "100"}, {"value": "£250.50"}]
+ITEMS_PRICED: dict[str, list[dict[str, Any]]] = {
+    **PRICED,
+    "items": [
+        {"quote_reference": "PREVIEW", "quote_option": 1, "item": 2, "item_premium": 25.05},
+        {"quote_reference": "PREVIEW", "quote_option": 1, "item": 1, "item_premium": 10.0},
+    ],
+    "layers": [
+        {"quote_reference": "PREVIEW", "quote_option": 1, "layer": 1, "layer_rate": 0.5},
+        {"quote_reference": "PREVIEW", "quote_option": 1, "layer": 2, "layer_rate": 0.25},
+    ],
+}
+
+
+def with_blocks(*blocks: dict[str, Any], cells: tuple[dict[str, str], ...] = ()) -> dict[str, Any]:
+    """FORM writing *blocks*, beside *cells*, with two items typed."""
+    form = with_cells(*cells, blocks=list(blocks))
+    form["sample"]["items"] = copy.deepcopy(ITEMS_SAMPLE)
+    return form
+
+
+def values_of(sheet: Any, cells: str) -> list[list[Any]]:
+    return [[held.value for held in row] for row in sheet[cells]]
 
 
 def test_a_workbook_of_cells_holds_each_value_typed_on_its_sheets_in_the_order_first_given() -> (
@@ -344,7 +391,7 @@ SLIP_B3 = cell("quote_details.insured", "Slip", "B3")
 @pytest.mark.parametrize(
     ("cells", "file_name", "problem"),
     [
-        ([], "slip", "writes no cells"),
+        ([], "slip", "writes no cells or tables"),
         (
             [cell("policy.nope", "Slip", "B3")],
             "slip",
@@ -443,6 +490,236 @@ def test_each_problem_is_named_and_refuses_the_export(
     with pytest.raises(ExportRefusedError) as refused:
         export(form)
     assert refused.value.message == f'Export "Slip" cannot be written: it {problem}.'
+
+
+ITEMS_A12 = block("items", ["item", "value"], "Slip", "A12")
+
+
+@pytest.mark.parametrize(
+    ("cells", "blocks", "problem"),
+    [
+        (
+            [],
+            [block("nowhere", ["item"], "Slip", "A12")],
+            "writes the table nowhere, which is no longer in the schema",
+        ),
+        ([], [block("items", [], "Slip", "A12")], "writes the table items with no columns"),
+        (
+            [],
+            [block("items", ["item", "nope"], "Slip", "A12")],
+            "writes items.nope, which is no longer in the schema",
+        ),
+        (
+            [],
+            [block("items", ["value", "item", "value"], "Slip", "A12")],
+            "writes items.value more than once in its table",
+        ),
+        ([], [block("items", ["item"], " ", "A12")], "writes to a sheet with no name"),
+        (
+            [],
+            [block("items", ["item"], "History", "A12")],
+            'writes to the sheet "History", which is a name Excel keeps for itself',
+        ),
+        (
+            [SLIP_B3],
+            [block("items", ["item"], "slip", "A12")],
+            'names the sheets "Slip" and "slip", which Excel holds as one',
+        ),
+        (
+            [],
+            [block("items", ["item"], "Slip", "a12")],
+            'writes the table items to "a12" on "Slip", which is not a cell like B3',
+        ),
+        (
+            [],
+            [block("items", ["item", "value"], "Slip", "XFD1")],
+            'writes the table items from XFD1 on "Slip" past XFD, the last column',
+        ),
+        # A block takes its columns from its top row down: a value or a label there, or
+        # another block's columns, is under it.
+        (
+            [SLIP_B3],
+            [block("items", ["item", "value"], "Slip", "A1")],
+            'writes the table items from A1 on "Slip" over B3, which is written already',
+        ),
+        (
+            [SLIP_B3],
+            [block("items", ["item", "value"], "Slip", "B3")],
+            'writes the table items from B3 on "Slip" over B3, which is written already',
+        ),
+        (
+            [cell("quote_details.insured", "Slip", "C3", "A900")],
+            [ITEMS_A12],
+            'writes the table items from A12 on "Slip" over A900, which is written already',
+        ),
+        (
+            [],
+            [ITEMS_A12, block("layers", ["layer"], "Slip", "B2")],
+            'writes the table layers from B2 on "Slip" over the table items from A12',
+        ),
+        (
+            [],
+            [ITEMS_A12, block("items", ["value"], "Slip", "A900")],
+            'writes the table items from A900 on "Slip" over the table items from A12',
+        ),
+    ],
+)
+def test_each_problem_of_a_block_is_named_and_refuses_the_export(
+    cells: list[dict[str, str]], blocks: list[dict[str, Any]], problem: str
+) -> None:
+    form = with_blocks(*blocks, cells=tuple(cells))
+    spec = with_quote_details(spec_of(form))
+
+    assert cells_problems(spec, spec.pages[0].sections[0].widgets[1].target) == [problem]
+    with pytest.raises(ExportRefusedError) as refused:
+        export(form, ITEMS_PRICED)
+    assert refused.value.message == f'Export "Slip" cannot be written: it {problem}.'
+
+
+@pytest.mark.parametrize(
+    ("cells", "blocks"),
+    [
+        # Above a block, or beside it, a value or a label is no part of it.
+        ([cell("quote_details.insured", "Slip", "B11", "A11")], [ITEMS_A12]),
+        ([cell("quote_details.insured", "Slip", "C900", "C12")], [ITEMS_A12]),
+        # Blocks side by side, or of one address on two sheets.
+        ([], [ITEMS_A12, block("layers", ["layer"], "Slip", "C12")]),
+        ([], [ITEMS_A12, block("items", ["item", "value"], "Summary", "A12")]),
+        # The last column a block may take is XFD.
+        ([], [block("items", ["item", "value"], "Slip", "XFC1")]),
+        # A block alone, no cell written beside it.
+        ([], [ITEMS_A12]),
+    ],
+)
+def test_a_block_beside_or_under_what_else_is_written_has_no_problem(
+    cells: list[dict[str, str]], blocks: list[dict[str, Any]]
+) -> None:
+    form = with_blocks(*blocks, cells=tuple(cells))
+    spec = with_quote_details(spec_of(form))
+
+    assert cells_problems(spec, spec.pages[0].sections[0].widgets[1].target) == []
+
+
+def test_a_block_s_problems_follow_the_cells_in_the_view_s_order() -> None:
+    form = with_blocks(
+        block("items", ["nope", "value", "value"], "History", "A0"),
+        cells=(cell("policy.nope", "Slip", "B3"),),
+    )
+    spec = with_quote_details(spec_of(form))
+
+    # The same list `cellsProblems` gives in the view (workbenchForm.test.ts).
+    assert cells_problems(spec, spec.pages[0].sections[0].widgets[1].target) == [
+        "writes policy.nope, which is no longer in the schema",
+        "writes items.nope, which is no longer in the schema",
+        "writes items.value more than once in its table",
+        'writes to the sheet "History", which is a name Excel keeps for itself',
+        'writes the table items to "A0" on "History", which is not a cell like B3',
+    ]
+
+
+def test_a_block_writes_its_rows_under_its_header_lined_up_by_index_not_place() -> None:
+    form = with_blocks(block("items", ["item", "item_premium", "value"], "Slip", "B12"))
+
+    _, data = export(form, ITEMS_PRICED)
+
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    # The header of the columns' labels, then a row for each typed row in order, each with
+    # its own priced output, in the block's order of columns.
+    assert values_of(slip, "B12:D14") == [
+        ["Item", "Item premium", "Value"],
+        [1, 10.0, 100.0],
+        [2, 25.05, 250.5],
+    ]
+    assert slip["B12"].data_type == "s"
+    assert slip["C13"].number_format == '"£"#,##0.00'
+    # Nothing past its rows or its columns.
+    assert values_of(slip, "B15:D15") == [[None, None, None]]
+    assert values_of(slip, "A12:A14") == [[None], [None], [None]]
+    assert values_of(slip, "E12:E14") == [[None], [None], [None]]
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("labels", [["Item", "Value"], [1, 100.0], [2, 250.5]]),
+        ("names", [["item", "value"], [1, 100.0], [2, 250.5]]),
+        ("none", [[1, 100.0], [2, 250.5], [None, None]]),
+    ],
+)
+def test_a_block_is_headed_by_its_columns_labels_their_names_or_nothing(
+    header: str, expected: list[list[Any]]
+) -> None:
+    form = with_blocks(block("items", ["item", "value"], "Slip", "A1", header))
+    form["schema"]["tables"][3]["inputs"][0]["label"] = "=Item"
+
+    _, data = export(form, ITEMS_PRICED)
+
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    if header == "labels":
+        expected[0][0] = "=Item"
+    assert values_of(slip, "A1:B3") == expected
+    assert slip["A1"].data_type == ("s" if header != "none" else "n")
+
+
+def test_a_block_of_a_one_row_table_writes_its_row_and_of_outputs_alone_its_priced_rows() -> None:
+    form = with_blocks(
+        block("policy", ["note", "limit"], "Summary", "E1"),
+        block("pricing", ["premium", "rate"], "Summary", "H1", "names"),
+        block("layers", ["layer_rate", "layer"], "Layers", "A1"),
+    )
+
+    _, data = export(form, ITEMS_PRICED)
+
+    book = load_workbook(io.BytesIO(data))
+    assert book.sheetnames == ["Summary", "Layers"]
+    summary, layers = book["Summary"], book["Layers"]
+    assert values_of(summary, "E1:F3") == [["Note", "Limit"], ["=1+1", 1e6], [None, None]]
+    assert summary["E2"].data_type == "s"
+    assert values_of(summary, "H1:I2") == [["premium", "rate"], [1234.5, 0.055]]
+    assert values_of(layers, "A1:B4") == [
+        ["Layer rate", "Layer"],
+        [0.5, 1],
+        [0.25, 2],
+        [None, None],
+    ]
+
+
+def test_a_block_of_a_table_with_no_rows_writes_its_header_alone() -> None:
+    form = with_blocks(block("items", ["item", "value"], "Slip", "A1"))
+    form["sample"]["items"] = []
+
+    _, data = export(form, PRICED)
+
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    assert values_of(slip, "A1:B2") == [["Item", "Value"], [None, None]]
+
+
+def test_a_block_whose_rows_run_past_the_sheet_s_last_row_is_refused_naming_it() -> None:
+    form = with_blocks(block("items", ["item"], "Slip", "A1048575"))
+
+    with pytest.raises(ExportRefusedError) as refused:
+        export(form, ITEMS_PRICED)
+
+    assert refused.value.message == (
+        'The table items has 2 rows, more than fit on "Slip" from A1048575 down: place it higher.'
+    )
+    # Its last row on the sheet's last is written.
+    form = with_blocks(block("items", ["item"], "Slip", "A1048574"))
+    _, data = export(form, ITEMS_PRICED)
+    assert load_workbook(io.BytesIO(data))["Slip"]["A1048576"].value == 2
+
+
+def test_a_block_s_value_not_of_its_column_s_type_is_refused_naming_the_field() -> None:
+    form = with_blocks(block("items", ["item_premium"], "Slip", "A1"))
+    tables = copy.deepcopy(ITEMS_PRICED)
+    tables["items"][0]["item_premium"] = "lots"
+
+    with pytest.raises(ExportRefusedError) as refused:
+        export(form, tables)
+
+    assert refused.value.message == (
+        "items.item_premium is 'lots', not 'float': price the sample again."
+    )
 
 
 def test_a_cell_s_problems_are_named_in_the_view_s_order() -> None:

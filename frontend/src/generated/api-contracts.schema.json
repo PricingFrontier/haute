@@ -5298,8 +5298,15 @@
     },
     "ExcelCellsExport": {
       "additionalProperties": false,
-      "description": "An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, under\na file name made as a ``_FileExport``'s is. Its cells say what it writes, so the Export\nexports no tables.",
+      "description": "An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, and\nchosen tables, each a block of its rows from a cell, under a file name made as a\n``_FileExport``'s is. Its cells and blocks say what it writes, so the Export exports no\ntables.",
       "properties": {
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/ExportBlock"
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
         "cells": {
           "items": {
             "$ref": "#/$defs/ExportCell"
@@ -5320,7 +5327,8 @@
       "required": [
         "format",
         "file_name",
-        "cells"
+        "cells",
+        "blocks"
       ],
       "title": "ExcelCellsExport",
       "type": "object"
@@ -9947,6 +9955,49 @@
         "key_check"
       ],
       "title": "ExploreRelationshipsResponse",
+      "type": "object"
+    },
+    "ExportBlock": {
+      "additionalProperties": false,
+      "description": "A table's rows an Excel workbook of cells holds as a block: the chosen ``columns`` of\nthe table ``table``, by name in the order chosen, rightward from the cell at ``cell``\n(an address such as ``A12``) of the sheet named ``sheet``, the block's top-left corner,\nunder a ``header`` of their labels or their names, or none, and a row for each of the\ntable's rows in the quote. Its names and address are the form's as typed: their\nproblems are the view's to show and the export's to refuse\n(:mod:`haute._workbench_export`).",
+      "properties": {
+        "cell": {
+          "title": "Cell",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "header": {
+          "enum": [
+            "labels",
+            "names",
+            "none"
+          ],
+          "title": "Header",
+          "type": "string"
+        },
+        "sheet": {
+          "title": "Sheet",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "columns",
+        "sheet",
+        "cell",
+        "header"
+      ],
+      "title": "ExportBlock",
       "type": "object"
     },
     "ExportCell": {

@@ -213,12 +213,16 @@ Preview but for an Excel workbook of cells (below).
 fields of the one-row tables, each written into a cell of a sheet, `Slip!B3` say, of a
 workbook Haute makes, its values typed and formatted as their columns' formats show them,
 each cell naming another for its field's label if it wants one, `Slip!A3` say, the label
-the schema gives the field.
+the schema gives the field; and tables written as blocks, each a table's columns chosen
+and ordered, its rows under a header of their labels, their names or none from the
+block's top-left cell, `Slip!A12` say, nothing written under a block in its columns,
+whatever rows a quote gives it. A column or a table the schema loses stays in the
+export as a problem rather than dropping out of it.
 Its first run is Preview's: pressing the Export downloads the workbook of the sample as
 it was last priced. Still to come, each its own slice: the app's run of it (below); a
-template, the analyst's own workbook filled in place of one Haute makes; a many-row
-table's rows written as a block from a cell; a cell for each row of a table with a row
-for each value; and cells named in a template in place of an address.
+template, the analyst's own workbook filled in place of one Haute makes; a cell for each
+row of a table with a row for each value; and cells named in a template in place of an
+address.
 
 **Plan:** Decision first, recorded here before the first slice: which formats the first
 release needs (the quote's tables as CSV or a spreadsheet, an import file for another

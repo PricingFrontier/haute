@@ -137,6 +137,9 @@ ImportMode = Literal["replace", "append", "update"]
 #: value as the quote holds it or as the sheets show it, in its column's format.
 ExportHeaders = Literal["names", "labels"]
 ExportValues = Literal["raw", "formatted"]
+#: What heads a block's columns in an Excel workbook of cells: their labels, their names,
+#: or nothing, its rows starting at its top-left cell.
+ExportHeader = Literal["labels", "names", "none"]
 
 #: The furthest down a workbook's sheet an Import's header row can be, as the view's
 #: properties panel takes it (``frontend/src/utils/workbenchForm.ts``).
@@ -683,15 +686,34 @@ class ExportCell(_Strict):
     label_cell: str
 
 
+class ExportBlock(_Strict):
+    """A table's rows an Excel workbook of cells holds as a block: the chosen ``columns`` of
+    the table ``table``, by name in the order chosen, rightward from the cell at ``cell``
+    (an address such as ``A12``) of the sheet named ``sheet``, the block's top-left corner,
+    under a ``header`` of their labels or their names, or none, and a row for each of the
+    table's rows in the quote. Its names and address are the form's as typed: their
+    problems are the view's to show and the export's to refuse
+    (:mod:`haute._workbench_export`)."""
+
+    table: str
+    columns: list[str]
+    sheet: str
+    cell: str
+    header: ExportHeader
+
+
 class ExcelCellsExport(_Strict):
-    """An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, under
-    a file name made as a ``_FileExport``'s is. Its cells say what it writes, so the Export
-    exports no tables."""
+    """An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, and
+    chosen tables, each a block of its rows from a cell, under a file name made as a
+    ``_FileExport``'s is. Its cells and blocks say what it writes, so the Export exports no
+    tables."""
 
     format: Literal["excel_cells"]
     file_name: str
     #: In the order chosen; a column may be written into more than one cell.
     cells: list[ExportCell]
+    #: In the order chosen; a table may be written as more than one block.
+    blocks: list[ExportBlock]
 
 
 class TableName(_Strict):

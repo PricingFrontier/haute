@@ -182,6 +182,7 @@ export type {
   ExcelCellsExport,
   ExcelExport,
   ExcelImport,
+  ExportBlock,
   ExportCell,
   ExportWidget,
   FieldRef,

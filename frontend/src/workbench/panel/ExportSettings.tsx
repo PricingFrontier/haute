@@ -1,25 +1,36 @@
 /** An Export's panel (specs/workbench). */
-import { X } from "lucide-react"
-import type { CsvExport, ExcelCellsExport, ExportCell, ExportWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import { GripVertical, X } from "lucide-react"
+import type { KeyboardEvent } from "react"
+import type { CsvExport, ExcelCellsExport, ExportBlock, ExportCell, ExportWidget, FieldRef, FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow } from "../../components/form"
+import useListReorder from "../../hooks/useListReorder"
+import useRefocusAfterMove, { altArrowMove } from "../../hooks/useRefocusAfterMove"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { sheetColumns } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
 import {
+  addBlockColumn,
+  addExportBlock,
   addExportCell,
   cellColumns,
   excelLayout,
   exportFormatShown,
   fieldColumn,
+  moveBlockColumn,
   readableName,
+  removeBlockColumn,
+  removeExportBlock,
   removeExportCell,
   setExcelLayout,
   setExportCellColumn,
   setExportFormat,
   setTableName,
   toggleExportTable,
+  updateExportBlock,
   updateExportCell,
   updateExportTarget,
   type ExcelLayout,
+  type ExportHeader,
 } from "../../utils/workbenchForm"
 import { ButtonPanes, FormatToggle } from "./ButtonPanes"
 import { Section } from "./Section"
@@ -40,6 +51,12 @@ const VALUES: ReadonlyArray<{ value: CsvExport["values"]; label: string }> = [
   { value: "formatted", label: "Formatted" },
 ]
 
+const BLOCK_HEADERS: ReadonlyArray<{ value: ExportHeader; label: string }> = [
+  { value: "labels", label: "Labels" },
+  { value: "names", label: "Names" },
+  { value: "none", label: "None" },
+]
+
 const EXCEL_LAYOUTS: ReadonlyArray<{ value: ExcelLayout; label: string }> = [
   { value: "tables", label: "Sheet per table" },
   { value: "cells", label: "Cells" },
@@ -52,8 +69,9 @@ const columnLabel = (column: SchemaColumn): string => column.label || readableNa
 /**
  * An Export's panel in its panes (`ButtonPanes`), Config holding its Format; to Excel, its
  * Layout; a file's name, a CSV's delimiter and, but for a workbook of cells, its headers and
- * values, or a database's connection; then a workbook of cells' Cells, or the Tables it
- * exports, each, to a database, beside the name of the table it is written to.
+ * values, or a database's connection; then a workbook of cells' Cells and Tables, its
+ * blocks, or the Tables it exports, each, to a database, beside the name of the table it is
+ * written to.
  */
 export function ExportSettings({ form, widget }: { form: FormSpec; widget: ExportWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
@@ -98,7 +116,10 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
         </Section>
       )}
       {target.format === "excel_cells" ? (
-        <ExportCells form={form} widget={widget} target={target} />
+        <>
+          <ExportCells form={form} widget={widget} target={target} />
+          <ExportBlocks form={form} widget={widget} target={target} />
+        </>
       ) : (
         <Section title="Tables" aside={`${widget.tables.length} exported`}>
           {form.schema.tables.map((table) => {
@@ -256,6 +277,177 @@ function CellRow({
       <button type="button" onClick={() => change((spec) => removeExportCell(spec, widget.id, index))} aria-label={`Remove cell ${number}`} className={REMOVE_CLASS}>
         <X size={12} aria-hidden="true" />
       </button>
+    </div>
+  )
+}
+
+/**
+ * A workbook of cells' Tables: under a heading row, each block, its table's name or Missing
+ * table, its sheet, its top-left cell's address, its header and a cross; then its columns
+ * and Add a column (`BlockColumns`); and under them Add a table, a select of the tables a
+ * sheet shows columns of, held at its first option.
+ */
+function ExportBlocks({ form, widget, target }: { form: FormSpec; widget: ExportWidget; target: ExcelCellsExport }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  const tables = form.schema.tables.filter((table) => sheetColumns(table).length > 0)
+  return (
+    <Section title="Tables" aside={`${target.blocks.length} written`}>
+      {target.blocks.length > 0 && (
+        <div className="flex items-center gap-1.5" style={{ color: "var(--text-muted)" }} aria-hidden="true">
+          <span className="min-w-0 flex-1">Table</span>
+          <span className="w-20 shrink-0">Sheet</span>
+          <span className="w-14 shrink-0">Cell</span>
+          <span className="w-16 shrink-0">Header</span>
+          <span className="w-4 shrink-0" />
+        </div>
+      )}
+      {target.blocks.map((block, index) => (
+        <BlockRow key={index} form={form} widget={widget} block={block} index={index} />
+      ))}
+      <select
+        aria-label="Add a table"
+        value=""
+        onChange={(event) => {
+          const table = event.target.value
+          if (table !== "") change((spec) => addExportBlock(spec, widget.id, table))
+        }}
+        className={`${FIELD_CLASS} w-full`}
+        style={INPUT_STYLE}
+      >
+        <option value="">Add a table</option>
+        {tables.map((table) => (
+          <option key={table.name} value={table.name}>
+            {table.name}
+          </option>
+        ))}
+      </select>
+    </Section>
+  )
+}
+
+function BlockRow({ form, widget, block, index }: { form: FormSpec; widget: ExportWidget; block: ExportBlock; index: number }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  const missing = !form.schema.tables.some((table) => table.name === block.table)
+  const number = index + 1
+  const set = (patch: Parameters<typeof updateExportBlock>[3]) => change((spec) => updateExportBlock(spec, widget.id, index, patch))
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate font-mono" style={missing ? { color: "var(--warning)" } : undefined}>
+          {missing ? "Missing table" : block.table}
+        </span>
+        <CommittedTextField aria-label={`Table ${number} sheet`} value={block.sheet} onCommit={(sheet) => set({ sheet })} className={`${FIELD_CLASS} w-20 shrink-0`} style={INPUT_STYLE} />
+        <CommittedTextField
+          aria-label={`Table ${number} address`}
+          value={block.cell}
+          onCommit={(address) => set({ cell: address.trim().toUpperCase() })}
+          className={`${FIELD_CLASS} w-14 shrink-0 font-mono`}
+          style={INPUT_STYLE}
+        />
+        <select
+          aria-label={`Table ${number} header`}
+          value={block.header}
+          onChange={(event) => set({ header: event.target.value as ExportHeader })}
+          className={`${FIELD_CLASS} w-16 shrink-0`}
+          style={INPUT_STYLE}
+        >
+          {BLOCK_HEADERS.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={() => change((spec) => removeExportBlock(spec, widget.id, index))} aria-label={`Remove table ${number}`} className={REMOVE_CLASS}>
+          <X size={12} aria-hidden="true" />
+        </button>
+      </div>
+      <BlockColumns form={form} widget={widget} block={block} index={index} />
+    </div>
+  )
+}
+
+/**
+ * A block's columns in its order, each by its label or Missing column, with a cross, moved
+ * by dragging or Alt+Up and Alt+Down; then Add a column, a select of its table's columns as
+ * a sheet shows them that it does not hold, held at its first option.
+ */
+function BlockColumns({ form, widget, block, index }: { form: FormSpec; widget: ExportWidget; block: ExportBlock; index: number }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  const dragFor = useListReorder((from, to) => change((spec) => moveBlockColumn(spec, widget.id, index, from, to)))
+  // A column moved by Alt+arrows takes the focus again in its new place.
+  const refocus = useRefocusAfterMove<HTMLDivElement>()
+  const table = form.schema.tables.find((held) => held.name === block.table)
+  const shown = table === undefined ? [] : sheetColumns(table)
+  const number = index + 1
+  return (
+    <div className="flex flex-col gap-1 pl-2">
+      {block.columns.length > 0 && (
+        <div role="list" aria-label={`Table ${number} columns`} className="flex flex-col gap-0.5 rounded-md p-1" style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
+          {block.columns.map((name, place) => {
+            const column = shown.find((held) => held.name === name)
+            const label = column === undefined ? "Missing column" : columnLabel(column)
+            const drag = dragFor(place)
+            const rowKey = `${place}-${name}`
+            const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+              const to = altArrowMove(event, "vertical", place, block.columns.length)
+              if (to === null) return
+              refocus.moved(`${to}-${name}`)
+              change((spec) => moveBlockColumn(spec, widget.id, index, place, to))
+            }
+            return (
+              <div
+                key={rowKey}
+                ref={refocus.register(rowKey)}
+                tabIndex={0}
+                role="listitem"
+                aria-label={label}
+                aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                draggable
+                onDragStart={drag.onStart}
+                onDragOver={drag.onOver}
+                onDrop={drag.onDrop}
+                onDragEnd={drag.onEnd}
+                onKeyDown={onKeyDown}
+                data-drop-target={drag.target ? "true" : undefined}
+                className="group focus-ring flex cursor-grab items-center gap-1.5 rounded px-1 py-0.5 hover-bg active:cursor-grabbing"
+                style={{ opacity: drag.dragging ? 0.5 : 1, boxShadow: drag.target ? "0 -2px 0 0 var(--accent)" : undefined }}
+              >
+                <GripVertical size={12} aria-hidden="true" className="shrink-0" style={{ color: "var(--text-muted)" }} />
+                <span className="min-w-0 flex-1 truncate" style={column === undefined ? { color: "var(--warning)" } : undefined}>
+                  {label}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => change((spec) => removeBlockColumn(spec, widget.id, index, place))}
+                  aria-label={`Remove ${label} from table ${number}`}
+                  className={REMOVE_CLASS}
+                >
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <select
+        aria-label={`Table ${number} add a column`}
+        value=""
+        onChange={(event) => {
+          const name = event.target.value
+          if (name !== "") change((spec) => addBlockColumn(spec, widget.id, index, name))
+        }}
+        className={`${FIELD_CLASS} w-full`}
+        style={INPUT_STYLE}
+      >
+        <option value="">Add a column</option>
+        {shown
+          .filter((column) => !block.columns.includes(column.name))
+          .map((column) => (
+            <option key={column.name} value={column.name}>
+              {columnLabel(column)}
+            </option>
+          ))}
+      </select>
     </div>
   )
 }

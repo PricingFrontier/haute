@@ -441,10 +441,24 @@ a sheet per table.
   written as its digits, as text, so none is lost. A field that holds nothing, or that only the underwriter app sets, leaves its cell
   empty; in Preview the quote's reference and option are `PREVIEW` and 1. The workbook's
   name is the file **Name**, with `.xlsx`; a character a file name cannot hold becomes `_`.
-  The Export's problems include a sheet name Excel refuses (blank, over 31 characters,
+- Under **Tables**, an Export of cells writes whole tables, a row for each row of the
+  quote. Pick a table under **Add a table**: it goes at `A1` of a sheet named after it.
+  Set its **Sheet**, its **Cell**, the top-left corner it starts from, and its
+  **Header**: the columns' **Labels**, their **Names**, or **None**, which starts the rows
+  at that cell. Pick its columns under **Add a column**, the index among them, and drag
+  them, or use Alt+Up and Alt+Down, into the order they go in, left to right. A table of
+  many rows writes the rows the quote has, each output beside the inputs of its row; a
+  one-row table writes its one row. As a quote can have any number of rows, a table takes
+  its columns from its top row to the foot of the sheet: put anything else above it,
+  beside it, or on another sheet.
+- Removing a column or a table from the schema leaves it in an Export of cells, named as
+  a problem until you pick another or take it out, so nothing the workbook holds goes
+  missing without you seeing it.
+- The Export's problems include a sheet name Excel refuses (blank, over 31 characters,
   holding `[ ] : * ? / \`, starting or ending with `'`, or `History`), an address that
-  is not a cell, for a field or its label, two things in one cell, and two sheet names
-  that differ only in case.
+  is not a cell, for a field, its label or a table, two things in one cell, a table over
+  a cell or another table, a table's columns past `XFD`, a table with no columns, and two
+  sheet names that differ only in case.
 
 Drag a component to move it and any of its eight handles to resize it; everything snaps
 to the grid. A component stays inside its section: it stops at the section's edges, and

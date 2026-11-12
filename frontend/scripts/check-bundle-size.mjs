@@ -267,7 +267,8 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Excel cells export (12 November 2026): an Export's workbook of cells, its panel, its
 // problems and its run in Preview bring the total to 1,795.6 KiB (initial 294.5 KiB);
 // 1,798 KiB restores about 2.4 KiB headroom. The other limits are unchanged. Label cells
-// (12 November 2026) bring it to 1,795.8 KiB within that allowance.
+// (12 November 2026) bring it to 1,795.8 KiB within that allowance, and tables written as
+// blocks (12 November 2026) to 1,797.7 KiB, still within it.
 const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1798
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205

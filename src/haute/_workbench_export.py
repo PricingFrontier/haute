@@ -1,10 +1,11 @@
 """An Export run (specs/workbench, Control flow 38): an Excel workbook of cells, made in
 memory from what Preview's last pricing gave.
 
-The workbook is Haute's own: a sheet for each sheet name the Export's cells give, in the
-order first given, each cell holding its column's value as the quote holds it, typed by
-its column, text always as text, and a number in its column's format as the sheets show
-it, and each label cell its column's label, as text. Nothing is written to disk.
+The workbook is Haute's own: a sheet for each sheet name the Export's cells and blocks
+give, in the order first given, each cell holding its column's value as the quote holds
+it, typed by its column, text always as text, and a number in its column's format as the
+sheets show it, each label cell its column's label, as text, and each block its table's
+rows under its header. Nothing is written to disk.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from haute._workbench_config import WorkbenchError
 from haute._workbench_form import (
     QUOTE_DETAILS_NAME,
     ExcelCellsExport,
+    ExportBlock,
     ExportCell,
     ExportWidget,
     FormSpec,
@@ -114,6 +116,20 @@ def _own_column(spec: FormSpec, cell: ExportCell) -> tuple[SchemaTable, SchemaCo
     return None if column is None else (table, column)
 
 
+def _block_columns(
+    spec: FormSpec, block: ExportBlock
+) -> tuple[SchemaTable, list[SchemaColumn]] | None:
+    """The table *block* names and its columns, in its order, among the columns a sheet
+    shows, or None when the schema no longer holds the table or one of them."""
+    table = next((held for held in spec.data_schema.tables if held.name == block.table), None)
+    if table is None:
+        return None
+    shown = {column.name: column for column in [*table.own_inputs, *table.own_outputs]}
+    columns = [shown.get(name) for name in block.columns]
+    found = [column for column in columns if column is not None]
+    return (table, found) if len(found) == len(columns) else None
+
+
 def _file_name_problems(spec: FormSpec, file_name: str) -> list[str]:
     """A file name's problems, as ``exportProblems`` in the view words them."""
     problems = [] if file_name.strip() else ["has no file name"]
@@ -129,15 +145,52 @@ def _file_name_problems(spec: FormSpec, file_name: str) -> list[str]:
     return problems
 
 
+def _sheet_problems(sheet: str, sheets: dict[str, str]) -> list[str]:
+    """What Excel refuses of the sheet named *sheet*, given *sheets*, each name given before
+    by its spelling in lower case, which it joins."""
+    if sheet.strip() == "":
+        return ["writes to a sheet with no name"]
+    if (reason := sheet_name_problem(sheet)) is not None:
+        return [f'writes to the sheet "{sheet}", which {reason}']
+    spelled = sheets.setdefault(sheet.lower(), sheet)
+    if spelled != sheet:
+        return [f'names the sheets "{spelled}" and "{sheet}", which Excel holds as one']
+    return []
+
+
+def _block_column_problems(spec: FormSpec, block: ExportBlock) -> list[str]:
+    """What stops *block*'s table and columns being written: the table or a column no longer
+    in the schema, no columns, or a column twice."""
+    table = next((held for held in spec.data_schema.tables if held.name == block.table), None)
+    if table is None:
+        return [f"writes the table {block.table}, which is no longer in the schema"]
+    if not block.columns:
+        return [f"writes the table {block.table} with no columns"]
+    shown = {column.name for column in [*table.own_inputs, *table.own_outputs]}
+    problems: list[str] = []
+    seen: set[str] = set()
+    for name in block.columns:
+        field = f"{block.table}.{name}"
+        if name not in shown:
+            problems.append(f"writes {field}, which is no longer in the schema")
+        elif name in seen:
+            problems.append(f"writes {field} more than once in its table")
+        seen.add(name)
+    return problems
+
+
 def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
     """What stops an Excel workbook of cells being written, as ``cellsProblems`` in the view
-    words them: its file name's problems, then its cells', each once, in the cells' order,
-    a cell's value's address checked before its label's, each against every address taken
-    before it on its sheet, a value's or a label's."""
+    words them: its file name's problems, then its cells', then its blocks', each once, in
+    their order, a cell's value's address checked before its label's, each against every
+    address taken before it on its sheet, a value's or a label's, and a block, which takes
+    its columns from its top-left cell's row to the sheet's last, against every value,
+    label and block before it, the first it lies over named."""
     problems = _file_name_problems(spec, target.file_name)
-    if not target.cells:
-        problems.append("writes no cells")
-    taken: set[tuple[str, str]] = set()
+    if not target.cells and not target.blocks:
+        problems.append("writes no cells or tables")
+    # The addresses taken, in the order taken, by sheet in lower case.
+    taken: dict[tuple[str, str], None] = {}
     sheets: dict[str, str] = {}
     for cell in target.cells:
         found = _own_column(spec, cell)
@@ -146,16 +199,7 @@ def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
             problems.append(f"writes {field}, which is no longer in the schema")
         elif found[0].rows == "many":
             problems.append(f"writes {field}, a column of a many-row table")
-        if cell.sheet.strip() == "":
-            problems.append("writes to a sheet with no name")
-        elif (reason := sheet_name_problem(cell.sheet)) is not None:
-            problems.append(f'writes to the sheet "{cell.sheet}", which {reason}')
-        else:
-            spelled = sheets.setdefault(cell.sheet.lower(), cell.sheet)
-            if spelled != cell.sheet:
-                problems.append(
-                    f'names the sheets "{spelled}" and "{cell.sheet}", which Excel holds as one'
-                )
+        problems += _sheet_problems(cell.sheet, sheets)
         if cell_address(cell.cell) is None:
             problems.append(
                 f'writes to "{cell.cell}" on "{cell.sheet}", which is not a cell like B3'
@@ -163,7 +207,7 @@ def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
         elif (cell.sheet.lower(), cell.cell) in taken:
             problems.append(f'writes more than once to {cell.cell} on "{cell.sheet}"')
         else:
-            taken.add((cell.sheet.lower(), cell.cell))
+            taken[(cell.sheet.lower(), cell.cell)] = None
         if cell.label_cell.strip() == "":
             continue
         if cell_address(cell.label_cell) is None:
@@ -174,7 +218,62 @@ def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
         elif (cell.sheet.lower(), cell.label_cell) in taken:
             problems.append(f'writes more than once to {cell.label_cell} on "{cell.sheet}"')
         else:
-            taken.add((cell.sheet.lower(), cell.label_cell))
+            taken[(cell.sheet.lower(), cell.label_cell)] = None
+    # The blocks placed, each its sheet in lower case, its first and last column and its
+    # top row, with its table's name and its address.
+    placed: list[tuple[str, int, int, int, ExportBlock]] = []
+    for block in target.blocks:
+        problems += _block_column_problems(spec, block)
+        problems += _sheet_problems(block.sheet, sheets)
+        address = cell_address(block.cell)
+        if address is None:
+            problems.append(
+                f'writes the table {block.table} to "{block.cell}" on "{block.sheet}", which '
+                "is not a cell like B3"
+            )
+            continue
+        first, top = address
+        last = first + len(block.columns) - 1
+        if last > _LAST_COLUMN:
+            problems.append(
+                f'writes the table {block.table} from {block.cell} on "{block.sheet}" past '
+                "XFD, the last column"
+            )
+            continue
+        if not block.columns:
+            continue
+        sheet = block.sheet.lower()
+        under = next(
+            (
+                written
+                for (on, written) in taken
+                if on == sheet
+                and (spot := cell_address(written)) is not None
+                and first <= spot[0] <= last
+                and spot[1] >= top
+            ),
+            None,
+        )
+        if under is not None:
+            problems.append(
+                f'writes the table {block.table} from {block.cell} on "{block.sheet}" over '
+                f"{under}, which is written already"
+            )
+        else:
+            over = next(
+                (
+                    other
+                    for (on, start, end, _, other) in placed
+                    if on == sheet and start <= last and first <= end
+                ),
+                None,
+            )
+            if over is not None:
+                problems.append(
+                    f'writes the table {block.table} from {block.cell} on "{block.sheet}" '
+                    f"over the table {over.table} from {over.cell}"
+                )
+        placed.append((sheet, first, last, top, block))
     return list(dict.fromkeys(problems))
 
 
@@ -270,14 +369,14 @@ def _write(cell: Any, column: SchemaColumn, value: Any, field: str) -> None:
         cell.number_format = number_format(column, value)
 
 
-def _write_label(cell: Any, column: SchemaColumn, field: str) -> None:
-    """*column*'s label into the openpyxl *cell*, held as text, so neither a leading ``=``
-    nor an error value is read."""
+def _write_label(cell: Any, label: str, field: str) -> None:
+    """*label*, the label or the name of the column *field*, into the openpyxl *cell*, held
+    as text, so neither a leading ``=`` nor an error value is read."""
     # Imported here: only an export loads openpyxl.
     from openpyxl.utils.exceptions import IllegalCharacterError
 
     try:
-        cell.value = column_label(column)
+        cell.value = label
     except IllegalCharacterError:
         raise ExportRefusedError(
             f"The label of {field} holds a character Excel cannot hold in a cell, such as a "
@@ -287,23 +386,33 @@ def _write_label(cell: Any, column: SchemaColumn, field: str) -> None:
 
 
 def cells_workbook(
-    spec: FormSpec, target: ExcelCellsExport, value_of: Callable[[ExportCell], Any]
+    spec: FormSpec,
+    target: ExcelCellsExport,
+    value_of: Callable[[ExportCell], Any],
+    rows_of: Callable[[ExportBlock], list[list[Any]]],
 ) -> bytes:
     """The workbook of *target*'s cells, each holding ``value_of`` it and its label cell its
-    column's label, its sheets in the order their names are first given; *target* has no
-    :func:`cells_problems`."""
+    column's label, and its blocks, each its header, but for ``none``, along its top-left
+    cell's row and under it ``rows_of`` it, a value for each of its columns, its sheets in
+    the order their names are first given; *target* has no :func:`cells_problems`. A block
+    whose rows run past the sheet's last row is refused, naming it."""
     # Imported here: only an export loads openpyxl.
     from openpyxl import Workbook
 
     workbook = Workbook()
     workbook.properties.creator = "Haute"
     sheets: dict[str, Any] = {}
-    for cell in target.cells:
-        sheet = sheets.get(cell.sheet)
+
+    def sheet_of(name: str) -> Any:
+        sheet = sheets.get(name)
         if sheet is None:
             sheet = workbook.active if not sheets else workbook.create_sheet()
-            sheet.title = cell.sheet
-            sheets[cell.sheet] = sheet
+            sheet.title = name
+            sheets[name] = sheet
+        return sheet
+
+    for cell in target.cells:
+        sheet = sheet_of(cell.sheet)
         found = _own_column(spec, cell)
         address = cell_address(cell.cell)
         if found is None or address is None:
@@ -317,7 +426,32 @@ def cells_workbook(
         if label_address is None:
             raise AssertionError(f"{cell!r} has a problem cells_problems names")
         label_column, label_row = label_address
-        _write_label(sheet.cell(row=label_row, column=label_column), found[1], field)
+        _write_label(sheet.cell(row=label_row, column=label_column), column_label(found[1]), field)
+    for block in target.blocks:
+        sheet = sheet_of(block.sheet)
+        held = _block_columns(spec, block)
+        address = cell_address(block.cell)
+        if held is None or address is None:
+            raise AssertionError(f"{block!r} has a problem cells_problems names")
+        table, columns = held
+        first, row = address
+        if block.header != "none":
+            for offset, column in enumerate(columns):
+                label = column_label(column) if block.header == "labels" else column.name
+                at = sheet.cell(row=row, column=first + offset)
+                _write_label(at, label, f"{table.name}.{column.name}")
+            row += 1
+        rows = rows_of(block)
+        if rows and row + len(rows) - 1 > _LAST_ROW:
+            raise ExportRefusedError(
+                f"The table {table.name} has {len(rows)} rows, more than fit on "
+                f'"{block.sheet}" from {block.cell} down: place it higher.'
+            )
+        for values in rows:
+            for offset, (column, value) in enumerate(zip(columns, values, strict=True)):
+                at = sheet.cell(row=row, column=first + offset)
+                _write(at, column, value, f"{table.name}.{column.name}")
+            row += 1
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
@@ -343,6 +477,55 @@ def _export_of(spec: FormSpec, component: str) -> tuple[ExportWidget, ExcelCells
             "Preview runs."
         )
     return widget, widget.target
+
+
+def _table_rows(
+    table: SchemaTable, quote: Mapping[str, Any], tables: Mapping[str, list[Any]]
+) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    """*table*'s rows in the quote, each its inputs as *quote* holds them and its outputs as
+    *tables* priced them: a one-row table's one row, an input table's rows as the quote holds
+    them, each beside the priced row whose index holds the same value as text, so the rows
+    line up by index, never by place, as ``pricedRows`` lines them up in the view; and a
+    table of outputs alone its priced rows in their order."""
+    priced = [row for row in tables.get(table.name) or [] if isinstance(row, dict)]
+    held = quote.get(table.name)
+    if table.rows == "one":
+        return [(held if isinstance(held, dict) else {}, priced[0] if priced else {})]
+    if not table.has_inputs:
+        return [({}, row) for row in priced]
+    index = table.index
+    assert index is not None, f"{table.name} has many rows, so it has an index"
+    by_index: dict[str, Mapping[str, Any]] = {}
+    for row in priced:
+        if row.get(index.name) is not None:
+            by_index.setdefault(str(row[index.name]), row)
+    typed = held if isinstance(held, list) else []
+    return [
+        (row, by_index.get(str(row.get(index.name)), {})) for row in typed if isinstance(row, dict)
+    ]
+
+
+def _typed_value(
+    table: SchemaTable,
+    column: SchemaColumn,
+    inputs: Mapping[str, Any],
+    outputs: Mapping[str, Any],
+) -> Any:
+    """*column*'s value in a row of *table*, an input's from *inputs* and an output's from
+    *outputs*, typed by the column; a value not of its type refused, naming it."""
+    if table.is_output(column.name):
+        held = outputs.get(column.name)
+        if column.type == "int" and isinstance(held, str) and _WHOLE_TEXT.fullmatch(held):
+            # A whole number past what JSON holds exactly, as the wire carries it.
+            held = int(held)
+    else:
+        held = inputs.get(column.name)
+    try:
+        return json_value(held, COLUMN_DTYPES[column.type])
+    except JsonValueError:
+        raise ExportRefusedError(
+            f"{table.name}.{column.name} is {held!r}, not {column.type!r}: price the sample again."
+        ) from None
 
 
 def preview_export(
@@ -381,23 +564,18 @@ def preview_export(
         found = _own_column(spec, cell)
         assert found is not None
         table, column = found
-        if table.is_output(column.name):
-            rows = tables.get(table.name) or [{}]
-            held = rows[0].get(column.name) if isinstance(rows[0], dict) else None
-            if column.type == "int" and isinstance(held, str) and _WHOLE_TEXT.fullmatch(held):
-                # A whole number past what JSON holds exactly, as the wire carries it.
-                held = int(held)
-        else:
-            row = quote.get(table.name)
-            held = row.get(column.name) if isinstance(row, dict) else None
-        try:
-            return json_value(held, COLUMN_DTYPES[column.type])
-        except JsonValueError:
-            raise ExportRefusedError(
-                f"{cell.table}.{cell.column} is {held!r}, not {column.type!r}: price the "
-                "sample again."
-            ) from None
+        inputs, outputs = _table_rows(table, quote, tables)[0]
+        return _typed_value(table, column, inputs, outputs)
 
-    data = cells_workbook(spec, target, value_of)
+    def rows_of(block: ExportBlock) -> list[list[Any]]:
+        held = _block_columns(spec, block)
+        assert held is not None
+        table, columns = held
+        return [
+            [_typed_value(table, column, inputs, outputs) for column in columns]
+            for inputs, outputs in _table_rows(table, quote, tables)
+        ]
+
+    data = cells_workbook(spec, target, value_of, rows_of)
     details = quote.get(QUOTE_DETAILS_NAME)
     return export_file_name(target.file_name, details if isinstance(details, dict) else {}), data

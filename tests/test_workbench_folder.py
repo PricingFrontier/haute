@@ -1917,7 +1917,8 @@ def test_each_reference_is_written_and_read_by_name_an_unknown_one_kept_as_writt
 def _cells_form() -> dict[str, Any]:
     """FORM with its Export writing an Excel workbook of cells: the insured's name, labelled
     beside it, and the state on a Slip sheet, the state again on a Summary, its address and
-    its label's as typed."""
+    its label's as typed; and the layers as a block on a Layers sheet, headed by names, its
+    columns in an order of their own."""
     form = copy.deepcopy(FORM)
     exporter = widget_of(form, EXPORTER)
     exporter["tables"] = []
@@ -1941,6 +1942,15 @@ def _cells_form() -> dict[str, Any]:
                 "label_cell": "b 1",
             },
         ],
+        "blocks": [
+            {
+                "table": "layers",
+                "columns": ["limit", "layer"],
+                "sheet": "Layers",
+                "cell": "b2",
+                "header": "names",
+            }
+        ],
     }
     return form
 
@@ -1959,6 +1969,16 @@ def test_an_export_of_cells_writes_each_cell_s_column_by_name_and_reads_it_back(
             {"field": "quote_details.insured", "sheet": "Slip", "cell": "B3", "label_cell": "A3"},
             {"field": "policy.state", "sheet": "Slip", "cell": "B4", "label_cell": ""},
             {"field": "policy.state", "sheet": "Summary", "cell": "a1", "label_cell": "b 1"},
+        ],
+        # Each block as the form holds it, its address as typed.
+        "blocks": [
+            {
+                "table": "layers",
+                "columns": ["limit", "layer"],
+                "sheet": "Layers",
+                "cell": "b2",
+                "header": "names",
+            }
         ],
     }
     document = read_form_document(config(project))
@@ -1985,6 +2005,29 @@ def test_an_export_of_cells_keeps_a_column_the_schema_does_not_hold_and_names_it
     assert len(found) == 1
     assert found[0].startswith("components/export.json names ")
     assert _word("stat").search(found[0])
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [
+        (lambda block: block.update(columns=["limit", "layr"]), "layers.layr"),
+        (lambda block: block.update(table="layer"), "layer"),
+    ],
+)
+def test_an_export_of_cells_keeps_a_block_naming_what_the_schema_does_not_hold_and_names_it(
+    project: Path, change: Any, named: str
+) -> None:
+    form = _cells_form()
+    change(widget_of(form, EXPORTER)["target"]["blocks"][0])
+    files = write_form(project, form)
+
+    spec = read_form_document(config(project)).spec
+
+    assert form_files(spec, form_folder(project)) == files
+    found = unresolved_references(spec)
+    assert found, named
+    assert all(entry.startswith("components/export.json names ") for entry in found)
+    assert any(_word(named).search(entry) for entry in found), found
 
 
 def test_an_export_of_cells_exporting_tables_too_is_refused_as_the_form_is_read() -> None:

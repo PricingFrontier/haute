@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { ApiError } from "../../api/client"
 import { listProjectFiles } from "../../api/projectFiles"
-import type { FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from "../../api/types"
+import type { ExcelCellsExport, ExportWidget, FormSpec, ProjectFolderResponse, SchemaColumn, SchemaTable } from "../../api/types"
 import { fetchParamFile } from "../../api/workbench"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -959,6 +959,39 @@ describe("SchemaEditor", () => {
     expect(asked()?.text).toBe("Its columns are used by 2 Imports and Exports; deleting it takes them out of them too.")
     await answerQuestion("confirm")
     expect(current().pages[0].sections[0].widgets).toMatchObject([{ table: null }, { tables: [] }])
+  })
+
+  it("asks before removing a column or a table an Export of cells writes, which keeps it, named as a problem", async () => {
+    const used = form(POLICY, LAYERS)
+    const cells: ExcelCellsExport = {
+      format: "excel_cells",
+      file_name: "slip",
+      cells: [{ table: "policy_details", column: "state", sheet: "Slip", cell: "B3", label_cell: "" }],
+      blocks: [{ table: "layers", columns: ["limit"], sheet: "Slip", cell: "A12", header: "labels" }],
+    }
+    used.pages[0].sections[0].widgets = [
+      { ...createWidget("import", { x: 0, y: 0, w: 160, h: 40 }, used), id: "w_in", table: "policy_details" },
+      { ...createWidget("export", { x: 176, y: 0, w: 160, h: 40 }, used), id: "w_out", tables: [], target: cells },
+    ]
+    load(used)
+    render(<SchemaEditor />)
+    const kept = () => (current().pages[0].sections[0].widgets[1] as ExportWidget).target
+
+    // The Import reads state and takes it out; the Export of cells keeps it.
+    fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
+    expect(asked()?.text).toBe("Used by 1 Import or Export; removing it takes it out of that too. An Export of cells writes it and keeps it as a problem until changed.")
+    await answerQuestion("confirm")
+    expect(kept()).toEqual(cells)
+
+    // Only the Export of cells writes a layer's limit, and the table's columns.
+    fireEvent.click(screen.getByRole("button", { name: "Remove column limit" }))
+    expect(asked()?.text).toBe("An Export of cells writes it and keeps it as a problem until changed.")
+    await answerQuestion(null)
+    fireEvent.click(screen.getByRole("button", { name: "Delete table layers" }))
+    expect(asked()?.text).toBe("An Export of cells writes its columns and keeps them as a problem until changed.")
+    await answerQuestion("confirm")
+    expect(current().schema.tables.map((t) => t.name)).toEqual(["policy_details"])
+    expect(kept()).toEqual(cells)
   })
 
   it.each([false, true])("lists where a column is used, sheet by sheet, as Remove counts it (readOnly=%s)", (readOnly) => {

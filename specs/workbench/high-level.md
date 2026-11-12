@@ -502,7 +502,11 @@ Out of scope:
   one-row table by `table` and `column`, written into the cell `cell` (an address such as
   `B3`) of the sheet named `sheet`, and its column's label into the cell `label_cell` of
   that sheet (`A3`, say; empty for none), in the order chosen, a column in as many cells as
-  it is given, and no `tables`, since its cells say what it writes; or a database (`sql`,
+  it is given; its `blocks`, each a table's rows written from a cell, in the order chosen:
+  the `table` by name, its `columns` by name in the order chosen, the cell `cell` of the
+  sheet named `sheet` at the block's top-left corner, and its `header`, its columns headed
+  by their `labels`, their `names` or, with `none`, not at all; and no `tables`, since its
+  cells and blocks say what it writes; or a database (`sql`,
   its `connection` and its `table_names`, the tables written to a table named otherwise,
   each by `table`, one it exports, with that `name`, never blank, one each at most)),
   each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
@@ -1090,12 +1094,15 @@ Out of scope:
   rows on it alone, the list's condition going with it once it has no test while it needs
   one (in any or every row) or when it totals the column; a group left with none goes with
   them; a table takes every condition on its rows; a column takes the name an Import
-  read it from, the parameters it gave a value and the cells it was written into; and a
+  read it from and the parameters it gave a value; and a
   table leaves the Import that
   filled it filling none, its column names gone too, takes the parameters its columns
-  gave and the cells they were written into, and stops being exported, with the name it
-  was written to. Renaming a table or a column renames it wherever it is used, an
-  Export's cells too. The editor says what would stop
+  gave, and stops being exported, with the name it was written to. An Export to a
+  workbook of cells keeps them: its cells and its blocks' columns, and a removed table's
+  blocks, still name them, each a problem until it is changed or taken away, so nothing
+  the workbook held goes from it unseen, and the question says which Exports keep them;
+  a column or a table given the name again is the one they write. Renaming a table or a
+  column renames it wherever it is used, an Export's cells and blocks too. The editor says what would stop
   the schema being the pipeline's tables: a table's name is an identifier, unique whatever
   its case, and its ports, the name with `_input` and with `_output`, are held to the port
   rules the Quote Input's labels are held to (an identifier, none of the document's
@@ -1445,7 +1452,15 @@ Out of scope:
   select of the same columns, a column chosen adding a cell of it on the last cell's sheet
   in the cell under the last cell's, its label in the cell under the last cell's label
   while that cell has one, or `Sheet1` and `A1` with no label for the first, the select
-  showing Add a cell again. Otherwise Tables, a
+  showing Add a cell again. Then Tables: for each block in order, its table's name, or
+  "Missing table", with a cross that takes the block away; its Sheet and its Cell, the
+  address of its top-left corner, in text fields as a cell's are; its Header, a select of
+  Labels, Names or None; its columns in order, each by its label, or "Missing column",
+  with a cross that takes it out, dragged or moved with Alt+Up and Alt+Down into a new
+  order; and Add a column, a select of its table's columns as a sheet shows them (the
+  index among them) that it does not hold yet. Under them Add a table, a select of the
+  schema's tables, a table chosen adding a block of it with no columns, headed by labels,
+  at `A1` of a sheet named by the table. Otherwise Tables, a
   checkbox per schema table, ticked in order, and, to a database, beside
   each one ticked the name of the table it is written to, showing the table's own while
   it has none; unticking a table drops its name; and a table it exports that is no longer
@@ -1758,8 +1773,8 @@ Out of scope:
   the Export and what that pricing gave (the sample as the server typed it and the priced
   tables), and the browser downloads the workbook the server writes, named by its file
   name with `.xlsx`; a refusal shows as an error naming why, as when the sample changed
-  meanwhile. The workbook holds a sheet for each sheet name its cells give, in the order
-  first given, Excel holding two names that differ only in case as one (a problem,
+  meanwhile. The workbook holds a sheet for each sheet name its cells and then its blocks
+  give, in the order first given, Excel holding two names that differ only in case as one (a problem,
   below), and each cell its column's value as that pricing's quote holds it: an input as
   the server typed the sample, which leaves out an input the sheets hide but in
   `quote_details`, held whole; an output as priced; and nothing for one holding no value
@@ -1770,7 +1785,14 @@ Out of scope:
   past 2^53, which Excel cannot hold exactly as a number, is written as its digits, as text,
   so no digit is lost. A cell's label cell holds its column's label as the sheets label
   it (its label, else its name made readable, `sum_insured` as `Sum insured`), always as
-  text. A number cell
+  text. A block writes its header, but for `none`, along its top-left cell's row, each
+  column's label as a label cell holds it, or its name, as text, and under it a row for
+  each of its table's rows in the quote, its columns in turn rightward, each value as a
+  cell holds it: a one-row table's one row; an input table's rows as the server typed the
+  sample, the rows the sheets hold anything typed in, in their order, each output that of
+  the priced row of the same index; a table of outputs alone its priced rows in their
+  order. A many-row table with no rows writes its header alone. A block whose rows would
+  run past row 1,048,576 is refused, naming it. A number cell
   takes its column's format as the sheets show it (decimal places fixed when set, a
   percent shown as the value times 100, a currency's sign before it, thousands grouped
   unless the column says not), the value itself written unrounded; where the sheets trim
@@ -1802,15 +1824,21 @@ Out of scope:
   And an Export's: no label; no tables, but to a workbook of cells; a table no longer in
   the schema; more than one
   table to a CSV, which holds one; a file with no name or naming a column `quote_details`
-  does not have; to a database, no connection; and to a workbook of cells, no cells, a
-  cell's column no longer in the schema or of a many-row table, which holds a value per
-  row, a sheet name Excel refuses (blank, longer than 31 characters, holding one of
-  `[ ] : * ? / \`, starting or ending with `'`, or `History` in any case), an address that
-  is not a cell (a column from `A` to `XFD` then a row from 1 to 1,048,576, as `B3`),
-  for a value or a label, a label's address left blank meaning no label, two values or
-  labels at one address of one sheet, and two sheet names that differ only in case. None
-  is refused: the form is saved as it is. The server refuses an export whose file name or
-  cells have any of these problems, naming each.
+  does not have; to a database, no connection; and to a workbook of cells, no cells and no
+  blocks, a cell's column no longer in the schema or of a many-row table, which holds a
+  value per row (a block writes its rows), a block's table or one of its columns no longer
+  in the schema, a block with no columns or with one twice, a sheet name Excel refuses
+  (blank, longer than 31 characters, holding one of `[ ] : * ? / \`, starting or ending
+  with `'`, or `History` in any case), an address that is not a cell (a column from `A`
+  to `XFD` then a row from 1 to 1,048,576, as `B3`), for a value, a label or a block, a
+  label's address left blank meaning no label, a block's columns running past `XFD`, two
+  values or labels at one address of one sheet, a block over a value, a label or another
+  block, as a block takes its columns from its top-left cell's row to the foot of the
+  sheet, however many rows a quote gives it, and two sheet names that differ only in
+  case. The cells' problems come first, in their order, then the blocks', in theirs, each
+  checked against all before it. None is refused: the form is saved as it is. The server
+  refuses an export whose file name, cells or blocks have any of these problems, naming
+  each.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
   the sheets as an underwriter uses them: the same sheets, their sections that show stacked
   one under the next and each component where it sits in its section, read and
@@ -3430,13 +3458,29 @@ Out of scope:
   but the form is kept for it; a template, the analyst's styled workbook filled in place,
   is a later slice, and the cells it fills are given the same way. Its own `format`,
   `excel_cells`, rather than a layout of `excel`, keeps every target holding only the
-  settings it uses: a workbook of cells has no headers, raw or formatted values, or
-  tables. The server writes it (openpyxl, a direct dependency, which a template will
+  settings it uses: a workbook of cells has no raw or formatted values, nor the Export's
+  tables, and each block heads its own columns. The server writes it (openpyxl, a direct dependency, which a template will
   also need), so the app's run, the next slice, writes the same file from a kept quote.
   Preview sends what its last pricing gave, so a workbook holds the values the sheets
   show beside it; the server types the sample again from the form and refuses the export
   when that sample is not the one priced. Values are written typed, text as text, so an
   underwriter's typing never becomes a formula in the file.
+- **A table's rows as a block that takes its columns to the foot of the sheet.** A block
+  holds as many rows as the quote, which the form alone cannot know, while its problems
+  are the form's, named alike by the server and the view as it is built. So a block takes
+  its columns from its top-left cell's row down, and anything placed there is a problem
+  before any quote is priced, rather than an export refused for a quote with more rows
+  than the analyst allowed for; tables sit side by side or on sheets of their own. A
+  limit of rows per block, which would let them stack, is not taken. A block's columns
+  are chosen and ordered, so a reader's layout is followed rather than the schema's, and
+  each block heads them as its reader needs: by label for a person, by name for a
+  system, or not at all.
+- **What a removed column or table leaves in an Export of cells.** Every other use of a
+  removed column goes with it, but a workbook of cells is laid out for a reader that
+  looks for a value at its place: a cell or a column of a block dropping out would move
+  nothing, yet leave the reader without it and no one told. So the Export keeps it,
+  named as a problem, which stops the export until the analyst picks another or takes it
+  out.
 
 ## Interactions
 

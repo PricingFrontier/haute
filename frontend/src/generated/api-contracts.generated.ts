@@ -5958,14 +5958,32 @@ export interface ExcelExport {
   values: 'raw' | 'formatted';
 }
 /**
- * An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, under
- * a file name made as a ``_FileExport``'s is. Its cells say what it writes, so the Export
- * exports no tables.
+ * An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, and
+ * chosen tables, each a block of its rows from a cell, under a file name made as a
+ * ``_FileExport``'s is. Its cells and blocks say what it writes, so the Export exports no
+ * tables.
  */
 export interface ExcelCellsExport {
+  blocks: ExportBlock[];
   cells: ExportCell[];
   file_name: string;
   format: 'excel_cells';
+}
+/**
+ * A table's rows an Excel workbook of cells holds as a block: the chosen ``columns`` of
+ * the table ``table``, by name in the order chosen, rightward from the cell at ``cell``
+ * (an address such as ``A12``) of the sheet named ``sheet``, the block's top-left corner,
+ * under a ``header`` of their labels or their names, or none, and a row for each of the
+ * table's rows in the quote. Its names and address are the form's as typed: their
+ * problems are the view's to show and the export's to refuse
+ * (:mod:`haute._workbench_export`).
+ */
+export interface ExportBlock {
+  cell: string;
+  columns: string[];
+  header: 'labels' | 'names' | 'none';
+  sheet: string;
+  table: string;
 }
 /**
  * A cell an Excel workbook of cells holds: the value of a one-row table's column, by

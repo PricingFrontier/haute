@@ -1265,5 +1265,8 @@ def unresolved_references(spec: FormSpec) -> list[str]:
                         refs += [(named.table, None) for named in widget.target.table_names]
                     if isinstance(widget.target, ExcelCellsExport):
                         refs += [(cell.table, cell.column) for cell in widget.target.cells]
+                        for block in widget.target.blocks:
+                            refs.append((block.table, None))
+                            refs += [(block.table, column) for column in block.columns]
                 report(_component_path(widget.name), refs)
     return found
