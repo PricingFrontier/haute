@@ -5,10 +5,14 @@ import App from "./App"
 import { bootstrapHauteSession } from "./api/client"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import { recordChunkLoadFailures } from "./utils/chunkLoadError"
+import { suppressBrowserContextMenu } from "./utils/suppressBrowserContextMenu"
 
 // Before anything loads lazily: a chunk Vite fails to load then surfaces as a
 // reload offer in the error boundary that catches it.
 recordChunkLoadFailures()
+
+// A right-click opens one of the app's menus or nothing: never the browser's.
+suppressBrowserContextMenu()
 
 const root = createRoot(document.getElementById("root")!)
 
