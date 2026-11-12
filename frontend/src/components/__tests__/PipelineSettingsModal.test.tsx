@@ -776,6 +776,21 @@ describe("PipelineSettingsModal settings fields", () => {
     await waitFor(() => expect(field(/^cache size$/i)).not.toBeDisabled())
   })
 
+  it("a reset that cannot be used says what it does and why it cannot", async () => {
+    serveSettings({ cache_size_gb: 5 })
+    await opened()
+    const reset = screen.getByRole("button", { name: "Use automatic Cache size" })
+    const does = reset.getAttribute("title")
+    expect(does).toMatch(/^Use automatic: /)
+    expect(does).not.toContain("Unavailable")
+    expect(reset).not.toBeDisabled()
+
+    fireEvent.click(screen.getByRole("switch", { name: "Caching" }))
+
+    await waitFor(() => expect(reset).toBeDisabled())
+    expect(reset).toHaveAttribute("title", `${does}. Unavailable while caching is off.`)
+  })
+
   it("reports a failed load and keeps the settings disabled", async () => {
     mockGetPipelineSettings.mockReset()
     mockGetPipelineSettings.mockRejectedValue(

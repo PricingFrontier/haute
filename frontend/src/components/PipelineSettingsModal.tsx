@@ -254,13 +254,14 @@ function PipelineSettingField({
   label,
   hint,
   unit,
-  disabled = false,
+  disabledBecause,
 }: {
   settingKey: NumericSettingKey
   label: string
   hint: string
   unit?: string
-  disabled?: boolean
+  /** Why the setting cannot be changed just now, as a sentence; absent while it can. */
+  disabledBecause?: string
 }) {
   const loaded = useSettingsStore((s) => s.pipelineSettings)
   const save = useSettingsStore((s) => s.savePipelineSetting)
@@ -269,7 +270,11 @@ function PipelineSettingField({
   const shown = set ?? automatic
   const shownText = loaded === null || shown === null ? "" : formatFigure(shown)
   const id = `pipeline-settings-${settingKey.replace(/_/g, "-")}`
-  const unavailable = loaded === null || disabled
+  const unavailable = loaded === null || disabledBecause !== undefined
+  const resets =
+    automatic === null
+      ? "Use automatic: no limit"
+      : `Use automatic: ${formatFigure(automatic)}${unit ? ` ${unit}` : ""}`
 
   const commit = useCallback((next: string) => {
     const raw = next.trim()
@@ -307,11 +312,7 @@ function PipelineSettingField({
             disabled={unavailable}
             className="h-[22px] w-9 justify-center"
             aria-label={`Use automatic ${label}`}
-            title={
-              automatic === null
-                ? "Use automatic: no limit"
-                : `Use automatic: ${formatFigure(automatic)}${unit ? ` ${unit}` : ""}`
-            }
+            title={disabledBecause === undefined ? resets : `${resets}. ${disabledBecause}`}
           >
             <RotateCcw size={11} aria-hidden="true" />
           </Button>
@@ -416,7 +417,7 @@ function CachingSettings() {
         label="Cache size"
         hint="Disk kept for automatically cached results."
         unit="GB"
-        disabled={caching === false}
+        disabledBecause={caching === false ? "Unavailable while caching is off." : undefined}
       />
     </SettingsGroup>
   )

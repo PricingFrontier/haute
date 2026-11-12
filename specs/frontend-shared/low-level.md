@@ -628,7 +628,9 @@ setting's range (more than 0 GB for Cache size and Previews, 0 GB or more for Ke
 more than 0 and at most 10,080 minutes for a time limit) is ignored and the field shows its
 value again; a draft equal to what the field already shows sends nothing. The Caching switch
 (`role="switch"`, `aria-checked`) saves at each toggle. While caching is off, Cache size is
-disabled, since nothing is captured for it to bound.
+disabled, since nothing is captured for it to bound. A reset button's tooltip says what it
+restores ("Use automatic: 20 GB"); while Cache size is disabled it also says why
+("Use automatic: 20 GB. Unavailable while caching is off.").
 
 The pane loads the settings each time it opens; reopened while a save is in flight, it shows
 that save's outcome instead of loading over it. A load answered after a newer load began,
