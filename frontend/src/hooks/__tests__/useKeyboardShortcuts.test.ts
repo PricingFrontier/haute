@@ -95,7 +95,7 @@ describe("useKeyboardShortcuts", () => {
   beforeEach(() => {
     // Reset store state between tests
     useUIStore.setState({
-      shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false,
+      shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false, renameDialog: null,
     })
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     params = makeParams()
@@ -106,6 +106,31 @@ describe("useKeyboardShortcuts", () => {
     cleanup()
     vi.clearAllMocks()
     vi.restoreAllMocks()
+  })
+
+  it("F2 opens the rename dialog for the one selected node", () => {
+    params.graphRef.current = {
+      nodes: [
+        { id: "a", position: { x: 0, y: 0 }, selected: true, data: { label: "Alpha", nodeType: "polars" } },
+        { id: "b", position: { x: 0, y: 0 }, data: { label: "Beta", nodeType: "polars" } },
+      ],
+      edges: [],
+    }
+    fireKey("F2")
+    expect(useUIStore.getState().renameDialog).toEqual({ nodeId: "a", currentLabel: "Alpha" })
+  })
+
+  it("F2 does nothing with no node, or several, selected", () => {
+    useUIStore.setState({ renameDialog: null })
+    fireKey("F2")
+    params.graphRef.current = {
+      nodes: ["a", "b"].map((id) => ({
+        id, position: { x: 0, y: 0 }, selected: true, data: { label: id, nodeType: "polars" },
+      })),
+      edges: [],
+    }
+    fireKey("F2")
+    expect(useUIStore.getState().renameDialog).toBeNull()
   })
 
   it("Ctrl+S calls handleSave", () => {

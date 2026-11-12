@@ -24,6 +24,7 @@ export interface KeyboardShortcutBinding {
     | "fitView"
     | "refreshPreview"
     | "deleteSelected"
+    | "rename"
     | "escape"
     | "help"
   keys: (modLabel: string) => string
@@ -96,6 +97,12 @@ export const KEYBOARD_SHORTCUT_BINDINGS: readonly KeyboardShortcutBinding[] = [
     keys: () => "Delete / Backspace",
     label: "Delete selected",
     matches: (e) => e.key === "Delete" || e.key === "Backspace",
+  },
+  {
+    id: "rename",
+    keys: () => "F2",
+    label: "Rename the selected node",
+    matches: (e) => e.key === "F2",
   },
   {
     id: "escape",
@@ -192,6 +199,7 @@ export default function useKeyboardShortcuts({
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
   const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
+  const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   const pasteRequestSerialRef = useRef(0)
   useEffect(() => {
     if (!enabled) return
@@ -332,6 +340,18 @@ export default function useKeyboardShortcuts({
       if (BINDING_BY_ID.searchNodes.matches?.(e, mod) && (!isTyping || useUIStore.getState().nodeSearchOpen)) {
         e.preventDefault()
         setNodeSearchOpen((prev) => !prev)
+        return
+      }
+
+      // F2 → rename the one selected node, as the node menu's Rename does. A request
+      // input or response node is named by its type alone, so it has no rename.
+      if (BINDING_BY_ID.rename.matches?.(e, mod) && !isTyping) {
+        const selected = graphRef.current.nodes.filter((n) => n.selected)
+        if (selected.length !== 1) return
+        e.preventDefault()
+        const data = nodeData(selected[0])
+        if (readOnly || isSingletonType(data.nodeType)) return
+        setRenameDialog({ nodeId: selected[0].id, currentLabel: data.label })
         return
       }
 

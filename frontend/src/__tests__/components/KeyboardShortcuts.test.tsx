@@ -35,6 +35,7 @@ describe("KeyboardShortcuts", () => {
       "Fit view",
       "Refresh the open preview",
       "Delete selected",
+      "Rename the selected node",
       "Close panel / clear trace",
       "Show this help",
     ]
