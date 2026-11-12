@@ -80,7 +80,7 @@ function Toolbar({
 
   // The brand column is as wide as the node palette, less the bar's padding, so the
   // Source selector starts over the palette's edge (haute-ui/toolbar.css).
-  const brand = <ToolbarBrand name="haute" version={__APP_VERSION__} />
+  const brand = <ToolbarBrand name="haute" version={__APP_VERSION__} build={__APP_BUILD__} />
 
   return (
     <header role="toolbar" aria-label="Pipeline toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">

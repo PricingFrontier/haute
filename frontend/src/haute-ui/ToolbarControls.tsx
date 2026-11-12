@@ -1,15 +1,80 @@
-import type { ButtonHTMLAttributes, HTMLAttributes } from "react"
+import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type HTMLAttributes } from "react"
 import { Redo2, Undo2, ZoomIn, ZoomOut, type LucideIcon } from "lucide-react"
 
 const classNames = (...names: (string | false | undefined)[]) => names.filter(Boolean).join(" ")
 
-/** The product's name, lowercase, over its version: the toolbar's first column. */
-export function ToolbarBrand({ name, version }: { name: string; version: string }) {
+/** When a build was made and from which commit; the commit is unknown outside a git checkout. */
+export interface BuildInfo {
+  builtAt: string
+  commit: string | null
+  commitDate: string | null
+}
+
+/** An ISO timestamp as a date and time in the viewer's locale and time zone, or as given if unparseable. */
+function formatBuildDate(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleString(undefined, { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })
+}
+
+/**
+ * The product's name, lowercase, over its version: the toolbar's first column.
+ *
+ * Given `build`, the version is a button that opens the build's details: the version,
+ * when it was built, and the commit it was built from with that commit's date. Escape
+ * or a press outside closes them.
+ */
+export function ToolbarBrand({ name, version, build }: { name: string; version: string; build?: BuildInfo }) {
+  const [open, setOpen] = useState(false)
+  const markRef = useRef<HTMLDivElement>(null)
+  const detailsId = useId()
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (!markRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("pointerdown", onPointerDown)
+    document.addEventListener("keydown", onKeyDown)
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown)
+      document.removeEventListener("keydown", onKeyDown)
+    }
+  }, [open])
+
   return (
     <div className="toolbar-brand" data-testid="toolbar-brand">
-      <div className="toolbar-brand-mark">
+      <div className="toolbar-brand-mark" ref={markRef}>
         <h1 className="toolbar-brand-name">{name}</h1>
-        <span className="toolbar-brand-version">v{version}</span>
+        {build ? (
+          <button
+            type="button"
+            className="toolbar-brand-version"
+            aria-expanded={open}
+            aria-controls={open ? detailsId : undefined}
+            title="Version details"
+            onClick={() => setOpen((wasOpen) => !wasOpen)}
+          >
+            v{version}
+          </button>
+        ) : (
+          <span className="toolbar-brand-version">v{version}</span>
+        )}
+        {build && open && (
+          <dl id={detailsId} className="toolbar-brand-details" data-testid="toolbar-brand-details">
+            <dt>Version</dt>
+            <dd>{version}</dd>
+            <dt>Built</dt>
+            <dd>{formatBuildDate(build.builtAt)}</dd>
+            <dt>Commit</dt>
+            <dd title={build.commit ?? undefined}>{build.commit ? build.commit.slice(0, 10) : "unknown"}</dd>
+            <dt>Commit date</dt>
+            <dd>{build.commitDate ? formatBuildDate(build.commitDate) : "unknown"}</dd>
+          </dl>
+        )}
       </div>
     </div>
   )
