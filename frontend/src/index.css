@@ -226,11 +226,6 @@
   --column-origin-manual-text: var(--success);
   --column-origin-manual-bg: var(--success-soft);
 
-  /* Cache fetch button, cached state. */
-  --cache-ready-text: var(--success);
-  --cache-ready-border: var(--success-border-strong);
-  --cache-ready-bg: var(--success-soft);
-
   /* Branch-restore affordance (BranchManager): icon/text colour at rest
      and on hover, plus the icon-button hover fill.  Branch-scoped name —
      "restore" alone would invite reuse by unrelated restore surfaces. */
