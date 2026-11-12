@@ -23,6 +23,7 @@ from haute._workbench_export import (
     StaleExportError,
     cell_address,
     cells_problems,
+    export_file_name,
     number_format,
     preview_export,
     sheet_name_problem,
@@ -66,6 +67,7 @@ FORM: dict[str, Any] = {
                     column("limit", "float", number_format="currency_gbp"),
                     column("sprinklered", "bool"),
                     column("note"),
+                    column("vehicles", "int"),
                     column("secret"),
                 ],
             },
@@ -75,6 +77,7 @@ FORM: dict[str, Any] = {
                 "outputs": [
                     column("premium", "float", number_format="currency_gbp"),
                     column("rate", "float", number_format="percent"),
+                    column("band", "int"),
                 ],
             },
             {
@@ -481,6 +484,42 @@ def test_the_file_name_writes_each_character_a_file_name_cannot_hold_as_an_under
     file_name, _ = export(form)
 
     assert file_name == "Acme_Ltd_ _UK_ _a_b____ PREVIEW-1.xlsx"
+
+
+#: A whole number past what JSON holds exactly, which the wire carries as text.
+HUGE = 2**53 + 1
+
+
+def test_a_whole_number_past_what_json_holds_exactly_is_written_whole_as_its_digits() -> None:
+    form = with_cells(cell("policy.vehicles", "Slip", "A1"), cell("pricing.band", "Slip", "A2"))
+    form["sample"]["policy"][0]["vehicles"] = str(HUGE)
+    tables = {"pricing": [{**PRICED["pricing"][0], "band": str(HUGE)}]}
+
+    # The sample priced, as the wire carries it, holds the number as text.
+    assert priced_sample(form)["policy"]["vehicles"] == str(HUGE)
+    _, data = export(form, tables)
+
+    # Excel's numbers are doubles, which cannot hold it: its digits are written as text.
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    assert [(slip[at].value, slip[at].data_type) for at in ("A1", "A2")] == [(str(HUGE), "s")] * 2
+
+
+def test_a_file_name_says_each_detail_as_text() -> None:
+    details = {
+        "is_renewal": True,
+        "lapsed": False,
+        "inception_date": datetime.date(2026, 11, 12),
+        "quote_option": 2,
+        "share": 0.5,
+        "limit": 3.0,
+        "broker": None,
+    }
+
+    named = export_file_name(
+        "{is_renewal}-{lapsed}-{inception_date}-{quote_option}-{share}-{limit}-{broker}", details
+    )
+
+    assert named == "true-false-2026-11-12-2-0.5-3-.xlsx"
 
 
 def test_a_file_name_blank_for_the_quote_is_refused() -> None:

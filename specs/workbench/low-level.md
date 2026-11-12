@@ -1929,20 +1929,25 @@ no longer has; and `InputSource` in
     route reads the config through `_enabled_config` and runs `preview_export` off the
     event loop. It takes the form holding quote_details (`with_quote_details`), finds the
     component by id (none, or one that is not an Export to an Excel workbook of cells, an
-    `ExportRefusedError`), and refuses `cells_problems`, each named, joined by `; `. It
+    `ExportRefusedError`), and refuses `cells_problems` in one message, `Export "<label>"
+    cannot be written: it <problem>; it <problem>.`. It
     compares the request's sample with `to_json_safe(sample_quote(form))`: another is a
     `StaleExportError`, so the workbook never pairs one sample's outputs with another's
-    inputs. The values are then the quote's: an input's is the sample's for its table
+    inputs. The values are then the quote's: an input's is the server's typing of the
+    sample for its table, `sample_quote`'s own rather than the request's, which carries a
+    whole number past 2**53 - 1 as text (`to_json_safe`), so it stays whole
     (`sample_quote` having left out an input the sheets hide, but in `quote_details`),
     `quote_details` taking the stand-in identity (`with_stand_in` over the input tables);
-    an output's is the first row of its table in `tables`; a table or column either holds
+    an output's is the first row of its table in `tables`, an Integer's whole number
+    carried as text read as the number; a table or column either holds
     none of is none. Each is typed by its
     column through `json_value(value, WorkbenchColumn(name, type).dtype)`, a misfit an
     `ExportRefusedError` naming `table.column` and its type. `cells_workbook` makes an
     openpyxl `Workbook`, the first sheet renamed and the rest made in the order their names
     are first given, and writes each cell: text set then held as text (`data_type` `s`,
     so neither `=` nor an error value is read), a character Excel cannot hold an
-    `ExportRefusedError` naming the field; a date with `yyyy-mm-dd`; a number with
+    `ExportRefusedError` naming the field; a whole number past 2**53 - 1, which Excel's
+    doubles cannot hold exactly, its digits as text; a date with `yyyy-mm-dd`; a number with
     `number_format`; a boolean as itself; none as an empty cell. The workbook is saved to a
     `BytesIO`, its properties' creator `Haute`, and answered with `export_file_name`'s name.
     The view reads the name and the bytes, hands them to `downloadBlob` (an object URL on a
@@ -2461,7 +2466,8 @@ no longer has; and `InputSource` in
   kept as text in the sheet's XML (no `<f>`, an inline string), each `number_format` rule,
   each of `cells_problems` refused with the view's words, an address or sheet name at
   Excel's limits, a sample not the form's refused 409, an Export not of cells or an id no
-  component has refused 422, a value not of its column's type and a control character
+  component has refused 422, a whole number past 2**53 - 1 written as its digits, a
+  value not of its column's type and a control character
   each refused naming the field, and the file name's `{name}`s and the characters it
   writes `_`; the route through the test client, its media type and its
   `Content-Disposition` with a name outside ASCII. `tests/test_workbench_folder.py` covers

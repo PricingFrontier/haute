@@ -16,7 +16,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from haute._json_safe import to_json_safe
+from haute._json_safe import MAX_SAFE_INTEGER, to_json_safe
 from haute._json_values import JsonValueError, json_value
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import (
@@ -51,6 +51,8 @@ _FILE_NAME_REFUSED = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _CURRENCY_SIGNS = {"currency_gbp": '"£"', "currency_usd": '"US$"', "currency_eur": '"€"'}
 #: The most decimal places an Excel format holds.
 _PLACES_LIMIT = 30
+#: A whole number as text, as ``to_json_safe`` writes one past what JSON holds exactly.
+_WHOLE_TEXT = re.compile(r"-?[0-9]+")
 
 
 class ExportRefusedError(WorkbenchError):
@@ -215,12 +217,18 @@ def export_file_name(file_name: str, details: Mapping[str, Any]) -> str:
 
 def _write(cell: Any, column: SchemaColumn, value: Any, field: str) -> None:
     """*value*, of *column*'s type, into the openpyxl *cell*: text held as text, so neither a
-    leading ``=`` nor an error value is read; a date shown ``yyyy-mm-dd``; a number in its
-    column's format; none leaving the cell empty."""
+    leading ``=`` nor an error value is read; a whole number Excel cannot hold exactly (past
+    2**53, as its numbers are doubles) written as its digits, as text, so none is lost; a
+    date shown ``yyyy-mm-dd``; a number in its column's format; none leaving the cell
+    empty."""
     # Imported here: only an export loads openpyxl.
     from openpyxl.utils.exceptions import IllegalCharacterError
 
     if value is None:
+        return
+    if column.type == "int" and abs(value) > MAX_SAFE_INTEGER:
+        cell.value = str(value)
+        cell.data_type = "s"
         return
     if column.type == "str":
         try:
@@ -317,11 +325,14 @@ def preview_export(
         raise ExportRefusedError(
             f'Export "{name}" cannot be written: it ' + "; it ".join(problems) + "."
         )
-    if to_json_safe(sample_quote(spec)) != to_json_safe(dict(sample)):
+    typed = sample_quote(spec)
+    if to_json_safe(typed) != to_json_safe(dict(sample)):
         raise StaleExportError(
             "The sample changed after it was priced: export once it is priced again."
         )
-    quote = with_stand_in(input_tables(spec), sample)
+    # The server's own typing of the sample priced, a whole number past what JSON holds
+    # exactly kept whole, rather than the text the wire carries it as.
+    quote = with_stand_in(input_tables(spec), typed)
 
     def value_of(cell: ExportCell) -> Any:
         found = _own_column(spec, cell)
@@ -330,6 +341,9 @@ def preview_export(
         if table.is_output(column.name):
             rows = tables.get(table.name) or [{}]
             held = rows[0].get(column.name) if isinstance(rows[0], dict) else None
+            if column.type == "int" and isinstance(held, str) and _WHOLE_TEXT.fullmatch(held):
+                # A whole number past what JSON holds exactly, as the wire carries it.
+                held = int(held)
         else:
             row = quote.get(table.name)
             held = row.get(column.name) if isinstance(row, dict) else None

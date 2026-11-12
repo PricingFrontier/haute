@@ -1763,7 +1763,9 @@ Out of scope:
   or one only the app sets, which Preview's sample holds none of (the quote's reference
   and option are Preview's stand-in, `PREVIEW` and 1). A number
   is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, and text is always
-  text, never read as a formula or an error value, whatever it starts with. A number cell
+  text, never read as a formula or an error value, whatever it starts with; a whole number
+  past 2^53, which Excel cannot hold exactly as a number, is written as its digits, as text,
+  so no digit is lost. A number cell
   takes its column's format as the sheets show it (decimal places fixed when set, a
   percent shown as the value times 100, a currency's sign before it, thousands grouped
   unless the column says not), the value itself written unrounded; where the sheets trim

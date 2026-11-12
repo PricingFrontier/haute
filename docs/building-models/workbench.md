@@ -435,7 +435,8 @@ a sheet per table.
   field. Sheets are made in the order the rows first name them. Each cell holds the
   field's value as the sheets hold it: numbers stay numbers in the field's number format,
   dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
-  `=`. A field that holds nothing, or that only the underwriter app sets, leaves its cell
+  `=`. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
+  written as its digits, as text, so none is lost. A field that holds nothing, or that only the underwriter app sets, leaves its cell
   empty; in Preview the quote's reference and option are `PREVIEW` and 1. The workbook's
   name is the file **Name**, with `.xlsx`; a character a file name cannot hold becomes `_`.
   The Export's problems include a sheet name Excel refuses (blank, over 31 characters,
