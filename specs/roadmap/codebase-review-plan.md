@@ -8,10 +8,12 @@ counts as covered. Remove a phase when it has run and its findings are
 written up. Delete the file, its section in the [index](README.md) and its
 entry in `_ROADMAP_SUPPORTING_REPORTS` when no phase remains.
 
-Phases 1 to 3 have the owner's go-ahead and are under way. Phases 4 and 5
-wait on the [decisions](#decisions) at the end.
+Phases 1 to 3 ran on 10 and 11 November 2026 and are removed from this
+file. Their findings are packages in the component roadmaps; what they did
+not finish is under [Left from phases 1 to 3](#left-from-phases-1-to-3).
+Phases 4 and 5 wait on the [decisions](#decisions) at the end.
 
-## Where the review stands on 10 November 2026
+## Where the review stands on 11 November 2026
 
 | | Size | Lines changed since the 31 October audit |
 |---|---:|---:|
@@ -20,43 +22,17 @@ wait on the [decisions](#decisions) at the end.
 
 Changed lines are added plus deleted lines in
 `git diff --numstat edde9e169..HEAD`, where `edde9e169` is the commit the
-31 October audit reviewed. 616 commits have landed since it, not counting
-this review's own.
+31 October audit reviewed, counted on 10 November.
 
-The product's surface, which is what this plan covers:
-
-- 21 node types;
-- 166 route decorators, the routes registered directly (the session routes
-  and the underwriter app's quote changes), the `/ws/sync` WebSocket and the
-  event streams;
-- 17 commands;
-- about 140 distinct API path literals in the browser client, before the
-  paths its helpers build;
-- the input formats and providers: CSV, Parquet, JSON, NDJSON, XML, Excel,
-  Delta, database, lakehouse, Databricks and inline;
-- the quote store on SQLite, SQL Server and PostgreSQL;
-- every operation that writes: a save, a git operation, a cache publication,
-  a model or optimiser artefact, a quote, a release.
-
-Three audits covered the production source in the week to 31 October 2026.
-The 25 October audit read each area in the main session or through a
-reviewer, and lists its partial and mechanical reads. The 28 October audit
-made an inventory-wide source pass, which it says does not establish that
-every statement was inspected. The 31 October audit reports a file-by-file
-pass over all 961 production files at `edde9e169`. The 9 November review
-then read about 31% of the backend and 6% of the frontend in full, by its
-own ledger, which is kept outside the repository. By their reports, none of
-the four ran the editor in a browser, ran on Linux or in a container, or
-used an external model registry, and scale was measured in a few places
-only. Pull requests are reviewed one diff at a time; no audit of the whole
-codebase has covered the changes since.
-
-By the 9 November review's own sorting, its 41 packages are of six kinds:
-two parts of Haute applying different rules to one thing (7), an input
-nobody had tried (9), a failure hidden or reported wrongly (10), slowness or
-a hang at scale (5), a missing check (6), and upkeep of tests and lint (4).
-Reading found most of the first 31. After that, more reading found almost
-nothing, and wrong inputs and specific questions found the rest.
+Three audits covered the production source in the week to 31 October 2026,
+and the 9 November review then read about 31% of the backend and 6% of the
+frontend in full. Phases 1 to 3 of this plan did not read the remainder a
+fourth time. They covered it by what the product does: every node type,
+reader, route and command was given wrong inputs made by machine, writing
+operations were failed and killed at each step, results were compared with
+answers computed another way, and the editor and the underwriter app were
+driven in a real browser. None of it ran on Linux, in a container, against
+a database server or against Databricks, which is phase 4.
 
 ## Method
 
@@ -152,149 +128,57 @@ project alone does not contain a sweep.
 - The main session judges every finding. A worker may build and run a
   sweep; it reports outcomes and reproductions, and judges none.
 
-## Phase 1: leads already on file
+## Left from phases 1 to 3
 
-The 28 October audit left 36 candidates marked unverified, each with the
-observation that would confirm it. They are in that audit's report, under
-"Unverified and source-screened candidates":
-`git show c4a53fe58:specs/roadmap/codebase-review-2026-10-28.md`. The
-25 October audit adds one: a saved form may hold a column name the tables
-route refuses.
+Phases 1 to 3 ran on 10 and 11 November 2026: 19 sweeps by workers, each
+candidate run again by the main session before it was written up, and the
+main session's own runs where no sweep reached. Their findings are packages
+in the component roadmaps. What they did not finish is here, with what each
+item lacks.
 
-First reconcile the leads with the current packages and with the regression
-tests added since, merging duplicates. Some are already owned: the retry
-policy is `FES-01` in [frontend shared](frontend-shared.md), and the quote
-list's pagination is `WB-41` in [workbench](workbench.md). Several name no
-trigger, and one needs macOS. Then run the stated experiment for each lead
-that is left, at `HEAD`.
+### Planned cases that were not reached
 
-The phase has run when every distinct lead has one of the four endings above
-and a next action, deferrals included. Leads left unresolved stay in this
-plan, with what each lacks.
+- **In a browser.** Most confirmations (charts, utility modules, sources,
+  GLM terms, the git panel's other actions, every workbench one); the
+  fields of Quote Input, Data Input, Data Output, Model Score, Source
+  Switch, Explore, Scenario Expander and the submodel nodes, of Pipeline
+  settings, the utility editor and the dialogs, and the Transform steps
+  beyond the first few; failed calls beyond save, load, preview, commit
+  and the two job polls; a response that never comes; the assistant's
+  stream and every other event stream. Around an open editor: pipeline
+  settings and constants changed in another tab, a restore in one tab while
+  another has unsaved work, the file edited under a drilled-in submodel, a
+  restart during an upload or an input build, and a connection lost at the
+  moment of a save. In the underwriter app: reopen, amend, alternatives,
+  archive and restore, search and paging, a draft after the form changed,
+  an old release's page. In the workbench designer: the schema editor, the
+  sample priced live, test quotes.
+- **Outside a browser.** 103 of the 127 frontend functions listed for the
+  logic sweep; the modelling, optimiser and quote-list stores; the pipeline
+  repair's node-scoped save and its recovery preview; MLflow logging to a
+  local store under failure; the caches under failed writes; every Excel
+  case (no reader package on the review's machine); t-boost beyond two fits;
+  random sequences of editor and git operations against a model; sizes
+  beyond 400 nodes, 100 columns and 800 commits, and any size of rows,
+  rating entries or form fields.
+- **Answers computed a second way.** The trace's derivations on the shipped
+  examples; a ratebook's frontier points; the Quotes explorer's sort, search
+  and filters; the optimiser's MLflow log; ratio constraints, which the
+  Optimiser node's settings cannot hold.
 
-## Phase 2: the backend, swept by machine
+### Leads without an ending
 
-Build the inventories first: the node types; the readers; the method and
-path pairs both applications register, with the routes added directly, the
-WebSocket and the event streams; the commands. A handler that parses its own
-body, as the underwriter app's quote changes do, needs valid bodies supplied
-as seeds, because a schema does not describe them.
-
-### The same answer every way
-
-- **Composed pipelines.** Small generated graphs with fan-out, joins,
-  selectors and reused submodels, compared with values, schemas and row
-  counts computed independently; through projection, a cold and a warm
-  cache, and a save and a reload. The single operations already have proofs
-  in the tests, so the sweep aims at their combinations.
-- **Every way of running.** One pipeline through preview, trace,
-  `haute run`, the deploy scorer, the packaged model, the batch worker and
-  workbench pricing. The rows must be identical. Each shipped example
-  records which of these it can enter and what it needs first: one has no
-  request input and cannot be deployed, and one scores a model that has to
-  be trained before it exists.
-- **Changes that must not change the answer**, where the precondition holds:
-  row order, how a batch is split, chunking on and off, an unused column
-  added, a consistent rename.
-- **Independent answers.** Each model library's own prediction, for every
-  model family and every level of a grouped category. The optimiser against
-  brute force on problems small enough to enumerate. Explore's pivots
-  against plain Polars. A trace's stated derivation recomputed from its
-  stated inputs. What JSON and XML inference declares against what the
-  runtime then reads.
-- **A model's whole life, on a real registry.** A local MLflow tracking
-  server needs no decision. Fit small models, register them, load by run,
-  version and alias, change the alias or the source, restart, and compare
-  the library's own predictions with what Haute restores and scores.
-
-### Wrong inputs
-
-- **Values against node types.** A fixed set of awkward values for each data
-  type, run through one minimal graph per node type: null, empty,
-  whitespace, leading zeros, NaN and the infinities, integers past 2^53,
-  non-ASCII text, very long text, boundary dates, time zones, high-scale
-  decimals, booleans as text, mixed types, duplicate keys.
-- **Files against readers.** A byte-order mark, CRLF, an empty file, a
-  header alone, a truncated file, a wrong encoding, duplicate headers or
-  keys, ragged rows, deep nesting, unusual Parquet types, and files written
-  by older library versions; against every input format, Load File, the
-  config sidecars, `haute.toml`, hand-written forms of a pipeline file, and
-  utility modules. For XML: one child against repeated children,
-  namespaces, empty elements, colliding names, and declarations the reader
-  must refuse; through inference, shredding and a served request.
-- **Requests against routes.** Start from a valid request for each
-  registered method and path. Remove, add and retype fields; use unknown
-  identifiers, very large values and traversal strings; send duplicates in
-  flight.
-- **Arguments against commands.** Every command with wrong arguments, wrong
-  paths and a wrong `haute.toml`.
-
-### Failures
-
-- **Where an operation writes.** Inject a failure at each logical step
-  (stage, replace, commit, publish), and at every file or subprocess call
-  where the operation makes few enough to enumerate; then kill and restart
-  the process at a chosen few. In a save, a config write, each git
-  operation, a snapshot or source-cache publication and eviction, a model or
-  optimiser artefact, a quote store write and migration, a release, and a
-  scaffold run a second time. After each: the old state or the new, never
-  half; no orphaned files; locks released; the next attempt succeeds; the
-  message names the cause.
-- **Of the real kinds, at every external call.** The file system, the git
-  subprocess, MLflow, a database, a worker that dies, memory. This finishes
-  over the whole backend the three sweeps the 9 November review began: what
-  else reaches each broad `except`, what each delete or overwrite removes
-  when something fails, and what each lock guards and whether it holds
-  across processes.
-
-### Load
-
-- **Two at once.** Two saves, two builds of one input, a cancel during a
-  build, a job finishing late, the server and `haute run` on one project,
-  two amendments of one quote. Random sequences of editor and git operations
-  through the HTTP API, checked against a plain model of what should result.
-- **Size.** Each operation at n, 2n, 4n and 8n nodes, columns, rows, commits
-  or quotes, judged against how it should grow and against a practical
-  budget. Growth the algorithm or the size of the output requires is not a
-  finding.
-
-## Phase 3: the frontend
-
-### In a browser
-
-Serve this branch's source on spare ports against scratch projects outside
-the repository, and drive it with Playwright. Record console errors, failed
-requests and anything left spinning. Do not edit `frontend/src` while it
-runs.
-
-- **State that outlives its moment**, first. Hold a destructive confirmation
-  open across an unrelated edit, then confirm. Complete two settings loads
-  out of order, then fail a save and see what is restored. Replace a
-  modelling result under a view that stays mounted. Wherever a load follows
-  a selection, hold the first response, make a second selection, and release
-  the two in the wrong order; the screen must show the second. Cancel an
-  event stream part-way, and end one without its terminal event.
-- **Fields.** Every field of every node editor takes an awkward value; save;
-  reload. The screen and the saved file must agree.
-- **Failed calls.** Each method and path the client calls fails once, with a
-  500, a timeout and a malformed body, in a journey that uses it. The user
-  must be told, the screen must recover, and nothing unsaved may be lost.
-- **Around the editor.** Two tabs on one pipeline, a file edited underneath,
-  the server restarted, the connection dropped and restored, a refresh in
-  the middle of an operation.
-- **The workbench and the underwriter app**, with a quote store.
-
-### Outside the browser
-
-- Bundle the logic that has no screen (`utils`, `stores`, the API client,
-  the type guards) and run it under Node with the same awkward values, and
-  with random sequences of edits: an undo and a redo must return the same
-  graph.
-- Wherever one rule lives on both sides (parsing a number or a date, names,
-  visibility, the lists of statuses and error codes), run both and compare.
-- Read in `stores`, `hooks` and `api` what the sweeps point at and what has
-  changed most: they hold 23,514 lines, with 6,338 added or deleted since
-  the last audit. Reading is not a precondition for the sweeps.
+| Lead | What it lacks |
+|---|---|
+| A project inside a cloud-synced folder with files on demand: every file may carry the reparse attribute that the path check treats as a link | A machine or a registered sync root where the attribute is set |
+| Four leads of the 28 October audit that name no trigger, input or expected answer (its L20, L21, L23, L28) | A trigger |
+| Two historical benchmark scripts (L18, L19) | Phase 5 leaves them last |
+| One lead that needs macOS (L29) | macOS |
+| Explore's profile took 7 seconds at 50 and at 100 columns, after a first run of 45 to 110 seconds | A quiet machine: three other runs shared it |
+| The Solve pane read "Did not converge in 20 iterations" beside a preview reading "Converged, 37 iterations" | A second look: probably the two solving methods of `OPM-02` |
+| What the browser's client saves from the empty canvas of a mistyped `haute.toml` (`PCF-02`) | A browser run |
+| A page reloaded during a training run shows a refused memory estimate, nothing of the run, and never its result | A decision: no route lets a page find a node's running job |
+| `haute run` prints a traceback after its one-line error when a node's own code raises, as the CLI specification prescribes | A decision |
 
 ## Phase 4: environments not yet run
 
@@ -331,18 +215,17 @@ runs.
 
 ## Order, budget and stopping
 
-Phase 1 first. Then, from phase 2, the same answer every way and a model's
-whole life, then wrong values and files, then failures where an operation
-writes: they aim at wrong answers and lost work. Then phase 3, starting with
-state that outlives its moment. Then the rest of phase 2, and phases 4
-and 5.
+Phases 1 to 3 took about 77 hours of agent time over two days, against a
+first budget of twenty to thirty: each sweep's cost came from its list of
+cases and its pilot, as this plan said it would, and every candidate was
+run a second time by the main session before it was written up.
+
+Of what is left, the items under [Left from phases 1 to
+3](#left-from-phases-1-to-3) need nothing new and can be taken first, in
+any order. Phases 4 and 5 follow, each once its decision is made.
 
 A phase has run when every planned case has evidence or a recorded deferral.
 The work can stop after any phase with a statement of coverage.
-
-Twenty to thirty hours of agent time is the first budget, over several
-sessions. It is not an estimate of what the whole plan costs: that comes
-from each sweep's list of cases and its pilot.
 
 ## What the last report states
 
@@ -356,7 +239,7 @@ and the providers and environments that were not run.
 | Decision | Recommendation |
 |---|---|
 | A second model family (Codex) over the diff since the last audit and over each sweep's candidates | Yes, for the diff. It costs quota. |
-| A local server, a browser, a local MLflow server, and small training and optimiser runs on the development machine, one at a time | Agreed for phases 1 to 3, which need nothing else. |
+| A local server, a browser, a local MLflow server, and small training and optimiser runs on the development machine, one at a time | Agreed on 10 November 2026. What is left from phases 1 to 3 needs nothing else. |
 | A clone and a Linux environment inside WSL, which downloads public packages and never touches the Windows `.venv` | Yes. |
 | Docker Desktop, for the container items in phase 4 and for a SQL Server | Decide when phase 4 comes up. PostgreSQL can be installed inside WSL without it. |
 | Two public tools run without installing them: schemathesis and pyright | Yes. |
