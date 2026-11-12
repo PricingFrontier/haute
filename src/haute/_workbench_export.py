@@ -4,7 +4,7 @@ memory from what Preview's last pricing gave.
 The workbook is Haute's own: a sheet for each sheet name the Export's cells give, in the
 order first given, each cell holding its column's value as the quote holds it, typed by
 its column, text always as text, and a number in its column's format as the sheets show
-it. Nothing is written to disk.
+it, and each label cell its column's label, as text. Nothing is written to disk.
 """
 
 from __future__ import annotations
@@ -92,6 +92,16 @@ def sheet_name_problem(name: str) -> str | None:
     return None
 
 
+def column_label(column: SchemaColumn) -> str:
+    """*column*'s label as the sheets label it: its own, else its name made readable as
+    ``readableName`` in the view makes it, each run of underscores a space, the ends
+    trimmed and the first character in capitals (``sum_insured`` as ``Sum insured``)."""
+    if column.label:
+        return column.label
+    readable = re.sub(r"_+", " ", column.name).strip()
+    return readable[:1].upper() + readable[1:]
+
+
 def _own_column(spec: FormSpec, cell: ExportCell) -> tuple[SchemaTable, SchemaColumn] | None:
     """The table and column *cell* names, among the columns a sheet shows, or None."""
     table = next((held for held in spec.data_schema.tables if held.name == cell.table), None)
@@ -121,7 +131,9 @@ def _file_name_problems(spec: FormSpec, file_name: str) -> list[str]:
 
 def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
     """What stops an Excel workbook of cells being written, as ``cellsProblems`` in the view
-    words them: its file name's problems, then its cells', each once, in the cells' order."""
+    words them: its file name's problems, then its cells', each once, in the cells' order,
+    a cell's value's address checked before its label's, each against every address taken
+    before it on its sheet, a value's or a label's."""
     problems = _file_name_problems(spec, target.file_name)
     if not target.cells:
         problems.append("writes no cells")
@@ -149,9 +161,20 @@ def cells_problems(spec: FormSpec, target: ExcelCellsExport) -> list[str]:
                 f'writes to "{cell.cell}" on "{cell.sheet}", which is not a cell like B3'
             )
         elif (cell.sheet.lower(), cell.cell) in taken:
-            problems.append(f'writes more than one field to {cell.cell} on "{cell.sheet}"')
+            problems.append(f'writes more than once to {cell.cell} on "{cell.sheet}"')
         else:
             taken.add((cell.sheet.lower(), cell.cell))
+        if cell.label_cell.strip() == "":
+            continue
+        if cell_address(cell.label_cell) is None:
+            problems.append(
+                f'writes the label of {field} to "{cell.label_cell}" on "{cell.sheet}", '
+                "which is not a cell like B3"
+            )
+        elif (cell.sheet.lower(), cell.label_cell) in taken:
+            problems.append(f'writes more than once to {cell.label_cell} on "{cell.sheet}"')
+        else:
+            taken.add((cell.sheet.lower(), cell.label_cell))
     return list(dict.fromkeys(problems))
 
 
@@ -247,11 +270,28 @@ def _write(cell: Any, column: SchemaColumn, value: Any, field: str) -> None:
         cell.number_format = number_format(column, value)
 
 
+def _write_label(cell: Any, column: SchemaColumn, field: str) -> None:
+    """*column*'s label into the openpyxl *cell*, held as text, so neither a leading ``=``
+    nor an error value is read."""
+    # Imported here: only an export loads openpyxl.
+    from openpyxl.utils.exceptions import IllegalCharacterError
+
+    try:
+        cell.value = column_label(column)
+    except IllegalCharacterError:
+        raise ExportRefusedError(
+            f"The label of {field} holds a character Excel cannot hold in a cell, such as a "
+            "control character: take it out of the column's label in the schema."
+        ) from None
+    cell.data_type = "s"
+
+
 def cells_workbook(
     spec: FormSpec, target: ExcelCellsExport, value_of: Callable[[ExportCell], Any]
 ) -> bytes:
-    """The workbook of *target*'s cells, each holding ``value_of`` it, its sheets in the order
-    their names are first given; *target* has no :func:`cells_problems`."""
+    """The workbook of *target*'s cells, each holding ``value_of`` it and its label cell its
+    column's label, its sheets in the order their names are first given; *target* has no
+    :func:`cells_problems`."""
     # Imported here: only an export loads openpyxl.
     from openpyxl import Workbook
 
@@ -269,12 +309,15 @@ def cells_workbook(
         if found is None or address is None:
             raise AssertionError(f"{cell!r} has a problem cells_problems names")
         column_number, row = address
-        _write(
-            sheet.cell(row=row, column=column_number),
-            found[1],
-            value_of(cell),
-            f"{cell.table}.{cell.column}",
-        )
+        field = f"{cell.table}.{cell.column}"
+        _write(sheet.cell(row=row, column=column_number), found[1], value_of(cell), field)
+        if cell.label_cell.strip() == "":
+            continue
+        label_address = cell_address(cell.label_cell)
+        if label_address is None:
+            raise AssertionError(f"{cell!r} has a problem cells_problems names")
+        label_column, label_row = label_address
+        _write_label(sheet.cell(row=label_row, column=label_column), found[1], field)
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()

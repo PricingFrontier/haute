@@ -380,7 +380,12 @@ def _component_file(widget: Any) -> BaseModel:
             ]
         if widget.target.format == "excel_cells":
             data["target"]["cells"] = [
-                {"field": f"{cell.table}.{cell.column}", "sheet": cell.sheet, "cell": cell.cell}
+                {
+                    "field": f"{cell.table}.{cell.column}",
+                    "sheet": cell.sheet,
+                    "cell": cell.cell,
+                    "label_cell": cell.label_cell,
+                }
                 for cell in widget.target.cells
             ]
     model: BaseModel = COMPONENT.validate_python(data)
@@ -802,7 +807,12 @@ def _component(component: Any, placed: PlacementFile) -> dict[str, Any]:
             ]
         if component.target.format == "excel_cells":
             data["target"]["cells"] = [
-                {**_ref(cell.field), "sheet": cell.sheet, "cell": cell.cell}
+                {
+                    **_ref(cell.field),
+                    "sheet": cell.sheet,
+                    "cell": cell.cell,
+                    "label_cell": cell.label_cell,
+                }
                 for cell in component.target.cells
             ]
     return data

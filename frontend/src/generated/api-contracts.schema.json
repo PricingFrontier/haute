@@ -9951,7 +9951,7 @@
     },
     "ExportCell": {
       "additionalProperties": false,
-      "description": "A cell an Excel workbook of cells holds: the value of a one-row table's column, by\n``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the\nsheet named ``sheet``. The address and the name are the form's as typed: their problems\nare the view's to show and the export's to refuse (:mod:`haute._workbench_export`).",
+      "description": "A cell an Excel workbook of cells holds: the value of a one-row table's column, by\n``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the\nsheet named ``sheet``, and the column's label in the cell at ``label_cell`` of that\nsheet. The addresses and the name are the form's as typed: their problems are the\nview's to show and the export's to refuse (:mod:`haute._workbench_export`).",
       "properties": {
         "cell": {
           "title": "Cell",
@@ -9959,6 +9959,10 @@
         },
         "column": {
           "title": "Column",
+          "type": "string"
+        },
+        "label_cell": {
+          "title": "Label Cell",
           "type": "string"
         },
         "sheet": {
@@ -9974,7 +9978,8 @@
         "table",
         "column",
         "sheet",
-        "cell"
+        "cell",
+        "label_cell"
       ],
       "title": "ExportCell",
       "type": "object"

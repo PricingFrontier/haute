@@ -671,13 +671,16 @@ class ExcelExport(_FileExport):
 class ExportCell(_Strict):
     """A cell an Excel workbook of cells holds: the value of a one-row table's column, by
     ``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the
-    sheet named ``sheet``. The address and the name are the form's as typed: their problems
-    are the view's to show and the export's to refuse (:mod:`haute._workbench_export`)."""
+    sheet named ``sheet``, and the column's label in the cell at ``label_cell`` of that
+    sheet. The addresses and the name are the form's as typed: their problems are the
+    view's to show and the export's to refuse (:mod:`haute._workbench_export`)."""
 
     table: str
     column: str
     sheet: str
     cell: str
+    #: Where the column's label is written, an address such as ``A3``; blank for none.
+    label_cell: str
 
 
 class ExcelCellsExport(_Strict):

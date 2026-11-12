@@ -1321,7 +1321,7 @@ describe("PropertiesPanel", () => {
     expect(exported()).toMatchObject({ tables: ["policy"], target: { table_names: [] } })
   })
 
-  it("lays an Export's Excel out as cells, a row for each with its field, sheet and address, one added under the last", () => {
+  it("lays an Export's Excel out as cells, a row for each with its field, sheet, address and label's address, one added under the last", () => {
     const form = sheetForm()
     addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
     loadForm(form)
@@ -1351,22 +1351,29 @@ describe("PropertiesPanel", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:year" } })
     expect(screen.getByRole("combobox", { name: "Add a cell" })).toHaveValue("")
     expect(cells()).toEqual([
-      { table: "policy", column: "state", sheet: "Sheet1", cell: "A1" },
-      { table: "policy", column: "year", sheet: "Sheet1", cell: "A2" },
+      { table: "policy", column: "state", sheet: "Sheet1", cell: "A1", label_cell: "" },
+      { table: "policy", column: "year", sheet: "Sheet1", cell: "A2", label_cell: "" },
     ])
     expect(screen.getByText("2 written")).toBeInTheDocument()
 
     commit("Cell 1 sheet", "Slip")
     commit("Cell 2 address", " b7 ")
+    commit("Cell 2 label address", " a7 ")
     fireEvent.change(screen.getByRole("combobox", { name: "Cell 1 field" }), { target: { value: "policy:year" } })
     expect(cells()).toEqual([
-      { table: "policy", column: "year", sheet: "Slip", cell: "A1" },
-      { table: "policy", column: "year", sheet: "Sheet1", cell: "B7" },
+      { table: "policy", column: "year", sheet: "Slip", cell: "A1", label_cell: "" },
+      { table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7" },
     ])
     expect(screen.getByRole("textbox", { name: "Cell 2 address" })).toHaveValue("B7")
+    expect(screen.getByRole("textbox", { name: "Cell 2 label address" })).toHaveValue("A7")
+
+    // The next cell goes under the last, its label under the last's label.
+    fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:state" } })
+    expect(cells()[2]).toEqual({ table: "policy", column: "state", sheet: "Sheet1", cell: "B8", label_cell: "A8" })
+    fireEvent.click(screen.getByRole("button", { name: "Remove cell 3" }))
 
     fireEvent.click(screen.getByRole("button", { name: "Remove cell 1" }))
-    expect(cells()).toEqual([{ table: "policy", column: "year", sheet: "Sheet1", cell: "B7" }])
+    expect(cells()).toEqual([{ table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7" }])
 
     // A cell whose column is gone, or of a many-row table, shows it first, disabled.
     act(() => useWorkbenchFormStore.getState().change((spec) => setExportCellColumn(spec, "w_out", 0, { table: "policy", column: "gone" })))

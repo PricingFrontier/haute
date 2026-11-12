@@ -500,8 +500,9 @@ Out of scope:
   `delimiter` that splits its fields (`comma`, `semicolon` or `tab`); or an Excel workbook
   of cells (`excel_cells`), with its `file_name` and its `cells`, each a column of a
   one-row table by `table` and `column`, written into the cell `cell` (an address such as
-  `B3`) of the sheet named `sheet`, in the order chosen, a column in as many cells as it is
-  given, and no `tables`, since its cells say what it writes; or a database (`sql`,
+  `B3`) of the sheet named `sheet`, and its column's label into the cell `label_cell` of
+  that sheet (`A3`, say; empty for none), in the order chosen, a column in as many cells as
+  it is given, and no `tables`, since its cells say what it writes; or a database (`sql`,
   its `connection` and its `table_names`, the tables written to a table named otherwise,
   each by `table`, one it exports, with that `name`, never blank, one each at most)),
   each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
@@ -1434,14 +1435,16 @@ Out of scope:
   the file name and starting the other's settings afresh; a file's File name, a CSV's
   Delimiter (Comma, Semicolon or Tab), and, but for Cells, Headers (Names or Labels) and
   Values (Raw or Formatted); or a database's Connection. Then, of Cells, Cells: under a
-  heading row naming Field, Sheet and Cell, a row for each cell in order, with a select of
-  the columns of the one-row tables, by table, each by its label (as a Collection's fields
-  are offered), the sheet's name and the cell's address, each in a text field committed on
-  blur or Enter, the address trimmed and taken in capitals, and a cross that takes the cell away; a
+  heading row naming Field, Sheet, Cell and Label cell, a row for each cell in order, with
+  a select of the columns of the one-row tables, by table, each by its label (as a
+  Collection's fields are offered), the sheet's name, the cell's address and its label's
+  address, each in a text field committed on blur or Enter, each address trimmed and taken
+  in capitals, and a cross that takes the cell away; a
   cell whose column is no longer in the schema, or no longer of a one-row table, shows it
   first, as "Missing column" or the column's label, disabled. Under them Add a cell, a
   select of the same columns, a column chosen adding a cell of it on the last cell's sheet
-  in the cell under the last cell's, or `Sheet1` and `A1` for the first, the select
+  in the cell under the last cell's, its label in the cell under the last cell's label
+  while that cell has one, or `Sheet1` and `A1` with no label for the first, the select
   showing Add a cell again. Otherwise Tables, a
   checkbox per schema table, ticked in order, and, to a database, beside
   each one ticked the name of the table it is written to, showing the table's own while
@@ -1765,7 +1768,9 @@ Out of scope:
   is a number, a date a date shown `yyyy-mm-dd`, a tick TRUE or FALSE, and text is always
   text, never read as a formula or an error value, whatever it starts with; a whole number
   past 2^53, which Excel cannot hold exactly as a number, is written as its digits, as text,
-  so no digit is lost. A number cell
+  so no digit is lost. A cell's label cell holds its column's label as the sheets label
+  it (its label, else its name made readable, `sum_insured` as `Sum insured`), always as
+  text. A number cell
   takes its column's format as the sheets show it (decimal places fixed when set, a
   percent shown as the value times 100, a currency's sign before it, thousands grouped
   unless the column says not), the value itself written unrounded; where the sheets trim
@@ -1801,8 +1806,9 @@ Out of scope:
   cell's column no longer in the schema or of a many-row table, which holds a value per
   row, a sheet name Excel refuses (blank, longer than 31 characters, holding one of
   `[ ] : * ? / \`, starting or ending with `'`, or `History` in any case), an address that
-  is not a cell (a column from `A` to `XFD` then a row from 1 to 1,048,576, as `B3`), two
-  cells at one address of one sheet, and two sheet names that differ only in case. None
+  is not a cell (a column from `A` to `XFD` then a row from 1 to 1,048,576, as `B3`),
+  for a value or a label, a label's address left blank meaning no label, two values or
+  labels at one address of one sheet, and two sheet names that differ only in case. None
   is refused: the form is saved as it is. The server refuses an export whose file name or
   cells have any of these problems, naming each.
 - **Preview.** The toolbar's Build over Preview switches the view between building and

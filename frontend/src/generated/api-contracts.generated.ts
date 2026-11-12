@@ -5970,12 +5970,14 @@ export interface ExcelCellsExport {
 /**
  * A cell an Excel workbook of cells holds: the value of a one-row table's column, by
  * ``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the
- * sheet named ``sheet``. The address and the name are the form's as typed: their problems
- * are the view's to show and the export's to refuse (:mod:`haute._workbench_export`).
+ * sheet named ``sheet``, and the column's label in the cell at ``label_cell`` of that
+ * sheet. The addresses and the name are the form's as typed: their problems are the
+ * view's to show and the export's to refuse (:mod:`haute._workbench_export`).
  */
 export interface ExportCell {
   cell: string;
   column: string;
+  label_cell: string;
   sheet: string;
   table: string;
 }

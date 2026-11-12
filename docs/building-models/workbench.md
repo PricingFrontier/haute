@@ -429,10 +429,12 @@ a sheet per table.
   the table's own name).
 - An Export to **Excel** has a **Layout**: **Sheet per table**, above, or **Cells**, which
   writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, each
-  row is a field of a one-row table, the **Sheet** it goes on and the **Cell** it goes in,
-  such as `B3`; pick a field under **Add a cell** to add one, which goes on the last row's
-  sheet in the cell below it. A field can go in more than one cell, but a cell takes one
-  field. Sheets are made in the order the rows first name them. Each cell holds the
+  row is a field of a one-row table, the **Sheet** it goes on, the **Cell** it goes in,
+  such as `B3`, and the **Label cell** its label goes in, such as `A3`, or blank for no
+  label. The label is the one the schema gives the field. Pick a field under **Add a cell**
+  to add one, which goes on the last row's sheet in the cell below it, its label below the
+  last row's label. A field can go in more than one cell, but a cell holds one field or one
+  label. Sheets are made in the order the rows first name them. Each cell holds the
   field's value as the sheets hold it: numbers stay numbers in the field's number format,
   dates are dates, ticks are TRUE or FALSE, and text is always text, even if it starts with
   `=`. A whole number too long for Excel to hold exactly (over 9,007,199,254,740,992) is
@@ -440,8 +442,9 @@ a sheet per table.
   empty; in Preview the quote's reference and option are `PREVIEW` and 1. The workbook's
   name is the file **Name**, with `.xlsx`; a character a file name cannot hold becomes `_`.
   The Export's problems include a sheet name Excel refuses (blank, over 31 characters,
-  holding `[ ] : * ? / \`, starting or ending with `'`, or `History`), an address that is
-  not a cell, two fields in one cell, and two sheet names that differ only in case.
+  holding `[ ] : * ? / \`, starting or ending with `'`, or `History`), an address that
+  is not a cell, for a field or its label, two things in one cell, and two sheet names
+  that differ only in case.
 
 Drag a component to move it and any of its eight handles to resize it; everything snaps
 to the grid. A component stays inside its section: it stops at the section's edges, and

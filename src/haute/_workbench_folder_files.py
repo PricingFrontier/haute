@@ -122,12 +122,14 @@ def _derived(
 
 
 class ExportCellFile(_File):
-    """A cell of an Excel workbook of cells: its column, as ``table.column``, and the sheet
-    and the address it is written to, as typed."""
+    """A cell of an Excel workbook of cells: its column, as ``table.column``, the sheet and
+    the address it is written to, and the address its label is written to, blank for none,
+    as typed."""
 
     field: Dotted
     sheet: str
     cell: str
+    label_cell: str
 
 
 class ConditionFile(_File):

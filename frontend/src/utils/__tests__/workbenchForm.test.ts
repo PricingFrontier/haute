@@ -216,7 +216,16 @@ describe("names", () => {
   it("makes a name unique by numbering it, and a column readable from its name", () => {
     expect(uniqueName("table", ["table", "table_2"])).toBe("table_3")
     expect(uniqueName("policy", ["table"])).toBe("policy")
-    expect(readableName("sum_insured")).toBe("Sum insured")
+    // The same cases as the server's `column_label` (tests/test_workbench_export.py).
+    for (const [name, readable] of [
+      ["sum_insured", "Sum insured"],
+      ["a__b", "A b"],
+      ["_x_", "X"],
+      ["sum_Insured", "Sum Insured"],
+      ["premium", "Premium"],
+    ] as const) {
+      expect(readableName(name)).toBe(readable)
+    }
   })
 
   it("names new tables and columns uniquely, each table leading with the quote's identity, and is no problem", () => {
@@ -2858,16 +2867,22 @@ describe("Imports and Exports", () => {
       expect(() => updateExportTarget(spec, "w_out", { headers: "labels" })).toThrow("An Export to excel_cells has no headers")
     })
 
-    it("adds a cell under the last on its sheet, the first on Sheet1 at A1", () => {
+    it("adds a cell under the last on its sheet, its label under the last's label, the first on Sheet1 at A1 with no label", () => {
       let spec = cells()
       expect(cellsOf(spec)).toEqual([
-        { ...insured, sheet: FIRST_CELL_SHEET, cell: "A1" },
-        { ...total, sheet: FIRST_CELL_SHEET, cell: "A2" },
+        { ...insured, sheet: FIRST_CELL_SHEET, cell: "A1", label_cell: "" },
+        { ...total, sheet: FIRST_CELL_SHEET, cell: "A2", label_cell: "" },
       ])
 
       spec = updateExportCell(spec, "w_out", 1, { sheet: "Slip", cell: "AB99" })
       spec = addExportCell(spec, "w_out", insured)
-      expect(cellsOf(spec)[2]).toEqual({ ...insured, sheet: "Slip", cell: "AB100" })
+      expect(cellsOf(spec)[2]).toEqual({ ...insured, sheet: "Slip", cell: "AB100", label_cell: "" })
+      const labelled = updateExportCell(spec, "w_out", 2, { label_cell: "AA100" })
+      expect(cellsOf(addExportCell(labelled, "w_out", total))[3]).toEqual({ ...total, sheet: "Slip", cell: "AB101", label_cell: "AA101" })
+      // Under a label's address that is no cell, or on the last row: no label.
+      for (const label_cell of ["Insured", `A${LAST_CELL_ROW}`]) {
+        expect(cellsOf(addExportCell(updateExportCell(spec, "w_out", 2, { label_cell }), "w_out", total))[3].label_cell).toBe("")
+      }
       // Under a last cell that is no cell, or on the last row: A1.
       spec = updateExportCell(spec, "w_out", 2, { cell: "B03" })
       expect(cellsOf(addExportCell(spec, "w_out", total))[3].cell).toBe("A1")
@@ -2876,16 +2891,18 @@ describe("Imports and Exports", () => {
       expect(nextCellAddress("Z9")).toBe("Z10")
     })
 
-    it("changes a cell's column, sheet or address and takes a cell away, each the form as given while nothing changes", () => {
+    it("changes a cell's column, sheet, address or label's address and takes a cell away, each the form as given while nothing changes", () => {
       let spec = cells()
 
       expect(updateExportCell(spec, "w_out", 0, { sheet: FIRST_CELL_SHEET })).toBe(spec)
+      expect(updateExportCell(spec, "w_out", 0, { label_cell: "" })).toBe(spec)
       expect(setExportCellColumn(spec, "w_out", 0, insured)).toBe(spec)
       spec = setExportCellColumn(spec, "w_out", 0, { table: QUOTE_DETAILS_NAME, column: "quote_reference" })
-      spec = updateExportCell(spec, "w_out", 0, { sheet: "Slip", cell: "B3" })
-      expect(cellsOf(spec)[0]).toEqual({ table: QUOTE_DETAILS_NAME, column: "quote_reference", sheet: "Slip", cell: "B3" })
+      spec = updateExportCell(spec, "w_out", 0, { sheet: "Slip", cell: "B3", label_cell: "A3" })
+      expect(cellsOf(spec)[0]).toEqual({ table: QUOTE_DETAILS_NAME, column: "quote_reference", sheet: "Slip", cell: "B3", label_cell: "A3" })
+      expect(updateExportCell(spec, "w_out", 0, { cell: "B3", label_cell: "A3" })).toBe(spec)
       spec = removeExportCell(spec, "w_out", 0)
-      expect(cellsOf(spec)).toEqual([{ ...total, sheet: FIRST_CELL_SHEET, cell: "A2" }])
+      expect(cellsOf(spec)).toEqual([{ ...total, sheet: FIRST_CELL_SHEET, cell: "A2", label_cell: "" }])
       expect(() => removeExportCell(spec, "w_out", 3)).toThrow("has no cell 3")
       expect(() => addExportCell(buttons(), "w_out", insured)).toThrow("which writes no cells")
     })
@@ -2913,8 +2930,8 @@ describe("Imports and Exports", () => {
       expect(cellsOf(spec)[1]).toMatchObject({ table: "premiums", column: "gross" })
       spec = updateSchemaTable(spec, "premiums", { name: "price" })
       expect(cellsOf(spec)[1]).toMatchObject({ table: "price", column: "gross" })
-      expect(cellsOf(removeSchemaColumn(spec, QUOTE_DETAILS_NAME, "insured"))).toEqual([{ table: "price", column: "gross", sheet: FIRST_CELL_SHEET, cell: "A2" }])
-      expect(cellsOf(removeSchemaTable(spec, "price"))).toEqual([{ ...insured, sheet: FIRST_CELL_SHEET, cell: "A1" }])
+      expect(cellsOf(removeSchemaColumn(spec, QUOTE_DETAILS_NAME, "insured"))).toEqual([{ table: "price", column: "gross", sheet: FIRST_CELL_SHEET, cell: "A2", label_cell: "" }])
+      expect(cellsOf(removeSchemaTable(spec, "price"))).toEqual([{ ...insured, sheet: FIRST_CELL_SHEET, cell: "A1", label_cell: "" }])
       const copied = exported(spec)
       const pasted = pasteWidget(removeSchemaTable(spec, "price"), copied, "s")
       expect((findWidget(pasted.spec, pasted.id)!.widget as ExportWidget).target).toMatchObject({ cells: [insured] })
@@ -2930,7 +2947,28 @@ describe("Imports and Exports", () => {
       expect(named(at(cells(), 1, { sheet: "A".repeat(32) }))).toEqual([`writes to the sheet "${"A".repeat(32)}", which is longer than ${SHEET_NAME_LIMIT} characters`])
       expect(named(at(cells(), 1, { sheet: "History" }))).toEqual(['writes to the sheet "History", which is a name Excel keeps for itself'])
       expect(named(at(cells(), 1, { sheet: "sheet1" }))).toEqual(['names the sheets "Sheet1" and "sheet1", which Excel holds as one'])
-      expect(named(at(cells(), 1, { cell: "A1" }))).toEqual(['writes more than one field to A1 on "Sheet1"'])
+      expect(named(at(cells(), 1, { cell: "A1" }))).toEqual(['writes more than once to A1 on "Sheet1"'])
+      // A label's address is a cell too, typed in capitals, never the label's text; blank is no label.
+      expect(named(at(cells(), 1, { label_cell: "a3" }))).toEqual(['writes the label of premiums.total to "a3" on "Sheet1", which is not a cell like B3'])
+      expect(named(at(cells(), 1, { label_cell: "Total" }))).toEqual(['writes the label of premiums.total to "Total" on "Sheet1", which is not a cell like B3'])
+      expect(named(at(cells(), 1, { label_cell: " " }))).toEqual([])
+      expect(named(at(cells(), 1, { label_cell: "B2" }))).toEqual([])
+      // A label takes its cell as a value does: on its own value, an earlier value or label,
+      // or a later value on it.
+      expect(named(at(cells(), 1, { label_cell: "A2" }))).toEqual(['writes more than once to A2 on "Sheet1"'])
+      expect(named(at(cells(), 1, { label_cell: "A1" }))).toEqual(['writes more than once to A1 on "Sheet1"'])
+      expect(named(at(at(cells(), 0, { label_cell: "B2" }), 1, { label_cell: "B2" }))).toEqual(['writes more than once to B2 on "Sheet1"'])
+      expect(named(at(at(cells(), 0, { label_cell: "B2" }), 1, { cell: "B2" }))).toEqual(['writes more than once to B2 on "Sheet1"'])
+      // Labels of one address on two sheets are two cells.
+      expect(named(at(at(cells(), 0, { label_cell: "B2" }), 1, { sheet: "Slip", label_cell: "B2" }))).toEqual([])
+      // A cell's problems in the server's order (tests/test_workbench_export.py).
+      const all = at(setExportCellColumn(cells(), "w_out", 1, { table: "policy", column: "nope" }), 1, { sheet: "History", cell: "B03", label_cell: "x" })
+      expect(named(all)).toEqual([
+        "writes policy.nope, which is no longer in the schema",
+        'writes to the sheet "History", which is a name Excel keeps for itself',
+        'writes to "B03" on "History", which is not a cell like B3',
+        'writes the label of policy.nope to "x" on "History", which is not a cell like B3',
+      ])
       expect(named(at(cells(), 1, { cell: "XFE1" }))).toEqual(['writes to "XFE1" on "Sheet1", which is not a cell like B3'])
       expect(named(updateExportTarget(cells(), "w_out", { file_name: " " }))).toEqual(["has no file name"])
       expect(named(updateExportTarget(cells(), "w_out", { file_name: "{agent}" }))).toEqual(["names its file by {agent}, which is not a column of quote_details"])

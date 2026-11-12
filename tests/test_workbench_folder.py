@@ -1915,8 +1915,9 @@ def test_each_reference_is_written_and_read_by_name_an_unknown_one_kept_as_writt
 
 
 def _cells_form() -> dict[str, Any]:
-    """FORM with its Export writing an Excel workbook of cells: the insured's name and the
-    state on a Slip sheet, the state again on a Summary, its address as typed."""
+    """FORM with its Export writing an Excel workbook of cells: the insured's name, labelled
+    beside it, and the state on a Slip sheet, the state again on a Summary, its address and
+    its label's as typed."""
     form = copy.deepcopy(FORM)
     exporter = widget_of(form, EXPORTER)
     exporter["tables"] = []
@@ -1924,9 +1925,21 @@ def _cells_form() -> dict[str, Any]:
         "format": "excel_cells",
         "file_name": "{insured}",
         "cells": [
-            {"table": "quote_details", "column": "insured", "sheet": "Slip", "cell": "B3"},
-            {"table": "policy", "column": "state", "sheet": "Slip", "cell": "B4"},
-            {"table": "policy", "column": "state", "sheet": "Summary", "cell": "a1"},
+            {
+                "table": "quote_details",
+                "column": "insured",
+                "sheet": "Slip",
+                "cell": "B3",
+                "label_cell": "A3",
+            },
+            {"table": "policy", "column": "state", "sheet": "Slip", "cell": "B4", "label_cell": ""},
+            {
+                "table": "policy",
+                "column": "state",
+                "sheet": "Summary",
+                "cell": "a1",
+                "label_cell": "b 1",
+            },
         ],
     }
     return form
@@ -1937,14 +1950,15 @@ def test_an_export_of_cells_writes_each_cell_s_column_by_name_and_reads_it_back(
 ) -> None:
     files = write_form(project, _cells_form())
 
-    # Each cell's column as `table.column`, then its sheet and its address as typed.
+    # Each cell's column as `table.column`, then its sheet, its address and its label's
+    # address as typed, blank for none.
     assert json.loads(files["components/export.json"])["target"] == {
         "format": "excel_cells",
         "file_name": "{insured}",
         "cells": [
-            {"field": "quote_details.insured", "sheet": "Slip", "cell": "B3"},
-            {"field": "policy.state", "sheet": "Slip", "cell": "B4"},
-            {"field": "policy.state", "sheet": "Summary", "cell": "a1"},
+            {"field": "quote_details.insured", "sheet": "Slip", "cell": "B3", "label_cell": "A3"},
+            {"field": "policy.state", "sheet": "Slip", "cell": "B4", "label_cell": ""},
+            {"field": "policy.state", "sheet": "Summary", "cell": "a1", "label_cell": "b 1"},
         ],
     }
     document = read_form_document(config(project))

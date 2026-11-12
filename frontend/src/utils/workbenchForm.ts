@@ -2075,15 +2075,17 @@ export function sheetNameProblem(name: string): string | null {
 
 /**
  * Add a cell writing a column to an Export's workbook of cells: on the last cell's sheet, in
- * the cell under the last cell's (`A1` while that is no cell, or on the last row), or the
- * first on `Sheet1` at `A1`.
+ * the cell under the last cell's (`A1` while that is no cell, or on the last row), its label
+ * under the last cell's label (none while that cell has none, or its label's address is no
+ * cell or on the last row), or the first on `Sheet1` at `A1` with no label.
  */
 export function addExportCell(spec: FormSpec, id: string, field: FieldRef): FormSpec {
   const last = cellsExportOf(spec, id).cells.at(-1)
   const sheet = last?.sheet ?? FIRST_CELL_SHEET
   const cell = (last === undefined ? null : nextCellAddress(last.cell)) ?? "A1"
+  const label_cell = (last === undefined ? null : nextCellAddress(last.label_cell)) ?? ""
   return edit(spec, (draft) => {
-    cellsExportOf(draft, id).cells.push({ table: field.table, column: field.column, sheet, cell })
+    cellsExportOf(draft, id).cells.push({ table: field.table, column: field.column, sheet, cell, label_cell })
   })
 }
 
@@ -2102,10 +2104,11 @@ export function setExportCellColumn(spec: FormSpec, id: string, index: number, f
   })
 }
 
-/** The sheet an Export's cell is on, or its address, as typed. */
-export function updateExportCell(spec: FormSpec, id: string, index: number, patch: Partial<Pick<ExportCell, "sheet" | "cell">>): FormSpec {
+/** The sheet an Export's cell is on, its address or its label's address, as typed. */
+export function updateExportCell(spec: FormSpec, id: string, index: number, patch: Partial<Pick<ExportCell, "sheet" | "cell" | "label_cell">>): FormSpec {
   const cell = cellAt(cellsExportOf(spec, id), id, index)
-  if ((patch.sheet === undefined || patch.sheet === cell.sheet) && (patch.cell === undefined || patch.cell === cell.cell)) return spec
+  const keys = Object.keys(patch) as Array<keyof typeof patch>
+  if (keys.every((key) => patch[key] === undefined || patch[key] === cell[key])) return spec
   return edit(spec, (draft) => {
     Object.assign(cellAt(cellsExportOf(draft, id), id, index), patch)
   })
@@ -2466,7 +2469,9 @@ function cellColumn(spec: FormSpec, cell: ExportCell): { table: SchemaTable; col
  * `cells_problems` words it, each once in its order: the file name's problems, no cells, and
  * each cell's: a column no longer in the schema or of a many-row table, a sheet with no
  * name, one Excel refuses or one named as another in another case, an address that is not a
- * cell, and a cell already written.
+ * cell, and a cell already written; then its label's, while its label's address is not
+ * blank: one that is not a cell, and a cell already written. A cell already written is one
+ * any value or label before it on its sheet took.
  */
 export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[] {
   const problems = fileNameProblems(spec, target.file_name)
@@ -2488,8 +2493,13 @@ export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[
     }
     const at = `${cell.sheet.toLowerCase()}!${cell.cell}`
     if (cellAddress(cell.cell) === null) problems.push(`writes to "${cell.cell}" on "${cell.sheet}", which is not a cell like B3`)
-    else if (taken.has(at)) problems.push(`writes more than one field to ${cell.cell} on "${cell.sheet}"`)
+    else if (taken.has(at)) problems.push(`writes more than once to ${cell.cell} on "${cell.sheet}"`)
     else taken.add(at)
+    if (cell.label_cell.trim() === "") continue
+    const labelAt = `${cell.sheet.toLowerCase()}!${cell.label_cell}`
+    if (cellAddress(cell.label_cell) === null) problems.push(`writes the label of ${field} to "${cell.label_cell}" on "${cell.sheet}", which is not a cell like B3`)
+    else if (taken.has(labelAt)) problems.push(`writes more than once to ${cell.label_cell} on "${cell.sheet}"`)
+    else taken.add(labelAt)
   }
   return [...new Set(problems)]
 }

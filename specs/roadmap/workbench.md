@@ -211,7 +211,9 @@ Preview but for an Excel workbook of cells (below).
 
 **Decided (12 November 2026):** the first format is an Excel workbook of cells: chosen
 fields of the one-row tables, each written into a cell of a sheet, `Slip!B3` say, of a
-workbook Haute makes, its values typed and formatted as their columns' formats show them.
+workbook Haute makes, its values typed and formatted as their columns' formats show them,
+each cell naming another for its field's label if it wants one, `Slip!A3` say, the label
+the schema gives the field.
 Its first run is Preview's: pressing the Export downloads the workbook of the sample as
 it was last priced. Still to come, each its own slice: the app's run of it (below); a
 template, the analyst's own workbook filled in place of one Haute makes; a many-row

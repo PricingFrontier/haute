@@ -23,6 +23,7 @@ from haute._workbench_export import (
     StaleExportError,
     cell_address,
     cells_problems,
+    column_label,
     export_file_name,
     number_format,
     preview_export,
@@ -42,9 +43,9 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
     return {"name": name, "type": type_, **rest}
 
 
-def cell(field: str, sheet: str, address: str) -> dict[str, str]:
+def cell(field: str, sheet: str, address: str, label: str = "") -> dict[str, str]:
     table, name = field.split(".")
-    return {"table": table, "column": name, "sheet": sheet, "cell": address}
+    return {"table": table, "column": name, "sheet": sheet, "cell": address, "label_cell": label}
 
 
 #: A form whose Export writes the insured's details, the policy's limit and tick, and its
@@ -378,7 +379,45 @@ SLIP_B3 = cell("quote_details.insured", "Slip", "B3")
         (
             [SLIP_B3, cell("policy.note", "Slip", "B3")],
             "slip",
-            'writes more than one field to B3 on "Slip"',
+            'writes more than once to B3 on "Slip"',
+        ),
+        # A label's address is a cell too: typed in capitals, never the label's text.
+        (
+            [cell("quote_details.insured", "Slip", "B3", "a3")],
+            "slip",
+            'writes the label of quote_details.insured to "a3" on "Slip", which is not a cell '
+            "like B3",
+        ),
+        (
+            [cell("quote_details.insured", "Slip", "B3", "Insured")],
+            "slip",
+            'writes the label of quote_details.insured to "Insured" on "Slip", which is not a '
+            "cell like B3",
+        ),
+        # A label takes its cell as a value does: on its own value, an earlier value or
+        # label, or a later value on it.
+        (
+            [cell("quote_details.insured", "Slip", "B3", "B3")],
+            "slip",
+            'writes more than once to B3 on "Slip"',
+        ),
+        (
+            [SLIP_B3, cell("policy.note", "Slip", "B4", "B3")],
+            "slip",
+            'writes more than once to B3 on "Slip"',
+        ),
+        (
+            [cell("quote_details.insured", "Slip", "B3", "A3"), cell("policy.note", "Slip", "A3")],
+            "slip",
+            'writes more than once to A3 on "Slip"',
+        ),
+        (
+            [
+                cell("quote_details.insured", "Slip", "B3", "A3"),
+                cell("policy.note", "Slip", "B4", "A3"),
+            ],
+            "slip",
+            'writes more than once to A3 on "Slip"',
         ),
         (
             [SLIP_B3, cell("policy.note", "slip", "B4")],
@@ -404,6 +443,103 @@ def test_each_problem_is_named_and_refuses_the_export(
     with pytest.raises(ExportRefusedError) as refused:
         export(form)
     assert refused.value.message == f'Export "Slip" cannot be written: it {problem}.'
+
+
+def test_a_cell_s_problems_are_named_in_the_view_s_order() -> None:
+    form = with_cells(cell("policy.nope", "History", "B03", "x"))
+    spec = with_quote_details(spec_of(form))
+
+    widget = spec.pages[0].sections[0].widgets[1]
+    # The same list `cellsProblems` gives in the view (workbenchForm.test.ts).
+    assert cells_problems(spec, widget.target) == [
+        "writes policy.nope, which is no longer in the schema",
+        'writes to the sheet "History", which is a name Excel keeps for itself',
+        'writes to "B03" on "History", which is not a cell like B3',
+        'writes the label of policy.nope to "x" on "History", which is not a cell like B3',
+    ]
+
+
+@pytest.mark.parametrize("blank", ["", " "])
+def test_a_label_cell_left_blank_writes_no_label(blank: str) -> None:
+    form = with_cells(cell("quote_details.insured", "Slip", "B3", blank))
+    spec = with_quote_details(spec_of(form))
+
+    assert cells_problems(spec, spec.pages[0].sections[0].widgets[1].target) == []
+    _, data = export(form)
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    assert [[value for value in row if value is not None] for row in slip.values] == [
+        [],
+        [],
+        ["Acme Ltd"],
+    ]
+
+
+def test_one_label_cell_on_two_sheets_is_two_cells() -> None:
+    form = with_cells(
+        cell("quote_details.insured", "Slip", "B3", "A3"),
+        cell("policy.note", "Summary", "B3", "A3"),
+    )
+    spec = with_quote_details(spec_of(form))
+
+    assert cells_problems(spec, spec.pages[0].sections[0].widgets[1].target) == []
+
+
+def test_a_label_cell_holds_its_column_s_label_as_text() -> None:
+    form = with_cells(
+        cell("quote_details.insured", "Slip", "B3", "A3"),
+        cell("policy.limit", "Slip", "B4", "A4"),
+        cell("pricing.premium", "Slip", "B5", "A5"),
+        cell("policy.note", "Slip", "B6", "C6"),
+    )
+    tables = form["schema"]["tables"]
+    tables[1]["inputs"][0]["label"] = "Sum insured"
+    tables[1]["inputs"][2]["label"] = "=Total"
+
+    _, data = export(form)
+
+    slip = load_workbook(io.BytesIO(data))["Slip"]
+    # The schema's label, else the column's name made readable; text, whatever it starts with.
+    assert [(slip[at].value, slip[at].data_type) for at in ("A3", "A4", "A5", "C6")] == [
+        ("Insured", "s"),
+        ("Sum insured", "s"),
+        ("Premium", "s"),
+        ("=Total", "s"),
+    ]
+    # Each value in its own cell beside its label.
+    assert (slip["B3"].value, slip["B4"].value, slip["B5"].value) == ("Acme Ltd", 1e6, 1234.5)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        assert "<f>" not in archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "expected"),
+    [
+        ("sum_insured", "", "Sum insured"),
+        ("a__b", "", "A b"),
+        ("_x_", "", "X"),
+        ("sum_Insured", "", "Sum Insured"),
+        ("premium", "", "Premium"),
+        ("premium", "Annual premium", "Annual premium"),
+    ],
+)
+def test_a_column_s_label_is_its_own_else_its_name_made_readable(
+    name: str, label: str, expected: str
+) -> None:
+    # The same cases as `readableName` in the view (workbenchForm.test.ts).
+    assert column_label(SchemaColumn(name=name, label=label)) == expected
+
+
+def test_a_label_holding_a_character_excel_cannot_hold_is_refused_naming_it() -> None:
+    form = with_cells(cell("policy.note", "Slip", "B3", "A3"))
+    form["schema"]["tables"][1]["inputs"][2]["label"] = "bell\x07"
+
+    with pytest.raises(ExportRefusedError) as refused:
+        export(form)
+
+    assert refused.value.message == (
+        "The label of policy.note holds a character Excel cannot hold in a cell, such as a "
+        "control character: take it out of the column's label in the schema."
+    )
 
 
 def test_a_cell_at_excel_s_last_address_on_a_sheet_of_the_longest_name_is_written() -> None:

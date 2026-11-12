@@ -156,8 +156,8 @@ function ColumnOptions({ tables }: { tables: readonly SchemaTable[] }) {
 
 /**
  * A workbook of cells' Cells: under a heading row, a row for each cell, its column, its
- * sheet and its address, and a cross; then Add a cell, a select of the columns a cell can
- * be given, held at its first option.
+ * sheet, its address and its label's address, and a cross; then Add a cell, a select of
+ * the columns a cell can be given, held at its first option.
  */
 function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportWidget; target: ExcelCellsExport }) {
   const change = useWorkbenchFormStore((s) => s.change)
@@ -170,6 +170,7 @@ function ExportCells({ form, widget, target }: { form: FormSpec; widget: ExportW
           <span className="min-w-0 flex-1">Field</span>
           <span className="w-20 shrink-0">Sheet</span>
           <span className="w-14 shrink-0">Cell</span>
+          <span className="w-14 shrink-0">Label cell</span>
           <span className="w-4 shrink-0" />
         </div>
       )}
@@ -242,6 +243,13 @@ function CellRow({
         aria-label={`Cell ${number} address`}
         value={cell.cell}
         onCommit={(address) => change((spec) => updateExportCell(spec, widget.id, index, { cell: address.trim().toUpperCase() }))}
+        className={`${FIELD_CLASS} w-14 shrink-0 font-mono`}
+        style={INPUT_STYLE}
+      />
+      <CommittedTextField
+        aria-label={`Cell ${number} label address`}
+        value={cell.label_cell}
+        onCommit={(address) => change((spec) => updateExportCell(spec, widget.id, index, { label_cell: address.trim().toUpperCase() }))}
         className={`${FIELD_CLASS} w-14 shrink-0 font-mono`}
         style={INPUT_STYLE}
       />
