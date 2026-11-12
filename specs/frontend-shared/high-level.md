@@ -392,8 +392,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   style to move a kit element. Colour stays the kit's: a colour utility beside a kit
   class would outrank the kit's hover, pressed and disabled colours as well, and so
   would one of `index.css`'s own unlayered state classes (`focus-ring`, `hover-*`), so
-  ESLint rejects either. The native dropdowns' colours are for every `select`, so that
-  stylesheet stays unlayered and wins over utility classes.
+  ESLint rejects either. It does not read an inline `style`, which a few callers use
+  to say something with colour: a status in the muted or danger text colour, a
+  toast's action in the accent, the Source selector's surface while its menu is open.
+  The native dropdowns' colours are for every `select`, so that stylesheet stays
+  unlayered and wins over utility classes.
 - **One button outside the toolbars.** `Button`, and `ButtonLink` for somewhere to go,
   are the toolbar button's raised surface and states in the shape a use needs: as wide
   as its label, an icon alone, or a page's main action filled in the accent. The
@@ -401,9 +404,15 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   it, where each had kept its own copy of the same class strings, so the size, the
   disabled look and the states are decided once. The caller lays the button out with a
   `className` and never colours it. ESLint keeps the kit's button classes inside the
-  kit, so a new button is one of the kit's and cannot start another copy; the eight
-  files that wrote the surface class with sizes of their own before that are listed as
+  kit, so a new button is one of the kit's and cannot start another copy; the three
+  files that still write the surface class with sizes of their own are listed as
   excused until they move.
+- **The toolbars' controls are the kit's.** A toolbar's button is `ToolbarButton`, a
+  link drawn as one `ToolbarLink`, and a status that stands among them `ToolbarStatus`,
+  a label in the same shape so it lines up. Where a control needs a layout of its own
+  (the Source selector's chevron pinned right, Submodel's two labels in one grid cell,
+  the view switcher's labels at the left), the caller writes a layout class on the
+  kit's component, where each had spelled out the whole button to get it.
 - **A catalogue of the kit, outside the product.** `frontend/catalogue/` is a page that
   draws the kit's pieces, a level to a page, each in every variant and state, with the
   app's own stylesheet, so what it shows is what the screens show. It draws the

@@ -1,4 +1,5 @@
 import { AppWindow, Workflow, type LucideIcon } from "lucide-react"
+import { Button, ToolbarButton } from "../haute-ui"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchStore, { type EditorView } from "../stores/useWorkbenchStore"
 
@@ -28,26 +29,24 @@ export default function ViewSwitcher({ compact }: { compact: boolean }) {
       className={compact ? "flex flex-col items-center gap-1 py-2" : "flex flex-col gap-1 px-2 py-2"}
       style={{ borderTop: "1px solid var(--chrome-border)" }}
     >
-      {VIEWS.map(({ view, label, Icon }) => (
-        <button
-          key={view}
-          type="button"
-          data-testid={`view-switcher-${view}`}
-          aria-pressed={activeView === view}
-          aria-label={compact ? label : undefined}
-          title={`Show ${label}`}
+      {VIEWS.map(({ view, label, Icon }) => {
+        const shared = {
+          "data-testid": `view-switcher-${view}`,
+          "aria-pressed": activeView === view,
+          title: `Show ${label}`,
           // Another view hides an open utility panel, so it waits for the panel's unsaved edit.
-          onClick={() => useUIStore.getState().afterUtilitySaved(() => showView(view))}
-          className={
-            compact
-              ? "toolbar-btn w-7 h-7 rounded-md flex items-center justify-center"
-              : "toolbar-btn w-full min-w-0 px-2 py-1 rounded-md flex items-center gap-1.5 text-[12px] font-medium"
-          }
-        >
-          <Icon size={13} aria-hidden="true" />
-          {!compact && <span className="truncate">{label}</span>}
-        </button>
-      ))}
+          onClick: () => useUIStore.getState().afterUtilitySaved(() => showView(view)),
+        }
+        return compact ? (
+          <Button key={view} {...shared} iconOnly aria-label={label} className="h-7 w-7 justify-center">
+            <Icon size={13} aria-hidden="true" />
+          </Button>
+        ) : (
+          <ToolbarButton key={view} {...shared} icon={Icon} compact className="min-w-0 justify-start gap-1.5">
+            <span className="truncate">{label}</span>
+          </ToolbarButton>
+        )
+      })}
     </div>
   )
 }

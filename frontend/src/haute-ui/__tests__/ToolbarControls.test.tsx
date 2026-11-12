@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { Wrench } from "lucide-react"
-import { SaveCommit, ToolbarButton, UndoRedo, ZoomInOut } from ".."
+import { SaveCommit, ToolbarButton, ToolbarLink, ToolbarStatus, UndoRedo, ZoomInOut } from ".."
 
 // The editor's toolbar exercises these through Toolbar.test.tsx; this covers what
-// only an extension uses: Save without Commit, and ToolbarButton for its own controls.
+// only an extension uses: Save without Commit, and ToolbarButton for its own controls,
+// with the link and the status drawn in a toolbar button's shape.
 describe("haute-ui toolbar controls", () => {
   afterEach(cleanup)
 
@@ -44,6 +45,35 @@ describe("haute-ui toolbar controls", () => {
     expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true")
     fireEvent.click(button)
     expect(onClick).toHaveBeenCalledOnce()
+  })
+
+  it("draws a link as a toolbar button, its layout classes after the kit's", () => {
+    render(
+      <ToolbarLink icon={Wrench} compact href="/quotes" title="Back to Quotes" className="w-auto">
+        Quotes
+      </ToolbarLink>,
+    )
+    const link = screen.getByRole("link", { name: "Quotes" })
+
+    expect(link).toHaveAttribute("href", "/quotes")
+    expect(link).toHaveAttribute("title", "Back to Quotes")
+    expect(link.className).toBe("toolbar-btn toolbar-action toolbar-action-compact w-auto")
+    expect(link.querySelector("svg")).toHaveAttribute("aria-hidden", "true")
+  })
+
+  it("draws a status in a toolbar button's shape as a label, not a control", () => {
+    render(
+      <ToolbarStatus data-testid="status" title="No git executable is available." className="min-w-[136px]">
+        Git unavailable
+      </ToolbarStatus>,
+    )
+    const status = screen.getByTestId("status")
+
+    expect(status.tagName).toBe("SPAN")
+    expect(status.className).toBe("toolbar-btn toolbar-action min-w-[136px]")
+    expect(status).toHaveAttribute("title", "No git executable is available.")
+    expect(status).toHaveTextContent("Git unavailable")
+    expect(screen.queryByRole("button")).toBeNull()
   })
 
   it("calls the undo, redo and zoom handlers, with undo and redo off when there is nothing to do", () => {

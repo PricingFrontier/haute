@@ -63,6 +63,25 @@ describe("BranchIndicator", () => {
     expect(indicator.style.color).toBe("var(--text-muted)")
   })
 
+  // Whatever it shows, the indicator is the kit's toolbar button or its status, so it is the
+  // size and shape of the bar's buttons: a label where there is nothing to press.
+  it.each([
+    ["checking", { loading: true }, "toolbar-branch-indicator", "SPAN"],
+    ["a status error", { statusError: "No project directory." }, "toolbar-branch-indicator", "SPAN"],
+    ["no Git executable", { status: status({ state: "git-unavailable", working_branch: null }) }, "toolbar-branch-indicator", "SPAN"],
+    ["an interrupted clone", { status: status({ state: "interrupted", errors: ["a.csv is in use"] }) }, "toolbar-branch-indicator", "SPAN"],
+    ["no repository", { status: status({ state: "no-repository", working_branch: null }) }, "toolbar-branch-indicator", "SPAN"],
+    ["no branch set", { status: status({ state: "unset", working_branch: null }) }, "toolbar-branch-indicator", "BUTTON"],
+    ["a ready branch", { status: status({}) }, "branch-indicator-name", "BUTTON"],
+  ] as const)("draws %s in a toolbar button's shape and the indicator's width", (_name, state, testId, tag) => {
+    useGitStore.setState(state)
+    render(<BranchIndicator />)
+    const drawn = screen.getByTestId(testId)
+
+    expect(drawn.tagName).toBe(tag)
+    expect(drawn).toHaveClass("toolbar-btn", "toolbar-action", "min-w-[136px]", "max-w-[220px]")
+  })
+
   it("keeps full Git errors readable on hover and Retry focus", () => {
     const loadStatus = vi.fn()
     const error = "Unable to read Git status because the project directory is no longer accessible."
@@ -175,9 +194,10 @@ describe("BranchIndicator", () => {
     render(<BranchIndicator />)
     const btn = screen.getByTestId("branch-indicator-name")
     expect(btn).toHaveTextContent("dev")
+    // The kit's toolbar button, as wide as its column, within the indicator's bounds.
+    expect(btn).toHaveClass("toolbar-action")
     expect(btn).toHaveClass("min-w-[136px]")
     expect(btn).toHaveClass("max-w-[220px]")
-    expect(btn).toHaveClass("w-full")
     expect(screen.queryByTestId("branch-indicator-sha")).toBeNull()
     // The commit code belongs to the history panel, not the toolbar.
     expect(screen.getByTestId("toolbar-branch-indicator")).not.toHaveTextContent("abc1234")

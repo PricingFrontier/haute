@@ -1,6 +1,6 @@
-import { ArrowLeft, FolderOpen, Plus, RotateCw, Wrench } from "lucide-react"
+import { ArrowLeft, ChevronDown, FolderOpen, Plus, RotateCw, Wrench } from "lucide-react"
 import type { ReactNode } from "react"
-import { Button, ButtonLink, ToolbarButton, ToolbarColumn } from "../src/haute-ui"
+import { Button, ButtonLink, ToolbarButton, ToolbarColumn, ToolbarLink, ToolbarStatus } from "../src/haute-ui"
 
 /** One sample on its stage, with what draws it underneath. */
 function Sample({ code, stage = "catalogue-stage", children }: { code: string; stage?: string; children: ReactNode }) {
@@ -132,6 +132,60 @@ export function ControlsPage() {
               <ToolbarButton icon={Wrench} aria-pressed>
                 Build
               </ToolbarButton>
+            </ToolbarColumn>
+          </Sample>
+        </div>
+
+        <h3>As a link</h3>
+        <div className="catalogue-samples">
+          <Sample code='<ToolbarLink icon={…} href="…" className="w-auto">'>
+            <ToolbarLink icon={ArrowLeft} href="#/controls" className="w-auto">
+              Quotes
+            </ToolbarLink>
+          </Sample>
+        </div>
+
+        <h3>Laid out by its caller</h3>
+        <div className="catalogue-samples">
+          <Sample code='<ToolbarButton className="justify-between"> over another'>
+            <ToolbarColumn>
+              <ToolbarButton className="justify-between">
+                development <ChevronDown size={11} />
+              </ToolbarButton>
+              <ToolbarButton>Pipeline</ToolbarButton>
+            </ToolbarColumn>
+          </Sample>
+          <Sample code='<ToolbarButton compact className="justify-start">'>
+            <ToolbarColumn className="w-40">
+              <ToolbarButton compact icon={Wrench} className="justify-start">
+                Workbench
+              </ToolbarButton>
+            </ToolbarColumn>
+          </Sample>
+        </div>
+      </section>
+
+      <section aria-labelledby="toolbar-status">
+        <h2 id="toolbar-status">Toolbar status</h2>
+        <p>
+          A status drawn in a toolbar button's shape, so it lines up with the buttons beside it. It is a label: it says
+          what is so, and anything to press sits inside it.
+        </p>
+        <div className="catalogue-samples">
+          <Sample code="<ToolbarStatus> over a <ToolbarButton>">
+            <ToolbarColumn>
+              <ToolbarStatus>Checking Git…</ToolbarStatus>
+              <ToolbarButton icon={Wrench}>Build</ToolbarButton>
+            </ToolbarColumn>
+          </Sample>
+          <Sample code="<ToolbarStatus> holding something to press">
+            <ToolbarColumn>
+              <ToolbarStatus>
+                Files in use
+                <button type="button" className="underline">
+                  Retry
+                </button>
+              </ToolbarStatus>
             </ToolbarColumn>
           </Sample>
         </div>

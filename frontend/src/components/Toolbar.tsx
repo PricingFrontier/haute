@@ -143,15 +143,14 @@ function Toolbar({
             the reason reaches the keyboard and touch users a `title` cannot.
             ``can*`` therefore drives presentation only. */}
         {/* Submodel and Instance column — Submodel on top of Instance.  Submodel
-            keeps its own grid of two stacked labels, which the kit's flex
-            action rule would override. */}
+            lays its two labels out in a grid of its own, one over the other. */}
         <ToolbarColumn>
-          <button
+          <ToolbarButton
             data-testid="toolbar-submodel"
             onClick={onSubmodelAction}
             aria-disabled={!canRunSubmodelAction}
             aria-label={dissolvesSubmodel ? "Dissolve" : "Submodel"}
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md grid w-full"
+            className="grid"
             title={dissolvesSubmodel
               ? "Dissolve the selected submodel back into its nodes"
               : "Group the selected nodes into a submodel - select 2 or more (Ctrl+G)"}
@@ -167,7 +166,7 @@ function Toolbar({
               <Ungroup size={13} aria-hidden="true" />
               Dissolve
             </span>
-          </button>
+          </ToolbarButton>
           <ToolbarButton
             icon={Link2}
             data-testid="toolbar-instance"

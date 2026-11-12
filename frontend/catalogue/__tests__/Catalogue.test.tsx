@@ -69,7 +69,7 @@ describe("the haute-ui catalogue", () => {
     expect(button.getByRole("button", { name: "Replace" })).toHaveClass("self-start")
   })
 
-  it("draws the toolbar's button at rest, compact, disabled and pressed", () => {
+  it("draws the toolbar's button at rest, compact, disabled, pressed, as a link and laid out by its caller", () => {
     window.location.hash = "#/controls"
     render(<Catalogue />)
     const toolbar = within(screen.getByRole("region", { name: "Toolbar button" }))
@@ -78,6 +78,20 @@ describe("the haute-ui catalogue", () => {
     expect(toolbar.getByRole("button", { name: "Zoom In" })).toHaveClass("toolbar-action-compact")
     expect(toolbar.getAllByRole("button").filter((sample) => (sample as HTMLButtonElement).disabled)).toHaveLength(1)
     expect(toolbar.getAllByRole("button", { pressed: true })).toHaveLength(1)
+    expect(toolbar.getByRole("link", { name: "Quotes" }).className).toBe("toolbar-btn toolbar-action w-auto")
+    expect(toolbar.getByRole("button", { name: "development" })).toHaveClass("toolbar-action", "justify-between")
+    expect(toolbar.getByRole("button", { name: "Workbench" })).toHaveClass("toolbar-action-compact", "justify-start")
+  })
+
+  it("draws the toolbar's status as a label, with what is pressed inside it", () => {
+    window.location.hash = "#/controls"
+    render(<Catalogue />)
+    const status = within(screen.getByRole("region", { name: "Toolbar status" }))
+
+    const label = status.getByText("Checking Git…")
+    expect(label.tagName).toBe("SPAN")
+    expect(label.className).toBe("toolbar-btn toolbar-action")
+    expect(status.getByRole("button", { name: "Retry" }).parentElement).toHaveClass("toolbar-action")
   })
 
   it("says under every sample what draws it", () => {
@@ -86,7 +100,7 @@ describe("the haute-ui catalogue", () => {
 
     const samples = screen.getAllByRole("figure")
     expect(samples.length).toBeGreaterThan(10)
-    for (const sample of samples) expect(sample.querySelector("figcaption")?.textContent).toMatch(/^<(Button|ButtonLink|ToolbarButton)\b/)
+    for (const sample of samples) expect(sample.querySelector("figcaption")?.textContent).toMatch(/^<(Button|ButtonLink|ToolbarButton|ToolbarLink|ToolbarStatus)\b/)
   })
 })
 

@@ -50,7 +50,8 @@ describe("ViewSwitcher", () => {
     expect(group).toHaveClass("flex-col")
     const buttons = within(group).getAllByRole("button")
     expect(buttons.map((button) => button.textContent)).toEqual(["Pricing", "Workbench"])
-    for (const button of buttons) expect(button).toHaveClass("w-full")
+    // The kit's toolbar button is as wide as what holds it.
+    for (const button of buttons) expect(button).toHaveClass("toolbar-action")
   })
 
   it("is a column of icon buttons named by their labels beside the collapsed palette", () => {

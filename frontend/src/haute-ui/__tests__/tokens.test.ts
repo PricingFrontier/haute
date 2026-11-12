@@ -57,10 +57,18 @@ describe("haute-ui's stylesheets", () => {
     ["toolbar.css", ".toolbar-brand", "width", "165px"],
     ["toolbar.css", ".toolbar-column", "flex-direction", "column"],
     ["toolbar.css", ".toolbar-action", "width", "100%"],
+    // The size the toolbar's buttons, links and statuses share.
+    ["toolbar.css", ".toolbar-action", "font-size", "12px"],
+    ["toolbar.css", ".toolbar-action", "padding", "4px 10px"],
+    ["toolbar.css", ".toolbar-action", "border-radius", "6px"],
+    // A label too long for its button is cut short, not an icon beside it.
+    ["toolbar.css", ".toolbar-action svg", "flex-shrink", "0"],
     ["toolbar.css", ".toolbar-save-commit", "width", "100%"],
     ["toolbar.css", ".toolbar-fill", "flex", "1 1 0%"],
     // Outside the toolbar the fill is as wide as its label.
     ["button.css", ".btn-fill", "flex", "none"],
+    // Its label stays centred where a caller's layout stretches it.
+    ["button.css", ".btn-fill", "justify-content", "center"],
     ["palette.css", ".palette", "width", "180px"],
     ["palette.css", ".palette-reveal", "width", "40px"],
     ["palette.css", ".palette-item-icon", "width", "24px"],

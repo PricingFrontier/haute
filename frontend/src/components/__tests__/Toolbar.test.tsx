@@ -278,8 +278,9 @@ describe("Toolbar", () => {
 
     expect(submodelBtn).toHaveTextContent(/submodel/i)
     expect(instanceBtn).toHaveTextContent(/instance/i)
-    // Submodel keeps its grid of two stacked labels, as wide as the column.
-    expect(submodelBtn).toHaveClass("w-full")
+    // Both are the kit's toolbar button, as wide as the column; Submodel lays its
+    // two labels out in a grid of its own.
+    expect(submodelBtn).toHaveClass("toolbar-action", "grid")
     expect(instanceBtn).toHaveClass("toolbar-action")
 
     expect(submodelBtn.compareDocumentPosition(instanceBtn) & 4).toBeTruthy()
@@ -689,23 +690,20 @@ describe("Toolbar", () => {
     // The two buttons stand without "Source:" and "Pipeline:" labels.
     expect(column.querySelector("label")).toBeNull()
     expect(cache).toHaveTextContent(/^Pipeline$/)
-    // The Source selector shares the toolbar button surface and type.
-    expect(source).toHaveClass("toolbar-btn", "text-[12px]", "font-medium")
+    // Both are the kit's toolbar button, so their type and padding match. The
+    // selector lays itself out: its chevron pinned right, its name at the left.
+    for (const button of [source, cache]) expect(button).toHaveClass("toolbar-btn", "toolbar-action")
+    expect(source).toHaveClass("justify-between", "gap-1.5")
+    expect(cache).not.toHaveClass("justify-between")
     expect(source).not.toHaveClass("font-mono")
-    // Same type and horizontal padding on both, so the two texts line up.
-    for (const cls of ["text-[12px]", "font-medium", "px-2.5"]) {
-      expect(source).toHaveClass(cls)
-      expect(cache).toHaveClass(cls)
-    }
 
     // Source on the top row, Pipeline underneath it.
     expect(source.compareDocumentPosition(cache) & 4).toBeTruthy()
 
-    // Both controls stretch to fill the same grid column, which is what makes
-    // the Pipeline button exactly as wide as the Source selector above it.
+    // Both controls fill the same grid column, as the kit's toolbar button fills
+    // its column, which is what makes the Pipeline button exactly as wide as the
+    // Source selector above it.
     expect(column.className).toContain("grid-cols-[auto]")
-    expect(source).toHaveClass("w-full")
-    expect(cache).toHaveClass("w-full")
 
     // The Pipeline control opens the pipeline settings pane.
     expect(cache).toHaveAttribute("aria-haspopup", "dialog")

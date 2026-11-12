@@ -5,10 +5,14 @@ import { apiErrorMessage } from "../api/errors"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
+import { ToolbarButton, ToolbarStatus } from "../haute-ui"
 import Tooltip from "./Tooltip"
 
 /** A status that is not pressed (checking, no Git, no repository) reads muted beside the bar's buttons. */
 const MUTED = { color: "var(--text-muted)" } as const
+
+/** As wide as the branch name's button, whatever the indicator shows, so the bar does not reflow. */
+const WIDTH = "min-w-[136px] max-w-[220px]"
 
 /** The sync/storage chip shown beside the branch indicator once a working
  *  branch is ready (S28 durable-storage surface). Hidden entirely when this
@@ -176,11 +180,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
         className="max-w-[220px]"
       >
         {(describedBy) => (
-          <span
-            data-testid="toolbar-branch-indicator"
-            data-branch-state="error"
-            className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[11px] font-medium min-w-[136px] max-w-[220px] w-full"
-          >
+          <ToolbarStatus data-testid="toolbar-branch-indicator" data-branch-state="error" className={WIDTH}>
             <span className="truncate">Git unavailable: {statusError}</span>
             <button
               type="button"
@@ -191,7 +191,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
             >
               Retry
             </button>
-          </span>
+          </ToolbarStatus>
         )}
       </Tooltip>
     )
@@ -200,14 +200,9 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
   if (status === null) {
     if (loading) {
       return wrapWithChildren(
-        <span
-          data-testid="toolbar-branch-indicator"
-          data-branch-state="checking"
-          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
-          style={MUTED}
-        >
+        <ToolbarStatus data-testid="toolbar-branch-indicator" data-branch-state="checking" className={WIDTH} style={MUTED}>
           Checking Git…
-        </span>
+        </ToolbarStatus>
       )
     }
     return children ? <div className="flex flex-col gap-1 w-fit min-w-[136px] max-w-[220px]">{children}</div> : null
@@ -218,15 +213,15 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
   if (!ready) {
     if (status.state === "git-unavailable") {
       return wrapWithChildren(
-        <span
+        <ToolbarStatus
           data-testid="toolbar-branch-indicator"
           data-branch-state="git-unavailable"
           title="No git executable is available in this environment."
-          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+          className={WIDTH}
           style={MUTED}
         >
           Git unavailable
-        </span>
+        </ToolbarStatus>
       )
     }
     if (status.state === "interrupted") {
@@ -234,10 +229,10 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
       return wrapWithChildren(
         <Tooltip label={detail} side="bottom" className="max-w-[260px]">
           {(describedBy) => (
-            <span
+            <ToolbarStatus
               data-testid="toolbar-branch-indicator"
               data-branch-state="interrupted"
-              className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+              className={WIDTH}
               style={{ color: "var(--danger)" }}
             >
               <span className="truncate">Files in use</span>
@@ -250,22 +245,22 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
               >
                 Retry
               </button>
-            </span>
+            </ToolbarStatus>
           )}
         </Tooltip>
       )
     }
     if (status.state === "no-repository") {
       return wrapWithChildren(
-        <span
+        <ToolbarStatus
           data-testid="toolbar-branch-indicator"
           data-branch-state="no-repository"
           title="Run git init in this project to enable version control."
-          className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+          className={WIDTH}
           style={MUTED}
         >
           Git not initialised
-        </span>
+        </ToolbarStatus>
       )
     }
     const stateMeta = status.state === "unset"
@@ -276,40 +271,38 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
           ? { label: "Viewing an earlier version", modal: "select" as const }
           : { label: "Git needs attention", modal: "select" as const }
     return wrapWithChildren(
-      <button
-        type="button"
+      <ToolbarButton
+        icon={GitBranch}
         data-testid="toolbar-branch-indicator"
         data-branch-state={status.state}
         onClick={() => openModal(stateMeta.modal)}
-        className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-md min-w-[136px] max-w-[220px] w-full"
+        className={WIDTH}
         style={{ color: "var(--danger)" }}
         title={`${stateMeta.label} - click to resolve in the Git panel`}
       >
-        <GitBranch size={13} aria-hidden="true" className="shrink-0" />
         <span className="truncate">{stateMeta.label}</span>
-      </button>
+      </ToolbarButton>
     )
   }
 
-  // The indicator carries the toolbar's shared button styling: it sat in an
-  // inset --bg-input well (darker than the chrome, so it read as a field
-  // rather than a control) and underlined on hover, while every other action
-  // in the bar is a raised button that brightens instead.
+  // The indicator is the kit's toolbar button: it sat in an inset --bg-input
+  // well (darker than the chrome, so it read as a field rather than a control)
+  // and underlined on hover, while every other action in the bar is a raised
+  // button that brightens instead.
   return (
     <div data-testid="toolbar-branch-indicator" data-branch-state="ready" className="flex items-center gap-1.5">
       <StorageChip />
       <ForkChip />
       {wrapWithChildren(
-        <button
-          type="button"
+        <ToolbarButton
+          icon={GitBranch}
           data-testid="branch-indicator-name"
           onClick={openOnCurrent}
-          className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium font-mono rounded-md min-w-[136px] max-w-[220px] w-full truncate"
+          className={`${WIDTH} truncate font-mono`}
           title={`Working branch: ${status.working_branch} - click to manage branches`}
         >
-          <GitBranch size={13} aria-hidden="true" className="shrink-0" />
           <span className="truncate">{status.working_branch}</span>
-        </button>
+        </ToolbarButton>
       )}
     </div>
   )

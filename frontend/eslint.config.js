@@ -132,7 +132,7 @@ const KIT_SELECTORS = [
     message: KIT_COLOUR_MESSAGE,
   },
   {
-    selector: `JSXOpeningElement[name.name=/^(Button|ButtonLink|ToolbarButton|ToolbarColumn)$/] > JSXAttribute[name.name="className"] :matches(Literal[value=${COLOUR_UTILITY}], TemplateElement[value.cooked=${COLOUR_UTILITY}])`,
+    selector: `JSXOpeningElement[name.name=/^(Button|ButtonLink|ToolbarButton|ToolbarColumn|ToolbarLink|ToolbarStatus)$/] > JSXAttribute[name.name="className"] :matches(Literal[value=${COLOUR_UTILITY}], TemplateElement[value.cooked=${COLOUR_UTILITY}])`,
     message: KIT_COLOUR_MESSAGE,
   },
 ]
@@ -145,7 +145,7 @@ const KIT_BUTTON_CLASS = String.raw`/(^|\s)(toolbar-(btn|fill|action)|btn)(-[a-z
 const KIT_BUTTON_SELECTORS = [
   {
     selector: `Literal[value=${KIT_BUTTON_CLASS}], TemplateElement[value.cooked=${KIT_BUTTON_CLASS}]`,
-    message: "Draw a button with Button, ButtonLink or ToolbarButton from haute-ui: the kit's button classes are written only inside it (specs/frontend-shared).",
+    message: "Draw a button with haute-ui's Button, ButtonLink, ToolbarButton or ToolbarLink, and a toolbar's status with ToolbarStatus: the kit's button classes are written only inside it (specs/frontend-shared).",
   },
 ]
 const SOURCE_FILES = ['src/**/*.{ts,tsx}', 'catalogue/**/*.{ts,tsx}']
@@ -248,13 +248,8 @@ export default defineConfig([
     // ban. Moving one onto the kit's button changes it by a pixel or two, so each
     // leaves this list with that choice.
     files: [
-      'src/app/QuoteView.tsx',
-      'src/components/BranchIndicator.tsx',
       'src/components/PipelineSettingsModal.tsx',
-      'src/components/SourcePipelineControls.tsx',
       'src/components/Toast.tsx',
-      'src/components/Toolbar.tsx',
-      'src/workbench/ViewSwitcher.tsx',
       'src/workbench/WorkbenchView.tsx',
     ],
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),

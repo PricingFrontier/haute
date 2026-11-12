@@ -61,7 +61,7 @@ function FrontPage() {
       <p>A piece is on the page of its level.</p>
       <ul className="catalogue-levels">
         <li>
-          <a href="#/controls">Controls</a>: one thing to press. The button, a link drawn as one, and the toolbar's button.
+          <a href="#/controls">Controls</a>: one thing to press. The button, a link drawn as one, the toolbar's button and the toolbar's status.
         </li>
       </ul>
       <p>The kit's toolbar, palette and side panel are not drawn here yet.</p>

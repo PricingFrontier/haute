@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, HTMLAttributes } from "react"
+import type { AnchorHTMLAttributes, ButtonHTMLAttributes, HTMLAttributes } from "react"
 import { Redo2, Undo2, ZoomIn, ZoomOut, type LucideIcon } from "lucide-react"
 import { classNames } from "./classNames"
 
@@ -19,24 +19,52 @@ export function ToolbarColumn({ className, ...props }: HTMLAttributes<HTMLDivEle
   return <div {...props} className={classNames("toolbar-column", className)} />
 }
 
-export interface ToolbarButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+/** What a toolbar button and a link drawn as one share. */
+interface ToolbarAction {
   icon?: LucideIcon
   /** Narrower side padding, as the zoom buttons have. */
   compact?: boolean
 }
 
+export interface ToolbarButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>, ToolbarAction {}
+
+/** The toolbar's raised surface in a toolbar button's shape; a caller's layout classes follow. */
+const action = (compact: boolean, className: string | undefined) =>
+  classNames("toolbar-btn toolbar-action", compact && "toolbar-action-compact", className)
+
 /** A labelled button on the toolbar's raised surface, as wide as its column. */
 export function ToolbarButton({ icon: Icon, compact = false, className, children, ...props }: ToolbarButtonProps) {
   return (
-    <button
-      type="button"
-      {...props}
-      className={classNames("toolbar-btn toolbar-action", compact && "toolbar-action-compact", className)}
-    >
+    <button type="button" {...props} className={action(compact, className)}>
       {Icon && <Icon size={13} aria-hidden="true" />}
       {children}
     </button>
   )
+}
+
+/** A link drawn as a toolbar button, for a control that goes somewhere. */
+export function ToolbarLink({
+  icon: Icon,
+  compact = false,
+  className,
+  children,
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement> & ToolbarAction & { href: string }) {
+  return (
+    <a {...props} className={action(compact, className)}>
+      {Icon && <Icon size={13} aria-hidden="true" />}
+      {children}
+    </a>
+  )
+}
+
+/**
+ * A status drawn as a toolbar button is, so it lines up with the buttons beside it: a label,
+ * not a control. It brightens under the pointer as the buttons do, which is the only answer
+ * something to press inside it gives.
+ */
+export function ToolbarStatus({ className, ...props }: HTMLAttributes<HTMLSpanElement>) {
+  return <span {...props} className={action(false, className)} />
 }
 
 interface UndoRedoProps {

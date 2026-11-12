@@ -6,6 +6,7 @@ import useGraphStore from "../stores/useGraphStore"
 import { confirmed } from "../stores/useQuestionStore"
 import { constantsWithSourceValue, withoutSource } from "../utils/globalConstants"
 import useClickOutside from "../hooks/useClickOutside"
+import { ToolbarButton } from "../haute-ui"
 
 const PipelineSettingsModal = lazy(() => import("./PipelineSettingsModal"))
 
@@ -125,15 +126,15 @@ export default function SourcePipelineControls({
               )}
             </form>
           ) : (
-            <button
+            <ToolbarButton
               data-testid="source-selector"
               onClick={() => setSourceOpen((v) => !v)}
               disabled={editingDisabled || !sourceSelectionTrusted}
-              className="toolbar-btn w-full flex items-center justify-between gap-1.5 px-2.5 py-1 text-[12px] font-medium rounded-md"
-              /* Uses the shared toolbar button surface and type so it matches
-                 every other button in the bar.  The chevron is pinned right
-                 rather than trailing the name, so the control still reads as a
-                 dropdown when the grid stretches it past its text. */
+              /* The kit's toolbar button, so it matches every other button in
+                 the bar.  The chevron is pinned right rather than trailing the
+                 name, so the control still reads as a dropdown when the grid
+                 stretches it past its text. */
+              className="justify-between gap-1.5"
               style={sourceOpen ? { background: 'var(--accent-soft)', borderColor: 'var(--accent)' } : undefined}
               title="Data source"
             >
@@ -144,7 +145,7 @@ export default function SourcePipelineControls({
                 <span className="truncate">{sourceSelectionTrusted ? activeSource : "Unavailable"}</span>
               </span>
               <ChevronDown size={11} className="shrink-0" style={{ color: 'var(--text-muted)', transition: 'transform 150ms', transform: sourceOpen ? 'rotate(180deg)' : undefined }} />
-            </button>
+            </ToolbarButton>
           )}
           {sourceOpen && !editingDisabled && sourceSelectionTrusted && (
             <div
@@ -199,19 +200,16 @@ export default function SourcePipelineControls({
             "Offline" while the server is away, as nothing calculates then.
             "Offline" is no wider than "Pipeline", so going offline never
             widens the column. */}
-        {/* Spelled as the Source selector over it is, whose chevron the kit's
-            centred action would not take, so the two texts line up. */}
-        <button
+        <ToolbarButton
           data-testid="toolbar-pipeline-settings"
           onClick={() => setPipelineSettingsOpen(true)}
           aria-haspopup="dialog"
           aria-expanded={pipelineSettingsOpen}
-          className="toolbar-btn w-full px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center"
           style={offlineTitle ? { color: 'var(--danger)' } : undefined}
           title={offlineTitle ?? PIPELINE_SETTINGS_TITLE}
         >
           {offlineTitle ? "Offline" : "Pipeline"}
-        </button>
+        </ToolbarButton>
       </div>
       {pipelineSettingsOpen && (
         <Suspense fallback={null}>

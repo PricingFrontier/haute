@@ -70,6 +70,8 @@ describe("colour utilities beside a haute-ui class", () => {
     ['export const a = <ToolbarButton className="focus-ring shrink-0">Refresh</ToolbarButton>'],
     ['export const a = <Button className="ml-auto bg-[var(--danger-soft)]">Delete</Button>'],
     ['export const a = <ButtonLink href="/" className="text-white">Quotes</ButtonLink>'],
+    ['export const a = <ToolbarLink href="/" className="w-auto text-[var(--text-accent)]">Quotes</ToolbarLink>'],
+    ['export const a = <ToolbarStatus className="text-[var(--text-muted)]">Checking Git…</ToolbarStatus>'],
     ['export const a = <span className="toolbar-btn btn hover:bg-[var(--bg-hover)]">Open</span>'],
   ])("rejects %s", async (code) => {
     const messages = await colourMessages(code, "src/panels/probe.tsx")

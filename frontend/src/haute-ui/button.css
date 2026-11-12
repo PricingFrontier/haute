@@ -28,10 +28,12 @@
 .btn-icon:disabled {
   opacity: 0.5;
 }
-/* The toolbar's fill shares its row equally; outside the toolbar it is as wide as its label. */
+/* The toolbar's fill shares its row equally; outside the toolbar it is as wide as its
+   label, which stays centred where a caller's layout stretches the button. */
 .btn-fill {
   display: inline-flex;
   flex: none;
   align-items: center;
+  justify-content: center;
   gap: 0.25rem;
 }

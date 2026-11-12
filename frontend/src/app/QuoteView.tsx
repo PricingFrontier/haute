@@ -10,7 +10,7 @@ import { ArrowLeft, BadgeCheck, History, LockOpen } from "lucide-react"
 import { Fragment, useEffect, useRef, useState } from "react"
 import type { QuoteSource } from "../api/app"
 import { CommittedTextField } from "../components/form"
-import { Button, ButtonLink, ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
+import { Button, ButtonLink, ToolbarButton, ToolbarColumn, ToolbarLink, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
 import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
@@ -257,15 +257,16 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
 
   return (
     <AppHeader label="Quote toolbar">
-      <a
+      <ToolbarLink
+        icon={ArrowLeft}
         href="/"
         onClick={(event) => followLink(event, "/")}
-        className="toolbar-btn toolbar-action w-auto"
+        className="w-auto"
         title="Back to Quotes"
         data-testid="back-to-quotes"
       >
-        <ArrowLeft size={13} aria-hidden="true" /> Quotes
-      </a>
+        Quotes
+      </ToolbarLink>
       <div className="flex min-w-[180px] max-w-[320px] flex-col gap-0.5" data-testid="quote-identity">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-[12px] font-semibold" style={{ color: "var(--text-accent)" }} data-testid="quote-reference">
@@ -292,9 +293,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         />
       </div>
       <ToolbarColumn role="group" aria-label="Save">
-        <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || unkeyed !== null || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
+        <Button variant="fill" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || unkeyed !== null || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
           {saving ? "Saving…" : "Save"}
-        </button>
+        </Button>
         {quote?.stage === "final" ? (
           <ToolbarButton icon={LockOpen} onClick={() => void amend()} disabled={working || !editor || quote.archived} title="Take the quote back to draft to amend it, giving a reason">
             Amend

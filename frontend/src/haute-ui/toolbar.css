@@ -119,6 +119,10 @@
 .toolbar-action-compact {
   padding-inline: 8px;
 }
+/* An icon in it keeps its size when a label too long for the button is cut short. */
+.toolbar-action svg {
+  flex-shrink: 0;
+}
 
 /* Save and Commit: filled, side by side and of equal width. */
 .toolbar-save-commit {
