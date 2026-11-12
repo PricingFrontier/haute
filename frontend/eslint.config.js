@@ -102,11 +102,11 @@ const PALETTE = 'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|gree
 // one of index.css's own state classes, which are unlayered and so outrank the kit too.
 const COLOUR_UTILITY = String.raw`/(^|\s)!?(\S*:)?!?((bg|text|border(-[xytrblse])?|outline|ring|ring-offset|inset-ring|divide|placeholder|shadow|inset-shadow|text-shadow|drop-shadow|fill|stroke|decoration|accent|caret|from|via|to)-(\[(color:|var\(|#|rgb|hsl|oklch|oklab|lab\(|lch\(|color-mix|(red|blue|green|white|black|gr[ae]y|yellow|orange|purple|pink|transparent|currentColor)\])|\(--|(inherit|current|transparent|black|white|(${PALETTE})-\d{2,3})(\s|$|!|\x2f))|\[(background|[a-z-]*color|fill|stroke):|(focus-ring|hover-[a-z-]+)(\s|$))/`
 const KIT_COLOUR_MESSAGE = 'Write layout utilities beside a haute-ui class or on a haute-ui component, never a colour: the kit draws its own colours and states (specs/frontend-shared).'
-const KIT_TEMPLATE = `TemplateLiteral:has(> TemplateElement[value.raw=${KIT_CLASS}])`
+const KIT_TEMPLATE = `TemplateLiteral:has(> TemplateElement[value.cooked=${KIT_CLASS}])`
 const KIT_STRING = `:matches(Literal[value=${KIT_CLASS}], ${KIT_TEMPLATE})`
 // A colour class in a string that does not itself name a kit class: one that does is
 // reported by the first selector, once.
-const COLOUR_STRING = `:matches(Literal[value=${COLOUR_UTILITY}]:not([value=${KIT_CLASS}]), TemplateLiteral:not(${KIT_TEMPLATE}):has(> TemplateElement[value.raw=${COLOUR_UTILITY}]))`
+const COLOUR_STRING = `:matches(Literal[value=${COLOUR_UTILITY}]:not([value=${KIT_CLASS}]), TemplateLiteral:not(${KIT_TEMPLATE}):has(> TemplateElement[value.cooked=${COLOUR_UTILITY}]))`
 // A string as one member of a class-name call or array, or one operand of a
 // concatenation: bare, or up to two `wrapper`s down. Only members are looked at, so a
 // kit class and a colour on different elements inside one call are left alone.
@@ -118,7 +118,7 @@ const COLOUR_MEMBER = within(COLOUR_STRING, CHOICE)
 const CLASS_LIST = ':matches(CallExpression, ArrayExpression)'
 const KIT_SELECTORS = [
   {
-    selector: `Literal[value=${KIT_CLASS}][value=${COLOUR_UTILITY}], ${KIT_TEMPLATE}:has(:matches(TemplateElement[value.raw=${COLOUR_UTILITY}], Literal[value=${COLOUR_UTILITY}]))`,
+    selector: `Literal[value=${KIT_CLASS}][value=${COLOUR_UTILITY}], ${KIT_TEMPLATE}:has(:matches(TemplateElement[value.cooked=${COLOUR_UTILITY}], Literal[value=${COLOUR_UTILITY}]))`,
     message: KIT_COLOUR_MESSAGE,
   },
   {
@@ -132,8 +132,20 @@ const KIT_SELECTORS = [
     message: KIT_COLOUR_MESSAGE,
   },
   {
-    selector: `JSXOpeningElement[name.name=/^(Button|ButtonLink|ToolbarButton|ToolbarColumn)$/] > JSXAttribute[name.name="className"] :matches(Literal[value=${COLOUR_UTILITY}], TemplateElement[value.raw=${COLOUR_UTILITY}])`,
+    selector: `JSXOpeningElement[name.name=/^(Button|ButtonLink|ToolbarButton|ToolbarColumn)$/] > JSXAttribute[name.name="className"] :matches(Literal[value=${COLOUR_UTILITY}], TemplateElement[value.cooked=${COLOUR_UTILITY}])`,
     message: KIT_COLOUR_MESSAGE,
+  },
+]
+// The kit's button classes (toolbar-btn, toolbar-fill, toolbar-action and btn, each with
+// any suffix) are written only inside haute-ui. Elsewhere a button is a Button, a
+// ButtonLink or a ToolbarButton, so its size and its states are decided once and a new
+// button cannot start another copy of them. The names are refused in any string, a
+// class name or not.
+const KIT_BUTTON_CLASS = String.raw`/(^|\s)(toolbar-(btn|fill|action)|btn)(-[a-z0-9-]+)?(\s|$)/`
+const KIT_BUTTON_SELECTORS = [
+  {
+    selector: `Literal[value=${KIT_BUTTON_CLASS}], TemplateElement[value.cooked=${KIT_BUTTON_CLASS}]`,
+    message: "Draw a button with Button, ButtonLink or ToolbarButton from haute-ui: the kit's button classes are written only inside it (specs/frontend-shared).",
   },
 ]
 const SOURCE_FILES = ['src/**/*.{ts,tsx}']
@@ -178,24 +190,24 @@ export default defineConfig([
   {
     files: SOURCE_FILES,
     ignores: TEST_FILES,
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS, KIT_BUTTON_SELECTORS),
   },
   {
     // The helpers' own homes.
     files: ['src/utils/isoDate.ts', 'src/api/types.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, KIT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, KIT_SELECTORS, KIT_BUTTON_SELECTORS),
   },
   {
     files: ['src/api/errors.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS, KIT_BUTTON_SELECTORS),
   },
   {
     files: ['src/utils/formatBytes.ts', 'src/utils/formatValue.ts', 'src/utils/relativeTime.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS, KIT_BUTTON_SELECTORS),
   },
   {
     files: ['src/types/guards.ts', 'src/utils/objectLiteral.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS, KIT_BUTTON_SELECTORS),
   },
   // Exact file/rule debt that predates the blocking severities. New instances
   // elsewhere fail lint; remove each override with its owning-stream fix.
@@ -223,7 +235,29 @@ export default defineConfig([
       'src/utils/connectionValidation.ts',
       'src/workbench/ChartBody.tsx',
     ],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS, KIT_BUTTON_SELECTORS),
+  },
+  {
+    // The kit writes its own classes.
+    files: ['src/haute-ui/**'],
+    ignores: TEST_FILES,
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
+  },
+  {
+    // Buttons that wrote the kit's surface class with sizes of their own before the
+    // ban. Moving one onto the kit's button changes it by a pixel or two, so each
+    // leaves this list with that choice.
+    files: [
+      'src/app/QuoteView.tsx',
+      'src/components/BranchIndicator.tsx',
+      'src/components/PipelineSettingsModal.tsx',
+      'src/components/SourcePipelineControls.tsx',
+      'src/components/Toast.tsx',
+      'src/components/Toolbar.tsx',
+      'src/workbench/ViewSwitcher.tsx',
+      'src/workbench/WorkbenchView.tsx',
+    ],
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, KIT_SELECTORS),
   },
   {
     files: ['e2e/persistence/api-input-v2-native.spec.ts'],

@@ -1209,6 +1209,20 @@ colour class on different elements included. The check reads the source as writt
 and does not follow a class through a variable. Every override block keeps the ban; test files
 are not policed.
 
+**The kit's button classes** (`frontend/src/__tests__/lint/kitButtons.test.ts` runs ESLint on
+probes). ESLint's `no-restricted-syntax` rejects, outside `frontend/src/haute-ui/`, a string or
+template literal, a class name or not, that names `toolbar-btn`, `toolbar-fill`, `toolbar-action`
+or `btn`, each alone or with any suffix: a button is drawn with `Button`, `ButtonLink` or
+`ToolbarButton`. The kit's other
+classes (`toolbar`, `toolbar-column`, `toolbar-brand*`, `side-panel-title`) may still be
+written. Eight files wrote `toolbar-btn` with sizes of their own before the ban and are listed
+in `frontend/eslint.config.js` as excused from it alone, as the kit's own files are (`app/QuoteView.tsx`,
+`components/BranchIndicator.tsx`, `components/PipelineSettingsModal.tsx`,
+`components/SourcePipelineControls.tsx`, `components/Toast.tsx`, `components/Toolbar.tsx`,
+`workbench/ViewSwitcher.tsx`, `workbench/WorkbenchView.tsx`); each leaves the list when its
+buttons move onto the kit's, which changes them by a pixel or two. Every other override block
+keeps the ban; test files are not policed.
+
 ## Runtime response contracts
 
 ### Execution-strategy diagnostics

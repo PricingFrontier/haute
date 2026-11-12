@@ -10,6 +10,11 @@ import { restrictedMessages } from "./probe"
 
 const KEEPS_ITS_COLOURS = "the kit draws its own colours and states"
 
+/** The colour rule's messages alone: a probe that writes a kit button class also meets the ban on those. */
+async function colourMessages(code: string, filePath?: string): Promise<string[]> {
+  return (await restrictedMessages(code, filePath)).filter((message) => message.includes(KEEPS_ITS_COLOURS))
+}
+
 describe("colour utilities beside a haute-ui class", () => {
   it.each([
     ['export const a = "toolbar-btn px-2.5 py-1 text-[12px] text-[var(--text-muted)] w-full"'],
@@ -51,7 +56,7 @@ describe("colour utilities beside a haute-ui class", () => {
     ['export const a = (on: boolean) => classNames("bg-red-500", on && "toolbar-btn")'],
     ['export const a = (a: boolean, b: boolean) => classNames(a ? (b ? "text-white" : "px-2") : "px-1", "toolbar-btn")'],
   ])("rejects %s", async (code) => {
-    const messages = await restrictedMessages(code)
+    const messages = await colourMessages(code)
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain(KEEPS_ITS_COLOURS)
   })
@@ -67,7 +72,7 @@ describe("colour utilities beside a haute-ui class", () => {
     ['export const a = <ButtonLink href="/" className="text-white">Quotes</ButtonLink>'],
     ['export const a = <span className="toolbar-btn btn hover:bg-[var(--bg-hover)]">Open</span>'],
   ])("rejects %s", async (code) => {
-    const messages = await restrictedMessages(code, "src/panels/probe.tsx")
+    const messages = await colourMessages(code, "src/panels/probe.tsx")
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain(KEEPS_ITS_COLOURS)
   })
@@ -96,7 +101,7 @@ describe("colour utilities beside a haute-ui class", () => {
       'export const r = register("toolbar-btn", () => describe("bg-red-500"))',
       'export const s = "toolbar-btn " + describe(() => "bg-red-500")',
     ].join("\n")
-    expect(await restrictedMessages(code)).toEqual([])
+    expect(await colourMessages(code)).toEqual([])
   })
 
   it("accepts a layout class on a kit component", async () => {
@@ -110,7 +115,7 @@ describe("colour utilities beside a haute-ui class", () => {
       'export const d = [1, 2].map((n) => <header key={n} className="toolbar"><span className="text-[var(--text-muted)]">{n}</span></header>)',
       'export const e = memo(() => <div className="toolbar-column"><p className="bg-[var(--bg-hover)]">x</p></div>)',
     ].join("\n")
-    expect(await restrictedMessages(code, "src/panels/probe.tsx")).toEqual([])
+    expect(await colourMessages(code, "src/panels/probe.tsx")).toEqual([])
   })
 
   // The kit's own files, and files with an override block of their own, keep the ban.
@@ -122,12 +127,12 @@ describe("colour utilities beside a haute-ui class", () => {
     ["src/utils/formatBytes.ts"],
     ["src/types/guards.ts"],
   ])("keeps the ban in %s", async (filePath) => {
-    const messages = await restrictedMessages('export const a = "toolbar-btn bg-red-500"', filePath)
+    const messages = await colourMessages('export const a = "toolbar-btn bg-red-500"', filePath)
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain(KEEPS_ITS_COLOURS)
   })
 
   it("does not police test files", async () => {
-    expect(await restrictedMessages('export const a = "toolbar-btn bg-red-500"', "src/panels/__tests__/probe.test.ts")).toEqual([])
+    expect(await colourMessages('export const a = "toolbar-btn bg-red-500"', "src/panels/__tests__/probe.test.ts")).toEqual([])
   })
 })

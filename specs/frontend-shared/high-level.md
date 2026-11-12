@@ -400,7 +400,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   underwriter app and the workbench's Test quotes panel draw every such button through
   it, where each had kept its own copy of the same class strings, so the size, the
   disabled look and the states are decided once. The caller lays the button out with a
-  `className` and never colours it.
+  `className` and never colours it. ESLint keeps the kit's button classes inside the
+  kit, so a new button is one of the kit's and cannot start another copy; the eight
+  files that wrote the surface class with sizes of their own before that are listed as
+  excused until they move.
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't
