@@ -66,7 +66,7 @@ function kitClasses(file: string): string[] {
   const names = new Set<string>()
   for (const block of topLevel(withoutComments(readFileSync(path.resolve(KIT, file), "utf8"))).blocks) {
     if (block.prelude.startsWith("@")) continue
-    for (const [, name] of block.prelude.matchAll(/\.((?:toolbar|btn|palette|side-panel|panel-drag-handle)[\w-]*)/g)) names.add(name)
+    for (const [, name] of block.prelude.matchAll(/\.((?:toolbar|btn|field|palette|side-panel|panel-drag-handle)[\w-]*)/g)) names.add(name)
   }
   return [...names]
 }
@@ -105,7 +105,7 @@ describe("haute-ui's stylesheets in the cascade", () => {
   })
 
   it("the kit has component stylesheets beside the dropdowns'", () => {
-    expect(COMPONENT_STYLESHEETS).toEqual(expect.arrayContaining(["toolbar.css", "button.css", "palette.css", "side-panel.css"]))
+    expect(COMPONENT_STYLESHEETS).toEqual(expect.arrayContaining(["toolbar.css", "button.css", "field.css", "palette.css", "side-panel.css"]))
     expect(readdirSync(KIT)).toContain("dropdowns.css")
   })
 

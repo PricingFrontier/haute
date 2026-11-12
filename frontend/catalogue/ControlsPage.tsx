@@ -1,6 +1,6 @@
 import { ArrowLeft, ChevronDown, FolderOpen, Plus, RotateCw, Wrench } from "lucide-react"
 import type { ReactNode } from "react"
-import { Button, ButtonLink, ToolbarButton, ToolbarColumn, ToolbarLink, ToolbarStatus } from "../src/haute-ui"
+import { Button, ButtonLink, Input, Select, TextArea, ToolbarButton, ToolbarColumn, ToolbarLink, ToolbarStatus } from "../src/haute-ui"
 
 /** One sample on its stage, with what draws it underneath. */
 function Sample({ code, stage = "catalogue-stage", children }: { code: string; stage?: string; children: ReactNode }) {
@@ -188,6 +188,37 @@ export function ControlsPage() {
                 </button>
               </ToolbarStatus>
             </ToolbarColumn>
+          </Sample>
+        </div>
+      </section>
+
+      <section aria-labelledby="fields">
+        <h2 id="fields">Fields</h2>
+        <p>
+          A text box or a native dropdown, in a side panel's size or a compact one for dense rows. The caller lays it
+          out with a class and never colours it.
+        </p>
+        <div className="catalogue-samples">
+          <Sample code="<Input>">
+            <Input aria-label="Name" defaultValue="Fleet renewal" className="w-40" />
+          </Sample>
+          <Sample code="<Select>">
+            <Select aria-label="Kind" defaultValue="number" className="w-40">
+              <option value="number">Number</option>
+              <option value="text">Text</option>
+            </Select>
+          </Sample>
+          <Sample code="<Input compact> beside a <Select compact>">
+            <div className="flex items-center gap-2">
+              <Input compact aria-label="Column" defaultValue="vehicle_age" className="w-32" />
+              <Select compact aria-label="Type" defaultValue="whole" className="w-32">
+                <option value="whole">Whole number</option>
+                <option value="decimal">Decimal</option>
+              </Select>
+            </div>
+          </Sample>
+          <Sample code="<TextArea>">
+            <TextArea aria-label="Note" defaultValue="Renewals only." rows={2} className="w-56 resize-y" />
           </Sample>
         </div>
       </section>

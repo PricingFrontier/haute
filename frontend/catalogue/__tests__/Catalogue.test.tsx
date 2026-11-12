@@ -100,7 +100,7 @@ describe("the haute-ui catalogue", () => {
 
     const samples = screen.getAllByRole("figure")
     expect(samples.length).toBeGreaterThan(10)
-    for (const sample of samples) expect(sample.querySelector("figcaption")?.textContent).toMatch(/^<(Button|ButtonLink|ToolbarButton|ToolbarLink|ToolbarStatus)\b/)
+    for (const sample of samples) expect(sample.querySelector("figcaption")?.textContent).toMatch(/^<(Button|ButtonLink|Input|Select|TextArea|ToolbarButton|ToolbarLink|ToolbarStatus)\b/)
   })
 })
 

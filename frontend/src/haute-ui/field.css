@@ -1,0 +1,31 @@
+/* haute-ui: a field, which is a text box or a native dropdown (Field.tsx,
+   specs/frontend-shared). The colours are the ones every field in the app already has.
+   Lengths are in rem, as the utility classes this shape replaced were. */
+
+/* A side panel's field. The line is a third taller than the text, the ratio rounded up
+   at the fifth decimal as button.css's is: a build keeps five, and rounded down the
+   field is a fraction of a pixel short. It may be narrower than its content asks, so
+   that it fits a row beside its label. */
+.field {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0.25rem 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  line-height: 1.33334;
+}
+/* The same in a dense row. */
+.field-compact {
+  padding-block: 0.125rem;
+}
+/* Keyboard focus, as index.css's .focus-ring draws it and as the kit's buttons do: the
+   border in the accent and a soft ring round it. The outline stays, transparent, for a
+   forced-colours mode to draw. */
+.field:focus-visible {
+  outline: 2px solid transparent;
+  border-color: var(--accent-ring);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}

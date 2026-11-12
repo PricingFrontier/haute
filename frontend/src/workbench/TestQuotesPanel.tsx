@@ -9,7 +9,7 @@
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, FolderOpen, Play, Replace, Save, Square, Trash2 } from "lucide-react"
 import { useState, type FormEvent } from "react"
 import type { WorkbenchTestQuoteMove } from "../api/types"
-import { Button, SidePanel } from "../haute-ui"
+import { Button, Input, SidePanel } from "../haute-ui"
 import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchTestQuotesStore, { type QuoteRun } from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
@@ -109,14 +109,13 @@ export default function TestQuotesPanel() {
     >
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2.5 text-xs">
         <form onSubmit={(event) => { void onSave(event) }} className="flex items-center gap-1.5" aria-label="Save the quote on the sheets">
-          <input
+          <Input
             aria-label="Test quote name"
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="Name"
             maxLength={100}
-            className="focus-ring min-w-0 flex-1 rounded-md px-1.5 py-1 text-xs"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+            className="flex-1"
           />
           <Button type="submit" disabled={waiting || name.trim() === ""}>
             <Save size={12} /> Save as test quote

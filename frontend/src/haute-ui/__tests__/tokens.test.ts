@@ -16,6 +16,7 @@ const INDEX_CSS = read("../index.css")
 const STYLESHEETS = {
   "toolbar.css": read("toolbar.css"),
   "button.css": read("button.css"),
+  "field.css": read("field.css"),
   "palette.css": read("palette.css"),
   "side-panel.css": read("side-panel.css"),
   "dropdowns.css": read("dropdowns.css"),
@@ -95,6 +96,13 @@ describe("haute-ui's stylesheets", () => {
     ["button.css", ".btn-fill", "flex", "none"],
     // Its label stays centred where a caller's layout stretches it.
     ["button.css", ".btn-fill", "justify-content", "center"],
+    // A field: the size the side panels' fields had, and a denser one.
+    ["field.css", ".field", "padding", "0.25rem 0.375rem"],
+    ["field.css", ".field", "font-size", "0.75rem"],
+    ["field.css", ".field", "border-radius", "0.375rem"],
+    ["field.css", ".field", "min-width", "0"],
+    ["field.css", ".field-compact", "padding-block", "0.125rem"],
+    ["field.css", ".field:focus-visible", "outline", "2px solid transparent"],
     ["palette.css", ".palette", "width", "180px"],
     ["palette.css", ".palette-reveal", "width", "40px"],
     ["palette.css", ".palette-item-icon", "width", "24px"],
@@ -115,6 +123,14 @@ describe("haute-ui's stylesheets", () => {
     expect(field.get("box-shadow")).toBe("0 0 0 2px var(--focus-ring-shadow, var(--accent-soft))")
     // The button's ring is the field's, with the raise every pressable button keeps.
     expect(button.get("box-shadow")).toBe("0 0 0 2px var(--accent-soft), var(--btn-raise)")
+  })
+
+  it("draws a field's keyboard focus as index.css's focus-ring does", () => {
+    const helper = declarations(ruleBody(INDEX_CSS, ".focus-ring:focus-visible"))
+    const field = declarations(ruleBody(STYLESHEETS["field.css"], ".field:focus-visible"))
+    expect(helper.get("border-color")).toBe(`var(--focus-ring-border, ${field.get("border-color")})`)
+    expect(helper.get("box-shadow")).toBe(`0 0 0 2px var(--focus-ring-shadow, var(--accent-soft))`)
+    expect(field.get("box-shadow")).toBe("0 0 0 2px var(--accent-soft)")
   })
 
   // Equal in weight to the unavailable look, the focus rule wins by coming after it, so a

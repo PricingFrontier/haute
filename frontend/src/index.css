@@ -12,6 +12,7 @@
    every native select, so they stay unlayered and win over utility classes. */
 @import "./haute-ui/toolbar.css" layer(components);
 @import "./haute-ui/button.css" layer(components);
+@import "./haute-ui/field.css" layer(components);
 @import "./haute-ui/palette.css" layer(components);
 @import "./haute-ui/side-panel.css" layer(components);
 @import "./haute-ui/dropdowns.css";

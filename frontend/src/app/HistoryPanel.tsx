@@ -6,7 +6,7 @@
 import { History } from "lucide-react"
 import { useState } from "react"
 import type { WorkbenchAppQuote } from "../api/types"
-import { Button, halfWindowWidth, SidePanel } from "../haute-ui"
+import { Button, halfWindowWidth, SidePanel, TextArea } from "../haute-ui"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { relativeTime } from "../utils/relativeTime"
 import { RELATION_TEXT as RELATION, activityText, fullTime } from "./quoteValues"
@@ -30,7 +30,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
   const locked = quote.archived || !canEdit()
   return (
     <div className="flex flex-col gap-1">
-      <textarea
+      <TextArea
         aria-label="Handover note"
         value={note}
         onChange={(event) => setNote(event.target.value)}
@@ -38,8 +38,7 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
         maxLength={4000}
         rows={3}
         placeholder="What a colleague picking this quote up should know"
-        className="focus-ring w-full resize-y rounded-md px-1.5 py-1 text-xs"
-        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+        className="w-full resize-y"
       />
       <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
         {quote.note_by !== null && quote.note_at !== null && <span title={fullTime(quote.note_at)}>By {quote.note_by}, {relativeTime(new Date(quote.note_at))}</span>}

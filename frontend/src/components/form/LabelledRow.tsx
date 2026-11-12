@@ -4,7 +4,7 @@
  * as for tick boxes under labelled rows; and a select of named choices in one.
  */
 import type { ReactNode } from "react"
-import { FIELD_CLASS, INPUT_STYLE } from "./fieldStyle"
+import { Select } from "../../haute-ui"
 
 const ROW = "flex items-center gap-2"
 const LABEL_COLUMN = "w-14 shrink-0"
@@ -44,13 +44,13 @@ export function SelectRow<T extends string>({
 }) {
   return (
     <LabelledRow label={label}>
-      <select aria-label={name} value={value} onChange={(event) => onChange(event.target.value as T)} className={FIELD_CLASS} style={INPUT_STYLE}>
+      <Select aria-label={name} value={value} onChange={(event) => onChange(event.target.value as T)}>
         {choices.map((choice) => (
           <option key={choice.value} value={choice.value}>
             {choice.label}
           </option>
         ))}
-      </select>
+      </Select>
     </LabelledRow>
   )
 }
