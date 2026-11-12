@@ -108,6 +108,16 @@ describe("column-name completion", () => {
     expect(onChange).toHaveBeenLastCalledWith(["region", "typed"])
   })
 
+  it("a click on the still-focused box reopens the list a pick closed", () => {
+    render(<ColumnListField columns={[]} onChange={vi.fn()} suggestions={COLUMNS} ariaLabel="Group by" />)
+    const input = screen.getByRole("combobox", { name: "Group by: add" })
+    fireEvent.focus(input)
+    fireEvent.mouseDown(within(screen.getByRole("listbox")).getByRole("option", { name: "region" }))
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    fireEvent.click(input)
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+  })
+
   it("clicking a completion picks it", () => {
     const onCommit = vi.fn()
     render(<ColumnPicker value="" onCommit={onCommit} suggestions={COLUMNS} ariaLabel="Window column" />)
