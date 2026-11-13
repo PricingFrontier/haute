@@ -49,7 +49,10 @@ export default function SearchableItemList({
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const problemCount = list.items.filter((item) => !item.healthy).length
   const selectedVisible = list.visible.some((item) => item.index === selectedIndex)
-  const movable = onMove !== undefined && list.items.length > 1
+  // A list that can be reordered shows its grip even with one row, so a node
+  // with one item looks like a node with several; dropping a row on itself
+  // moves nothing.
+  const movable = onMove !== undefined
 
   const focusOption = (position: number) => {
     const options = listRef.current?.querySelectorAll<HTMLElement>('[data-list-option="true"]')
@@ -227,6 +230,9 @@ export default function SearchableItemList({
                   <Trash2 size={11} />
                 </button>
               )}
+              {/* The bin's place is kept while the last item cannot be removed,
+                  so the badges sit where they do with several items. */}
+              {!onRemove && <span aria-hidden="true" className="shrink-0" style={{ width: 15 }} />}
             </div>
           )
         })}

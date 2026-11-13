@@ -528,6 +528,15 @@ describe("BandingEditor", () => {
       expect(rowOf("first")).toHaveAttribute("aria-pressed", "true")
     })
 
+    it("shows the grip with one factor too, as with several", () => {
+      renderEditor(
+        <BandingEditor config={{ factors: [THREE.factors[0]] }} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
+      )
+      const row = rowOf("first").parentElement as HTMLElement
+      expect(within(row).getByTitle("Drag to reorder")).toBeInTheDocument()
+      expect(row.lastElementChild).toHaveAttribute("aria-hidden", "true")
+    })
+
     it("moves a factor with Alt+Up/Down from the keyboard", () => {
       const onUpdate = vi.fn()
       renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)

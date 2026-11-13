@@ -259,13 +259,20 @@ describe("RatingStepEditor", () => {
       expect(onUpdate).toHaveBeenCalledTimes(1)
     })
 
-    it("has no grip while there is only one table", () => {
+    it("looks the same with one table as with several: the grip and the bin's place stay", () => {
+      const onUpdate = vi.fn()
       render(
-        <RatingStepEditor config={{ tables: [THREE.tables[0]] }} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
+        <RatingStepEditor config={{ tables: [THREE.tables[0]] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
         { allNodes: BANDING_NODES },
       )
-      expect(tableRow("age_factor").parentElement).toHaveAttribute("draggable", "false")
-      expect(screen.queryByTitle("Drag to reorder")).toBeNull()
+      const row = tableRow("age_factor").parentElement as HTMLElement
+      expect(row).toHaveAttribute("draggable", "true")
+      expect(within(row).getByTitle("Drag to reorder")).toBeInTheDocument()
+      // The last table cannot be removed, so its bin is only a kept place.
+      expect(within(row).queryByRole("button", { name: /^Remove / })).toBeNull()
+      expect(row.lastElementChild).toHaveAttribute("aria-hidden", "true")
+      fireEvent.keyDown(tableRow("age_factor"), { key: "ArrowDown", altKey: true })
+      expect(onUpdate).not.toHaveBeenCalled()
     })
   })
 
