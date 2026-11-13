@@ -9,7 +9,9 @@ commands read `haute.toml`, and what a project is. `PCF-01` comes from the
 9 November 2026 codebase review. It is read from the source; what the editor
 does with the two pointer forms was not traced. `PCF-02` to `PCF-04` come
 from the review plan's sweep of the commands on 11 November and were run
-again by the main session.
+again by the main session. `PCF-05` comes from the plan's phase 4, which
+carried projects made on Windows to Linux on 12 November; the main session
+ran each case again on both systems.
 
 ## Priorities
 
@@ -19,6 +21,7 @@ again by the main session.
 | PCF-02 | Planned | P3 | Every command, and the editor, reads `haute.toml` by one rule: a byte-order mark and a misspelt key are treated, and named, the same by all of them. |
 | PCF-03 | Planned | P3 | A configured pipeline file with a trailing space, an upper-case extension or a moment's lock is run or refused for that cause, not called "not a pipeline". |
 | PCF-04 | Planned | P2 | `haute run` in a project that is not yet a git repository runs, or names the missing repository as `haute serve` does, instead of calling an existing data file unavailable. |
+| PCF-05 | Planned | P2 | An absolute path, a path in another letter case than its file, and a backslash in `haute.toml` are each refused or rewritten on Windows when saved and linted, instead of running there and failing on Linux. |
 
 ## Planned improvements
 
@@ -150,3 +153,52 @@ for a file that exists.
 **Evidence:** `src/haute/_project.py::get_project_root`;
 `src/haute/_project_context.py::resolve_project`;
 `src/haute/cli/_run.py`.
+
+### PCF-05 — A path only the analyst's machine can open is said so when it is saved
+**Why:** Reproduced on 13 November 2026 by saving projects on Windows
+through the editor's save route, committing them, and cloning and running
+them on Linux as a CI job does. Three ways of writing a path run on Windows
+with nothing said and fail on Linux.
+
+An absolute path. A Data Input's path typed as the file's full Windows
+path inside the project, as Explorer's "Copy as path" gives it, is saved as
+typed, the user's name included. The preview and `haute run` pass on
+Windows. On Linux `haute lint` passes and `haute run` ends "Path
+'C:\\Users\\analyst\\pricing\\data\\synthetic.csv' resolves outside the
+project root". The plan's sweep also saw every node's preview there, the
+unrelated ones too, answer 403 with that sentence and no node's name.
+
+Another letter case. A path saved as `data/Synthetic.csv` for the file
+`data/synthetic.csv` runs on Windows. `haute run` prints one log line,
+`input_path_case_ambiguous`; the editor, lint and the dry run say nothing.
+On Linux the run ends with the fixed text of `IOL-01`, which names no file.
+The module that audits letter case calls the mismatch "worth a loud
+warning at access time"; the warning is a line in the server's log.
+
+A backslash in `haute.toml`. `pipeline = 'rating\main.py'` passes lint and
+the dry run on Windows. On Linux lint says the pipeline file "does not
+exist" and shows the path with its backslash. A node's path with
+backslashes is read as separators on every system, so that "cache keys and
+existence checks" are "consistent across operating systems"; the paths of
+`haute.toml` are not read by that rule.
+
+**Plan:** Decide each case where the analyst is, on Windows, when the path
+is saved and when the project is linted. Store an absolute path that lies
+inside the project as the path from the project's root, and refuse one that
+lies outside it. Report a path whose spelling differs in case from the
+entry on disk as a problem of its node, naming both spellings. Read the
+paths of `haute.toml` by the rule node paths use. On Linux, say of a path
+with a drive letter that it was written on Windows.
+
+**Acceptance:** Each of the three projects above either runs on Linux as it
+does on Windows, or is refused on Windows by the save and by `haute lint`
+in words that name the node or the key, the path and what to write
+instead. No file a save writes holds an absolute path. A test carries a
+project from Windows to Linux and back.
+
+**Dependencies:** `IOL-01` for what an input that cannot be read says.
+`DPL-01` owns relative paths in the deployed bundle.
+
+**Evidence:** `src/haute/_path_resolution.py::resolve_runtime_file_path`;
+`src/haute/_path_case_audit.py`; `src/haute/_project.py`;
+`src/haute/routes/_save_pipeline.py`; `src/haute/cli/_lint.py`.

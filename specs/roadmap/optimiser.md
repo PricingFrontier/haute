@@ -37,7 +37,10 @@ quote's scenario values differ from the others' (0.8, 1.0, 1.3 against
 be sorted and strictly increasing, but [1]=1.1 <= [0]=1.2", and "Quote
 'q_2' row 6: scenario_value=0.8, expected 0.85 for step 0 (all chunks must
 share the same scenario grid)". The analyst is sent to a log for a mistake
-in two boxes of their own node.
+in two boxes of their own node. An analysis column of a 128-bit integer
+type ends a solve with the same sentence (run on 13 November 2026). There
+the log holds Haute's own message, that the column "is Int128" and should
+be cast "upstream to Int64", and the answer leaves it out.
 
 The error policy gives that fixed sentence to an "Unknown grid-construction
 catch-all", and the specification says input problems "surface as 4xx

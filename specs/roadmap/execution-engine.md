@@ -12,7 +12,9 @@ source and was not run. `EXE-04` and `EXE-05` were reproduced on 10 November
 2026 through the editor's preview route, `haute run` and the deploy. `EXE-06`
 comes from the review plan's phase 5, a reader from a second model family
 (Codex) over the code changed since the 31 October audit, and was reproduced
-on 13 November by running one pipeline file three ways.
+on 13 November by running one pipeline file three ways. `EXE-07` and
+`EXE-08` come from the same reader; a worker built each run and the main
+session ran it again on 13 November.
 
 `EXE-01` also changes what the optimiser runs on, so it is read together with
 [the optimiser specification](../optimiser/high-level.md).
@@ -27,6 +29,8 @@ on 13 November by running one pipeline file three ways.
 | EXE-04 | Planned | P2 | A join that previews in the editor runs from the command line and in a deployment, whatever Polars options it carries. |
 | EXE-05 | Planned | P2 | The Constant page's own example, a Transform that cross-joins a Constant, runs from the command line and deploys. |
 | EXE-06 | Planned | P2 | A pipeline run as Python, by `pipeline.run()` or `pipeline.score()`, applies each node's column selection and renames, as `haute run`, the preview and a deployment do. |
+| EXE-07 | Planned | P2 | A preview worker that died while idle is replaced whatever the size of the next request; previews and the server's shutdown no longer hang until a restart. |
+| EXE-08 | Planned | P3 | A column replaced under its own name is estimated at its new width, so work that cannot fit is refused before it runs. |
 
 ## Planned improvements
 
@@ -260,3 +264,70 @@ examples the standalone way beside the others.
 `src/haute/_graph_walker.py`;
 `src/haute/_execute_lazy.py::_apply_selected_columns`;
 `src/haute/_execute_lazy.py::_apply_column_renames`.
+
+### EXE-07 — A preview worker that died is replaced, whatever the next request's size
+**Why:** Reproduced on 13 November 2026 with the real worker pool and
+through the editor's preview route. The editor keeps a worker process for
+previews. That process can die while it is idle: ended in Task Manager, or
+killed by the system when memory is short. The next request finds it dead.
+With a request of 4,000 bytes the pool reports a crashed worker in 3.5
+seconds, starts another, and answers the request after that. With a request
+of 16,000 bytes or more the call never returns. The pool closes the dead
+worker's request queue and waits for the queue's feeder thread, which is
+still writing the request into a pipe that nothing reads. The next request
+times out waiting for the slot, and the pool's own close, which the server
+calls when it shuts down, does not return either.
+
+Through the editor, the shipped rating example's graph is 2,224 bytes as
+sent to the worker. With the worker killed, the next preview answers 500,
+"Operation failed. Check the server logs for details.", and the one after
+it works. With the example's rating table grown to 5,000 rows the graph is
+151,156 bytes: after the worker is killed the preview has no answer after
+60 seconds, and the next preview of the shipped graph has none after 30.
+Previews stay dead until the server is restarted. The execution
+specification has a request never wait "unbounded".
+
+**Plan:** When a worker is known to be dead, do not wait for its queue's
+feeder: abandon what was not yet sent, and bound the wait that remains.
+Answer the first request after a worker's death by saying that the worker
+stopped and was started again.
+
+**Acceptance:** With the idle worker killed, a preview whose graph is 151
+kB as sent is answered, with rows or with a named failure, within the
+request's own time limit; the preview after it has rows; and the server
+shuts down. No preview after a worker's death says "Check the server logs".
+
+**Dependencies:** `SRV-01` decides how much a failure's answer says.
+
+**Evidence:** `src/haute/_interactive_workers.py`;
+`specs/execution-engine/low-level.md`.
+
+### EXE-08 — A column replaced under its own name is estimated at its new width
+**Why:** Reproduced on 13 November 2026 through the executor with an
+admitted preview. 100,000 quotes hold a three-byte `risk_text` and a
+`description` of 4,097 bytes, every one distinct. A Transform selects
+`pl.col("description").alias("risk_text")`, and the next node keeps the
+distinct rows. The memory estimate for the distinct step is 8.0 MiB. With
+the alias changed to a name the frame does not have, `risk_text_new`, the
+estimate for the same data is 4,107.6 MiB. An output column that takes the
+name of an upstream column is given that column's width, not the width of
+what it is computed from. The execution specification asks the estimate to
+account "conservatively for variable-width columns".
+
+With the preview's budget set to 0.2 GB, the new name is refused before
+anything runs, by name: "Materialisation of 'unique' could not be
+admitted". The old name is admitted, runs, and is stopped part way:
+"Execution 'preview' exceeded its memory growth budget". The cap held and
+nothing crashed; the estimate that should have refused the work first did
+not.
+
+**Plan:** Take a replaced column's width from the columns its expression
+reads, as for a column with a new name.
+
+**Acceptance:** The two aliases above get the same estimate, and with the
+0.2 GB budget both are refused before running.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_ram_estimate.py`;
+`specs/execution-engine/low-level.md`.

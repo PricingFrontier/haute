@@ -53,7 +53,12 @@ Excel reader's package, an Excel Data Input fails with it, and the worker's
 message, "Reading format 'excel' needs an engine package this haute install
 lacks (required package 'fastexcel' not found", never arrives (reproduced
 on 10 November 2026). The editor's format list names the package a format
-needs; a run on another machine does not.
+needs; a run on another machine does not. A file that is not there is
+told the same way: on Linux, a Data Input whose path is spelt
+`data/Synthetic.csv` for the file `data/synthetic.csv`, a spelling Windows
+opens, ends `haute run` with "This Data Input's source is unavailable and
+no published snapshot exists." and no file's name (run on 13 November
+2026; `PCF-05` is the Windows side).
 
 **Plan:** Let a failure that is about the file's content through: Haute's
 schema errors as written, and a JSON syntax error as its line and column

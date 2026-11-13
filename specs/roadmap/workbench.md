@@ -35,7 +35,8 @@ as a database browser or a backup does; no server database was used.
 
 `WB-56` to `WB-58` come from the review plan's phase 4, which ran the underwriter app on
 SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the containers CI
-uses. The main session ran each again on the three databases.
+uses. The main session ran each again on the three databases. `WB-59` comes from the same
+phase's carrying of projects made on Windows to Linux, and was run again on Windows.
 
 ## Priorities
 
@@ -63,6 +64,7 @@ uses. The main session ran each again on the three databases.
 | WB-56 | Planned | P3 | On SQL Server a quote address with a trailing space names no quote, as on the other databases; no row is stored under a padded reference. |
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
+| WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
 
 ## Planned improvements
 
@@ -927,3 +929,41 @@ and the store's server tests check it.
 
 **Evidence:** `src/haute/_quote_store/_book.py`;
 `src/haute/_quote_store/_schema.py`; `specs/workbench/high-level.md`.
+
+### WB-59 — A release has one id whatever line endings its checkout has
+**Why:** Reproduced on 13 November 2026 with the real executable. For one
+workbench project at one commit, `haute app build` gives the release the id
+`d69d65737100` when the helper files under `rating/utility` are checked out
+with LF line endings and `54482649bc3f` when they are checked out with
+CRLF. The plan's sweep saw the same two ids for a Windows clone and a
+Linux clone of that commit. The id's own description promises that "the
+same project builds the same id wherever it is checked out". It is a hash
+that takes the bytes of each utility file and of each artifact as they lie
+on disk.
+
+Git for Windows turns LF into CRLF on checkout by default, wherever no
+`.gitattributes` says otherwise. `haute init` writes a `.gitattributes`
+that keeps `*.py` and `*.json` at LF, and in the sweep's run with it the
+ids agree. A project without that file differs: one made before the file
+was written, one that lost it, a shipped example. The id is what tells one
+release from another, "a retrained model, an edited helper"; here it tells
+an analyst's build from the CI's build of the same commit. The automated
+deploy records digests of the same files in its bundle's manifest, and the
+sweep saw them differ the same way.
+
+**Plan:** Hash the text files that go into the id, and into the bundle's
+digests, with their line endings normalised. Keep the bytes as they are
+for binary artifacts.
+
+**Acceptance:** `haute app build` gives one id for one commit from a
+checkout with LF and from one with CRLF, on Windows and on Linux, and a
+changed helper still changes the id. The bundle's digests of text files
+agree the same way.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app.py::_release_id`;
+`src/haute/_workbench_app.py::_utility_hashes`;
+`src/haute/deploy/_request_rows.py::record_digests`;
+`src/haute/_hashing.py::content_hash`;
+`src/haute/_scaffold_files.py`.

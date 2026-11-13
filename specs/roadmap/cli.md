@@ -12,7 +12,8 @@ each reproduction again in a fresh folder. `CLI-05` comes from the main
 session's run, that day, of a submodel's whole life through the routes.
 `CLI-06` comes from the plan's phase 5, a reader from a second model
 family (Codex) over the code changed since the 31 October audit, and was
-reproduced with the real executable on 13 November.
+reproduced with the real executable on 13 November. `CLI-07` comes from
+the plan's phase 4, which carried projects made on Windows to Linux.
 
 ## Priorities
 
@@ -23,7 +24,8 @@ reproduced with the real executable on 13 November.
 | CLI-03 | Planned | P3 | `haute ci registry-host` refuses an empty registry by name, and a mistyped deploy target or table is named where it is. |
 | CLI-04 | Planned | P3 | The project `haute init` makes passes the lint step of the CI it generates. |
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
-| CLI-06 | Planned | P2 | `haute ci update` and `haute init --force` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
+| CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
+| CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
 
 ## Planned improvements
 
@@ -210,7 +212,8 @@ kind of project could have on any provider, and removes each one this run
 does not write, "so a switch of provider ... leaves no orphaned workflow
 behind". `release.yml` is on the list because a workbench project's
 workflow has that name; this project never had one from Haute. The list of
-what was removed is not printed. `haute init --force` prunes the same way.
+what was removed is not printed. A second `haute init` in the project
+removes the file as well, and does list it as removed.
 By the same list a workbench project would lose a `deploy-staging.yml` of
 its own, and a GitHub project a `.gitlab-ci.yml` or an
 `azure-pipelines.yml` it keeps for a mirror (read from the list, not run).
@@ -222,8 +225,8 @@ files a run generated, in the project, and prune from that record. A file
 with a listed name that is not in the record is left where it is. Print
 every file a run removes.
 
-**Acceptance:** In the project above, `haute ci update` and
-`haute init --force` leave the team's `release.yml` in place. After a real
+**Acceptance:** In the project above, `haute ci update` and a second
+`haute init` leave the team's `release.yml` in place. After a real
 change of provider, the files the earlier run wrote are removed and each is
 named in the output. A run that removed a file does not say the CI files
 are up to date.
@@ -233,3 +236,30 @@ are up to date.
 **Evidence:** `src/haute/cli/_init_cmd.py::_prune_stale_ci_files`;
 `src/haute/cli/_ci.py::handle_ci_update`;
 `src/haute/cli/_init_cmd.py::handle_init`; `specs/cli/high-level.md`.
+
+### CLI-07 — `haute init` on Windows records its pre-commit hook as executable
+**Why:** Reproduced on 13 November 2026 with the real executable. After
+`haute init` on Windows in a git repository, git records
+`.githooks/pre-commit` with mode 100644. The plan's sweep ran the same
+command on Linux, where it is 100755; every other file `haute init` writes
+is the same byte for byte on the two systems. A project made on Windows and
+cloned on Linux or macOS therefore carries a hook file that git will not
+run, and a colleague who installs it as the file's own comment says, by
+copying it into `.git/hooks`, gets no check of the staged Python.
+
+The command skips setting the mode on Windows, where the file system has no
+such bit, and keeps the remedy as a comment in its own source:
+`git update-index --chmod=+x .githooks/pre-commit`. Nothing tells the
+analyst.
+
+**Plan:** Have `haute init` record the hook as executable in git's index
+when it captures the files it wrote, on every system.
+
+**Acceptance:** After `haute init` on Windows, `git ls-files -s` shows
+`.githooks/pre-commit` as 100755, and a clone of the project on Linux has
+an executable hook.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_init_cmd.py::handle_init`;
+`src/haute/_scaffold.py::pre_commit_hook`.

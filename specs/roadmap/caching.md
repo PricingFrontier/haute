@@ -13,7 +13,9 @@ show it. `CCH-02` comes from the review plan's sweep of pairs of operations
 and was reproduced on 11 November with a second process holding one of the
 snapshot's new files open. `CCH-03` comes from the plan's sweep of sizes
 on the same day, measured again by the main session with a timer around
-the check.
+the check. `CCH-04` comes from the plan's phase 5, a reader from a second model
+family (Codex) over the code changed since the 31 October audit;
+a worker built the run and the main session ran it again on 13 November.
 
 ## Priorities
 
@@ -22,6 +24,7 @@ the check.
 | CCH-01 | Planned | P2 | A node output stored by one version of Haute's node code is not read as current by another. |
 | CCH-02 | Planned | P3 | A snapshot is published while a scanner or an indexer still has one of its new files open, instead of the build failing with no reason given. |
 | CCH-03 | Planned | P3 | A preview that stores many node outputs checks the store's budget once, not with a walk of the whole store after each one. |
+| CCH-04 | Planned | P2 | A preview follows the order of a node's inputs: reconnecting a Load File's two inputs the other way round no longer shows the first input's rows from the store. |
 
 ## Planned improvements
 
@@ -155,3 +158,35 @@ are within their budget, and the existing eviction tests pass unchanged.
 `src/haute/_node_snapshots.py::NodeSnapshotStore.publish_node_output`;
 `src/haute/_node_snapshots.py::NodeSnapshotStore.enforce_automatic_budget`;
 `src/haute/_node_snapshots.py::NodeSnapshotStore._scan_usage`.
+
+### CCH-04 — A preview follows the order of a node's inputs
+**Why:** Reproduced on 13 November 2026 through the editor's preview route.
+A Load File node reads a factor of 1.2 from a JSON file and multiplies the
+premium of `df`, which is its first input. With the inputs `a` (premium
+100) and then `b` (premium 200), the preview shows `a1` at 120. With the
+inputs connected the other way round, `b` first, the preview still shows
+`a1` at 120: in the same editor process, in a new one, and after the
+pipeline file itself is rewritten as `loaded(b, a)` and read again. A
+trace of the same cell says 240, and the graph run without the preview's
+store gives `b1` at 240. The old rows sit in the project's `.haute_cache`
+folder, so a restart of the editor keeps them.
+
+The caching specification has preview keys "include every
+execution-relevant graph" input. The preview's key and the graph's
+structural fingerprint both sort a node's edges before they hash them, so
+the order of a node's inputs is in neither. For a node whose code is given
+its first input as `df`, the order is what it computes on.
+
+**Plan:** Keep the order of a node's inputs in the preview key, in the
+structural fingerprint and in a node output's signature, at least for the
+node types whose work depends on it.
+
+**Acceptance:** The Load File above previews `b1` at 240 once its inputs
+are swapped, in the same process and after a restart, and its trace and its
+preview agree. A test swaps the inputs of every node type that takes more
+than one and compares the preview with a run that uses no store.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_cache.py`; `src/haute/_node_snapshots.py`;
+`src/haute/_user_exec.py`; `specs/caching/high-level.md`.
