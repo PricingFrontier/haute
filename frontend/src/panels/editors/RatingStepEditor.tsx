@@ -560,15 +560,15 @@ export default function RatingStepEditor({
         </div>
       )}
 
-      {/* Factor selection: the factors in order on one line, wrapping only
-          when the panel is too narrow for them, then Add factor. */}
+      {/* Factor selection: the factors in order on one line, then Add factor,
+          each a third of the width however many there are. */}
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>
           Factors ({factorCount}/3)
         </label>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="grid grid-cols-3 items-center gap-1.5">
           {table.factors.map((f, fi) => (
-            <div key={fi} className="flex min-w-[8rem] flex-1 items-center gap-0.5">
+            <div key={fi} className="flex min-w-0 items-center gap-0.5">
               {/* By name alone, so three fit a line; the count of levels is
                   its tooltip, and Add factor's list gives each column's. */}
               <select key={`fsel-${safeIdx}-${fi}`} value={f}
@@ -600,8 +600,8 @@ export default function RatingStepEditor({
             <select aria-label="Add factor" value=""
               onChange={(e) => { if (e.target.value) addFactor(safeIdx, e.target.value) }}
               className={factorCount === 0
-                ? "min-w-[8rem] flex-1 px-2 py-1.5 text-xs rounded-lg focus:outline-none"
-                : "add-row-btn focus-ring shrink-0 w-[6.5rem] appearance-none cursor-pointer px-2 py-1.5 text-center text-xs font-medium rounded-lg"}
+                ? "min-w-0 w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none"
+                : "add-row-btn focus-ring min-w-0 w-full appearance-none cursor-pointer px-1 py-1.5 text-center text-xs font-medium rounded-lg"}
               style={factorCount === 0
                 ? { ...INPUT_STYLE, color: 'var(--text-muted)' }
                 : { color: "var(--accent)", background: "var(--accent-soft-subtle)", border: "1px dashed var(--accent-ring)" }}>
