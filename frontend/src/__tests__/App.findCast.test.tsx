@@ -238,7 +238,6 @@ describe("App - lastSelectedId referencing deleted node resolves cleanly (#38)",
       utilityOpen: false,
       constantsOpen: false,
       gitOpen: false,
-      ratingStepEditorSections: {},
       explorePanes: {},
       explorePreviewPanes: {},
     })

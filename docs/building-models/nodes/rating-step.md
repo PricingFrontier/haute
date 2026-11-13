@@ -8,17 +8,13 @@ You have a set of rating factors  - area, age band, NCD level  - and a table of 
     - Looking up relativities based on one, two, or three dimensions.
     - Use [Banding](banding.md) first if your tables expect banded inputs rather than raw values.
 
-A Rating Step takes a single input and outputs it with one new column per rating table, plus any combined columns. The panel has three tabs: **CONFIG**, **TRANSFORM** and **COLUMNS**.
+A Rating Step takes a single input and outputs it with one new column per rating table, plus any combined columns. The panel has four tabs: **TABLES**, **COMBINED**, **TRANSFORM** and **COLUMNS**.
 
-## The CONFIG tab
+## The TABLES tab
 
 The **INPUT** chip at the top names the node's connection; its × removes the connection. When a table rates on a column of the input, a line says where the column's levels come from: **Levels from all rows ·** and the row count once the node's input data is cached, **Levels from a sample ·** and the number of preview rows until then, or "Cached data is out of date".
 
 If a Banding node's output has no labelled rule, a warning names it: "Banding outputs … have no valid levels. Add a labelled Banding rule before using them as rating factors."
-
-**RATING SECTION** switches the tab between **Tables**, the rating tables, and **Combined**, the columns that combine them (it reads **Combined set** once a combined output is named). The first time you open a node that already has combined outputs, the tab opens on **Combined**; after that it remembers your choice.
-
-### Tables
 
 The list shows one row per table, named by its output column, with a dot (green when healthy, amber when not), the number of factors and the number of entries, and a bin to remove it (when there is more than one). Hover a row for its problems, such as "Output column is required", "Add at least one factor" or "Add at least one rating entry".
 
@@ -48,9 +44,9 @@ A factor with many levels can make a table too large to edit: past 20,000 cells 
 
 A band's **DEFAULT** (unmatched rows) on the Banding node is not a level of the table, so rows that fall to it are rated with the table's **DEFAULT**.
 
-### Combined
+## The COMBINED tab
 
-Each combined output is a tab, named by its column (with a dot, green when complete); the + button after the tabs adds one, named `combined_1`, `combined_2` and so on, and the × on a tab removes it. With none, the section says "No combined output".
+Each combined output is a tab, named by its column (with a dot, green when complete); the + button after the tabs adds one, named `combined_1`, `combined_2` and so on, and the × on a tab removes it. With none, the tab says "No combined output".
 
 | Field | What it does |
 |---|---|
@@ -75,7 +71,7 @@ An area factor and an age factor, multiplied together, where `age_band` comes fr
 1. Connect your data to a Rating Step. In the first table, choose `area` under **+ Add factor...**, type `area_factor` as the **OUTPUT COLUMN** and leave **DEFAULT** empty, so an area the table does not list stops the run.
 2. Fill in the relativities: London `1.25`, Manchester `1.10`, Rural `0.85`.
 3. Click the + button beside the table list to add a second table. Choose `age_band` as its factor, type `age_factor` as the **OUTPUT COLUMN**, and fill in `18-25` → `1.40`, `26-65` → `1.00`, `65+` → `1.15`.
-4. Switch **RATING SECTION** to **Combined**, click the + button, and change the **COMBINED OUTPUT COLUMN** to `location_age_factor`. Leave **OPERATION** on **× Multiply** and **BASE VALUE** at `1.0`.
+4. Open the **COMBINED** tab, click the + button, and change the **COMBINED OUTPUT COLUMN** to `location_age_factor`. Leave **OPERATION** on **× Multiply** and **BASE VALUE** at `1.0`.
 
 **Before and after:**
 

@@ -1,8 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react"
-import { GitMerge, Plus, Table2, X } from "lucide-react"
+import { useState } from "react"
+import { Plus, X } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
-import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField, SavedValueOption } from "../../components/form"
 import SearchableItemList from "./shared/SearchableItemList"
 import { indexAfterMove, isListMove, moveListItem } from "./shared/moveListItem"
@@ -25,9 +24,12 @@ import { TwoWayGrid } from "./rating/TwoWayGrid"
 import useRatingLevels from "./rating/useRatingLevels"
 import type { SimpleNode } from "./_shared"
 import { useGraph } from "../useGraph"
-import useUIStore, { type RatingStepEditorSection } from "../../stores/useUIStore"
 
-type RatingSection = RatingStepEditorSection
+/**
+ * The part of a Rating Step on show: the node panel's Tables tab or its
+ * Combined tab, or both, for the comparison view, which cannot switch tabs.
+ */
+export type RatingStepSection = "tables" | "combined" | "all"
 type CombinedOperation = "multiply" | "add" | "min" | "max"
 
 type CombinedOutput = {
@@ -54,11 +56,6 @@ function asOperation(value: unknown): CombinedOperation {
 function defaultBaseValue(operation: string): string {
   if (operation === "add") return "0.0"
   return "1.0"
-}
-
-function resolveInitialSection(config: Record<string, unknown>): RatingSection {
-  if (Array.isArray(config.combined_outputs) && config.combined_outputs.length > 0) return "combined"
-  return "tables"
 }
 
 function normaliseCombinedOutputs(config: Record<string, unknown>): CombinedOutput[] {
@@ -181,6 +178,7 @@ export default function RatingStepEditor({
   previewRows = [],
   accentColor,
   nodeId,
+  section,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -190,20 +188,18 @@ export default function RatingStepEditor({
   previewRows?: Record<string, unknown>[]
   accentColor: string
   nodeId?: string
+  section: RatingStepSection
 }) {
   const graph = useGraph()
   const { allNodes } = graph
-  const rememberedSection = useUIStore((s) => nodeId ? s.ratingStepEditorSections[nodeId] : undefined)
-  const setRememberedSection = useUIStore((s) => s.setRatingStepEditorSection)
+  const showTables = section !== "combined"
+  const showCombined = section !== "tables"
   const [activeTab, setActiveTab] = useState(0)
   // The chosen slice is the level itself: levels can arrive, and an index
   // would then name a different one without the user touching anything.
   const [sliceLevel, setSliceLevel] = useState<string | null>(null)
   // Why a factor the user picked was not added, kept until they move on.
   const [factorLimitNotice, setFactorLimitNotice] = useState<string | null>(null)
-  const [activeSection, setActiveSectionState] = useState<RatingSection>(() => (
-    rememberedSection ?? resolveInitialSection(config)
-  ))
   const tables = normaliseRatingTables(config)
   const bandingClassification = classifyBandingLevels(allNodes)
   const bandingLevels = bandingClassification.levels
@@ -249,13 +245,6 @@ export default function RatingStepEditor({
   const combinedOutputs = normaliseCombinedOutputs(config)
   const [activeCombinedIdx, setActiveCombinedIdx] = useState(0)
 
-  const setActiveSection = (section: RatingSection) => {
-    setActiveSectionState(section)
-    if (nodeId) {
-      setRememberedSection(nodeId, section)
-    }
-  }
-
   const availableColumns = Object.keys(factorLevels)
   const safeIdx = Math.min(activeTab, tables.length - 1)
   const table = tables[safeIdx] || newRatingTable()
@@ -286,7 +275,7 @@ export default function RatingStepEditor({
       setActiveTab(idx)
       setSliceLevel(null)
     },
-    activeSection === "tables",
+    showTables,
   )
   const tableEditorUnavailable = tableList.noneVisible
   const outputColumnBlank = table.output_column.trim() === ""
@@ -314,7 +303,6 @@ export default function RatingStepEditor({
   )
   const combinedOperationInvalid = hasCombinedOutput && !isCombinedOperation(combinedOutput.operation)
   const tableOutputColumns = tables.map(t => t.output_column.trim()).filter(Boolean)
-  const combinedOutputColumns = combinedOutputs.map(t => t.output_column.trim()).filter(Boolean)
   const currentCombinedOutputName = combinedOutput.output_column.trim()
   const combinedColumnDuplicate = currentCombinedOutputName !== "" && (
     tableOutputColumns.includes(currentCombinedOutputName) ||
@@ -322,16 +310,7 @@ export default function RatingStepEditor({
       idx !== safeCombinedIdx && item.output_column.trim() === currentCombinedOutputName
     ))
   )
-  const hasConfiguredCombined = combinedOutputColumns.length > 0
   const combinedColumnInvalid = hasCombinedOutput && (combinedColumnBlank || combinedColumnDuplicate)
-  const sectionOptions: { key: RatingSection; label: string; icon: ReactNode }[] = [
-    { key: "tables", label: "Tables", icon: <Table2 size={13} /> },
-    { key: "combined", label: hasConfiguredCombined ? "Combined set" : "Combined", icon: <GitMerge size={13} /> },
-  ]
-  useEffect(() => {
-    setActiveSectionState(rememberedSection ?? resolveInitialSection(config))
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the visible editor section only when switching rating nodes
-  }, [nodeId])
 
   const commitTables = (next: RatingTable[]) => onUpdate("tables", next)
 
@@ -499,6 +478,8 @@ export default function RatingStepEditor({
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
+      {showTables && (
+        <>
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
       {/* Only when something here reads the data. A table rating purely on
@@ -529,21 +510,6 @@ export default function RatingStepEditor({
         </div>
       )}
 
-      <div>
-        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Rating Section</label>
-        <div className="mt-1">
-          <ToggleButtonGroup
-            value={activeSection}
-            onChange={setActiveSection}
-            options={sectionOptions}
-            accentColor={accentColor}
-            ariaLabel="Rating section"
-          />
-        </div>
-      </div>
-
-      {activeSection === "tables" && (
-        <>
       <SearchableItemList
         list={tableList}
         selectedIndex={safeIdx}
@@ -764,7 +730,7 @@ export default function RatingStepEditor({
         </>
       )}
 
-      {activeSection === "combined" && (
+      {showCombined && (
         <div className="space-y-3">
           <div>
             <div className="flex items-center gap-1 overflow-x-auto flex-nowrap whitespace-nowrap" role="tablist" aria-label="Combined outputs">

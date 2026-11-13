@@ -80,7 +80,7 @@ const BANDING_NODES: SimpleNode[] = [
 
 afterEach(() => {
   cleanup()
-  useUIStore.setState({ ratingStepEditorSections: {}, explorePanes: {}, explorePreviewPanes: {} })
+  useUIStore.setState({ explorePanes: {}, explorePreviewPanes: {} })
 })
 
 // Tests
@@ -89,6 +89,7 @@ describe("RatingStepEditor", () => {
   it("warns once for configured zero-level Banding outputs without restoring stale levels", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             factors: ["empty_one"], output_column: "factor", default_value: "1.0",
@@ -120,6 +121,7 @@ describe("RatingStepEditor", () => {
   it("renders with default empty table", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -137,6 +139,7 @@ describe("RatingStepEditor", () => {
   it("shows healthy and problem status markers in the rating table selector", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [
             {
@@ -209,7 +212,7 @@ describe("RatingStepEditor", () => {
 
     it("spells out each table's factors and entries, as Banding does its rules", () => {
       render(
-        <RatingStepEditor config={THREE} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
+        <RatingStepEditor section="tables" config={THREE} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
         { allNodes: BANDING_NODES },
       )
       expect(tableRow("age_factor")).toHaveTextContent("1 factor1 entry")
@@ -220,7 +223,7 @@ describe("RatingStepEditor", () => {
     it("moves a table dragged onto another, keeping it selected", () => {
       const onUpdate = vi.fn()
       const { rerender } = render(
-        <RatingStepEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
         { allNodes: BANDING_NODES },
       )
       const row = (name: string) => tableRow(name).parentElement as HTMLElement
@@ -236,6 +239,7 @@ describe("RatingStepEditor", () => {
       rerender(
         <GraphProvider allNodes={BANDING_NODES} edges={[]}>
           <RatingStepEditor
+            section="tables"
             config={{ tables: onUpdate.mock.lastCall![1] }}
             onUpdate={onUpdate}
             inputSources={[]}
@@ -249,7 +253,7 @@ describe("RatingStepEditor", () => {
     it("moves a table with Alt+Up/Down from the keyboard", () => {
       const onUpdate = vi.fn()
       render(
-        <RatingStepEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
         { allNodes: BANDING_NODES },
       )
       fireEvent.keyDown(tableRow("region_factor"), { key: "ArrowDown", altKey: true })
@@ -262,7 +266,7 @@ describe("RatingStepEditor", () => {
     it("looks the same with one table as with several: the grip and the bin's place stay", () => {
       const onUpdate = vi.fn()
       render(
-        <RatingStepEditor config={{ tables: [THREE.tables[0]] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        <RatingStepEditor section="tables" config={{ tables: [THREE.tables[0]] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
         { allNodes: BANDING_NODES },
       )
       const row = tableRow("age_factor").parentElement as HTMLElement
@@ -279,6 +283,7 @@ describe("RatingStepEditor", () => {
   it("summarises why a selected rating table has problems", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [
             { factors: [], output_column: " ", default_value: "1.0", entries: [] },
@@ -323,6 +328,7 @@ describe("RatingStepEditor", () => {
 
     render(
       <RatingStepEditor
+        section="tables"
         config={{ tables }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -354,7 +360,7 @@ describe("RatingStepEditor", () => {
     const table = (value: string) => ({ factors: [], output_column: "age_factor", default_value: "1.0", entries: [], [key]: value })
     const onUpdate = vi.fn()
     const view = render(
-      <RatingStepEditor config={{ tables: [table(before)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+      <RatingStepEditor section="tables" config={{ tables: [table(before)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
     )
     const input = screen.getByLabelText(label) as HTMLInputElement
     expect(input.value).toBe(before)
@@ -362,7 +368,7 @@ describe("RatingStepEditor", () => {
     // An undo (or a broadcast) changes the value while the field is on screen.
     view.rerender(
       <GraphProvider allNodes={[]} edges={[]}>
-        <RatingStepEditor config={{ tables: [table(after)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+        <RatingStepEditor section="tables" config={{ tables: [table(after)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
     expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(after)
@@ -381,12 +387,12 @@ describe("RatingStepEditor", () => {
       combined_outputs: [combined(value)],
     })
     const view = render(
-      <RatingStepEditor config={config(before)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+      <RatingStepEditor section="combined" config={config(before)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
     )
     expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(before)
     view.rerender(
       <GraphProvider allNodes={[]} edges={[]}>
-        <RatingStepEditor config={config(after)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+        <RatingStepEditor section="combined" config={config(after)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
     expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(after)
@@ -398,6 +404,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{ tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }] }}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -414,6 +421,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }],
         }}
@@ -437,6 +445,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{ factors: [], output_column: "", on_missing: "neutral", entries: [] }],
         }}
@@ -462,6 +471,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{ tables: [{ factors: [], output_column: "af", entries: [] }] }}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -482,6 +492,7 @@ describe("RatingStepEditor", () => {
   it("disables On miss while a default fills every miss", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{ tables: [{ factors: [], output_column: "af", default_value: "1.0", entries: [] }] }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -496,6 +507,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{ tables: [{ factors: [], output_column: "af", default_value: "1.0", entries: [] }] }}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -513,113 +525,57 @@ describe("RatingStepEditor", () => {
     ])
   })
 
-  it("renders the top rating section selector without persisting section changes", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        config={{}}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByRole("radiogroup", { name: "Rating section" })).toBeTruthy()
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByRole("radio", { name: /Combined/ })).toBeTruthy()
-
-    fireEvent.click(screen.getByRole("radio", { name: /Combined/ }))
-    expect(screen.getByRole("radio", { name: /Combined/ })).toHaveAttribute("aria-checked", "true")
-    expect(onUpdate).not.toHaveBeenCalledWith("mode", "combined")
-  })
-
-  it("restores the last selected rating section when reopening the same node", () => {
+  describe("the node panel's Tables and Combined tabs", () => {
     const config = {
-      code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
       tables: [
-        { name: "Age Factor", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { factors: [], output_column: "region_factor", default_value: "1.0", entries: [] },
       ],
+      combined_outputs: [{ output_column: "technical_price", operation: "multiply", base_value: "1.0" }],
     }
-
-    const { unmount } = render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_1"
-      />,
-      { allNodes: [] },
+    const input = [{ sourceNodeId: "src", name: "source_data", sourceLabel: "Source Data", edgeId: "e1" }]
+    const editor = (section: "tables" | "combined" | "all") => (
+      <RatingStepEditor section={section} config={config} onUpdate={vi.fn()} inputSources={input} accentColor="#14b8a6" />
     )
 
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
+    it("shows the input and the tables on Tables, and no combined output", () => {
+      render(editor("tables"), { allNodes: [] })
+      expect(screen.getByText("source_data")).toBeTruthy()
+      expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
+      expect(screen.queryByRole("tablist", { name: "Combined outputs" })).toBeNull()
+      expect(screen.queryByRole("radiogroup", { name: "Rating section" })).toBeNull()
+    })
 
-    fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
+    it("shows only the combined outputs on Combined", () => {
+      render(editor("combined"), { allNodes: [] })
+      expect(screen.getByRole("tablist", { name: "Combined outputs" })).toBeTruthy()
+      expect(screen.getByLabelText("Combined Output Column")).toHaveValue("technical_price")
+      expect(screen.queryByRole("group", { name: "Rating tables" })).toBeNull()
+      expect(screen.queryByText("source_data")).toBeNull()
+    })
 
-    unmount()
+    it("shows both in the comparison view, which cannot switch tabs", () => {
+      render(editor("all"), { allNodes: [] })
+      expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
+      expect(screen.getByRole("tablist", { name: "Combined outputs" })).toBeTruthy()
+    })
 
-    render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_1"
-      />,
-      { allNodes: [] },
-    )
-
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
-    expect(screen.queryByText("Polars Code")).toBeNull()
-  })
-
-  it("scopes the remembered rating section to the node id", () => {
-    const config = {
-      code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
-      tables: [
-        { name: "Age Factor", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
-      ],
-    }
-
-    const { unmount } = render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_1"
-      />,
-      { allNodes: [] },
-    )
-
-    fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
-    unmount()
-
-    render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_2"
-      />,
-      { allNodes: [] },
-    )
-
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
+    it("keeps the selected table across a visit to Combined", () => {
+      const view = render(editor("tables"), { allNodes: [] })
+      fireEvent.click(screen.getByRole("button", { name: /^region_factor (healthy|problem)$/ }))
+      const rerender = (section: "tables" | "combined") =>
+        view.rerender(<GraphProvider allNodes={[]} edges={[]}>{editor(section)}</GraphProvider>)
+      rerender("combined")
+      rerender("tables")
+      expect(screen.getByRole("button", { name: /^region_factor (healthy|problem)$/ })).toHaveAttribute("aria-pressed", "true")
+      expect(screen.getByLabelText("Output Column")).toHaveValue("region_factor")
+    })
   })
 
   it("'Select at least one factor' shown when no factors", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -634,6 +590,7 @@ describe("RatingStepEditor", () => {
   it("flags a blank table output column and does not show placeholder text", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -652,6 +609,7 @@ describe("RatingStepEditor", () => {
   it("does not flag a populated table output column", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{ name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] }],
         }}
@@ -672,6 +630,7 @@ describe("RatingStepEditor", () => {
   it("allows the Combined section to have no configured output", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           tables: [
             { name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
@@ -686,7 +645,6 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    fireEvent.click(screen.getByRole("radio", { name: /Combined/ }))
     expect(screen.getByText("No combined output")).toBeTruthy()
     expect(screen.queryByLabelText("Combined Output Column")).toBeNull()
     expect(screen.queryByText("Combined output column is required")).toBeNull()
@@ -695,6 +653,7 @@ describe("RatingStepEditor", () => {
   it("flags an explicitly blank combined output column and does not show placeholder text", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [{ output_column: "", operation: "multiply", base_value: "1.0" }],
         }}
@@ -714,6 +673,7 @@ describe("RatingStepEditor", () => {
   it("surfaces invalid configured combined outputs without masking them", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [
             { output_column: "", operation: "divide" },
@@ -741,6 +701,7 @@ describe("RatingStepEditor", () => {
   it("treats whitespace-only table output columns as blank", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [
             { name: "T1", factors: [], output_column: "   ", default_value: "1.0", entries: [] },
@@ -762,6 +723,7 @@ describe("RatingStepEditor", () => {
   it("treats whitespace-only combined output columns as blank", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [{ output_column: "\t ", operation: "multiply", base_value: "1.0" }],
         }}
@@ -793,6 +755,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -827,6 +790,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -846,6 +810,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -884,6 +849,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -916,6 +882,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -940,6 +907,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -965,6 +933,7 @@ describe("RatingStepEditor", () => {
   it("shows operation select for a configured one-table combined output", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           tables: [
             { name: "T1", factors: [], output_column: "af", default_value: "1.0", entries: [] },
@@ -997,6 +966,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1016,6 +986,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [
             { output_column: "combined", operation: "multiply", base_value: "1.0" },
@@ -1047,6 +1018,7 @@ describe("RatingStepEditor", () => {
 
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1056,7 +1028,6 @@ describe("RatingStepEditor", () => {
     )
 
     const tablist = screen.getByRole("tablist", { name: "Combined outputs" })
-    expect(screen.getByRole("radio", { name: /Combined set/ })).toBeTruthy()
     expect(tablist.className).toContain("overflow-x-auto")
     expect(screen.getAllByText("technical_price").length).toBeGreaterThan(0)
     expect(screen.getByText("loaded_price")).toBeTruthy()
@@ -1096,6 +1067,7 @@ describe("RatingStepEditor", () => {
 
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1127,6 +1099,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1141,6 +1114,7 @@ describe("RatingStepEditor", () => {
   it("rebuild button not shown when no factors selected", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1165,6 +1139,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1190,6 +1165,7 @@ describe("RatingStepEditor", () => {
   it("shows factor count label", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1204,6 +1180,7 @@ describe("RatingStepEditor", () => {
   it("shows factor dropdown with available banding columns", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1222,6 +1199,7 @@ describe("RatingStepEditor", () => {
   it("shows raw string/categorical preview columns in the add factor dropdown but hides numeric columns", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1252,6 +1230,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1287,6 +1266,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1309,6 +1289,7 @@ describe("RatingStepEditor", () => {
   it("uses preview-derived raw string factor levels without showing an explanatory warning", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Channel Factor",
@@ -1344,6 +1325,7 @@ describe("RatingStepEditor", () => {
   it("uses saved raw factor entries as levels before preview rows are available", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Channel Factor",
@@ -1371,6 +1353,7 @@ describe("RatingStepEditor", () => {
   it("uses preview and saved entries for unbanded channel and cover_type levels without raw-level helper UI", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Channel Cover Factor",
@@ -1416,6 +1399,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Age Factor",
@@ -1459,6 +1443,7 @@ describe("RatingStepEditor", () => {
   it("shows breakpoint banding columns in the add factor dropdown", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1496,6 +1481,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1511,6 +1497,7 @@ describe("RatingStepEditor", () => {
   it("renders input sources bar when inputs provided", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[{ sourceNodeId: "test-source", name: "source_data", sourceLabel: "Source Data", edgeId: "e1" }]}
@@ -1532,6 +1519,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1551,6 +1539,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1571,6 +1560,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "T1",
@@ -1602,6 +1592,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     const { container } = render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "T1",
@@ -1651,6 +1642,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}

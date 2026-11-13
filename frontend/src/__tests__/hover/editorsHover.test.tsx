@@ -488,12 +488,12 @@ function renderInputSourcesBarWithDelete() {
 
 /** Render RatingStepEditor wrapped in GraphProvider so hooks resolve. */
 function renderRatingStep(
-  props: Parameters<typeof RatingStepEditor>[0],
+  props: Omit<Parameters<typeof RatingStepEditor>[0], "section">,
   opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
 ) {
   return render(
     <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
-      <RatingStepEditor {...props} />
+      <RatingStepEditor section="tables" {...props} />
     </GraphProvider>,
   )
 }

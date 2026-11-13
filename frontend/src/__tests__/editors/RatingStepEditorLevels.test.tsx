@@ -16,7 +16,6 @@ import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
 import type { NodeDataPointResponse, RatingLevelsResponse } from "../../api/types"
 
 const mockGetRatingLevels = vi.fn()
@@ -148,6 +147,7 @@ function renderEditor(ui: ReactElement, nodes: unknown[] = [sourceNode, ratingNo
 function editor(props: Record<string, unknown> = {}) {
   return (
     <RatingStepEditor
+      section="tables"
       config={CONFIG}
       onUpdate={vi.fn()}
       inputSources={[]}
@@ -165,7 +165,6 @@ describe("RatingStepEditor levels", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     useNodeDataStore.getState().reset()
     useSettingsStore.setState({ activeSource: "live" })
-    useUIStore.setState({ ratingStepEditorSections: {} })
     mockGetRatingLevels.mockReset()
     mockGetNodeDataPoint.mockReset()
     mockGetNodeDataPoint.mockResolvedValue(point("current", DATA_VERSION))

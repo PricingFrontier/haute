@@ -40,7 +40,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 
 - **Adding and connecting nodes.** Drag a node from the **NODES** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name; a connection from a Quote Input or Workbench Input table carries it under the table's label, and one from a submodel output under the output's port name.
 - **The node panel.** Click a node to open its panel on the right. Most nodes have tabs along its top:
-    - **CONFIG** holds the node's own settings, described on its page. On a Transform node this tab is called **TRANSFORM**, because the node's settings are its steps.
+    - **CONFIG** holds the node's own settings, described on its page. On a Transform node this tab is called **TRANSFORM**, because the node's settings are its steps; a Rating Step splits it into **TABLES** and **COMBINED**.
     - **TRANSFORM**, on Data Input, Load File, Expander, Rating Step and Model Scoring nodes, adds optional steps that run on the node's result, built the same way as a Transform node's (see [Building the node from steps](transform.md#building-the-node-from-steps)).
     - **COLUMNS** lists the node's **OUTPUT COLUMNS**: untick a column to stop the node passing it on. **Filter columns...** finds a column by name, and **All** and **None** tick or clear every box. The list appears once the node has been previewed. Quote Input, Quote Response, Workbench Input, Workbench Output, Model Training, Optimisation, Explore and Submodel nodes have no Columns tab.
 
