@@ -265,7 +265,7 @@ export default function RatingStepEditor({
   const tableItems: SearchableListItem[] = tables.map((candidate, idx) => {
     const status = tableStatuses[idx] || ratingTableStatus(candidate, idx, tables)
     const factorCount = candidate.factors.length
-    const entryCount = tableStats(candidate.entries || [])?.count ?? 0
+    const entryCount = (candidate.entries || []).length
     return {
       index: idx,
       name: tableDisplayName(candidate, idx),
