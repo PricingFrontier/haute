@@ -32,6 +32,7 @@ import { ImportParamValues } from "./banding/ImportParamValues"
 import { withAlpha } from "../../utils/color"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import SearchableItemList from "./shared/SearchableItemList"
+import { indexAfterMove, isListMove, moveListItem } from "./shared/moveListItem"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 
 const EMPTY_CATEGORICAL: CategoricalRule = { value: "", assignment: "" }
@@ -149,19 +150,10 @@ export default function BandingEditor({
   // List order is the order execution applies the factors in: a row dragged
   // onto another, or moved with Alt+Up/Down, takes its place.
   const moveFactor = (from: number, to: number) => {
-    if (from === to || to < 0 || to >= factors.length) return
-    const next = [...factors]
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
+    if (!isListMove(factors.length, from, to)) return
     if (nodeId) forgetBandingRuleStash(nodeId)
-    commitFactors(next)
-    const current = safeIdx
-    setActiveIdx(
-      current === from ? to
-        : from < current && current <= to ? current - 1
-          : to <= current && current < from ? current + 1
-            : current,
-    )
+    commitFactors(moveListItem(factors, from, to))
+    setActiveIdx(indexAfterMove(safeIdx, from, to))
   }
 
   // Execution refuses two active factors writing one column, so both are issues.

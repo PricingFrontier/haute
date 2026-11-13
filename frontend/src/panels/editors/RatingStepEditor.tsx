@@ -5,6 +5,7 @@ import type { InputSource, OnUpdateConfig } from "./_shared"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField, SavedValueOption } from "../../components/form"
 import SearchableItemList from "./shared/SearchableItemList"
+import { indexAfterMove, isListMove, moveListItem } from "./shared/moveListItem"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 import { classifyBandingLevels } from "../../utils/banding"
 import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
@@ -263,14 +264,18 @@ export default function RatingStepEditor({
   const activeTableSummaryIssues = activeTableStatus.issues.filter(issue => !issue.startsWith("Output column"))
   const tableItems: SearchableListItem[] = tables.map((candidate, idx) => {
     const status = tableStatuses[idx] || ratingTableStatus(candidate, idx, tables)
-    const stats = tableStats(candidate.entries || [])
+    const factorCount = candidate.factors.length
+    const entryCount = tableStats(candidate.entries || [])?.count ?? 0
     return {
       index: idx,
       name: tableDisplayName(candidate, idx),
       searchTerms: candidate.factors,
       healthy: status.state === "healthy",
       issues: status.issues,
-      badges: [`${candidate.factors.length}f`, ...(stats ? [String(stats.count)] : [])],
+      badges: [
+        `${factorCount} factor${factorCount === 1 ? "" : "s"}`,
+        `${entryCount} ${entryCount === 1 ? "entry" : "entries"}`,
+      ],
     }
   })
   // A table the search or filter hides is not the one being edited.
@@ -425,6 +430,15 @@ export default function RatingStepEditor({
     selectTable(Math.max(0, nextActiveTab))
   }
 
+  // List order is the order the tables' columns come out in: a row dragged
+  // onto another, or moved with Alt+Up/Down, takes its place. The table being
+  // edited stays selected, slice and all.
+  const moveTable = (from: number, to: number) => {
+    if (!isListMove(tables.length, from, to)) return
+    commitTables(moveListItem(tables, from, to))
+    setActiveTab(indexAfterMove(safeIdx, from, to))
+  }
+
   const commitCombinedOutputs = (next: CombinedOutput[]) => {
     onUpdate({ combined_outputs: next })
   }
@@ -536,6 +550,7 @@ export default function RatingStepEditor({
         onSelect={selectTable}
         onAdd={addTable}
         onRemove={tables.length > 1 ? removeTable : undefined}
+        onMove={moveTable}
         labels={{
           list: "Rating tables",
           search: "Search rating tables",

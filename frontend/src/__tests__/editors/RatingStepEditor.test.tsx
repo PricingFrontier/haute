@@ -187,6 +187,88 @@ describe("RatingStepEditor", () => {
     }
   })
 
+  describe("reordering tables", () => {
+    const rated = (output_column: string, entries: Record<string, string | number>[]) => ({
+      factors: ["age_band"],
+      output_column,
+      default_value: "1.0",
+      entries,
+    })
+    const THREE = {
+      tables: [
+        rated("age_factor", [{ age_band: "young", value: 1.1 }]),
+        rated("region_factor", [{ age_band: "young", value: 1.2 }, { age_band: "old", value: 0.9 }]),
+        rated("cover_factor", []),
+      ],
+    }
+    const tableRow = (name: string) =>
+      within(screen.getByRole("group", { name: "Rating tables" }))
+        .getByRole("button", { name: new RegExp(`^${name} (healthy|problem)$`) })
+    const outputs = (onUpdate: ReturnType<typeof vi.fn>) =>
+      (onUpdate.mock.lastCall![1] as { output_column: string }[]).map((table) => table.output_column)
+
+    it("spells out each table's factors and entries, as Banding does its rules", () => {
+      render(
+        <RatingStepEditor config={THREE} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      expect(tableRow("age_factor")).toHaveTextContent("1 factor1 entry")
+      expect(tableRow("region_factor")).toHaveTextContent("1 factor2 entries")
+      expect(tableRow("cover_factor")).toHaveTextContent("1 factor0 entries")
+    })
+
+    it("moves a table dragged onto another, keeping it selected", () => {
+      const onUpdate = vi.fn()
+      const { rerender } = render(
+        <RatingStepEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const row = (name: string) => tableRow(name).parentElement as HTMLElement
+      expect(row("age_factor")).toHaveAttribute("draggable", "true")
+      expect(within(row("age_factor")).getByTitle("Drag to reorder")).toBeInTheDocument()
+      const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" }
+      fireEvent.dragStart(row("age_factor"), { dataTransfer })
+      fireEvent.dragOver(row("cover_factor"), { dataTransfer })
+      fireEvent.drop(row("cover_factor"), { dataTransfer })
+
+      expect(onUpdate.mock.lastCall![0]).toBe("tables")
+      expect(outputs(onUpdate)).toEqual(["region_factor", "cover_factor", "age_factor"])
+      rerender(
+        <GraphProvider allNodes={BANDING_NODES} edges={[]}>
+          <RatingStepEditor
+            config={{ tables: onUpdate.mock.lastCall![1] }}
+            onUpdate={onUpdate}
+            inputSources={[]}
+            accentColor="#14b8a6"
+          />
+        </GraphProvider>,
+      )
+      expect(tableRow("age_factor")).toHaveAttribute("aria-pressed", "true")
+    })
+
+    it("moves a table with Alt+Up/Down from the keyboard", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.keyDown(tableRow("region_factor"), { key: "ArrowDown", altKey: true })
+      expect(outputs(onUpdate)).toEqual(["age_factor", "cover_factor", "region_factor"])
+      fireEvent.keyDown(tableRow("age_factor"), { key: "ArrowUp", altKey: true })
+      // Already first: nothing to move.
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+    })
+
+    it("has no grip while there is only one table", () => {
+      render(
+        <RatingStepEditor config={{ tables: [THREE.tables[0]] }} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      expect(tableRow("age_factor").parentElement).toHaveAttribute("draggable", "false")
+      expect(screen.queryByTitle("Drag to reorder")).toBeNull()
+    })
+  })
+
   it("summarises why a selected rating table has problems", () => {
     render(
       <RatingStepEditor
@@ -1416,7 +1498,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
     expect(screen.getByRole("button", { name: /^age_factor healthy$/ })).toBeTruthy()
-    expect(screen.getByText(/2 entries/)).toBeTruthy()
+    expect(screen.getByText(/2 entries · range/)).toBeTruthy()
   })
 
   it("renders input sources bar when inputs provided", () => {
