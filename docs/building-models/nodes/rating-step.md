@@ -27,7 +27,7 @@ Click a table in the list to edit it below:
 
 | Field | What it does |
 |---|---|
-| **FACTORS (N/3)** | The columns the table looks up, up to three. **+ Add factor...** adds one, and the × beside a factor removes it. The lists offer the columns with known levels, each with its number of levels: the band names of every Banding node's outputs, and the text columns of the input. A factor that is not among them shows as "(not a banding factor)". A column named `value` cannot be a factor, since each entry keeps its relativity under `value`: rename it upstream, in a Transform node for example. Adding or removing a factor rebuilds the entries for every combination of levels, keeping the values already entered. |
+| **FACTORS (N/3)** | The columns the table looks up, up to three, side by side in order on one line (it wraps when the panel is narrow). With none yet, choose the first from **Select factor...**; after that **+ Add factor**, beside the factors, adds another, and the × beside a factor removes it. **+ Add factor** lists the columns with known levels, each with its number of levels: the band names of every Banding node's outputs, and the text columns of the input. A factor's own list names them alone, and hovering it gives its number of levels. A factor that is not among them shows as "(not a banding factor)". A column named `value` cannot be a factor, since each entry keeps its relativity under `value`: rename it upstream, in a Transform node for example. Adding or removing a factor rebuilds the entries for every combination of levels, keeping the values already entered. |
 | **OUTPUT COLUMN** | The name of the column the looked-up value goes into. Errors and logs identify the table by it. It is required and must be unique: the box turns red with "Output column is required" or "Output column name must be unique". |
 | **DEFAULT** | The value given to a row whose factor values have no entry in the table (e.g. an area code you haven't mapped). A new table starts empty, so such a row is handled by **ON MISS** (see [What happens on a miss](#what-happens-on-a-miss)). Type a value such as `1.0` to price every miss at it. |
 | **ON MISS** | What a row with no entry does while **DEFAULT** is empty: **Stop the run** (the default) or **Leave empty**, which leaves the table's output empty and logs a warning with the number of misses. It is greyed out while **DEFAULT** holds a value, which fills every miss. |
@@ -69,7 +69,7 @@ The **COLUMNS** tab chooses which columns the node passes on (see [Working with 
 
 An area factor and an age factor, multiplied together, where `age_band` comes from an upstream Banding node:
 
-1. Connect your data to a Rating Step. In the first table, choose `area` under **+ Add factor...**, type `area_factor` as the **OUTPUT COLUMN** and leave **DEFAULT** empty, so an area the table does not list stops the run.
+1. Connect your data to a Rating Step. In the first table, choose `area` under **Select factor...**, type `area_factor` as the **OUTPUT COLUMN** and leave **DEFAULT** empty, so an area the table does not list stops the run.
 2. Fill in the relativities: London `1.25`, Manchester `1.10`, Rural `0.85`.
 3. Click **Add table** to add a second table. Choose `age_band` as its factor, type `age_factor` as the **OUTPUT COLUMN**, and fill in `18-25` → `1.40`, `26-65` → `1.00`, `65+` → `1.15`.
 4. Open the **COMBINED** tab, click the + button, and change the **COMBINED OUTPUT COLUMN** to `location_age_factor`. Leave **OPERATION** on **× Multiply** and **BASE VALUE** at `1.0`.

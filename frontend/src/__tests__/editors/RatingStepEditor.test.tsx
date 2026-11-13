@@ -877,7 +877,8 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
     // OneWayEditor renders "age_band" column header and "Relativity" header
-    expect(screen.getByText("age_band")).toBeTruthy()
+    // The one-way editor's heading, not the factor's own option.
+    expect(screen.getByText("age_band", { ignore: "option" })).toBeTruthy()
     expect(screen.getByText("Relativity")).toBeTruthy()
     // The "select at least one factor" message should NOT be shown
     expect(screen.queryByText("Select at least one factor to populate the rating table")).toBeNull()
@@ -1303,9 +1304,31 @@ describe("RatingStepEditor", () => {
     )
     const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
     const options = Array.from(addSelect.options).map(o => o.textContent)
-    expect(options).toContain("+ Add factor...")
+    // With no factor yet, Add factor is the first factor's slot.
+    expect(options).toContain("Select factor...")
     expect(options.some(o => o?.includes("age_band"))).toBe(true)
     expect(options.some(o => o?.includes("region"))).toBe(true)
+  })
+
+  it("lays the factors out on one line with + Add factor after them, until there are three", () => {
+    const table = (factors: string[]) => ({ tables: [{ factors, output_column: "f", default_value: "1.0", entries: [] }] })
+    const view = render(
+      <RatingStepEditor section="tables" config={table(["age_band"])} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
+      { allNodes: BANDING_NODES },
+    )
+    const first = screen.getByRole("combobox", { name: "Factor 1" })
+    const add = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
+    // One line: the factor's slot and Add factor share a row.
+    expect(add.parentElement).toBe(first.parentElement!.parentElement)
+    expect(add.options[0].textContent).toBe("+ Add factor")
+
+    view.rerender(
+      <GraphProvider allNodes={BANDING_NODES} edges={[]}>
+        <RatingStepEditor section="tables" config={table(["age_band", "region", "vehicle_type"])} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />
+      </GraphProvider>,
+    )
+    expect(screen.getAllByRole("combobox", { name: /^Factor \d$/ })).toHaveLength(3)
+    expect(screen.queryByRole("combobox", { name: "Add factor" })).toBeNull()
   })
 
   it("shows raw string/categorical preview columns in the add factor dropdown but hides numeric columns", () => {
@@ -1769,7 +1792,8 @@ describe("RatingStepEditor", () => {
     expect(screen.getByRole("combobox", { name: "Factor 2" })).toHaveValue("region")
     expect(screen.getByRole("combobox", { name: "Factor 3" })).toHaveValue("vehicle_type")
     // The 3rd factor (vehicle_type) should appear as the slice selector label
-    expect(screen.getByText("vehicle_type")).toBeTruthy()
+    // The slice's label, not the factor's own option.
+    expect(screen.getByText("vehicle_type", { ignore: "option" })).toBeTruthy()
     expect(screen.getByRole("combobox", { name: "vehicle_type slice" })).toBeInTheDocument()
   })
 })

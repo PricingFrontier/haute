@@ -45,6 +45,9 @@ const OPERATION_OPTIONS: { value: CombinedOperation; label: string }[] = [
   { value: "max", label: "Max" },
 ]
 
+/** The list a factor is chosen from, drawn as any field's even when Add factor is a button. */
+const FACTOR_OPTION_STYLE = { background: "var(--bg-input)", color: "var(--text-primary)" } as const
+
 function isCombinedOperation(value: string): value is CombinedOperation {
   return value === "multiply" || value === "add" || value === "min" || value === "max"
 }
@@ -557,45 +560,54 @@ export default function RatingStepEditor({
         </div>
       )}
 
-      {/* Factor selection */}
+      {/* Factor selection: the factors in order on one line, wrapping only
+          when the panel is too narrow for them, then Add factor. */}
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>
           Factors ({factorCount}/3)
         </label>
-        <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {table.factors.map((f, fi) => (
-            <div key={fi} className="flex items-center gap-1.5">
-              <span className="text-[10px] font-bold w-4 text-center" style={{ color: 'var(--text-muted)' }}>{fi + 1}</span>
+            <div key={fi} className="flex min-w-[8rem] flex-1 items-center gap-0.5">
+              {/* By name alone, so three fit a line; the count of levels is
+                  its tooltip, and Add factor's list gives each column's. */}
               <select key={`fsel-${safeIdx}-${fi}`} value={f}
                 aria-label={`Factor ${fi + 1}`}
+                title={factorLevels[f] ? `${f}: ${factorLevels[f].length} levels` : f}
                 onChange={(e) => {
                   const next = [...table.factors]
                   next[fi] = e.target.value
                   setFactors(safeIdx, next)
                 }}
-                className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
+                className="min-w-0 flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
                 style={INPUT_STYLE}>
                 <option value="">Select column...</option>
                 <SavedValueOption value={f} options={availableColumns} missingLabel={(name) => `${name} (not a banding factor)`} />
                 {availableColumns.map(c => (
-                  <option key={c} value={c}>{c} ({(factorLevels[c] || []).length} levels)</option>
+                  <option key={c} value={c}>{c}</option>
                 ))}
               </select>
               <button type="button" aria-label={`Remove factor ${fi + 1}: ${f}`}
                 onClick={() => removeFactor(safeIdx, fi)}
-                className="icon-danger-btn p-1 rounded">
+                className="icon-danger-btn p-1 rounded shrink-0">
                 <X size={11} />
               </button>
             </div>
           ))}
+          {/* The first factor's slot while there is none; after that a button
+              drawn like Add table, which opens the list of columns in one click. */}
           {factorCount < 3 && (
             <select aria-label="Add factor" value=""
               onChange={(e) => { if (e.target.value) addFactor(safeIdx, e.target.value) }}
-              className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none"
-              style={{ ...INPUT_STYLE, color: 'var(--text-muted)' }}>
-              <option value="">+ Add factor...</option>
+              className={factorCount === 0
+                ? "min-w-[8rem] flex-1 px-2 py-1.5 text-xs rounded-lg focus:outline-none"
+                : "add-row-btn focus-ring shrink-0 w-[6.5rem] appearance-none cursor-pointer px-2 py-1.5 text-center text-xs font-medium rounded-lg"}
+              style={factorCount === 0
+                ? { ...INPUT_STYLE, color: 'var(--text-muted)' }
+                : { color: "var(--accent)", background: "var(--accent-soft-subtle)", border: "1px dashed var(--accent-ring)" }}>
+              <option value="" style={FACTOR_OPTION_STYLE}>{factorCount === 0 ? "Select factor..." : "+ Add factor"}</option>
               {availableColumns.filter(c => !table.factors.includes(c)).map(c => (
-                <option key={c} value={c}>{c} ({(factorLevels[c] || []).length} levels)</option>
+                <option key={c} value={c} style={FACTOR_OPTION_STYLE}>{c} ({(factorLevels[c] || []).length} levels)</option>
               ))}
             </select>
           )}
