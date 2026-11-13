@@ -148,7 +148,7 @@ describe("BandingEditor", () => {
     const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add banding" }))
 
     const factors = onUpdate.mock.calls[0][1]
     expect(factors).toHaveLength(2)
@@ -169,7 +169,7 @@ describe("BandingEditor", () => {
     const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add banding" }))
 
     const factors = onUpdate.mock.calls[0][1]
     expect(factors[1]).toEqual({ banding: "breakpoints", column: "", output_column: "", rules: [], default: null })
@@ -1101,14 +1101,19 @@ describe("BandingEditor", () => {
     expect(label.getAttribute("for")).toBeTruthy()
   })
 
-  it("Add column button has aria-label", () => {
+  it("puts the Add banding button under the list, as wide as it", () => {
     const config = {
       factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByLabelText("Add column")).toBeTruthy()
+    const add = screen.getByRole("button", { name: "Add banding" })
+    expect(add).toHaveTextContent("Add banding")
+    expect(add.className).toContain("w-full")
+    // It follows the list, and is the only add control: none beside the search.
+    expect(columnList().nextElementSibling).toBe(add)
+    expect(screen.getAllByRole("button", { name: "Add banding" })).toHaveLength(1)
   })
 
   // ─── Feature 19: No dangling ARIA references ─────────────────────

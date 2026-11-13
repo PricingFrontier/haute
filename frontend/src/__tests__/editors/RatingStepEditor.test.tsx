@@ -220,6 +220,19 @@ describe("RatingStepEditor", () => {
       expect(tableRow("cover_factor")).toHaveTextContent("1 factor0 entries")
     })
 
+    it("adds a table with the Add table button under the list", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const add = screen.getByRole("button", { name: "Add table" })
+      expect(screen.getByRole("group", { name: "Rating tables" }).nextElementSibling).toBe(add)
+      fireEvent.click(add)
+      expect(onUpdate.mock.lastCall![0]).toBe("tables")
+      expect(onUpdate.mock.lastCall![1]).toHaveLength(4)
+    })
+
     it("moves a table dragged onto another, keeping it selected", () => {
       const onUpdate = vi.fn()
       const { rerender } = render(

@@ -76,9 +76,9 @@ backend API modules own validation and persistence.
   factors the way Rating Step lists its tables, with the same shared list: a search over each
   factor's output and input column names, an All/Issues filter (an issue is a factor without
   its input column, output column or rules, or an active factor whose output column another
-  active factor also writes, which marks both, as execution refuses them), an Add button, and a scrollable box of rows with
+  active factor also writes, which marks both, as execution refuses them), a scrollable box of rows with
   a health dot, the output name, a rule-count badge and, when there is more than one factor, a
-  remove control. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
+  remove control, and under the box a button as wide as it, Add banding or Add table. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
   them, and both show the grip and keep the remove control's place even with a single row, so
   a node with one item looks like a node with several. Banding's list order is the order
   execution applies the factors in, so a factor that bands another's output must stay after it;

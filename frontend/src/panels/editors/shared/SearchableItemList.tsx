@@ -18,6 +18,7 @@ export interface SearchableItemListProps {
     /** The accessible name of the list. */
     list: string
     search: string
+    /** The text of the Add button under the list. */
     add: string
     remove: (name: string) => string
     /** Read after the item's name, as its state. */
@@ -101,15 +102,6 @@ export default function SearchableItemList({
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          onClick={onAdd}
-          aria-label={labels.add}
-          className="accent-hover-btn p-1.5 rounded-lg shrink-0"
-          style={{ color: "var(--text-muted)", border: "1px dashed var(--border)", ["--node-accent" as string]: accentColor }}
-        >
-          <Plus size={12} />
-        </button>
       </div>
 
       <div
@@ -242,6 +234,17 @@ export default function SearchableItemList({
           </div>
         )}
       </div>
+
+      {/* Under the list and as wide as it, drawn like the Transform tab's Add step. */}
+      <button
+        type="button"
+        onClick={onAdd}
+        className="add-row-btn focus-ring flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium"
+        style={{ color: "var(--accent)", background: "var(--accent-soft-subtle)", border: "1px dashed var(--accent-ring)" }}
+      >
+        <Plus size={13} aria-hidden="true" />
+        {labels.add}
+      </button>
     </div>
   )
 }

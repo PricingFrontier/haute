@@ -405,7 +405,7 @@ export default function BandingEditor({
         labels={{
           list: "Banding columns",
           search: "Search banding columns",
-          add: "Add column",
+          add: "Add banding",
           remove: (name) => `Remove ${name} column`,
           status: (healthy) => (healthy ? "complete" : "incomplete"),
           empty: "No matching columns",
