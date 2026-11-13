@@ -284,6 +284,28 @@ describe("RatingStepEditor", () => {
       expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
     })
 
+    it("opens the selected table's name with a click in its box, while a click on another row only selects it", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const nameOf = (name: string) => within(tableRow(name)).getByText(name)
+      fireEvent.click(nameOf("region_factor"))
+      expect(tableRow("region_factor")).toHaveAttribute("aria-pressed", "true")
+      expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+
+      fireEvent.click(nameOf("region_factor"))
+      const box = screen.getByRole("textbox", { name: "Rename region_factor" })
+      // It opens in the name's place: the row keeps its badges.
+      expect(box.closest("[draggable]")).toHaveTextContent("1 factor")
+      fireEvent.keyDown(box, { key: "Escape" })
+      // A click elsewhere on the selected row (its badges) does not rename.
+      fireEvent.click(within(tableRow("region_factor")).getByText("1 factor"))
+      expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
     it("opens the name with F2 and keeps the old one on Escape, a blank one or the same one", () => {
       const onUpdate = vi.fn()
       render(

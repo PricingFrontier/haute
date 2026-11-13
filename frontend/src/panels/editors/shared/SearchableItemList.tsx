@@ -44,6 +44,21 @@ export interface ItemRename {
   commit: (index: number, name: string) => void
 }
 
+/** A row's dot, name and badges, laid out alike whether its name shows or is being typed. */
+const ROW_BODY = "min-w-0 flex flex-1 items-center gap-2 rounded-md px-1 py-0.5"
+/** The name's box, and the rename box's, so the one opens exactly where the other was. */
+const NAME_BOX = "min-w-0 flex-1 rounded border px-1.5 py-px font-mono"
+
+function healthDot(healthy: boolean) {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+      style={{ background: healthy ? "var(--success)" : "var(--warning-strong)" }}
+    />
+  )
+}
+
 /**
  * A searchable, filterable, scrollable list of an editor's items — Rating
  * Step's tables, Banding's factors — with a health dot, badges and a remove
@@ -85,6 +100,19 @@ export default function SearchableItemList({
     setDragIndex(null)
     setDropIndex(null)
   }
+  const itemBadges = (badges: readonly string[], selected: boolean) =>
+    badges.map((badge, badgeIndex) => (
+      <span
+        key={badgeIndex}
+        className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono"
+        style={{
+          background: selected ? withAlpha(accentColor, 0.14) : "var(--bg-elevated)",
+          color: "var(--text-muted)",
+        }}
+      >
+        {badge}
+      </span>
+    ))
 
   return (
     <div className="space-y-1.5">
@@ -183,18 +211,23 @@ export default function SearchableItemList({
                 </span>
               )}
               {rename && renaming === item.index ? (
-                <RenameField
-                  initial={rename.value(item.index)}
-                  label={`Rename ${item.name}`}
-                  validate={(name) => rename.validate?.(item.index, name) ?? null}
-                  onDone={(name, byKey) => {
-                    setRenaming(null)
-                    if (name !== null) rename.commit(item.index, name)
-                    // Enter and Escape give the row its focus back; a click
-                    // elsewhere keeps the focus where it went.
-                    if (byKey) focusOption(position)
-                  }}
-                />
+                // The box takes the name's place, the dot and badges staying put.
+                <div className={ROW_BODY}>
+                  {healthDot(item.healthy)}
+                  <RenameField
+                    initial={rename.value(item.index)}
+                    label={`Rename ${item.name}`}
+                    validate={(name) => rename.validate?.(item.index, name) ?? null}
+                    onDone={(name, byKey) => {
+                      setRenaming(null)
+                      if (name !== null) rename.commit(item.index, name)
+                      // Enter and Escape give the row its focus back; a click
+                      // elsewhere keeps the focus where it went.
+                      if (byKey) focusOption(position)
+                    }}
+                  />
+                  {itemBadges(item.badges, selected)}
+                </div>
               ) : (
               <button
                 type="button"
@@ -204,7 +237,14 @@ export default function SearchableItemList({
                 title={item.issues.length > 0 ? item.issues.join("; ") : "Healthy"}
                 tabIndex={focusable ? 0 : -1}
                 data-list-option="true"
-                onClick={() => onSelect(item.index)}
+                onClick={(e) => {
+                  // The selected row's name is a box: a click in it renames.
+                  if (rename && selected && (e.target as HTMLElement).closest("[data-item-name]")) {
+                    setRenaming(item.index)
+                    return
+                  }
+                  onSelect(item.index)
+                }}
                 onDoubleClick={rename ? () => setRenaming(item.index) : undefined}
                 onKeyDown={(e) => {
                   if (e.key === "F2" && rename) {
@@ -230,27 +270,24 @@ export default function SearchableItemList({
                   onSelect(next.index)
                   focusOption(nextPosition)
                 }}
-                className="min-w-0 flex flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left focus:outline-none focus:ring-1"
+                className={`${ROW_BODY} text-left focus:outline-none focus:ring-1`}
                 style={{ color: "inherit", background: "transparent" }}
               >
+                {healthDot(item.healthy)}
+                {/* A renamable name sits in a box like the one it opens into:
+                    the selected row's always, another row's while hovered. */}
                 <span
-                  aria-hidden="true"
-                  className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ background: item.healthy ? "var(--success)" : "var(--warning-strong)" }}
-                />
-                <span className="min-w-0 flex-1 truncate font-mono">{item.name}</span>
-                {item.badges.map((badge, badgeIndex) => (
-                  <span
-                    key={badgeIndex}
-                    className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono"
-                    style={{
-                      background: selected ? withAlpha(accentColor, 0.14) : "var(--bg-elevated)",
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    {badge}
-                  </span>
-                ))}
+                  data-item-name
+                  className={`${NAME_BOX} truncate${
+                    !rename ? " border-transparent"
+                      : selected ? " cursor-text"
+                        : " cursor-text border-transparent group-hover:border-[var(--border)] group-hover:bg-[var(--bg-input)]"
+                  }`}
+                  style={rename && selected ? { background: "var(--bg-input)", borderColor: "var(--border)" } : undefined}
+                >
+                  {item.name}
+                </span>
+                {itemBadges(item.badges, selected)}
               </button>
               )}
               {onRemove && (
@@ -345,8 +382,12 @@ function RenameField({
             finish(false, true)
           }
         }}
-        className="w-full rounded-md px-1 py-0.5 text-[11px] font-mono focus:outline-none"
-        style={{ ...INPUT_STYLE, border: error !== null ? "1px solid var(--danger-border-strong)" : INPUT_STYLE.border }}
+        className={`${NAME_BOX} w-full border-[var(--border)] focus:border-[var(--accent)] focus:outline-none`}
+        style={{
+          background: "var(--bg-input)",
+          color: "var(--text-primary)",
+          borderColor: error !== null ? "var(--danger-border-strong)" : undefined,
+        }}
       />
       {error !== null && (
         <div className="mt-0.5 px-1 text-[10px] leading-snug" style={{ color: "var(--danger-text)" }}>

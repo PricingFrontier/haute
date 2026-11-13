@@ -81,7 +81,8 @@ backend API modules own validation and persistence.
   remove control, and under the box a button as wide as it, Add banding or Add table. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
   them, and both show the grip and keep the remove control's place even with a single row, so
   a node with one item looks like a node with several. A row's output column can be renamed
-  in the row (double-click or F2), under the same rule as the editor's Output Column field:
+  in the row (a click in the selected row's name box, a double-click or F2; the name shows in
+  a box like the one it opens into), under the same rule as the editor's Output Column field:
   Banding refuses a name another active factor writes, Rating takes it and marks both. Banding's list order is the order
   execution applies the factors in, so a factor that bands another's output must stay after it;
   Rating Step's is the order its tables' output columns come out in. A Rating Step's node panel
