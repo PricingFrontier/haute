@@ -17,6 +17,7 @@ never raises:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import polars as pl
@@ -238,11 +239,19 @@ class TestUseDefault:
     def test_an_unusable_default_is_refused_naming_the_table(self, unusable: object) -> None:
         """Ignoring it would leave the table's misses empty unseen."""
         lf = pl.DataFrame({"band": ["A", "B"]}).lazy()
-        with pytest.raises(ConfigSettingError, match="'out'") as excinfo:
+        with pytest.raises(ConfigSettingError, match=re.escape("tables[0]")) as excinfo:
             apply_rating_step_from_config(lf, _one_table(default_value=unusable))
         assert excinfo.value.setting == "tables"
         assert excinfo.value.values == (unusable,)
         assert excinfo.value.fix is not None
+
+    def test_an_unusable_default_is_refused_when_the_config_is_saved(self) -> None:
+        """Refused at the config boundary, so it can be neither saved nor deployed."""
+        with pytest.raises(
+            ConfigSettingError, match=re.escape("tables[0] has default_value 'N/A'")
+        ):
+            validate_node_config(NodeType.RATING_STEP, _one_table(default_value="N/A"))
+        validate_node_config(NodeType.RATING_STEP, _one_table(default_value="1.0"))
 
 
 # ---------------------------------------------------------------------------

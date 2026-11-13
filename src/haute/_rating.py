@@ -33,6 +33,7 @@ from haute._logging import get_logger
 from haute._polars_dtypes import dtype_to_spec, parse_dtype
 from haute._rating_step_config import (
     normalise_rating_tables,
+    rating_default_value,
     validate_unique_rating_table_outputs,
 )
 from haute._types import NodeType, _Frame
@@ -1165,30 +1166,6 @@ def _apply_rating_miss_guard(
     )
 
 
-def _rating_default_value(raw: object, *, table_label: str) -> float | None:
-    """The finite number every miss of a table takes, or ``None`` for a blank default.
-
-    A default that is set but not a finite number is refused rather than
-    ignored: ignoring it would leave the table's misses empty unseen.
-    """
-    if raw is None or (isinstance(raw, str) and not raw.strip()):
-        return None
-    value = math.nan
-    if isinstance(raw, (str, int, float)) and not isinstance(raw, bool):
-        try:
-            value = float(raw)
-        except ValueError:
-            value = math.nan
-    if not math.isfinite(value):
-        raise ConfigSettingError(
-            f"Rating table {table_label!r} has default_value {raw!r}, which is not a finite number",
-            setting="tables",
-            fix="Type a number as the table's Default, or set On miss to Leave empty.",
-            values=(raw,),
-        )
-    return value
-
-
 def _normalise_combine_operation(operation: object) -> str:
     """Return a validated rating combine operation."""
     normalised = str(operation or "multiply")
@@ -1299,7 +1276,7 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     # A blank default is none: misses stay null and the miss guard reports
     # them. Any other default must be a finite number every miss takes;
     # ignoring one that is not would leave its misses empty unseen.
-    default_val = _rating_default_value(default_raw, table_label=table_label)
+    default_val = rating_default_value(default_raw, where=f"Rating table {table_label!r}")
 
     original_dtypes = {factor: frame_schema[factor] for factor in factors}
     _validate_supported_factor_dtypes(

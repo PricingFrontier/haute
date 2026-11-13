@@ -96,7 +96,7 @@ A row whose factor value has no entry in the table is a miss. A miss never stops
 - On **Leave empty** (where a new table starts), the table's output is empty for that row, and the run logs a warning naming the table's output column, the number of rows missed and the missing keys - so a renamed band label shows up rather than pricing at base rate unnoticed. A combined output gives the empty value no effect (×1 for **× Multiply**, +0 for **+ Add**; **Min** and **Max** skip it).
 - On **Use default**, the row takes the table's **DEFAULT**, with no warning.
 
-A **DEFAULT** that is not a number, such as one typed into the pipeline file by hand, stops the run before it starts, naming the table, rather than being ignored.
+A **DEFAULT** that is not a number, such as one typed into the pipeline file by hand, is refused when the pipeline is loaded or saved, naming the table, rather than being ignored.
 
 !!! warning "How entries match"
     Each entry's factor values are first converted to the type of the input

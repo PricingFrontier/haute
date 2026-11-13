@@ -263,7 +263,7 @@ and a null claim is exactly a defaulted row:
 | Condition | Exception | Where raised | Where it surfaces |
 |---|---|---|---|
 | Rating-table miss, no default | Nothing raised: the output stays null and `rating_table_lookup_misses` is logged at WARNING | `_apply_rating_miss_guard._check`, inside the row-local Python scan | At materialisation of the lazy plan, once per batch with misses |
-| Unusable `default_value` (not blank, not a finite number) | `ConfigSettingError` (`setting="tables"`, the value in `values`) | `rating_table_lookup` | Eagerly, when the table's lookup is built |
+| Unusable `default_value` (not blank, not a finite number) | `ConfigSettingError` (`setting="tables"`, the value in `values`, a fix) | `_rating_step_config.rating_default_value`, called by `normalise_rating_step_config` per table and by `rating_table_lookup` | Eagerly: when a config is validated (saved, read, deployed or built), and when a raw table's lookup is built |
 | Non-numeric/non-finite banding rule value or breakpoint boundary | `ValueError` | `_banding_condition`, `_breakpoints_to_rules` | Eagerly, during `_apply_banding` — before any frame materialisation |
 | >1 open-ended breakpoint, or a sole open-ended breakpoint with no bounded anchor, or a duplicate breakpoint boundary | `ValueError` | `_breakpoints_to_rules` | Eagerly |
 | Rating table entries contain NaN/Infinity `value` | `ValueError` | `_apply_rating_table` | Eagerly, before the join |

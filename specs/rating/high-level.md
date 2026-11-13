@@ -126,7 +126,9 @@ Out of scope (owned by neighbouring components):
   replace that null with their neutral element during a multi-column combine;
   `min`/`max` skip it when another value exists). There is no other miss
   setting and no `on_missing` key. A `default_value` that is not a finite
-  number is refused when the table's lookup is built, naming the table, since
+  number is refused by the config codec (`rating_default_value`), so a config
+  holding one can be neither saved, read nor deployed, and again when a table's
+  lookup is built from a raw table; each refusal names the table, since
   ignoring it would leave its misses empty unseen.
 - A table the editor creates (the Rating Step node default and **Add table**)
   has no `default_value`, so it starts on **Leave empty**. Under the table the
@@ -301,8 +303,9 @@ Out of scope (owned by neighbouring components):
   streaming. The output stays null for those rows (multiply/add fold it to the
   operation's neutral element downstream).
 - **Unusable `default_value`** (present, not blank, and not a finite number):
-  `ConfigSettingError` when the table's lookup is built, naming the table and
-  the value.
+  `ConfigSettingError` from the config codec when the config is validated
+  (saved, read, deployed or built), naming the table's position and the value,
+  and from the lookup builder for a raw table, naming its output column.
 - **Malformed table entries** (non-finite banding rule value/boundary, NaN/Infinity
   or null rating entry `value` — an entry without `value` when another entry
   has one counts as null, wherever it sits in the table — a Duration entry key
