@@ -33,6 +33,10 @@ routes. All three come from leads the October reviews left unverified; `WB-53` i
 2026. Both were reproduced on a SQLite quote store with a second process holding the file,
 as a database browser or a backup does; no server database was used.
 
+`WB-56` to `WB-58` come from the review plan's phase 4, which ran the underwriter app on
+SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the containers CI
+uses. The main session ran each again on the three databases.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -56,6 +60,9 @@ as a database browser or a backup does; no server database was used.
 | WB-53 | Decision | P2 | A pricing failure in the underwriter app gives the underwriter a fixed message and an id, and keeps the exception's text for the log. |
 | WB-54 | Planned | P2 | A write the quote store refuses is answered in words, with a code and an id, not with a bare "Internal Server Error". |
 | WB-55 | Planned | P3 | A SQLite quote store that is busy, damaged or missing is reported as that, not as unreachable "just now" or as a journal mode. |
+| WB-56 | Planned | P3 | On SQL Server a quote address with a trailing space names no quote, as on the other databases; no row is stored under a padded reference. |
+| WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
+| WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 
 ## Planned improvements
 
@@ -764,7 +771,9 @@ have" when the store's check finds its tables in order. What it fails as is
 an unhandled error: the app has no handler of its own, where the editor
 answers a structured 500 with an id. The case is not SQLite's alone, since a
 server database refuses statements too: a lock wait, a permission, a
-trigger.
+trigger. One was run on 12 November 2026: PostgreSQL refuses a text that
+holds a NUL character, which SQLite and SQL Server store, and a save, a
+note and a list search carrying one each answer the same bare 500 there.
 
 **Plan:** Answer a refused statement as the app answers its other store
 failures: JSON with an error code and a sentence saying that the store
@@ -819,3 +828,102 @@ With an exclusive lock held, the answer names the lock, not a journal mode.
 
 **Evidence:** `src/haute/_quote_store/_store.py`;
 `src/haute/_workbench_app_quotes.py`; `src/haute/_workbench_app_store.py`.
+
+### WB-56 — A quote's address with a trailing space names no quote on SQL Server
+**Why:** Reproduced on 12 November 2026 on SQLite, SQL Server 2022 and
+PostgreSQL 16, in the containers CI uses. With quotes `ABC-1` and `Ré-1` in
+the store, the address of `ABC-1` with a space after the reference
+(`/api/app/quotes/ABC-1%20/1`) answers 404 on SQLite and on PostgreSQL. On
+SQL Server it opens `ABC-1`, its archive route archives `ABC-1`, and its
+activity route lists that quote's changes. A priced save sent to `Ré-1`
+with the space answers 200 for `Ré-1` and stores the sheet's row in
+`policy_details` under the reference with the space.
+
+SQL Server's `=` ignores trailing spaces, also under the binary collation
+the store gives a reference, and the routes hand the address's reference to
+the store as it came. The specification keeps a reference trimmed and says
+that "two are one reference only when they are the same". An underwriter
+does not type such an address; a link pasted with a space, or a program
+that calls the app, sends one. The row under the padded reference is what a
+report that reads the store outside SQL Server would then fail to match.
+
+**Plan:** Read a reference from an address as the store keeps one: a
+reference that is not in its kept form names no quote, on every database,
+before any statement compares it.
+
+**Acceptance:** On each of the three databases the address with the space
+answers 404 from every route that takes a reference (open, save, final,
+amend, archive, restore, assign, note, activity), and no row is stored
+under a padded reference. The store's server tests run it.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py`;
+`src/haute/_quote_store/_book.py`; `src/haute/_quote_store/_schema.py`;
+`specs/workbench/high-level.md`; `tests/_store_servers.py`.
+
+### WB-57 — The quote list finds the same quotes on every database
+**Why:** Reproduced on 12 November 2026 on the three databases. The
+specification has a list match "every word searched for against the
+reference, quote name, insured or broker whatever their case". With one
+quote whose insured is "ZÜRICH RE", a search for `zürich` or for `ZÜRICH`
+finds it on SQL Server and on PostgreSQL and finds nothing on SQLite, where
+`re` does find it. SQLite's `lower()` folds the 26 unaccented letters only,
+and the searched word is lowered in Python before it is compared with the
+column lowered by the database. The same two-sided rule means `İzmir`
+finds "İzmir Sigorta" on no database, and `ΟΔΟΣ` finds "ΟΔΟΣ Ltd" on SQL
+Server alone.
+
+On SQL Server a searched word that holds `[` is read as a pattern: `[x]`
+also finds "x co", and `[` alone finds nothing, where the other two
+databases find "[x] co" for both. The escape applied to a searched word
+covers `\`, `%` and `_` and leaves `[` out.
+
+SQLite is the store `haute app serve` uses on an analyst's machine, so a
+search tried there on an accented name fails where the hosted app answers.
+
+**Plan:** Fold the case of the word and of the column by one rule on every
+database, either both in the database or with a folded column the store
+writes, and escape `[` in a searched word on SQL Server.
+
+**Acceptance:** A search for each of `zürich`, `ZÜRICH`, `İzmir`, `ΟΔΟΣ`,
+`[x]` and `[` returns the same quotes on SQLite, SQL Server and PostgreSQL,
+and a quote is found by any word of its insured in any case. The store's
+server tests run these searches.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_book.py`;
+`specs/workbench/high-level.md`; `tests/_store_servers.py`.
+
+### WB-58 — The quote list is in one order on every database
+**Why:** Reproduced on 12 November 2026 on the three databases. The
+specification orders a list "by reference from A to Z with its options in
+order, or by insured". Eight quotes `b-1`, `B-2`, `a-3`, `A-4`, `é-5`,
+`Z-6`, `10-7` and `2-8`, listed by reference, come back from SQLite and SQL
+Server as `10-7`, `2-8`, `A-4`, `B-2`, `Z-6`, `a-3`, `b-1`, `é-5`, every
+capital before every small letter, and from PostgreSQL as `10-7`, `2-8`,
+`a-3`, `A-4`, `b-1`, `B-2`, `é-5`, `Z-6`. Nine insureds listed by insured
+come back in three orders, one for each database: `_x` is first on SQLite
+and SQL Server and after `É` on PostgreSQL, and `Z` is before `É` on SQLite
+and after it on the two servers.
+
+The reference column has the store's exact collation on SQL Server alone;
+PostgreSQL orders it by the database's own collation. The insured is
+ordered by its lower case under each database's default collation, and
+SQLite lowers unaccented letters only. Within one database the pages are
+sound: with quotes added and archived between pages, none is repeated or
+skipped.
+
+**Plan:** State the order in the specification, where the plain reading of
+"A to Z" is PostgreSQL's, and have each database produce it, by a named
+collation on the two ordered columns or by a sort key the store writes.
+
+**Acceptance:** The eight references and the nine insureds above come back
+in one order on the three databases, the order the specification states,
+and the store's server tests check it.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_book.py`;
+`src/haute/_quote_store/_schema.py`; `specs/workbench/high-level.md`.

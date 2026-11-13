@@ -10,6 +10,9 @@ values, what a mismatch tells the analyst, and what a typed number becomes.
 reproduced on that day through the node's preview. `RTG-03` and `RTG-04`
 come from the plan's browser sweep of the editors' fields on 11 November;
 the main session re-ran them in a browser and from the command line.
+`RTG-05` and `RTG-06` come from the plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit;
+both were reproduced through the executor on 13 November.
 
 ## Priorities
 
@@ -19,6 +22,8 @@ the main session re-ran them in a browser and from the command line.
 | RTG-02 | Planned | P3 | A Rating Step entry whose key is not a value of its factor's type is refused naming the table, the factor and the key. |
 | RTG-03 | Planned | P2 | A decimal comma typed into a number box of the editor (a Rating Step's Default, a Banding breakpoint, a model's validation share, an optimiser's bounds and tolerance) is kept or refused in words, the same in every browser, never saved ten times too large. |
 | RTG-04 | Planned | P3 | A Rating table with a Default and no entries prices the Default, instead of stopping the run for a column it did not create. |
+| RTG-05 | Planned | P3 | A breakpoint band named with the number 0 in the settings file is a band, or is refused by name; its rows no longer fall to the default in silence. |
+| RTG-06 | Planned | P3 | A Rating Step on a factor column of Null type prices every row at the default, instead of refusing a table with distinct entries as holding duplicates. |
 
 ## Planned improvements
 
@@ -167,3 +172,62 @@ what it lacks.
 `src/haute/_rating.py::_apply_rating_table`;
 `frontend/src/panels/editors/RatingStepEditor.tsx`;
 `scripts/run_frontend_e2e_server.py`.
+
+### RTG-05 — A band named with the number 0 is a band
+**Why:** Reproduced on 13 November 2026 through the executor. A breakpoint
+Banding on a no-claims count has two bands, written in its settings file as
+`{"upper": 1, "label": 0}` and `{"label": 1}`, with the default
+"unmatched". Rows with 0 and 1 claims-free years get "unmatched"; rows with
+2 and 5 get "1". With the names written as the texts "0" and "1" the first
+two rows get "0".
+
+The reader and the check of a Banding's settings accept a number as a band
+name. Where the bands are built the name is taken as `label or ""`, which
+turns the number 0 into no name, and a band with no name falls to the
+default. The editor writes band names as text, so the number comes from a
+settings file written by hand, by a script or by the assistant. Nothing
+says the band was dropped, and whatever reads the column downstream is
+given the default band for those rows.
+
+**Plan:** Turn a number given as a band's name into its text, so that only
+a missing or empty name is no name. Or refuse a number where the settings
+are checked, naming the factor and the band.
+
+**Acceptance:** The Banding above gives "0" for 0 and 1 claims-free years,
+or its settings are refused by name when loaded, by lint and by the run. A
+band named 0.0 and one named `false` are covered by the same rule.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_rating.py`;
+`docs/building-models/nodes/banding.md`; `specs/rating/high-level.md`.
+
+### RTG-06 — A factor column of Null type takes the default, not a duplicate-entries refusal
+**Why:** Reproduced on 13 November 2026 through the executor. A Transform
+adds a factor that has no value yet, `pl.lit(None).alias("territory")`,
+which Polars gives its Null type. A Rating Step looks `territory` up in a
+table with two entries, NW at 1.1 and SE at 1.2, and a default of 1.0. The
+run stops: "Rating table 'territory_factor' has more than one entry for the
+same levels: territory='NW'; territory='SE'. Keep one entry for each
+combination of levels." The table has no duplicate. With the same empty
+column typed as text every row takes the default, 1.0.
+
+The lookup casts each entry's key to the factor column's type before it
+checks the entries for duplicates, on purpose: "25.0" and "25.00" are then
+one level. Cast to the Null type, NW and SE are both null, so the check
+sees one key twice. The rating specification lists Null among the factor
+types it supports, says "Null stays null and therefore never matches", and
+gives a row with no matching entry the default.
+
+**Plan:** Leave a factor of Null type out of the duplicate check: no entry
+can match it, so entries cannot collide on it, and every row takes the
+default.
+
+**Acceptance:** The pipeline above runs and prices every row at the
+default, through the preview, `haute run` and the deploy scorer. A table
+with a real duplicate is still refused by name, whatever the factor
+column's type.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_rating.py`; `specs/rating/high-level.md`.

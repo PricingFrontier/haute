@@ -9,7 +9,10 @@ failure before any node runs is reported. The packages below come from the
 9 November 2026 codebase review. `EXE-01` and `EXE-02` were reproduced against
 `HEAD` on that day by calling the named functions; `EXE-03` is read from the
 source and was not run. `EXE-04` and `EXE-05` were reproduced on 10 November
-2026 through the editor's preview route, `haute run` and the deploy.
+2026 through the editor's preview route, `haute run` and the deploy. `EXE-06`
+comes from the review plan's phase 5, a reader from a second model family
+(Codex) over the code changed since the 31 October audit, and was reproduced
+on 13 November by running one pipeline file three ways.
 
 `EXE-01` also changes what the optimiser runs on, so it is read together with
 [the optimiser specification](../optimiser/high-level.md).
@@ -23,6 +26,7 @@ source and was not run. `EXE-04` and `EXE-05` were reproduced on 10 November
 | EXE-03 | Planned | P3 | A preamble failure is reported at the preamble's own line, wherever the project folder is. |
 | EXE-04 | Planned | P2 | A join that previews in the editor runs from the command line and in a deployment, whatever Polars options it carries. |
 | EXE-05 | Planned | P2 | The Constant page's own example, a Transform that cross-joins a Constant, runs from the command line and deploys. |
+| EXE-06 | Planned | P2 | A pipeline run as Python, by `pipeline.run()` or `pipeline.score()`, applies each node's column selection and renames, as `haute run`, the preview and a deployment do. |
 
 ## Planned improvements
 
@@ -221,3 +225,38 @@ and `tests/test_polars_backend_strategy_contract.py` hold that answer;
 `docs/building-models/nodes/constant.md` (Connecting to other nodes, and its
 example); `docs/deployment/index.md`; `specs/deploy/high-level.md`;
 `specs/execution-engine/low-level.md`.
+
+### EXE-06 — `pipeline.run()` applies a node's column selection and renames
+**Why:** Reproduced on 13 November 2026 on two small pipelines, each run
+three ways. A Banding's settings keep two columns and rename one, as its
+Columns tab writes them: `selected_columns` of `quote_id` and `ncd_band`,
+and `column_renames` of `ncd_band` to `band`. `haute run` and the editor's
+preview return `quote_id` and `band`. The same file run as Python,
+`pipeline.run(source="batch")`, returns `quote_id`, `ncd`,
+`internal_margin` and `ncd_band`: nothing selected and nothing renamed. A
+Data Input with `selected_columns` in its settings and a Transform with
+`selected_columns` on its decorator do the same: two columns from
+`haute run`, all four from `pipeline.run()`.
+
+`pipeline.run()` and `pipeline.score()` walk the nodes with a loop of their
+own. The graph walker shapes each node's output after its work; the loop
+does not, and neither it nor the code that runs a configured node reads
+either setting. A column the analyst removed therefore comes back in the
+standalone result, and a later node that reads a renamed column does not
+find it, in the one way of running a pipeline that needs no editor.
+
+**Plan:** Shape a node's output in the standalone loop by the functions the
+walker uses, so the two cannot differ, for every node type.
+
+**Acceptance:** For each node type that can carry a column selection or a
+rename, a pipeline gives the same columns and rows from `pipeline.run()`,
+`pipeline.score()`, `haute run` and the preview. A test runs the shipped
+examples the standalone way beside the others.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/pipeline.py`;
+`src/haute/_standalone_nodes.py::run_configured_node`;
+`src/haute/_graph_walker.py`;
+`src/haute/_execute_lazy.py::_apply_selected_columns`;
+`src/haute/_execute_lazy.py::_apply_column_renames`.

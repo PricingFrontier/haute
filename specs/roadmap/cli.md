@@ -10,6 +10,9 @@ November 2026, which ran the commands 499 times with wrong arguments, wrong
 paths, a damaged `haute.toml` and awkward folders. The main session ran
 each reproduction again in a fresh folder. `CLI-05` comes from the main
 session's run, that day, of a submodel's whole life through the routes.
+`CLI-06` comes from the plan's phase 5, a reader from a second model
+family (Codex) over the code changed since the 31 October audit, and was
+reproduced with the real executable on 13 November.
 
 ## Priorities
 
@@ -20,6 +23,7 @@ session's run, that day, of a submodel's whole life through the routes.
 | CLI-03 | Planned | P3 | `haute ci registry-host` refuses an empty registry by name, and a mistyped deploy target or table is named where it is. |
 | CLI-04 | Planned | P3 | The project `haute init` makes passes the lint step of the CI it generates. |
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
+| CLI-06 | Planned | P2 | `haute ci update` and `haute init --force` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
 
 ## Planned improvements
 
@@ -191,3 +195,41 @@ nodes inside it. A name held by two occurrences is refused naming both.
 
 **Evidence:** `src/haute/cli/_run.py::_handle_run_in_project`;
 `specs/cli/high-level.md`; `docs/building-models/nodes/submodel.md`.
+
+### CLI-06 — `haute ci update` removes only the CI files Haute wrote
+**Why:** Reproduced on 13 November 2026 with the real executable. A project
+made by `haute init --target container --ci github` has three workflows:
+`ci.yml`, `deploy-staging.yml` and `deploy-production.yml`. The team adds a
+workflow of its own, `.github/workflows/release.yml`, and commits it.
+`haute ci update` then lists its five files as unchanged, says "The CI
+files are up to date." and exits 0. The team's `release.yml` is gone, and
+`git status` shows it deleted.
+
+The command holds a fixed list of eight file names, every CI file either
+kind of project could have on any provider, and removes each one this run
+does not write, "so a switch of provider ... leaves no orphaned workflow
+behind". `release.yml` is on the list because a workbench project's
+workflow has that name; this project never had one from Haute. The list of
+what was removed is not printed. `haute init --force` prunes the same way.
+By the same list a workbench project would lose a `deploy-staging.yml` of
+its own, and a GitHub project a `.gitlab-ci.yml` or an
+`azure-pipelines.yml` it keeps for a mirror (read from the list, not run).
+The CLI specification gives the command "the CI files `haute init`
+generated" and no others.
+
+**Plan:** Remove a file only when Haute wrote it: keep a record of the CI
+files a run generated, in the project, and prune from that record. A file
+with a listed name that is not in the record is left where it is. Print
+every file a run removes.
+
+**Acceptance:** In the project above, `haute ci update` and
+`haute init --force` leave the team's `release.yml` in place. After a real
+change of provider, the files the earlier run wrote are removed and each is
+named in the output. A run that removed a file does not say the CI files
+are up to date.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_init_cmd.py::_prune_stale_ci_files`;
+`src/haute/cli/_ci.py::handle_ci_update`;
+`src/haute/cli/_init_cmd.py::handle_init`; `specs/cli/high-level.md`.
