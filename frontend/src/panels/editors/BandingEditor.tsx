@@ -158,6 +158,13 @@ export default function BandingEditor({
 
   // Execution refuses two active factors writing one column, so both are issues.
   const outputCollisions = bandingOutputCollisions(factors)
+  // Why a factor cannot take an output column: the rule of its Output Column
+  // field and of renaming it in the list, which refuse such a name.
+  const outputColumnError = (idx: number, candidate: string): string | null => {
+    const next = factors.map((f, i) => (i === idx ? { ...f, output_column: candidate } : f))
+    const others = bandingOutputCollisions(next).get(idx)
+    return others ? bandingOutputCollisionMessage(others, candidate) : null
+  }
   const factorItems: SearchableListItem[] = factors.map((f, i) => {
     const ruleCount = (f.rules || []).length
     const collidesWith = outputCollisions.get(i)
@@ -402,6 +409,11 @@ export default function BandingEditor({
         onAdd={addFactor}
         onRemove={factors.length > 1 ? removeFactor : undefined}
         onMove={moveFactor}
+        rename={{
+          value: (idx) => factors[idx]?.output_column ?? "",
+          validate: outputColumnError,
+          commit: (idx, name) => updateFactor(idx, { output_column: name }),
+        }}
         labels={{
           list: "Banding columns",
           search: "Search banding columns",
@@ -479,11 +491,7 @@ export default function BandingEditor({
             key={`out-${safeIdx}`}
             dataTestId="banding-output-column"
             value={factor.output_column || ""}
-            validate={(candidate) => {
-              const next = factors.map((f, i) => (i === safeIdx ? { ...f, output_column: candidate } : f))
-              const others = bandingOutputCollisions(next).get(safeIdx)
-              return others ? bandingOutputCollisionMessage(others, candidate) : null
-            }}
+            validate={(candidate) => outputColumnError(safeIdx, candidate)}
             onCommit={(v) => updateFactor(safeIdx, { output_column: v })}
             containerClassName=""
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"

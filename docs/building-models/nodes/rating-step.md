@@ -21,6 +21,7 @@ The list shows one row per table, named by its output column, with a dot (green 
 - The search box finds a table by its output column or factors; **All** and **Issues** filter the list.
 - **Add table**, under the list, adds a table, with an empty **DEFAULT**, so a level it does not list stops the run.
 - Drag a row onto another, or use **Alt+Up** and **Alt+Down**, to reorder: the tables' output columns come out in list order.
+- Double-click a row, or press **F2** on it, to rename its output column in the row: **Enter** or clicking away keeps the new name, **Escape** keeps the old one. As with **OUTPUT COLUMN**, a name another table has is taken and both are marked.
 
 Click a table in the list to edit it below:
 

@@ -80,7 +80,9 @@ backend API modules own validation and persistence.
   a health dot, the output name, a rule-count badge and, when there is more than one factor, a
   remove control, and under the box a button as wide as it, Add banding or Add table. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
   them, and both show the grip and keep the remove control's place even with a single row, so
-  a node with one item looks like a node with several. Banding's list order is the order
+  a node with one item looks like a node with several. A row's output column can be renamed
+  in the row (double-click or F2), under the same rule as the editor's Output Column field:
+  Banding refuses a name another active factor writes, Rating takes it and marks both. Banding's list order is the order
   execution applies the factors in, so a factor that bands another's output must stay after it;
   Rating Step's is the order its tables' output columns come out in. A Rating Step's node panel
   calls its config tab Tables (the input, levels line and tables) and adds a Combined tab after

@@ -517,6 +517,11 @@ export default function RatingStepEditor({
         onAdd={addTable}
         onRemove={tables.length > 1 ? removeTable : undefined}
         onMove={moveTable}
+        // As its Output Column field, which takes a name another table has and marks both.
+        rename={{
+          value: (idx) => tables[idx]?.output_column ?? "",
+          commit: (idx, name) => updateTable(idx, { output_column: name }),
+        }}
         labels={{
           list: "Rating tables",
           search: "Search rating tables",

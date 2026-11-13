@@ -23,6 +23,7 @@ Each banded column is a **factor**. The list shows one row per factor, named by 
 - The search box finds a factor by its output or input column; **All** and **Issues** (with the number of incomplete factors) filter the list.
 - **Add banding**, under the list, adds a factor, starting as **Numeric**.
 - Drag a row onto another, or use **Alt+Up** and **Alt+Down**, to reorder: the factors are applied in list order.
+- Double-click a row, or press **F2** on it, to rename its output column in the row: **Enter** or clicking away keeps the new name, **Escape** keeps the old one. As with **OUTPUT COLUMN**, a name another factor already writes is refused, with the reason under the box.
 
 ### Editing a factor
 

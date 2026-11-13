@@ -190,7 +190,7 @@ describe("RatingStepEditor", () => {
     }
   })
 
-  describe("reordering tables", () => {
+  describe("the table list", () => {
     const rated = (output_column: string, entries: Record<string, string | number>[]) => ({
       factors: ["age_band"],
       output_column,
@@ -261,6 +261,83 @@ describe("RatingStepEditor", () => {
         </GraphProvider>,
       )
       expect(tableRow("age_factor")).toHaveAttribute("aria-pressed", "true")
+    })
+
+    it("renames a table's output column in its row: a double-click opens it, Enter keeps it", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.doubleClick(tableRow("region_factor"))
+      const box = screen.getByRole("textbox", { name: "Rename region_factor" })
+      expect(box).toHaveValue("region_factor")
+      expect(box).toHaveFocus()
+      // While the name is typed, a drag in the box selects text rather than moving the row.
+      expect(box.closest("[draggable]")).toHaveAttribute("draggable", "false")
+      fireEvent.change(box, { target: { value: "  area_factor " } })
+      fireEvent.keyDown(box, { key: "Enter" })
+      fireEvent.blur(box)
+
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+      expect(outputs(onUpdate)).toEqual(["age_factor", "area_factor", "cover_factor"])
+      expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+    })
+
+    it("opens the name with F2 and keeps the old one on Escape, a blank one or the same one", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const rename = (keys: (box: HTMLElement) => void) => {
+        fireEvent.keyDown(tableRow("age_factor"), { key: "F2" })
+        keys(screen.getByRole("textbox", { name: "Rename age_factor" }))
+        expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+      }
+      rename((box) => {
+        fireEvent.change(box, { target: { value: "other" } })
+        fireEvent.keyDown(box, { key: "Escape" })
+      })
+      rename((box) => {
+        fireEvent.change(box, { target: { value: "   " } })
+        fireEvent.keyDown(box, { key: "Enter" })
+      })
+      rename((box) => fireEvent.blur(box))
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("starts an unnamed table's box empty, never from its stand-in name", () => {
+      const onUpdate = vi.fn()
+      const config = { tables: [THREE.tables[0], { ...THREE.tables[1], output_column: "" }] }
+      render(
+        <RatingStepEditor section="tables" config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.doubleClick(tableRow("Table 2"))
+      const box = screen.getByRole("textbox", { name: "Rename Table 2" })
+      expect(box).toHaveValue("")
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(onUpdate).not.toHaveBeenCalled()
+
+      fireEvent.doubleClick(tableRow("Table 2"))
+      fireEvent.change(screen.getByRole("textbox", { name: "Rename Table 2" }), { target: { value: "region_factor" } })
+      fireEvent.blur(screen.getByRole("textbox", { name: "Rename Table 2" }))
+      expect(outputs(onUpdate)).toEqual(["age_factor", "region_factor"])
+    })
+
+    it("takes a name another table has, as the Output Column field does, and marks both", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.doubleClick(tableRow("cover_factor"))
+      const box = screen.getByRole("textbox", { name: "Rename cover_factor" })
+      fireEvent.change(box, { target: { value: "age_factor" } })
+      expect(box).not.toHaveAttribute("aria-invalid")
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(outputs(onUpdate)).toEqual(["age_factor", "region_factor", "age_factor"])
     })
 
     it("moves a table with Alt+Up/Down from the keyboard", () => {

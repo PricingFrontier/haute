@@ -14,6 +14,8 @@ export interface SearchableItemListProps {
   onRemove?: (index: number) => void
   /** Given when the order means something the user may change. */
   onMove?: (from: number, to: number) => void
+  /** Given when an item's name may be typed over in its row. */
+  rename?: ItemRename
   labels: {
     /** The accessible name of the list. */
     list: string
@@ -30,10 +32,24 @@ export interface SearchableItemListProps {
 }
 
 /**
+ * Renaming an item in its row: the name the editor stores (its output column),
+ * which the box starts from, never a stand-in a row shows while there is none
+ * ("Table 2", or a Banding factor's input column); the editor's own rule for a
+ * name, the one its field for the name applies; and the commit.
+ */
+export interface ItemRename {
+  value: (index: number) => string
+  /** Why a name cannot be taken, or null. */
+  validate?: (index: number, name: string) => string | null
+  commit: (index: number, name: string) => void
+}
+
+/**
  * A searchable, filterable, scrollable list of an editor's items — Rating
  * Step's tables, Banding's factors — with a health dot, badges and a remove
  * control on each row. Up/Down moves the selection; with `onMove`, a row can
- * be dragged onto another, or moved with Alt+Up/Down.
+ * be dragged onto another, or moved with Alt+Up/Down; with `rename`, a
+ * double-click on a row, or F2, opens its name in a box to type over.
  */
 export default function SearchableItemList({
   list,
@@ -42,12 +58,15 @@ export default function SearchableItemList({
   onAdd,
   onRemove,
   onMove,
+  rename,
   labels,
   accentColor,
 }: SearchableItemListProps) {
   const listRef = useRef<HTMLDivElement>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
+  // The item whose name is in a box to be typed over, if any.
+  const [renaming, setRenaming] = useState<number | null>(null)
   const problemCount = list.items.filter((item) => !item.healthy).length
   const selectedVisible = list.visible.some((item) => item.index === selectedIndex)
   // A list that can be reordered shows its grip even with one row, so a node
@@ -55,9 +74,12 @@ export default function SearchableItemList({
   // moves nothing.
   const movable = onMove !== undefined
 
+  // Looked up once the rows are drawn again: a row being renamed has no option
+  // until its box goes.
   const focusOption = (position: number) => {
-    const options = listRef.current?.querySelectorAll<HTMLElement>('[data-list-option="true"]')
-    window.requestAnimationFrame(() => options?.[position]?.focus())
+    window.requestAnimationFrame(() => {
+      listRef.current?.querySelectorAll<HTMLElement>('[data-list-option="true"]')[position]?.focus()
+    })
   }
   const endDrag = () => {
     setDragIndex(null)
@@ -118,7 +140,8 @@ export default function SearchableItemList({
           return (
             <div
               key={item.index}
-              draggable={movable}
+              // Not while its name is being typed: a drag in the box selects text.
+              draggable={movable && renaming !== item.index}
               onDragStart={movable ? (e) => {
                 e.dataTransfer?.setData("text/plain", String(item.index))
                 if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"
@@ -159,15 +182,36 @@ export default function SearchableItemList({
                   <GripVertical size={11} />
                 </span>
               )}
+              {rename && renaming === item.index ? (
+                <RenameField
+                  initial={rename.value(item.index)}
+                  label={`Rename ${item.name}`}
+                  validate={(name) => rename.validate?.(item.index, name) ?? null}
+                  onDone={(name, byKey) => {
+                    setRenaming(null)
+                    if (name !== null) rename.commit(item.index, name)
+                    // Enter and Escape give the row its focus back; a click
+                    // elsewhere keeps the focus where it went.
+                    if (byKey) focusOption(position)
+                  }}
+                />
+              ) : (
               <button
                 type="button"
                 aria-label={`${item.name} ${labels.status(item.healthy)}`}
                 aria-pressed={selected}
+                aria-keyshortcuts={rename ? "F2" : undefined}
                 title={item.issues.length > 0 ? item.issues.join("; ") : "Healthy"}
                 tabIndex={focusable ? 0 : -1}
                 data-list-option="true"
                 onClick={() => onSelect(item.index)}
+                onDoubleClick={rename ? () => setRenaming(item.index) : undefined}
                 onKeyDown={(e) => {
+                  if (e.key === "F2" && rename) {
+                    e.preventDefault()
+                    setRenaming(item.index)
+                    return
+                  }
                   if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
                   e.preventDefault()
                   const step = e.key === "ArrowDown" ? 1 : -1
@@ -208,6 +252,7 @@ export default function SearchableItemList({
                   </span>
                 ))}
               </button>
+              )}
               {onRemove && (
                 <button
                   type="button"
@@ -245,6 +290,69 @@ export default function SearchableItemList({
         <Plus size={13} aria-hidden="true" />
         {labels.add}
       </button>
+    </div>
+  )
+}
+
+/**
+ * A row's name in a box, its text selected to type over. Enter, or leaving
+ * the box, keeps a new name the editor's rule allows; Escape keeps the old
+ * one, as does a blank name or the same one. A name the rule refuses says why
+ * under the box, and Enter keeps the box open on it; leaving drops it.
+ */
+function RenameField({
+  initial,
+  label,
+  validate,
+  onDone,
+}: {
+  initial: string
+  label: string
+  validate: (name: string) => string | null
+  /** The new name, or null for none; `byKey` when Enter or Escape ended it. */
+  onDone: (name: string | null, byKey: boolean) => void
+}) {
+  const [draft, setDraft] = useState(initial)
+  // Enter or Escape ends the box, and its removal may blur it too: only the first counts.
+  const done = useRef(false)
+  const name = draft.trim()
+  const changed = name !== "" && name !== initial.trim()
+  const error = changed ? validate(name) : null
+  const finish = (keep: boolean, byKey: boolean) => {
+    if (done.current) return
+    done.current = true
+    onDone(keep && changed && error === null ? name : null, byKey)
+  }
+  return (
+    <div className="min-w-0 flex-1">
+      <input
+        autoFocus
+        type="text"
+        aria-label={label}
+        aria-invalid={error !== null ? true : undefined}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={() => finish(true, false)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault()
+            if (error === null) finish(true, true)
+          } else if (e.key === "Escape") {
+            // The box's Escape, not the pipeline's (which closes the panel).
+            e.preventDefault()
+            e.stopPropagation()
+            finish(false, true)
+          }
+        }}
+        className="w-full rounded-md px-1 py-0.5 text-[11px] font-mono focus:outline-none"
+        style={{ ...INPUT_STYLE, border: error !== null ? "1px solid var(--danger-border-strong)" : INPUT_STYLE.border }}
+      />
+      {error !== null && (
+        <div className="mt-0.5 px-1 text-[10px] leading-snug" style={{ color: "var(--danger-text)" }}>
+          {error}
+        </div>
+      )}
     </div>
   )
 }

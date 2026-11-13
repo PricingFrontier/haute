@@ -537,6 +537,45 @@ describe("BandingEditor", () => {
       expect(row.lastElementChild).toHaveAttribute("aria-hidden", "true")
     })
 
+    it("renames a factor's output column in its row", () => {
+      const onUpdate = vi.fn()
+      renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.doubleClick(rowOf("second"))
+      const box = screen.getByRole("textbox", { name: "Rename second" })
+      expect(box).toHaveValue("second")
+      fireEvent.change(box, { target: { value: "region_band" } })
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+      expect(outputs(onUpdate)).toEqual(["first", "region_band", "cover_band"])
+    })
+
+    it("starts a factor named by its input column with an empty box, never writing the input column", () => {
+      const onUpdate = vi.fn()
+      const config = { factors: [factor("age", "first"), factor("region", "")] }
+      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.keyDown(rowOf("region"), { key: "F2" })
+      const box = screen.getByRole("textbox", { name: "Rename region" })
+      expect(box).toHaveValue("")
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("refuses a name another factor writes, as the Output Column field does, saying why", () => {
+      const onUpdate = vi.fn()
+      renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.doubleClick(rowOf("cover_band"))
+      const box = screen.getByRole("textbox", { name: "Rename cover_band" })
+      fireEvent.change(box, { target: { value: "first" } })
+      expect(box).toHaveAttribute("aria-invalid", "true")
+      expect(within(columnList()).getByText("Factor 1 also writes first")).toBeInTheDocument()
+      // Enter keeps the box open on the refused name; leaving it drops the name.
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(screen.getByRole("textbox", { name: "Rename cover_band" })).toBeInTheDocument()
+      fireEvent.blur(box)
+      expect(screen.queryByRole("textbox", { name: "Rename cover_band" })).toBeNull()
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
     it("moves a factor with Alt+Up/Down from the keyboard", () => {
       const onUpdate = vi.fn()
       renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
