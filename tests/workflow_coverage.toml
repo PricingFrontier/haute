@@ -785,9 +785,9 @@ tests = [
 invariant = "A rating step previewed and traced through the real executor reproduces hand-calculated premiums (band thresholds at the boundary, a null falling to the default, a table miss resolved as neutral, a multiplicative combine over a base value); every banding and table rule has its documented outcome at exact thresholds, ties, nulls, missing factors, mixed key dtypes and rounding; invalid expressions become opaque, and a formula one row cannot determine is reported not computable rather than guessed."
 
 [scenarios.evidence]
-commit = "f8af18c67"
+commit = "56b333cfc"
 command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step.py tests/test_rating_key_agreement.py tests/test_rating_misses.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -n 4'
-result = "851 passed in 19.78s"
+result = "1205 passed in 25.21s"
 
 [[scenarios]]
 id = "W08-S01"
