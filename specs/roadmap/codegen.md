@@ -23,6 +23,13 @@ naming check cannot see.
 `CGEN-08` was reproduced on 11 November 2026 through the editor's load and
 the commands: a syntax error the loader reports as a fault of its own.
 
+`CGEN-09` and `CGEN-10` come from phase 5 of
+[the codebase review plan](codebase-review-plan.md): a reader from a second
+model family (Codex) read the lift of code into steps, which is new since
+the 31 October 2026 audit, and the review reproduced both on 13 November
+2026 through the editor's load and save routes, `CGEN-09` in a browser too.
+Each is a save that rewrites code nobody edited.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -35,6 +42,8 @@ the commands: a syntax error the loader reports as a fault of its own.
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 | CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
 | CGEN-08 | Planned | P3 | A line indented with a tab, or a space too far, is reported as a syntax error at its line, not as an internal error with an incident id. |
+| CGEN-09 | Planned | P1 | A pipeline opened and saved in the editor keeps the numbers of its hand-written Transforms as written: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
+| CGEN-10 | Planned | P2 | A Transform that rebinds its input's name keeps its code on save; a step list rebuilt from code and not edited is never replaced by the placeholder that raises. |
 
 ## Planned improvements
 
@@ -291,3 +300,98 @@ loader.
 `src/haute/_pipeline_recovery.py::_load_readable_pipeline_editor_document`;
 `src/haute/_pipeline_recovery.py::_span`;
 `src/haute/schemas.py::RecoverySourceSpan`.
+
+### CGEN-09 — A load and a save do not rewrite the numbers in hand-written code
+**Why:** Reproduced on 13 November 2026 in a browser and through the
+editor's routes. A pipeline file holds four Transforms written by hand:
+`pl.lit(1.0).alias("relativity")`, `(pl.col("value") * 2.0)`,
+`pl.col("value").fill_null(0.0)` and a filter
+`pl.col("id") == 9007199254740993`. The page is opened and Save is pressed.
+No node is opened and nothing is typed. The save answers "saved", with no
+warning about these nodes, and the file now holds `pl.lit(1)`, `* 2`,
+`fill_null(0)` and `== 9007199254740992`. Run on the same rows, the first
+column is 32-bit integer where it was 64-bit float, the second and third
+are 64-bit integer where they were float, and the filter returns the row of
+another id.
+
+The editor's document carries the steps rebuilt from each Transform's code,
+with a number literal as a JSON number. A browser has one kind of number:
+`1.0` arrives as `1`, and an integer above 2^53 as its nearest double. The
+save request brings the steps back, the save renders the node's code from
+them, and the renderer writes an integer for an integer. On the server a
+rebuilt step is accepted only when it renders the statement's own text, and
+"the rebuilt steps never take authority over Python they cannot describe";
+once the steps have been through a browser that no longer holds. Opening
+such a node's panel has the same effect before any save: the steps editor
+renders the list when it mounts and adopts the answer as the node's code
+when the text differs.
+
+Every hand-written or assistant-written Transform that spells a whole
+number as a decimal (`1.0`, `0.0`, `100.0`), or holds an integer above
+2^53, is rewritten by the first save from the editor. The changed type
+reaches whatever reads the column: a deployment's output schema, a Data
+Output's column type, and arithmetic that was written to be decimal.
+
+**Plan:** Carry a step's number across the wire in a form that keeps how it
+was written, its kind and its digits as text, as the Workbench does for
+integers a browser cannot hold, and render from that. A step list that was
+rebuilt from code and not edited must render that code, on the server and
+after a browser has held it.
+
+**Acceptance:** A test passes every rebuilt step list through a number
+round trip as JavaScript performs it and requires the rendered code to
+equal the source, for whole-number decimals, exponent forms, negative zero
+and integers of 16 to 19 digits. A browser journey that loads a pipeline
+with the four Transforms above and saves it leaves the file byte for byte,
+and opening each node's panel leaves its code unchanged.
+
+**Dependencies:** None.
+
+**Evidence:**
+`src/haute/_polars_steps_lift.py::_bare_literal`;
+`src/haute/_polars_steps.py::_Renderer`;
+`src/haute/_config_builder.py::_with_lifted_steps`;
+`src/haute/_codegen_builders.py::_stepped_body_code`;
+`frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts`;
+`frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`;
+`specs/codegen/structured-syntax-boundary.md`.
+
+### CGEN-10 — A Transform that rebinds its input's name keeps its code on save
+**Why:** Reproduced on 13 November 2026 through the editor's load and save
+routes. A Transform whose input is named `exposure` holds `df = exposure`,
+then `exposure = 365`, then
+`df.with_columns((pl.col("days") / exposure).alias("years"))`. It runs and
+gives 1.0 and 2.0. The editor loads the pipeline as ready. A save of the
+untouched document answers "saved" with the warning "Transform node 'years'
+has an incomplete step list (Step 2: Variable name 'exposure' is already an
+input name.). It will save, but running the pipeline will fail until the
+step is completed.", and the function's body in the file is now
+`raise NotImplementedError(` with "This node's steps are incomplete.
+Complete or remove them before running." The code the analyst wrote is no
+longer in the file.
+
+The lift reads `exposure = 365` as a Variable step. It accepts a step when
+the step, rendered after the steps before it, gives the statement's text,
+and it makes that trial without the node's input names. The save's render
+has them and refuses a variable named after an input. What the lift accepts
+and what the save renders are then two rules, and the save resolves the
+difference by writing the placeholder.
+
+**Plan:** Give the lift the node's input names, so a statement the save's
+renderer would refuse stays code. And make the save keep a node's code
+whenever its step list was rebuilt from that code and not edited: such a
+list failing to render is a fault of the lift, not an unfinished step.
+
+**Acceptance:** The Transform above loads with `exposure = 365` and the
+line after it as code, a save leaves the file as it was, and the node runs.
+A test renders every lifted list with its node's input names and requires
+the source back. A save never writes the incomplete-steps placeholder over
+code whose steps nobody edited.
+
+**Dependencies:** None.
+
+**Evidence:**
+`src/haute/_polars_steps_lift.py::lift_steps`;
+`src/haute/_polars_steps.py::_Renderer`;
+`src/haute/_codegen_builders.py::_stepped_body_code`;
+`src/haute/_config_builder.py::_with_lifted_steps`.

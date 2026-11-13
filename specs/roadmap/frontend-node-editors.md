@@ -9,7 +9,10 @@ accepts, saves and undoes. `FEN-01` comes from the review plan's browser
 sweep of 10 November 2026 and was reproduced in a real browser, with the two
 answers held and released in the reverse order. `FEN-02` to `FEN-06` come
 from the plan's browser sweep of the editors' fields on 11 November; the
-main session re-ran each in a browser on a fresh project.
+main session re-ran each in a browser on a fresh project. `FEN-07` comes
+from the plan's phase 5, a reader from a second model family (Codex) over
+the code changed since the 31 October audit, and was reproduced in a
+browser on 13 November.
 
 ## Priorities
 
@@ -21,6 +24,7 @@ main session re-ran each in a browser on a fresh project.
 | FEN-04 | Planned | P3 | A Constant value whose name is cleared is kept, or the save says so; the panel shows what the file holds. |
 | FEN-05 | Planned | P3 | An edit to a Banding cell is one undo step. |
 | FEN-06 | Planned | P3 | A Banding factor whose input column is gone is marked when the editor opens and counted among its Issues. |
+| FEN-07 | Planned | P2 | A Group by with a row count, saved and opened again, is a step the analyst can edit, not an "Invalid step" whose only action is Delete. |
 
 ## Planned improvements
 
@@ -178,3 +182,41 @@ filter lists the factor.
 **Dependencies:** None.
 
 **Evidence:** `frontend/src/panels/editors/BandingEditor.tsx`.
+
+### FEN-07 — A saved Group by with a row count opens as a step
+**Why:** Reproduced on 13 November 2026 in a browser. A Transform's saved
+code is what the steps editor writes for a Group by on `channel` with a row
+count named `policy_count`:
+`df.group_by("channel", maintain_order=True).agg(pl.len().alias("policy_count"))`.
+Opened again, its panel shows a card titled "Invalid step" that reads "The
+group and aggregate step aggregation 1 is missing "column" or "name"." and
+"This step cannot be edited here. Delete it to repair the step list." The
+card does not open; its one action is Delete. The generated code beneath it
+is unchanged and runs, so an analyst who does as the card says deletes a
+working aggregation.
+
+The server rebuilds the aggregation with a name and no `column`,
+`{"agg": "len", "name": "policy_count"}`, as the syntax specification
+requires: "A group-by row count (`len`) has no `column`." The browser's
+check of a step demands a text `column` in every aggregation that has no
+column type. Built in the panel, the entry still carries the empty `column`
+it started with and passes, so the fault appears only after a reload. The
+form and the summary beside the check already treat a row count as having
+no column.
+
+**Plan:** Let the step check accept a row count without a column, by the
+same list of column-less aggregations the form uses.
+
+**Acceptance:** The node above opens as a Group by card that can be opened
+and edited. A test gives the browser's step check every step list the
+server rebuilds from the code the server renders, for each aggregation and
+each window function, and none is called invalid.
+
+**Dependencies:** None.
+
+**Evidence:**
+`frontend/src/panels/editors/polarsSteps/catalogue.ts`;
+`frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`;
+`frontend/src/panels/editors/polarsSteps/forms.tsx`;
+`src/haute/_polars_steps_lift.py::_Reader`;
+`specs/codegen/structured-syntax-boundary.md`.

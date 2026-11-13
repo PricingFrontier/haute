@@ -173,6 +173,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "rating",
     "sandbox-security",
     "server-api",
+    "tracing",
     "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
