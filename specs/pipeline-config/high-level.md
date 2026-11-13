@@ -482,7 +482,7 @@ renamed:
 | `leftOn`, `rightOn`, `maintainOrder` | `left_on`, `right_on`, `maintain_order` | Edge Join, and the join step |
 | `outputMapping` | `output_mapping` | Output |
 | `outputColumn`, `rightClosed` | `output_column`, `right_closed` | a banding factor |
-| `outputColumn`, `defaultValue`, `onMissing`, `factorDtypes` | `output_column`, `default_value`, `on_missing`, `factor_dtypes` | a rating table |
+| `outputColumn`, `defaultValue`, `factorDtypes` | `output_column`, `default_value`, `factor_dtypes` | a rating table |
 | `timeUnit`, `timeZone` | `time_unit`, `time_zone` | a rating table's dtype descriptor |
 | `combinedOutputs`, and its `outputColumn`, `baseValue` | `combined_outputs`, `output_column`, `base_value` | Rating Step |
 | `stepCount` | `step_count` | Scenario Expander |

@@ -118,20 +118,25 @@ Out of scope (owned by neighbouring components):
   A left join matches input rows to table entries on the canonicalised factor
   key (see below).
 - A **miss** — an input row whose factor combination has no matching entry —
-  is resolved by, in order of precedence: (1) a usable numeric `default_value`
-  fills every miss silently; (2) `on_missing: "neutral"` leaves the output
-  null and logs each materialised batch containing misses at WARNING
-  (`multiply`/`add` replace that null with their neutral element during a
-  multi-column combine; `min`/`max` skip it when another value exists);
-  (3) the default policy, `on_missing: "error"`, raises
-  `RatingTableMissError` naming the table, the missing key(s), and the
-  affected row count.
+  never stops the run: a live quote must still be priced when a level is not
+  in a table (decided 13 November 2026). A table with a `default_value`
+  (**On miss** **Use default**) fills every miss with it silently; a table
+  without one (**On miss** **Leave empty**) leaves the output null and logs
+  each materialised batch containing misses at WARNING (`multiply`/`add`
+  replace that null with their neutral element during a multi-column combine;
+  `min`/`max` skip it when another value exists). There is no other miss
+  setting and no `on_missing` key. A `default_value` that is not a finite
+  number is refused when the table's lookup is built, naming the table, since
+  ignoring it would leave its misses empty unseen.
 - A table the editor creates (the Rating Step node default and **Add table**)
-  has no `default_value`, so its misses stop the run until the analyst types a
-  default or sets **On miss** (`on_missing`) to **Leave empty** (`"neutral"`).
-  The editor shows **On miss** beside **Default** and disables it while
-  Default holds a value; clearing Default removes `default_value`. Every edit
-  keeps a table's `on_missing` and leaves an absent `default_value` absent.
+  has no `default_value`, so it starts on **Leave empty**. Under the table the
+  editor shows **On miss** (**Leave empty** / **Use default**) and **Default**,
+  which is editable only on **Use default**: choosing **Use default** writes
+  `default_value` `1.0`, and choosing **Leave empty**, or clearing **Default**,
+  removes it. Whether a table uses a default is the engine's own rule (a
+  non-blank `default_value`, text or number), so the editor never says
+  **Leave empty** of a table the engine fills. Every edit leaves an absent
+  `default_value` absent.
 - Table lookup keys are compared as strings through the factor column's
   originating Polars dtype. Table-entry values are first coerced through that
   dtype, then both the entry and input values use the same Polars expression:
@@ -180,13 +185,15 @@ Out of scope (owned by neighbouring components):
   exactly — see
   [execution-engine](../execution-engine/high-level.md).
 - **Fail loud on ambiguous or silently-lossy config**, per project convention:
-  a rating-table miss with no default raises rather than quietly rating at a
-  neutral factor; NaN/Infinity/null table entries raise rather than
-  corrupting downstream pricing arithmetic; more than one open-ended
-  breakpoint raises rather than silently keeping only the last; duplicate
-  breakpoint boundaries raise rather than producing an empty interval.
-  `on_missing: "neutral"` is the explicit rating-miss opt-out, and it logs
-  each materialised batch containing misses. Banding rejects unknown operators
+  NaN/Infinity/null table entries raise rather than corrupting downstream
+  pricing arithmetic; a `default_value` that is not a finite number raises
+  rather than being ignored; more than one open-ended breakpoint raises rather
+  than silently keeping only the last; duplicate breakpoint boundaries raise
+  rather than producing an empty interval. A rating-table miss is the
+  deliberate exception: it is data, not config, and a run (a live quote above
+  all) must still produce a price, so a miss without a default leaves its
+  output empty and is logged for each materialised batch containing misses.
+  Banding rejects unknown operators
   and any non-list top-level `factors` value. Rating rejects non-list factor or
   entry containers and any populated entry list without declared factors at
   both config and execution boundaries. Missing, `null`, or genuinely empty
@@ -207,11 +214,11 @@ Out of scope (owned by neighbouring components):
   `columns` and each line of `rows` is a level and its rate; with more,
   `columns` lists the last factor's levels and each line of `rows` holds one
   combination of the other factors, its levels first, then one rate per
-  column. A cell with no entry is `null`, and a lookup there misses and follows
-  the table's miss policy; a rate of 0 is a rate. Levels keep their JSON type,
+  column. A cell with no entry is `null`, and a lookup there misses and takes
+  the table's default or stays empty; a rate of 0 is a rate. Levels keep their JSON type,
   so `25` and `"25"` stay distinct (JSON object keys would erase that, so the
   grid uses arrays). `default_value` is written as the editor holds it, text,
-  next to `on_missing`, which the engine reads as the number it is; an entry
+  which the engine reads as the number it is; an entry
   holding a key other than its levels and its rate is refused at save, naming
   it, since the grid has no place for it,
   and `factor_dtypes`, the outputs and the other settings stay beside the grid,
@@ -287,15 +294,15 @@ Out of scope (owned by neighbouring components):
 
 ## Failure model
 
-- **Rating-table miss, no usable default, `on_missing: "error"` (default):**
-  raises `RatingTableMissError` at frame materialisation (not at config-build
-  time — it is wired into the lazy plan via `map_batches` so it fires exactly
-  when the plan runs, batch by batch under streaming). The message names the
-  table, up to 10 distinct missing keys, and that batch's row/miss counts.
-- **Rating-table miss, `on_missing: "neutral"`:** no exception; each batch with
-  misses is logged at WARNING with table, output column, miss count, and missing keys.
-  The output stays null for those rows (multiply/add fold it to the operation's
-  neutral element downstream).
+- **Rating-table miss, no `default_value`:** no exception — a miss never stops
+  a run. Each batch with misses is logged at WARNING with table, output column,
+  miss count, and up to 10 distinct missing keys, by a row-local scan wired into
+  the lazy plan so it reports exactly when the plan runs, batch by batch under
+  streaming. The output stays null for those rows (multiply/add fold it to the
+  operation's neutral element downstream).
+- **Unusable `default_value`** (present, not blank, and not a finite number):
+  `ConfigSettingError` when the table's lookup is built, naming the table and
+  the value.
 - **Malformed table entries** (non-finite banding rule value/boundary, NaN/Infinity
   or null rating entry `value` — an entry without `value` when another entry
   has one counts as null, wherever it sits in the table — a Duration entry key

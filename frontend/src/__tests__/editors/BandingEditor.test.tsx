@@ -432,7 +432,7 @@ describe("BandingEditor", () => {
     expect(screen.getByRole("radio", { name: "Numeric" })).toHaveAttribute("aria-checked", "true")
     fireEvent.click(rowOf("region_group"))
     expect(screen.getByRole("radio", { name: "Categorical" })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByLabelText("Output Column")).toHaveValue("region_group")
+    expect(rowOf("region_group")).toHaveAttribute("aria-pressed", "true")
   })
 
   describe("factor list", () => {
@@ -454,7 +454,6 @@ describe("BandingEditor", () => {
       expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["cover_band complete"])
       // The selected factor was filtered out, so the one in view is edited.
       expect(rowOf("cover_band")).toHaveAttribute("aria-pressed", "true")
-      expect(screen.getByLabelText("Output Column")).toHaveValue("cover_band")
     })
 
     it("marks both active factors that write one output column", () => {
@@ -468,27 +467,28 @@ describe("BandingEditor", () => {
       ])
     })
 
-    it("refuses an output column another active factor writes, keeping the typed name", () => {
-      const onUpdate = vi.fn()
-      const config = { factors: [factor("age", "age_band"), factor("driver_age", "driver_band")] }
-      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
-      fireEvent.click(rowOf("driver_band"))
-      const output = screen.getByLabelText("Output Column")
-      fireEvent.change(output, { target: { value: "age_band" } })
-      fireEvent.blur(output)
-      expect(onUpdate).not.toHaveBeenCalled()
-      expect(output).toHaveValue("age_band")
-      expect(screen.getByTestId("banding-output-column-error")).toHaveTextContent("Factor 1 also writes age_band")
+    it("has no Output Column field, and says above the selected factor what is wrong with its name", () => {
+      // Saved that way (renaming refuses it): two active factors writing one column.
+      const config = { factors: [factor("age", "age_band"), factor("driver_age", "age_band")] }
+      renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      expect(screen.queryByLabelText("Output Column")).toBeNull()
+      expect(screen.getByTestId("banding-factor-name-issues")).toHaveTextContent("Factor 2 also writes age_band")
+    })
+
+    it("says a new factor has no output column, and leaves its other gaps to where they are filled", () => {
+      renderEditor(<BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      expect(screen.getByTestId("banding-factor-name-issues")).toHaveTextContent(/^No output column$/)
     })
 
     it("lets a draft factor share an output column, since it writes nothing", () => {
       const onUpdate = vi.fn()
       const config = { factors: [factor("age", "age_band"), { ...factor("driver_age", ""), rules: [] }] }
       renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
-      fireEvent.click(rowOf("driver_age"))
-      const output = screen.getByLabelText("Output Column")
-      fireEvent.change(output, { target: { value: "age_band" } })
-      fireEvent.blur(output)
+      fireEvent.doubleClick(rowOf("driver_age"))
+      const box = screen.getByRole("textbox", { name: "Rename driver_age" })
+      fireEvent.change(box, { target: { value: "age_band" } })
+      expect(box).not.toHaveAttribute("aria-invalid")
+      fireEvent.keyDown(box, { key: "Enter" })
       expect(outputs(onUpdate)).toEqual(["age_band", "age_band"])
     })
 
@@ -560,7 +560,7 @@ describe("BandingEditor", () => {
       expect(onUpdate).not.toHaveBeenCalled()
     })
 
-    it("refuses a name another factor writes, as the Output Column field does, saying why", () => {
+    it("refuses a name another factor writes, saying why", () => {
       const onUpdate = vi.fn()
       renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
       fireEvent.doubleClick(rowOf("cover_band"))
@@ -1126,17 +1126,6 @@ describe("BandingEditor", () => {
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
     const label = screen.getByText("Input Column")
-    expect(label.getAttribute("for")).toBeTruthy()
-  })
-
-  it("Output Column label is linked to its input via htmlFor", () => {
-    const config = {
-      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const label = screen.getByText("Output Column")
     expect(label.getAttribute("for")).toBeTruthy()
   })
 

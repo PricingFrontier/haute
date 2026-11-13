@@ -8,11 +8,12 @@ from typing import Any
 
 import polars as pl
 import pytest
+import structlog.testing
 from polars.testing import assert_frame_equal
 
 import haute._rating as rating
 from haute._polars_utils import streaming_collect
-from haute._rating import RatingTableMissError, apply_rating_step_from_config
+from haute._rating import apply_rating_step_from_config
 
 pytestmark = pytest.mark.perf
 
@@ -58,7 +59,6 @@ def _workload(
                     "name": f"{factor_count}_factor_lookup",
                     "factors": factors,
                     "output_column": "rate",
-                    "on_missing": "neutral",
                     "entries": entries,
                 }
             ]
@@ -170,15 +170,11 @@ def test_rating_miss_guard_records_representative_decision_evidence(
             }
         )
 
-    # Keep the fail-loud semantic boundary in the same evidence test. The
-    # control above is deliberately timing-only and is not a proposed rewrite.
-    # The guard runs as a Python scan, so Haute's collect seam restores the
-    # typed miss error that a bare Polars collect reports as a ComputeError.
-    with pytest.raises(
-        RatingTableMissError,
-        match=r"1 of 2 row\(s\).*Missing key",
-    ):
-        streaming_collect(
+    # Keep the guard's semantic boundary in the same evidence test. The control
+    # above is deliberately timing-only and is not a proposed rewrite: the guard
+    # is what reports a miss, which never stops the run.
+    with structlog.testing.capture_logs() as logs:
+        reported = streaming_collect(
             apply_rating_step_from_config(
                 pl.DataFrame({"factor": ["known", "missing"]}),
                 {
@@ -192,6 +188,9 @@ def test_rating_miss_guard_records_representative_decision_evidence(
                 },
             )
         )
+    assert reported["rate"].to_list() == [1.0, None]
+    [report] = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+    assert (report["miss_count"], report["missing_keys"]) == (1, [{"factor": "missing"}])
 
     trigger_cells = sum(
         float(cell["overhead_percent"]) >= _MIN_RELATIVE_OVERHEAD_PERCENT
@@ -215,8 +214,8 @@ def test_rating_miss_guard_records_representative_decision_evidence(
                 "semantic_oracle": {
                     "row_order": "preserved",
                     "schema": "preserved",
-                    "neutral_misses": "null",
-                    "default_policy": "RatingTableMissError",
+                    "misses_without_default": "null",
+                    "miss_report": "rating_table_lookup_misses warning",
                 },
                 "decision": decision,
             },

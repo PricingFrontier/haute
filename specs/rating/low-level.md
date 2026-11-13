@@ -38,9 +38,8 @@
   by 1-based position and input column. `validate_banding_config` (save, the
   assistant, recovery inspection) and `apply_banding_factors` (executor and
   standalone) both call it; draft factors are left out.
-- **Rating table** (`dict`): `{"factors": list[str] (1-3 cols), "factor_dtypes"?: dict[str, dtype-descriptor], "output_column": str, "entries": list[dict], "default_value"?: str|number, "on_missing"?: "error"|"neutral"}`. `entries` is an ordered row array with one JSON scalar per factor plus numeric `"value"`. Invariants: `len(factors) <= _MAX_RATING_FACTORS` (3), and no factor is `RATE_KEY` (`"value"`), the rate's own key, which would leave a row one of the two; both enforced in `_rating_step_config._validate_factors`, whose refusal names the factor's position and carries a fix asking for the column to be renamed upstream. The editor's `ratingFactorProblem` (`ratingTableUtils.ts`, over the same `RATING_RATE_KEY`) refuses to add such a factor before any entry is built.
+- **Rating table** (`dict`): `{"factors": list[str] (1-3 cols), "factor_dtypes"?: dict[str, dtype-descriptor], "output_column": str, "entries": list[dict], "default_value"?: str|number}`; a non-blank `default_value` is the value every miss takes and must be a finite number, and without one a miss leaves the output empty (there is no `on_missing` key). `entries` is an ordered row array with one JSON scalar per factor plus numeric `"value"`. Invariants: `len(factors) <= _MAX_RATING_FACTORS` (3), and no factor is `RATE_KEY` (`"value"`), the rate's own key, which would leave a row one of the two; both enforced in `_rating_step_config._validate_factors`, whose refusal names the factor's position and carries a fix asking for the column to be renamed upstream. The editor's `ratingFactorProblem` (`ratingTableUtils.ts`, over the same `RATING_RATE_KEY`) refuses to add such a factor before any entry is built.
 - **Combined output** (`dict`): `{"output_column": str, "operation": "multiply"|"add"|"min"|"max", "base_value": float}`.
-- **`RatingTableMissError(HauteValidationError)`** (a `ValueError` subclass) — raised at frame materialisation, not at config-build time, by `_apply_rating_miss_guard`'s row-local Python scan transform.
 - **`ConfigSettingError(HauteValidationError)`** (`haute._validation_error`, re-exported by `haute.errors`; a `ValueError` subclass) — every config refusal of the banding, rating-table and combined-output parsers (`_banding_config`, `_rating`, `_rating_step_config`) raises it with the message they always raised, so `str(error)` and every `except ValueError` are unchanged and a node that raises it still fails on its own in a preview. It adds `setting` (`factors`, `tables` or `combined_outputs`), an optional `fix` (a breakpoint-kind mismatch names the boundaries its column takes, such as "A Date column's boundaries are dates like 2024-12-31."; a rating row without its factor names the row shape) and `values`, the configured values the message quotes, so a caller that must not disclose configuration (the assistant) knows what it would. The rating miss-guard's internal key-alignment invariant stays a plain `ValueError`.
 - **Rating dtype descriptor** (`dict`): `{"kind": <name>}` where `<name>` is
   exactly one of `Int8`, `Int16`, `Int32`, `Int64`, `Int128`, `UInt8`,
@@ -229,8 +228,8 @@ and a null claim is exactly a defaulted row:
 - **No Polars callback raises a `ConfigSettingError`:** of the callbacks in
   `_rating.py` that raise, the `_rating_extrema_expr` guard's
   `RatingExtremaUndefinedError` subclass keeps its fields through Polars'
-  positional rebuild, and the miss guard's `RatingTableMissError` takes only its
-  message. `_banding_config.py` and `_rating_step_config.py` run no callbacks.
+  positional rebuild; the miss guard's callback only logs.
+  `_banding_config.py` and `_rating_step_config.py` run no callbacks.
 - **Ratebook dtype metadata is mandatory:** `factor_dtypes` is part of every
   newly saved ratebook artifact. `_apply_ratebook` validates ordered factor
   names and exact descriptors before calling `_apply_rating_table`; it neither
@@ -263,7 +262,8 @@ and a null claim is exactly a defaulted row:
 
 | Condition | Exception | Where raised | Where it surfaces |
 |---|---|---|---|
-| Rating-table miss, no default, `on_missing: "error"` | `RatingTableMissError` (subclass of `HauteValidationError`/`ValueError`) | `_apply_rating_miss_guard._check`, inside the row-local Python scan | At materialisation of the lazy plan — Haute's collect, batch-collect, and sink seams and standalone `Pipeline.run()` re-raise it with its type; a direct Polars `.collect()` receives a `ComputeError` naming it |
+| Rating-table miss, no default | Nothing raised: the output stays null and `rating_table_lookup_misses` is logged at WARNING | `_apply_rating_miss_guard._check`, inside the row-local Python scan | At materialisation of the lazy plan, once per batch with misses |
+| Unusable `default_value` (not blank, not a finite number) | `ConfigSettingError` (`setting="tables"`, the value in `values`) | `rating_table_lookup` | Eagerly, when the table's lookup is built |
 | Non-numeric/non-finite banding rule value or breakpoint boundary | `ValueError` | `_banding_condition`, `_breakpoints_to_rules` | Eagerly, during `_apply_banding` — before any frame materialisation |
 | >1 open-ended breakpoint, or a sole open-ended breakpoint with no bounded anchor, or a duplicate breakpoint boundary | `ValueError` | `_breakpoints_to_rules` | Eagerly |
 | Rating table entries contain NaN/Infinity `value` | `ValueError` | `_apply_rating_table` | Eagerly, before the join |
@@ -271,7 +271,6 @@ and a null claim is exactly a defaulted row:
 | A Duration factor's entry key is not an ISO-8601 duration, is finer than the factor's time unit, or lies outside its range | `ConfigSettingError` (`ValueError`), setting `tables`, the key quoted, with a fix | `_duration_key_to_physical`, from `rating_table_lookup` and `normalise_rating_key` | Eagerly, before the join and on the trace path alike |
 | Rating factor has an unsupported nested/binary/object/unknown dtype | `ValueError` naming the table/factor/dtype, supported scalar families, and upstream-cast remediation | rating dtype validation in `_apply_rating_table` | Eagerly, before the join |
 | Saved ratebook lacks factor dtype metadata or apply dtype differs | `RatingFactorDtypeContractError` (`SchemaMismatchError`) | `_apply_ratebook` | Eagerly, before lookup construction; public contract adapters map it to HTTP 422/background `contract_error` |
-| Unsupported `on_missing` value | `ValueError` | `_normalise_on_missing` | Eagerly |
 | Unsupported combine `operation` | `ValueError` | `_normalise_combine_operation` | Eagerly, from both `_combine_rating_columns` and `normalise_combined_outputs` |
 | Duplicate non-empty `tables[].output_column` | `ValueError` naming the later table index and column | `_rating_step_config` output validation | Eagerly, at config normalisation |
 | Duplicate participant column, or a combined output that would overwrite one of its participant columns | `ValueError` | `_combine_rating_columns` | Eagerly, before constructing arithmetic expressions |
@@ -344,7 +343,7 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   scalar-key benchmark comparing the production Series path with the historical
   one-row DataFrame-expression reference, with the shared dtype matrix checked
   for semantic equivalence before timings are accepted.
-- **`tests/test_rating_miss_fail_loud.py`** — the miss-policy contract: default (`error`) fails loud, no default + no miss stays silent, opt-in `on_missing: "neutral"`, and `_apply_rating_table`'s miss-guard wiring specifically. `tests/test_rating.py` pins the scan semantics: `test_miss_guard_survives_a_filter_that_excludes_the_missing_row`, `test_miss_guard_validates_only_the_rows_a_limit_reads`, and `test_miss_guard_declares_the_joined_schema`.
+- **`tests/test_rating_misses.py`** — the miss-policy contract: a miss never raises, through the config path, the executor builder and the streaming engine; without a default the output stays null, combined outputs take the operation's neutral element and each batch with misses warns with the table, its count and its keys (capped); a usable default fills silently; no miss stays silent; an unusable default and an `on_missing` key are refused; and `_apply_rating_table`'s miss-guard wiring specifically. `tests/test_rating.py` pins the scan semantics: `test_miss_guard_survives_a_filter_that_excludes_the_missing_row`, `test_miss_guard_validates_only_the_rows_a_limit_reads`, and `test_miss_guard_declares_the_joined_schema`.
 - **`tests/test_trace_banding_lineage.py`** — integration tests asserting a banding-created output continues the same lineage chain as other trace-calculated fields (through prior banding, through a computed upstream input, and for breakpoint-matched boundaries).
 
 Strategy is predominantly unit/property-style direct calls into the module functions (not full pipeline runs), with a smaller number of executor-integration and trace-integration tests confirming the shared primitives behave identically across entry points. `test_rating_key_agreement.py` in particular is written as a pinning/regression suite specifically to prevent the Python-mirror and Polars-expression forms of the canonical key from drifting apart, since that would be silently wrong in exactly the misleading way this codebase's error-handling conventions are designed to avoid (a trace agreeing with a join that actually disagreed).

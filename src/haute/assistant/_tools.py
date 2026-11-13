@@ -614,9 +614,9 @@ def execution_error_record(
     line, the column names it names that the policy discloses, and its text
     only under ``allow_row_samples``; a ``ConfigSettingError`` is
     ``configuration`` with its message as :func:`_config_setting_message`
-    gives it and its fix; any other ``HauteValidationError`` (the rating miss
-    guard's ``RatingTableMissError``) is ``validation``, its text, which can
-    quote row values, only under ``allow_row_samples``; any other Haute
+    gives it and its fix; any other ``HauteValidationError`` (such as a
+    preview's ``PreviewProjectionError``) is ``validation``, its text, which
+    can quote row values, only under ``allow_row_samples``; any other Haute
     error, ``SourceCacheError`` or ``PolarsIoConfigError`` (and Haute's
     incomplete-transform refusal) is ``haute`` with its own message; anything
     else is ``internal``, logged, with the sanitized internal detail.

@@ -483,10 +483,8 @@ class RatingTable(TypedDict, total=False):
     output_column: str
     """The column the looked-up value is written to."""
     default_value: str | int | float | None
-    """The value of a factor combination the table does not hold; `null` for none."""
-    on_missing: Literal["error", "neutral"]
-    """With no default, whether a missing combination fails the run (`error`) or takes the neutral
-    value (`neutral`)."""
+    """The value every factor combination the table does not hold takes; absent or `null` leaves
+    such a combination empty."""
     entries: list[dict[str, Any]]
     """The table's rows, each a level of every factor and its `value`; the config file
     writes them as a grid of `columns` and `rows`."""

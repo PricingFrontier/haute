@@ -3759,7 +3759,8 @@ export interface RatingCombinedOutput {
  */
 export interface RatingTable {
   /**
-   * The value of a factor combination the table does not hold; `null` for none.
+   * The value every factor combination the table does not hold takes; absent or `null` leaves
+   * such a combination empty.
    */
   default_value?: string | number | null;
   /**
@@ -3781,11 +3782,6 @@ export interface RatingTable {
    * The factor columns the table is keyed by, at most three.
    */
   factors?: string[];
-  /**
-   * With no default, whether a missing combination fails the run (`error`) or takes the neutral
-   * value (`neutral`).
-   */
-  on_missing?: 'error' | 'neutral';
   /**
    * The column the looked-up value is written to.
    */

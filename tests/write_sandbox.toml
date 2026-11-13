@@ -345,7 +345,7 @@ strict = [
     "test_rating_hand_calculated.py",
     "test_rating_key_agreement.py",
     "test_rating_levels.py",
-    "test_rating_miss_fail_loud.py",
+    "test_rating_misses.py",
     "test_rating_step.py",
     "test_read_user_text.py",
     "test_reference_pipeline.py",

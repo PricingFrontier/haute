@@ -215,9 +215,8 @@ test.describe("frontend canvas assurance", () => {
     await expect(
       bandingPanel.getByRole("radio", { name: "Numeric", exact: true }),
     ).toBeChecked()
-    await expect(bandingPanel.getByLabel("Output Column")).toHaveValue(
-      "vehicle_age_band",
-    )
+    // The factor is named in the list; there is no Output Column field.
+    await expect(vehicleRow).toHaveAttribute("aria-pressed", "true")
     // Browsing the factor list made no edit: nothing to undo.
     await expect(page.getByRole("button", { name: "Undo", exact: true })).toBeDisabled()
     // Banding shows numbers only for the whole dataset, so its data is cached

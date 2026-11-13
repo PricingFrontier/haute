@@ -66,9 +66,12 @@ backend API modules own validation and persistence.
 - Constant lists its named values. A name another row also uses marks both rows inline, and
   typing one into a row is refused without being applied, the typed name kept; Add value offers
   the first `constant_<n>` no row uses.
-- Banding's Output Column field refuses, inline and without applying it, a name another active
-  factor writes while the factor being edited is active (it has its input column and rules);
-  a draft factor may share a name, since it writes nothing.
+- Neither Banding nor Rating Step has an Output Column field: an item's output column is its
+  name in the list, renamed there. Banding's rename refuses, inline and without applying it, a
+  name another active factor writes while the factor being edited is active (it has its input
+  column and rules); a draft factor may share a name, since it writes nothing. What is wrong
+  with the selected factor's name (none, or a collision) is said above its settings, and a
+  Rating table's problems, its name's among them, above its factors.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
   context. The Numeric type is disabled, with the reason as its tooltip, while the selected
   input column's dtype is known and neither numeric nor a date: numeric bands compare the column
@@ -82,8 +85,8 @@ backend API modules own validation and persistence.
   them, and both show the grip and keep the remove control's place even with a single row, so
   a node with one item looks like a node with several. A row's output column can be renamed
   in the row (a click in the selected row's name box, a double-click or F2; the name shows in
-  a box like the one it opens into), under the same rule as the editor's Output Column field:
-  Banding refuses a name another active factor writes, Rating takes it and marks both. Banding's list order is the order
+  a box like the one it opens into): Banding refuses a name another active factor writes,
+  Rating takes it and marks both. Banding's list order is the order
   execution applies the factors in, so a factor that bands another's output must stay after it;
   Rating Step's is the order its tables' output columns come out in. A Rating Step's node panel
   calls its config tab Tables (the input, levels line and tables) and adds a Combined tab after

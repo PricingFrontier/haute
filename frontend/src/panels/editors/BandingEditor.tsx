@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Plus } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
-import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
+import { CommittedTextField, SavedValueOption } from "../../components/form"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
 import type { CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -158,21 +158,32 @@ export default function BandingEditor({
 
   // Execution refuses two active factors writing one column, so both are issues.
   const outputCollisions = bandingOutputCollisions(factors)
-  // Why a factor cannot take an output column: the rule of its Output Column
-  // field and of renaming it in the list, which refuse such a name.
+  // Why a factor cannot take an output column: renaming it in the list
+  // refuses such a name, saying why under the box.
   const outputColumnError = (idx: number, candidate: string): string | null => {
     const next = factors.map((f, i) => (i === idx ? { ...f, output_column: candidate } : f))
     const others = bandingOutputCollisions(next).get(idx)
     return others ? bandingOutputCollisionMessage(others, candidate) : null
   }
+  // What is wrong with a factor's output column: none, or a name another
+  // active factor also writes.
+  const nameIssues = (f: BandingFactor, i: number): { missing: string[]; collision: string[] } => {
+    const collidesWith = outputCollisions.get(i)
+    return {
+      missing: f.output_column ? [] : ["No output column"],
+      collision: collidesWith ? [bandingOutputCollisionMessage(collidesWith, f.output_column)] : [],
+    }
+  }
+  const activeNames = factors[safeIdx] ? nameIssues(factors[safeIdx], safeIdx) : null
+  const activeNameIssues = activeNames ? [...activeNames.missing, ...activeNames.collision] : []
   const factorItems: SearchableListItem[] = factors.map((f, i) => {
     const ruleCount = (f.rules || []).length
-    const collidesWith = outputCollisions.get(i)
+    const names = nameIssues(f, i)
     const issues = [
       ...(f.column ? [] : ["No input column"]),
-      ...(f.output_column ? [] : ["No output column"]),
+      ...names.missing,
       ...(ruleCount > 0 ? [] : ["No rules yet"]),
-      ...(collidesWith ? [bandingOutputCollisionMessage(collidesWith, f.output_column)] : []),
+      ...names.collision,
     ]
     return {
       index: i,
@@ -431,6 +442,25 @@ export default function BandingEditor({
         </div>
       ) : (
         <>
+      {/* What is wrong with the selected factor's output column: its name is
+          set in the list, which has no room to say. The rest of a factor's
+          issues show where they are fixed (its input column, its rules). */}
+      {activeNameIssues.length > 0 && (
+        <div
+          data-testid="banding-factor-name-issues"
+          className="space-y-1 rounded-lg px-2.5 py-2 text-[10px] font-medium"
+          style={{
+            background: 'var(--warning-soft-strong)',
+            border: '1px solid var(--warning-border-emphasis)',
+            color: 'var(--warning-strong)',
+          }}
+        >
+          {activeNameIssues.map(issue => (
+            <div key={issue}>{issue}</div>
+          ))}
+        </div>
+      )}
+
       {/* Active factor config */}
       <div>
         <div className="flex items-center gap-1.5">
@@ -454,7 +484,7 @@ export default function BandingEditor({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div>
         <div>
           <label htmlFor={`banding-input-col-${safeIdx}`} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Input Column</label>
           {upstreamColumns.length > 0 ? (
@@ -483,19 +513,6 @@ export default function BandingEditor({
               className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
               style={INPUT_STYLE} />
           )}
-        </div>
-        <div>
-          <label htmlFor={`banding-output-col-${safeIdx}`} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Output Column</label>
-          <ValidatedTextField
-            id={`banding-output-col-${safeIdx}`}
-            key={`out-${safeIdx}`}
-            dataTestId="banding-output-column"
-            value={factor.output_column || ""}
-            validate={(candidate) => outputColumnError(safeIdx, candidate)}
-            onCommit={(v) => updateFactor(safeIdx, { output_column: v })}
-            containerClassName=""
-            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={INPUT_STYLE} />
         </div>
       </div>
 

@@ -168,7 +168,6 @@ def _examples():
     by_type[NodeType.RATING_STEP].data.config["tables"][0].update(
         {
             "factor_dtypes": {"score_band": {"kind": "String"}},
-            "on_missing": "neutral",
         }
     )
     chart = _chart()

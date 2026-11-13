@@ -1640,8 +1640,8 @@ reports:
 - Rating, for a Rating Step: per table, identified by its 0-based position in
   `tables` and its output column, the rows the table read; the rows whose factor
   key has no entry, keys canonicalised exactly as the lookup canonicalises them
-  and counted alike whether `default_value` fills them, `"on_missing": "neutral"`
-  leaves them null, or the default `"on_missing": "error"` raises; the number of
+  and counted alike whether `default_value` fills them or they are left null
+  (a miss never fails the node); the number of
   entries; and the number of entries no row's key matched. A table execution
   skips is `skipped`, with no counts. At most 20 tables per node, with the
   number omitted.
@@ -1655,7 +1655,7 @@ Measurements that read only a node's inputs (its input row counts, banding
 claims and rating lookups computed on the frame the factor or table reads, and
 an Edge Join's key matches and duplicates computed on its two inputs) are
 collected before its output, so they survive a failure of its own output: a
-rating step whose miss guard raises still reports its tables' misses. Code-mode
+rating step whose output fails still reports its tables' misses. Code-mode
 nodes and free-code steps are measured like every node, by rows in and out, null
 counts and errors. Banding, rating and join measurements come only from
 structured configuration, so a join written in code or in a step list is
@@ -1683,9 +1683,9 @@ or step code, or a preamble failure is `authored_code`, reported as every
 execution error is (type, step or line, disclosable columns, text only under
 `allow_row_samples`); a `ConfigSettingError` is `configuration`, with its
 setting and fix and only values the model submitted; every other
-`HauteValidationError` subclass, such as the rating miss guard's
-`RatingTableMissError`, is `validation`, its type always and its text, which can
-quote row values, only under `allow_row_samples`; any other `HauteError` is
+`HauteValidationError` subclass, such as a preview's `PreviewProjectionError`,
+is `validation`, its type always and its text, which can quote row values, only
+under `allow_row_samples`; any other `HauteError` is
 `haute`, with its own message; anything else is `internal`, logged and reported
 with the sanitized internal detail.
 
@@ -1719,10 +1719,8 @@ share finding. The kinds are a closed set:
 | `column_mostly_null` | informational | A new or changed column's nulls over the port's rows is at least 0.5 and below 1. | `port`, `column`, `nulls`, `rows`, `share` |
 
 A `join_validation_failed` finding replaces the `execution_failed` finding of the
-join whose validation raised. When a rating step's miss guard raises (its
-table's `on_missing` is `error` and it has no usable `default_value`), that
-table's `rating_misses` finding is advisory whatever its share and replaces the
-node's `execution_failed` finding. Each replacement states the cause. Findings
+join whose validation raised, and states the cause. A rating table's misses
+never fail its node, so `rating_misses` is graded by its share alone. Findings
 are ordered advisory first, then by the changed nodes' order, then by the order
 of the kinds in the table above. At most 20 are returned, with the number
 omitted.

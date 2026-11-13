@@ -21785,7 +21785,7 @@
               "type": "null"
             }
           ],
-          "description": "The value of a factor combination the table does not hold; `null` for none.",
+          "description": "The value every factor combination the table does not hold takes; absent or `null` leaves\nsuch a combination empty.",
           "title": "Default Value"
         },
         "entries": {
@@ -21813,15 +21813,6 @@
           },
           "title": "Factors",
           "type": "array"
-        },
-        "on_missing": {
-          "description": "With no default, whether a missing combination fails the run (`error`) or takes the neutral\nvalue (`neutral`).",
-          "enum": [
-            "error",
-            "neutral"
-          ],
-          "title": "On Missing",
-          "type": "string"
         },
         "output_column": {
           "description": "The column the looked-up value is written to.",

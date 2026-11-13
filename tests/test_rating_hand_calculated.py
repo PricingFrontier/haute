@@ -57,7 +57,6 @@ def _rating_graph(tmp_path: Path) -> PipelineGraph:
             {"region": "north", "value": 0.9},
             {"region": "south", "value": 1.1},
         ],
-        "on_missing": "neutral",
     }
     combined = {
         "output_column": "premium",

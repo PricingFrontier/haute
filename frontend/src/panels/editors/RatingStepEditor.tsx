@@ -14,6 +14,7 @@ import {
   buildCartesianEntries,
   ratingTableStatus,
   tableStats,
+  tableUsesDefault,
   extractPreviewCategoricalLevels,
   extractTableEntryFactorLevels,
   mergeFactorLevels,
@@ -253,7 +254,9 @@ export default function RatingStepEditor({
   const table = tables[safeIdx] || newRatingTable()
   const tableStatuses = tables.map((candidate, idx) => ratingTableStatus(candidate, idx, tables))
   const activeTableStatus = tableStatuses[safeIdx] || { state: "problem" as const, issues: [] }
-  const activeTableSummaryIssues = activeTableStatus.issues.filter(issue => !issue.startsWith("Output column"))
+  // Every issue of the table, its output column's among them: the name is set
+  // in the list, which has no room to say what is wrong with it.
+  const activeTableSummaryIssues = activeTableStatus.issues
   const tableItems: SearchableListItem[] = tables.map((candidate, idx) => {
     const status = tableStatuses[idx] || ratingTableStatus(candidate, idx, tables)
     const factorCount = candidate.factors.length
@@ -281,16 +284,9 @@ export default function RatingStepEditor({
     showTables,
   )
   const tableEditorUnavailable = tableList.noneVisible
-  const outputColumnBlank = table.output_column.trim() === ""
-  const outputColumnDuplicate = !outputColumnBlank && tables.some((candidate, idx) => (
-    idx !== safeIdx && candidate.output_column.trim() === table.output_column.trim()
-  ))
-  const outputColumnInvalid = outputColumnBlank || outputColumnDuplicate
-  const outputColumnInputId = `rating-output-column-${safeIdx}`
-  const outputColumnErrorId = `${outputColumnInputId}-error`
   const defaultInputId = `rating-default-${safeIdx}`
   const onMissingInputId = `rating-on-missing-${safeIdx}`
-  const hasDefault = typeof table.default_value === "string" && table.default_value.trim() !== ""
+  const usesDefault = tableUsesDefault(table)
   const hasCombinedOutput = combinedOutputs.length > 0
   const safeCombinedIdx = hasCombinedOutput ? Math.min(activeCombinedIdx, combinedOutputs.length - 1) : 0
   const combinedOutput = combinedOutputs[safeCombinedIdx] || { output_column: "", operation: "multiply" as CombinedOperation, base_value: "1.0" }
@@ -322,7 +318,8 @@ export default function RatingStepEditor({
     commitTables(next)
   }
 
-  // An empty Default is removed rather than saved, so a miss follows on_missing.
+  // An empty Default is removed rather than saved, so the table's misses are
+  // left empty (On miss: Leave empty).
   const setDefaultValue = (idx: number, raw: string) => {
     const value = raw.trim()
     commitTables(tables.map((t, i) => {
@@ -614,44 +611,6 @@ export default function RatingStepEditor({
         </div>
       </div>
 
-      {/* Output column, default and what a miss does */}
-      <div className="grid grid-cols-[2fr_1fr_1.3fr] gap-2">
-        <div>
-          <label htmlFor={outputColumnInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: outputColumnInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Output Column</label>
-          <CommittedTextField key={`out-${safeIdx}`} type="text" value={table.output_column}
-            id={outputColumnInputId}
-            onCommit={(outputColumn) => updateTable(safeIdx, { output_column: outputColumn })}
-            aria-invalid={outputColumnInvalid}
-            aria-describedby={outputColumnInvalid ? outputColumnErrorId : undefined}
-            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={{ ...INPUT_STYLE, border: outputColumnInvalid ? '1px solid var(--danger-border-strong)' : INPUT_STYLE.border }} />
-          {outputColumnInvalid && (
-            <div id={outputColumnErrorId} className="mt-1 text-[10px] font-medium" style={{ color: 'var(--danger)' }}>
-              {outputColumnBlank ? "Output column is required" : "Output column name must be unique"}
-            </div>
-          )}
-        </div>
-        <div>
-          <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
-          <CommittedTextField key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" value={table.default_value ?? ""}
-            onCommit={(value) => setDefaultValue(safeIdx, value)}
-            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={INPUT_STYLE} placeholder="none" />
-        </div>
-        <div>
-          <label htmlFor={onMissingInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>On miss</label>
-          <select id={onMissingInputId} value={table.on_missing ?? "error"}
-            disabled={hasDefault}
-            title={hasDefault ? "The default fills every miss" : "What a level with no entry does"}
-            onChange={(e) => updateTable(safeIdx, { on_missing: e.target.value })}
-            className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
-            style={INPUT_STYLE}>
-            <option value="error">Stop the run</option>
-            <option value="neutral">Leave empty</option>
-          </select>
-        </div>
-      </div>
-
       {/* Rebuild button */}
       {factorCount > 0 && (
         <button onClick={rebuildCurrentEntries} disabled={tableTooLarge}
@@ -741,6 +700,32 @@ export default function RatingStepEditor({
           </div>
         )
       })()}
+
+      {/* What a level the table does not list takes, under the table: nothing,
+          or the table's Default, which only Use default lets you set. */}
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label htmlFor={onMissingInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>On miss</label>
+          <select id={onMissingInputId} value={usesDefault ? "default" : "empty"}
+            onChange={(e) => {
+              if (e.target.value === "empty") setDefaultValue(safeIdx, "")
+              else if (!usesDefault) updateTable(safeIdx, { default_value: "1.0" })
+            }}
+            className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2"
+            style={INPUT_STYLE}>
+            <option value="empty">Leave empty</option>
+            <option value="default">Use default</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
+          <CommittedTextField key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" value={table.default_value ?? ""}
+            disabled={!usesDefault}
+            onCommit={(value) => setDefaultValue(safeIdx, value)}
+            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
+            style={INPUT_STYLE} />
+        </div>
+      </div>
         </>
       )}
 

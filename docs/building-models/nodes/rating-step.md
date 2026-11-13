@@ -16,24 +16,21 @@ The **INPUT** chip at the top names the node's connection; its × removes the co
 
 If a Banding node's output has no labelled rule, a warning names it: "Banding outputs … have no valid levels. Add a labelled Banding rule before using them as rating factors."
 
-The list shows one row per table, named by its output column, with a dot (green when healthy, amber when not), the number of factors and the number of entries, and a bin to remove it (when there is more than one). Hover a row for its problems, such as "Output column is required", "Add at least one factor" or "Add at least one rating entry".
+The list shows one row per table, named by its output column (the column the looked-up value goes into, which errors and logs identify the table by), with a dot (green when healthy, amber when not), the number of factors and the number of entries, and a bin to remove it (when there is more than one). Hover a row for its problems, such as "Output column is required", "Output column name must be unique", "Add at least one factor" or "Add at least one rating entry"; the selected table's problems are also listed above its factors.
 
 - The search box finds a table by its output column or factors; **All** and **Issues** filter the list.
-- **Add table**, under the list, adds a table, with an empty **DEFAULT**, so a level it does not list stops the run.
+- **Add table**, under the list, adds a table with no output column, on **ON MISS** **Leave empty**.
 - Drag a row onto another, or use **Alt+Up** and **Alt+Down**, to reorder: the tables' output columns come out in list order.
-- The selected table's name sits in a box: click in it, double-click any row, or press **F2** on a row, to rename its output column in the row: **Enter** or clicking away keeps the new name, **Escape** keeps the old one. As with **OUTPUT COLUMN**, a name another table has is taken and both are marked.
+- The selected table's name sits in a box: click in it, double-click any row, or press **F2** on a row, to name or rename its output column in the row: **Enter** or clicking away keeps the new name, **Escape** keeps the old one. A name another table has is taken, and both are marked.
 
 Click a table in the list to edit it below:
 
 | Field | What it does |
 |---|---|
 | **FACTORS (N/3)** | The columns the table looks up, up to three, side by side in order on one line, each a third of its width however many there are. With none yet, choose the first from **Select factor...**; after that **+ Add factor**, beside the factors, adds another, and the × beside a factor removes it. **+ Add factor** lists the columns with known levels, each with its number of levels: the band names of every Banding node's outputs, and the text columns of the input. A factor's own list names them alone, and hovering it gives its full name and number of levels. A factor that is not among them shows as "(not a banding factor)". A column named `value` cannot be a factor, since each entry keeps its relativity under `value`: rename it upstream, in a Transform node for example. Adding or removing a factor rebuilds the entries for every combination of levels, keeping the values already entered. |
-| **OUTPUT COLUMN** | The name of the column the looked-up value goes into. Errors and logs identify the table by it. It is required and must be unique: the box turns red with "Output column is required" or "Output column name must be unique". |
-| **DEFAULT** | The value given to a row whose factor values have no entry in the table (e.g. an area code you haven't mapped). A new table starts empty, so such a row is handled by **ON MISS** (see [What happens on a miss](#what-happens-on-a-miss)). Type a value such as `1.0` to price every miss at it. |
-| **ON MISS** | What a row with no entry does while **DEFAULT** is empty: **Stop the run** (the default) or **Leave empty**, which leaves the table's output empty and logs a warning with the number of misses. It is greyed out while **DEFAULT** holds a value, which fills every miss. |
 | **↻ Rebuild from factor levels** | Rebuilds the entries from the factors' current levels - after a Banding node gains a band, for example - keeping the values already entered. |
 
-Under the fields, the table itself:
+Under the factors, the table itself:
 
 - **One factor**: one row per level, with its **RELATIVITY** and a bar showing its size.
 - **Two factors**: a grid, with the first factor's levels as rows and the second's as columns. **Copy visible table as TSV** copies it; pasting tab-separated values into a cell fills the grid from that cell.
@@ -43,7 +40,14 @@ Type a relativity into a cell; it is saved when you leave the cell, and an empti
 
 A factor with many levels can make a table too large to edit: past 20,000 cells the editor says how big it would be, for example "area (2000) × vehicle_model (400) would be 800,000 cells - too many to edit here. Band the column first, or rate it in a table of its own."
 
-A band's **DEFAULT** (unmatched rows) on the Banding node is not a level of the table, so rows that fall to it are rated with the table's **DEFAULT**.
+Under the table, what a row whose factor values have no entry in it (e.g. an area code you haven't mapped) gets:
+
+| Field | What it does |
+|---|---|
+| **ON MISS** | **Leave empty** (a new table's choice) leaves the table's output empty for that row and logs a warning with the number of misses; a combined output treats the empty value as having no effect. **Use default** gives the row the table's **DEFAULT**. A miss never stops the run (see [What happens on a miss](#what-happens-on-a-miss)). |
+| **DEFAULT** | The value a missed row takes on **Use default**: choosing **Use default** sets it to `1.0`, and you can change it. It is greyed out on **Leave empty**, and clearing it switches **ON MISS** back to **Leave empty**. |
+
+A band's **DEFAULT** (unmatched rows) on the Banding node is not a level of the table, so rows that fall to it follow the table's **ON MISS**.
 
 ## The COMBINED tab
 
@@ -69,9 +73,9 @@ The **COLUMNS** tab chooses which columns the node passes on (see [Working with 
 
 An area factor and an age factor, multiplied together, where `age_band` comes from an upstream Banding node:
 
-1. Connect your data to a Rating Step. In the first table, choose `area` under **Select factor...**, type `area_factor` as the **OUTPUT COLUMN** and leave **DEFAULT** empty, so an area the table does not list stops the run.
+1. Connect your data to a Rating Step. Double-click the first table in the list and name it `area_factor`, then choose `area` under **Select factor...**. Leave **ON MISS** on **Leave empty**, so an area the table does not list leaves `area_factor` empty and is logged.
 2. Fill in the relativities: London `1.25`, Manchester `1.10`, Rural `0.85`.
-3. Click **Add table** to add a second table. Choose `age_band` as its factor, type `age_factor` as the **OUTPUT COLUMN**, and fill in `18-25` → `1.40`, `26-65` → `1.00`, `65+` → `1.15`.
+3. Click **Add table** to add a second table, name it `age_factor` in the list, choose `age_band` as its factor, and fill in `18-25` → `1.40`, `26-65` → `1.00`, `65+` → `1.15`.
 4. Open the **COMBINED** tab, click the + button, and change the **COMBINED OUTPUT COLUMN** to `location_age_factor`. Leave **OPERATION** on **× Multiply** and **BASE VALUE** at `1.0`.
 
 **Before and after:**
@@ -87,9 +91,12 @@ BEFORE                                AFTER
 
 ## What happens on a miss
 
-A row whose factor value has no entry in the table is an unpriceable row. A table with a numeric **DEFAULT** prices it at that value without an error. Tables start with an empty **DEFAULT**, so a miss follows **ON MISS**.
+A row whose factor value has no entry in the table is a miss. A miss never stops the run - a live quote is still priced - and it is never silent:
 
-With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError` naming the table's output column, the missing keys and the number of rows affected - a renamed band label cannot silently price at base rate.
+- On **Leave empty** (where a new table starts), the table's output is empty for that row, and the run logs a warning naming the table's output column, the number of rows missed and the missing keys - so a renamed band label shows up rather than pricing at base rate unnoticed. A combined output gives the empty value no effect (×1 for **× Multiply**, +0 for **+ Add**; **Min** and **Max** skip it).
+- On **Use default**, the row takes the table's **DEFAULT**, with no warning.
+
+A **DEFAULT** that is not a number, such as one typed into the pipeline file by hand, stops the run before it starts, naming the table, rather than being ignored.
 
 !!! warning "How entries match"
     Each entry's factor values are first converted to the type of the input
@@ -112,9 +119,8 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     |---|---|
     | The tables | `tables`: a list with one object per table |
     | **FACTORS** | `tables[].factors`: the input columns to match on, at most 3 |
-    | **OUTPUT COLUMN** | `tables[].output_column` |
-    | **DEFAULT** | `tables[].default_value`, a number such as `1.0` (absent when empty) |
-    | **ON MISS** | `tables[].on_missing`: `"error"` (**Stop the run**, also what an absent key means) or `"neutral"` (**Leave empty**) |
+    | A table's name in the list | `tables[].output_column` |
+    | **ON MISS** and **DEFAULT** | `tables[].default_value`: a number such as `1.0` on **Use default**, absent on **Leave empty** |
     | The relativities | a grid: with one factor, `tables[].rows` holds a line per level, the level and its relativity; with two or three, `tables[].columns` lists the last factor's levels and each line of `tables[].rows` holds the other factors' levels, then a relativity per column, `null` where there is no entry |
     | The combined outputs | `combined_outputs`: a list with one object per combined output |
     | **COMBINED OUTPUT COLUMN** | `combined_outputs[].output_column` |
@@ -127,7 +133,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
 
     - `tables[].factor_dtypes`: the data types of the factor columns, which Haute records.
 
-    With `"neutral"`, a combined output treats the table's empty output as the operation's neutral element (×1.0 / +0.0).
+    Without a `default_value`, a combined output treats the table's empty output as the operation's neutral element (×1.0 / +0.0).
 
     A one-way area factor, as stored:
 
@@ -156,8 +162,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | `tables[].factors` | list of text | The factor columns the table is keyed by, at most three. |
     | `tables[].factor_dtypes` | map of text to map of text to any JSON value | For each factor, the type its levels are read as. |
     | `tables[].output_column` | text | The column the looked-up value is written to. |
-    | `tables[].default_value` | text or number or `null` | The value of a factor combination the table does not hold; `null` for none. |
-    | `tables[].on_missing` | `"error"` or `"neutral"` | With no default, whether a missing combination fails the run (`error`) or takes the neutral value (`neutral`). |
+    | `tables[].default_value` | text or number or `null` | The value every factor combination the table does not hold takes; absent or `null` leaves such a combination empty. |
     | `tables[].entries` | list of map of text to any JSON value | The table's rows, each a level of every factor and its `value`; the config file writes them as a grid of `columns` and `rows`. |
     | `combined_outputs` | list of object | Columns combined from the tables' values. |
     | `combined_outputs[].output_column` | text | The combined column. |

@@ -36,7 +36,7 @@ from haute._rating_step_config import (
     validate_unique_rating_table_outputs,
 )
 from haute._types import NodeType, _Frame
-from haute._validation_error import ConfigSettingError, HauteValidationError
+from haute._validation_error import ConfigSettingError
 from haute.errors import (
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
@@ -724,7 +724,6 @@ def apply_banding_from_config(
 
 _LOOKUP_VAL = "__haute_lookup_val__"
 _SUPPORTED_COMBINE_OPERATIONS = frozenset({"multiply", "add", "min", "max"})
-_SUPPORTED_ON_MISSING = frozenset({"error", "neutral"})
 _MISS_KEY_DISPLAY_CAP = 10
 # Int-like floats collapse to integer digit strings only inside the Int64
 # range, where the cast on the engine side is exact and lossless.
@@ -787,16 +786,6 @@ _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY: Mapping[str, str] = MappingProxyType(
 _RATING_SPEC_KEY_BY_DESCRIPTOR_KEY: Mapping[str, str] = MappingProxyType(
     {descriptor: spec for spec, descriptor in _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY.items()}
 )
-
-
-class RatingTableMissError(HauteValidationError):
-    """A rating-table lookup left rows without a matching entry.
-
-    Raised at materialisation time when a table has no usable
-    ``default_value`` and ``on_missing`` is ``"error"`` (the default).
-    The message names the table, the missing key(s) (capped at
-    ``_MISS_KEY_DISPLAY_CAP``) and the affected row count.
-    """
 
 
 def rating_dtype_descriptor(dtype: pl.DataType) -> dict[str, Any]:
@@ -1112,23 +1101,6 @@ def _validate_supported_factor_dtypes(
             )
 
 
-def _normalise_on_missing(value: object) -> str:
-    """Return a validated rating-table miss policy ("error" | "neutral")."""
-    if value is None:
-        return "error"
-    normalised = str(value).strip()
-    if not normalised:
-        return "error"
-    if normalised not in _SUPPORTED_ON_MISSING:
-        raise ConfigSettingError(
-            f"Unsupported rating table on_missing {normalised!r}; "
-            f"expected one of {sorted(_SUPPORTED_ON_MISSING)!r}",
-            setting="tables",
-            values=(normalised,),
-        )
-    return normalised
-
-
 def _apply_rating_miss_guard(
     lf: _Frame,
     factors: list[str],
@@ -1137,16 +1109,16 @@ def _apply_rating_miss_guard(
     lookup_value_column: str = _LOOKUP_VAL,
     table_label: str,
     output_col: str,
-    on_missing: str,
-    default_note: str = "",
     input_schema: pl.Schema | None = None,
 ) -> _Frame:
-    """Validate lookup misses as a row-local Python scan.
+    """Report lookup misses as a row-local Python scan.
 
-    The scan always reads the key and lookup-value columns and refuses pushed
-    input predicates, so neither a downstream projection nor a filter can prune
-    validation; a pushed row limit bounds it to the rows computed. The callback
-    returns each batch unchanged.
+    A miss never stops the run: each batch with misses is logged at WARNING,
+    naming the table, its miss count and the missing keys, and returned
+    unchanged, its misses null. The scan always reads the key and lookup-value
+    columns and refuses pushed input predicates, so neither a downstream
+    projection nor a filter can prune the report; a pushed row limit bounds it
+    to the rows computed.
     """
 
     resolved_key_columns = key_columns if key_columns is not None else factors
@@ -1165,28 +1137,16 @@ def _apply_rating_miss_guard(
             .rename(dict(zip(resolved_key_columns, factors)))
             .unique(maintain_order=True)
         )
-        shown = missed.head(_MISS_KEY_DISPLAY_CAP).to_dicts()
-        if on_missing == "neutral":
-            logger.warning(
-                "rating_table_lookup_misses",
-                table=table_label,
-                output_column=output_col,
-                miss_count=miss_count,
-                row_count=frame.height,
-                distinct_missing_keys=missed.height,
-                missing_keys=shown,
-            )
-            return frame
-        shown_text = ", ".join(str(key) for key in shown)
-        raise RatingTableMissError(
-            f"Rating table {table_label!r} (output column {output_col!r}): "
-            f"{miss_count} of {frame.height} row(s) had no matching entry for "
-            f"factor(s) {factors!r}. Missing key(s): {shown_text} "
-            f"(showing {len(shown)} of {missed.height} distinct).{default_note} "
-            "Add the missing level(s) to the table, set a numeric "
-            '\'default_value\', or set "on_missing": "neutral" to accept '
-            "neutral pricing for misses."
+        logger.warning(
+            "rating_table_lookup_misses",
+            table=table_label,
+            output_column=output_col,
+            miss_count=miss_count,
+            row_count=frame.height,
+            distinct_missing_keys=missed.height,
+            missing_keys=missed.head(_MISS_KEY_DISPLAY_CAP).to_dicts(),
         )
+        return frame
 
     if isinstance(lf, pl.DataFrame):
         return _check(lf)
@@ -1203,6 +1163,30 @@ def _apply_rating_miss_guard(
         input_predicates_allowed=False,
         elide_transform_when_unused=False,
     )
+
+
+def _rating_default_value(raw: object, *, table_label: str) -> float | None:
+    """The finite number every miss of a table takes, or ``None`` for a blank default.
+
+    A default that is set but not a finite number is refused rather than
+    ignored: ignoring it would leave the table's misses empty unseen.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    value = math.nan
+    if isinstance(raw, (str, int, float)) and not isinstance(raw, bool):
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+    if not math.isfinite(value):
+        raise ConfigSettingError(
+            f"Rating table {table_label!r} has default_value {raw!r}, which is not a finite number",
+            setting="tables",
+            fix="Type a number as the table's Default, or set On miss to Leave empty.",
+            values=(raw,),
+        )
+    return value
 
 
 def _normalise_combine_operation(operation: object) -> str:
@@ -1234,8 +1218,9 @@ class RatingTableLookup:
     ``keyed_entries`` holds every authored entry's canonical key columns and
     value, in authored order; ``lookup`` is what execution joins: deduplicated
     by key with the last-authored entry kept, its value under
-    ``lookup_value_column``. ``default_value`` is the usable finite default, or
-    ``None``, in which case execution guards the lookup against misses.
+    ``lookup_value_column``. ``default_value`` is the finite default every
+    miss takes, or ``None``, in which case a miss stays null and execution
+    reports it.
     """
 
     factors: tuple[str, ...]
@@ -1246,8 +1231,6 @@ class RatingTableLookup:
     keyed_entries: pl.DataFrame
     lookup: pl.DataFrame
     default_value: float | None
-    default_note: str
-    on_missing: str
 
     def frame_key_exprs(self) -> list[pl.Expr]:
         """The canonical key of each factor of the frame a lookup reads."""
@@ -1261,8 +1244,9 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     """Build *table*'s lookup against a frame of *frame_schema*, or ``None`` for a no-op table.
 
     Raises exactly what :func:`_apply_rating_table` raises for the table: a
-    malformed table, an absent factor, an unsupported factor dtype, or an
-    entry its factor dtype refuses. ``None`` is a table execution passes
+    malformed table, an absent factor, an unsupported factor dtype, an entry
+    its factor dtype refuses, or a ``default_value`` that is not blank and not
+    a finite number. ``None`` is a table execution passes
     through (no factors, output column or entries, or no entry at all with a
     ``value`` or with some factor's key). Once any entry has a key, every
     entry is read for it: an entry without a ``value`` is a null value.
@@ -1281,7 +1265,6 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
         )
     output_col: str = table.get("output_column", "")
     default_raw = table.get("default_value")
-    on_missing = _normalise_on_missing(table.get("on_missing"))
 
     if not factors or not output_col:
         return None
@@ -1313,24 +1296,10 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     if "value" not in entry_cols or any(factor not in entry_cols for factor in factors):
         return None
 
-    # Parse the default up front (B13: tolerate non-numeric/non-finite
-    # values) — whether a usable default exists decides if the miss guard
-    # is wired into the plan at all, and an unusable one is named in the
-    # miss error instead of being silently ignored.
-    has_default = bool(default_raw is not None and str(default_raw).strip())
-    try:
-        default_val: float | None = float(str(default_raw)) if has_default else None
-    except (ValueError, TypeError):
-        default_val = None
-    # Reject inf/nan — they corrupt downstream arithmetic silently
-    if default_val is not None and not math.isfinite(default_val):
-        default_val = None
-    default_note = ""
-    if has_default and default_val is None:
-        default_note = (
-            f" Note: configured default_value {default_raw!r} is not a usable "
-            "finite number and was ignored."
-        )
+    # A blank default is none: misses stay null and the miss guard reports
+    # them. Any other default must be a finite number every miss takes;
+    # ignoring one that is not would leave its misses empty unseen.
+    default_val = _rating_default_value(default_raw, table_label=table_label)
 
     original_dtypes = {factor: frame_schema[factor] for factor in factors}
     _validate_supported_factor_dtypes(
@@ -1433,8 +1402,6 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
         keyed_entries=keyed_entries,
         lookup=deduplicated,
         default_value=default_val,
-        default_note=default_note,
-        on_missing=on_missing,
     )
 
 
@@ -1447,9 +1414,9 @@ def apply_rating_table_lookup(
 ) -> _Frame:
     """Join *built* onto *lf* and write its output column, as execution does.
 
-    Without *guard_misses* a lookup without a usable default leaves its
-    misses null instead of guarding them: a measurement reads the misses
-    itself and must not raise on them.
+    A lookup without a default leaves its misses null, and the miss guard
+    reports them. Without *guard_misses* it does not: a measurement reads the
+    misses itself and needs no report of them.
     """
     key_columns = list(built.key_columns)
     lookup_value_column = built.lookup_value_column
@@ -1461,9 +1428,9 @@ def apply_rating_table_lookup(
     # streaming joins may otherwise emit hash-partition order.
     lf = lf.join(built.lookup.lazy(), on=key_columns, how="left", maintain_order="left")
 
-    # Miss guard (3a.3): only when no usable default exists — a usable
-    # default_value fills every miss below, so nothing can be silent.
-    # Diagnostics relabel temporary keys with the public factor names.
+    # Miss guard: only when there is no default — a default fills every miss
+    # below. It reports misses and never raises; its diagnostics relabel the
+    # temporary keys with the public factor names.
     if built.default_value is None and guard_misses:
         joined_schema = pl.Schema(
             {
@@ -1479,8 +1446,6 @@ def apply_rating_table_lookup(
             lookup_value_column=lookup_value_column,
             table_label=built.output_column,
             output_col=built.output_column,
-            on_missing=built.on_missing,
-            default_note=built.default_note,
             input_schema=joined_schema,
         )
 
@@ -1505,20 +1470,16 @@ def _apply_rating_table(
 
     *table* must contain ``factors`` (list of column names to join on),
     ``output_column``, ``entries`` (list of dicts with one key per factor
-    plus a ``value`` key), and optionally ``default_value`` and
-    ``on_missing``.
+    plus a ``value`` key), and optionally ``default_value``.
 
     Both join sides are canonicalised with :func:`_rating_key_expr`, so
     int-like float keys (``25.0``) match string-keyed entries (``"25"``)
     deterministically.
 
-    Miss policy (3a.3 — breaking change, release-noted): a lookup miss
-    with no usable ``default_value`` raises :class:`RatingTableMissError`
-    at materialisation.  ``"on_missing": "neutral"`` opts back in to the
-    old behaviour explicitly — the table output stays null (combined
-    outputs fill the operation's neutral element) and every miss is
-    counted and logged at WARNING.  A usable ``default_value`` always
-    fills misses with no error or warning.
+    Miss policy: a miss never stops the run. A ``default_value`` fills every
+    miss with no warning; without one the table output stays null (combined
+    outputs fill the operation's neutral element) and every batch with
+    misses is counted and logged at WARNING.
     """
     frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
     built = rating_table_lookup(table, frame_schema)
@@ -1539,10 +1500,8 @@ def _combine_rating_columns(
 
     Null inputs fold in as the operation's neutral element (1.0 multiply,
     0.0 add; min/max skip nulls horizontally).  In the rating-step path
-    nulls can only reach this point when a table explicitly opted in with
-    ``"on_missing": "neutral"`` — every such miss has already been counted
-    and logged by the miss guard in ``_apply_rating_table`` (3a.3);
-    misses are otherwise rejected loudly there.
+    nulls reach this point from a table without a default, whose misses the
+    miss guard in ``_apply_rating_table`` has already counted and logged.
     """
     operation = _normalise_combine_operation(operation)
     seen_columns: set[str] = set()
@@ -1571,7 +1530,7 @@ def _combine_rating_columns(
         return lf.with_columns(_rating_extrema_expr(expr, columns, operation, output_col))
 
     if operation == "add":
-        # fill_null(0.0) for add: an opted-in miss contributes nothing.
+        # fill_null(0.0) for add: a miss left empty contributes nothing.
         expr = pl.col(columns[0]).fill_null(0.0)
         for c in columns[1:]:
             expr = expr + pl.col(c).fill_null(0.0)
@@ -1580,7 +1539,7 @@ def _combine_rating_columns(
     elif operation == "max":
         expr = pl.max_horizontal(*[pl.col(c) for c in columns])
     else:  # multiply (default)
-        # fill_null(1.0) for multiply: an opted-in miss has no effect (neutral element).
+        # fill_null(1.0) for multiply: a miss left empty has no effect (neutral element).
         expr = pl.col(columns[0]).fill_null(1.0)
         for c in columns[1:]:
             expr = expr * pl.col(c).fill_null(1.0)

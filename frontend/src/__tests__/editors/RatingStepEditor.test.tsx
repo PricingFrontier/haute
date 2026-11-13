@@ -348,7 +348,7 @@ describe("RatingStepEditor", () => {
       expect(outputs(onUpdate)).toEqual(["age_factor", "region_factor"])
     })
 
-    it("takes a name another table has, as the Output Column field does, and marks both", () => {
+    it("takes a name another table has, and marks both", () => {
       const onUpdate = vi.fn()
       render(
         <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
@@ -426,7 +426,8 @@ describe("RatingStepEditor", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: /^duplicate_factor problem$/i })[0])
 
-    expect(screen.getByLabelText("Output Column")).toHaveAttribute("aria-invalid", "true")
+    // With no Output Column field, the summary says what is wrong with the name.
+    expect(screen.queryByLabelText("Output Column")).toBeNull()
     expect(screen.getByText("Output column name must be unique")).toBeTruthy()
   })
 
@@ -458,33 +459,28 @@ describe("RatingStepEditor", () => {
     expect(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i })).toBeTruthy()
     expect(within(selector).queryByRole("button", { name: /factor_01/i })).toBeNull()
     expect(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i })).toHaveAttribute("aria-pressed", "true")
-    expect(screen.getByLabelText("Output Column")).toHaveValue("telematics_adjustment")
 
     fireEvent.click(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i }))
 
-    expect(screen.getByLabelText("Output Column")).toHaveValue("telematics_adjustment")
+    expect(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i })).toHaveAttribute("aria-pressed", "true")
   })
 
-  it.each([
-    { label: "Output Column", before: "age_factor", after: "region_factor", key: "output_column" },
-    { label: "Default", before: "1.5", after: "2.5", key: "default_value" },
-  ])("shows $label as undo leaves it, and a blur then commits nothing", ({ label, before, after, key }) => {
-    const table = (value: string) => ({ factors: [], output_column: "age_factor", default_value: "1.0", entries: [], [key]: value })
+  it("shows Default as undo leaves it, and a blur then commits nothing", () => {
+    const table = (value: string) => ({ factors: [], output_column: "age_factor", default_value: value, entries: [] })
     const onUpdate = vi.fn()
     const view = render(
-      <RatingStepEditor section="tables" config={{ tables: [table(before)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+      <RatingStepEditor section="tables" config={{ tables: [table("1.5")] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
     )
-    const input = screen.getByLabelText(label) as HTMLInputElement
-    expect(input.value).toBe(before)
+    expect((screen.getByLabelText("Default") as HTMLInputElement).value).toBe("1.5")
 
     // An undo (or a broadcast) changes the value while the field is on screen.
     view.rerender(
       <GraphProvider allNodes={[]} edges={[]}>
-        <RatingStepEditor section="tables" config={{ tables: [table(after)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+        <RatingStepEditor section="tables" config={{ tables: [table("2.5")] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
-    expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(after)
-    fireEvent.blur(screen.getByLabelText(label))
+    expect((screen.getByLabelText("Default") as HTMLInputElement).value).toBe("2.5")
+    fireEvent.blur(screen.getByLabelText("Default"))
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
@@ -512,110 +508,58 @@ describe("RatingStepEditor", () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
-  it("commits the output column on Enter", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        section="tables"
-        config={{ tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }] }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-    )
-    const input = screen.getByLabelText("Output Column")
-    fireEvent.change(input, { target: { value: "age_factor" } })
-    fireEvent.keyDown(input, { key: "Enter" })
-    expect(onUpdate).toHaveBeenCalledWith("tables", [expect.objectContaining({ output_column: "age_factor" })])
+  describe("On miss and Default, under the table", () => {
+    const table = (extra: Record<string, unknown> = {}) => ({ factors: [], output_column: "af", entries: [], ...extra })
+    const editor = (config: Record<string, unknown>, onUpdate = vi.fn()) => {
+      render(
+        <RatingStepEditor section="tables" config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: [] },
+      )
+      return onUpdate
+    }
+
+    it("offers Leave empty and Use default, never Stop the run", () => {
+      editor({ tables: [table()] })
+      const onMiss = screen.getByLabelText("On miss") as HTMLSelectElement
+      expect(Array.from(onMiss.options).map((option) => option.textContent)).toEqual(["Leave empty", "Use default"])
+    })
+
+    it("starts a table without a default on Leave empty, its Default box off and empty", () => {
+      editor({ tables: [table()] })
+      expect(screen.getByLabelText("On miss")).toHaveValue("empty")
+      expect(screen.getByLabelText("Default")).toBeDisabled()
+      expect(screen.getByLabelText("Default")).toHaveValue(null)
+    })
+
+    it.each([["1.0"], [1.25]])("reads a table whose default is %j as Use default, as the engine does", (defaultValue) => {
+      editor({ tables: [table({ default_value: defaultValue })] })
+      expect(screen.getByLabelText("On miss")).toHaveValue("default")
+      expect(screen.getByLabelText("Default")).toBeEnabled()
+      expect(screen.getByLabelText("Default")).toHaveValue(Number(defaultValue))
+    })
+
+    it("writes a default of 1.0 on Use default, and removes it on Leave empty", () => {
+      const onUpdate = editor({ tables: [table()] })
+      fireEvent.change(screen.getByLabelText("On miss"), { target: { value: "default" } })
+      expect(onUpdate).toHaveBeenLastCalledWith("tables", [table({ default_value: "1.0" })])
+
+      cleanup()
+      const second = editor({ tables: [table({ default_value: "1.3" })] })
+      fireEvent.change(screen.getByLabelText("On miss"), { target: { value: "empty" } })
+      expect(second).toHaveBeenLastCalledWith("tables", [table()])
+    })
+
+    it("sits under the table, after its rates", () => {
+      editor({
+        tables: [{ factors: ["age_band"], output_column: "af", entries: [{ age_band: "young", value: 1.1 }] }],
+      })
+      const onMiss = screen.getByLabelText("On miss")
+      const rates = screen.getByText(/1 entries · range/)
+      expect(rates.compareDocumentPosition(onMiss) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
   })
 
-  it("persists only the output column on blur", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        section="tables"
-        config={{
-          tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }],
-        }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    fireEvent.change(outputColumnInput, { target: { value: "age_factor" } })
-    fireEvent.blur(outputColumnInput)
-
-    expect(onUpdate).toHaveBeenCalledWith("tables", [
-      expect.objectContaining({ output_column: "age_factor" }),
-    ])
-  })
-
-  it("keeps a table's on_missing and absent default through an edit", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        section="tables"
-        config={{
-          tables: [{ factors: [], output_column: "", on_missing: "neutral", entries: [] }],
-        }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByLabelText("Default")).toHaveValue(null)
-    expect(screen.getByLabelText("On miss")).toHaveValue("neutral")
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    fireEvent.change(outputColumnInput, { target: { value: "age_factor" } })
-    fireEvent.blur(outputColumnInput)
-
-    expect(onUpdate).toHaveBeenLastCalledWith("tables", [
-      { factors: [], output_column: "age_factor", on_missing: "neutral", entries: [] },
-    ])
-  })
-
-  it("sets on_missing while Default is empty", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        section="tables"
-        config={{ tables: [{ factors: [], output_column: "af", entries: [] }] }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    const onMiss = screen.getByLabelText("On miss")
-    expect(onMiss).toHaveValue("error")
-    fireEvent.change(onMiss, { target: { value: "neutral" } })
-    expect(onUpdate).toHaveBeenLastCalledWith("tables", [
-      { factors: [], output_column: "af", on_missing: "neutral", entries: [] },
-    ])
-
-  })
-
-  it("disables On miss while a default fills every miss", () => {
-    render(
-      <RatingStepEditor
-        section="tables"
-        config={{ tables: [{ factors: [], output_column: "af", default_value: "1.0", entries: [] }] }}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-    expect(screen.getByLabelText("On miss")).toBeDisabled()
-  })
-
-  it("clearing Default removes it, so a miss stops the run", () => {
+  it("clearing Default removes it, so the table's misses are left empty", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
@@ -680,7 +624,6 @@ describe("RatingStepEditor", () => {
       rerender("combined")
       rerender("tables")
       expect(screen.getByRole("button", { name: /^region_factor (healthy|problem)$/ })).toHaveAttribute("aria-pressed", "true")
-      expect(screen.getByLabelText("Output Column")).toHaveValue("region_factor")
     })
   })
 
@@ -699,7 +642,7 @@ describe("RatingStepEditor", () => {
     expect(screen.getByText("Select at least one factor to populate the rating table")).toBeTruthy()
   })
 
-  it("flags a blank table output column and does not show placeholder text", () => {
+  it("says a blank table output column is required, with no Output Column field", () => {
     render(
       <RatingStepEditor
         section="tables"
@@ -712,9 +655,7 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    expect(outputColumnInput.getAttribute("placeholder")).toBeNull()
-    expect(outputColumnInput).toHaveAttribute("aria-invalid", "true")
+    expect(screen.queryByLabelText("Output Column")).toBeNull()
     expect(screen.getByText("Output column is required")).toBeTruthy()
   })
 
@@ -733,9 +674,6 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    expect(outputColumnInput.getAttribute("placeholder")).toBeNull()
-    expect(outputColumnInput).toHaveAttribute("aria-invalid", "false")
     expect(screen.queryByText("Output column is required")).toBeNull()
   })
 
@@ -828,7 +766,6 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    expect(screen.getByLabelText("Output Column")).toHaveAttribute("aria-invalid", "true")
     expect(screen.getByText("Output column is required")).toBeTruthy()
   })
 

@@ -62,7 +62,6 @@ def test_lookup_coerces_entries_through_input_dtype_and_preserves_source(
         "factors": ["factor"],
         "output_column": "rate",
         "entries": [{"factor": case.entry_value, "value": 2.0}],
-        "on_missing": "neutral",
     }
 
     result = _apply_rating_table(source.lazy(), table).collect()
@@ -398,7 +397,6 @@ def _date_entry_table(entry: str) -> dict[str, Any]:
         "factors": ["factor"],
         "output_column": "rate",
         "entries": [{"factor": entry, "value": 2.0}],
-        "on_missing": "neutral",
     }
 
 
@@ -462,7 +460,6 @@ def _duration_entry_table(entry: str) -> dict[str, Any]:
         "factors": ["factor"],
         "output_column": "rate",
         "entries": [{"factor": entry, "value": 2.0}],
-        "on_missing": "neutral",
     }
 
 
