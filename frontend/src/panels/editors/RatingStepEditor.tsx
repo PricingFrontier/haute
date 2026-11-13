@@ -6,7 +6,6 @@ import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField, SavedValueOption } from "../../components/form"
 import SearchableItemList from "./shared/SearchableItemList"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
-import { withAlpha } from "../../utils/color"
 import { classifyBandingLevels } from "../../utils/banding"
 import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
 import {
@@ -531,12 +530,6 @@ export default function RatingStepEditor({
 
       {activeSection === "tables" && (
         <>
-      <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-medium"
-        style={{ background: withAlpha(accentColor, 0.1), border: `1px solid ${withAlpha(accentColor, 0.3)}`, color: accentColor }}>
-        <Table2 size={13} />
-        <span>Rating Tables · {tables.length} table{tables.length !== 1 ? 's' : ''}</span>
-      </div>
-
       <SearchableItemList
         list={tableList}
         selectedIndex={safeIdx}

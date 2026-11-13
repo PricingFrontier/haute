@@ -128,7 +128,7 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: [] }
     )
-    expect(screen.getByText(/Rating Tables\s+.\s+1 table/)).toBeTruthy()
+    expect(screen.queryByText(/Rating Tables/)).toBeNull()
     expect(screen.getByRole("button", { name: /^Table 1 problem$/ })).toBeTruthy()
     expect(screen.queryByText("Table Name")).toBeNull()
     expect(screen.queryByPlaceholderText("Age Factor")).toBeNull()
@@ -469,7 +469,7 @@ describe("RatingStepEditor", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
     expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText(/Rating Tables/)).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
 
     unmount()
 
@@ -486,7 +486,7 @@ describe("RatingStepEditor", () => {
     )
 
     expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText(/Rating Tables/)).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
     expect(screen.queryByText("Polars Code")).toBeNull()
   })
 

@@ -20,7 +20,7 @@ If a Banding node's output has no labelled rule, a warning names it: "Banding ou
 
 ### Tables
 
-A banner counts the tables ("Rating Tables · 2 tables"). The list shows one row per table, named by its output column, with a dot (green when healthy, amber when not), the number of factors (`2f`) and the number of entries, and a bin to remove it (when there is more than one). Hover a row for its problems, such as "Output column is required", "Add at least one factor" or "Add at least one rating entry".
+The list shows one row per table, named by its output column, with a dot (green when healthy, amber when not), the number of factors (`2f`) and the number of entries, and a bin to remove it (when there is more than one). Hover a row for its problems, such as "Output column is required", "Add at least one factor" or "Add at least one rating entry".
 
 - The search box finds a table by its output column or factors; **All** and **Issues** filter the list.
 - The + button beside the filter adds a table, with an empty **DEFAULT**, so a level it does not list stops the run.
