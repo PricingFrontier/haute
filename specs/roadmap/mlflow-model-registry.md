@@ -11,7 +11,10 @@ codebase review. `MLR-01` was reproduced against `HEAD` on that day with the
 loader's collaborators replaced by stubs, and `MLR-04` by running the
 commands on a shipped example; `MLR-02` and `MLR-03` are read from the
 source. `MLR-05` was reproduced on 10 November 2026 against a local address
-where nothing listens.
+where nothing listens. `MLR-06` to `MLR-08` come from the review plan's
+phase 5, a reader from a second model family (Codex) over the code changed
+since the 31 October audit. A worker ran each against a local MLflow store
+and the main session ran each again on 13 November.
 
 ## Priorities
 
@@ -22,6 +25,9 @@ where nothing listens.
 | MLR-03 | Planned | P3 | The run picker says how many runs it could not check, and lists the runs the loader can load. |
 | MLR-04 | Planned | P3 | A Model Scoring node whose MLflow run does not exist is reported by node, run and destination, not as a traceback. |
 | MLR-05 | Planned | P2 | A model load from an MLflow server that cannot be reached fails within seconds and says so, instead of holding a preview for four and a half minutes. |
+| MLR-06 | Planned | P1 | A Model Scoring node that names a registered model and version scores the file that version was registered from, not the first model file of its run. |
+| MLR-07 | Planned | P3 | A model file logged again over the same path of a run is the one that scores. |
+| MLR-08 | Planned | P3 | A logged model takes a part-year or a missing exposure whatever type its training exposure had. |
 
 ## Planned improvements
 
@@ -205,3 +211,99 @@ second wait where its retry stops treating every failure as a damaged file.
 `src/haute/_mlflow_utils.py::resolve_mlflow_source`;
 `src/haute/routes/mlflow.py::_search_experiments_probe` is the bounded call
 to follow.
+
+### MLR-06 — A registered model version scores the file it was registered from
+**Why:** Reproduced on 13 November 2026 with a local MLflow store. An
+analyst's script logs two CatBoost models into one run, `frequency.cbm` and
+`severity.cbm`, and registers the second as version 1 of `severity`. The
+version's source ends `artifacts/severity.cbm`. A Model Scoring node names
+that model and version, with no artifact path. Its scores are the frequency
+model's: 0.465, 0.478 and 0.645, where the severity model's own `predict`
+gives 2287.21, 2356.015 and 3571.833. The preview, `haute run` and the
+deploy scorer all give the frequency scores, and the deploy bundle carries
+`frequency.cbm`. Nothing says another file was chosen.
+
+Resolving a registered version keeps the version's run and drops its
+source. The loader then searches the run's artifacts and takes the first
+model file it finds. The specification locates a registered model by its
+name and its version; a search of the run belongs to a model given by run
+with no path. Haute's own Log to MLflow makes one run for each model, so
+the fault needs a run that a script of the analyst's own made.
+
+The same pair logged with `mlflow.catboost.log_model` and registered from
+the logged model, as MLflow 3 registers, is not scored at all. `haute run`
+and the deploy say "No model artifact found in run", and the preview
+answers 500, "Operation failed. Check the server logs for details." A
+logged model's files are not among its run's artifacts.
+
+**Plan:** Load the file a version's source names. When a version cannot be
+resolved to one model file, refuse by name: the model, the version and the
+files found. Decide whether a version registered from a logged model is
+supported; read it from the logged model's own location if so, and say in
+every path that it is not if not.
+
+**Acceptance:** The node above scores 2287.21, 2356.015 and 3571.833 in
+the preview, in `haute run` and in the deploy scorer, and the bundle
+carries `severity.cbm`. A version that cannot be told from another file of
+its run is refused by name. A version registered from a logged model
+either scores that model or is refused in the same words by the preview,
+the run and the deploy.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_mlflow_utils.py::resolve_mlflow_source`;
+`src/haute/_mlflow_io.py::_find_model_artifact`;
+`src/haute/_mlflow_io.py::load_mlflow_model`;
+`src/haute/deploy/_bundler.py`;
+`specs/mlflow-model-registry/high-level.md`.
+
+### MLR-07 — A run's model file logged again is the one that scores
+**Why:** Reproduced on 13 November 2026 with a local MLflow store. A Model
+Scoring node names a run and the artifact path `model.cbm`. The analyst's
+script resumes that run and logs a retrained `model.cbm` over the same
+path, and the store then holds the retrained file. Haute goes on scoring
+with the first one: 290.45 and 599.24, where the retrained model gives
+1029.05 and 1059.92. It does so in the same editor process with another
+row limit, in a new process, and from `haute run`.
+
+The first download is kept in the project's `.cache/models` folder under
+the store, the run and the path, and a copy that exists is used without
+asking MLflow. The plan's earlier sweep found that a model retrained over a
+file path, and an alias moved to another version, are both picked up at
+once; a run's artifact is the one source that is not.
+
+**Plan:** Before a kept copy is used, compare it with what the run holds
+now, at the cost of one request, or key the copy on what identifies the
+stored file.
+
+**Acceptance:** After the second log the node above scores 1029.05 and
+1059.92, in the same process and in a new one. A load whose run is
+unchanged makes no download.
+
+**Dependencies:** `MLR-01` and `MLR-02` change the same copy's handling.
+
+**Evidence:** `src/haute/_mlflow_io.py::_disk_cached_run_model`;
+`src/haute/_mlflow_io.py::_resolve_artifact_local_in_use`.
+
+### MLR-08 — A logged model takes a part-year or a missing exposure whatever its training data held
+**Why:** Reproduced on 13 November 2026. A Poisson model is trained through
+Haute on data whose exposure column holds whole numbers, typed Int64, and
+is logged to MLflow. The logged model's input schema then declares the
+exposure as `long`. Scored through the logged model, as a serving endpoint
+scores it, an exposure of 0.5 is refused by MLflow: "Can not safely convert
+float64 to int64". So are a missing exposure, and 1.0 given as a decimal.
+The Model Scoring node scores the same rows natively: 0.28197 for 0.5, and
+0.56395 for a missing exposure, which the specification prices "as an
+exposure of one" "for every model family".
+
+**Plan:** Declare an exposure column as a double in the logged model's
+schema, whatever type the training data gave it.
+
+**Acceptance:** The logged model above scores an exposure of 0.5, a missing
+exposure and 1.0 with the values the Model Scoring node gives.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_signature.py::build_signature`;
+`src/haute/modelling/_candidate_run.py`;
+`specs/mlflow-model-registry/high-level.md`.

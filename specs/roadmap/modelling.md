@@ -19,6 +19,11 @@ scoring it with the family's own library. Where a family scored at all,
 every way agreed with the library row for row; these two are the places
 where it did not score.
 
+`MDL-09` comes from the plan's phase 5, a reader from a second model family
+(Codex) over the code changed since the 31 October audit. It is about a
+model trained outside Haute, which the earlier sweep did not score, and was
+reproduced on 13 November against LightGBM's own `predict`.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -31,6 +36,7 @@ where it did not score.
 | MDL-06 | Planned | P3 | `haute train` runs any script that plain Python runs: a script's own classes can be dataclasses and can be pickled. |
 | MDL-07 | Planned | P3 | A GLM asked to classify is refused by name, when it is trained from a script and when a Model Scoring node scores it. |
 | MDL-08 | Planned | P2 | A null in a GLM's numeric feature, or an infinity reaching an XGBoost model, is refused naming the column instead of failing the whole run with the library's own error. |
+| MDL-09 | Planned | P2 | An imported LightGBM model whose categorical feature has Boolean levels scores a False and a True as its own `predict` does, not both as missing. |
 
 ## Planned improvements
 
@@ -285,3 +291,37 @@ name, as proposed, or answer null for that row and carry on.
 `specs/modelling/high-level.md` (Unseen categorical values);
 `docs/building-models/nodes/model-score.md` (Values the model was not
 trained on).
+
+### MDL-09 — An imported LightGBM model's Boolean categories score as its own predict scores them
+**Why:** Reproduced on 13 November 2026 through the editor's preview. A
+LightGBM model trained outside Haute has a categorical feature `flag`
+whose levels are the Booleans False and True, as pandas gives a yes/no
+column. Scored by a Model Scoring node on a Boolean column, both rows get
+5.7288. The booster's own `predict` gives 2.5293 for False and 5.7288 for
+True. False is scored as a missing value and nothing says so. The same
+values sent as the texts "False" and "True" score 2.5293 and 5.7288. An
+integer-coded category is refused by name: "model expects categorical
+(String), got Int".
+
+Haute reads the model's recorded levels with Python's `str`, which gives
+"False" and "True", and turns the incoming column to text with Polars,
+which gives "false" and "true". The two never match, so every Boolean
+value falls outside the levels. The modelling specification has a model
+trained outside Haute "priced by LightGBM's own `predict`" from the levels
+LightGBM records.
+
+**Plan:** Turn a recorded level and an incoming value to text by one rule,
+so a Boolean, like any other level, matches itself. Or refuse a Boolean
+column for a categorical feature by name, as an integer one is refused.
+
+**Acceptance:** The model above scores 2.5293 for False and 5.7288 for
+True through the preview, `haute run` and the deploy scorer, or the node
+is refused naming the feature and its type. A test scores an imported
+model with a level of each type LightGBM records against the booster's own
+`predict`.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/modelling/_native_encoding.py::native_categories`;
+`src/haute/modelling/_native_encoding.py::encode_frame`;
+`src/haute/modelling/_lightgbm.py`; `specs/modelling/low-level.md`.

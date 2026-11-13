@@ -16,6 +16,9 @@ on the same day, measured again by the main session with a timer around
 the check. `CCH-04` comes from the plan's phase 5, a reader from a second model
 family (Codex) over the code changed since the 31 October audit;
 a worker built the run and the main session ran it again on 13 November.
+`CCH-05` comes from a question the plan asks of the whole codebase, put to
+the same reader: for every cache, what is in its key against what changes
+its answer. It was run the same way on the same day.
 
 ## Priorities
 
@@ -25,6 +28,7 @@ a worker built the run and the main session ran it again on 13 November.
 | CCH-02 | Planned | P3 | A snapshot is published while a scanner or an indexer still has one of its new files open, instead of the build failing with no reason given. |
 | CCH-03 | Planned | P3 | A preview that stores many node outputs checks the store's budget once, not with a walk of the whole store after each one. |
 | CCH-04 | Planned | P2 | A preview follows the order of a node's inputs: reconnecting a Load File's two inputs the other way round no longer shows the first input's rows from the store. |
+| CCH-05 | Planned | P2 | A preview follows an edit to a utility module that a node's own code imports, as it does one the preamble imports. |
 
 ## Planned improvements
 
@@ -190,3 +194,36 @@ than one and compares the preview with a run that uses no store.
 
 **Evidence:** `src/haute/_cache.py`; `src/haute/_node_snapshots.py`;
 `src/haute/_user_exec.py`; `specs/caching/high-level.md`.
+
+### CCH-05 — A preview follows a utility module imported inside a node's code
+**Why:** Reproduced on 13 November 2026 through the editor's routes, in one
+editor process. A Transform's code begins `from utility.rates import RATE`
+and multiplies a premium of 100 by it. The pipeline's preamble holds a
+constant and no import of `utility`. With `RATE` at 10 the preview shows
+1000. `RATE` is changed to 20 in the file, and then to 30 through the
+editor's own utility route. The preview shows 1000 each time, also with a
+row limit it had not served before. `haute run` gives 3000, and so does the
+editor once it is restarted. With the import in the preamble, where the
+Utility panel puts it, the preview follows each edit: 1000, 2000, 3000.
+
+The preview's key takes in the utility files only when the preamble
+imports them, and the worker that runs the node keeps the module it first
+imported. The caching specification has the key "include every
+execution-relevant" utility file. The plan's run of the same pipeline with
+no preamble at all could not make the import: the preview and `haute run`
+both failed with "No module named 'utility'".
+
+**Plan:** Treat a utility import in a node's code as the preamble's is
+treated, in the key and in the worker. Or refuse it when the pipeline is
+saved and linted, naming the node, and say the import belongs in the
+preamble.
+
+**Acceptance:** In the pipeline above the preview shows 2000 and then 3000
+after the two edits, without a restart, or the save refuses the import by
+name. The preview and `haute run` agree either way.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_cache.py::preamble_execution_fingerprint`;
+`src/haute/_node_snapshots.py`; `src/haute/_project_imports.py`;
+`specs/caching/high-level.md`.
