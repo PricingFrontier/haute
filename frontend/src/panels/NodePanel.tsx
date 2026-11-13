@@ -866,7 +866,7 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = 
           <button
             key={tab}
             onClick={() => onSelect(tab)}
-            className={`flex-1 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
+            className={`flex-1 px-1.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
               isActive ? "" : " hover:bg-[var(--bg-hover)]"
             }`}
             style={isActive

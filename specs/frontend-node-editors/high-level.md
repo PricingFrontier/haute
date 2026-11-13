@@ -78,9 +78,13 @@ backend API modules own validation and persistence.
   its input column, output column or rules, or an active factor whose output column another
   active factor also writes, which marks both, as execution refuses them), an Add button, and a scrollable box of rows with
   a health dot, the output name, a rule-count badge and, when there is more than one factor, a
-  remove control. Banding's rows can also be dragged, or moved with Alt+Up/Down, to reorder
-  the factors; list order is the order execution applies them in, so a factor that bands
-  another's output must stay after it. A new node, or one whose only factor is still empty,
+  remove control. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
+  them, and both show the grip and keep the remove control's place even with a single row, so
+  a node with one item looks like a node with several. Banding's list order is the order
+  execution applies the factors in, so a factor that bands another's output must stay after it;
+  Rating Step's is the order its tables' output columns come out in. A Rating Step's node panel
+  calls its config tab Tables (the input, levels line and tables) and adds a Combined tab after
+  it (the combined outputs); both show the one editor, which stays mounted across them. A new node, or one whose only factor is still empty,
   shows the list with a placeholder "Column 1" row and the Type row as any other factor, so
   choosing the first column does not move the layout. A new factor is Numeric; choosing an
   input column whose dtype is not numeric switches it to Categorical. Numeric and Categorical
