@@ -12,7 +12,9 @@ from the plan's browser sweep of the editors' fields on 11 November; the
 main session re-ran each in a browser on a fresh project. `FEN-07` comes
 from the plan's phase 5, a reader from a second model family (Codex) over
 the code changed since the 31 October audit, and was reproduced in a
-browser on 13 November.
+browser on 13 November. `FEN-08` to `FEN-10` come from the same reader;
+a worker ran each in a browser, and the main session ran each journey
+again on 13 November.
 
 ## Priorities
 
@@ -25,6 +27,9 @@ browser on 13 November.
 | FEN-05 | Planned | P3 | An edit to a Banding cell is one undo step. |
 | FEN-06 | Planned | P3 | A Banding factor whose input column is gone is marked when the editor opens and counted among its Issues. |
 | FEN-07 | Planned | P2 | A Group by with a row count, saved and opened again, is a step the analyst can edit, not an "Invalid step" whose only action is Delete. |
+| FEN-08 | Planned | P3 | The Output editor's preview follows an Undo of a change upstream. |
+| FEN-09 | Planned | P3 | A Banding factor switched to its other type gets its own remembered rules, never another factor's after an Undo. |
+| FEN-10 | Planned | P3 | Values imported into a Banding factor are dropped when the factor was removed before they arrived. |
 
 ## Planned improvements
 
@@ -220,3 +225,74 @@ each window function, and none is called invalid.
 `frontend/src/panels/editors/polarsSteps/forms.tsx`;
 `src/haute/_polars_steps_lift.py::_Reader`;
 `specs/codegen/structured-syntax-boundary.md`.
+
+### FEN-08 — The Output editor's preview follows an Undo upstream
+**Why:** Reproduced on 13 November 2026 in a browser. The Quote Response's
+editor is open and its Output preview shows `value_doubled` as 22. The
+Transform upstream is changed from `* 2` to `* 3`, and the preview, opened
+again, shows 33. Undo in the toolbar puts `* 2` back. The Output preview
+still shows 33, with no note. Closing the Output preview and opening it
+again sends no request and shows 33; only Refresh shows 22.
+
+The preview is kept under a key made of the output mapping and the source.
+The nodes upstream, whose code decides the values, are not in it. Going to
+another node and back makes the editor ask again, so the old answer needs
+the editor to stay open through the Undo.
+
+**Plan:** Put what the preview was computed from into its key: the graph's
+structural version, as the node previews use.
+
+**Acceptance:** In the run above the Output preview shows 22 after the
+Undo, or says it is out of date, without Refresh.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/OutputEditor.tsx`;
+`src/haute/routes/output_assemble.py`.
+
+### FEN-09 — A Banding factor's remembered rules stay with it through an Undo
+**Why:** Reproduced on 13 November 2026 in a browser. A Banding has a
+Numeric factor `proposer_age` and then a Categorical factor `vehicle_age`
+with the rules 0 to "New" and 1 to "Nearly new". `vehicle_age` is moved
+first and switched to Numeric, and two Undos put the order and the type
+back. `proposer_age` is then switched to Categorical. It is given
+`vehicle_age`'s rules, 0 to "New" and 1 to "Nearly new", and Save writes
+them into its settings. Without the move and the Undos its rules are
+empty.
+
+The editor remembers the rules a factor had under its other type, so a
+switch back does not lose them, and it remembers them by the factor's
+position. Moving a factor forgets what was remembered; undoing the move
+does not, so the rules sit at a position another factor now holds.
+
+**Plan:** Remember the rules by the factor, not by its position, or forget
+them whenever the list of factors is replaced, as on an Undo.
+
+**Acceptance:** After the steps above `proposer_age` has no rules as a
+Categorical factor, and `vehicle_age` still has its two.
+
+**Dependencies:** `FEN-05` changes what one Undo covers in the same editor.
+
+**Evidence:** `frontend/src/panels/editors/BandingEditor.tsx`.
+
+### FEN-10 — Imported values that arrive after their factor was removed are dropped
+**Why:** Reproduced on 13 November 2026 in a browser. A Banding has two
+Categorical factors, `channel` and `vehicle_age`. An import of values into
+`channel` from a column of a params file is started, and the read of the
+column is slow (the run held it). `channel` is removed. When the read
+answers, its values, North, South and East, are added to `vehicle_age`'s
+rules, and Save keeps them. Nothing is said. Choosing another factor
+while an import is pending cancels it; removing the factor does not,
+because the import's dialog is kept by the factor's position, which the
+next factor now has.
+
+**Plan:** Tie a pending import to its factor, and drop its answer when
+that factor is gone.
+
+**Acceptance:** In the run above `vehicle_age` keeps only its own rule
+after the read answers, and the removed factor's import adds nothing.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/editors/BandingEditor.tsx`;
+`frontend/src/panels/editors/banding/ImportParamValues.tsx`.

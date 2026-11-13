@@ -17,7 +17,10 @@ browser sweep of failed calls on the same day; the main session ran it
 again with a dropped connection and with a gateway's answer. `FEG-05`
 comes from the plan's browser sweep of what happens around an open editor,
 also on 11 November; the main session ran it again with a slip in a code
-editor and with a branch checked out and back.
+editor and with a branch checked out and back. `FEG-06` to `FEG-08` come
+from the plan's phase 5, a reader from a second model family (Codex) over
+the code changed since the 31 October audit. A worker ran each in a
+browser, and the main session ran each journey again on 13 November.
 
 ## Priorities
 
@@ -28,6 +31,9 @@ editor and with a branch checked out and back.
 | FEG-03 | Planned | P2 | A connection that closes a loop is refused at the canvas, and a save that meets a loop names its nodes instead of failing every later save with "Check the server logs". |
 | FEG-04 | Planned | P2 | After a save whose answer never came, the next Save repeats it under the same operation: the analyst's own save is not refused as a change on disk, and the work done since is kept. |
 | FEG-05 | Planned | P2 | A tab with unsaved work that a change on disk locked is editable again once the file is back as the tab loaded it, and the banner offers the reload it names. |
+| FEG-06 | Planned | P3 | Nodes pasted together stay connected in their code: a pasted Transform reads the pasted input, not the original under a name it no longer has. |
+| FEG-07 | Planned | P3 | An Edge Join dropped on the edge into an optimiser moves the optimiser's chosen input to the join, and a save's refusal names the node as the canvas does. |
+| FEG-08 | Planned | P3 | "Save node" saves the change the panel shows, however long the editor takes to resolve it. |
 
 ## Planned improvements
 
@@ -274,3 +280,85 @@ answer.
 `frontend/src/panels/NodePanel.tsx`; `frontend/src/App.tsx`;
 `specs/frontend-graph-canvas/high-level.md`;
 `specs/frontend-shared/high-level.md`.
+
+### FEG-06 — Pasted nodes read each other, not the nodes they were copied from
+**Why:** Reproduced on 13 November 2026 in a browser. On the starter
+pipeline the Data Input `raw_rows` and the Transform `enriched` that reads
+it are selected together, copied and pasted; the canvas says "Pasted 2
+nodes". The pasted Transform's preview says "name 'raw_rows' is not
+defined". Save writes `def enriched_copy(raw_rows_copy: pl.LazyFrame)`
+with a body that still reads `raw_rows`, and
+`haute run --node enriched_copy` ends with a `NameError`.
+
+The paste gives the pasted input a new name and points the pasted edge at
+it, and leaves the pasted Transform's code as it was. A rename of an input
+keeps a coded Transform working by recording which name its code uses for
+the input; the paste records nothing.
+
+**Plan:** Give a pasted node whose code names a pasted input the record a
+rename gives it, from the name in its code to the pasted input.
+
+**Acceptance:** After the paste above the pasted Transform previews rows,
+saves and runs. A Transform pasted without its input still reads the
+original.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/hooks/useKeyboardShortcuts.ts`;
+`frontend/src/utils/nodeUpdatePlan.ts`;
+`specs/frontend-node-editors/low-level.md`.
+
+### FEG-07 — An Edge Join dropped on an optimiser's input edge takes the optimiser's input with it
+**Why:** Reproduced on 13 November 2026 in a browser. An optimiser's
+settings name its input: `data_input` is `browser_optimiser_rows`. A
+second table's output is dropped onto the edge from that input into the
+optimiser, which puts an Edge Join between them. The optimiser's Data tab
+then says "Missing input", its estimate answers 400, Optimise is off, and
+every Save of the pipeline answers 400: "Node 'optimiser' data_input
+'browser_optimiser_rows' is not an exact connected input name". The node
+is called `browser_ratebook` on the canvas, not `optimiser`. The Data tab
+offers `edge_join` to be picked by hand. In the plan's run an optimiser
+that had never saved a `data_input` was not affected.
+
+The insertion rewrites the step references and the input mapping of the
+node after the join, and not the settings by which an optimiser or a
+modelling node names its input. A rename of the input does move them.
+
+**Plan:** Move a node's input selectors when a join is inserted on its
+edge, as a rename moves them, and name the node by its label in the save's
+refusal.
+
+**Acceptance:** After the drop above the optimiser reads `edge_join`, its
+Data tab shows the input, and Save succeeds. A refusal that names a node
+uses the name on the canvas.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/utils/edgeJoinGraph.ts`;
+`frontend/src/utils/nodeUpdatePlan.ts`;
+`specs/frontend-modelling-optimiser-ui/high-level.md`.
+
+### FEG-08 — "Save node" saves what the panel shows
+**Why:** Reproduced on 13 November 2026 in a browser. A pipeline the
+editor opens in recovery, because one node reads a node the file lacks,
+has no Save for the whole pipeline; each node that can be edited has "Save
+node". In the Quote Input the sample file is changed to
+`other_quote.json` and Save node is pressed while the editor is still
+resolving the change (the run held that request). The save sends the old
+`sample_quote.json`. When the resolution answers the panel shows
+`other_quote.json`; when the save answers it shows `sample_quote.json`
+again. Undo is off, nothing is said, and the file keeps the old value.
+With no delay the new value is saved. The whole pipeline's Save waits for
+changes that are still resolving; Save node does not.
+
+**Plan:** Have Save node wait for the node's pending change, as the whole
+pipeline's Save does, or stay off until it has resolved.
+
+**Acceptance:** In the run above the file holds `other_quote.json` after
+Save node, however slow the resolution is, and the panel never goes back
+to the old value.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/hooks/useScopedNodeSave.ts`;
+`frontend/src/App.tsx`.

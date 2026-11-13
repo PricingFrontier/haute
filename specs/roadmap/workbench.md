@@ -38,6 +38,10 @@ SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the cont
 uses. The main session ran each again on the three databases. `WB-59` comes from the same
 phase's carrying of projects made on Windows to Linux, and was run again on Windows.
 
+`WB-60` to `WB-62` come from the plan's phase 5, a reader from a second model family (Codex)
+over the code changed since the 31 October audit. A worker ran each in a browser, and the
+main session ran each journey again on 13 November 2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -65,6 +69,9 @@ phase's carrying of projects made on Windows to Linux, and was run again on Wind
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
+| WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
+| WB-61 | Planned | P3 | Text being typed in the designer's Preview is kept when a test quote's Open answers late. |
+| WB-62 | Planned | P3 | A whole number of more than 15 digits is shown digit for digit in a column with a Number format. |
 
 ## Planned improvements
 
@@ -967,3 +974,84 @@ agree the same way.
 `src/haute/deploy/_request_rows.py::record_digests`;
 `src/haute/_hashing.py::content_hash`;
 `src/haute/_scaffold_files.py`.
+
+### WB-60 — Hidden values stay on their own rows through a save
+**Why:** Reproduced on 13 November 2026 in a browser, in the underwriter
+app. A form has a table `equipment` of many rows, indexed by a text the
+underwriter types, `item`, with a `units` column and a `limit` column that
+shows only while `show_limits` is ticked. In a new quote with the box
+ticked, the underwriter enters item B with a limit of 200 and then item A
+with a limit of 100. The premium shown is 2,100. The box is unticked, the
+quote is saved, and the box is ticked again. The sheet now shows A with
+200 and B with 100, the next pricing request sends those limits, and the
+premium shown is 1,200. Nothing says a value moved.
+
+The save answers the table's rows in the order of their index, A then B.
+The app puts the hidden cells it kept back onto the answered rows by
+position, so each row is given the hidden value of whichever row was typed
+in its place. The specification keeps hidden values so that "hiding a
+section and showing it again loses nothing: in the sample, and in the
+app's quote while it stays open, saved or not". Rows typed out of their
+index's order are ordinary typing.
+
+**Plan:** Put a kept hidden cell back on the answered row that has the
+same index values, not the same position.
+
+**Acceptance:** In the run above A shows 100 and B shows 200 after the box
+is ticked again, and the premium is 2,100. A test types rows out of order
+into a table with a typed index of each type, hides a column, saves and
+shows it again.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/app/quoteValues.ts`;
+`frontend/src/app/useOpenQuoteStore.ts`; `specs/workbench/high-level.md`.
+
+### WB-61 — Text being typed when a test quote opens is kept
+**Why:** Reproduced on 13 November 2026 in a browser, in the designer's
+Preview. A test quote `tq1` is saved with "kept in quote" in a notes
+field. Open is pressed for it, and before its answer arrives (the run held
+it) the designer clicks into the notes field and types "typed during
+open" without leaving the field. When the answer arrives the field shows
+"kept in quote" again, with the cursor still in it, and nothing is said.
+The specification has an Open's values dropped when the form changed
+meanwhile, "so typing during an Open" wins.
+
+The check that drops a late Open compares the form as last committed. Text
+still being typed in a field is not committed until the field is left, so
+the check does not see it.
+
+**Plan:** Count a field that is being typed in as a change when a late
+Open is weighed, or commit the text before the Open's values are applied.
+
+**Acceptance:** In the run above the field keeps "typed during open" after
+the Open answers, and the Open's values are dropped.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/stores/useWorkbenchTestQuotesStore.ts`;
+`frontend/src/components/form/CommittedTextField.tsx`;
+`specs/workbench/low-level.md`.
+
+### WB-62 — A whole number of more than 15 digits is shown as typed in a formatted column
+**Why:** Reproduced on 13 November 2026 in a browser, in the underwriter
+app. An Integer column with a Number format, no decimal places and
+grouping shows `123456789012345678`, once the cell is left, as
+123,456,789,012,345,680, and `9007199254740993` as
+9,007,199,254,740,992. An Integer output in the same format shows the
+priced value the same way. Only the display is wrong: the pricing request
+sends the digits typed, the answer returns them, and the store holds them.
+The specification sends integers above JavaScript's safe range to the
+browser as "exact decimal strings"; the formatter reads the text through a
+JavaScript number before it groups the digits.
+
+**Plan:** Format a whole number's digits from its text, as the pivot
+formatter the same code calls already does for a text it is given.
+
+**Acceptance:** Both numbers above are shown with every digit as typed,
+grouped, in an input cell and in an output.
+
+**Dependencies:** `WB-48` is about typed numbers with a comma out of place.
+
+**Evidence:** `frontend/src/utils/sheetValues.ts`;
+`specs/workbench/low-level.md`.
