@@ -2,7 +2,7 @@
 import { ChevronDown, ChevronRight, X } from "lucide-react"
 import { type ReactNode, useState } from "react"
 import type { CollectionWidget, FieldRef, FormSpec, TableInputWidget } from "../../api/types"
-import { ConfigCheckbox, EditorLabel, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { ConfigCheckbox, EditorLabel, LabelledRow, QuietAction, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { columnKey, takesNothingTyped } from "../../utils/sheetVisibility"
 import {
@@ -66,8 +66,8 @@ export function WidthRow({
         onCommit={(text) => onCommit(text.trim() === "" ? null : Number(text))}
         validate={share ? percent : pixels}
         containerClassName="w-20"
-        className={`${FIELD_CLASS} w-full tabular-nums`}
-        style={INPUT_STYLE}
+        field="regular"
+        className="w-full tabular-nums"
       />
       {share && (
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>

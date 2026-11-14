@@ -21,6 +21,10 @@
 .field-compact {
   padding-block: 0.125rem;
 }
+/* The same with more room round its text, for a dialog or a node's editor. */
+.field-large {
+  padding: 0.375rem 0.625rem;
+}
 /* Keyboard focus, as index.css's .focus-ring draws it and as the kit's buttons do: the
    border in the accent and a soft ring round it. The outline stays, transparent, for a
    forced-colours mode to draw. */
@@ -28,4 +32,8 @@
   outline: 2px solid transparent;
   border-color: var(--accent-ring);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* A value that cannot be kept: the border in the danger colour, focused or not. */
+.field[aria-invalid="true"] {
+  border-color: var(--danger-border-strong);
 }

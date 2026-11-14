@@ -1,7 +1,7 @@
 /** A Table's, a Collection's or a Chart's panel, in its panes (specs/workbench). */
 import { useState } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SearchField, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextField, ConfigCheckbox, LabelledRow, SearchField, ValidatedTextField, wholeNumber } from "../../components/form"
 import useCollapsedSet from "../../hooks/useCollapsedSet"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -83,8 +83,8 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
               value={widget.title}
               placeholder="None"
               onCommit={(title) => change((spec) => updateWidget(spec, widget.id, { title }))}
-              className={`${FIELD_CLASS} w-full`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="w-full"
             />
           </Section>
         )}
@@ -108,8 +108,8 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
                   onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { columns: Number(text) }))}
                   validate={wholeNumber({ min: 1, max: COLLECTION_COLUMNS_MAX })}
                   containerClassName="w-16"
-                  className={`${FIELD_CLASS} w-full tabular-nums`}
-                  style={INPUT_STYLE}
+                  field="regular"
+                  className="w-full tabular-nums"
                 />
               ) : (
                 <ValidatedTextField
@@ -118,8 +118,8 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
                   onCommit={(text) => change((spec) => setTableRows(spec, widget.id, Number(text)))}
                   validate={wholeNumber({ min: 1, max: TABLE_ROWS_MAX })}
                   containerClassName="w-16"
-                  className={`${FIELD_CLASS} w-full tabular-nums`}
-                  style={INPUT_STYLE}
+                  field="regular"
+                  className="w-full tabular-nums"
                 />
               )}
             </LabelledRow>

@@ -5,7 +5,7 @@
  * key being the quote's identity and a many-row table's its index too.
  */
 import type { SchemaColumn } from "../../api/types"
-import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
+import { Select } from "../../haute-ui"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import type { IndexKind } from "../../utils/quoteIdentity"
 import { setIndexKind } from "../../utils/workbenchForm"
@@ -31,21 +31,21 @@ export function IndexKindSelect({
 }) {
   const change = useWorkbenchFormStore((s) => s.change)
   return (
-    <select
+    <Select
       aria-label={`How ${column.name} gets its values`}
       value={column.index ?? undefined}
       onChange={(e) => {
         const kind = e.target.value as IndexKind
         change((f) => setIndexKind(f, tableId, kind))
       }}
-      className={`${COMPACT_FIELD_CLASS} w-full`}
-      style={INPUT_STYLE}
+      fieldSize="compact"
+      className="w-full"
     >
       {INDEX_KINDS.map(({ value, label }) => (
         <option key={value} value={value}>
           {label}
         </option>
       ))}
-    </select>
+    </Select>
   )
 }

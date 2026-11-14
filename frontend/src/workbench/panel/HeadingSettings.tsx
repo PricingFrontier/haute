@@ -1,7 +1,8 @@
 /** A Heading's panel (specs/workbench). */
 import { TextAlignCenter, TextAlignEnd, TextAlignStart, type LucideIcon } from "lucide-react"
 import type { FormSpec, HeadingWidget } from "../../api/types"
-import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow } from "../../components/form"
+import { CommittedTextField, LabelledRow } from "../../components/form"
+import { Select } from "../../haute-ui"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { updateWidget } from "../../utils/workbenchForm"
@@ -34,8 +35,8 @@ export function HeadingSettings({ form, widget }: { form: FormSpec; widget: Head
           value={widget.text}
           placeholder="Name a section of the sheet"
           onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { text }))}
-          className={`${FIELD_CLASS} w-full`}
-          style={INPUT_STYLE}
+          field="regular"
+          className="w-full"
         />
       </Section>
       <Section title="Description">
@@ -44,8 +45,8 @@ export function HeadingSettings({ form, widget }: { form: FormSpec; widget: Head
           value={widget.description}
           placeholder="None"
           onCommit={(description) => change((spec) => updateWidget(spec, widget.id, { description }))}
-          className={`${FIELD_CLASS} w-full`}
-          style={INPUT_STYLE}
+          field="regular"
+          className="w-full"
         />
       </Section>
       <Section title="Show when">
@@ -58,19 +59,17 @@ export function HeadingSettings({ form, widget }: { form: FormSpec; widget: Head
       </Section>
       <Section title="Look">
         <LabelledRow label="Size">
-          <select
+          <Select
             aria-label="Size"
             value={widget.size}
             onChange={(event) => change((spec) => updateWidget(spec, widget.id, { size: event.target.value as HeadingWidget["size"] }))}
-            className={FIELD_CLASS}
-            style={INPUT_STYLE}
           >
             {HEADING_SIZES.map(({ value, label }) => (
               <option key={value} value={value}>
                 {label}
               </option>
             ))}
-          </select>
+          </Select>
         </LabelledRow>
         <div className="flex items-center gap-2">
           <span className="w-14 shrink-0" style={{ color: "var(--text-muted)" }}>

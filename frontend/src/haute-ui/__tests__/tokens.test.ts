@@ -102,6 +102,8 @@ describe("haute-ui's stylesheets", () => {
     ["field.css", ".field", "border-radius", "0.375rem"],
     ["field.css", ".field", "min-width", "0"],
     ["field.css", ".field-compact", "padding-block", "0.125rem"],
+    ["field.css", ".field-large", "padding", "0.375rem 0.625rem"],
+    ["field.css", '.field[aria-invalid="true"]', "border-color", "var(--danger-border-strong)"],
     ["field.css", ".field:focus-visible", "outline", "2px solid transparent"],
     ["palette.css", ".palette", "width", "180px"],
     ["palette.css", ".palette-reveal", "width", "40px"],

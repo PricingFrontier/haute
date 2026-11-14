@@ -1,10 +1,15 @@
 import {
   useState,
+  type ComponentProps,
   type CSSProperties,
   type InputHTMLAttributes,
   type Ref,
   type TextareaHTMLAttributes,
 } from "react"
+import { Input, TextArea } from "../../haute-ui"
+
+/** A size of the kit's field. */
+type FieldSize = NonNullable<ComponentProps<typeof Input>["fieldSize"]>
 
 // ─── CommittedTextField / CommittedTextArea ───────────────────────
 //
@@ -68,6 +73,9 @@ type CommittedTextFieldProps = Omit<
 > & {
   /** The input itself, passed through as React 19 passes a ref. */
   ref?: Ref<HTMLInputElement>
+  /** Draws the field as the kit's field of this size. Without it the field draws nothing
+   *  of its own and its caller's `className` and `style` colour it. */
+  field?: FieldSize
   /** The committed value from state — the source of truth when idle. */
   value: string
   /** Called once per commit boundary (blur / Enter) with the final
@@ -80,12 +88,15 @@ export default function CommittedTextField({
   onCommit,
   onBlur,
   onKeyDown,
+  field,
   ...rest
 }: CommittedTextFieldProps) {
   const { shown, setDraft, commit } = useCommittedDraft(value, onCommit)
+  const Box = field === undefined ? "input" : Input
   return (
-    <input
+    <Box
       {...rest}
+      {...(field === undefined ? {} : { fieldSize: field })}
       value={shown}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={(e) => {
@@ -108,6 +119,8 @@ type CommittedTextAreaProps = Omit<
   value: string
   /** Called once per commit boundary (blur) with the final value. */
   onCommit: (next: string) => void
+  /** Draws the box as the kit's field of this size, as `CommittedTextField`'s does. */
+  field?: FieldSize
 }
 
 /** Multi-line sibling of CommittedTextField. Commits on blur only — Enter
@@ -116,12 +129,15 @@ export function CommittedTextArea({
   value,
   onCommit,
   onBlur,
+  field,
   ...rest
 }: CommittedTextAreaProps) {
   const { shown, setDraft, commit } = useCommittedDraft(value, onCommit)
+  const Box = field === undefined ? "textarea" : TextArea
   return (
-    <textarea
+    <Box
       {...rest}
+      {...(field === undefined ? {} : { fieldSize: field })}
       value={shown}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={(e) => {
@@ -153,7 +169,10 @@ type ValidatedTextFieldProps = {
   ariaLabel?: string
   containerClassName: string
   className: string
-  style: CSSProperties
+  /** Draws the input as the kit's field of this size, which shows an error by its own
+   *  border. Without it the caller's `style` colours the input. */
+  field?: FieldSize
+  style?: CSSProperties
   placeholder?: string
   /** The on-screen keyboard to offer, such as `decimal` for a number typed as text. */
   inputMode?: InputHTMLAttributes<HTMLInputElement>["inputMode"]
@@ -176,6 +195,7 @@ export function ValidatedTextField({
   ariaLabel,
   containerClassName,
   className,
+  field,
   style,
   placeholder,
   inputMode,
@@ -184,9 +204,11 @@ export function ValidatedTextField({
     validate(next) === null ? onCommit(next) : { ok: false },
   )
   const error = validate(shown) ?? commitError
+  const Box = field === undefined ? "input" : Input
   return (
     <div className={containerClassName}>
-      <input
+      <Box
+        {...(field === undefined ? {} : { fieldSize: field })}
         data-testid={dataTestId}
         id={id}
         type="text"
@@ -201,7 +223,7 @@ export function ValidatedTextField({
           if (e.key === "Enter") commit()
         }}
         className={className}
-        style={error !== null ? { ...style, border: "1px solid var(--danger-border-strong)" } : style}
+        style={error !== null && field === undefined ? { ...style, border: "1px solid var(--danger-border-strong)" } : style}
       />
       {error !== null && (
         <div

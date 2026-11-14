@@ -1,7 +1,8 @@
 /** A schema column's details: its label, help, rules, format, allowed values and default (specs/workbench). */
 import { useId } from "react"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
-import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, INPUT_STYLE, ValidatedTextField } from "../../components/form"
+import { CommittedTextField, ConfigCheckbox, ValidatedTextField } from "../../components/form"
+import { Select } from "../../haute-ui"
 import { isOutputColumn, tableColumns } from "../../utils/quoteIdentity"
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../../panels/explore/pivotNumberFormat"
@@ -69,8 +70,8 @@ export function ColumnDetails({
         aria-label={`Label of ${column.name}`}
         value={column.label}
         onCommit={(label) => set({ label })}
-        className={`${COMPACT_FIELD_CLASS} w-full`}
-        style={INPUT_STYLE}
+        field="compact"
+        className="w-full"
       />
       <span style={{ color: "var(--text-muted)" }}>Group</span>
       <CommittedTextField
@@ -78,8 +79,8 @@ export function ColumnDetails({
         value={column.group}
         list={groupsId}
         onCommit={(group) => set({ group: group.trim() })}
-        className={`${COMPACT_FIELD_CLASS} w-full`}
-        style={INPUT_STYLE}
+        field="compact"
+        className="w-full"
       />
       <datalist id={groupsId}>
         {groups.map((group) => (
@@ -91,33 +92,31 @@ export function ColumnDetails({
         aria-label={`Help of ${column.name}`}
         value={column.help}
         onCommit={(help) => set({ help })}
-        className={`${COMPACT_FIELD_CLASS} w-full`}
-        style={INPUT_STYLE}
+        field="compact"
+        className="w-full"
       />
       {isNumeric(column.type) && column.index !== "numbered" && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Format</span>
           <div className="flex items-center gap-1.5">
-            <select
+            <Select
               aria-label={`Format of ${column.name}`}
               value={column.number_format}
               onChange={(e) => set({ number_format: e.target.value as SchemaColumn["number_format"] })}
-              className={COMPACT_FIELD_CLASS}
-              style={INPUT_STYLE}
+              fieldSize="compact"
             >
               {PIVOT_NUMBER_FORMATS.map((format) => (
                 <option key={format} value={format}>
                   {NUMBER_FORMAT_LABELS[format]}
                 </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label={`Decimal places of ${column.name}`}
               value={column.decimal_places ?? "automatic"}
               onChange={(e) => set({ decimal_places: e.target.value === "automatic" ? null : Number(e.target.value) })}
               title="Decimal places"
-              className={COMPACT_FIELD_CLASS}
-              style={INPUT_STYLE}
+              fieldSize="compact"
             >
               <option value="automatic">Auto decimals</option>
               {DECIMAL_PLACES.map((places) => (
@@ -125,7 +124,7 @@ export function ColumnDetails({
                   {places} {places === 1 ? "decimal" : "decimals"}
                 </option>
               ))}
-            </select>
+            </Select>
             <ConfigCheckbox
               label="Separators (1,000)"
               checked={grouped && column.use_grouping}
@@ -148,8 +147,8 @@ export function ColumnDetails({
             aria-label={`Placeholder of ${column.name}`}
             value={column.placeholder}
             onCommit={(placeholder) => set({ placeholder })}
-            className={`${COMPACT_FIELD_CLASS} w-full`}
-            style={INPUT_STYLE}
+            field="compact"
+            className="w-full"
           />
         </>
       )}
@@ -169,8 +168,8 @@ export function ColumnDetails({
               onCommit={(text) => set({ min: bound(text) })}
               validate={numberOrNothing}
               containerClassName="w-24"
-              className={`${COMPACT_FIELD_CLASS} w-full`}
-              style={INPUT_STYLE}
+              field="compact"
+              className="w-full"
             />
             <span style={{ color: "var(--text-muted)" }}>to</span>
             <ValidatedTextField
@@ -179,8 +178,8 @@ export function ColumnDetails({
               onCommit={(text) => set({ max: bound(text) })}
               validate={numberOrNothing}
               containerClassName="w-24"
-              className={`${COMPACT_FIELD_CLASS} w-full`}
-              style={INPUT_STYLE}
+              field="compact"
+              className="w-full"
             />
           </div>
         </>

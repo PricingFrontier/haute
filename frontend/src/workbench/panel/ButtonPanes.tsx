@@ -1,7 +1,7 @@
 /** An Import's and an Export's panes, and their Format (specs/workbench). */
 import type { ReactNode } from "react"
 import type { FormSpec } from "../../api/types"
-import { CommittedTextField, FIELD_CLASS, INPUT_STYLE } from "../../components/form"
+import { CommittedTextField } from "../../components/form"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import PreviewPanelTabs from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -78,8 +78,8 @@ export function ButtonPanes({ form, widget, children }: { form: FormSpec; widget
                 value={widget.label}
                 placeholder="None"
                 onCommit={(label) => change((spec) => updateWidget(spec, widget.id, { label }))}
-                className={`${FIELD_CLASS} w-full`}
-                style={INPUT_STYLE}
+                field="regular"
+                className="w-full"
               />
             </Section>
             <Section title="Show when">

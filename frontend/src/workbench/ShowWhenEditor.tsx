@@ -10,7 +10,8 @@
 import { Eye, EyeOff, List, X } from "lucide-react"
 import type { CSSProperties } from "react"
 import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
+import { CommittedTextField, ConfigCheckbox, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
+import { Select } from "../haute-ui"
 import { hasInputs, hasOutputs, isOutputColumn, ownOutputs, tableColumns, typedInputs } from "../utils/quoteIdentity"
 import { parseTypedNumber } from "../utils/sheetValues"
 import {
@@ -148,36 +149,34 @@ function MatchSentence({
   return (
     <div className="flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
       {lead !== null && <span>{lead}</span>}
-      <select
+      <Select
         aria-label={`Which conditions${of} must hold`}
         value={typeof match === "number" ? "at_least" : match}
         onChange={(event) => {
           const next = event.target.value
           onChange(next === "at_least" ? AT_LEAST : (next as "all" | "any"))
         }}
-        className={`${FIELD_CLASS} w-20`}
-        style={INPUT_STYLE}
+        className="w-20"
       >
         {MATCHES.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
         ))}
-      </select>
+      </Select>
       {typeof match === "number" && (
-        <select
+        <Select
           aria-label={`How many conditions${of} must hold`}
           value={match}
           onChange={(event) => onChange(Number(event.target.value))}
-          className={`${FIELD_CLASS} w-14 tabular-nums`}
-          style={INPUT_STYLE}
+          className="w-14 tabular-nums"
         >
           {numbers.map((number) => (
             <option key={number} value={number}>
               {number}
             </option>
           ))}
-        </select>
+        </Select>
       )}
       <span>of these are true</span>
     </div>
@@ -377,7 +376,7 @@ function ConditionRow({
         <span title={marker?.label} className={`flex size-4 shrink-0 items-center justify-center ${marker?.color ?? ""}`}>
           {marker !== null && <marker.icon size={12} aria-hidden="true" />}
         </span>
-        <select
+        <Select
           aria-label={`${name} column`}
           value={key}
           onChange={(event) => {
@@ -385,8 +384,7 @@ function ConditionRow({
             if (choose === undefined) throw new Error(`"${event.target.value}" is not a column a condition can test`)
             onChange(choose())
           }}
-          className={`${FIELD_CLASS} min-w-0 flex-1`}
-          style={INPUT_STYLE}
+          className="flex-1"
         >
           {!offered && (
             <option value={key} disabled>
@@ -406,7 +404,7 @@ function ConditionRow({
               )}
             </optgroup>
           ))}
-        </select>
+        </Select>
         <button type="button" onClick={onRemove} aria-label={`Remove ${name.toLowerCase()}`} title="Remove this condition" className="icon-danger-btn focus-ring shrink-0 rounded p-0.5">
           <X size={12} aria-hidden="true" />
         </button>
@@ -469,28 +467,26 @@ function ListFields({
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
       <div className="flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-secondary)" }}>
-        <select
+        <Select
           aria-label={`${name} rows`}
           value={kind}
           onChange={(event) => onChange(withListKind(form, condition, event.target.value as ListKind))}
-          className={`${FIELD_CLASS} w-32 shrink-0`}
-          style={INPUT_STYLE}
+          className="w-32 shrink-0"
         >
           {KINDS.map((option) => (
             <option key={option.value} value={option.value} disabled={unavailable(option.value)}>
               {option.label}
             </option>
           ))}
-        </select>
+        </Select>
         {isRowTotal(condition) && (
           <>
             <span>of</span>
-            <select
+            <Select
               aria-label={`${name} total of`}
               value={condition.column}
               onChange={(event) => onChange({ ...condition, column: event.target.value })}
-              className={`${FIELD_CLASS} min-w-0 flex-1`}
-              style={INPUT_STYLE}
+              className="flex-1"
             >
               {!numbers.some((column) => column.name === condition.column) && (
                 <option value={condition.column} disabled>
@@ -502,7 +498,7 @@ function ListFields({
                   {label(column)}
                 </option>
               ))}
-            </select>
+            </Select>
           </>
         )}
         {condition.where.length > 0 && <span>where</span>}
@@ -533,19 +529,18 @@ function ListFields({
       </QuietAction>
       {!isRowsCondition(condition) && (
         <div className="flex items-start gap-1.5">
-          <select
+          <Select
             aria-label={`${name} test`}
             value={condition.op}
             onChange={(event) => onChange({ ...condition, op: event.target.value as CountTest })}
-            className={`${FIELD_CLASS} w-32 shrink-0`}
-            style={INPUT_STYLE}
+            className="w-32 shrink-0"
           >
             {COUNT_TESTS.map((test) => (
               <option key={test} value={test}>
                 {testLabel(test, isRowCount(condition) ? "int" : "float")}
               </option>
             ))}
-          </select>
+          </Select>
           {isRowCount(condition) ? (
             <ValidatedTextField
               dataTestId={`${name}-count`}
@@ -554,8 +549,8 @@ function ListFields({
               validate={countValid}
               onCommit={(text) => onChange({ ...condition, count: Number(text) })}
               containerClassName="min-w-0 flex-1"
-              className={`${FIELD_CLASS} w-full tabular-nums`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="w-full tabular-nums"
             />
           ) : (
             <ValidatedTextField
@@ -565,8 +560,8 @@ function ListFields({
               validate={numberValid}
               onCommit={(text) => onChange({ ...condition, value: text.trim() })}
               containerClassName="min-w-0 flex-1"
-              className={`${FIELD_CLASS} w-full tabular-nums`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="w-full tabular-nums"
             />
           )}
         </div>
@@ -600,15 +595,14 @@ function RowTestFields({
   return (
     <div role="group" aria-label={name} className="flex flex-col gap-1 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
       <div className="flex items-center gap-1.5">
-        <select
+        <Select
           aria-label={`${name} column`}
           value={test.column}
           onChange={(event) => {
             // A test is only offered the columns of a table the schema has.
             if (table !== undefined) onChange(withTestColumn(form, table.name, test, event.target.value))
           }}
-          className={`${FIELD_CLASS} min-w-0 flex-1`}
-          style={INPUT_STYLE}
+          className="flex-1"
         >
           {!columns.some((candidate) => candidate.name === test.column) && (
             <option value={test.column} disabled>
@@ -620,7 +614,7 @@ function RowTestFields({
               {label(candidate)}
             </option>
           ))}
-        </select>
+        </Select>
         {removable && (
           <button type="button" onClick={onRemove} aria-label={`Remove ${name.toLowerCase()}`} title="Remove this test" className="icon-danger-btn focus-ring shrink-0 rounded p-0.5">
             <X size={12} aria-hidden="true" />
@@ -660,19 +654,18 @@ function ColumnFields<T extends ColumnTest>({
   const against = CONDITION_TESTS[test.op].values === "one" && (fields.length > 0 || test.field !== null)
   return (
     <>
-      <select
+      <Select
         aria-label={`${name} test`}
         value={test.op}
         onChange={(event) => onChange(withConditionTest(column ?? undefined, test, event.target.value as ConditionTest))}
-        className={`${FIELD_CLASS} w-32 shrink-0`}
-        style={INPUT_STYLE}
+        className="w-32 shrink-0"
       >
         {(tests.includes(test.op) ? tests : [test.op, ...tests]).map((option) => (
           <option key={option} value={option}>
             {testLabel(option, type)}
           </option>
         ))}
-      </select>
+      </Select>
       {against && <Against form={form} tableId={tableId} fields={fields} test={test} name={name} onChange={(field) => onChange(withTestField(test, field, type === "date"))} />}
       {test.field === null ? (
         <ConditionValue condition={test} column={column} name={name} onChange={(values) => onChange({ ...test, values })} />
@@ -686,8 +679,8 @@ function ColumnFields<T extends ColumnTest>({
               validate={daysValid}
               onCommit={(text) => onChange({ ...test, days: Number(text.trim()) })}
               containerClassName="w-20 shrink-0"
-              className={`${FIELD_CLASS} w-full tabular-nums`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="w-full tabular-nums"
             />
             <span className="pt-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
               days
@@ -730,7 +723,7 @@ function Against<T extends ColumnTest>({
   const named = ref === null ? null : fieldColumn(form, ref)
   const tables = [...new Map(fields.map((choice) => [choice.table.name, choice.table])).values()]
   return (
-    <select
+    <Select
       aria-label={`${name} against`}
       value={current}
       onChange={(event) => {
@@ -739,8 +732,7 @@ function Against<T extends ColumnTest>({
         if (chosen === undefined) throw new Error(`"${event.target.value}" is not a field this test can be tested against`)
         onChange((rowTest ? chosen.column.name : { table: chosen.table.name, column: chosen.column.name }) as T["field"])
       }}
-      className={`${FIELD_CLASS} w-32 shrink-0`}
-      style={INPUT_STYLE}
+      className="w-32 shrink-0"
     >
       <option value={VALUE}>Value</option>
       {field !== null && !fields.some((choice) => keyOf(choice) === current) && (
@@ -759,7 +751,7 @@ function Against<T extends ColumnTest>({
             ))}
         </optgroup>
       ))}
-    </select>
+    </Select>
   )
 }
 
@@ -806,8 +798,8 @@ function ConditionValue({
           validate={listedNumbersValid}
           onCommit={(text) => onChange(splitValues(text))}
           containerClassName="min-w-0 flex-1"
-          className={`${FIELD_CLASS} w-full tabular-nums`}
-          style={INPUT_STYLE}
+          field="regular"
+          className="w-full tabular-nums"
         />
       )
     }
@@ -817,8 +809,8 @@ function ConditionValue({
         value={condition.values.join(", ")}
         placeholder="Values, comma-separated"
         onCommit={(text) => onChange(splitValues(text))}
-        className={`${FIELD_CLASS} flex-1`}
-        style={INPUT_STYLE}
+        field="regular"
+        className="flex-1"
       />
     )
   }
@@ -826,7 +818,7 @@ function ConditionValue({
   const one = (text: string) => onChange(text === "" ? [] : [text])
   if (options.length > 0 && (condition.op === "equals" || condition.op === "not_equals")) {
     return (
-      <select aria-label={aria} value={value} onChange={(event) => one(event.target.value)} className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE}>
+      <Select aria-label={aria} value={value} onChange={(event) => one(event.target.value)} className="flex-1">
         <option value="">Choose…</option>
         {!options.includes(value) && value !== "" && <option value={value}>{value}</option>}
         {options.map((option) => (
@@ -834,12 +826,12 @@ function ConditionValue({
             {option}
           </option>
         ))}
-      </select>
+      </Select>
     )
   }
   if (column?.type === "date") {
     // Committed on blur or Enter: a year typed digit by digit is one change.
-    return <CommittedTextField type="date" aria-label={aria} value={value} onCommit={one} className={`${FIELD_CLASS} flex-1`} style={INPUT_STYLE} />
+    return <CommittedTextField type="date" aria-label={aria} value={value} onCommit={one} field="regular" className="flex-1" />
   }
   return (
     <CommittedTextField
@@ -848,8 +840,8 @@ function ConditionValue({
       placeholder="Value"
       inputMode={column?.type === "int" || column?.type === "float" ? "decimal" : undefined}
       onCommit={(text) => one(text.trim())}
-      className={`${FIELD_CLASS} flex-1`}
-      style={INPUT_STYLE}
+      field="regular"
+      className="flex-1"
     />
   )
 }

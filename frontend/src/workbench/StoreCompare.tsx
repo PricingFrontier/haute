@@ -2,8 +2,7 @@
 import { Code2, Loader2, RefreshCw } from "lucide-react"
 import { useState } from "react"
 import type { SchemaTable, WorkbenchStoreDifference } from "../api/types"
-import { FIELD_CLASS, INPUT_STYLE } from "../components/form"
-import { ToolbarButton } from "../haute-ui"
+import { Select, ToolbarButton } from "../haute-ui"
 import { comparisonFailure, comparisonStatus, useDatabaseComparison, environmentState } from "../stores/useStoreCompareStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { schemaColumns } from "./schema/schemaText"
@@ -25,15 +24,15 @@ export function CompareControls() {
       <div className="flex min-w-0 basis-80 items-center gap-2 text-[11px]">
         {environments.length > 0 && <>
           <label htmlFor="schema-database" className="sr-only">Database</label>
-          <select id="schema-database" aria-label="Database" value={state.environment ?? ""}
-            className={`${FIELD_CLASS} flex-1`} style={{ ...INPUT_STYLE, color: colour(state.environment) }}
+          <Select id="schema-database" aria-label="Database" value={state.environment ?? ""}
+            className="flex-1" style={{ color: colour(state.environment) }}
             title={state.environment === null ? "Local schema" : `${state.environment} · ${status}`}
             aria-describedby={state.environment === null ? undefined : "schema-database-status"}
             onChange={(event) => state.choose(event.target.value || null)}>
             <option value="" style={{ color: colour(null) }}>Local</option>
             {environments.map((name) => <option key={name} value={name} style={{ color: colour(name) }}
               title={comparisonStatus(state, form, name)} aria-description={comparisonStatus(state, form, name)}>{name}</option>)}
-          </select>
+          </Select>
           {state.environment !== null && <span id="schema-database-status" role="status" className="sr-only"
             title={read.status === "read" ? `Schema snapshot fetched ${new Date(read.checkedAt).toLocaleString()}` : undefined}>{status}</span>}
           <ToolbarButton onClick={state.readAgain} disabled={state.environment === null || busy} aria-busy={busy}

@@ -1,7 +1,8 @@
 /** Database information and explicit rename choices, separate from field configuration. */
 import { Undo2 } from "lucide-react"
 import type { SchemaColumn, SchemaTable } from "../api/types"
-import { COMPACT_FIELD_CLASS, EditorLabel, INPUT_STYLE, QuietAction } from "../components/form"
+import { EditorLabel, QuietAction } from "../components/form"
+import { Select } from "../haute-ui"
 import { comparisonFailure, comparisonStatus, useDatabaseComparison, environmentState } from "../stores/useStoreCompareStore"
 import { IDENTITY_NAMES } from "../utils/quoteIdentity"
 import DatabaseDisclosure, { DatabaseExtras } from "./DatabaseDisclosure"
@@ -77,15 +78,15 @@ export function ColumnDatabaseDetails({ table, column, readOnly }: { table: Sche
         </>}
     {canPair && <label className="flex min-w-0 flex-col gap-1">
       <span style={QUIET}>Renamed from</span>
-      <select aria-label={`Database column for ${table.name}.${column.name}`} value={pairing?.was ?? ""}
-        disabled={readOnly || answer === null} className={`${COMPACT_FIELD_CLASS} w-full`} style={INPUT_STYLE}
+      <Select aria-label={`Database column for ${table.name}.${column.name}`} value={pairing?.was ?? ""}
+        disabled={readOnly || answer === null} fieldSize="compact" className="w-full"
         onChange={(event) => event.target.value
           ? state.pair({ table: table.name, column: column.name, was: event.target.value })
           : state.unpair(table.name, column.name)}>
         <option value="">{pairing === undefined ? "Create a new column" : "Remove rename choice"}</option>
         {pairing !== undefined && !candidates.some((each) => each.column === pairing.was) && <option value={pairing.was}>{pairing.was} → {column.name}</option>}
         {candidates.map((each) => <option key={each.column} value={each.column!}>{each.column} → {column.name}{each.quotes === null ? " · count unavailable" : ` · ${each.quotes} quotes`}</option>)}
-      </select>
+      </Select>
     </label>}
     {!ordinary && pairing !== undefined && <QuietAction icon={Undo2} disabled={readOnly || answer === null}
       className="self-start" onClick={() => state.unpair(table.name, column.name)}>Remove rename choice</QuietAction>}

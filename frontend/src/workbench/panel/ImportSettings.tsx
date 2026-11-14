@@ -1,7 +1,8 @@
 /** An Import's panel (specs/workbench). */
 import { X } from "lucide-react"
 import type { FormSpec, ImportWidget, SchemaColumn, SchemaTable, SqlImport } from "../../api/types"
-import { CommittedTextArea, CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextArea, CommittedTextField, LabelledRow, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { Select } from "../../haute-ui"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { hasInputs, tableColumns } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
@@ -73,8 +74,8 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
               value={source.sheet}
               placeholder="First"
               onCommit={(sheet) => change((spec) => updateImportSource(spec, widget.id, { sheet }))}
-              className={`${FIELD_CLASS} min-w-0 flex-1`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="flex-1"
             />
           </LabelledRow>
           <LabelledRow label="Header row">
@@ -84,20 +85,19 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
               onCommit={(text) => change((spec) => updateImportSource(spec, widget.id, { header_row: Number(text) }))}
               validate={wholeNumber({ min: 1, max: HEADER_ROW_MAX })}
               containerClassName="w-16"
-              className={`${FIELD_CLASS} w-full tabular-nums`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="w-full tabular-nums"
             />
           </LabelledRow>
         </Section>
       )}
       {source.format === "sql" && <DatabaseSettings form={form} widget={widget} source={source} />}
       <Section title="Into">
-        <select
+        <Select
           aria-label="Into"
           value={widget.table ?? ""}
           onChange={(event) => change((spec) => setImportTable(spec, widget.id, event.target.value === "" ? null : event.target.value))}
-          className={`${FIELD_CLASS} w-full`}
-          style={INPUT_STYLE}
+          className="w-full"
         >
           {widget.table !== null && !offered && (
             <option value={widget.table} disabled>
@@ -110,23 +110,22 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
               {candidate.name}
             </option>
           ))}
-        </select>
+        </Select>
       </Section>
       {table !== undefined && hasInputs(table) && table.rows === "many" && (
         <Section title="Rows">
-          <select
+          <Select
             aria-label="Rows"
             value={widget.mode}
             onChange={(event) => change((spec) => setImportMode(spec, widget.id, event.target.value as ImportWidget["mode"]))}
-            className={`${FIELD_CLASS} w-full`}
-            style={INPUT_STYLE}
+            className="w-full"
           >
             {IMPORT_MODES.map(({ value, label }) => (
               <option key={value} value={value}>
                 {label}
               </option>
             ))}
-          </select>
+          </Select>
         </Section>
       )}
       {table !== undefined && hasInputs(table) && <ColumnNames widget={widget} table={table} />}
@@ -152,8 +151,8 @@ function DatabaseSettings({ form, widget, source }: { form: FormSpec; widget: Im
           value={source.connection}
           placeholder="None"
           onCommit={(connection) => change((spec) => updateImportSource(spec, widget.id, { connection }))}
-          className={`${FIELD_CLASS} w-full font-mono`}
-          style={INPUT_STYLE}
+          field="regular"
+          className="w-full font-mono"
         />
       </Section>
       <Section title="Query">
@@ -163,8 +162,8 @@ function DatabaseSettings({ form, widget, source }: { form: FormSpec; widget: Im
           rows={5}
           spellCheck={false}
           onCommit={(query) => change((spec) => setImportQuery(spec, widget.id, query))}
-          className={`${FIELD_CLASS} w-full resize-y font-mono`}
-          style={INPUT_STYLE}
+          field="regular"
+          className="w-full resize-y font-mono"
         />
       </Section>
       {held.length + strays.length > 0 && (
@@ -204,12 +203,11 @@ function ParameterRow({
       <span className="w-20 shrink-0 truncate font-mono" title={`:${name}`}>
         :{name}
       </span>
-      <select
+      <Select
         aria-label={`:${name} column`}
         value={key}
         onChange={(event) => change((spec) => bindParameter(spec, widget.id, name, choices.get(event.target.value) ?? null))}
-        className={`${FIELD_CLASS} min-w-0 flex-1`}
-        style={INPUT_STYLE}
+        className="flex-1"
       >
         {key !== "" && !choices.has(key) && (
           <option value={key} disabled>
@@ -226,7 +224,7 @@ function ParameterRow({
             ))}
           </optgroup>
         ))}
-      </select>
+      </Select>
       {!held && (
         <button type="button" onClick={() => change((spec) => bindParameter(spec, widget.id, name, null))} aria-label={`Remove :${name}`} className={REMOVE_CLASS}>
           <X size={12} aria-hidden="true" />
@@ -264,8 +262,8 @@ function ColumnNames({ widget, table }: { widget: ImportWidget; table: SchemaTab
               value={widget.column_names.find((named) => named.column === column.name)?.name ?? ""}
               placeholder={column.name}
               onCommit={(name) => commit(column.name, name)}
-              className={`${FIELD_CLASS} min-w-0 flex-1`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="flex-1"
             />
           </div>
         )

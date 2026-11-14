@@ -1,7 +1,8 @@
 /** A one-row input column's default (specs/workbench). */
 import { useState } from "react"
 import type { SchemaColumn } from "../../api/types"
-import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, INPUT_STYLE } from "../../components/form"
+import { CommittedTextField, ConfigCheckbox } from "../../components/form"
+import { Select } from "../../haute-ui"
 import { formattedNumber } from "../../utils/sheetValues"
 
 /**
@@ -26,12 +27,12 @@ export function DefaultField({ column, set }: { column: SchemaColumn; set: (patc
   const label = `Default of ${column.name}`
   if (column.options.length > 0) {
     return (
-      <select
+      <Select
         aria-label={label}
         value={text}
         onChange={(e) => set({ default_value: e.target.value })}
-        className={`${COMPACT_FIELD_CLASS} w-full`}
-        style={INPUT_STYLE}
+        fieldSize="compact"
+        className="w-full"
       >
         <option value="" />
         {[...column.options, ...(text === "" || column.options.includes(text) ? [] : [text])].map((option) => (
@@ -39,7 +40,7 @@ export function DefaultField({ column, set }: { column: SchemaColumn; set: (patc
             {formattedNumber(column, option) ?? option}
           </option>
         ))}
-      </select>
+      </Select>
     )
   }
   return (
@@ -50,8 +51,8 @@ export function DefaultField({ column, set }: { column: SchemaColumn; set: (patc
       onCommit={(value) => set({ default_value: value.trim() })}
       onFocus={() => setTyping(true)}
       onBlur={() => setTyping(false)}
-      className={`${COMPACT_FIELD_CLASS} w-full`}
-      style={INPUT_STYLE}
+      field="compact"
+      className="w-full"
     />
   )
 }

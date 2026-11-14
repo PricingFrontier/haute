@@ -1,7 +1,7 @@
 /** An Export's panel (specs/workbench). */
 import { X } from "lucide-react"
 import type { CsvExport, ExportWidget, FormSpec } from "../../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow } from "../../components/form"
+import { CommittedTextField, ConfigCheckbox, LabelledRow, SelectRow } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { setExportFormat, setTableName, toggleExportTable, updateExportTarget } from "../../utils/workbenchForm"
 import { ButtonPanes, FormatToggle } from "./ButtonPanes"
@@ -43,8 +43,8 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
             value={target.connection}
             placeholder="None"
             onCommit={(connection) => set({ connection })}
-            className={`${FIELD_CLASS} w-full font-mono`}
-            style={INPUT_STYLE}
+            field="regular"
+            className="w-full font-mono"
           />
         </Section>
       ) : (
@@ -54,8 +54,8 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
               aria-label="File name"
               value={target.file_name}
               onCommit={(file_name) => set({ file_name })}
-              className={`${FIELD_CLASS} min-w-0 flex-1 font-mono`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="flex-1 font-mono"
             />
           </LabelledRow>
           {target.format === "csv" && <SelectRow label="Delimiter" value={target.delimiter} choices={EXPORT_DELIMITERS} onChange={(delimiter) => set({ delimiter })} />}
@@ -77,8 +77,8 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
                   value={target.table_names.find((named) => named.table === table.name)?.name ?? ""}
                   placeholder={table.name}
                   onCommit={(name) => change((spec) => setTableName(spec, widget.id, table.name, name))}
-                  className={`${FIELD_CLASS} w-32 font-mono`}
-                  style={INPUT_STYLE}
+                  field="regular"
+                  className="w-32 font-mono"
                 />
               )}
             </div>

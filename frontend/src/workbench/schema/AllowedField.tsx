@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../../api/errors"
 import type { SchemaColumn } from "../../api/types"
 import { fetchParamFile } from "../../api/workbench"
-import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
+import { Select } from "../../haute-ui"
 import { useParamsFiles } from "../../hooks/useParamsFiles"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { tableColumns } from "../../utils/quoteIdentity"
@@ -101,13 +101,13 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <div className="flex min-w-0 items-center gap-1.5">
-        <select
+        <Select
           aria-label={`Where the allowed values of ${column.name} come from`}
           value={typedIn && pendingFile === null ? TYPED_IN : file}
           onChange={(e) => chooseFile(e.target.value)}
           disabled={fileChoices.length === 0 && !typedIn}
-          className={`${COMPACT_FIELD_CLASS} ${file === "" ? "flex-1" : "max-w-[50%]"}`}
-          style={INPUT_STYLE}
+          fieldSize="compact"
+          className={file === "" ? "flex-1" : "max-w-[50%]"}
         >
           <option value="" />
           {typedIn && (
@@ -120,15 +120,15 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
               {name}
             </option>
           ))}
-        </select>
+        </Select>
         {file !== "" && (
           <>
-            <select
+            <Select
               aria-label={`Column the allowed values of ${column.name} come from`}
               value={pendingFile === null ? (source?.column ?? "") : ""}
               onChange={(e) => chooseColumn(e.target.value)}
-              className={`${COMPACT_FIELD_CLASS} min-w-0 flex-1`}
-              style={INPUT_STYLE}
+              fieldSize="compact"
+              className="flex-1"
             >
               {pendingFile !== null && <option value="" />}
               {columnChoices.map((name) => (
@@ -136,7 +136,7 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
                   {name}
                 </option>
               ))}
-            </select>
+            </Select>
             {pendingFile === null && (
               <IconButton
                 icon={RefreshCw}

@@ -18,8 +18,13 @@ describe("haute-ui's fields", () => {
     expect(onChange).toHaveBeenCalledTimes(1)
   })
 
+  it("draws the large size with a second class", () => {
+    render(<Input fieldSize="large" aria-label="Branch" defaultValue="main" />)
+    expect(screen.getByRole("textbox", { name: "Branch" }).className).toBe("field field-large")
+  })
+
   it("draws the compact size with a second class", () => {
-    render(<Input compact aria-label="Column" defaultValue="age" />)
+    render(<Input fieldSize="compact" aria-label="Column" defaultValue="age" />)
     expect(screen.getByRole("textbox", { name: "Column" }).className).toBe("field field-compact")
   })
 
@@ -33,7 +38,7 @@ describe("haute-ui's fields", () => {
   it("draws a native dropdown the same way, its options its children", () => {
     const onChange = vi.fn()
     render(
-      <Select compact aria-label="Kind" value="a" onChange={onChange}>
+      <Select fieldSize="compact" aria-label="Kind" value="a" onChange={onChange}>
         <option value="a">First</option>
         <option value="b">Second</option>
       </Select>,

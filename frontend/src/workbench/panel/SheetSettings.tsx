@@ -1,7 +1,7 @@
 /** The showing sheet's own panel (specs/workbench). */
 import { Trash2 } from "lucide-react"
 import type { FormSpec, Page } from "../../api/types"
-import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextField, LabelledRow, ValidatedTextField, wholeNumber } from "../../components/form"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { takesNothingTyped } from "../../utils/sheetVisibility"
@@ -44,8 +44,8 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
             const trimmed = title.trim()
             if (trimmed) change((spec) => renamePage(spec, page.id, trimmed))
           }}
-          className={`${FIELD_CLASS} w-full`}
-          style={INPUT_STYLE}
+          field="regular"
+          className="w-full"
         />
       </Section>
       <Section title="Show when">
@@ -64,8 +64,8 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
             onCommit={(text) => change((spec) => setPageWidth(spec, page.id, Number(text)))}
             validate={width}
             containerClassName="w-20"
-            className={`${FIELD_CLASS} w-full tabular-nums`}
-            style={INPUT_STYLE}
+            field="regular"
+            className="w-full tabular-nums"
           />
         </LabelledRow>
         <LabelledRow label="Height">
@@ -75,8 +75,8 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
             onCommit={(text) => change((spec) => setPageHeight(spec, page.id, Number(text)))}
             validate={height}
             containerClassName="w-20"
-            className={`${FIELD_CLASS} w-full tabular-nums`}
-            style={INPUT_STYLE}
+            field="regular"
+            className="w-full tabular-nums"
           />
         </LabelledRow>
       </Section>

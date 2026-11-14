@@ -1,6 +1,6 @@
 /** A component's Component name, first in its panel (specs/workbench). */
 import type { FormSpec } from "../../api/types"
-import { FIELD_CLASS, INPUT_STYLE, ValidatedTextField } from "../../components/form"
+import { ValidatedTextField } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { componentNameProblem, renameWidget, type Widget } from "../../utils/workbenchForm"
 import { Section } from "./Section"
@@ -21,8 +21,8 @@ export function ComponentNameField({ form, widget }: { form: FormSpec; widget: W
         validate={(name) => componentNameProblem(form, widget.id, name)}
         onCommit={(name) => change((spec) => renameWidget(spec, widget.id, name))}
         containerClassName="w-full"
-        className={`${FIELD_CLASS} w-full`}
-        style={INPUT_STYLE}
+        field="regular"
+        className="w-full"
       />
     </Section>
   )

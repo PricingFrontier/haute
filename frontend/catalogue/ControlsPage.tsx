@@ -195,8 +195,8 @@ export function ControlsPage() {
       <section aria-labelledby="fields">
         <h2 id="fields">Fields</h2>
         <p>
-          A text box or a native dropdown, in a side panel's size or a compact one for dense rows. The caller lays it
-          out with a class and never colours it.
+          A text box or a native dropdown, in three sizes: a side panel's, a compact one for dense rows and a large
+          one for a dialog or a node's editor. The caller lays it out with a class and never colours it.
         </p>
         <div className="catalogue-samples">
           <Sample code="<Input>">
@@ -208,14 +208,26 @@ export function ControlsPage() {
               <option value="text">Text</option>
             </Select>
           </Sample>
-          <Sample code="<Input compact> beside a <Select compact>">
+          <Sample code='<Input fieldSize="compact"> beside a <Select fieldSize="compact">'>
             <div className="flex items-center gap-2">
-              <Input compact aria-label="Column" defaultValue="vehicle_age" className="w-32" />
-              <Select compact aria-label="Type" defaultValue="whole" className="w-32">
+              <Input fieldSize="compact" aria-label="Column" defaultValue="vehicle_age" className="w-32" />
+              <Select fieldSize="compact" aria-label="Type" defaultValue="whole" className="w-32">
                 <option value="whole">Whole number</option>
                 <option value="decimal">Decimal</option>
               </Select>
             </div>
+          </Sample>
+          <Sample code='<Input fieldSize="large"> beside a <Select fieldSize="large">'>
+            <div className="flex items-center gap-2">
+              <Input fieldSize="large" aria-label="Branch" defaultValue="feature/tariff" className="w-40" />
+              <Select fieldSize="large" aria-label="Format" defaultValue="parquet" className="w-32">
+                <option value="parquet">Parquet</option>
+                <option value="csv">CSV</option>
+              </Select>
+            </div>
+          </Sample>
+          <Sample code="<Input aria-invalid>">
+            <Input aria-invalid aria-label="Rows" defaultValue="-3" className="w-40" />
           </Sample>
           <Sample code="<TextArea>">
             <TextArea aria-label="Note" defaultValue="Renewals only." rows={2} className="w-56 resize-y" />

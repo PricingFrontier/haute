@@ -1,7 +1,7 @@
 /** A section's own panel (specs/workbench). */
 import { Trash2 } from "lucide-react"
 import type { FormSpec, Page, Section as SheetSection } from "../../api/types"
-import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextField, LabelledRow, QuietAction, ValidatedTextField, wholeNumber } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { takesNothingTyped } from "../../utils/sheetVisibility"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
@@ -38,8 +38,8 @@ export function SectionSettings({ form, page, section, index }: { form: FormSpec
             const trimmed = title.trim()
             if (trimmed) change((spec) => renameSection(spec, section.id, trimmed))
           }}
-          className={`${FIELD_CLASS} w-full`}
-          style={INPUT_STYLE}
+          field="regular"
+          className="w-full"
         />
       </Section>
       <Section title="Show when">
@@ -59,8 +59,8 @@ export function SectionSettings({ form, page, section, index }: { form: FormSpec
               onCommit={(text) => change((spec) => setSectionHeight(spec, section.id, Number(text)))}
               validate={height}
               containerClassName="w-20"
-              className={`${FIELD_CLASS} w-full tabular-nums`}
-              style={INPUT_STYLE}
+              field="regular"
+              className="w-full tabular-nums"
             />
           </LabelledRow>
           <button

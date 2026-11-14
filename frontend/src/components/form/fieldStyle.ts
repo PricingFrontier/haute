@@ -1,6 +1,6 @@
 /**
- * The look the panels' fields share (specs/frontend-shared): the input's colours, and the
- * class of a small field in a side panel, with a denser one for the schema's rows.
+ * The look of the fields not yet drawn by the kit's field (specs/frontend-shared): the
+ * input's colours, and the class of a dense field in the schema's rows.
  */
 export const INPUT_STYLE = {
   background: "var(--bg-input)",
@@ -8,10 +8,8 @@ export const INPUT_STYLE = {
   color: "var(--text-primary)",
 } as const
 
-/** A small field in a side panel: a select, a text or a number box. */
-export const FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-1 text-xs"
-
-/** The same, in the schema editor's dense rows, a column to a row. */
+/** A dense field in the schema editor's rows, a column to a row: the kit's compact field,
+ *  for the one row that still colours its own. */
 export const COMPACT_FIELD_CLASS = "focus-ring min-w-0 rounded-md px-1.5 py-0.5 text-xs"
 
 /**
