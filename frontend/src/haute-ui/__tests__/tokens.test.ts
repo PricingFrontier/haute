@@ -91,7 +91,10 @@ describe("haute-ui's stylesheets", () => {
     ["toolbar.css", ".toolbar-save-commit", "width", "100%"],
     ["toolbar.css", ".toolbar-fill", "flex", "1 1 0%"],
     // Disabled, a button fades by half, which tells it from a text field beside it.
-    ["button.css", ".btn:disabled, .btn-icon:disabled", "opacity", "0.5"],
+    ["button.css", ".btn:disabled, .btn-icon:disabled", "color", "color-mix(in srgb, var(--text-disabled) 50%, transparent)"],
+    ["toolbar.css", '.toolbar-btn[aria-pressed="true"]:hover:not(:disabled):not([aria-disabled="true"])', "background", "var(--accent-soft-hover)"],
+    ["toolbar.css", '.toolbar-btn[aria-pressed="true"]:hover:not(:disabled):not([aria-disabled="true"])', "border-color", "var(--accent-ring)"],
+    ["toolbar.css", '.toolbar-btn[aria-pressed="true"]:focus-visible:not(:disabled):not([aria-disabled="true"])', "background", "var(--accent-soft)"],
     // Outside the toolbar the fill is as wide as its label.
     ["button.css", ".btn-fill", "flex", "none"],
     // Its label stays centred where a caller's layout stretches it.
@@ -133,6 +136,23 @@ describe("haute-ui's stylesheets", () => {
     expect(helper.get("border-color")).toBe(`var(--focus-ring-border, ${field.get("border-color")})`)
     expect(helper.get("box-shadow")).toBe(`0 0 0 2px var(--focus-ring-shadow, var(--accent-soft))`)
     expect(field.get("box-shadow")).toBe("0 0 0 2px var(--accent-soft)")
+  })
+
+  it("keeps an invalid field's border while it is focused, and a switched-on toggle's press visible", () => {
+    // Equal in weight, the later rule is the one drawn.
+    const field = STYLESHEETS["field.css"]
+    const focus = field.indexOf(".field:focus-visible {")
+    expect(focus).toBeGreaterThanOrEqual(0)
+    expect(field.indexOf('.field[aria-invalid="true"] {')).toBeGreaterThan(focus)
+    const toolbar = STYLESHEETS["toolbar.css"]
+    const AVAILABLE = ':not(:disabled):not([aria-disabled="true"])'
+    const hover = toolbar.indexOf(`.toolbar-btn[aria-pressed="true"]:hover${AVAILABLE} {`)
+    const active = toolbar.indexOf(`.toolbar-btn[aria-pressed="true"]:active${AVAILABLE} {`)
+    expect(hover).toBeGreaterThanOrEqual(0)
+    expect(active).toBeGreaterThan(hover)
+    expect(declarations(ruleBody(toolbar, `.toolbar-btn[aria-pressed="true"]:active${AVAILABLE}`)).get("background")).toBe("var(--accent-soft)")
+    // A fill is never a .btn, so a disabled fill is faded once, by its own rule.
+    expect(declarations(ruleBody(STYLESHEETS["button.css"], ".btn-fill")).has("color")).toBe(false)
   })
 
   // Equal in weight to the unavailable look, the focus rule wins by coming after it, so a

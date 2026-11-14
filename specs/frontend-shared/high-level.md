@@ -416,8 +416,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   can be pressed is raised: a fill, an outline, a small shadow below and a lighter line
   along its top edge, and it brightens under the pointer. What cannot be pressed has
   none of these. An unavailable button is flat and still, keeps only a faint outline so
-  that a button can be seen to be there, fades by half where it stands outside a
-  toolbar, and under keyboard focus takes a grey ring, fainter than the accent one. A
+  that a button can be seen to be there, has its icon and label faded by half where it
+  stands outside a toolbar, the outline keeping its strength, and under keyboard focus takes a grey ring, fainter than the accent one. A
+  toggle that is switched on keeps its accent tint under the pointer and under
+  keyboard focus, so it never looks switched off. A
   status is not a button of either kind and is drawn as plain text. Not everything
   that can be pressed is a button: the raised look is for the fixed controls of the
   interface, and an action on one piece of information, such as Retry inside a status,

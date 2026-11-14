@@ -24,11 +24,12 @@
   padding: 0.25rem;
   border-radius: 0.375rem;
 }
-/* Disabled, the surface goes flat (toolbar.css) and the button fades by half: beside a
-   text field, the fade is what tells an unusable button from the field. */
+/* Disabled, the surface goes flat (toolbar.css) and the icon and label fade by half:
+   beside a text field, the fade is what tells an unusable button from the field. The
+   fade is in the colour and not the whole button, so the faint outline keeps its strength. */
 .btn:disabled,
 .btn-icon:disabled {
-  opacity: 0.5;
+  color: color-mix(in srgb, var(--text-disabled) 50%, transparent);
 }
 /* The toolbar's fill shares its row equally; outside the toolbar it is as wide as its
    label, which stays centred where a caller's layout stretches the button. */

@@ -94,6 +94,20 @@
   border-color: var(--accent-ring);
   color: var(--text-accent);
 }
+/* It keeps its tint under the pointer, a little stronger, and under the keyboard: grey
+   there, as an ordinary button goes, it would look switched off. */
+.toolbar-btn[aria-pressed="true"]:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--accent-soft);
+}
+.toolbar-btn[aria-pressed="true"]:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--accent-soft-hover);
+  border-color: var(--accent-ring);
+}
+/* Pressed down it falls back to the resting tint, so a press can still be seen. After the
+   pointer's rule and equal to it in weight, since the pointer is over it while it is down. */
+.toolbar-btn[aria-pressed="true"]:active:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--accent-soft);
+}
 /* Unavailable.  Losing the raised surface is the signal — a flat control next
    to raised ones reads as "not right now" without any colour knowledge. The
    label stays readable so you can still tell what it is and why you might
