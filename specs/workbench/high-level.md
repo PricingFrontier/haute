@@ -3655,8 +3655,10 @@ Out of scope:
   FastAPI's 422 for a body that is not a form with an Export's id, a sample and priced
   tables. It refuses with 422, naming why: an id no component of the form has, or one
   that is not an Export to an Excel workbook of cells; the Export's file name or cells
-  with a problem, each named; a value not of its column's type, naming the field; and
-  text holding a character Excel cannot hold, naming the field. It refuses with 409, "The
+  with a problem, each named; a value not of its column's type, naming the field; text
+  holding a character Excel cannot hold, and text or a label longer than the 32,767
+  characters a cell holds (rather than cut, as openpyxl would), each naming the field. It
+  refuses with 409, "The
   sample changed after it was priced: export once it is priced again.", a sample that is
   not the form's as the server types it. It writes nothing to disk: the workbook is made
   in memory and answered. The view shows a refusal as an error toast, and the Export can

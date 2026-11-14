@@ -174,6 +174,36 @@ describe("column-stash source identity (cache-key completeness)", () => {
     expect(nodes[0].data._columnsSource).toBeUndefined()
   })
 
+  it("invalidates per-frame stashes, on screen and on the root graph kept while drilled in, when the active source changes", async () => {
+    vi.useRealTimers()
+    const frames = { policy: LIVE_COLUMNS }
+    // A drilled view's Input card holds only per-frame columns.
+    const inputCard = makeNode("input-card", "submodelPort")
+    inputCard.data = { ...inputCard.data, _frameColumns: frames, _columnsSource: "live" }
+    const kept = makeNode("kept")
+    kept.data = { ...kept.data, _frameColumns: frames, _columnsSource: "staging" }
+    const feeder = makeStashedNode("workbench", "live")
+    feeder.data = { ...feeder.data, _frameColumns: frames }
+    const root = { nodes: [feeder, makeNode("pricing", "submodel")], edges: [], submodels: {} }
+    const params = makeParams({ parentGraphRef: { current: root } })
+    params.graphRef.current = { nodes: [inputCard, kept], edges: [] }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => { useGraphStore.getState().setNodesRaw([inputCard, kept]) })
+
+    act(() => { useSettingsStore.getState().setActiveSource("staging") })
+
+    const [card, keptNode] = useGraphStore.getState().nodes
+    expect(card.data._frameColumns).toBeUndefined()
+    expect(card.data._columnsSource).toBeUndefined()
+    expect(keptNode.data._frameColumns).toEqual(frames)
+    const [rootFeeder, occurrence] = params.parentGraphRef.current!.nodes
+    expect(rootFeeder.data._frameColumns).toBeUndefined()
+    expect(rootFeeder.data._columns).toBeUndefined()
+    expect(occurrence).toBe(root.nodes[1])
+  })
+
   it("keeps a stash captured under the current source (no gratuitous invalidation)", async () => {
     vi.useRealTimers()
     const A = makeStashedNode("A", "staging")

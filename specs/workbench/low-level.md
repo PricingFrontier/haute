@@ -2473,7 +2473,9 @@ no longer has; and `InputSource` in
 - `ExportRefusedError` and `StaleExportError` (`src/haute/_workbench_export.py`) are
   `WorkbenchError`s the export route answers itself, 422 and 409, each with its message;
   openpyxl's `IllegalCharacterError` is caught where a cell's text is set and raised as an
-  `ExportRefusedError` naming the field, and no other openpyxl error is caught.
+  `ExportRefusedError` naming the field, and no other openpyxl error is caught. Text or a
+  label longer than `CELL_TEXT_LIMIT` (32,767 characters) is refused the same way before it
+  is set, since openpyxl would cut it silently.
 
 ## Testing
 
@@ -2494,8 +2496,8 @@ no longer has; and `InputSource` in
   block above, beside or on another sheet from what else is written left alone, an address or sheet name at
   Excel's limits, a sample not the form's refused 409, an Export not of cells or an id no
   component has refused 422, a whole number past 2**53 - 1 written as its digits, a
-  value not of its column's type and a control character
-  each refused naming the field, and the file name's `{name}`s and the characters it
+  value not of its column's type, a control character, and text or a label one character
+  past `CELL_TEXT_LIMIT` each refused naming the field (text at the limit written whole), and the file name's `{name}`s and the characters it
   writes `_`; the route through the test client, its media type and its
   `Content-Disposition` with a name outside ASCII. `tests/test_workbench_folder.py` covers
   an Export of cells written to and read from its file, `field` as `table.column`, its

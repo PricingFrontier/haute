@@ -18,6 +18,7 @@ from openpyxl import load_workbook
 
 from haute._json_safe import to_json_safe
 from haute._workbench_export import (
+    CELL_TEXT_LIMIT,
     XLSX_MEDIA_TYPE,
     ExportRefusedError,
     StaleExportError,
@@ -938,6 +939,32 @@ def test_text_holding_a_character_excel_cannot_hold_is_refused_naming_the_field(
         export(form)
 
     assert refused.value.message.startswith("policy.note holds a character Excel cannot hold")
+
+
+def test_text_as_long_as_a_cell_holds_is_written_whole_and_longer_is_refused() -> None:
+    # openpyxl would cut the longer text to the limit without a word.
+    form = with_cells(cell("policy.note", "Slip", "A1"))
+    form["sample"]["policy"][0]["note"] = "x" * CELL_TEXT_LIMIT
+    _, data = export(form)
+    assert load_workbook(io.BytesIO(data))["Slip"]["A1"].value == "x" * CELL_TEXT_LIMIT
+
+    form["sample"]["policy"][0]["note"] = "x" * (CELL_TEXT_LIMIT + 1)
+    with pytest.raises(ExportRefusedError) as refused:
+        export(form)
+    assert refused.value.message == (
+        "policy.note is 32,768 characters long; an Excel cell holds at most 32,767: "
+        "shorten it in the sample."
+    )
+
+
+def test_a_label_longer_than_a_cell_holds_is_refused_naming_it() -> None:
+    form = with_cells(cell("policy.note", "Slip", "B3", "A3"))
+    form["schema"]["tables"][1]["inputs"][2]["label"] = "x" * (CELL_TEXT_LIMIT + 1)
+
+    with pytest.raises(ExportRefusedError) as refused:
+        export(form)
+
+    assert refused.value.message.startswith("The label of policy.note is 32,768 characters long")
 
 
 def test_the_file_name_writes_each_character_a_file_name_cannot_hold_as_an_underscore() -> None:

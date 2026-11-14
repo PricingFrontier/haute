@@ -337,6 +337,20 @@ def export_file_name(file_name: str, details: Mapping[str, Any]) -> str:
     return f"{named}.xlsx"
 
 
+CELL_TEXT_LIMIT = 32_767
+"""The most characters an Excel cell holds; openpyxl cuts longer text there silently."""
+
+
+def _refuse_long_text(text: str, what: str, where: str) -> None:
+    """Refuse *text*, *what* is, longer than a cell holds, rather than let openpyxl cut it:
+    the download would lose its tail without a word."""
+    if len(text) > CELL_TEXT_LIMIT:
+        raise ExportRefusedError(
+            f"{what} is {len(text):,} characters long; an Excel cell holds at most "
+            f"{CELL_TEXT_LIMIT:,}: shorten it in {where}."
+        )
+
+
 def _write(cell: Any, column: SchemaColumn, value: Any, field: str) -> None:
     """*value*, of *column*'s type, into the openpyxl *cell*: text held as text, so neither a
     leading ``=`` nor an error value is read; a whole number Excel cannot hold exactly (past
@@ -353,6 +367,7 @@ def _write(cell: Any, column: SchemaColumn, value: Any, field: str) -> None:
         cell.data_type = "s"
         return
     if column.type == "str":
+        _refuse_long_text(str(value), field, "the sample")
         try:
             cell.value = value
         except IllegalCharacterError:
@@ -375,6 +390,7 @@ def _write_label(cell: Any, label: str, field: str) -> None:
     # Imported here: only an export loads openpyxl.
     from openpyxl.utils.exceptions import IllegalCharacterError
 
+    _refuse_long_text(label, f"The label of {field}", "the column's label in the schema")
     try:
         cell.value = label
     except IllegalCharacterError:

@@ -30,6 +30,8 @@ type Props = {
 
 /** Room a compact menu keeps from the window's edge. */
 const EDGE = 8
+/** The space between a compact menu and its trigger. */
+const GAP = 4
 /** A compact menu's narrowest, so a narrow row's names stay readable. */
 const COMPACT_MENU_MIN_WIDTH = 240
 
@@ -51,7 +53,7 @@ export function ColumnSelector({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [activeIndex, setActiveIndex] = useState(0)
-  const [place, setPlace] = useState<{ left: number; top: number; width: number } | null>(null)
+  const [place, setPlace] = useState<{ left: number; width: number; top?: number; bottom?: number } | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -116,16 +118,23 @@ export function ColumnSelector({
     )
   }
 
-  // A compact menu sits under its trigger, over the page, kept inside the window.
+  // A compact menu sits under its trigger, over the page, kept inside the
+  // window: over the trigger instead when it does not fit below and there is
+  // more room above, its foot held there as a search shortens it. It is
+  // measured while still hidden, before it is placed.
   useLayoutEffect(() => {
     if (!compact || !open || triggerRef.current === null) return
     const trigger = triggerRef.current.getBoundingClientRect()
     const width = Math.max(trigger.width, COMPACT_MENU_MIN_WIDTH)
-    setPlace({
-      left: Math.max(EDGE, Math.min(trigger.left, window.innerWidth - EDGE - width)),
-      top: trigger.bottom + 4,
-      width,
-    })
+    const left = Math.max(EDGE, Math.min(trigger.left, window.innerWidth - EDGE - width))
+    const height = menuRef.current?.offsetHeight ?? 0
+    const below = window.innerHeight - EDGE - (trigger.bottom + GAP)
+    const above = trigger.top - GAP - EDGE
+    setPlace(
+      height > below && above > below
+        ? { left, width, bottom: window.innerHeight - trigger.top + GAP }
+        : { left, width, top: trigger.bottom + GAP },
+    )
   }, [compact, open])
 
   // It closes on a press outside it or its trigger, and as anything scrolls or
@@ -163,7 +172,7 @@ export function ColumnSelector({
         ...(compact
           ? place === null
             ? { visibility: "hidden" as const }
-            : { left: place.left, top: place.top, width: place.width }
+            : { left: place.left, width: place.width, top: place.top, bottom: place.bottom }
           : {}),
       }}
       onBlur={

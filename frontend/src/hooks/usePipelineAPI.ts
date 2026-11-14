@@ -508,19 +508,21 @@ function canvasNodeStatuses(result: PreviewNodeResponse, requestedNodeId: string
  * must be invalidated, never served. Stripped nodes return to the
  * never-previewed state the lazy gap-fill in `refreshPreview` already
  * handles; editors see "columns not loaded yet", exactly as on first load.
- * Returns the input array unchanged when nothing is stale.
+ * Per-frame stashes count too: a submodel occurrence's outputs and a
+ * drilled view's Input card hold only those. Returns the input array
+ * unchanged when nothing is stale.
  */
 function invalidateStaleColumnStashes(nodes: Node[], activeSource: string): Node[] {
   const isStale = (n: Node) => {
     const data = nodeData(n)
-    return (data._columns !== undefined || data._availableColumns !== undefined) &&
+    return (data._columns !== undefined || data._availableColumns !== undefined || data._frameColumns !== undefined) &&
       data._columnsSource !== activeSource
   }
   if (!nodes.some(isStale)) return nodes
   return nodes.map((n) => {
     if (!isStale(n)) return n
-    const { _columns, _availableColumns, _schemaWarnings, _notes, _columnsSource, _columnsStructuralVersion, ...rest } = n.data
-    void _columns; void _availableColumns; void _schemaWarnings; void _notes; void _columnsSource; void _columnsStructuralVersion
+    const { _columns, _availableColumns, _frameColumns, _schemaWarnings, _notes, _columnsSource, _columnsStructuralVersion, ...rest } = n.data
+    void _columns; void _availableColumns; void _frameColumns; void _schemaWarnings; void _notes; void _columnsSource; void _columnsStructuralVersion
     return { ...n, data: rest }
   })
 }
@@ -676,7 +678,15 @@ export default function usePipelineAPI({
   // stashes of unknown provenance gets them stripped and lazily re-filled.
   useEffect(() => {
     setNodesRaw((nds) => invalidateStaleColumnStashes(nds, activeSource))
-  }, [activeSource, setNodesRaw])
+    // The root graph kept while drilled in holds stashes too
+    // (`recordRootPreviewColumns`): they return with it and seed the Input
+    // card on the next drill-in, so they answer to the same invariant.
+    const root = parentGraphRef.current
+    if (root) {
+      const nodes = invalidateStaleColumnStashes(root.nodes, activeSource)
+      if (nodes !== root.nodes) parentGraphRef.current = { ...root, nodes }
+    }
+  }, [activeSource, setNodesRaw, parentGraphRef])
 
   const adoptPipelineDocument = useCallback((
     data: import("../types/pipelineDocument").PipelineEditorDocument,

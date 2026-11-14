@@ -859,14 +859,18 @@ reconciliation rather than dropping them or committing a second mutation.
     invalidateStaleColumnStashes(nds, activeSource)), [activeSource,
     setNodesRaw])`) runs on mount and on every `activeSource` change:
     `invalidateStaleColumnStashes` scans for any node with a column stash
-    (`_columns`/`_availableColumns` defined) whose `_columnsSource` doesn't
+    (`_columns`/`_availableColumns`/`_frameColumns` defined; a submodel
+    occurrence and a drilled view's Input card hold only per-frame columns)
+    whose `_columnsSource` doesn't
     match the current `activeSource` — including a stash with no
     `_columnsSource` at all, treated as unknown provenance — and only calls
     `setNodesRaw` (a new array) if at least one node qualifies; a no-op
     scan returns the input array unchanged. A qualifying node has
-    `_columns`/`_availableColumns`/`_schemaWarnings`/`_columnsSource`
+    `_columns`/`_availableColumns`/`_frameColumns`/`_schemaWarnings`/`_columnsSource`
     deleted from its data via destructuring, returning it to the
-    pre-preview state.
+    pre-preview state. The same scan runs over the root graph kept while
+    drilled in (`parentGraphRef`), whose stashes seed the Input card on the
+    next drill-in (`columnStashSourceIdentity.test.ts`).
 17. **No downstream cascade.** A preview previews its target and nothing
     below it. The response's `node_columns`/`node_available_columns`/
     `node_frame_columns` maps already carry every *ancestor*'s schema — the
