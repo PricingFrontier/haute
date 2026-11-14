@@ -30,7 +30,7 @@ import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { effectiveNodeType, nodeData } from "../types/node"
-import type { NodeStatus, PipelineEdge } from "../types/node"
+import type { NodeStatus, PipelineEdge, SubmodelPortData } from "../types/node"
 import { NODE_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import {
   adaptPipelineEditorDocument,
@@ -41,6 +41,7 @@ import { type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { requestInputSourceHandles } from "../utils/apiInputPorts"
 import { workbenchNodePorts, type WorkbenchTables } from "../utils/workbenchTables"
 import {
+  qualifiedRuntimeNodeId,
   runtimeNodeIdForVisibleNode,
   submodelOutputPreview,
   submodelOutputHandle,
@@ -345,15 +346,67 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
   )
 }
 
-function applyPreviewSchemaMapsToNodes(nodes: Node[], result: PreviewNodeResponse, source: string, structuralVersion: number): Node[] {
+/**
+ * The id a visible node's columns come back under in a preview's schema maps:
+ * its own, or in a drilled submodel view its runtime id in this occurrence.
+ */
+function previewSchemaKey(nodeId: string, drilled: DrilledOccurrenceIdentity | null): string {
+  return drilled ? qualifiedRuntimeNodeId(drilled.instanceId, nodeId) : nodeId
+}
+
+/**
+ * A drilled view's Input card runs nothing of its own: each of its ports
+ * carries the columns of the parent node feeding that port of this
+ * occurrence, which the preview's schema maps hold under the parent's id.
+ */
+function boundaryInputFrames(
+  node: Node,
+  result: PreviewNodeResponse,
+  drilled: DrilledOccurrenceIdentity,
+): Record<string, ColumnDef[]> {
+  const data = nodeData(node) as Partial<SubmodelPortData>
+  const frames: Record<string, ColumnDef[]> = {}
+  if (data.portDirection !== "input" || data.instanceId !== drilled.instanceId) return frames
+  const nodeColumns: Record<string, ColumnDef[] | undefined> = result.node_columns
+  const nodeFrameColumns: Record<string, Record<string, ColumnDef[]> | undefined> = result.node_frame_columns
+  for (const port of data.ports ?? []) {
+    const feed = port.parentEdges.find((edge) => edge.target === drilled.instanceId)
+    if (!feed) continue
+    const handle = feed.sourceHandle
+    const columns = (handle ? nodeFrameColumns[feed.source]?.[handle] : undefined) ?? nodeColumns[feed.source]
+    if (columns) frames[port.id] = columns
+  }
+  return frames
+}
+
+function applyPreviewSchemaMapsToNodes(
+  nodes: Node[],
+  result: PreviewNodeResponse,
+  source: string,
+  structuralVersion: number,
+  drilled: DrilledOccurrenceIdentity | null,
+): Node[] {
   const nodeColumns: Record<string, ColumnDef[] | undefined> = result.node_columns
   const nodeFrameColumns: Record<string, Record<string, ColumnDef[]> | undefined> = result.node_frame_columns
   const nodeAvailableColumns: Record<string, ColumnDef[] | undefined> = result.node_available_columns
   const nodeSchemaWarnings: Record<string, SchemaWarning[] | undefined> = result.node_schema_warnings
   return nodes.map((n) => {
-    const columns = nodeColumns[n.id]
-    const frames = nodeFrameColumns[n.id]
-    const warnings = nodeSchemaWarnings[n.id]
+    if (drilled && nodeData(n).nodeType === NODE_TYPES.SUBMODEL_PORT) {
+      const ports = boundaryInputFrames(n, result, drilled)
+      if (Object.keys(ports).length === 0) return n
+      // Ports this preview did not reach keep their columns from the same source.
+      const kept = nodeData(n)._columnsSource === source ? nodeData(n)._frameColumns : undefined
+      return { ...n, data: {
+        ...n.data,
+        _frameColumns: { ...kept, ...ports },
+        _columnsSource: source,
+        _columnsStructuralVersion: structuralVersion,
+      } }
+    }
+    const key = previewSchemaKey(n.id, drilled)
+    const columns = nodeColumns[key]
+    const frames = nodeFrameColumns[key]
+    const warnings = nodeSchemaWarnings[key]
     if (!columns) {
       // A submodel occurrence has no flat column list of its own, only its
       // output ports' columns keyed by handle.
@@ -369,9 +422,9 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: PreviewNodeRespons
       data: {
         ...n.data,
         _columns: columns,
-        _availableColumns: nodeAvailableColumns[n.id] ?? columns,
+        _availableColumns: nodeAvailableColumns[key] ?? columns,
         _frameColumns: frames,
-        _schemaWarnings: nodeSchemaWarnings[n.id] ?? [],
+        _schemaWarnings: warnings ?? [],
         _columnsSource: source,
         _columnsStructuralVersion: structuralVersion,
       },
@@ -379,9 +432,21 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: PreviewNodeRespons
   })
 }
 
-export function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: PreviewNodeResponse, source: string, structuralVersion: number): Node[] {
-  const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion)
-  const withColumns = nodeId in result.node_columns
+/**
+ * Record a preview's columns on the nodes on screen. `drilled` is the
+ * occurrence a drilled submodel view shows, whose children come back under
+ * their runtime ids; null on the root canvas.
+ */
+export function applyPreviewResultColumnsToNodes(
+  nodes: Node[],
+  nodeId: string,
+  result: PreviewNodeResponse,
+  source: string,
+  structuralVersion: number,
+  drilled: DrilledOccurrenceIdentity | null = null,
+): Node[] {
+  const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion, drilled)
+  const withColumns = previewSchemaKey(nodeId, drilled) in result.node_columns
     ? mapped
     : applyPreviewColumnsToNodes(mapped, nodeId, result.columns, result, source, structuralVersion)
   // The previewed node's notes (a Model Score's full-policy-term note), however its columns came.
@@ -968,7 +1033,7 @@ export default function usePipelineAPI({
           setNodeStatuses(canvasNodeStatuses(result, node.id))
         }
         if (result.columns) {
-          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, output ? targetNodeId : node.id, result, snapshotSource, structuralVersion))
+          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, output ? targetNodeId : node.id, result, snapshotSource, structuralVersion, output ? null : activeSubmodelIdentity))
         }
       })
       .catch((err: unknown) => {
@@ -1257,7 +1322,7 @@ export default function usePipelineAPI({
               if (noteAnnouncedCaptures(capturedGenerationIds(result))) bumpEpoch()
               if (!requestStillCurrent()) return
               if (result.columns) {
-                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion))
+                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion, activeSubmodelIdentity))
               }
             })
             .catch((err: unknown) => {

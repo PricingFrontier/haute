@@ -873,7 +873,15 @@ reconciliation rather than dropping them or committing a second mutation.
     preview route asks the executor for them with
     `include_schema_metadata=True`, which resolves them without
     materialising those ancestors — and `applyPreviewSchemaMapsToNodes`
-    writes them onto node data. The readers of a column stash are: an
+    writes them onto node data. Drilled into a submodel occurrence, the maps
+    hold each child under its qualified runtime id, so the child's columns
+    are read from that key (`previewSchemaKey`, never the bare local id,
+    which may name a root node); the Input card, which runs nothing, gets
+    `_frameColumns` keyed by port, each the columns of the parent edge
+    feeding that port of this occurrence (`boundaryInputFrames`, the
+    parent's frame for the edge's source handle, else its flat columns).
+    Ports a preview did not reach keep their columns while the source is
+    unchanged (`drilledPreviewColumns.test.ts`). The readers of a column stash are: an
     editor, which reads its own node's `_columns` or an upstream source's
     through `NodePanel.edgeSourceColumns`; the save-time edge-join gate,
     which reads *any* join's two inputs and therefore only reports a
