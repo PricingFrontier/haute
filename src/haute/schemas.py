@@ -238,9 +238,11 @@ class WorkbenchExportRequest(BaseModel):
     its name (``tables``)."""
 
     form: FormSpec
-    component: str
-    sample: dict[str, Any]
-    tables: dict[str, list[dict[str, Any]]]
+    component: BoundedName
+    sample: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    tables: dict[
+        BoundedName, Annotated[list[RequestEntry], Field(max_length=MAX_REQUEST_ITEMS)]
+    ] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchStoreSqlRequest(BaseModel):

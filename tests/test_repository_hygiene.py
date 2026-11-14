@@ -749,6 +749,13 @@ _BACKEND_MINT_ALLOWLIST = {
     # "_"); a save refuses two titles making one name, or none, so no collision
     # reaches the folder.
     "src/haute/_workbench_form.py",
+    # export_file_name: the name an Excel export of cells is downloaded under,
+    # each character a file name cannot hold written "_" and nothing else
+    # (spaces kept, as the specification's "Acme Ltd PREVIEW-1.xlsx"), so
+    # sanitise_label_for_filesystem's stricter stem would not do. It names a
+    # download in the browser; Haute writes it nowhere, so it has no collision
+    # space.
+    "src/haute/_workbench_export.py",
     # NOTE (not an entry): _scaffold.py's clean_columns mint lives inside the
     # starter-pipeline TEMPLATE STRING that `haute init` writes into the
     # user's project — string constants are invisible to the AST walk, and
