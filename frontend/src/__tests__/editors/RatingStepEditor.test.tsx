@@ -556,7 +556,7 @@ describe("RatingStepEditor", () => {
         tables: [{ factors: ["age_band"], output_column: "af", entries: [{ age_band: "young", value: 1.1 }] }],
       })
       const onMiss = screen.getByLabelText("On miss")
-      const rates = screen.getByText(/1 entries · range/)
+      const rates = screen.getByText("n=1")
       expect(rates.compareDocumentPosition(onMiss) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
   })
@@ -1565,7 +1565,9 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
     expect(screen.getByRole("button", { name: /^age_factor healthy$/ })).toBeTruthy()
-    expect(screen.getByText(/2 entries · range/)).toBeTruthy()
+    // The grid's own stats line counts the rates; no second line names the table and its range.
+    expect(screen.getByText("n=2")).toBeTruthy()
+    expect(screen.queryByText(/entries · range/)).toBeNull()
   })
 
   it("renders input sources bar when inputs provided", () => {

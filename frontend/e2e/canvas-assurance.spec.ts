@@ -259,7 +259,7 @@ test.describe("frontend canvas assurance", () => {
     await rebuildButton.focus()
     await expect(rebuildButton).toBeFocused()
     await rebuildButton.press("Enter")
-    await expect(ratingPanel.getByText(/8 entries · range/)).toBeVisible()
+    await expect(ratingPanel.getByText("n=8", { exact: true })).toBeVisible()
 
     const relativity = ratingPanel.getByLabel(
       "Relativity for proposer_age_band Age 40 or below and channel_band Direct",
@@ -301,7 +301,7 @@ test.describe("frontend canvas assurance", () => {
         "Relativity for proposer_age_band Age 40 or below and channel_band Direct",
       ),
     ).toHaveValue("1.23")
-    await expect(reloadedRatingPanel.getByText(/8 entries · range/)).toBeVisible()
+    await expect(reloadedRatingPanel.getByText("n=8", { exact: true })).toBeVisible()
   })
 
   test("persists optimiser ranges and preserves selected-point identity across local and intercepted MLflow exports", async ({

@@ -246,19 +246,21 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
           </tbody>
         </table>
       </div>
-      <div className="flex items-center justify-end px-2 py-1.5" style={{ background: 'var(--bg-elevated)', borderTop: '1px solid var(--border)' }}>
-        <button
-          type="button"
-          onClick={copyVisibleTable}
-          aria-label="Copy visible table as TSV"
-          title="Copy visible table as TSV"
-          className="accent-hover-btn flex size-6 items-center justify-center rounded"
-          style={{ color: 'var(--text-secondary)', ['--node-accent' as string]: 'var(--accent)' }}
-        >
-          <Copy size={13} aria-hidden="true" />
-        </button>
-      </div>
-      <StatsFooter stats={stats} />
+      <StatsFooter
+        stats={stats}
+        actions={
+          <button
+            type="button"
+            onClick={copyVisibleTable}
+            aria-label="Copy visible table as TSV"
+            title="Copy visible table as TSV"
+            className="accent-hover-btn -my-1 flex size-6 items-center justify-center rounded"
+            style={{ color: 'var(--text-secondary)', ['--node-accent' as string]: 'var(--accent)' }}
+          >
+            <Copy size={13} aria-hidden="true" />
+          </button>
+        }
+      />
     </div>
   )
 }

@@ -13,7 +13,6 @@ import {
   newRatingTable,
   buildCartesianEntries,
   ratingTableStatus,
-  tableStats,
   tableUsesDefault,
   extractPreviewCategoricalLevels,
   extractTableEntryFactorLevels,
@@ -688,18 +687,6 @@ export default function RatingStepEditor({
           )}
         </div>
       )}
-
-      {/* Summary */}
-      {table.entries.length > 0 && (() => {
-        const s = tableStats(table.entries)
-        return (
-          <div className="flex items-center justify-between text-[10px] font-mono px-1"
-            style={{ color: 'var(--text-muted)' }}>
-            <span>{table.output_column ? <span style={{ color: 'var(--text-secondary)' }}>{table.output_column}</span> : 'untitled'}</span>
-            <span>{table.entries.length} entries{s ? ` · range ${s.min.toFixed(2)}–${s.max.toFixed(2)}` : ''}</span>
-          </div>
-        )
-      })()}
 
       {/* What a level the table does not list takes, under the table: nothing,
           or the table's Default, which only Use default lets you set. */}

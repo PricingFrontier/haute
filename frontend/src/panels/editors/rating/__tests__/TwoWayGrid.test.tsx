@@ -516,6 +516,8 @@ describe("TwoWayGrid", () => {
     expect(button).toHaveAttribute("title", "Copy visible table as TSV")
     expect(grid.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(container.querySelector("[data-testid='two-way-grid-scroll-container'] + div button")).toBe(button)
+    // On the stats line, not a row of its own.
+    expect(button.closest("div.rounded-b-lg")).toHaveTextContent(/^n=\d+/)
   })
 
   it("selects a dragged range of editable cells and copies selected values as TSV", () => {
