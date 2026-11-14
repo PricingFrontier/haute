@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { ChevronDown } from "lucide-react"
+import { ChevronDown, Plus } from "lucide-react"
 
 export type ColumnOption = { name: string; dtype: string }
 type Props = {
@@ -16,6 +16,12 @@ type Props = {
    * the menu opens over the page, so a list that clips its rows cannot cut it.
    */
   compact?: boolean
+  /**
+   * How a compact trigger is drawn: a list row's small box (the default), a
+   * form field's, or a dashed add button reading its placeholder, for
+   * choosing a column to add (it shows no value).
+   */
+  trigger?: "row" | "field" | "add"
   /** The trigger's place in the tab order, for a list that keeps one row's controls in it. */
   tabIndex?: number
   /** Called as the trigger takes the focus, for a list that selects the row first. */
@@ -25,7 +31,7 @@ type Props = {
 /** Room a compact menu keeps from the window's edge. */
 const EDGE = 8
 /** A compact menu's narrowest, so a narrow row's names stay readable. */
-const COMPACT_MENU_MIN_WIDTH = 200
+const COMPACT_MENU_MIN_WIDTH = 240
 
 /** A column-only searchable combobox. Saved unavailable values remain visible,
  * but are deliberately never offered as a new selectable option. */
@@ -37,6 +43,7 @@ export function ColumnSelector({
   optional = false,
   placeholder,
   compact = false,
+  trigger = "row",
   tabIndex,
   onFocus,
 }: Props) {
@@ -304,19 +311,28 @@ export function ColumnSelector({
           }
         }}
         className={
-          compact
-            ? "flex w-full min-w-0 items-center gap-1 rounded border px-1 py-px text-left text-[11px] font-mono focus:outline-none focus:border-[var(--accent)]"
-            : "flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] font-mono"
+          !compact
+            ? "flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] font-mono"
+            : trigger === "add"
+              ? "add-row-btn focus-ring flex w-full min-w-0 items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-xs font-medium"
+              : trigger === "field"
+                ? "flex w-full min-w-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-left text-xs font-mono focus:outline-none focus:border-[var(--accent)]"
+                : "flex w-full min-w-0 items-center gap-1 rounded border px-1 py-px text-left text-[11px] font-mono focus:outline-none focus:border-[var(--accent)]"
         }
-        style={{
-          background: "var(--bg-input)",
-          ...(compact
-            ? { borderColor: unavailable ? "var(--danger)" : "var(--border)" }
-            : { border: `1px solid ${unavailable ? "var(--danger)" : "var(--border)"}` }),
-          color: value === "" && compact ? "var(--text-muted)" : "var(--text-primary)",
-        }}
+        style={
+          compact && trigger === "add"
+            ? { color: "var(--accent)", background: "var(--accent-soft-subtle)", border: "1px dashed var(--accent-ring)" }
+            : {
+                background: "var(--bg-input)",
+                ...(compact
+                  ? { borderColor: unavailable ? "var(--danger)" : "var(--border)" }
+                  : { border: `1px solid ${unavailable ? "var(--danger)" : "var(--border)"}` }),
+                color: value === "" && compact ? "var(--text-muted)" : "var(--text-primary)",
+              }
+        }
       >
-        <span className="min-w-0 flex-1 truncate">{display}</span>
+        {compact && trigger === "add" && <Plus size={12} className="shrink-0" aria-hidden="true" />}
+        <span className={compact && trigger === "add" ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}>{display}</span>
         {known && !compact && (
           <span
             className="shrink-0 text-[11px]"
@@ -325,12 +341,14 @@ export function ColumnSelector({
             {dtype}
           </span>
         )}
-        <ChevronDown
-          size={compact ? 11 : 13}
-          className="shrink-0"
-          style={{ color: "var(--text-muted)" }}
-          aria-hidden="true"
-        />
+        {!(compact && trigger === "add") && (
+          <ChevronDown
+            size={compact ? 11 : 13}
+            className="shrink-0"
+            style={{ color: "var(--text-muted)" }}
+            aria-hidden="true"
+          />
+        )}
       </button>
       {unavailable && !compact && (
         <p

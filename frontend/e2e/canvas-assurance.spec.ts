@@ -244,14 +244,14 @@ test.describe("frontend canvas assurance", () => {
       "Rating Step node: browser_rating",
     )
     await expect(
-      ratingPanel.getByRole("combobox", { name: "Factor 1", exact: true }),
-    ).toHaveValue("proposer_age_band")
+      ratingPanel.getByRole("button", { name: "Factor 1", exact: true }),
+    ).toHaveText("proposer_age_band")
     await expect(
-      ratingPanel.getByRole("combobox", { name: "Factor 2", exact: true }),
-    ).toHaveValue("channel_band")
+      ratingPanel.getByRole("button", { name: "Factor 2", exact: true }),
+    ).toHaveText("channel_band")
     await expect(
-      ratingPanel.getByRole("combobox", { name: "Factor 3", exact: true }),
-    ).toHaveValue("vehicle_age_band")
+      ratingPanel.getByRole("button", { name: "Factor 3", exact: true }),
+    ).toHaveText("vehicle_age_band")
 
     const rebuildButton = ratingPanel.getByRole("button", {
       name: /Rebuild from factor levels/i,

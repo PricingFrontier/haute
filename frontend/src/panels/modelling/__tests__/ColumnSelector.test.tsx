@@ -54,6 +54,33 @@ describe("ColumnSelector", () => {
 
 afterEach(cleanup)
 
+describe("a compact ColumnSelector's trigger looks", () => {
+  afterEach(cleanup)
+
+  it("draws an add button reading its placeholder, whose menu adds the column chosen", () => {
+    const onChange = vi.fn()
+    render(<ColumnSelector compact trigger="add" label="Add factor" value="" placeholder="Add factor" columns={columns} onChange={onChange} />)
+    const trigger = screen.getByRole("button", { name: "Add factor" })
+    expect(trigger).toHaveTextContent("Add factor")
+    expect(trigger).toHaveClass("add-row-btn")
+
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getAllByRole("option").find((option) => option.firstElementChild?.textContent === "region")!)
+    expect(onChange).toHaveBeenCalledWith("region")
+  })
+
+  it("draws a form field that marks a saved column the list lacks and names the type of a known one", () => {
+    const { rerender } = render(<ColumnSelector compact trigger="field" label="Factor 1" value="removed" columns={columns} onChange={vi.fn()} />)
+    const trigger = screen.getByRole("button", { name: "Factor 1" })
+    expect(trigger).toHaveClass("rounded-lg")
+    expect(trigger).toHaveAttribute("title", "removed is not in the input's columns")
+    expect(screen.queryByRole("alert")).toBeNull()
+
+    rerender(<ColumnSelector compact trigger="field" label="Factor 1" value="claim" columns={columns} onChange={vi.fn()} />)
+    expect(trigger).toHaveAttribute("title", "claim (Int64)")
+  })
+})
+
 describe("ColumnSelector before the columns load", () => {
   afterEach(cleanup)
 

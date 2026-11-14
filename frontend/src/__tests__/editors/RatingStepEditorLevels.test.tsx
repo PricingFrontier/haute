@@ -447,7 +447,11 @@ describe("RatingStepEditor levels", () => {
     onUpdate.mockClear()
 
     await act(async () => {
-      fireEvent.change(screen.getByLabelText("Add factor"), { target: { value: "cover" } })
+      fireEvent.click(screen.getByRole("button", { name: "Add factor" }))
+    })
+    await act(async () => {
+      // An option reads its name, then its count of levels.
+      fireEvent.click(screen.getAllByRole("option").find(option => option.firstElementChild?.textContent === "cover")!)
     })
 
     expect(onUpdate).not.toHaveBeenCalled()

@@ -30,6 +30,24 @@ function render(
 
 // Helpers
 
+/** Opens a factor dropdown and reads its options, each as "name (N levels)", then closes it. */
+function factorOptions(label: string): string[] {
+  fireEvent.click(screen.getByRole("button", { name: label }))
+  const menu = screen.getByRole("listbox", { name: `${label} options` })
+  const options = within(menu).queryAllByRole("option").map(option => `${option.children[0]?.textContent} (${option.children[1]?.textContent})`)
+  fireEvent.keyDown(screen.getByRole("combobox", { name: `Search ${label}` }), { key: "Escape" })
+  return options
+}
+
+/** Chooses a column in a factor dropdown by clicking its option. */
+function chooseFactor(label: string, column: string) {
+  fireEvent.click(screen.getByRole("button", { name: label }))
+  // An option reads its name, then its count of levels: match the name.
+  const option = screen.getAllByRole("option").find(candidate => candidate.firstElementChild?.textContent === column)
+  if (!option) throw new Error(`No ${column} option`)
+  fireEvent.click(option)
+}
+
 /** Create a banding node that provides levels for the rating editor. */
 function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNode {
   return {
@@ -113,9 +131,9 @@ describe("RatingStepEditor", () => {
       ] },
     )
     expect(screen.getByRole("alert")).toHaveTextContent(/empty_one.*empty_two/)
-    const addFactor = screen.getByRole("combobox", { name: "Add factor" })
-    expect(Array.from((addFactor as HTMLSelectElement).options).map(option => option.value)).toContain("healthy")
-    expect(Array.from((addFactor as HTMLSelectElement).options).map(option => option.value)).not.toContain("empty_one")
+    const offered = factorOptions("Add factor")
+    expect(offered.some(option => option.startsWith("healthy "))).toBe(true)
+    expect(offered.some(option => option.startsWith("empty_one "))).toBe(false)
   })
 
   it("renders with default empty table", () => {
@@ -822,7 +840,7 @@ describe("RatingStepEditor", () => {
     )
     // OneWayEditor renders "age_band" column header and "Relativity" header
     // The one-way editor's heading, not the factor's own option.
-    expect(screen.getByText("age_band", { ignore: "option" })).toBeTruthy()
+    expect(screen.getByText("age_band", { ignore: "option, button span" })).toBeTruthy()
     expect(screen.getByText("Relativity")).toBeTruthy()
     // The "select at least one factor" message should NOT be shown
     expect(screen.queryByText("Select at least one factor to populate the rating table")).toBeNull()
@@ -1246,12 +1264,27 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: BANDING_NODES }
     )
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
-    const options = Array.from(addSelect.options).map(o => o.textContent)
     // With no factor yet, Add factor is the first factor's slot.
-    expect(options).toContain("Select factor...")
+    expect(screen.getByRole("button", { name: "Add factor" })).toHaveTextContent("Select factor...")
+    const options = factorOptions("Add factor")
     expect(options.some(o => o?.includes("age_band"))).toBe(true)
     expect(options.some(o => o?.includes("region"))).toBe(true)
+  })
+
+  it("offers a factor's slot the columns with levels the table's other factors do not use, each with its count of levels", () => {
+    render(
+      <RatingStepEditor
+        section="tables"
+        config={{ tables: [{ factors: ["age_band", "region"], output_column: "f", default_value: "1.0", entries: [] }] }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: [...BANDING_NODES, makeBandingNode("single", ["only"])] },
+    )
+
+    expect(factorOptions("Factor 1")).toEqual(["age_band (3 levels)", "vehicle_type (3 levels)", "single (1 level)"])
+    expect(screen.getByRole("button", { name: "Factor 2" })).toHaveAttribute("title", "region (2 levels)")
   })
 
   it("lays the factors out on one line with + Add factor after them, until there are three", () => {
@@ -1260,19 +1293,19 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor section="tables" config={table(["age_band"])} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
       { allNodes: BANDING_NODES },
     )
-    const first = screen.getByRole("combobox", { name: "Factor 1" })
-    const add = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
+    const first = screen.getByRole("button", { name: "Factor 1" })
+    const add = screen.getByRole("button", { name: "Add factor" })
     // One line: the factor's slot and Add factor share a row.
-    expect(add.parentElement).toBe(first.parentElement!.parentElement)
-    expect(add.options[0].textContent).toBe("+ Add factor")
+    expect(add.parentElement!.parentElement).toBe(first.parentElement!.parentElement!.parentElement)
+    expect(add).toHaveTextContent("Add factor")
 
     view.rerender(
       <GraphProvider allNodes={BANDING_NODES} edges={[]}>
         <RatingStepEditor section="tables" config={table(["age_band", "region", "vehicle_type"])} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
-    expect(screen.getAllByRole("combobox", { name: /^Factor \d$/ })).toHaveLength(3)
-    expect(screen.queryByRole("combobox", { name: "Add factor" })).toBeNull()
+    expect(screen.getAllByRole("button", { name: /^Factor \d$/ })).toHaveLength(3)
+    expect(screen.queryByRole("button", { name: "Add factor" })).toBeNull()
   })
 
   it("shows raw string/categorical preview columns in the add factor dropdown but hides numeric columns", () => {
@@ -1297,8 +1330,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
-    const options = Array.from(addSelect.options).map(o => o.textContent)
+    const options = factorOptions("Add factor")
     expect(options.some(o => o?.includes("age_band"))).toBe(true)
     expect(options.some(o => o?.includes("channel (2 levels)"))).toBe(true)
     expect(options.some(o => o?.includes("segment (2 levels)"))).toBe(true)
@@ -1327,7 +1359,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Add factor" }), { target: { value: "channel" } })
+    chooseFactor("Add factor", "channel")
 
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
@@ -1356,7 +1388,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Add factor" }), { target: { value: "value" } })
+    chooseFactor("Add factor", "value")
 
     expect(onUpdate).not.toHaveBeenCalled()
     expect(screen.getByTestId("rating-factor-limit")).toHaveTextContent(
@@ -1538,8 +1570,7 @@ describe("RatingStepEditor", () => {
       }
     )
 
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
-    const options = Array.from(addSelect.options).map(o => o.textContent)
+    const options = factorOptions("Add factor")
     expect(options.some(o => o?.includes("proposer_age_band"))).toBe(true)
     expect(options.some(o => o?.includes("vehicle_age_band"))).toBe(true)
     expect(options.some(o => o?.includes("channel_band"))).toBe(true)
@@ -1629,8 +1660,7 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: BANDING_NODES }
     )
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" })
-    fireEvent.change(addSelect, { target: { value: "age_band" } })
+    chooseFactor("Add factor", "age_band")
     // Should update tables with the new factor
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({ factors: ["age_band"] }),
@@ -1659,7 +1689,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES },
     )
 
-    fireEvent.change(screen.getAllByRole("combobox", { name: "Add factor" }).at(-1)!, { target: { value: "region" } })
+    chooseFactor("Add factor", "region")
 
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
@@ -1734,12 +1764,12 @@ describe("RatingStepEditor", () => {
     )
     // Factors count should show 3/3
     expect(screen.getByText("Factors (3/3)")).toBeTruthy()
-    expect(screen.getByRole("combobox", { name: "Factor 1" })).toHaveValue("age_band")
-    expect(screen.getByRole("combobox", { name: "Factor 2" })).toHaveValue("region")
-    expect(screen.getByRole("combobox", { name: "Factor 3" })).toHaveValue("vehicle_type")
+    expect(screen.getByRole("button", { name: "Factor 1" })).toHaveTextContent("age_band")
+    expect(screen.getByRole("button", { name: "Factor 2" })).toHaveTextContent("region")
+    expect(screen.getByRole("button", { name: "Factor 3" })).toHaveTextContent("vehicle_type")
     // The 3rd factor (vehicle_type) should appear as the slice selector label
     // The slice's label, not the factor's own option.
-    expect(screen.getByText("vehicle_type", { ignore: "option" })).toBeTruthy()
+    expect(screen.getByText("vehicle_type", { ignore: "option, button span" })).toBeTruthy()
     expect(screen.getByRole("combobox", { name: "vehicle_type slice" })).toBeInTheDocument()
   })
 })
