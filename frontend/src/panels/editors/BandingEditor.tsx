@@ -1,7 +1,8 @@
 import { useState } from "react"
 import { ArrowRight, Plus } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
-import { CommittedTextField, SavedValueOption } from "../../components/form"
+import { CommittedTextField } from "../../components/form"
+import { ColumnSelector } from "../modelling/ColumnSelector"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
 import type { CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -175,49 +176,28 @@ export default function BandingEditor({
     }
   }
   // A factor's input column, in its row of the list before the arrow to its
-  // name. Using it selects the row first: choosing a column of another type
-  // clears the factor's rules, which must be the rules on screen. Only the
-  // selected row's box is in the tab order, so Tab reaches the list once.
+  // name: a dropdown with a search box over the input's columns, never typed
+  // free (until the input has been previewed, it says no columns are known).
+  // Using it selects the row first: choosing a column of another type clears
+  // the factor's rules, which must be the rules on screen. Only the selected
+  // row's dropdown is in the tab order, so Tab reaches the list once.
   const renderInputColumn = (idx: number, selected: boolean) => {
     const f = factors[idx]
     if (!f) return null
-    const label = `${factorItems[idx]?.name ?? `Column ${idx + 1}`} input column`
-    const common = {
-      "aria-label": label,
-      tabIndex: selected ? 0 : -1,
-      onFocus: () => { if (!selected) setActiveIdx(idx) },
-      className: "min-w-0 flex-1 rounded border px-1 py-px text-[11px] font-mono focus:outline-none focus:border-[var(--accent)]",
-      style: { background: "var(--bg-input)", borderColor: "var(--border)", color: "var(--text-primary)" },
-    }
-    if (upstreamColumns.length === 0) {
-      return (
-        <CommittedTextField
-          key={`col-${idx}`}
-          type="text"
-          value={f.column || ""}
-          onCommit={(v) => updateFactor(idx, { column: v })}
-          {...common}
-        />
-      )
-    }
-    const dtype = f.column ? colMap[f.column] : undefined
     return (
-      <select
-        value={f.column}
-        title={f.column ? (dtype ? `${f.column} (${dtype})` : f.column) : undefined}
-        onChange={(e) => {
+      <ColumnSelector
+        compact
+        label={`${factorItems[idx]?.name ?? `Column ${idx + 1}`} input column`}
+        value={f.column || ""}
+        columns={upstreamColumns}
+        placeholder="Select column..."
+        tabIndex={selected ? 0 : -1}
+        onFocus={() => { if (!selected) setActiveIdx(idx) }}
+        onChange={(column) => {
           setActiveIdx(idx)
-          setColumnWithAutoDetect(idx, e.target.value)
+          setColumnWithAutoDetect(idx, column)
         }}
-        {...common}
-      >
-        <option value="">Select column...</option>
-        <SavedValueOption value={f.column} options={upstreamColumns.map(c => c.name)} />
-        {/* By name, so the row keeps room for its name; the type is the tooltip. */}
-        {upstreamColumns.map(c => (
-          <option key={c.name} value={c.name} title={c.dtype}>{c.name}</option>
-        ))}
-      </select>
+      />
     )
   }
   const activeNames = factors[safeIdx] ? nameIssues(factors[safeIdx], safeIdx) : null

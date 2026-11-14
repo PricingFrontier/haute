@@ -103,6 +103,18 @@ function rowOf(name: string) {
   return within(columnList()).getByRole("button", { name: new RegExp(`^${name} (complete|incomplete)$`) })
 }
 
+/** Choose a factor's input column from its row's dropdown, searched by its name. */
+function chooseInputColumn(factorName: string, column: string) {
+  fireEvent.click(screen.getByRole("button", { name: `${factorName} input column` }))
+  fireEvent.change(screen.getByRole("combobox", { name: `Search ${factorName} input column` }), {
+    target: { value: column },
+  })
+  // An option reads its name, then its type: match the name.
+  const option = screen.getAllByRole("option").find((candidate) => candidate.firstElementChild?.textContent === column)
+  if (!option) throw new Error(`No ${column} option`)
+  fireEvent.click(option)
+}
+
 describe("BandingEditor", () => {
   // ─── Existing tests (updated for terminology changes) ─────────
 
@@ -251,12 +263,11 @@ describe("BandingEditor", () => {
         accentColor="#22d3ee"
       />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("age"))
-    })
-    expect(colSelect).toBeTruthy()
+    // A dropdown with a search box, never a box to type a name into.
+    fireEvent.click(screen.getByRole("button", { name: "Column 1 input column" }))
+    expect(screen.getByRole("combobox", { name: "Search Column 1 input column" })).toBeInTheDocument()
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["ageint64", "regionUtf8"])
+    expect(screen.queryByRole("textbox", { name: /input column/ })).toBeNull()
   })
 
   it("column selection auto-detects type for numeric dtype -> breakpoints", () => {
@@ -277,12 +288,7 @@ describe("BandingEditor", () => {
         accentColor="#22d3ee"
       />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("age"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "age" } })
+    chooseInputColumn("Column 1", "age")
 
     // Should auto-detect to breakpoints for int64 dtype
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
@@ -308,12 +314,7 @@ describe("BandingEditor", () => {
         accentColor="#22d3ee"
       />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("region"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "region" } })
+    chooseInputColumn("Column 1", "region")
 
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ column: "region", banding: "categorical" }),
@@ -682,12 +683,7 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("age"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "age" } })
+    chooseInputColumn("Column 1", "age")
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ banding: "breakpoints" }),
     ]))
@@ -753,12 +749,7 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("driver_age"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "driver_age" } })
+    chooseInputColumn("Column 1", "driver_age")
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ output_column: "driver_age_band" }),
     ]))
@@ -779,6 +770,7 @@ describe("BandingEditor", () => {
     )
     const row = rowOf("age_band").parentElement as HTMLElement
     expect(within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+      "age_band input column",
       "age_band complete",
       "Remove age_band column",
     ])
@@ -1133,19 +1125,29 @@ describe("BandingEditor", () => {
     it("sits before an arrow to the factor's name, and is no longer a field below the list", () => {
       renderEditor(<BandingEditor config={two} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
       const row = rowOf("age_band").parentElement as HTMLElement
-      const input = within(row).getByRole("combobox", { name: "age_band input column" })
-      expect(input).toHaveValue("age")
+      const input = within(row).getByRole("button", { name: "age_band input column" })
+      expect(input).toHaveTextContent("age")
       // Input first, then the name: the dropdown comes before the row's button.
       expect(input.compareDocumentPosition(rowOf("age_band")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(input).toHaveAttribute("title", "age (Int64)")
       expect(screen.queryByText("Input Column")).toBeNull()
     })
 
+    it("searches the input's columns, listing each with its type", () => {
+      renderEditor(<BandingEditor config={two} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      fireEvent.click(screen.getByRole("button", { name: "age_band input column" }))
+      const search = screen.getByRole("combobox", { name: "Search age_band input column" })
+      fireEvent.change(search, { target: { value: "reg" } })
+      expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["regionString"])
+      // The menu opens over the page, so the factor list cannot clip it.
+      expect(columnList().contains(search)).toBe(false)
+    })
+
     it("selects the row it belongs to before changing its column", () => {
       const onUpdate = vi.fn()
       renderEditor(<BandingEditor config={two} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
       expect(rowOf("age_band")).toHaveAttribute("aria-pressed", "true")
-      const regionInput = screen.getByRole("combobox", { name: "region_band input column" })
+      const regionInput = screen.getByRole("button", { name: "region_band input column" })
       // Off the tab order until its row is selected: Tab reaches the list once.
       expect(regionInput).toHaveAttribute("tabindex", "-1")
       fireEvent.focus(regionInput)
@@ -1154,24 +1156,24 @@ describe("BandingEditor", () => {
 
       // A number column makes it Numeric, clearing the rules now on screen, and
       // the suggested name follows the column.
-      fireEvent.change(regionInput, { target: { value: "age" } })
+      chooseInputColumn("region_band", "age")
       const [, factors] = onUpdate.mock.lastCall!
       expect(factors[1]).toMatchObject({ column: "age", banding: "breakpoints", rules: [], output_column: "age_band" })
       expect(factors[0]).toEqual(two.factors[0])
     })
 
-    it("keeps a saved column the input no longer has, and takes a typed one while no columns are known", () => {
-      const onUpdate = vi.fn()
+    it("keeps a saved column the input no longer has, and offers no free text while no columns are known", () => {
       const config = { factors: [{ banding: "categorical", column: "gone", output_column: "gone_band", rules: [] }] }
-      const view = renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
-      expect(screen.getByRole("combobox", { name: "gone_band input column" })).toHaveValue("gone")
+      const view = renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      const saved = screen.getByRole("button", { name: "gone_band input column" })
+      expect(saved).toHaveTextContent("gone")
+      expect(saved).toHaveAttribute("title", "gone is not in the input's columns")
       view.unmount()
 
-      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
-      const typed = screen.getByRole("textbox", { name: "gone_band input column" })
-      fireEvent.change(typed, { target: { value: "region" } })
-      fireEvent.blur(typed)
-      expect(onUpdate.mock.lastCall![1][0]).toMatchObject({ column: "region" })
+      renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      expect(screen.queryByRole("textbox", { name: "gone_band input column" })).toBeNull()
+      fireEvent.click(screen.getByRole("button", { name: "gone_band input column" }))
+      expect(screen.getByText("No columns known yet.")).toBeInTheDocument()
     })
   })
 
@@ -1283,7 +1285,7 @@ describe("BandingEditor on a date column", () => {
     )
     expect(screen.getByText("Numeric").closest("button")).toBeDisabled()
 
-    fireEvent.change(screen.getByRole("combobox", { name: "region_band input column" }), { target: { value: column } })
+    chooseInputColumn("region_band", column)
     const factors = onUpdate.mock.calls[0][1]
     expect(factors[0]).toMatchObject({ column, banding: "breakpoints" })
 
@@ -1372,7 +1374,9 @@ describe("BandingEditor saved input column", () => {
         accentColor="#22d3ee"
       />,
     )
-    expect(screen.getByDisplayValue("old_age (not in input)")).toBeInTheDocument()
+    const saved = screen.getByRole("button", { name: "age_band input column" })
+    expect(saved).toHaveTextContent("old_age")
+    expect(saved).toHaveAttribute("title", "old_age is not in the input's columns")
   })
 })
 

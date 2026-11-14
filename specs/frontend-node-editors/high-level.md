@@ -68,8 +68,9 @@ backend API modules own validation and persistence.
   the first `constant_<n>` no row uses.
 - Neither Banding nor Rating Step has an Output Column field: an item's output column is its
   name in the list, renamed there. Banding has no Input Column field either: each row shows
-  the factor's input column, a dropdown of the input's columns by name (a text box while none
-  are known), then an arrow to its name, so a row reads input → output. Using a row's
+  the factor's input column, a dropdown with a search box over the input's columns, never a
+  text box (with none known yet it says so), then an arrow to its name, so a row reads
+  input → output. Using a row's
   dropdown selects that row first, since a change of type clears the rules on screen, and
   only the selected row's dropdown is in the tab order. Banding's rename refuses, inline and without applying it, a
   name another active factor writes while the factor being edited is active (it has its input

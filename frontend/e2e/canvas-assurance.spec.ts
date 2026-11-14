@@ -225,7 +225,7 @@ test.describe("frontend canvas assurance", () => {
     await page.getByRole("button", { name: "Refresh", exact: true }).click()
     await expect(bandingPanel.getByText(/^All rows · /)).toBeVisible({ timeout: 60_000 })
     await expect(bandingPanel.getByRole("img", { name: "Distribution histogram" })).toBeVisible()
-    await expect(bandingPanel.getByRole("combobox", { name: "vehicle_age_band input column", exact: true })).toHaveValue("vehicle_age")
+    await expect(bandingPanel.getByRole("button", { name: "vehicle_age_band input column", exact: true })).toHaveText("vehicle_age")
     await stabiliseCanvasScreenshot(page)
 
     await expectCanvasScreenshot(
