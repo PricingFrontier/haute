@@ -16,6 +16,11 @@ phase 5, a reader from a second model family (Codex) over the code changed
 since the 31 October audit. A worker ran each against a local MLflow store
 and the main session ran each again on 13 November.
 
+`MLR-09` comes from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker built each run and the main session ran each again on 14 November
+2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -28,6 +33,7 @@ and the main session ran each again on 13 November.
 | MLR-06 | Planned | P1 | A Model Scoring node that names a registered model and version scores the file that version was registered from, not the first model file of its run. |
 | MLR-07 | Planned | P3 | A model file logged again over the same path of a run is the one that scores. |
 | MLR-08 | Planned | P3 | A logged model takes a part-year or a missing exposure whatever type its training exposure had. |
+| MLR-09 | Planned | P3 | A GLM trained on the canvas logs its family, link, terms and penalty to MLflow, as a scripted run does. |
 
 ## Planned improvements
 
@@ -307,3 +313,25 @@ exposure and 1.0 with the values the Model Scoring node gives.
 **Evidence:** `src/haute/modelling/_signature.py::build_signature`;
 `src/haute/modelling/_candidate_run.py`;
 `specs/mlflow-model-registry/high-level.md`.
+
+### MLR-09 — A GLM trained on the canvas logs its parameters to MLflow
+**Why:** Reproduced on 14 November 2026. A Poisson GLM with a log link,
+two terms, an exposure offset and a ridge penalty of 0.1 is trained on the
+canvas and logged to a local MLflow. The run holds no `param_` keys. The
+same model trained by a scripted job logs five: `param_alpha`,
+`param_family`, `param_link`, `param_regularization` and `param_terms`.
+The specification has the final parameters logged on both paths. The
+canvas log reads the node's `params` setting, which a GLM does not use:
+its family, link and terms are fields of the node.
+
+**Plan:** Log the parameters the training was built with, from the same
+function that built them.
+
+**Acceptance:** The canvas run above holds the five keys the scripted run
+holds, with the same values.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/modelling.py`;
+`src/haute/modelling/_train_config.py`;
+`specs/mlflow-model-registry/low-level.md`.

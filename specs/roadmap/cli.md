@@ -15,6 +15,11 @@ family (Codex) over the code changed since the 31 October audit, and was
 reproduced with the real executable on 13 November. `CLI-07` comes from
 the plan's phase 4, which carried projects made on Windows to Linux.
 
+`CLI-08` to `CLI-09` come from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker built each run and the main session ran each again on 14 November
+2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -26,6 +31,8 @@ the plan's phase 4, which carried projects made on Windows to Linux.
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
 | CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
+| CLI-08 | Planned | P3 | `haute run` refused for memory prints one line with the limit and the setting that raises it, not a traceback. |
+| CLI-09 | Planned | P3 | A second `haute init` lists the `.gitattributes` it writes, and the file is recorded like the others. |
 
 ## Planned improvements
 
@@ -263,3 +270,47 @@ an executable hook.
 
 **Evidence:** `src/haute/cli/_init_cmd.py::handle_init`;
 `src/haute/_scaffold.py::pre_commit_hook`.
+
+### CLI-08 — `haute run` refused for memory says so in one line
+**Why:** Reproduced on 14 November 2026 with the real command on a
+two-node pipeline. With the process memory cap of the run's profile set
+below what the command already holds
+(`HAUTE_SINK_PROCESS_RSS_LIMIT_MB=50`), the run is not admitted and the
+command prints a 34-line Python traceback ending "Execution 'cli_run' was
+not admitted for profile 'lazy_sink': process_rss_limit_exceeded", with no
+limit and no remedy. The editor's server turns the same refusal into a
+memory message. The command catches Haute's own errors, `ValueError` and
+`OSError`; the admission refusal is a `MemoryError`, so it passes through.
+
+**Plan:** Catch the admission refusal in the command and print one line
+with the limit that refused it, what was measured, and the setting that
+raises it.
+
+**Acceptance:** The run above exits 1 with one line naming the limit and
+the setting, and no traceback.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_run.py`; `src/haute/cli/_helpers.py`;
+`src/haute/_execution_admission.py`.
+
+### CLI-09 — A second `haute init` lists and records the `.gitattributes` it writes
+**Why:** Reproduced on 14 November 2026. In a project whose
+`.gitattributes` is gone (deleted, or made before Haute wrote one),
+`haute init` run again writes the file. Its summary lists every other
+generated file and not this one. On a working branch the editor then has
+no pending save for it, and Commit answers "No new saves to commit — the
+working branch is up to date." while `git status` shows the file
+untracked. The specification has every generated, untracked file recorded
+as a save or named as not captured.
+
+**Plan:** Put `.gitattributes` in the list of files the command wrote, so
+it is reported and captured like the others.
+
+**Acceptance:** After the steps above the summary names `.gitattributes`
+as written and the file is in the working branch's history, or is named as
+not captured.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_init_cmd.py`; `specs/cli/high-level.md`.

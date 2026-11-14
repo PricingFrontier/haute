@@ -19,6 +19,11 @@ session ran it again on 13 November.
 `EXE-01` also changes what the optimiser runs on, so it is read together with
 [the optimiser specification](../optimiser/high-level.md).
 
+`EXE-09` comes from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker built each run and the main session ran each again on 14 November
+2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -31,6 +36,7 @@ session ran it again on 13 November.
 | EXE-06 | Planned | P2 | A pipeline run as Python, by `pipeline.run()` or `pipeline.score()`, applies each node's column selection and renames, as `haute run`, the preview and a deployment do. |
 | EXE-07 | Planned | P2 | A preview worker that died while idle is replaced whatever the size of the next request; previews and the server's shutdown no longer hang until a restart. |
 | EXE-08 | Planned | P3 | A column replaced under its own name is estimated at its new width, so work that cannot fit is refused before it runs. |
+| EXE-09 | Planned | P3 | A Source Switch input with a non-ASCII name is chosen by `pipeline.run()` as it is by the preview and `haute run`. |
 
 ## Planned improvements
 
@@ -331,3 +337,24 @@ reads, as for a column with a new name.
 
 **Evidence:** `src/haute/_ram_estimate.py`;
 `specs/execution-engine/low-level.md`.
+
+### EXE-09 — A Source Switch input with a non-ASCII name is chosen in plain Python too
+**Why:** Reproduced on 14 November 2026. A pipeline has the Data Inputs
+`live_rows` and `données` behind a Source Switch, with `données` mapped
+to the source `batch`. The editor's preview under `batch` and
+`haute run --source batch` both read `données`. Imported and run as plain
+Python, `pipeline.run(source='batch')` raises "Live switch 'choose' has no
+input for scenario 'batch'", in a message that lists `batch` among the
+available mappings. That path gives the switch its inputs by the names
+written in the code, where the mapping holds the sanitised names the
+specification gives a non-ASCII parameter.
+
+**Plan:** Give the switch the sanitised input names on the plain-Python
+path, as the other two paths do.
+
+**Acceptance:** The three paths above return the same two rows.
+
+**Dependencies:** `EXE-06` is another difference of the same path.
+
+**Evidence:** `src/haute/_standalone_nodes.py`;
+`specs/pipeline-config/low-level.md`.

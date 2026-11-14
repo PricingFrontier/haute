@@ -42,6 +42,11 @@ phase's carrying of projects made on Windows to Linux, and was run again on Wind
 over the code changed since the 31 October audit. A worker ran each in a browser, and the
 main session ran each journey again on 13 November 2026.
 
+`WB-63` to `WB-69` come from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker built each run and the main session ran each again on 14 November
+2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -72,6 +77,13 @@ main session ran each journey again on 13 November 2026.
 | WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
 | WB-61 | Planned | P3 | Text being typed in the designer's Preview is kept when a test quote's Open answers late. |
 | WB-62 | Planned | P3 | A whole number of more than 15 digits is shown digit for digit in a column with a Number format. |
+| WB-63 | Planned | P1 | An underwriter app opened before a column was added keeps that column's values when it saves a quote. |
+| WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
+| WB-65 | Planned | P3 | A single-precision column for a Decimal field is named as a difference, not left to round values. |
+| WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
+| WB-67 | Planned | P2 | A changed params file changes the form's revision, so a test quote typed against the old values is refused as stale. |
+| WB-68 | Planned | P3 | A number in a params file is read as the same text typed in a cell, thousands separators included. |
+| WB-69 | Planned | P2 | Accept is refused when a data file the helper code reads changed after the run. |
 
 ## Planned improvements
 
@@ -1055,3 +1067,153 @@ grouped, in an input cell and in an output.
 
 **Evidence:** `frontend/src/utils/sheetValues.ts`;
 `specs/workbench/low-level.md`.
+
+### WB-63 — An app opened before a column was added keeps that column's values
+**Why:** Reproduced on 14 November 2026 on SQLite, PostgreSQL 16 and SQL
+Server 2022. An app on the old release has the store open. The owner runs
+Haute's migration SQL, which adds a nullable column `sum_insured`. An app
+on the new release saves 5,000,000 there. The old app then opens that
+quote, changes another field and saves: the answer is 200 and
+`sum_insured` is null. An old app opened after the migration keeps the
+value. The specification has a database column the form does not know
+keep its values through a save. The store reads which columns to keep
+once, when it opens, and the gate reuses the open store.
+
+**Plan:** Read the columns to keep when a save is made, or when the
+database's tables are seen to have changed, not once at opening.
+
+**Acceptance:** In the run above the old app's save leaves 5,000,000 in
+place on all three databases.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_store.py`;
+`src/haute/_workbench_app_store.py`; `specs/workbench/high-level.md`.
+
+### WB-64 — The migration SQL for SQL Server leaves a column's NOT NULL as it says it does
+**Why:** Reproduced on 14 November 2026. A column of the store was made
+`BIGINT NOT NULL` by its owner, and the form declares it Decimal. The
+migration SQL Haute writes says "Not changed here: policy_details.exposure
+takes no null, unlike the store's." and then, on SQL Server, runs
+`ALTER COLUMN exposure FLOAT(53) NULL`. After it the column takes nulls.
+On PostgreSQL the statement changes the type only and the column still
+refuses them.
+
+**Plan:** Write the column's present nullability into the SQL Server
+statement that changes its type.
+
+**Acceptance:** After the SQL above the column on SQL Server is a float
+that takes no null.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_migrate.py`;
+`specs/workbench/high-level.md`.
+
+### WB-65 — A single-precision column is named as a difference for a Decimal field
+**Why:** Reproduced on 14 November 2026 on SQL Server 2022 and
+PostgreSQL 16. A Decimal field's column was made `REAL` by hand. The
+comparison of the form with the database reports no difference and the app
+opens. A quote saved with 16,777,217 there opens as 16,777,216, with
+nothing said. The specification makes a Decimal a double. The comparison
+reads `REAL` and a double as one kind.
+
+**Plan:** Tell single from double precision when the database's columns
+are read, and report a single-precision column for a Decimal field as a
+difference the migration SQL widens.
+
+**Acceptance:** The comparison above names the column, and after the SQL
+is run the value is kept.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_catalogue.py`;
+`specs/workbench/high-level.md`.
+
+### WB-66 — A test quote's rows are opened by their values after a list of codes is reordered
+**Why:** Reproduced on 14 November 2026 through the designer's routes. A
+table's index takes its allowed values from a params file holding `01`
+and `02`. A test quote is saved with 100 against the first code and 200
+against the second. The file is reordered to `02`, `01` and the quote is
+opened: the sheet shows `02` with 100 and `01` with 200. Both codes are
+listed as not opened, yet their amounts are kept, paired by position. The
+specification has "preset rows placed by their values". With the
+file unchanged the codes are still listed as not opened, and so is a
+limit of 1000 whose allowed value is written `1000.00`: the saved number
+is compared as text with the file's spelling.
+
+**Plan:** Compare a saved value with an allowed value as the column's
+type, and place the saved rows by the index value. Leave a row out whole
+when its index value is no longer allowed.
+
+**Acceptance:** With the file unchanged nothing is listed as not opened.
+After the reorder `01` shows 100 and `02` shows 200.
+
+**Dependencies:** `WB-60` is the app's side of pairing by position.
+
+**Evidence:** `src/haute/_workbench_test_quotes.py`;
+`src/haute/_workbench_tables.py`; `specs/workbench/high-level.md`.
+
+### WB-67 — A change to a params file changes the form's revision
+**Why:** Reproduced on 14 November 2026 through the designer's routes. A
+table's index takes its values, `A` and `B`, from a params file outside
+the form's folder. Preview is open with 100 against `A` and 200 against
+`B`. The file is changed to `A`, `C`, as a colleague's pull would. A test
+quote saved from Preview is answered 200 and holds `A` with 100 and `C`
+with nothing: the 200 is lost and nothing is said. The specification has
+the quote saved be the one typed, or the save refused as stale. The
+revision that guards the save is made from the form's folder only, and
+was the same before and after.
+
+**Plan:** Put the params files the form reads into its revision.
+
+**Acceptance:** The save above is refused as stale, and Preview shows the
+new codes after it reloads.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_folder.py`;
+`specs/workbench/high-level.md`.
+
+### WB-68 — A number in a params file is read as the same number typed in a cell
+**Why:** Reproduced on 14 November 2026. A field takes its allowed values
+from a params file. With `1,000` for an Integer field, `1,000.00` for a
+Decimal one, or `1.0` for an Integer one, the form does not load: 409,
+"limits.csv gives policy.limit the value '1,000', which a int column does
+not hold." The same text typed into a cell of the same type is read as
+1000, 1000.0 and 1. A file saved from a spreadsheet with thousands
+separators is such a file. The message also names the type by its code
+name, "a int", "a float".
+
+**Plan:** Read a params value with the function that reads a typed cell,
+and name the type in the message as the form does.
+
+**Acceptance:** The three files above load with the values the cell
+gives. A value that is not a number is refused with the type's own name.
+
+**Dependencies:** `WB-48` is about typed numbers with a comma out of place.
+
+**Evidence:** `src/haute/_workbench_params.py`;
+`src/haute/_workbench_tables.py`.
+
+### WB-69 — Accept is refused when a data file the helper code reads has changed
+**Why:** Reproduced on 14 November 2026 through the designer's routes. A
+project's `utility` code reads a factor from `utility/rates.json`. A test
+quote expects a premium of 100. The factor is changed to 2 and the test
+is run: it shows the premium moving from 100 to 200. The factor is then
+changed to 3, and Accept is pressed. The answer is 200 and the test's
+expected premium becomes 300, a number the analyst was never shown. With
+the change made in `utility/__init__.py` instead, Accept is refused:
+"What the run priced on changed since". The check hashes the `.py` files
+of `utility` only.
+
+**Plan:** Hash every file under `utility`, as `CCH-05` asks of the
+preview's cache.
+
+**Acceptance:** The Accept above is refused with the sentence the code
+change gets.
+
+**Dependencies:** `CCH-05`.
+
+**Evidence:** `src/haute/_workbench_test_quotes.py`;
+`specs/workbench/high-level.md`.

@@ -14,6 +14,11 @@ comparison a deploy's validation uses. `DPL-05` comes from the review
 plan's sweep of the commands on 11 November 2026 and was reproduced on
 fresh copies of the shipped examples.
 
+`DPL-06` to `DPL-10` come from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker built each run and the main session ran each again on 14 November
+2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -23,6 +28,11 @@ fresh copies of the shipped examples.
 | DPL-03 | Planned | P3 | A dry run refuses a deploy target, a model name and a target setting that no deploy can use, and a missing pipeline file is reported without a traceback. |
 | DPL-04 | Planned | P3 | A test quote can expect a date or a date-time output, written as the response writes it. |
 | DPL-05 | Planned | P2 | `haute deploy --dry-run` passes on a clean checkout of a pipeline whose input is a CSV Data Input, as a CI job runs it, without `haute run` first. |
+| DPL-06 | Planned | P2 | `haute impact` fails, naming the output, when staging answers no premium where production answers one. |
+| DPL-07 | Planned | P3 | `haute impact` sends a Date column as ISO text instead of ending in a traceback. |
+| DPL-08 | Planned | P3 | The dry run refuses a test quote with a fraction for an integer input, as the service does. |
+| DPL-09 | Planned | P2 | The dry run passes a test quote that leaves out an exposure the service prices for a full term. |
+| DPL-10 | Planned | P2 | A container for a Model Scoring node that names a run carries MLflow and the model's engine, or the node is refused in words. |
 
 ## Planned improvements
 
@@ -209,3 +219,105 @@ runs the dry run on clean copies of the examples (`EQ-04`).
 `src/haute/_input_providers.py::resolve_data_input`;
 `src/haute/_input_providers.py::recording_schema_tiers`;
 `src/haute/_scaffold.py::_DRY_RUN_CHECK`.
+
+### DPL-06 — An impact report says when staging no longer answers an output
+**Why:** Reproduced on 14 November 2026 with the real `haute impact`
+against two stand-in endpoints. Production answers a premium and a tax for
+each quote. Staging answers the same tax and a null premium, or no premium
+at all. The command exits 0 and reports only "Output: tax", no rows
+changed, premium impact 0.0%. The premium is not mentioned. The
+specification has the command raise rather than report when predictions
+hold missing values. The outputs compared are staging's numeric columns,
+and a column that is all null, or absent, is not one of them.
+
+**Plan:** Compare the outputs production answers. Fail, naming the
+output, when staging lacks one or answers null where production answers a
+number.
+
+**Acceptance:** Both runs above exit 1 and name `premium`.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_impact.py`; `specs/deploy/high-level.md`.
+
+### DPL-07 — `haute impact` sends a date column as text
+**Why:** Reproduced on 14 November 2026. With an impact dataset whose
+Parquet file holds a Date column, `haute impact` exits 1 with a traceback
+ending "TypeError: Object of type date is not JSON serializable", and
+neither endpoint receives a request. With the same column as text the
+quotes are sent and the report is written. A served request takes a date
+as ISO text.
+
+**Plan:** Build the request rows with the JSON writer the service's own
+callers use, which writes dates and times as ISO text.
+
+**Acceptance:** The run above sends `2026-11-01` for the date and writes
+its report.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_impact.py`; `src/haute/cli/_impact.py`;
+`specs/deploy/high-level.md`.
+
+### DPL-08 — The dry run types a test quote as the service types a request
+**Why:** Reproduced on 14 November 2026. A test quote gives `age` as 30.9
+for an input the deploy records as Int64. `haute deploy --dry-run` passes
+it: "fractional.json 1 rows ok". The served app, built from the same
+bundle, refuses the same quote with 422: "Quote 0's 'age' is 30.9, which
+its Int64 column does not hold." The specification types requests and
+test quotes by the same declared types. The dry run builds its frame from
+the quote with no schema.
+
+**Plan:** Build the dry run's frame through the function the served app
+uses for a request.
+
+**Acceptance:** The dry run fails on the quote above with the service's
+sentence.
+
+**Dependencies:** `DPL-09` is the same difference the other way round.
+
+**Evidence:** `src/haute/deploy/_validators.py`;
+`src/haute/deploy/_container.py`; `specs/deploy/high-level.md`.
+
+### DPL-09 — The dry run accepts a test quote that leaves out its exposure
+**Why:** Reproduced on 14 November 2026. A Model Scoring node scores a
+model whose contract declares an exposure offset, and the deploy records
+`exposure` as an input a quote may leave out. A test quote without it
+fails the dry run: "missing required input column(s) ['exposure']", exit
+1. The served app prices the same quote, 0.5578, the answer it gives for
+an exposure of 1. So the check a project's CI runs before a deploy
+refuses a quote the service is specified to price for a full term.
+
+**Plan:** Have the dry run's check of required columns leave out the
+inputs the deploy records as omittable.
+
+**Acceptance:** The dry run passes the quote above and reports the
+service's answer.
+
+**Dependencies:** `DPL-08`.
+
+**Evidence:** `src/haute/deploy/_validators.py`;
+`specs/deploy/high-level.md`.
+
+### DPL-10 — A container for a model chosen by run carries MLflow and the model's engine
+**Why:** Run on 14 November 2026 as far as the image's list of
+dependencies; no image was built. A Model Scoring node names an MLflow
+run and leaves the artifact path empty, so the model is found when the
+service scores. `haute run` and the dry run pass. The bundle holds no
+model file, and the dependencies written for the image hold neither
+`mlflow` nor `catboost`, the model's engine. MLflow is added for an
+Optimiser Apply node only, and engines are read from the suffixes of
+bundled files. The image as listed cannot load the model its node names.
+
+**Plan:** Add MLflow, and the engine the run's model records, to the
+image whenever a Model Scoring node resolves its model at run time; or
+refuse such a node for a container target and say to bundle the file.
+
+**Acceptance:** For the project above the image's dependencies hold both
+packages, or the dry run refuses the node in words. A test builds the
+list for a node of each source type.
+
+**Dependencies:** `MLR-06` is about which file such a node scores.
+
+**Evidence:** `src/haute/deploy/_container.py`;
+`specs/deploy/low-level.md`.

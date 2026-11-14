@@ -13,6 +13,11 @@ again by the main session. `PCF-05` comes from the plan's phase 4, which
 carried projects made on Windows to Linux on 12 November; the main session
 ran each case again on both systems.
 
+`PCF-06` to `PCF-08` come from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker built each run and the main session ran each again on 14 November
+2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -22,6 +27,9 @@ ran each case again on both systems.
 | PCF-03 | Planned | P3 | A configured pipeline file with a trailing space, an upper-case extension or a moment's lock is run or refused for that cause, not called "not a pipeline". |
 | PCF-04 | Planned | P2 | `haute run` in a project that is not yet a git repository runs, or names the missing repository as `haute serve` does, instead of calling an existing data file unavailable. |
 | PCF-05 | Planned | P2 | An absolute path, a path in another letter case than its file, and a backslash in `haute.toml` are each refused or rewritten on Windows when saved and linted, instead of running there and failing on Linux. |
+| PCF-06 | Planned | P2 | A node whose placeholder body was replaced by hand is no longer called unfinished: the editor, `haute lint`, `haute run` and plain Python agree. |
+| PCF-07 | Planned | P3 | Recover settings rebuilds a Model Score that follows an alias, instead of refusing a version it added itself. |
+| PCF-08 | Planned | P2 | Reset node refuses to replace a settings file that a node inside a submodel shares. |
 
 ## Planned improvements
 
@@ -202,3 +210,73 @@ project from Windows to Linux and back.
 **Evidence:** `src/haute/_path_resolution.py::resolve_runtime_file_path`;
 `src/haute/_path_case_audit.py`; `src/haute/_project.py`;
 `src/haute/routes/_save_pipeline.py`; `src/haute/cli/_lint.py`.
+
+### PCF-06 — A record of unfinished steps ends when the node's code is rewritten by hand
+**Why:** Reproduced on 14 November 2026. A Data Input saved in the editor
+with a half-built step gets a placeholder body that raises, and a record
+of its unfinished steps in `.haute.json`. The analyst then replaces the
+body by hand with `return df`. The four ways of using the file now
+disagree. Run as plain Python, the pipeline returns its three rows. The
+editor loads the node as ready, shows the old steps, and its preview says
+"This node's steps are incomplete". `haute lint` warns the same and exits
+0. `haute run` on the node exits 1 with a traceback ending in
+`NotImplementedError`. The specification has the record ignored once the
+body is no longer the placeholder. The record is restored whenever the
+body yields no step code, and `return df` yields none.
+
+**Plan:** Restore the record only while the body is the placeholder
+itself; drop it from `.haute.json` on the next save otherwise.
+
+**Acceptance:** After the hand edit above, the editor's preview,
+`haute lint`, `haute run` and plain Python all treat the node as
+`return df`.
+
+**Dependencies:** `CGEN-10` is another way the placeholder replaces code.
+
+**Evidence:** `src/haute/_sidecar.py`; `src/haute/_builders.py`;
+`specs/pipeline-config/high-level.md`.
+
+### PCF-07 — Recover settings keeps a Model Score that follows an alias
+**Why:** Reproduced on 14 November 2026 through the editor's routes. A
+Model Score's settings name a registered model and the alias `champion`,
+no version, and hold one key the node type no longer declares. The node
+loads unavailable, and Recover settings answers 409: "modelScore config
+names both a version and an alias; choose one ... (alias=champion,
+version=latest)". The file names no version. Recovery fills the missing
+key with a new node's default, `latest`, and then refuses its own result.
+With a pinned version and no alias, the same recovery removes the old key
+and succeeds.
+
+**Plan:** When recovery fills missing keys from a new node's defaults,
+leave out a default the kept settings exclude, here a version beside an
+alias.
+
+**Acceptance:** Recover settings on the file above removes the obsolete
+key and keeps the model and its alias, with no version.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_node_config_recovery.py`;
+`src/haute/_config_validation.py`.
+
+### PCF-08 — Reset node leaves a settings file a submodel's node shares
+**Why:** Reproduced on 14 November 2026 through the editor's routes. A
+Data Input at the root and a Data Input inside a submodel both name
+`config/shared_input.json`. The root node's code is broken by a hand
+edit, and Reset node is pressed. The answer is 200, and the shared file is
+replaced by a new node's defaults, an empty path. The submodel's node,
+which was working, now fails: "Format 'parquet' requires a non-empty
+'path'". With both nodes at the root the same Reset is refused: "This
+config is shared by another node and cannot be reset independently." The
+search for sharers does not see a node inside a submodel.
+
+**Plan:** Include the nodes of every submodel file when looking for the
+nodes that share a settings file.
+
+**Acceptance:** The Reset above is refused with the sentence the root
+case gets, and the shared file is unchanged.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_pipeline_recovery.py`;
+`specs/server-api/node-recovery-actions.md`.
