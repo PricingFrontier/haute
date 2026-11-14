@@ -32,7 +32,7 @@ Click a table in the list to edit it below:
 
 Under the factors, the table itself:
 
-- **One factor**: one row per level, with its **RELATIVITY** and a bar showing its size.
+- **One factor**: one row per level, with its **RELATIVITY**.
 - **Two factors**: a grid, with the first factor's levels as rows and the second's as columns. **Copy visible table as TSV** copies it; pasting tab-separated values into a cell fills the grid from that cell.
 - **Three factors**: a list for the third factor chooses which level's grid to show; the grid is the first factor by the second, as for two factors.
 

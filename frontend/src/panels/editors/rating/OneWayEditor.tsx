@@ -25,7 +25,6 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
     const k = String(e[factor] ?? "")
     if (k) lookup.set(k, typeof e.value === "number" ? e.value : parseFloat(String(e.value ?? "1")))
   }
-  const maxVal = stats ? Math.max(Math.abs(stats.max), Math.abs(stats.min), 1) : 1
 
   const safeDefault = resolveDefault(defaultValue)
 
@@ -54,18 +53,16 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
           <tr style={{ background: 'var(--bg-elevated)' }}>
             <th scope="col" className="text-left px-2.5 py-2 font-bold uppercase tracking-[0.06em] text-[10px]"
               style={{ color: 'var(--text-muted)', borderBottom: '2px solid var(--border)' }}>{factor}</th>
+            {/* The rates as plain numbers, with no formatting that varies with the value. */}
             <th scope="col" className="text-center px-2 py-2 font-bold uppercase tracking-[0.06em] text-[10px]"
-              style={{ color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', width: 80 }}>Relativity</th>
-            <th scope="col" className="px-2 py-2 text-[10px]"
-              style={{ color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', width: '40%' }}></th>
+              style={{ color: 'var(--text-muted)', borderBottom: '2px solid var(--border)', width: '45%' }}>Relativity</th>
           </tr>
         </thead>
         <tbody>
           {levels.length === 0 ? (
-            <tr><td colSpan={3} className="px-2 py-4 text-center" style={{ color: 'var(--text-muted)' }}>No banding levels found</td></tr>
+            <tr><td colSpan={2} className="px-2 py-4 text-center" style={{ color: 'var(--text-muted)' }}>No banding levels found</td></tr>
           ) : levels.map((level, ri) => {
             const val = lookup.get(level) ?? safeDefault
-            const barWidth = Math.min((Math.abs(val) / maxVal) * 100, 100)
             return (
               <tr key={level} style={{
                 borderBottom: '1px solid var(--border)',
@@ -79,7 +76,6 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
                   style={{
                     background: isCellSelected(ri, 0) ? 'var(--accent-soft)' : 'transparent',
                     borderBottom: '1px solid var(--border)',
-                    borderRight: '1px solid var(--border)',
                   }}
                 >
                   <ControlledNumberCell
@@ -88,15 +84,6 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
                     aria-label={`Relativity for ${factor} ${level}`}
                     className="rating-editor-number-cell w-full px-1.5 py-1 rounded-none text-[11px] font-mono text-center cursor-text"
                     style={EDITABLE_RELATIVITY_INPUT_STYLE} />
-                </td>
-                <td className="px-2 py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <div className="relative h-3 rounded-full overflow-hidden" style={{ background: 'var(--bg-elevated)' }}>
-                    <div className="absolute inset-y-0 left-0 rounded-full transition-all"
-                      style={{
-                        width: `${barWidth}%`,
-                        background: val >= 1 ? "rgba(var(--danger-rgb), .35)" : "rgba(var(--chart-below-rgb), .35)",
-                      }} />
-                  </div>
                 </td>
               </tr>
             )
