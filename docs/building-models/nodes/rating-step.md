@@ -28,7 +28,6 @@ Click a table in the list to edit it below:
 | Field | What it does |
 |---|---|
 | **FACTORS (N/3)** | The columns the table looks up, up to three, side by side in order on one line, each a third of its width however many there are. With none yet, choose the first from **Select factor...**; after that **+ Add factor**, beside the factors, adds another, and the × beside a factor removes it. **+ Add factor** lists the columns with known levels, each with its number of levels: the band names of every Banding node's outputs, and the text columns of the input. A factor's own list names them alone, and hovering it gives its full name and number of levels. A factor that is not among them shows as "(not a banding factor)". A column named `value` cannot be a factor, since each entry keeps its relativity under `value`: rename it upstream, in a Transform node for example. Adding or removing a factor rebuilds the entries for every combination of levels, keeping the values already entered. |
-| **↻ Rebuild from factor levels** | Rebuilds the entries from the factors' current levels - after a Banding node gains a band, for example - keeping the values already entered. |
 
 Under the factors, the table itself:
 
@@ -40,7 +39,9 @@ Type a relativity into a cell; it is saved when you leave the cell, and an empti
 
 A factor with many levels can make a table too large to edit: past 20,000 cells the editor says how big it would be, for example "area (2000) × vehicle_model (400) would be 800,000 cells - too many to edit here. Band the column first, or rate it in a table of its own."
 
-Under the table, what a row whose factor values have no entry in it (e.g. an area code you haven't mapped) gets:
+Under the table, **↻ Rebuild from factor levels** rebuilds its entries from the factors' current levels - after a Banding node gains a band, for example - keeping the values already entered. It is greyed out while the table is too large to edit.
+
+Below that, what a row whose factor values have no entry in it (e.g. an area code you haven't mapped) gets:
 
 | Field | What it does |
 |---|---|

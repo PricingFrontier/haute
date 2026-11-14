@@ -557,7 +557,12 @@ describe("RatingStepEditor", () => {
       })
       const onMiss = screen.getByLabelText("On miss")
       const rates = screen.getByText("n=1")
-      expect(rates.compareDocumentPosition(onMiss) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      const rebuild = screen.getByRole("button", { name: /Rebuild from factor levels/ })
+      const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+      // The table, then Rebuild from factor levels, then On miss and Default.
+      expect(follows(screen.getByRole("region", { name: "age_band rating grid" }), rebuild)).toBe(true)
+      expect(follows(rates, rebuild)).toBe(true)
+      expect(follows(rebuild, onMiss)).toBe(true)
     })
   })
 

@@ -610,15 +610,6 @@ export default function RatingStepEditor({
         </div>
       </div>
 
-      {/* Rebuild button */}
-      {factorCount > 0 && (
-        <button onClick={rebuildCurrentEntries} disabled={tableTooLarge}
-          className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}>
-          ↻ Rebuild from factor levels
-        </button>
-      )}
-
       {/* Table editor */}
       {factorCount === 0 && (
         <div className="px-2 py-4 text-center text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -686,6 +677,15 @@ export default function RatingStepEditor({
               }} />
           )}
         </div>
+      )}
+
+      {/* Rebuild, under the table it rebuilds */}
+      {factorCount > 0 && (
+        <button onClick={rebuildCurrentEntries} disabled={tableTooLarge}
+          className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}>
+          ↻ Rebuild from factor levels
+        </button>
       )}
 
       {/* What a level the table does not list takes, under the table: nothing,
