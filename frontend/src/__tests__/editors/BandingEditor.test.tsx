@@ -1118,15 +1118,61 @@ describe("BandingEditor", () => {
 
   // ─── Feature 18: Accessibility — labels linked to inputs ──────────
 
-  it("Input Column label is linked to its input via htmlFor", () => {
-    const config = {
-      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
+  describe("a factor's input column, in its row", () => {
+    const columns = [
+      { name: "age", dtype: "Int64" },
+      { name: "region", dtype: "String" },
+    ]
+    const two = {
+      factors: [
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [{ upper: 30, label: "young" }] },
+        { banding: "categorical", column: "region", output_column: "region_band", rules: [{ value: "N", assignment: "North" }] },
+      ],
     }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const label = screen.getByText("Input Column")
-    expect(label.getAttribute("for")).toBeTruthy()
+
+    it("sits before an arrow to the factor's name, and is no longer a field below the list", () => {
+      renderEditor(<BandingEditor config={two} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      const row = rowOf("age_band").parentElement as HTMLElement
+      const input = within(row).getByRole("combobox", { name: "age_band input column" })
+      expect(input).toHaveValue("age")
+      // Input first, then the name: the dropdown comes before the row's button.
+      expect(input.compareDocumentPosition(rowOf("age_band")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(input).toHaveAttribute("title", "age (Int64)")
+      expect(screen.queryByText("Input Column")).toBeNull()
+    })
+
+    it("selects the row it belongs to before changing its column", () => {
+      const onUpdate = vi.fn()
+      renderEditor(<BandingEditor config={two} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      expect(rowOf("age_band")).toHaveAttribute("aria-pressed", "true")
+      const regionInput = screen.getByRole("combobox", { name: "region_band input column" })
+      // Off the tab order until its row is selected: Tab reaches the list once.
+      expect(regionInput).toHaveAttribute("tabindex", "-1")
+      fireEvent.focus(regionInput)
+      expect(rowOf("region_band")).toHaveAttribute("aria-pressed", "true")
+      expect(onUpdate).not.toHaveBeenCalled()
+
+      // A number column makes it Numeric, clearing the rules now on screen, and
+      // the suggested name follows the column.
+      fireEvent.change(regionInput, { target: { value: "age" } })
+      const [, factors] = onUpdate.mock.lastCall!
+      expect(factors[1]).toMatchObject({ column: "age", banding: "breakpoints", rules: [], output_column: "age_band" })
+      expect(factors[0]).toEqual(two.factors[0])
+    })
+
+    it("keeps a saved column the input no longer has, and takes a typed one while no columns are known", () => {
+      const onUpdate = vi.fn()
+      const config = { factors: [{ banding: "categorical", column: "gone", output_column: "gone_band", rules: [] }] }
+      const view = renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      expect(screen.getByRole("combobox", { name: "gone_band input column" })).toHaveValue("gone")
+      view.unmount()
+
+      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      const typed = screen.getByRole("textbox", { name: "gone_band input column" })
+      fireEvent.change(typed, { target: { value: "region" } })
+      fireEvent.blur(typed)
+      expect(onUpdate.mock.lastCall![1][0]).toMatchObject({ column: "region" })
+    })
   })
 
   it("puts the Add banding button under the list, as wide as it", () => {
@@ -1237,7 +1283,7 @@ describe("BandingEditor on a date column", () => {
     )
     expect(screen.getByText("Numeric").closest("button")).toBeDisabled()
 
-    fireEvent.change(screen.getByLabelText("Input Column"), { target: { value: column } })
+    fireEvent.change(screen.getByRole("combobox", { name: "region_band input column" }), { target: { value: column } })
     const factors = onUpdate.mock.calls[0][1]
     expect(factors[0]).toMatchObject({ column, banding: "breakpoints" })
 

@@ -67,7 +67,11 @@ backend API modules own validation and persistence.
   typing one into a row is refused without being applied, the typed name kept; Add value offers
   the first `constant_<n>` no row uses.
 - Neither Banding nor Rating Step has an Output Column field: an item's output column is its
-  name in the list, renamed there. Banding's rename refuses, inline and without applying it, a
+  name in the list, renamed there. Banding has no Input Column field either: each row shows
+  the factor's input column, a dropdown of the input's columns by name (a text box while none
+  are known), then an arrow to its name, so a row reads input → output. Using a row's
+  dropdown selects that row first, since a change of type clears the rules on screen, and
+  only the selected row's dropdown is in the tab order. Banding's rename refuses, inline and without applying it, a
   name another active factor writes while the factor being edited is active (it has its input
   column and rules); a draft factor may share a name, since it writes nothing. What is wrong
   with the selected factor's name (none, or a collision) is said above its settings, and a
@@ -80,7 +84,7 @@ backend API modules own validation and persistence.
   factor's output and input column names, an All/Issues filter (an issue is a factor without
   its input column, output column or rules, or an active factor whose output column another
   active factor also writes, which marks both, as execution refuses them), a scrollable box of rows with
-  a health dot, the output name, a rule-count badge and, when there is more than one factor, a
+  a health dot, for Banding the input column and an arrow, the output name, a rule-count badge and, when there is more than one factor, a
   remove control, and under the box a button as wide as it, Add banding or Add table. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
   them, and both show the grip and keep the remove control's place even with a single row, so
   a node with one item looks like a node with several. A row's output column can be renamed

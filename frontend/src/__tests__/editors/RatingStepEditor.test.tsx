@@ -182,11 +182,13 @@ describe("RatingStepEditor", () => {
     )
 
     const selector = screen.getByRole("group", { name: "Rating tables" })
-    expect(within(selector).getByRole("button", { name: /^age_factor healthy$/i })).toContainHTML("var(--success)")
-    expect(within(selector).getByRole("button", { name: /^Table 2 problem$/i })).toContainHTML("var(--warning-strong)")
-    expect(within(selector).getByRole("button", { name: /^region_factor problem$/i })).toContainHTML("var(--warning-strong)")
+    // The dot leads the row, beside the row's button.
+    const row = (name: RegExp) => within(selector).getByRole("button", { name }).parentElement!
+    expect(row(/^age_factor healthy$/i)).toContainHTML("var(--success)")
+    expect(row(/^Table 2 problem$/i)).toContainHTML("var(--warning-strong)")
+    expect(row(/^region_factor problem$/i)).toContainHTML("var(--warning-strong)")
     for (const duplicate of within(selector).getAllByRole("button", { name: /^duplicate_factor problem$/i })) {
-      expect(duplicate).toContainHTML("var(--warning-strong)")
+      expect(duplicate.parentElement!).toContainHTML("var(--warning-strong)")
     }
   })
 

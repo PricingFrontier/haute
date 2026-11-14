@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useRef, useState, type ReactNode } from "react"
 import { GripVertical, Plus, Search, Trash2 } from "lucide-react"
 
 import { withAlpha } from "../../../utils/color"
@@ -16,6 +16,11 @@ export interface SearchableItemListProps {
   onMove?: (from: number, to: number) => void
   /** Given when an item's name may be typed over in its row. */
   rename?: ItemRename
+  /**
+   * What a row shows before its name, such as Banding's input column and an
+   * arrow to the name: controls of its own, beside the row's button.
+   */
+  rowLead?: (index: number, selected: boolean) => ReactNode
   labels: {
     /** The accessible name of the list. */
     list: string
@@ -44,7 +49,7 @@ export interface ItemRename {
   commit: (index: number, name: string) => void
 }
 
-/** A row's dot, name and badges, laid out alike whether its name shows or is being typed. */
+/** A row's name and badges, laid out alike whether its name shows or is being typed. */
 const ROW_BODY = "min-w-0 flex flex-1 items-center gap-2 rounded-md px-1 py-0.5"
 /** The name's box, and the rename box's, so the one opens exactly where the other was. */
 const NAME_BOX = "min-w-0 flex-1 rounded border px-1.5 py-px font-mono"
@@ -74,6 +79,7 @@ export default function SearchableItemList({
   onRemove,
   onMove,
   rename,
+  rowLead,
   labels,
   accentColor,
 }: SearchableItemListProps) {
@@ -210,10 +216,18 @@ export default function SearchableItemList({
                   <GripVertical size={11} />
                 </span>
               )}
+              {/* The dot leads the row, before any lead, so every row's health lines up. */}
+              <span className="flex shrink-0 pl-1">{healthDot(item.healthy)}</span>
+              {rowLead && (
+                // It shares the row with the name and badges, 5 to 8, so neither
+                // is squeezed out when the panel is narrow.
+                <div className="flex min-w-0 flex-[0.625_1_0%] items-center gap-1">
+                  {rowLead(item.index, selected)}
+                </div>
+              )}
               {rename && renaming === item.index ? (
-                // The box takes the name's place, the dot and badges staying put.
+                // The box takes the name's place, the badges staying put.
                 <div className={ROW_BODY}>
-                  {healthDot(item.healthy)}
                   <RenameField
                     initial={rename.value(item.index)}
                     label={`Rename ${item.name}`}
@@ -273,7 +287,6 @@ export default function SearchableItemList({
                 className={`${ROW_BODY} text-left focus:outline-none focus:ring-1`}
                 style={{ color: "inherit", background: "transparent" }}
               >
-                {healthDot(item.healthy)}
                 {/* A renamable name sits in a box like the one it opens into:
                     the selected row's always, another row's while hovered. */}
                 <span
