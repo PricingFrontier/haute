@@ -881,7 +881,12 @@ reconciliation rather than dropping them or committing a second mutation.
     feeding that port of this occurrence (`boundaryInputFrames`, the
     parent's frame for the edge's source handle, else its flat columns).
     Ports a preview did not reach keep their columns while the source is
-    unchanged (`drilledPreviewColumns.test.ts`). The readers of a column stash are: an
+    unchanged (`drilledPreviewColumns.test.ts`). The maps' root ids are
+    recorded on the root graph kept while drilled in
+    (`recordRootPreviewColumns`), so they return with it; drilling into an
+    occurrence again starts the Input card from the feeding root nodes'
+    source-tagged stashes (`buildSubmodelViewGraph`), which a preview served
+    from the cache, sending nothing, would otherwise leave empty. The readers of a column stash are: an
     editor, which reads its own node's `_columns` or an upstream source's
     through `NodePanel.edgeSourceColumns`; the save-time edge-join gate,
     which reads *any* join's two inputs and therefore only reports a

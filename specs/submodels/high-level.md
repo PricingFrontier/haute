@@ -233,7 +233,9 @@ qualified runtime ids do not leak back into the visible definition graph.
 A preview's schema maps come back under those runtime ids and are recorded
 on the children they name, and the Input card carries each port's columns
 from the parent node feeding it, so an editor inside the occurrence lists
-its input's columns as it does on the root canvas.
+its input's columns as it does on the root canvas. The parents' columns are
+kept on the root graph too, so the card starts with them when the occurrence
+is drilled into again.
 The occurrence identity is authoritative navigation state, not inferred from
 rendered boundary-port cards: definitions with no public ports (including a
 group made entirely from disconnected source nodes) must use the same qualified

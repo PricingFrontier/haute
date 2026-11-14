@@ -432,6 +432,29 @@ function applyPreviewSchemaMapsToNodes(
   })
 }
 
+type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
+
+/**
+ * A drilled preview's schema maps also name root nodes, such as the parents
+ * feeding the occurrence. Recorded on the root graph kept while drilled in,
+ * they return with it, and seed the Input card the next time an occurrence
+ * is drilled into (`buildSubmodelViewGraph`), even when that preview is
+ * served from the cache.
+ */
+function recordRootPreviewColumns(
+  parentGraphRef: ParentGraphRef,
+  result: PreviewNodeResponse,
+  source: string,
+  structuralVersion: number,
+): void {
+  const root = parentGraphRef.current
+  if (!root) return
+  parentGraphRef.current = {
+    ...root,
+    nodes: applyPreviewSchemaMapsToNodes(root.nodes, result, source, structuralVersion, null),
+  }
+}
+
 /**
  * Record a preview's columns on the nodes on screen. `drilled` is the
  * occurrence a drilled submodel view shows, whose children come back under
@@ -1034,6 +1057,7 @@ export default function usePipelineAPI({
         }
         if (result.columns) {
           setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, output ? targetNodeId : node.id, result, snapshotSource, structuralVersion, output ? null : activeSubmodelIdentity))
+          if (activeSubmodelIdentity && !output) recordRootPreviewColumns(parentGraphRef, result, snapshotSource, structuralVersion)
         }
       })
       .catch((err: unknown) => {
@@ -1323,6 +1347,7 @@ export default function usePipelineAPI({
               if (!requestStillCurrent()) return
               if (result.columns) {
                 setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion, activeSubmodelIdentity))
+                if (activeSubmodelIdentity) recordRootPreviewColumns(parentGraphRef, result, snapshotSource, structuralVersion)
               }
             })
             .catch((err: unknown) => {
