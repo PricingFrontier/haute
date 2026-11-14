@@ -412,6 +412,17 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   the button's own raise, drawn by the kit in place of the browser's outline, which differs between browsers and is
   near-black on this chrome in some. No caller adds a focus class of its own. A
   filled button takes a ring in the accent outside its edge.
+- **One field, in three sizes.** Every text field and native dropdown outside a table
+  is the kit's field: compact (22px tall, for dense rows), regular (26px, a side panel's
+  field) or large (30px, for a dialog or a node's editor). All three have 12px text, 6px
+  corners, the same colours, the accent border and soft ring on keyboard focus, a red
+  border while their value is refused and a half fade while disabled. A caller chooses
+  the size and lays the field out; it never sets a field's padding, text size, corners,
+  colours or focus look. A node's editor may give its fields' focus the node's own
+  colour. Left outside this for now are the fields in tables and grids, which a table
+  element will replace, an input inside a wrapper that draws the box (a search box with
+  its icon), and inputs that are deliberately not boxes: a node's title, a tab's rename
+  box and the toolbar's numbers.
 - **Pressable and not pressable look different in every way that is practical.** What
   can be pressed is raised: a fill, an outline, a small shadow below and a lighter line
   along its top edge, and it brightens under the pointer. What cannot be pressed has

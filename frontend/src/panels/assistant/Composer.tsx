@@ -3,6 +3,7 @@ import { Send, Square } from "lucide-react"
 import useGraphStore from "../../stores/useGraphStore"
 import useAssistantStore, { assistantSendDisabledReason } from "../../stores/useAssistantStore"
 import ContextChips from "./ContextChips"
+import { TextArea } from "../../haute-ui"
 
 interface ComposerProps {
   isInsideSubmodel: boolean
@@ -74,7 +75,8 @@ export default function Composer({
         className="flex items-end gap-2"
         onSubmit={(event) => { event.preventDefault(); send() }}
       >
-        <textarea
+        <TextArea
+          fieldSize="large"
           data-testid="assistant-composer"
           value={text}
           onChange={(event) => setText(event.target.value)}
@@ -88,12 +90,7 @@ export default function Composer({
           rows={2}
           placeholder="Ask Assistant to update the pipeline…"
           aria-label="Assistant message"
-          className="min-w-0 flex-1 resize-none rounded-md px-2.5 py-2 text-[12px] focus:outline-none disabled:opacity-60"
-          style={{
-            background: "var(--bg-input)",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-          }}
+          className="flex-1 resize-none"
         />
         {streaming ? (
           <button

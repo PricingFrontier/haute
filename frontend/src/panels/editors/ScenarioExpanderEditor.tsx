@@ -2,6 +2,7 @@ import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
 import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
+import { Select } from "../../haute-ui"
 
 function numberConfigText(value: unknown): string {
   return value === null || value === undefined ? "" : String(value)
@@ -35,8 +36,8 @@ function RangeBoundField({
       dataTestId={`scenario-${field}`}
       ariaLabel={label}
       containerClassName=""
-      className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
-      style={INPUT_STYLE}
+      field="large"
+      className="w-full font-mono"
       inputMode="decimal"
       value={numberConfigText(value)}
       validate={rangeBoundError}
@@ -54,20 +55,18 @@ function StepsField({
   steps,
   onUpdate,
   ariaLabel,
-  className,
 }: {
   steps: unknown
   onUpdate: OnUpdateConfig
   ariaLabel?: string
-  className: string
 }) {
   return (
     <ValidatedTextField
       dataTestId="scenario-steps"
       ariaLabel={ariaLabel}
       containerClassName=""
-      className={className}
-      style={INPUT_STYLE}
+      field="large"
+      className="w-full font-mono"
       value={steps === null || steps === undefined ? "" : String(steps)}
       validate={stepCountError}
       onCommit={(v) => onUpdate("step_count", Number(v))}
@@ -109,9 +108,8 @@ export default function ScenarioExpanderEditor({
           <span className="ml-1.5 normal-case tracking-normal font-normal">unique column per input row</span>
         </label>
         {upstreamColumns.length > 0 ? (
-          <select
-            className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono appearance-none cursor-pointer"
-            style={INPUT_STYLE}
+          <Select fieldSize="large"
+            className="w-full font-mono cursor-pointer"
             value={quoteId}
             onChange={(e) => onUpdate("quote_id", e.target.value)}
           >
@@ -120,12 +118,12 @@ export default function ScenarioExpanderEditor({
             {upstreamColumns.map((c) => (
               <option key={c.name} value={c.name}>{c.name}</option>
             ))}
-          </select>
+          </Select>
         ) : (
           <CommittedTextField
             type="text"
-            className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
-            style={INPUT_STYLE}
+            field="large"
+            className="w-full font-mono"
             value={quoteId}
             onCommit={(v) => onUpdate("quote_id", v)}
           />
@@ -140,8 +138,8 @@ export default function ScenarioExpanderEditor({
         </label>
         <CommittedTextField
           type="text"
-          className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
-          style={INPUT_STYLE}
+          field="large"
+          className="w-full font-mono"
           value={stepColumn}
           onCommit={(v) => onUpdate("step_column", v)}
         />
@@ -157,7 +155,6 @@ export default function ScenarioExpanderEditor({
           <StepsField
             steps={steps}
             onUpdate={onUpdate}
-            className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
           />
         </div>
       )}
@@ -170,8 +167,8 @@ export default function ScenarioExpanderEditor({
         </label>
         <CommittedTextField
           type="text"
-          className="w-full px-2.5 py-1.5 rounded-md text-[12px] font-mono"
-          style={INPUT_STYLE}
+          field="large"
+          className="w-full font-mono"
           value={columnName}
           onCommit={(v) => onUpdate("column_name", v)}
         />
@@ -203,7 +200,6 @@ export default function ScenarioExpanderEditor({
                 steps={steps}
                 onUpdate={onUpdate}
                 ariaLabel="Steps"
-                className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
               />
             </div>
             <div>

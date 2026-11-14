@@ -382,7 +382,8 @@ describe("EdgeJoinEditor", () => {
 
     const keyControl = screen.getByLabelText("Same-name key 1")
     expect(keyControl).toHaveAttribute("aria-invalid", "true")
-    expect(keyControl.getAttribute("style")).toContain("border: 1px solid var(--danger)")
+    // The kit's field draws the danger border of a value marked invalid.
+    expect(keyControl).toHaveClass("field")
   })
 
   it("marks only the incomplete side of a paired key row as invalid", () => {
@@ -395,7 +396,7 @@ describe("EdgeJoinEditor", () => {
     expect(screen.getByLabelText("Base key 1")).not.toHaveAttribute("aria-invalid")
     const joinKey = screen.getByLabelText("Join key 1")
     expect(joinKey).toHaveAttribute("aria-invalid", "true")
-    expect(joinKey.getAttribute("style")).toContain("border: 1px solid var(--danger)")
+    expect(joinKey).toHaveClass("field")
   })
 
   it("does not reject a non-empty freeform key while column schemas are unavailable", () => {

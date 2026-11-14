@@ -36,8 +36,9 @@ import {
   type TermSpec,
   type Terms,
 } from "./glmTerms"
-import { GLM_FIELD_CLASS, GLM_ROW_CLASS, GLM_SELECT_CLASS, MODELLING_INPUT_STYLE, toggleButtonStyle } from "./styles"
+import { GLM_FIELD_CLASS, GLM_ROW_CLASS, toggleButtonStyle } from "./styles"
 import { EncodingControls, TermCard } from "./TermCard"
+import { Select } from "../../haute-ui"
 
 type Props = {
   config: Record<string, unknown>
@@ -134,10 +135,9 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
         <div className={SLOT_ROW_CLASS} style={{ borderColor: "var(--border)" }}>
           <label className={`${GLM_FIELD_CLASS} w-32`} style={{ color: "var(--text-secondary)" }}>
             <span>Fit type</span>
-            <select
+            <Select
               aria-label={`Interaction ${number} encoding`}
-              className={GLM_SELECT_CLASS}
-              style={MODELLING_INPUT_STYLE}
+              className="w-full"
               value={interaction.encoding ?? "product"}
               onChange={(event) => {
                 const next = encodingOptions.find((option) => option.value === event.target.value)
@@ -145,7 +145,7 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
               }}
             >
               {encodingOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
+            </Select>
           </label>
           {interaction.encoding === "target_encoding" && (
             <EncodingControls
@@ -172,11 +172,10 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
             <div key={slotKeys.keys[slot] ?? `slot-${slot}`} className={SLOT_ROW_CLASS} style={{ borderColor: "var(--border)" }}>
               <label className={`${GLM_FIELD_CLASS} w-32`} style={{ color: "var(--text-secondary)" }}>
                 <span>Feature {slot + 1}</span>
-                <select
+                <Select
                   aria-label={`Interaction ${number} feature ${slot + 1}`}
                   aria-invalid={ineligible !== null || incompatible}
-                  className={`${GLM_SELECT_CLASS} font-mono`}
-                  style={{ ...MODELLING_INPUT_STYLE, borderColor: ineligible !== null || incompatible ? "var(--danger)" : "var(--border)" }}
+                  className="w-full font-mono"
                   value={factor}
                   onChange={(event) => write(pickSlotColumn(entries, index, slot, event.target.value))}
                 >
@@ -186,7 +185,7 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
                   {context.eligible
                     .filter((column) => !others.has(column.name) && fitsSlot(column))
                     .map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
-                </select>
+                </Select>
               </label>
               {ineligible !== null && <Alert>{ineligible}; choose another feature.</Alert>}
               {incompatible && (

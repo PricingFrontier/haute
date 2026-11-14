@@ -168,7 +168,7 @@ type ValidatedTextFieldProps = {
   /** The input's name for a screen reader, where no `<label>` names it. */
   ariaLabel?: string
   containerClassName: string
-  className: string
+  className?: string
   /** Draws the input as the kit's field of this size, which shows an error by its own
    *  border. Without it the caller's `style` colours the input. */
   field?: FieldSize

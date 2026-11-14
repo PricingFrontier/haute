@@ -11,6 +11,7 @@ import { useMemo } from "react"
 import { Plus, X } from "lucide-react"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
+import { Input, Select } from "../../haute-ui"
 import {
   finalSelectedFeatureNames,
   roleColumns,
@@ -54,12 +55,6 @@ export function EBMInteractionsConfig({ config, onUpdate, columns }: Props) {
     next[index][position] = name
     write(next)
   }
-  const inputClass = "rounded-md px-2 py-1 text-[13px]"
-  const inputStyle = {
-    background: "var(--bg-input)",
-    border: "1px solid var(--border)",
-    color: "var(--text-primary)",
-  }
 
   return (
     <section aria-labelledby="ebm-interactions-heading" className="space-y-3">
@@ -100,13 +95,12 @@ export function EBMInteractionsConfig({ config, onUpdate, columns }: Props) {
       {mode === "automatic" ? (
         <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
           Up to
-          <input
+          <Input
             type="number"
             min={0}
             step={1}
             aria-label="Maximum interaction count"
-            className={`${inputClass} w-20`}
-            style={inputStyle}
+            className="w-20"
             value={count}
             onChange={(event) => {
               const next = Number.parseInt(event.target.value, 10)
@@ -130,11 +124,10 @@ export function EBMInteractionsConfig({ config, onUpdate, columns }: Props) {
               className="flex items-center gap-2"
             >
               {([0, 1] as const).map((position) => (
-                <select
+                <Select
                   key={position}
                   aria-label={`Interaction ${index + 1} feature ${position + 1}`}
-                  className={`${inputClass} min-w-0 flex-1`}
-                  style={inputStyle}
+                  className="flex-1"
                   value={pair[position]}
                   onChange={(event) => setPair(index, position, event.target.value)}
                 >
@@ -147,7 +140,7 @@ export function EBMInteractionsConfig({ config, onUpdate, columns }: Props) {
                   {pair[position] && !features.includes(pair[position]) && (
                     <option value={pair[position]}>{columns.length === 0 ? pair[position] : `${pair[position]} (not a feature)`}</option>
                   )}
-                </select>
+                </Select>
               ))}
               <button
                 type="button"

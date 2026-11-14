@@ -13,7 +13,7 @@ import type {
   PivotOutputPlacement,
   PivotValuePlacement,
 } from "../../explore/pivotConfig"
-import { INPUT_STYLE } from "../_shared"
+import { Select } from "../../../haute-ui"
 import FilterMemberPicker from "./FilterMemberPicker"
 import PlacementCard from "./PlacementCard"
 import type { PlacementDrag } from "./PlacementCard"
@@ -213,7 +213,7 @@ export default function ZoneSection({
                 </span>
               )}
               {value && (
-                <select
+                <Select fieldSize="compact"
                   aria-label={`Aggregation for ${placement.field}`}
                   value={value.aggregation}
                   onChange={(event) => {
@@ -249,15 +249,13 @@ export default function ZoneSection({
                       ),
                     })
                   }}
-                  className="rounded px-1 py-0.5 text-[10px]"
-                  style={INPUT_STYLE}
                 >
                   {aggregations.map((aggregation) => (
                     <option key={aggregation} value={aggregation}>
                       {PIVOT_AGGREGATION_LABELS[aggregation]}
                     </option>
                   ))}
-                </select>
+                </Select>
               )}
             </PlacementCard>
           )

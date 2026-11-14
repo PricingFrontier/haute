@@ -3,8 +3,8 @@ import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { MODEL_COLORS } from "../../theme/colors"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { NumberField } from "./NumberField"
-import { MODELLING_INPUT_STYLE } from "./styles"
 import { fitBudgetLabel } from "./trainingFitBudget"
+import { Select, TextArea } from "../../haute-ui"
 import {
   formatHyperparameters,
   formatTuningSearchSpace,
@@ -128,7 +128,7 @@ export function HyperparametersConfig({
       },
     })
   }
-  const inputClass = "mt-1 w-full rounded-lg px-3 py-2 font-mono text-[13px]"
+  const inputClass = "mt-1 w-full font-mono"
   return (
     <section className="space-y-5">
       <div>
@@ -157,7 +157,8 @@ export function HyperparametersConfig({
             style={{ color: "var(--text-secondary)" }}
           >
             Parameters JSON
-            <textarea
+            <TextArea
+              fieldSize="large"
               aria-label={`${algorithmLabel} hyperparameters JSON`}
               aria-invalid={Boolean(fixedError)}
               value={draft}
@@ -167,8 +168,7 @@ export function HyperparametersConfig({
               }}
               spellCheck={false}
               rows={Math.min(24, Math.max(6, draft.split("\n").length + 1))}
-              className={`${inputClass} leading-5`}
-              style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
+              className={`${inputClass} resize-y`}
             />
           </label>
         </div>
@@ -213,6 +213,7 @@ export function HyperparametersConfig({
                 integer
                 required
                 step={1}
+                field="large"
                 className={inputClass}
                 onCommit={(value) => updateTuning({ trial_count: value })}
               />
@@ -229,20 +230,21 @@ export function HyperparametersConfig({
                 integer
                 required
                 step={1}
+                field="large"
                 className={inputClass}
                 onCommit={(value) => updateTuning({ seed: value })}
               />
             </label>
             <label className="col-span-2 text-[13px]">
               Selection metric
-              <select
+              <Select
+                fieldSize="large"
                 aria-label="Tuning selection metric"
                 value={typeof tuning.metric === "string" ? tuning.metric : ""}
                 onChange={(event) =>
                   updateTuning({ metric: event.target.value })
                 }
                 className={inputClass}
-                style={MODELLING_INPUT_STYLE}
               >
                 <option value="">Choose a metric</option>
                 {metrics.map((metric) => (
@@ -250,12 +252,13 @@ export function HyperparametersConfig({
                     {metric}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           </div>
           <label className="block text-[13px]">
             Search space JSON
-            <textarea
+            <TextArea
+              fieldSize="large"
               aria-label={`${algorithmLabel} search space JSON`}
               aria-invalid={Boolean(searchError)}
               value={searchSpaceDraft}
@@ -282,8 +285,7 @@ export function HyperparametersConfig({
                 20,
                 Math.max(6, searchSpaceDraft.split("\n").length + 1),
               )}
-              className={`${inputClass} leading-5`}
-              style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
+              className={`${inputClass} resize-y`}
             />
           </label>
         </>

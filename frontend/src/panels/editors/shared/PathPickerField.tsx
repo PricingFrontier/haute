@@ -72,8 +72,8 @@ export default function PathPickerField({
                 onSelect(next)
                 setExpanded(false)
               }}
-              className="focus-ring w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+              field="large"
+              className="w-full font-mono"
             />
           )}
           <FileBrowser

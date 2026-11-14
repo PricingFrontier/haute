@@ -11,9 +11,9 @@ import type {
   IoInputCapability,
   IoOutputCapability,
 } from "../../api/types"
+import { Select, TextArea } from "../../haute-ui"
 import { withAlpha } from "../../utils/color"
 import { isPlainObject } from "../../types/guards"
-import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import PathPickerField from "./shared/PathPickerField"
 
@@ -66,7 +66,7 @@ export function IoArgumentsEditor({
   argumentNames,
   context,
   onCommit,
-  inputStyle = INPUT_STYLE,
+  inputStyle,
 }: {
   value: unknown
   argumentNames: string[]
@@ -163,7 +163,8 @@ export function IoArgumentsEditor({
                         ),
                       )
                     }
-                    className="focus-ring w-2/5 px-2 py-1.5 text-xs font-mono rounded-lg"
+                    field="large"
+                    className="w-2/5 font-mono"
                     style={inputStyle}
                   />
                   <CommittedTextField
@@ -180,7 +181,8 @@ export function IoArgumentsEditor({
                         ),
                       )
                     }
-                    className="focus-ring flex-1 px-2 py-1.5 text-xs font-mono rounded-lg"
+                    field="large"
+                    className="flex-1 font-mono"
                     style={inputStyle}
                   />
                   <button
@@ -300,7 +302,8 @@ function RecordsField({
         {label}
         {required ? " *" : ""}
       </EditorLabel>
-      <textarea
+      <TextArea
+        fieldSize="large"
         id={id}
         aria-label={label}
         value={editor.text}
@@ -321,7 +324,7 @@ function RecordsField({
           if (canonical === configText) return
           onUpdate(fieldName, parsed)
         }}
-        className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
+        className="mt-1 w-full font-mono resize-y"
         style={inputStyle}
       />
       {editor.error && (
@@ -392,7 +395,6 @@ export default function IoFormatEditor({
   const modeId = useId()
 
   const inputStyle: CSSProperties = {
-    ...INPUT_STYLE,
     ["--focus-ring-border" as string]: withAlpha(accentColor, 0.3),
     ["--focus-ring-shadow" as string]: withAlpha(accentColor, 0.1),
   }
@@ -477,7 +479,7 @@ export default function IoFormatEditor({
 
       <div>
         <EditorLabel htmlFor={formatId}>Format</EditorLabel>
-        <select
+        <Select fieldSize="large"
           id={formatId}
           aria-label="Format"
           value={typeof config.format === "string" ? config.format : ""}
@@ -487,7 +489,7 @@ export default function IoFormatEditor({
             )
             if (next) onSelectFormat(next)
           }}
-          className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
+          className="mt-1 w-full"
           style={inputStyle}
         >
           <option value="">Select a format...</option>
@@ -509,7 +511,7 @@ export default function IoFormatEditor({
                 : ""}
             </option>
           ))}
-        </select>
+        </Select>
 
         {format?.unstable && (
           <p
@@ -538,12 +540,12 @@ export default function IoFormatEditor({
       {modeVisible && (
         <div>
           <EditorLabel htmlFor={modeId}>Mode</EditorLabel>
-          <select
+          <Select fieldSize="large"
             id={modeId}
             aria-label="Mode"
             value={effectiveMode}
             onChange={(event) => onUpdate("mode", event.target.value)}
-            className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
+            className="mt-1 w-full"
             style={inputStyle}
           >
             {explicitMode !== "" &&
@@ -557,7 +559,7 @@ export default function IoFormatEditor({
                 {mode}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       )}
 
@@ -608,7 +610,8 @@ export default function IoFormatEditor({
                 value={value}
                 rows={3}
                 onCommit={(next) => updateField(field.name, next)}
-                className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
+                field="large"
+                className="mt-1 w-full font-mono resize-y"
                 style={inputStyle}
               />
             ) : (
@@ -616,7 +619,8 @@ export default function IoFormatEditor({
                 aria-label={field.label}
                 value={value}
                 onCommit={(next) => updateField(field.name, next)}
-                className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
+                field="large"
+                className="mt-1 w-full font-mono"
                 style={inputStyle}
               />
             )}

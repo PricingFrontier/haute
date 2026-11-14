@@ -5,6 +5,7 @@ import ModalShell from "./ModalShell"
 import { withAlpha } from "../utils/color"
 import type { InheritGroup } from "../panels/editors/apiInputInherit"
 import type { ColumnType } from "../panels/editors/apiInputSchema"
+import { Input, Select } from "../haute-ui"
 
 const MANUAL_TYPES: ColumnType[] = ["int", "float", "str", "bool", "date"]
 
@@ -191,33 +192,25 @@ export default function KeyPickerModal({
               Enter a field by hand
             </div>
             <div className="flex items-center gap-2">
-              <input
+              <Input
+                fieldSize="large"
                 data-testid="key-picker-manual-path"
                 type="text"
                 placeholder="$[:].orders[:].currency"
                 value={manualPath}
                 onChange={(e) => setManualPath(e.target.value)}
                 aria-invalid={pathError !== null ? true : undefined}
-                className="flex-1 min-w-0 text-[11px] font-mono px-1.5 py-1 rounded"
-                style={{
-                  background: "var(--bg-input)",
-                  border: `1px solid ${pathError !== null ? "var(--danger-border-strong)" : "var(--border)"}`,
-                  color: "var(--text-primary)",
-                }}
+                className="flex-1 font-mono"
               />
-              <select
+              <Select
+                fieldSize="large"
                 data-testid="key-picker-manual-type"
                 value={manualType}
                 onChange={(e) => setManualType(e.target.value as ColumnType | "")}
                 disabled={exists}
                 title={exists ? "Field already exists - its name and type are kept" : undefined}
-                className="text-[11px] px-1 py-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{
-                  background: "var(--bg-input)",
-                  border: "1px solid var(--border)",
-                  // A missing type is the incomplete half of the entry — read as such.
-                  color: manualType === "" ? "var(--text-muted)" : "var(--text-primary)",
-                }}
+                // A missing type is the incomplete half of the entry — read as such.
+                style={manualType === "" ? { color: "var(--text-muted)" } : undefined}
               >
                 <option value="">type…</option>
                 {MANUAL_TYPES.map((t) => (
@@ -225,7 +218,7 @@ export default function KeyPickerModal({
                     {t}
                   </option>
                 ))}
-              </select>
+              </Select>
               <button
                 type="button"
                 data-testid="key-picker-manual-add"

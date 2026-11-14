@@ -52,7 +52,7 @@ import {
   type ExplorePivotConfig,
   type PivotResultFreshnessEntry,
 } from "../explore/pivotConfig"
-import { INPUT_STYLE } from "./_shared"
+import { Input, Select } from "../../haute-ui"
 import type { OnUpdateConfig } from "./_shared"
 import useConfirmedConfigUpdate from "./useConfirmedConfigUpdate"
 import {
@@ -250,30 +250,25 @@ function StyleControls({
   onStackingChange: (mode: ChartStackingMode) => void
   groupRename: GroupRename
 }) {
-  const control = "rounded px-1.5 py-1 text-xs"
   return (
     <div
       className="grid grid-cols-2 gap-2 rounded p-2"
       style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
     >
       <Field label={`Chart type for ${suffix}`}>
-        <select
+        <Select
           aria-label={`Chart type for ${suffix}`}
-          className={control}
-          style={INPUT_STYLE}
           value={style.mark}
           onChange={(e) => onChange({ mark: e.target.value as ChartMark })}
         >
           {CHART_MARKS.map((mark) => (
             <option key={mark} value={mark}>{MARK_LABELS[mark]}</option>
           ))}
-        </select>
+        </Select>
       </Field>
       <Field label={`Axis for ${suffix}`}>
-        <select
+        <Select
           aria-label={`Axis for ${suffix}`}
-          className={control}
-          style={INPUT_STYLE}
           value={style.axis}
           onChange={(e) => onAxisChange(e.target.value as ChartAxis)}
         >
@@ -282,20 +277,18 @@ function StyleControls({
           ).map((axis) => (
             <option key={axis} value={axis}>{AXIS_LABELS[axis]}</option>
           ))}
-        </select>
+        </Select>
       </Field>
       <Field label={`Stacking for ${suffix}`}>
-        <select
+        <Select
           aria-label={`Stacking for ${suffix}`}
-          className={control}
-          style={INPUT_STYLE}
           value={chartStackingMode(style)}
           onChange={(e) => onStackingChange(e.target.value as ChartStackingMode)}
         >
           <option value="none">None</option>
           <option value="stacked">Stacked</option>
           <option value="normalized">100% stacked</option>
-        </select>
+        </Select>
       </Field>
       {multiGroup && style.stack_group !== null ? (
         <StackGroupInput
@@ -341,7 +334,6 @@ function ValidatedField({
   value,
   validate,
   onCommit,
-  className,
   placeholder,
   inputMode,
 }: {
@@ -350,7 +342,6 @@ function ValidatedField({
   value: string
   validate: (candidate: string) => string | null
   onCommit: (next: string) => void
-  className: string
   placeholder?: string
   inputMode?: "decimal"
 }) {
@@ -365,8 +356,7 @@ function ValidatedField({
         validate={validate}
         onCommit={onCommit}
         containerClassName=""
-        className={className}
-        style={INPUT_STYLE}
+        field="regular"
         placeholder={placeholder}
         inputMode={inputMode}
       />
@@ -392,7 +382,6 @@ function StackGroupInput({
       value={group}
       validate={validate}
       onCommit={onRename}
-      className="rounded px-1.5 py-1 text-xs"
     />
   )
 }
@@ -414,17 +403,14 @@ function AxisFields({
     <div className="grid grid-cols-2 gap-2">
       <Field label={`${prefix} axis title`}>
         <CommittedTextField
-          className="rounded px-2 py-1 text-xs"
-          style={INPUT_STYLE}
+          field="regular"
           value={config.title}
           onCommit={(title) => updateAxis(axis, { title })}
         />
       </Field>
       <Field label={`${prefix} number format`}>
-        <select
+        <Select
           aria-label={`${prefix} number format`}
-          className="rounded px-2 py-1 text-xs"
-          style={INPUT_STYLE}
           value={config.number_format}
           onChange={(e) => updateAxis(axis, {
             number_format: e.target.value as ChartAxisConfig["number_format"],
@@ -435,7 +421,7 @@ function AxisFields({
               {f === "inherit" ? "General (automatic)" : f}
             </option>
           ))}
-        </select>
+        </Select>
       </Field>
       <AxisBoundInput
         axis={axis}
@@ -626,7 +612,6 @@ function AxisBoundInput({
         const next = parse(draft)
         if (next !== value) onCommit(next)
       }}
-      className="rounded px-2 py-1 text-xs"
       placeholder="Automatic"
       inputMode="decimal"
     />
@@ -871,12 +856,10 @@ export default function ExploreChartsConfig({
         </div>
       )}
       <Field label="Chart name">
-        <input
+        <Input
           key={`${chart.id}:${chart.name}`}
           aria-label="Chart name"
           defaultValue={chart.name}
-          className="rounded px-2 py-1 text-xs"
-          style={INPUT_STYLE}
           onBlur={(e) => nameCommit(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -907,11 +890,9 @@ export default function ExploreChartsConfig({
         </div>
       ) : (
         <Field label="Source pivot">
-          <select
+          <Select
             aria-label="Source pivot"
             value={chart.pivot_id ?? ""}
-            className="rounded px-2 py-1 text-xs"
-            style={INPUT_STYLE}
             onChange={(e) => void selectPivot(e.target.value)}
           >
             <option value="" disabled>
@@ -923,7 +904,7 @@ export default function ExploreChartsConfig({
                 {p.enabled ? "" : " (Hidden)"}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
       )}
       {sourceMissing && (
@@ -1075,10 +1056,8 @@ export default function ExploreChartsConfig({
                 </label>
                 {chart.legend.visible && (
                   <Field label="Legend position">
-                    <select
+                    <Select
                       aria-label="Legend position"
-                      className="rounded px-2 py-1 text-xs"
-                      style={INPUT_STYLE}
                       value={chart.legend.position}
                       onChange={(e) =>
                         commit({
@@ -1094,7 +1073,7 @@ export default function ExploreChartsConfig({
                       {CHART_LEGEND_POSITIONS.map((x) => (
                         <option key={x}>{x}</option>
                       ))}
-                    </select>
+                    </Select>
                   </Field>
                 )}
               </div>
@@ -1184,10 +1163,8 @@ export default function ExploreChartsConfig({
           )}
           <div className="grid grid-cols-2 gap-2">
             <Field label="Category label rotation">
-              <select
+              <Select
                 aria-label="Category label rotation"
-                className="rounded px-2 py-1 text-xs"
-                style={INPUT_STYLE}
                 value={chart.category.label_rotation}
                 onChange={(e) =>
                   commit({
@@ -1201,7 +1178,7 @@ export default function ExploreChartsConfig({
                     {x}
                   </option>
                 ))}
-              </select>
+              </Select>
             </Field>
             <label className="text-xs">
               <input

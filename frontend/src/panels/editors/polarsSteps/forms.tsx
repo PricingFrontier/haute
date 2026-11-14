@@ -11,7 +11,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 
 import { ConfigCheckbox, QuietAction } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
-import { INPUT_STYLE } from "../_shared"
+import { TextArea } from "../../../haute-ui"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { completionMatches } from "./completion"
@@ -56,7 +56,6 @@ import {
 } from "./catalogue"
 import { castFamily } from "../../../utils/polarsDtypes"
 import {
-  CONTROL_CLASS,
   ColumnListField,
   ColumnPicker,
   CompletionList,
@@ -555,7 +554,8 @@ function FormulaField({
       }
     >
       <div className="relative">
-        <textarea
+        <TextArea
+          fieldSize="large"
           ref={box}
           rows={1}
           aria-label="Formula"
@@ -579,8 +579,8 @@ function FormulaField({
               commitText(draft)
             }
           }}
-          className={`${CONTROL_CLASS} block resize-none overflow-hidden font-mono leading-5`}
-          style={problem ? { ...INPUT_STYLE, border: "1px solid var(--warning)" } : INPUT_STYLE}
+          className="block w-full resize-none overflow-hidden font-mono leading-5"
+          style={problem ? { borderColor: "var(--warning)" } : undefined}
         />
         {completion.open && prefix.length > 0 && columns.length === 0 && completion.matches.length === 0 && (
           <div role="status" className="mt-1">

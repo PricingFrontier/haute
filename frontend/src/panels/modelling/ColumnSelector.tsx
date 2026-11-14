@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 import { ChevronDown } from "lucide-react"
+import { Input } from "../../haute-ui"
 
 export type ColumnOption = { name: string; dtype: string }
 type Props = {
@@ -152,7 +153,8 @@ export function ColumnSelector({
             border: "1px solid var(--border)",
           }}
         >
-          <input
+          <Input
+            fieldSize="large"
             ref={searchRef}
             type="search"
             role="combobox"
@@ -182,12 +184,7 @@ export function ColumnSelector({
                 closeMenu(true)
               }
             }}
-            className="w-full rounded px-2 py-1.5 text-[13px] outline-none"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-            }}
+            className="w-full"
             placeholder="Search columns"
           />
           <ul

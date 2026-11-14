@@ -14,6 +14,7 @@ import {
   glmCrossValidates,
 } from "./glmFamilies"
 import { NumberField } from "./NumberField"
+import { Select } from "../../haute-ui"
 
 const REGULARIZATION_TYPES = [
   { value: "", label: "None" },
@@ -32,8 +33,7 @@ const SOLVER_HELP =
   "widen their standard errors when the variance assumption is doubtful."
 
 const LABEL_STYLE = { color: "var(--text-secondary)" } as const
-const INPUT_CLASS = "w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-const INPUT_STYLE = { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" } as const
+const INPUT_CLASS = "w-full mt-0.5 font-mono"
 
 export type GLMRegularizationConfigProps = {
   config: Record<string, unknown>
@@ -143,24 +143,24 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                     step={1}
                     integer
                     required
+                    field="large"
                     className={INPUT_CLASS}
-                    style={INPUT_STYLE}
                     onCommit={(value) => onUpdate("cv_folds", value)}
                   />
                 </label>
                 <label className="flex flex-col text-xs" style={LABEL_STYLE}>
                   Selection rule
-                  <select
+                  <Select
+                    fieldSize="large"
                     aria-label="Cross-validation selection rule"
                     value={typeof config.cv_selection === "string" ? config.cv_selection : ""}
                     onChange={(event) => onUpdate("cv_selection", event.target.value)}
                     className={INPUT_CLASS}
-                    style={INPUT_STYLE}
                   >
                     {typeof config.cv_selection !== "string" && <option value="" disabled>Choose…</option>}
                     <option value="min">Minimum deviance</option>
                     <option value="1se">One standard error</option>
-                  </select>
+                  </Select>
                 </label>
               </div>
             ) : (
@@ -174,8 +174,8 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   step="any"
                   integer={false}
                   required
+                  field="large"
                   className={INPUT_CLASS}
-                  style={INPUT_STYLE}
                   onCommit={(value) => onUpdate("alpha", value)}
                 />
               </label>
@@ -225,8 +225,8 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   step={1}
                   integer
                   placeholder="Default"
+                  field="large"
                   className={INPUT_CLASS}
-                  style={INPUT_STYLE}
                   onCommit={(value) => onUpdate("max_iter", value ?? null)}
                 />
               </label>
@@ -242,23 +242,23 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   step="any"
                   integer={false}
                   placeholder="Default"
+                  field="large"
                   className={INPUT_CLASS}
-                  style={INPUT_STYLE}
                   onCommit={(value) => onUpdate("tol", value ?? null)}
                 />
               </label>
               <label className="flex flex-col text-xs" style={LABEL_STYLE}>
                 Robust standard errors
-                <select
+                <Select
+                  fieldSize="large"
                   aria-label="Robust standard errors"
                   value={robust}
                   onChange={(event) => onUpdate("robust_standard_errors", event.target.value || null)}
                   className={INPUT_CLASS}
-                  style={INPUT_STYLE}
                 >
                   <option value="">Off</option>
                   {GLM_ROBUST_STANDARD_ERRORS.map((type) => <option key={type} value={type}>{type}</option>)}
-                </select>
+                </Select>
               </label>
             </div>
           </div>

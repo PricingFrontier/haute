@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react"
 import { GitMerge, Plus, Table2, X } from "lucide-react"
-import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { InputSourcesBar } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField, SavedValueOption } from "../../components/form"
+import { Select } from "../../haute-ui"
 import SearchableItemList from "./shared/SearchableItemList"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 import { withAlpha } from "../../utils/color"
@@ -587,21 +588,20 @@ export default function RatingStepEditor({
           {table.factors.map((f, fi) => (
             <div key={fi} className="flex items-center gap-1.5">
               <span className="text-[10px] font-bold w-4 text-center" style={{ color: 'var(--text-muted)' }}>{fi + 1}</span>
-              <select key={`fsel-${safeIdx}-${fi}`} value={f}
+              <Select fieldSize="large" key={`fsel-${safeIdx}-${fi}`} value={f}
                 aria-label={`Factor ${fi + 1}`}
                 onChange={(e) => {
                   const next = [...table.factors]
                   next[fi] = e.target.value
                   setFactors(safeIdx, next)
                 }}
-                className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-                style={INPUT_STYLE}>
+                className="flex-1 font-mono">
                 <option value="">Select column...</option>
                 <SavedValueOption value={f} options={availableColumns} missingLabel={(name) => `${name} (not a banding factor)`} />
                 {availableColumns.map(c => (
                   <option key={c} value={c}>{c} ({(factorLevels[c] || []).length} levels)</option>
                 ))}
-              </select>
+              </Select>
               <button type="button" aria-label={`Remove factor ${fi + 1}: ${f}`}
                 onClick={() => removeFactor(safeIdx, fi)}
                 className="icon-danger-btn p-1 rounded">
@@ -610,15 +610,15 @@ export default function RatingStepEditor({
             </div>
           ))}
           {factorCount < 3 && (
-            <select aria-label="Add factor" value=""
+            <Select fieldSize="large" aria-label="Add factor" value=""
               onChange={(e) => { if (e.target.value) addFactor(safeIdx, e.target.value) }}
-              className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none"
-              style={{ ...INPUT_STYLE, color: 'var(--text-muted)' }}>
+              className="w-full"
+              style={{ color: 'var(--text-muted)' }}>
               <option value="">+ Add factor...</option>
               {availableColumns.filter(c => !table.factors.includes(c)).map(c => (
                 <option key={c} value={c}>{c} ({(factorLevels[c] || []).length} levels)</option>
               ))}
-            </select>
+            </Select>
           )}
         </div>
       </div>
@@ -632,8 +632,8 @@ export default function RatingStepEditor({
             onCommit={(outputColumn) => updateTable(safeIdx, { output_column: outputColumn })}
             aria-invalid={outputColumnInvalid}
             aria-describedby={outputColumnInvalid ? outputColumnErrorId : undefined}
-            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={{ ...INPUT_STYLE, border: outputColumnInvalid ? '1px solid var(--danger-border-strong)' : INPUT_STYLE.border }} />
+            field="large"
+            className="w-full font-mono" />
           {outputColumnInvalid && (
             <div id={outputColumnErrorId} className="mt-1 text-[10px] font-medium" style={{ color: 'var(--danger)' }}>
               {outputColumnBlank ? "Output column is required" : "Output column name must be unique"}
@@ -644,20 +644,19 @@ export default function RatingStepEditor({
           <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
           <CommittedTextField key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" value={table.default_value ?? ""}
             onCommit={(value) => setDefaultValue(safeIdx, value)}
-            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={INPUT_STYLE} placeholder="none" />
+            field="large"
+            className="w-full font-mono" placeholder="none" />
         </div>
         <div>
           <label htmlFor={onMissingInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>On miss</label>
-          <select id={onMissingInputId} value={table.on_missing ?? "error"}
+          <Select fieldSize="large" id={onMissingInputId} value={table.on_missing ?? "error"}
             disabled={hasDefault}
             title={hasDefault ? "The default fills every miss" : "What a level with no entry does"}
             onChange={(e) => updateTable(safeIdx, { on_missing: e.target.value })}
-            className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
-            style={INPUT_STYLE}>
+            className="w-full">
             <option value="error">Stop the run</option>
             <option value="neutral">Leave empty</option>
-          </select>
+          </Select>
         </div>
       </div>
 
@@ -719,14 +718,13 @@ export default function RatingStepEditor({
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
               {sliceFactor}
             </label>
-            <select aria-label={`${sliceFactor} slice`} value={selectedSlice ?? ""}
+            <Select fieldSize="large" aria-label={`${sliceFactor} slice`} value={selectedSlice ?? ""}
               onChange={(e) => setSliceLevel(e.target.value)}
-              className="flex-1 px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-              style={INPUT_STYLE}>
+              className="flex-1 font-mono">
               {sliceLevels.map((level) => (
                 <option key={level} value={level}>{level}</option>
               ))}
-            </select>
+            </Select>
           </div>
           {sliceLevels.length > 0 && (
             <TwoWayGrid table={table} bandingLevels={factorLevels}
@@ -844,8 +842,8 @@ export default function RatingStepEditor({
                 onCommit={(outputColumn) => updateCombinedOutput(safeCombinedIdx, { output_column: outputColumn })}
                 aria-invalid={combinedColumnInvalid}
                 aria-describedby={combinedColumnInvalid ? combinedColumnErrorId : undefined}
-                className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-                style={{ ...INPUT_STYLE, border: combinedColumnInvalid ? '1px solid var(--danger-border-strong)' : INPUT_STYLE.border }}
+                field="large"
+                className="w-full font-mono"
               />
               {combinedColumnInvalid && (
                 <div id={combinedColumnErrorId} className="mt-1 text-[10px] font-medium" style={{ color: 'var(--danger)' }}>
@@ -857,13 +855,12 @@ export default function RatingStepEditor({
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Operation</label>
-                <select
+                <Select fieldSize="large"
                   value={combinedOutput.operation}
                   onChange={(e) => updateCombinedOutput(safeCombinedIdx, { operation: asOperation(e.target.value) })}
                   aria-invalid={combinedOperationInvalid}
                   aria-describedby={combinedOperationInvalid ? combinedOperationErrorId : undefined}
-                  className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-                  style={{ ...INPUT_STYLE, border: combinedOperationInvalid ? '1px solid var(--danger-border-strong)' : INPUT_STYLE.border }}
+                  className="w-full font-mono"
                 >
                   {combinedOperationInvalid && (
                     <option value={combinedOutput.operation}>{combinedOutput.operation}</option>
@@ -871,7 +868,7 @@ export default function RatingStepEditor({
                   {OPERATION_OPTIONS.map(option => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
-                </select>
+                </Select>
                 {combinedOperationInvalid && (
                   <div id={combinedOperationErrorId} className="mt-1 text-[10px] font-medium" style={{ color: 'var(--danger)' }}>
                     Operation is not supported
@@ -889,8 +886,8 @@ export default function RatingStepEditor({
                   onCommit={(baseValue) => updateCombinedOutput(safeCombinedIdx, { base_value: baseValue })}
                   aria-invalid={combinedBaseValueInvalid}
                   aria-describedby={combinedBaseValueInvalid ? combinedBaseValueErrorId : undefined}
-                  className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-                  style={{ ...INPUT_STYLE, border: combinedBaseValueInvalid ? '1px solid var(--danger-border-strong)' : INPUT_STYLE.border }}
+                  field="large"
+                  className="w-full font-mono"
                 />
                 {combinedBaseValueInvalid && (
                   <div id={combinedBaseValueErrorId} className="mt-1 text-[10px] font-medium" style={{ color: 'var(--danger)' }}>

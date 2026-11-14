@@ -10,7 +10,7 @@ import type {
   ExplorePivotConfig,
   PivotFormulaPlacement,
 } from "../../explore/pivotConfig"
-import { INPUT_STYLE } from "../_shared"
+import { Input, TextArea } from "../../../haute-ui"
 
 type PivotFormulaSectionProps = {
   pivot: ExplorePivotConfig
@@ -138,14 +138,14 @@ export default function PivotFormulaSection({
       <h4><EditorLabel as="span">Formulas</EditorLabel></h4>
       <label className="mt-1.5 block text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>
         Search formulas
-        <input
+        <Input
+          fieldSize="large"
           type="search"
           role="searchbox"
           aria-label="Search formulas"
           value={formulaSearch}
           onChange={(event) => setFormulaSearch(event.target.value)}
-          className="mt-1 block w-full rounded-md px-2 py-1.5 text-xs"
-          style={INPUT_STYLE}
+          className="mt-1 block w-full"
         />
       </label>
       <div
@@ -236,26 +236,24 @@ export default function PivotFormulaSection({
         >
           <label className="block text-[10px]" style={{ color: "var(--text-secondary)" }}>
             Formula name
-            <input
+            <Input
               aria-label="Formula name"
               value={nameDraft}
               onChange={(event) => setNameDraft(event.target.value)}
-              className="mt-1 block w-full rounded px-2 py-1 text-xs"
-              style={INPUT_STYLE}
+              className="mt-1 block w-full"
             />
           </label>
 
           <label className="mt-2 block text-[10px]" style={{ color: "var(--text-secondary)" }}>
             Polars expression
-            <textarea
+            <TextArea
               ref={expressionRef}
               aria-label="Polars expression"
               value={expressionDraft}
               onChange={(event) => setExpressionDraft(event.target.value)}
               rows={3}
               spellCheck={false}
-              className="mt-1 block w-full resize-y rounded px-2 py-1.5 font-mono text-[11px]"
-              style={INPUT_STYLE}
+              className="mt-1 block w-full resize-y font-mono"
             />
           </label>
 

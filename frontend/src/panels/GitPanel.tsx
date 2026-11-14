@@ -22,6 +22,7 @@ import { recordSwitch } from "../utils/vcHistory"
 import { apiErrorMessage } from "../api/errors"
 import { relativeTime } from "../utils/relativeTime"
 import { useGitHistory } from "./git/useGitHistory"
+import { Input } from "../haute-ui"
 
 /** Minimal graph-branch shape the in-row spawn chips need. */
 interface SpawnChipBranch {
@@ -877,15 +878,13 @@ function GitPanelBranchScope({
             <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
               {FORK_DIALOG[forkDraft.mode].title}
             </span>
-            <input
+            <Input
               autoFocus
               data-testid="git-panel-fork-name"
               value={forkDraft.name}
               onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value, error: undefined })}
               onKeyDown={(e) => { if (e.key === "Enter") requestForkSubmit() }}
               placeholder="New branch name…"
-              className="px-2 py-1 text-[12px] rounded-md focus:outline-none focus:ring-2"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
             />
             {forkDraft.error && (
               <p data-testid="git-panel-fork-error" role="alert" className="text-[11px]" style={{ color: "var(--danger)" }}>

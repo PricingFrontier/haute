@@ -37,8 +37,9 @@ import {
   type TermEntry,
   type UnresolvedTerm,
 } from "./glmTerms"
-import { MODELLING_INPUT_STYLE, toggleButtonStyle } from "./styles"
+import { toggleButtonStyle } from "./styles"
 import { TermCard } from "./TermCard"
+import { Input, TextArea } from "../../haute-ui"
 
 type Props = {
   config: Record<string, unknown>
@@ -214,10 +215,10 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
 
       <div className="relative mt-2">
         <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" size={13} style={{ color: "var(--text-muted)" }} />
-        <input
+        <Input
+          fieldSize="large"
           aria-label="Search features"
-          className="w-full rounded-lg py-2 pl-8 pr-2.5 text-xs outline-none focus:ring-1 focus:ring-[var(--model-accent-border)]"
-          style={MODELLING_INPUT_STYLE}
+          className="w-full pl-8"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           placeholder="Search features"
@@ -262,15 +263,16 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
           <p className="mb-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
             RustyStats terms dict. Paste from Atelier or edit directly. Saved on blur.
           </p>
-          <textarea
+          <TextArea
+            fieldSize="large"
             aria-label="Terms JSON"
+            aria-invalid={jsonError ? true : undefined}
             value={jsonDraft}
             onChange={(event) => setJsonDraft(event.target.value)}
             onBlur={() => commitJson(jsonDraft)}
             spellCheck={false}
             rows={Math.min(20, Math.max(6, jsonDraft.split("\n").length + 1))}
-            className="w-full rounded-lg px-2.5 py-2 font-mono text-xs"
-            style={{ ...MODELLING_INPUT_STYLE, border: `1px solid ${jsonError ? "var(--danger)" : "var(--border)"}`, resize: "vertical" }}
+            className="w-full resize-y font-mono"
           />
           {jsonError && <p role="alert" className="mt-0.5 text-[10px]" style={{ color: "var(--danger)" }}>{jsonError}</p>}
         </div>

@@ -5,7 +5,8 @@ import { evaluationConfigurationIssues } from "../../utils/trainingObjective"
 import { NumberField } from "./NumberField"
 import { EvaluationAllocation } from "./EvaluationAllocation"
 import type { EvaluationStrategy, ValidationMethod } from "./evaluationPreview"
-import { MODELLING_INPUT_STYLE, toggleButtonStyle } from "./styles"
+import { toggleButtonStyle } from "./styles"
+import { Input, Select } from "../../haute-ui"
 
 type Column = { name: string; dtype: string }
 type Evaluation = Record<string, unknown>
@@ -124,7 +125,8 @@ export function SplitAndMetricsConfig({
     <div className="space-y-3">
       <ConfigSection title="Row limit">
         <div className="flex items-center gap-2">
-          <input
+          <Input
+            fieldSize="large"
             aria-label="Row limit"
             type="number"
             min={0}
@@ -134,8 +136,7 @@ export function SplitAndMetricsConfig({
               onRowLimitChange(event.target.value === "" ? null : Math.max(0, Number(event.target.value)))
             }
             placeholder="All rows"
-            className="h-8 w-full min-w-0 rounded px-2 font-mono text-[13px]"
-            style={MODELLING_INPUT_STYLE}
+            className="w-full font-mono"
           />
           {rowLimit !== null && rowLimit > 0 && (
             <span className="shrink-0 text-xs font-mono" style={{ color: "var(--text-muted)" }}>
@@ -187,12 +188,12 @@ export function SplitAndMetricsConfig({
         {strategy === "group" && (
           <label className={field}>
             Group column
-            <select
+            <Select
+              fieldSize="large"
               aria-label="Group column"
               value={text(evaluation.group_column)}
               onChange={(e) => update({ group_column: e.target.value })}
-              className="h-8 rounded px-2 font-mono text-[13px]"
-              style={MODELLING_INPUT_STYLE}
+              className="font-mono"
             >
               <option value="">Select...</option>
               <SavedValueOption value={text(evaluation.group_column)} options={columnNames} />
@@ -201,18 +202,18 @@ export function SplitAndMetricsConfig({
                   {x.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         )}
         {strategy === "temporal" && (
           <label className={field}>
             Date column
-            <select
+            <Select
+              fieldSize="large"
               aria-label="Date column"
               value={text(evaluation.date_column)}
               onChange={(e) => update({ date_column: e.target.value })}
-              className="h-8 rounded px-2 font-mono text-[13px]"
-              style={MODELLING_INPUT_STYLE}
+              className="font-mono"
             >
               <option value="">Select...</option>
               <SavedValueOption value={text(evaluation.date_column)} options={columnNames} />
@@ -221,7 +222,7 @@ export function SplitAndMetricsConfig({
                   {x.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         )}
       </ConfigSection>
@@ -248,7 +249,8 @@ export function SplitAndMetricsConfig({
           (strategy === "temporal" ? (
             <label className={field}>
               Validation starts
-              <input
+              <Input
+                fieldSize="large"
                 aria-label="Validation starts"
                 type="date"
                 value={text(current.start)}
@@ -257,8 +259,7 @@ export function SplitAndMetricsConfig({
                     validation: { method: "single", start: e.target.value },
                   })
                 }
-                className="h-8 rounded px-2 font-mono text-[13px]"
-                style={MODELLING_INPUT_STYLE}
+                className="font-mono"
               />
             </label>
           ) : (
@@ -274,7 +275,8 @@ export function SplitAndMetricsConfig({
                 integer={false}
                 required
                 step={1}
-                className="h-8 w-full rounded px-2 font-mono text-[13px]"
+                field="large"
+                className="w-full font-mono"
                 onCommit={(v) =>
                   v !== undefined &&
                   update({ validation: { method: "single", size: v / 100 } })
@@ -293,7 +295,8 @@ export function SplitAndMetricsConfig({
               integer
               required
               step={1}
-              className="h-8 w-full rounded px-2 font-mono text-[13px]"
+              field="large"
+              className="w-full font-mono"
               onCommit={(v) =>
                 v !== undefined &&
                 update({
@@ -333,15 +336,15 @@ export function SplitAndMetricsConfig({
         {strategy === "temporal" ? (
           <label className={field}>
             Test starts
-            <input
+            <Input
+              fieldSize="large"
               aria-label="Test starts"
               type="date"
               value={text(test?.start)}
               onChange={(e) =>
                 updateTest(e.target.value ? { start: e.target.value } : null)
               }
-              className="h-8 rounded px-2 font-mono text-[13px]"
-              style={MODELLING_INPUT_STYLE}
+              className="font-mono"
             />
           </label>
         ) : (
@@ -356,7 +359,8 @@ export function SplitAndMetricsConfig({
               integer={false}
               required
               step={1}
-              className="h-8 w-full rounded px-2 font-mono text-[13px]"
+              field="large"
+              className="w-full font-mono"
               onCommit={(v) =>
                 v !== undefined && updateTest(v === 0 ? null : { size: v / 100 })
               }

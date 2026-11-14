@@ -4,6 +4,7 @@ import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
+import { Input } from "../haute-ui"
 
 interface StorageBindModalProps {
   onClose: () => void
@@ -177,20 +178,15 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
             >
               Fork into a new location
             </label>
-            <input
+            <Input
+              fieldSize="large"
               id="storage-fork-url"
               data-testid="storage-fork-url"
               value={forkUrl}
               onChange={(e) => setForkUrl(e.target.value)}
               autoFocus
               placeholder="uc://catalog.schema.volume/path/to/copy"
-              className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                caretColor: "var(--accent)",
-              }}
+              className="w-full"
             />
           </div>
 
@@ -244,20 +240,15 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
             >
               Repository URL
             </label>
-            <input
+            <Input
+              fieldSize="large"
               id="storage-bind-url"
               data-testid="storage-bind-url"
               value={remoteUrl}
               onChange={(e) => setRemoteUrl(e.target.value)}
               autoFocus
               placeholder="https://github.com/org/repo.git or uc://catalog.schema.volume/path"
-              className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                caretColor: "var(--accent)",
-              }}
+              className="w-full"
             />
           </div>
 

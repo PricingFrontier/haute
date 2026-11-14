@@ -15,7 +15,7 @@ import type {
   PivotValuePlacement,
 } from "../../explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS, effectivePivotNumberFormat } from "../../explore/pivotNumberFormat"
-import { INPUT_STYLE } from "../_shared"
+import { Select } from "../../../haute-ui"
 import type { Column } from "./placements"
 
 type DisplayedZone = "columns" | "rows" | "values" | "formulas"
@@ -232,7 +232,7 @@ export default function PivotFormattingSection({
                   <div className="flex flex-wrap items-end justify-end gap-2">
                     <label className="shrink-0 text-[10px]">
                       Format
-                      <select
+                      <Select fieldSize="compact"
                         aria-label={`Number format for ${accessibleLabel}`}
                         value={numberFormat}
                         onChange={(event) =>
@@ -240,19 +240,18 @@ export default function PivotFormattingSection({
                             number_format: selectedNumberFormat(event.target.value),
                           })
                         }
-                        className="ml-2 rounded px-1 py-0.5 text-[10px]"
-                        style={INPUT_STYLE}
+                        className="ml-2"
                       >
                         {PIVOT_NUMBER_FORMATS.map((format) => (
                           <option key={format} value={format}>
                             {NUMBER_FORMAT_LABELS[format]}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
                     <label className="shrink-0 text-[10px]">
                       Decimal places
-                      <select
+                      <Select fieldSize="compact"
                         aria-label={`Decimal places for ${accessibleLabel}`}
                         value={entry.placement.decimal_places ?? "automatic"}
                         onChange={(event) =>
@@ -260,8 +259,7 @@ export default function PivotFormattingSection({
                             decimal_places: selectedDecimalPlaces(event.target.value),
                           })
                         }
-                        className="ml-2 rounded px-1 py-0.5 text-[10px]"
-                        style={INPUT_STYLE}
+                        className="ml-2"
                       >
                         <option value="automatic">Automatic</option>
                         {DECIMAL_PLACE_OPTIONS.map((decimalPlaces) => (
@@ -269,7 +267,7 @@ export default function PivotFormattingSection({
                             {decimalPlaces}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
                     <label className="flex shrink-0 items-center gap-1 text-[10px]">
                       <input

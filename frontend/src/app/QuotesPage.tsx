@@ -31,7 +31,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { changeAppQuote, type QuotesQuery } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
-import { Button, ButtonLink } from "../haute-ui"
+import { Button, ButtonLink, Select } from "../haute-ui"
 import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import useToastStore from "../stores/useToastStore"
 import { relativeTime } from "../utils/relativeTime"
@@ -56,8 +56,6 @@ const SORTS: ReadonlyArray<{ sort: QuotesQuery["sort"]; label: string }> = [
   { sort: "reference", label: "Reference" },
   { sort: "insured", label: "Insured" },
 ]
-const SELECT = "focus-ring rounded-md px-1.5 py-1 text-xs"
-const SELECT_STYLE = { border: "1px solid var(--border)", color: "var(--text-primary)" }
 
 /** New quote's link: the window over the list; a press with a modifier opens its address as the browser would. */
 function openNewQuote(event: MouseEvent): void {
@@ -270,22 +268,22 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               />
             </label>
             {query.view === "team" && (
-              <select aria-label="Assigned to" value={query.assignee ?? ""} onChange={(event) => go({ assignee: event.target.value || null })} className={SELECT} style={SELECT_STYLE}>
+              <Select aria-label="Assigned to" value={query.assignee ?? ""} onChange={(event) => go({ assignee: event.target.value || null })}>
                 <option value="">Anyone</option>
                 {people.map((person) => (
                   <option key={person} value={person}>
                     {person === principal ? `${person} (you)` : person}
                   </option>
                 ))}
-              </select>
+              </Select>
             )}
-            <select aria-label="Order" value={query.sort} onChange={(event) => go({ sort: event.target.value as QuotesQuery["sort"] })} className={SELECT} style={SELECT_STYLE}>
+            <Select aria-label="Order" value={query.sort} onChange={(event) => go({ sort: event.target.value as QuotesQuery["sort"] })}>
               {SORTS.map((each) => (
                 <option key={each.sort} value={each.sort}>
                   {each.label}
                 </option>
               ))}
-            </select>
+            </Select>
             <Button iconOnly onClick={() => void load(query, true)} title="Refresh the list" aria-label="Refresh the list">
               <RotateCw size={12} />
             </Button>

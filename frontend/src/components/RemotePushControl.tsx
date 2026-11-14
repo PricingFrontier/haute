@@ -28,6 +28,7 @@ import { apiErrorMessage } from "../api/errors"
 import GitNavigationConfirm from "./GitNavigationConfirm"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
+import { Select } from "../haute-ui"
 
 interface RemotePushControlProps {
   /** Out-of-version saves on the ledger — drives the pre-push integrity prompt
@@ -357,17 +358,12 @@ export default function RemotePushControl({
           refresh failed
         </span>
       )}
-      <select
+      <Select
         data-testid="git-push-remote"
         aria-label="Remote to push to"
         value={selected}
         onChange={(e) => selectRemote(e.target.value)}
-        className="flex-1 min-w-0 text-[12px] rounded-md px-2 py-1 focus:outline-none focus:ring-2"
-        style={{
-          background: "var(--bg-input)",
-          border: "1px solid var(--border)",
-          color: "var(--text-primary)",
-        }}
+        className="flex-1"
       >
         <option value="">Select a remote…</option>
         {remotes.map((r) => (
@@ -375,7 +371,7 @@ export default function RemotePushControl({
             {r.url ? `${r.name} - ${r.url}` : r.name}
           </option>
         ))}
-      </select>
+      </Select>
 
       {selectedRemote && <AheadBehind remote={selectedRemote} />}
       {selectedRemote && <LedgerStatus remote={selectedRemote} />}

@@ -5,6 +5,7 @@ import type { OnUpdateConfig } from "./_shared"
 import type { ColumnInfo } from "../../types/node"
 import ColumnTable from "../../components/ColumnTable"
 import { EditorLabel } from "../../components/form"
+import { Input } from "../../haute-ui"
 
 interface ColumnsTabProps {
   config: Record<string, unknown>
@@ -130,13 +131,12 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
       <div className="flex items-center gap-2">
         <div className="flex-1 relative">
           <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
-          <input
+          <Input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter columns..."
-            className="w-full pl-7 pr-2 py-1 text-xs rounded-md border bg-transparent focus:outline-none focus:ring-1"
-            style={{ color: "var(--text-primary)", borderColor: "var(--border)", background: "var(--bg-input)" }}
+            className="w-full pl-7"
           />
         </div>
         <button

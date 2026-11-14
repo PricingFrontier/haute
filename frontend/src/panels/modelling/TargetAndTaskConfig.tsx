@@ -11,6 +11,7 @@ import WeightOffsetFields from "./WeightOffsetFields"
 import { NumberField } from "./NumberField"
 import { algorithmCapability, supportedLosses } from "./algorithmCapabilities"
 import { METRIC_OPTIONS, metricCompatible } from "./metricOptions"
+import { Input } from "../../haute-ui"
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); new selections start at the 1.5 midpoint."
@@ -183,7 +184,7 @@ export function TargetAndTaskConfig({
                       integer={false}
                       required
                       step="any"
-                      className="h-7 w-14 shrink-0 rounded px-1.5 py-1 font-mono text-xs [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      className="w-14 shrink-0 font-mono [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                       onCommit={(value) =>
                         onUpdate("variance_power", value ?? null)
                       }
@@ -213,10 +214,10 @@ export function TargetAndTaskConfig({
                   Positive class
                   {positiveClassRequired ? "" : " (only if the labels are not 0/1)"}
                 </label>
-                <input
+                <Input
                   id="positive-class"
                   aria-label="Positive class"
-                  className="mt-0.5 w-full rounded-md px-2 py-1 text-xs font-mono"
+                  className="mt-0.5 w-full font-mono"
                   value={positiveClassText}
                   placeholder={positiveClassRequired ? "e.g. claim" : "e.g. 2"}
                   onChange={(event) =>

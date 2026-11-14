@@ -1,6 +1,7 @@
 import { useState } from "react"
 
 import ModalShell from "./ModalShell"
+import { Input } from "../haute-ui"
 
 interface SubmodelDialogProps {
   nodeCount: number
@@ -43,7 +44,8 @@ export default function SubmodelDialog({ nodeCount, onClose, onSubmit }: Submode
       >
         <div>
           <label className="text-[11px] font-medium block mb-1" style={{ color: 'var(--text-muted)' }}>Submodel name</label>
-          <input
+          <Input
+            fieldSize="large"
             name="name"
             type="text"
             autoFocus
@@ -51,8 +53,7 @@ export default function SubmodelDialog({ nodeCount, onClose, onSubmit }: Submode
             placeholder="e.g. model_scoring"
             aria-invalid={error !== null}
             aria-describedby={error ? "submodel-name-error" : undefined}
-            className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', caretColor: 'var(--accent)' }}
+            className="w-full"
           />
           {error && (
             <p id="submodel-name-error" role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--danger)' }}>

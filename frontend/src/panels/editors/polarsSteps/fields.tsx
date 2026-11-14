@@ -28,7 +28,7 @@ import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 
 import { CommittedTextField, IconSelect, QuietAction, ValidatedTextField } from "../../../components/form"
 import { getDtypeColor } from "../../../utils/dtypeColors"
-import { INPUT_STYLE } from "../_shared"
+import { Input, Select } from "../../../haute-ui"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, NUMBER_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal, numberTypeOf } from "./catalogue"
@@ -39,7 +39,6 @@ import { namesAsCompletions, useCompletionList, type Completion } from "./useCom
 import { useRowKeys } from "../shared/useRowKeys"
 import type { Condition, ConstantOperand, Expr, LiteralOperand, LiteralType, MatchMode, NumberType, Operand } from "./types"
 
-export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
 const CHIP_STYLE = { background: "var(--chrome-hover)", color: "var(--text-primary)", border: "1px solid var(--border)" }
 const ADD_BUTTON_STYLE = { color: "var(--text-secondary)", border: "1px solid var(--border)" }
 
@@ -168,13 +167,13 @@ export function SelectField<T extends string>({
   className?: string
 }) {
   return (
-    <select
+    <Select
+      fieldSize="large"
       id={id}
       aria-label={ariaLabel}
       value={value}
       onChange={(e) => onChange(e.target.value as T)}
-      className={`${CONTROL_CLASS} ${className}`}
-      style={INPUT_STYLE}
+      className={`w-full ${className}`}
     >
       {placeholder !== undefined && (
         <option value="" disabled>
@@ -189,7 +188,7 @@ export function SelectField<T extends string>({
         ))
         return run.group === undefined ? items : <optgroup key={`${run.group}-${index}`} label={run.group}>{items}</optgroup>
       })}
-    </select>
+    </Select>
   )
 }
 
@@ -225,8 +224,8 @@ export function TextField({
         onCommit={onCommit}
         placeholder={placeholder}
         containerClassName=""
-        className={`${CONTROL_CLASS} ${mono ? "font-mono" : ""}`}
-        style={INPUT_STYLE}
+        field="large"
+        className={mono ? "w-full font-mono" : "w-full"}
       />
     )
   }
@@ -239,8 +238,8 @@ export function TextField({
       onCommit={onCommit}
       placeholder={placeholder}
       autoFocus={autoFocus}
-      className={`${CONTROL_CLASS} ${mono ? "font-mono" : ""}`}
-      style={INPUT_STYLE}
+      field="large"
+      className={mono ? "w-full font-mono" : "w-full"}
     />
   )
 }
@@ -301,8 +300,8 @@ export function NumberField({
           setError(null)
           onCommit(parsed)
         }}
-        className={`${CONTROL_CLASS} font-mono`}
-        style={INPUT_STYLE}
+        field="large"
+        className="w-full font-mono"
       />
       {error !== null && (
         <p id={errorId} role="alert" className="text-[11px] mt-1 mb-0" style={{ color: "var(--danger-text)" }}>
@@ -616,7 +615,8 @@ function CompletingInput({
   }
   return (
     <div className={`relative ${className}`}>
-      <input
+      <Input
+        fieldSize="large"
         id={id}
         type="text"
         aria-label={ariaLabel}
@@ -644,8 +644,8 @@ function CompletingInput({
             onCommit(draft)
           }
         }}
-        className={`${CONTROL_CLASS} font-mono`}
-        style={unknown ? { ...INPUT_STYLE, border: UNKNOWN_BORDER } : INPUT_STYLE}
+        className="w-full font-mono"
+        style={unknown ? { borderStyle: "dashed", borderColor: "var(--warning)" } : undefined}
       />
       <CompletionList {...completion.listProps} prefix={typed} onPick={accept} />
     </div>
@@ -858,19 +858,20 @@ export function LiteralValueInput({
           aria-label={ariaLabel}
           value={String(value.value)}
           onCommit={(text) => onChange(literal("date", text))}
-          className={`${CONTROL_CLASS} font-mono`}
-          style={INPUT_STYLE}
+          field="large"
+          className="w-full font-mono"
         />
       )
     case "null":
       return (
-        <input
+        <Input
+          fieldSize="large"
           type="text"
           readOnly
           aria-label={ariaLabel}
           value="null"
-          className={`${CONTROL_CLASS} font-mono`}
-          style={{ ...INPUT_STYLE, color: "var(--text-muted)" }}
+          className="w-full font-mono"
+          style={{ color: "var(--text-muted)" }}
         />
       )
   }

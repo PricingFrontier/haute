@@ -28,10 +28,9 @@ import {
 import {
   GLM_FIELD_CLASS as FIELD_CLASS,
   GLM_ROW_CLASS as ROW_CLASS,
-  GLM_SELECT_CLASS as SELECT_CLASS,
-  MODELLING_INPUT_STYLE,
 } from "./styles"
 import { NumberField } from "./NumberField"
+import { Input, Select } from "../../haute-ui"
 
 type Direction = {
   value: "decreasing" | "increasing" | undefined
@@ -155,11 +154,10 @@ function JsonArrayField({
   }
   return (
     <Field label={label}>
-      <input
+      <Input
         aria-label={inputLabel}
         aria-invalid={error !== null}
-        className="h-7 w-full min-w-0 rounded px-1.5 py-1 font-mono text-xs"
-        style={{ ...MODELLING_INPUT_STYLE, borderColor: error ? "var(--danger)" : "var(--border)" }}
+        className="w-full font-mono"
         value={draft}
         placeholder={placeholder}
         onChange={(event) => setDraft(event.target.value)}
@@ -240,14 +238,13 @@ function CommittedText({
     setDraft(null)
   }
   return (
-    <input
+    <Input
       type="text"
       aria-label={label}
       aria-invalid={invalid}
       title={title}
       placeholder={placeholder}
-      className={`h-7 w-full min-w-0 rounded px-1.5 py-1 text-xs ${mono ? "font-mono" : ""}`}
-      style={{ ...MODELLING_INPUT_STYLE, borderColor: invalid ? "var(--danger)" : "var(--border)" }}
+      className={mono ? "w-full font-mono" : "w-full"}
       value={draft ?? value}
       spellCheck={false}
       onChange={(event) => setDraft(event.target.value)}
@@ -275,10 +272,10 @@ export function EncodingControls({
   return (
     <div className={inline ? "contents" : ROW_CLASS}>
       <Field label="Prior weight">
-        <select aria-label={`${label} prior weight mode`} className={SELECT_CLASS} style={MODELLING_INPUT_STYLE} value={fixed ? "fixed" : "auto"} onChange={(event) => onChangeField("prior_weight", event.target.value === "auto" ? undefined : 1)}>
+        <Select aria-label={`${label} prior weight mode`} className="w-full" value={fixed ? "fixed" : "auto"} onChange={(event) => onChangeField("prior_weight", event.target.value === "auto" ? undefined : 1)}>
           <option value="auto">Auto</option>
           <option value="fixed">Fixed</option>
-        </select>
+        </Select>
       </Field>
       {fixed && (
         <Field label="Weight">
@@ -311,13 +308,13 @@ function SplineFields({
   return (
     <>
       <Field label="df mode" className="w-[4.5rem]">
-        <select aria-label={`${label} df mode`} title="Degrees of freedom" className={SELECT_CLASS} style={MODELLING_INPUT_STYLE} value={mode} onChange={(event) => onChangeSplineMode(event.target.value as SplineMode)}>
+        <Select aria-label={`${label} df mode`} title="Degrees of freedom" className="w-full" value={mode} onChange={(event) => onChangeSplineMode(event.target.value as SplineMode)}>
           <option value="auto">Auto</option>
           <option value="fixed">Fixed</option>
-        </select>
+        </Select>
       </Field>
       {mode === "fixed" && (spec.knots !== undefined ? (
-        <div className={FIELD_CLASS}><span>df</span><span className="flex h-7 items-center text-xs" style={{ color: "var(--text-muted)" }}>Custom knots</span></div>
+        <div className={FIELD_CLASS}><span>df</span><span className="flex h-[26px] items-center text-xs" style={{ color: "var(--text-muted)" }}>Custom knots</span></div>
       ) : (
         <Field label="df">
           <NumberField label={`${label} df`} value={spec.df as number | undefined} min={minimum} max={SPLINE_LIMITS.maxBasis} step={1} integer required onCommit={(value) => onChangeField("df", value)} />
@@ -424,11 +421,10 @@ function TypeSelect<T extends string>({
   const known = options.some((option) => option.value === value)
   return (
     <Field label="Fit type" className="w-32">
-      <select
+      <Select
         aria-label={label}
         aria-invalid={invalid}
-        className={SELECT_CLASS}
-        style={{ ...MODELLING_INPUT_STYLE, borderColor: invalid ? "var(--danger)" : "var(--border)" }}
+        className="w-full"
         value={value}
         onChange={(event) => {
           // A placeholder option is disabled, but a programmatic change still
@@ -440,7 +436,7 @@ function TypeSelect<T extends string>({
         {placeholder !== undefined && <option value="" disabled>{placeholder}</option>}
         {!known && value !== "" && <option value={value} disabled>{typeLabel(value)} (unavailable)</option>}
         {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
+      </Select>
     </Field>
   )
 }
@@ -525,7 +521,7 @@ function UnresolvedCard({ termKey, spec, reason, repairOptions, onRepair, onRemo
         ) : (
           <div className={FIELD_CLASS}>
             <span>Fit type</span>
-            <span className="flex h-7 items-center text-xs" style={{ color: "var(--text-secondary)" }}>{type === null ? "None" : typeLabel(type)}</span>
+            <span className="flex h-[26px] items-center text-xs" style={{ color: "var(--text-secondary)" }}>{type === null ? "None" : typeLabel(type)}</span>
           </div>
         )}
         <Alert>{reason}</Alert>
@@ -558,11 +554,10 @@ function SlotCard({ column, dtype, terms, override, partnerSpecs, sharedTargetEn
   return (
     <div className="contents">
       <Field label="Fit type" className={resolution.kind === "main" ? "w-40" : "w-32"}>
-        <select
+        <Select
           aria-label={`${column} fit in interaction`}
           aria-invalid={resolution.kind === "blocked" || unavailable}
-          className={SELECT_CLASS}
-          style={{ ...MODELLING_INPUT_STYLE, borderColor: resolution.kind === "blocked" || unavailable ? "var(--danger)" : "var(--border)" }}
+          className="w-full"
           value={current}
           onChange={(event) => {
             const next = options.find((option) => option.value === event.target.value)
@@ -572,7 +567,7 @@ function SlotCard({ column, dtype, terms, override, partnerSpecs, sharedTargetEn
           {resolution.kind === "blocked" && <option value="" disabled>Choose a fit…</option>}
           {unavailable && <option value={current} disabled>{current === "main" ? "As main" : typeLabel(current)} (unavailable)</option>}
           {optionsWithCurrent.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+        </Select>
       </Field>
       {resolution.kind === "override" && !unavailable && (resolution.spec.type === "bs" || resolution.spec.type === "ns") && (
         <SplineFields label={column} spec={resolution.spec} onChangeField={onChangeField} onChangeSplineMode={onChangeSplineMode} />

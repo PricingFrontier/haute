@@ -30,6 +30,7 @@ import type {
   MlflowTestConnectionResponse,
 } from "../api/types"
 import useSettingsStore, { useMlflowDestinations } from "../stores/useSettingsStore"
+import { Input } from "../haute-ui"
 import {
   mlflowDestinationEntry,
   type MlflowInventoryState,
@@ -194,11 +195,6 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
     }
   }, [saving, serverDraft, folderDraft, invalidateMlflow])
 
-  const fieldStyle = {
-    background: "var(--bg-input)",
-    border: "1px solid var(--border)",
-    color: "var(--text-primary)",
-  }
   const buttonStyle = {
     background: "var(--bg-input)",
     border: "1px solid var(--border)",
@@ -279,7 +275,8 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
               >
                 MLflow server URL
               </label>
-              <input
+              <Input
+                fieldSize="large"
                 id="mlflow-server-url"
                 type="text"
                 value={serverDraft}
@@ -289,8 +286,7 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
                   handleDraftEdit()
                 }}
                 placeholder="http://localhost:5000"
-                className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 font-mono text-xs"
-                style={fieldStyle}
+                className="mt-0.5 w-full font-mono"
               />
               <button
                 onClick={() => void handleTest("server")}
@@ -313,7 +309,8 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
               >
                 Local folder
               </label>
-              <input
+              <Input
+                fieldSize="large"
                 id="mlflow-local-folder"
                 type="text"
                 value={folderDraft}
@@ -323,8 +320,7 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
                   handleDraftEdit()
                 }}
                 placeholder={settings.resolved_folder}
-                className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 font-mono text-xs"
-                style={fieldStyle}
+                className="mt-0.5 w-full font-mono"
               />
               <span className="mt-0.5 block break-all text-[10px]" style={{ color: "var(--text-muted)" }}>
                 Resolves to: {settings.resolved_folder}

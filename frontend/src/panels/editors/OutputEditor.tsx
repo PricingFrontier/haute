@@ -8,6 +8,7 @@ import {
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel, ValidatedTextField } from "../../components/form"
+import { Input } from "../../haute-ui"
 import { useGraph } from "../useGraph"
 import { buildGraph } from "../../utils/buildGraph"
 import useNodeDataStore from "../../stores/useNodeDataStore"
@@ -1066,7 +1067,8 @@ function FrameBlock({
             the pencil; Enter applies, Escape/blur cancels. */}
         {editingPath ? (
           <div className="flex items-center gap-1 max-w-[40%] shrink-0">
-            <input
+            <Input
+              fieldSize="compact"
               ref={pathInputRef}
               data-testid={`${testIdPrefix}-path-edit-input`}
               type="text"
@@ -1078,8 +1080,7 @@ function FrameBlock({
                 else if (e.key === "Escape") setEditingPath(false)
               }}
               placeholder={headerPath}
-              className="flex-1 min-w-0 text-left text-[10px] px-1 py-0.5 rounded font-mono"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+              className="flex-1 text-left font-mono"
             />
             <button
               data-testid={`${testIdPrefix}-path-edit-apply`}

@@ -10,7 +10,7 @@ import { ArrowLeft, BadgeCheck, History, LockOpen } from "lucide-react"
 import { Fragment, useEffect, useRef, useState } from "react"
 import type { QuoteSource } from "../api/app"
 import { CommittedTextField } from "../components/form"
-import { Button, ButtonLink, ToolbarButton, ToolbarColumn, ToolbarLink, ZoomInOut } from "../haute-ui"
+import { Button, ButtonLink, Select, ToolbarButton,ToolbarColumn, ToolbarLink, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
 import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
@@ -288,8 +288,8 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           title="The quote's name, saved with it"
           onCommit={(text) => setCell(QUOTE_DETAILS_NAME, 0, NAME_COLUMN, text.trim())}
           maxLength={200}
-          className="focus-ring w-full rounded px-1 py-0.5 text-[12px]"
-          style={{ background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-primary)" }}
+          field="compact"
+          className="w-full"
         />
       </div>
       <ToolbarColumn role="group" aria-label="Save">
@@ -370,13 +370,12 @@ function QuoteLine() {
           )}
           <label className="ml-auto flex items-center gap-1.5" style={muted}>
             With
-            <select
+            <Select
+              fieldSize="compact"
               aria-label="Assigned to"
               value={quote.assignee}
               disabled={working || quote.archived || !canEdit()}
               onChange={(event) => void assign(event.target.value)}
-              className="focus-ring rounded px-1 py-0.5 text-[11px]"
-              style={{ border: "1px solid var(--border)", color: "var(--text-primary)" }}
             >
               {choices.map((person) => (
                 <option key={person} value={person}>
@@ -384,7 +383,7 @@ function QuoteLine() {
                 </option>
               ))}
               <option value="">Someone else…</option>
-            </select>
+            </Select>
           </label>
         </>
       )}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { InputSourcesBar, SELECT_STYLE } from "./_shared"
+import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import PathPickerField from "./shared/PathPickerField"
@@ -9,6 +9,7 @@ import type { ModelFileInspectionResponse } from "../../api/types"
 import { MODEL_FILE_SUFFIXES } from "../../utils/modelFamilies"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
+import { Select } from "../../haute-ui"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
 import { clearedMlflowSelection, effectiveMlflowDestination } from "../../utils/mlflowDestinations"
 import type { MlflowDestinationKey } from "../../api/types"
@@ -225,28 +226,28 @@ export default function ModelScoreEditor({
             <p
               data-testid="model-score-recorded-task"
               className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg"
-              style={{ ...SELECT_STYLE, color: "var(--text-muted)" }}
+              style={{ ...INPUT_STYLE, color: "var(--text-muted)" }}
             >
               {TASK_LABELS[recordedTask]}
             </p>
           ) : (
-            <select
-              className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
-              style={SELECT_STYLE}
+            <Select
+              fieldSize="large"
+              className="mt-1 w-full"
               value={task}
               onChange={(e) => onUpdate("task", e.target.value)}
             >
               <option value="regression">Regression</option>
               <option value="classification">Classification</option>
-            </select>
+            </Select>
           )}
         </div>
         <div className="flex-1">
           <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Output Column</label>
           <CommittedTextField
             type="text"
-            className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
-            style={SELECT_STYLE}
+            field="large"
+            className="mt-1 w-full"
             value={outputColumn}
             onCommit={(v) => onUpdate("output_column", v)}
             placeholder="prediction"

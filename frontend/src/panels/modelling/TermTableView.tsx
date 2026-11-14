@@ -8,6 +8,7 @@
 import { useState } from "react"
 import type { EbmTermAxis, NestedNumbers } from "../../api/types"
 import { InteractionLines, LevelBars, LevelTable, StepShape, SurfaceTable } from "./termCharts"
+import { Select } from "../../haute-ui"
 
 export type TermDisplay = "table" | "chart"
 
@@ -169,18 +170,13 @@ function AxisSelect({
   return (
     <label className="flex items-center gap-1.5">
       {label}
-      <select
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="rounded border px-1 py-0.5 text-[13px]"
-        style={{ background: "var(--bg-input)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-      >
+      <Select value={value} onChange={(event) => onChange(Number(event.target.value))}>
         {options.map((option, index) => (
           <option key={option} value={index}>
             {option}
           </option>
         ))}
-      </select>
+      </Select>
     </label>
   )
 }

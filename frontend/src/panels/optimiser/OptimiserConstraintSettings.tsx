@@ -8,6 +8,7 @@ import { withAlpha } from "../../utils/color"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { useOptimiserAutoRange, type FrontierRange } from "./useOptimiserAutoRange"
 import { sweptConstraintNames } from "./solveReadiness"
+import { Select } from "../../haute-ui"
 import {
   boundFromDisplay,
   boundToDisplay,
@@ -142,17 +143,7 @@ export default function OptimiserConstraintSettings({
     [frontierRanges, onUpdate, rangeForConstraint],
   )
 
-  const inputStyle = {
-    background: "var(--bg-input)",
-    border: "1px solid var(--border)",
-    color: "var(--text-primary)",
-  }
-  const rangeInputStyle = (missing: boolean) => ({
-    background: missing ? "var(--warning-soft)" : "var(--bg-input)",
-    border: `1px solid ${missing ? "var(--warning-border-strong)" : "var(--border)"}`,
-    color: "var(--text-primary)",
-  })
-  const valueClass = "w-full min-w-0 px-2 py-1 rounded text-[11px] font-mono text-right"
+  const valueClass = "w-full font-mono text-right"
 
   if (constraintEntries.length === 0) {
     return (
@@ -206,12 +197,11 @@ export default function OptimiserConstraintSettings({
               }}
             >
               <div data-testid="constraint-row" className="flex items-center gap-1.5">
-                <select
+                <Select
                   aria-label={`${name} constraint column`}
                   value={name}
                   onChange={(event) => onConstraintColumnChange(name, event.target.value)}
-                  className="flex-1 min-w-0 px-1.5 py-1 rounded text-[11px] font-mono"
-                  style={inputStyle}
+                  className="flex-1 font-mono"
                 >
                   <option value={name}>{name}</option>
                   {dataInputColumns
@@ -226,7 +216,7 @@ export default function OptimiserConstraintSettings({
                         {column.name}
                       </option>
                     ))}
-                </select>
+                </Select>
                 <button
                   type="button"
                   aria-label={`Remove ${name} constraint`}
@@ -239,20 +229,19 @@ export default function OptimiserConstraintSettings({
               </div>
 
               <div className="flex flex-wrap items-start gap-1.5">
-                <select
+                <Select
                   aria-label={`${name} constraint bound type`}
                   aria-invalid={boundKind === null || undefined}
                   value={boundKind ?? ""}
                   onChange={(event) =>
                     onConstraintKindChange(name, event.target.value as ConstraintBoundKind)}
-                  className="shrink-0 px-1.5 py-1 rounded text-[11px]"
-                  style={{ ...inputStyle, color: "var(--text-secondary)" }}
+                  className="shrink-0"
                 >
                   {boundKind === null && <option value="" disabled>choose a bound</option>}
                   {CONSTRAINT_BOUND_KINDS.map((kind) => (
                     <option key={kind} value={kind}>{CONSTRAINT_BOUND_LABELS[kind]}</option>
                   ))}
-                </select>
+                </Select>
                 <div
                   role="radiogroup"
                   aria-label={`${name} bound`}
@@ -293,8 +282,8 @@ export default function OptimiserConstraintSettings({
                         aria-invalid={minMissing || undefined}
                         placeholder="Required"
                         onCommit={(raw) => handleFrontierRangeChange(name, "min", stored(raw))}
+                        field="regular"
                         className={valueClass}
-                        style={rangeInputStyle(minMissing)}
                       />
                       {unit}
                       <span style={{ color: "var(--text-muted)" }}>to</span>
@@ -306,8 +295,8 @@ export default function OptimiserConstraintSettings({
                         aria-invalid={maxMissing || undefined}
                         placeholder="Required"
                         onCommit={(raw) => handleFrontierRangeChange(name, "max", stored(raw))}
+                        field="regular"
                         className={valueClass}
-                        style={rangeInputStyle(maxMissing)}
                       />
                       {unit}
                       <div className="col-start-2 flex items-center justify-end gap-1.5">
@@ -352,8 +341,8 @@ export default function OptimiserConstraintSettings({
                           const value = stored(raw)
                           if (value !== undefined && boundKind !== null) onConstraintValueChange(name, boundKind, value)
                         }}
+                        field="regular"
                         className={valueClass}
-                        style={inputStyle}
                       />
                       {unit}
                     </div>
@@ -394,8 +383,8 @@ export default function OptimiserConstraintSettings({
               step={1}
               value={String(frontierSteps)}
               onCommit={(value) => onUpdate("frontier_steps", safeParseInt(value, 15))}
-              className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-              style={inputStyle}
+              field="regular"
+              className="w-full mt-0.5 font-mono"
             />
           </div>
         </section>

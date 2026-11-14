@@ -1,6 +1,6 @@
-import { useState, type CSSProperties } from "react"
+import { useState, type ComponentProps } from "react"
 
-import { MODELLING_INPUT_STYLE } from "./styles"
+import { Input } from "../../haute-ui"
 
 export type NumberBounds = {
   min: number
@@ -42,8 +42,8 @@ export function NumberField({
   value,
   step,
   placeholder,
-  className = "h-7 w-14 min-w-0 rounded px-1.5 py-1 font-mono text-xs",
-  style,
+  className = "w-14 font-mono",
+  field,
   onCommit,
   ...bounds
 }: NumberBounds & {
@@ -52,7 +52,8 @@ export function NumberField({
   step: number | "any"
   placeholder?: string
   className?: string
-  style?: CSSProperties
+  /** The size of the kit's field it is drawn as. */
+  field?: ComponentProps<typeof Input>["fieldSize"]
   onCommit: (value: number | undefined) => void
 }) {
   const committed = value === undefined ? "" : String(value)
@@ -71,12 +72,12 @@ export function NumberField({
   }
   return (
     <>
-      <input
+      <Input
+        fieldSize={field}
         type="number"
         aria-label={label}
         aria-invalid={error !== null}
         className={className}
-        style={{ ...MODELLING_INPUT_STYLE, ...style, borderColor: error ? "var(--danger)" : "var(--border)" }}
         value={draft ?? committed}
         placeholder={placeholder}
         min={bounds.min}

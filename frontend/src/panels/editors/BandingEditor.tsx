@@ -1,7 +1,8 @@
 import { useState } from "react"
 import { Plus } from "lucide-react"
-import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { InputSourcesBar } from "./_shared"
 import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
+import { Select } from "../../haute-ui"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
 import type { CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -454,13 +455,12 @@ export default function BandingEditor({
         <div>
           <label htmlFor={`banding-input-col-${safeIdx}`} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Input Column</label>
           {upstreamColumns.length > 0 ? (
-            <select
+            <Select fieldSize="large"
               id={`banding-input-col-${safeIdx}`}
               key={`col-${safeIdx}`}
               value={factor.column}
               onChange={(e) => setColumnWithAutoDetect(safeIdx, e.target.value)}
-              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-              style={INPUT_STYLE}
+              className="w-full font-mono"
             >
               <option value="">Select column...</option>
               <SavedValueOption value={factor.column} options={upstreamColumns.map(c => c.name)} />
@@ -469,15 +469,15 @@ export default function BandingEditor({
                   {c.name} ({c.dtype})
                 </option>
               ))}
-            </select>
+            </Select>
           ) : (
             <CommittedTextField
               id={`banding-input-col-${safeIdx}`}
               key={`col-${safeIdx}`}
               type="text" value={factor.column || ""}
               onCommit={(v) => updateFactor(safeIdx, { column: v })}
-              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-              style={INPUT_STYLE} />
+              field="large"
+            className="w-full font-mono" />
           )}
         </div>
         <div>
@@ -494,8 +494,8 @@ export default function BandingEditor({
             }}
             onCommit={(v) => updateFactor(safeIdx, { output_column: v })}
             containerClassName=""
-            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={INPUT_STYLE} />
+            field="large"
+            className="w-full font-mono" />
         </div>
       </div>
 
@@ -682,8 +682,8 @@ export default function BandingEditor({
           key={`def-${safeIdx}`}
           type="text" value={factor.default ?? ""}
           onCommit={(v) => updateFactor(safeIdx, { default: v !== "" ? v : null })}
-          className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-          style={INPUT_STYLE} />
+          field="large"
+            className="w-full font-mono" />
       </div>
         </>
       )}

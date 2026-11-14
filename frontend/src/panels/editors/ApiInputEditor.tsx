@@ -1065,12 +1065,8 @@ function TableBlock({
           validate={validateLabel}
           commitError={commitError}
           containerClassName="flex-1 min-w-0"
-          className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
-          style={{
-            background: "var(--bg-input)",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-          }}
+          field="compact"
+          className="w-full font-mono"
         />
         <ValidatedTextField
           dataTestId={`${testIdPrefix}-path`}
@@ -1078,12 +1074,9 @@ function TableBlock({
           onCommit={(path) => onUpdate({ path })}
           validate={validateTablePath}
           containerClassName="flex-1 min-w-0"
-          className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
-          style={{
-            background: "var(--bg-input)",
-            border: "1px solid var(--border)",
-            color: "var(--text-muted)",
-          }}
+          field="compact"
+          className="w-full font-mono"
+          style={{ color: "var(--text-muted)" }}
         />
         <button
           data-testid={`${testIdPrefix}-remove`}

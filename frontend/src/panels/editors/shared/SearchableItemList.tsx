@@ -2,7 +2,7 @@ import { useRef, useState } from "react"
 import { GripVertical, Plus, Search, Trash2 } from "lucide-react"
 
 import { withAlpha } from "../../../utils/color"
-import { INPUT_STYLE } from "../_shared"
+import { Input } from "../../../haute-ui"
 import type { SearchableList } from "./useSearchableList"
 
 export interface SearchableItemListProps {
@@ -69,13 +69,13 @@ export default function SearchableItemList({
             className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
             style={{ color: "var(--text-muted)" }}
           />
-          <input
+          <Input
+            fieldSize="large"
             type="search"
             aria-label={labels.search}
             value={list.search}
             onChange={(e) => list.setSearch(e.target.value)}
-            className="w-full pl-7 pr-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-            style={INPUT_STYLE}
+            className="w-full pl-7 font-mono"
           />
         </div>
         <div

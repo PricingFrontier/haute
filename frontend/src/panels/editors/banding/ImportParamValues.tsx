@@ -1,16 +1,11 @@
 import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../../../api/errors"
 import { fetchParamFile } from "../../../api/workbench"
+import { Select } from "../../../haute-ui"
 import { useParamsFiles } from "../../../hooks/useParamsFiles"
 import { latest } from "../../../utils/latest"
 
-const SELECT_CLASS = "w-full px-1.5 py-1 rounded text-[11px] font-mono focus:outline-none"
 const LABEL_CLASS = "text-[11px] font-medium block mb-0.5"
-const SELECT_STYLE = {
-  background: "var(--bg-panel)",
-  border: "1px solid var(--border)",
-  color: "var(--text-primary)",
-}
 
 /**
  * Categorical's Import from params (specs/frontend-node-editors): a CSV in the pipeline
@@ -96,13 +91,12 @@ export function ImportParamValues({
           <label htmlFor="banding-import-file" className={LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             File
           </label>
-          <select
+          <Select
             id="banding-import-file"
             value={file}
             onChange={(e) => chooseFile(e.target.value)}
             disabled={!files?.length}
-            className={SELECT_CLASS}
-            style={SELECT_STYLE}
+            className="w-full font-mono"
           >
             <option value="" />
             {(files ?? []).map((name) => (
@@ -110,19 +104,18 @@ export function ImportParamValues({
                 {name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
         <div>
           <label htmlFor="banding-import-column" className={LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             Column
           </label>
-          <select
+          <Select
             id="banding-import-column"
             value={column}
             onChange={(e) => chooseColumn(e.target.value)}
             disabled={header === undefined}
-            className={SELECT_CLASS}
-            style={SELECT_STYLE}
+            className="w-full font-mono"
           >
             <option value="" />
             {(header ?? []).map((name) => (
@@ -130,7 +123,7 @@ export function ImportParamValues({
                 {name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       </div>
 

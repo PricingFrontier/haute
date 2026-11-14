@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react"
+import { Input, Select } from "../../../haute-ui"
 import { withAlpha } from "../../../utils/color"
 import {
   CALENDAR_UNITS,
@@ -44,13 +45,7 @@ export function GenerateBandsDialog(props: GenerateBandsDialogProps) {
   return props.temporal ? <CalendarGenerate {...props} /> : <NumericGenerate {...props} />
 }
 
-const INPUT_CLASS = "w-full px-1.5 py-1 rounded text-[11px] font-mono focus:outline-none"
 const LABEL_CLASS = "text-[11px] font-medium block mb-0.5"
-const INPUT_STYLE = {
-  background: "var(--bg-panel)",
-  border: "1px solid var(--border)",
-  color: "var(--text-primary)",
-}
 
 function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, initial }: NumericProps) {
   const [start, setStart] = useState<number | "">(initial?.start ?? dataMin ?? "")
@@ -99,13 +94,12 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
           <label htmlFor="gen-start" className={LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             Start
           </label>
-          <input
+          <Input
             id="gen-start"
             type="number"
             value={start}
             onChange={(e) => setStart(e.target.value === "" ? "" : parseFloat(e.target.value))}
-            className={INPUT_CLASS}
-            style={INPUT_STYLE}
+            className="w-full font-mono"
             placeholder="0"
           />
         </div>
@@ -113,13 +107,12 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
           <label htmlFor="gen-end" className={LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             End
           </label>
-          <input
+          <Input
             id="gen-end"
             type="number"
             value={end}
             onChange={(e) => setEnd(e.target.value === "" ? "" : parseFloat(e.target.value))}
-            className={INPUT_CLASS}
-            style={INPUT_STYLE}
+            className="w-full font-mono"
             placeholder="100"
           />
         </div>
@@ -127,13 +120,12 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
           <label htmlFor="gen-step" className={LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             Step
           </label>
-          <input
+          <Input
             id="gen-step"
             type="number"
             value={step}
             onChange={(e) => setStep(e.target.value === "" ? "" : parseFloat(e.target.value))}
-            className={INPUT_CLASS}
-            style={INPUT_STYLE}
+            className="w-full font-mono"
             placeholder="10"
           />
         </div>
@@ -175,26 +167,24 @@ function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, 
           <label htmlFor="gen-start" className={LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             Start
           </label>
-          <input
+          <Input
             id="gen-start"
             type="date"
             value={start}
             onChange={(e) => setStart(e.target.value)}
-            className={INPUT_CLASS}
-            style={INPUT_STYLE}
+            className="w-full font-mono"
           />
         </div>
         <div>
           <label htmlFor="gen-end" className={LABEL_CLASS} style={{ color: "var(--text-muted)" }}>
             End
           </label>
-          <input
+          <Input
             id="gen-end"
             type="date"
             value={end}
             onChange={(e) => setEnd(e.target.value)}
-            className={INPUT_CLASS}
-            style={INPUT_STYLE}
+            className="w-full font-mono"
           />
         </div>
         <div className="col-span-2">
@@ -202,29 +192,27 @@ function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, 
             Step
           </label>
           <div className="flex gap-2">
-            <input
+            <Input
               id="gen-step"
               type="number"
               min={1}
               step={1}
               value={step}
               onChange={(e) => setStep(e.target.value === "" ? "" : Number(e.target.value))}
-              className={INPUT_CLASS}
-              style={INPUT_STYLE}
+              className="w-full font-mono"
             />
-            <select
+            <Select
               aria-label="Step unit"
               value={unit}
               onChange={(e) => setUnit(e.target.value as CalendarUnit)}
-              className={INPUT_CLASS}
-              style={INPUT_STYLE}
+              className="w-full font-mono"
             >
               {CALENDAR_UNITS.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         </div>
       </div>

@@ -15,7 +15,7 @@ import {
   pivotOutputs,
 } from "../../explore/pivotConfig"
 import type { ExplorePivotConfig } from "../../explore/pivotConfig"
-import { INPUT_STYLE } from "../_shared"
+import { Input } from "../../../haute-ui"
 import ZoneSection from "./ZoneSection"
 import {
   ZONES,
@@ -265,14 +265,14 @@ export default function PivotFieldWell({
       <div>
         <label className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>
           Search pivot fields
-          <input
+          <Input
+            fieldSize="large"
             type="search"
             role="searchbox"
             aria-label="Search pivot fields"
             value={fieldSearch}
             onChange={(event) => setFieldSearch(event.target.value)}
-            className="mt-1 block w-full rounded-md px-2 py-1.5 text-xs"
-            style={INPUT_STYLE}
+            className="mt-1 block w-full"
           />
         </label>
         <div

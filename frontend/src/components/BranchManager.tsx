@@ -25,6 +25,7 @@ import BrokenPairs from "./BrokenPairs"
 import Tooltip from "./Tooltip"
 import BackdropMenu, { MenuItem } from "./BackdropMenu"
 import GitNavigationConfirm from "./GitNavigationConfirm"
+import { Input } from "../haute-ui"
 
 interface BranchManagerProps {
   /** Branch whose history is currently shown in the panel (peek/current). */
@@ -342,7 +343,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
 
           {/* Create (below the existing lines) — split button: Create / & Move */}
           <div className="relative flex gap-1.5">
-            <input
+            <Input
               data-testid="branch-manager-create-input"
               value={newBranch}
               onChange={(e) => setNewBranch(e.target.value)}
@@ -353,8 +354,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                 }
               }}
               placeholder="New branch…"
-              className="flex-1 px-2 py-1 text-[12px] rounded-md focus:outline-none focus:ring-2 min-w-0"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
+              className="flex-1"
             />
             <div className="flex shrink-0">
               <button
@@ -453,7 +453,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                   </div>
                   {restoreAs?.id === d.id && (
                     <div className="flex gap-1.5 pl-[19px]">
-                      <input
+                      <Input
                         data-testid="branch-manager-restore-as-input"
                         aria-label="Restore as"
                         value={restoreAs.name}
@@ -465,8 +465,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                           } else if (e.key === "Escape") setRestoreAs(null)
                         }}
                         autoFocus
-                        className="flex-1 px-2 py-1 text-[12px] font-mono rounded-md focus:outline-none focus:ring-2 min-w-0"
-                        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
+                        className="flex-1 font-mono"
                       />
                       <button
                         data-testid="branch-manager-restore-as-go"

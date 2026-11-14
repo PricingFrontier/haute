@@ -2615,15 +2615,13 @@ describe("ModellingConfig", () => {
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
       const experiment = screen.getByLabelText("MLflow experiment path")
       expectThemedField(experiment)
-      expect(experiment).toHaveClass("w-full", "rounded-lg", "font-mono")
+      expect(experiment).toHaveClass("w-full", "font-mono")
     })
 
+    /** The kit's large field, whose class supplies the themed background, border and text colour. */
     function expectThemedField(field: HTMLElement) {
-      expect(field).toHaveStyle({
-        background: "var(--bg-input)",
-        color: "var(--text-primary)",
-      })
-      expect(field.getAttribute("style")).toContain("border: 1px solid var(--border)")
+      expect(field).toHaveClass("field", "field-large")
+      expect(field.getAttribute("style")).toBeNull()
     }
 
     describe("Export pane", () => {

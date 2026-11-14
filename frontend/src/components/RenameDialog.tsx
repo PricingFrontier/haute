@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 import { validateNodeName } from "../utils/nodeNameValidation"
+import { TextArea } from "../haute-ui"
 
 interface RenameDialogProps {
   defaultValue: string
@@ -77,7 +78,8 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
           >
             Node name
           </label>
-          <textarea
+          <TextArea
+            fieldSize="large"
             ref={inputRef}
             id="rename-input"
             name="name"
@@ -97,14 +99,8 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
                 void submit()
               }
             }}
-            className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2 resize-none overflow-hidden"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-              caretColor: "var(--accent)",
-              whiteSpace: "nowrap",
-            }}
+            className="w-full resize-none overflow-hidden"
+            style={{ whiteSpace: "nowrap" }}
             aria-invalid={!canSubmit}
             aria-describedby={error ? "rename-error" : undefined}
           />

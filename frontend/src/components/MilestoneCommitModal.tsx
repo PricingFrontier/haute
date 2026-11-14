@@ -7,6 +7,7 @@ import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
+import { Input, TextArea } from "../haute-ui"
 
 interface MilestoneCommitModalProps {
   onConfirmed: () => void
@@ -118,7 +119,8 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
           >
             What changed in this version?
           </label>
-          <textarea
+          <TextArea
+            fieldSize="large"
             id="milestone-message"
             data-testid="milestone-message"
             value={message}
@@ -126,13 +128,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
             autoFocus
             rows={3}
             placeholder="e.g. New age banding + competitor uplift"
-            className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2 resize-none"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-              caretColor: "var(--accent)",
-            }}
+            className="w-full resize-none"
             aria-invalid={!canSubmit && trimmed !== ""}
             aria-describedby={trimmed.length > MAX_MESSAGE_LENGTH ? "milestone-message-limit" : undefined}
           />
@@ -151,19 +147,14 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
           >
             Version label (optional)
           </label>
-          <input
+          <Input
+            fieldSize="large"
             id="milestone-version"
             data-testid="milestone-version"
             value={versionLabel}
             onChange={(e) => setVersionLabel(e.target.value)}
             placeholder="e.g. 2.1"
-            className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-              caretColor: "var(--accent)",
-            }}
+            className="w-full"
           />
         </div>
 

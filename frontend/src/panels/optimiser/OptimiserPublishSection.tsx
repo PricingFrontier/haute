@@ -29,9 +29,9 @@ import { optimiserResultSavePath } from "./optimiserHelpers"
 import { factorTablesCsv, hasFactorTables } from "./ratebookFactorTables"
 import RequestFailureNotice from "./RequestFailureNotice"
 import { useLatestRequest } from "./useLatestRequest"
+import { Input, Select } from "../../haute-ui"
 
 const SECTION_LABEL_CLASS = "text-[11px] font-bold uppercase tracking-[0.08em]"
-const INPUT_STYLE = { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
 
 type OptimiserPublishSectionProps = {
   nodeId: string
@@ -205,13 +205,13 @@ export default function OptimiserPublishSection({
           <label htmlFor={`${nodeId}-publish-target`} className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             Result to publish
           </label>
-          <select
+          <Select
+            fieldSize="large"
             id={`${nodeId}-publish-target`}
             value={target === null ? "" : String(target)}
             onChange={(event) => selectPoint(nodeId, event.target.value === "" ? null : Number(event.target.value))}
             disabled={busy}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs"
-            style={INPUT_STYLE}
+            className="w-full mt-0.5"
           >
             <option value="">Solved result</option>
             {points.map((point, index) => (
@@ -219,7 +219,7 @@ export default function OptimiserPublishSection({
                 {`Frontier point ${index + 1} (objective ${formatNumber(point.total_objective)})`}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {isStale && (
@@ -244,22 +244,22 @@ export default function OptimiserPublishSection({
               placeholder={defaultPath}
               value={outputPath}
               onCommit={(next) => onUpdate("result_export_path", next.trim() || undefined)}
-              className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-              style={INPUT_STYLE}
+              field="large"
+              className="w-full mt-0.5 font-mono"
             />
           </div>
           <div>
             <label htmlFor={`${nodeId}-result-version`} className="text-[11px]" style={{ color: "var(--text-muted)" }}>
               Version label
             </label>
-            <input
+            <Input
+              fieldSize="large"
               id={`${nodeId}-result-version`}
               type="text"
               placeholder="Automatic"
               value={version}
               onChange={(event) => setVersion(event.target.value)}
-              className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-              style={INPUT_STYLE}
+              className="w-full mt-0.5 font-mono"
             />
           </div>
         </div>
@@ -370,16 +370,15 @@ export default function OptimiserPublishSection({
             </div>
             {applyNodes.length > 0 && onUpdateNodeConfig && (
               <div className="flex items-center gap-2">
-                <select
+                <Select
                   aria-label="Apply Optimisation node"
                   value={applyNodeId}
                   onChange={(event) => { setApplyNodeId(event.target.value); setApplyMessage(null) }}
-                  className="flex-1 min-w-0 px-2 py-1 rounded text-xs"
-                  style={INPUT_STYLE}
+                  className="flex-1"
                 >
                   <option value="">Choose an Apply Optimisation node...</option>
                   {applyNodes.map((node) => <option key={node.id} value={node.id}>{node.data.label}</option>)}
-                </select>
+                </Select>
                 <button
                   type="button"
                   onClick={pointApplyNodeAtSave}

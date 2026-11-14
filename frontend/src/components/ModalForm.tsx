@@ -1,4 +1,5 @@
 import type { InputHTMLAttributes, ReactNode, Ref } from "react"
+import { Input } from "../haute-ui"
 import ConfigCheckbox from "./form/ConfigCheckbox"
 
 // The form blocks the identity, working-branch and divergence modals share,
@@ -24,16 +25,7 @@ export function ModalFormHeader({ title, children }: { title: string; children?:
 /** A full-width modal text input, its `ref` given to the input. */
 export function ModalTextInput(props: InputHTMLAttributes<HTMLInputElement> & { ref?: Ref<HTMLInputElement> }) {
   return (
-    <input
-      {...props}
-      className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-      style={{
-        background: "var(--bg-input)",
-        border: "1px solid var(--border)",
-        color: "var(--text-primary)",
-        caretColor: "var(--accent)",
-      }}
-    />
+    <Input fieldSize="large" {...props} className="w-full" />
   )
 }
 

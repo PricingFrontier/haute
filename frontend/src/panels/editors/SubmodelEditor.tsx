@@ -1,6 +1,7 @@
 import { GripVertical, Package } from "lucide-react"
 import { apiErrorMessage } from "../../api/errors"
 import { EditorLabel } from "../../components/form"
+import { Select } from "../../haute-ui"
 import useGraphStore from "../../stores/useGraphStore"
 import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../../types/node"
 import { withAlpha } from "../../utils/color"
@@ -156,13 +157,11 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
             {definition.inputPorts.map((port) => (
               <label key={port.name} className="flex items-center justify-between gap-2 text-xs">
                 <span>{port.name}</span>
-                <select
+                <Select
                   aria-label={port.name}
                   disabled={readOnly}
                   value={incoming.find((edge) => edge.targetHandle === `in__${port.name}`)?.id ?? ""}
                   onChange={(event) => retarget(port.name, event.target.value)}
-                  className="min-w-0 rounded px-2 py-1"
-                  style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
                 >
                   <option value="">not connected</option>
                   {incoming.map((edge) => {
@@ -170,7 +169,7 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
                     if (!source) throw new Error(`Connection ${edge.id} has no source ${edge.source}`)
                     return <option key={edge.id} value={edge.id}>{edgeInputName(edge, source as unknown as SimpleNode)}</option>
                   })}
-                </select>
+                </Select>
               </label>
             ))}
           </div>

@@ -25,6 +25,7 @@ import useWholeDataAnswer from "../editors/shared/useWholeDataAnswer"
 import type { ExploreDataView } from "./exploreDataView"
 import ExploreTableHead from "./ExploreTableHead"
 import { CELL_CLASS, LABEL_CLASS, MUTED_STYLE, PRIMARY_STYLE, SECONDARY_STYLE } from "./exploreTableStyles"
+import { Select } from "../../haute-ui"
 
 /** The server's bounds: features per question and columns per key. */
 const FEATURE_LIMIT = 50
@@ -268,15 +269,14 @@ export default function ExploreRelationshipsPane({
             <span className={LABEL_CLASS} style={SECONDARY_STYLE}>
               Target
             </span>
-            <select
+            <Select
               aria-label="Target"
               value={target}
               onChange={(event) => {
                 setTarget(event.target.value)
                 if (event.target.value === weight) setWeight("")
               }}
-              className="w-full rounded-md px-2 py-1 text-[11px] font-mono"
-              style={SELECT_STYLE}
+              className="w-full font-mono"
             >
               <option value="">Choose a numeric target…</option>
               {targetColumns.map((column) => (
@@ -284,18 +284,17 @@ export default function ExploreRelationshipsPane({
                   {column.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="block space-y-1">
             <span className={LABEL_CLASS} style={SECONDARY_STYLE}>
               Weight (optional)
             </span>
-            <select
+            <Select
               aria-label="Weight"
               value={weight}
               onChange={(event) => setWeight(event.target.value)}
-              className="w-full rounded-md px-2 py-1 text-[11px] font-mono"
-              style={SELECT_STYLE}
+              className="w-full font-mono"
               disabled={!target}
             >
               <option value="">No weight</option>
@@ -304,7 +303,7 @@ export default function ExploreRelationshipsPane({
                   {column.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         </div>
         <ColumnChecklist

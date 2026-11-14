@@ -7,6 +7,7 @@ import { apiErrorMessage } from "../api/errors"
 import { GitIdentityFields, ModalFormActions, ModalFormHeader, ModalTextInput } from "./ModalForm"
 import BrokenPairs from "./BrokenPairs"
 import ModalShell from "./ModalShell"
+import { Select } from "../haute-ui"
 
 interface WorkingBranchModalProps {
   /** Called after the working branch has been set and status reloaded. */
@@ -118,17 +119,13 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
           >
             Branch
           </label>
-          <select
+          <Select
+            fieldSize="large"
             id="working-branch-select"
             data-testid="working-branch-select"
             value={choice}
             onChange={(e) => setChoice(e.target.value)}
-            className="w-full px-2.5 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-            }}
+            className="w-full"
           >
             {eligible.map((b) => (
               <option key={b} value={b}>
@@ -136,7 +133,7 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
               </option>
             ))}
             <option value={CREATE_SENTINEL}>+ Create new branch…</option>
-          </select>
+          </Select>
           {detached && (
             <p
               data-testid="working-branch-detached"

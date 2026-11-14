@@ -1,6 +1,7 @@
 import { Plus, Search, X, type LucideIcon } from "lucide-react"
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react"
 
+import { Input } from "../../../haute-ui"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, type CalculationId } from "./calculations"
 import { AGGREGATIONS, COLUMNLESS_AGGREGATIONS, DATE_FORMAT_DEFAULTS, FUNCTIONS, STEP_CATALOGUE, WINDOW_AGGREGATIONS } from "./catalogue"
@@ -284,7 +285,8 @@ export default function AddStepMenu({
           <div className="flex items-center gap-2">
             <div className="relative flex-1 min-w-0">
               <Search size={12} aria-hidden="true" className="absolute left-2 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
-              <input
+              <Input
+                fieldSize="large"
                 ref={search}
                 type="search"
                 aria-label="Search steps and functions"
@@ -294,8 +296,7 @@ export default function AddStepMenu({
                   setQuery(event.target.value)
                   setDescribed(null)
                 }}
-                className="focus-ring w-full rounded-md py-1.5 pl-7 pr-2 text-xs"
-                style={{ background: "var(--bg-input)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
+                className="w-full pl-7"
               />
             </div>
             <button type="button" onClick={close} aria-label="Close" className="hover-chrome focus-ring rounded p-1" style={{ color: "var(--text-secondary)" }}>

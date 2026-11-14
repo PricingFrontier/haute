@@ -19,6 +19,7 @@ import {
 } from "../api/client"
 import { apiErrorMessage, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
 import type { UtilityFile } from "../api/types"
+import { Input } from "../haute-ui"
 
 /**
  * Extract syntax error info from an ApiError's flat string detail.
@@ -426,7 +427,7 @@ export default function UtilityPanel({
       <div className="px-3 py-2 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
         {creating ? (
           <form className="flex items-center gap-1 flex-1" onSubmit={(e) => { e.preventDefault(); handleCreate() }}>
-            <input
+            <Input
               autoFocus
               value={newName}
               aria-label="New utility module name"
@@ -434,8 +435,7 @@ export default function UtilityPanel({
               onChange={(e) => { setNewName(e.target.value); setCreateError(null) }}
               onBlur={() => { if (createError === null) { setCreating(false); setNewName("") } }}
               placeholder="module_name"
-              className="flex-1 px-2 py-1 text-[12px] font-mono rounded focus:outline-none"
-              style={{ background: 'var(--bg-input)', border: '1px solid var(--accent)', color: 'var(--text-primary)' }}
+              className="flex-1 font-mono"
             />
             <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>.py</span>
           </form>

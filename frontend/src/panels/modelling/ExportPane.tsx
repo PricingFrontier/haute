@@ -24,7 +24,6 @@ import { MlflowExportSection } from "./MlflowExportSection"
 import { ModelFileExportSection } from "./ModelFileExportSection"
 import type { ExportableAlgorithm } from "./modelExport"
 import { useExportReceipts } from "./exportReceipts"
-import { MODELLING_INPUT_STYLE } from "./styles"
 
 /**
  * The manual-only note. It is help, not state, so it lives behind the MLflow
@@ -142,8 +141,8 @@ export function ExportPane({
             placeholder={experimentDefault}
             list="mlflow-experiment-options"
             onFocus={loadExperimentOptions}
-            className="mt-0.5 w-full rounded-lg px-2.5 py-1.5 text-xs font-mono"
-            style={MODELLING_INPUT_STYLE}
+            field="large"
+            className="mt-0.5 w-full font-mono"
           />
           <datalist id="mlflow-experiment-options">
             {experiments.map((experiment) => (

@@ -8,11 +8,12 @@ import {
   analyzeEdgeJoinNode,
   type EdgeJoinColumnInfo,
 } from "../../utils/edgeJoinValidation"
+import { Select } from "../../haute-ui"
 import useGraphStore from "../../stores/useGraphStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { useGraph } from "../useGraph"
-import { INPUT_STYLE, SELECT_STYLE } from "./_shared"
+import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "./_shared"
 import { joinOrderAfterHowChange } from "./polarsSteps/catalogue"
 import type { JoinHow } from "./polarsSteps/types"
@@ -229,7 +230,7 @@ export default function EdgeJoinEditor({
       <section className="space-y-2">
         <div>
           <EditorLabel htmlFor="edge-join-how" className="block mb-1.5">Join Type</EditorLabel>
-          <select
+          <Select fieldSize="large"
             id="edge-join-how"
             aria-label="Join Type"
             value={how}
@@ -242,8 +243,8 @@ export default function EdgeJoinEditor({
                 onUpdate({ how: nextHow, maintain_order: nextOrder })
               }
             }}
-            className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-            style={{ ...SELECT_STYLE, ...focusVars }}
+            className="w-full font-mono"
+            style={focusVars}
           >
             {!JOIN_HOW_OPTIONS.some((option) => option.value === how) && (
               <option value={how}>Invalid join type ({how})</option>
@@ -251,7 +252,7 @@ export default function EdgeJoinEditor({
             {JOIN_HOW_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {how !== "cross" && (
@@ -338,37 +339,38 @@ export default function EdgeJoinEditor({
             type="text"
             value={suffix}
             onCommit={(v) => onUpdate("suffix", v)}
-            className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-            style={{ ...INPUT_STYLE, ...focusVars }}
+            field="large"
+            className="w-full font-mono"
+            style={focusVars}
           />
         </div>
 
         <div className="grid grid-cols-1 gap-2">
           <div>
             <EditorLabel htmlFor="edge-join-coalesce" className="block mb-1.5">Coalesce</EditorLabel>
-            <select
+            <Select fieldSize="large"
               id="edge-join-coalesce"
               aria-label="Coalesce"
               value={coalesce}
               onChange={(event) => onUpdate("coalesce", coalesceValueToConfig(event.target.value))}
-              className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-              style={{ ...SELECT_STYLE, ...focusVars }}
+              className="w-full font-mono"
+              style={focusVars}
             >
               <option value="">Not set</option>
               <option value="true">True</option>
               <option value="false">False</option>
-            </select>
+            </Select>
           </div>
 
           <div>
             <EditorLabel htmlFor="edge-join-validate" className="block mb-1.5">Validate</EditorLabel>
-            <select
+            <Select fieldSize="large"
               id="edge-join-validate"
               aria-label="Validate"
               value={validate}
               onChange={(event) => onUpdate("validate", event.target.value || null)}
-              className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-              style={{ ...SELECT_STYLE, ...focusVars }}
+              className="w-full font-mono"
+              style={focusVars}
             >
               {validate && !VALIDATE_OPTIONS.some((option) => option.value === validate) && (
                 <option value={validate}>Invalid validate ({validate})</option>
@@ -376,18 +378,18 @@ export default function EdgeJoinEditor({
               {VALIDATE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
-            </select>
+            </Select>
           </div>
 
           <div>
             <EditorLabel htmlFor="edge-join-maintain-order" className="block mb-1.5">Maintain Order</EditorLabel>
-            <select
+            <Select fieldSize="large"
               id="edge-join-maintain-order"
               aria-label="Maintain Order"
               value={maintainOrder}
               onChange={(event) => onUpdate("maintain_order", event.target.value)}
-              className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-              style={{ ...SELECT_STYLE, ...focusVars }}
+              className="w-full font-mono"
+              style={focusVars}
             >
               {maintainOrder && !MAINTAIN_ORDER_OPTIONS.some((option) => option.value === maintainOrder) && (
                 <option value={maintainOrder}>Invalid maintain order ({maintainOrder})</option>
@@ -395,7 +397,7 @@ export default function EdgeJoinEditor({
               {MAINTAIN_ORDER_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
-            </select>
+            </Select>
           </div>
         </div>
       </section>
@@ -434,7 +436,7 @@ function RoleDisplay({
           aria-label={label}
           title={inputName}
           className="min-w-0 flex-1 px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-          style={{ ...SELECT_STYLE, ...focusVars }}
+          style={{ ...INPUT_STYLE, ...focusVars }}
         >
           <span
             className="block truncate"
@@ -483,7 +485,6 @@ function KeyInput({
   const fieldStyle = {
     ...focusVars,
     ...(isInvalid ? {
-      border: "1px solid var(--danger)",
       ["--focus-ring-border" as string]: "var(--danger)",
       ["--focus-ring-shadow" as string]: "var(--danger-soft-strong)",
     } : {}),
@@ -492,21 +493,21 @@ function KeyInput({
     <div className="min-w-0 flex-1">
       <EditorLabel htmlFor={id} className="block mb-1">{label}</EditorLabel>
       {hasColumns ? (
-        <select
+        <Select fieldSize="large"
           id={id}
           aria-label={label}
           aria-invalid={isInvalid || undefined}
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-          style={{ ...SELECT_STYLE, ...fieldStyle }}
+          className="w-full font-mono"
+          style={fieldStyle}
         >
           <option value="">Select column</option>
           {hasMissingValue && <option value={value}>Missing column ({value})</option>}
           {columns.map((column) => (
             <option key={column.name} value={column.name}>{column.name}</option>
           ))}
-        </select>
+        </Select>
       ) : (
         <CommittedTextField
           id={id}
@@ -515,8 +516,9 @@ function KeyInput({
           type="text"
           value={value}
           onCommit={onChange}
-          className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
-          style={{ ...INPUT_STYLE, ...fieldStyle }}
+          field="large"
+          className="w-full font-mono"
+          style={fieldStyle}
         />
       )}
     </div>

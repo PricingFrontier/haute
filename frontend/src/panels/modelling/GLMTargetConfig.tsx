@@ -12,6 +12,7 @@ import { ColumnSelector } from "./ColumnSelector"
 import { modelColumnChoices } from "./modelColumns"
 import WeightOffsetFields from "./WeightOffsetFields"
 import useToastStore from "../../stores/useToastStore"
+import { Input } from "../../haute-ui"
 
 type Column = { name: string; dtype: string }
 
@@ -282,7 +283,8 @@ export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate 
               <FailoverHelp label={THETA_HELP} />
             </label>
             <div className="mt-1 flex gap-1.5">
-              <input
+              <Input
+                fieldSize="large"
                 type="number" min={0} step="any"
                 value={typeof theta === "number" ? theta : ""}
                 placeholder="e.g. 1.5"
@@ -290,12 +292,8 @@ export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate 
                   const parsed = parseFloat(e.target.value)
                   onUpdate("theta", Number.isFinite(parsed) ? parsed : null)
                 }}
-                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-                style={
-                  typeof theta === "number" && theta > 0
-                    ? { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
-                    : { background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--text-primary)" }
-                }
+                className="flex-1 font-mono"
+                style={typeof theta === "number" && theta > 0 ? undefined : { background: "var(--warning-soft-subtle)", borderColor: "var(--warning-border)" }}
               />
               {estimateButton("theta")}
             </div>

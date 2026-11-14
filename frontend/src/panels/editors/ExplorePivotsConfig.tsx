@@ -21,7 +21,7 @@ import type {
   PivotFormulaPlacement,
   PivotValuePlacement,
 } from "../explore/pivotConfig"
-import { INPUT_STYLE } from "./_shared"
+import { Select } from "../../haute-ui"
 import type { OnUpdateConfig } from "./_shared"
 import useConfirmedConfigUpdate from "./useConfirmedConfigUpdate"
 import {
@@ -150,8 +150,8 @@ function PivotEditor({
             if (name !== pivot.name) persistPivot({ ...pivot, name })
           }}
           containerClassName="mt-1"
-          className="block w-full rounded-md px-2 py-1.5 text-xs"
-          style={INPUT_STYLE}
+          field="large"
+          className="block w-full"
         />
       </div>
 
@@ -185,12 +185,11 @@ function PivotEditor({
           <div data-testid="pivot-sorting-controls" className="grid grid-cols-2 gap-2">
             <label className="min-w-0 text-[10px]">
               Sort by
-              <select
+              <Select fieldSize="compact"
                 aria-label="Sort by"
                 value={selectedSortBy}
                 onChange={(event) => persistPivot(normalizePivotOrdering(pivot, event.target.value || null))}
-                className="mt-1 block w-full min-w-0 rounded px-1 py-0.5 text-[10px]"
-                style={INPUT_STYLE}
+                className="mt-1 block w-full"
               >
                 <option value="">Default - Row labels</option>
                 <optgroup label="Rows">
@@ -199,11 +198,11 @@ function PivotEditor({
                 <optgroup label="Values">
                   {pivot.values.map((value) => <option key={value.id} value={value.id}>Value - {valueDisplayLabel(value)}</option>)}
                 </optgroup>
-              </select>
+              </Select>
             </label>
             <label className="min-w-0 text-[10px]">
               Order
-              <select
+              <Select fieldSize="compact"
                 aria-label="Order"
                 disabled={!selectedSortRow && !selectedSortValue}
                 value={selectedSortRow?.sort ?? selectedSortValue?.sort_rows ?? "ascending"}
@@ -221,12 +220,11 @@ function PivotEditor({
                     }, selectedSortValue.id))
                   }
                 }}
-                className="mt-1 block w-full min-w-0 rounded px-1 py-0.5 text-[10px] disabled:opacity-50"
-                style={INPUT_STYLE}
+                className="mt-1 block w-full"
               >
                 <option value="ascending">{selectedSortValueNumeric ? "Low → High" : "A → Z"}</option>
                 <option value="descending">{selectedSortValueNumeric ? "High → Low" : "Z → A"}</option>
-              </select>
+              </Select>
             </label>
           </div>
         </div>
@@ -268,7 +266,7 @@ function PivotEditor({
                 >
                   <label className="text-[10px]">
                     Value field
-                    <select
+                    <Select fieldSize="compact"
                       aria-label={`Value field for conditional formatting rule ${index + 1}`}
                       value={rule.id}
                       onChange={(event) => {
@@ -294,19 +292,18 @@ function PivotEditor({
                           }),
                         })
                       }}
-                      className="mt-1 block rounded px-1 py-0.5 text-[10px]"
-                      style={INPUT_STYLE}
+                      className="mt-1 block"
                     >
                       {compatibleTargets.map((value) => (
                         <option key={value.id} value={value.id}>
                           {valueDisplayLabel(value)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                   <label className="text-[10px]">
                     Colour scale
-                    <select
+                    <Select fieldSize="compact"
                       aria-label={`Colour scale for conditional formatting rule ${index + 1}`}
                       value={rule.color_scale}
                       onChange={(event) =>
@@ -322,16 +319,15 @@ function PivotEditor({
                           ),
                         })
                       }
-                      className="mt-1 block rounded px-1 py-0.5 text-[10px]"
-                      style={INPUT_STYLE}
+                      className="mt-1 block"
                     >
                       <option value="low_red_high_green">Low red → High green</option>
                       <option value="low_green_high_red">Low green → High red</option>
-                    </select>
+                    </Select>
                   </label>
                   <label className="text-[10px]">
                     Split scale by
-                    <select
+                    <Select fieldSize="compact"
                       aria-label={`Split scale by for conditional formatting rule ${index + 1}`}
                       value={rule.color_scale_split_by ?? ""}
                       onChange={(event) =>
@@ -347,8 +343,7 @@ function PivotEditor({
                           ),
                         })
                       }
-                      className="mt-1 block rounded px-1 py-0.5 text-[10px]"
-                      style={INPUT_STYLE}
+                      className="mt-1 block"
                     >
                       <option value="">None - entire Value</option>
                       {pivot.rows.length > 0 && (
@@ -365,7 +360,7 @@ function PivotEditor({
                           ))}
                         </optgroup>
                       )}
-                    </select>
+                    </Select>
                   </label>
                   <div
                     role="img"

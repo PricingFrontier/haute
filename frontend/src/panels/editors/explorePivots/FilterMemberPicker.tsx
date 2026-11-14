@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react"
 
 import type { ExplorePivotMembersResponse } from "../../../api/types"
 import type { PivotFilterPlacement, PivotMember } from "../../explore/pivotConfig"
-import { INPUT_STYLE } from "../_shared"
+import { Input } from "../../../haute-ui"
 import { memberIdentity, type LoadPivotFilterMembers } from "./placements"
 import { apiErrorMessage } from "../../../api/errors"
 
@@ -122,13 +122,12 @@ export default function FilterMemberPicker({
         >
           <label className="block text-[10px] font-semibold">
             Search members for {placement.field}
-            <input
+            <Input
               type="search"
               aria-label={`Search members for ${placement.field}`}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              className="mt-1 block w-full rounded px-2 py-1 text-xs"
-              style={INPUT_STYLE}
+              className="mt-1 block w-full"
             />
           </label>
 

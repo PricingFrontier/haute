@@ -1,4 +1,4 @@
-import { SELECT_STYLE } from "./_shared"
+import { Select } from "../../haute-ui"
 import type { OnUpdateConfig } from "./_shared"
 import type { MlflowBrowserState, ModelVersion, Run } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
@@ -64,9 +64,8 @@ export function RegisteredModelPicker({
         >
           Model Name
         </label>
-        <select
-          className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
-          style={SELECT_STYLE}
+        <Select fieldSize="large"
+          className="mt-1 w-full"
           value={selectedModel}
           onFocus={refreshModels}
           onChange={(e) =>
@@ -85,7 +84,7 @@ export function RegisteredModelPicker({
               {m.name}
             </option>
           ))}
-        </select>
+        </Select>
         {errorModels && (
           <span className="text-[10px] mt-0.5" style={{ color: "var(--danger)" }}>
             {errorModels}
@@ -106,9 +105,8 @@ export function RegisteredModelPicker({
           >
             Version
           </label>
-          <select
-            className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
-            style={SELECT_STYLE}
+          <Select fieldSize="large"
+            className="mt-1 w-full"
             value={selectionValue}
             onFocus={() => refreshVersions(selectedModel)}
             onChange={(e) => {
@@ -136,7 +134,7 @@ export function RegisteredModelPicker({
                 {v.description ? ` (${v.description})` : ""}
               </option>
             ))}
-          </select>
+          </Select>
           {errorVersions && (
             <span
               className="text-[10px] mt-0.5"
@@ -212,9 +210,8 @@ export function ExperimentRunPicker({
         >
           Experiment
         </label>
-        <select
-          className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
-          style={SELECT_STYLE}
+        <Select fieldSize="large"
+          className="mt-1 w-full"
           value={browseExpId}
           onFocus={refreshExperiments}
           onChange={(e) => {
@@ -243,7 +240,7 @@ export function ExperimentRunPicker({
               {exp.name}
             </option>
           ))}
-        </select>
+        </Select>
         {errorExperiments && (
           <span className="text-[10px] mt-0.5" style={{ color: "var(--danger)" }}>
             {errorExperiments}
@@ -258,9 +255,8 @@ export function ExperimentRunPicker({
           >
             Run
           </label>
-          <select
-            className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:ring-2"
-            style={SELECT_STYLE}
+          <Select fieldSize="large"
+            className="mt-1 w-full"
             value={configField(config, "run_id", "")}
             onFocus={() => refreshRuns(browseExpId)}
             onChange={(e) => {
@@ -289,7 +285,7 @@ export function ExperimentRunPicker({
                 {getRunLabel(r)}
               </option>
             ))}
-          </select>
+          </Select>
           {errorRuns && (
             <span
               className="text-[10px] mt-0.5"
@@ -315,8 +311,8 @@ export function ExperimentRunPicker({
         </label>
         <CommittedTextField
           type="text"
-          className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg font-mono focus:outline-none focus:ring-2"
-          style={SELECT_STYLE}
+          field="large"
+          className="mt-1 w-full font-mono"
           value={configField(config, "run_id", "")}
           onCommit={(v) => onUpdate("run_id", v)}
           placeholder="e.g. a1b2c3d4e5f6..."
@@ -332,8 +328,8 @@ export function ExperimentRunPicker({
           </label>
           <CommittedTextField
             type="text"
-            className="mt-1 w-full text-xs px-2.5 py-1.5 rounded-lg font-mono focus:outline-none focus:ring-2"
-            style={SELECT_STYLE}
+            field="large"
+            className="mt-1 w-full font-mono"
             value={configField(config, "artifact_path", "")}
             onCommit={(v) => onUpdate("artifact_path", v)}
             placeholder="e.g. model.cbm"

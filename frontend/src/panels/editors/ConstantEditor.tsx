@@ -6,12 +6,6 @@ import { duplicateConstantNames, nextConstantName } from "./constantNames"
 
 type ConstantValue = { name: string; value: string }
 
-const FIELD_STYLE = {
-  background: "var(--bg-input)",
-  color: "var(--text-primary)",
-  border: "1px solid var(--border)",
-}
-
 export default function ConstantEditor({
   config,
   onUpdate,
@@ -60,16 +54,16 @@ export default function ConstantEditor({
               placeholder="name"
               dataTestId={`constant-name-${i}`}
               containerClassName="flex-1 min-w-0"
-              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg"
-              style={FIELD_STYLE}
+              field="large"
+              className="w-full font-mono"
             />
             <CommittedTextField
               type="text"
               value={v.value}
               onCommit={(val) => updateRow(i, "value", val)}
               placeholder="value"
-              className="w-24 px-2 py-1.5 text-xs font-mono rounded-lg text-right"
-              style={FIELD_STYLE}
+              field="large"
+              className="w-24 font-mono text-right"
             />
             <button
               onClick={() => removeRow(i)}

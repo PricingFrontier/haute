@@ -11,6 +11,7 @@
 import type { CSSProperties, ReactNode } from "react"
 
 import type { SortState } from "./valuesSort"
+import { Input } from "../haute-ui"
 
 export interface SortableValuesColumn<Row, K extends string> {
   key: K
@@ -128,16 +129,11 @@ export function ValuesTableSearch({
   return (
     <label className="min-w-0 flex-1 text-[13px]" style={{ color: "var(--text-secondary)" }}>
       {label}
-      <input
+      <Input
         aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-1 block w-full rounded border px-2 py-1 text-[13px]"
-        style={{
-          background: "var(--bg-input)",
-          borderColor: "var(--border)",
-          color: "var(--text-primary)",
-        }}
+        className="mt-1 block w-full"
       />
     </label>
   )

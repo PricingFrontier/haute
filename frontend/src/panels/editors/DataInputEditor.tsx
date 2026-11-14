@@ -5,7 +5,7 @@ import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
 import { hasNonEmptyString, ioBranchConfig } from "./_ioProvider"
 import IoProviderPicker from "./_IoProviderPicker"
 import { useIoCapabilities } from "./_ioFormats"
-import { INPUT_STYLE, SchemaPreview } from "./_shared"
+import { SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 
@@ -190,8 +190,8 @@ export default function DataInputEditor({
                 }
               }}
               rows={3}
-              className="mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
-              style={INPUT_STYLE}
+              field="large"
+              className="mt-1 w-full font-mono"
             />
             <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
               Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table.

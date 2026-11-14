@@ -6,6 +6,7 @@ import { isNumericDtype } from "../../utils/polarsDtypes"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { withAlpha } from "../../utils/color"
 import { getDtypeColor } from "../../utils/dtypeColors"
+import { Input } from "../../haute-ui"
 import {
   finalSelectedFeatureNames,
   roleColumns,
@@ -141,14 +142,10 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
             size={13}
             style={{ color: "var(--text-muted)" }}
           />
-          <input
+          <Input
+            fieldSize="large"
             aria-label="Search features"
-            className="w-full rounded-lg py-2 pl-8 pr-2.5 text-xs outline-none focus:ring-1 focus:ring-[var(--model-accent-border)]"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-            }}
+            className="w-full pl-8"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
             placeholder="Search features"

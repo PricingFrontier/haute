@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import useListReorder from "../../../hooks/useListReorder"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import type { StepStart } from "../../../utils/polarsStepInputs"
-import { InputSourcesBar, INPUT_STYLE } from "../_shared"
+import { Select } from "../../../haute-ui"
+import { InputSourcesBar } from "../_shared"
 import type { InputSource, OnUpdateConfig } from "../_shared"
 import AddStepMenu, { type StepPreset } from "./AddStepMenu"
 import { stepIcon, stepTitle } from "./calculations"
@@ -343,15 +344,14 @@ export default function PolarsStepsEditor({
               <span className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
                 Start from
               </span>
-              <select
+              <Select fieldSize="large"
                 ref={(el) => {
                   if (el) disclosures.current.set(0, el)
                 }}
                 aria-label="Start from input"
                 value={effectiveStart}
                 onChange={(e) => setStart(e.target.value)}
-                className="focus-ring flex-1 basis-32 min-w-0 px-2 py-1.5 text-xs font-mono rounded-md"
-                style={INPUT_STYLE}
+                className="flex-1 basis-32 font-mono"
               >
                 {effectiveStart === "" && (
                   <option value="" disabled>
@@ -368,7 +368,7 @@ export default function PolarsStepsEditor({
                     {name}
                   </option>
                 ))}
-              </select>
+              </Select>
               {badgeFor(0) && (
                 <div role="status" className="basis-full text-[11px]" style={{ color: `var(--${badgeFor(0)?.tone})` }}>
                   {badgeFor(0)?.text}

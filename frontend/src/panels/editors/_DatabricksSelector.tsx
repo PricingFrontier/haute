@@ -3,6 +3,7 @@ import { Check, ChevronDown, Loader2, RefreshCw } from "lucide-react"
 import { getWarehouses, getCatalogs, getSchemas, getTables } from "../../api/client"
 import { apiErrorMessage } from "../../api/errors"
 import { CommittedTextField } from "../../components/form"
+import { Select } from "../../haute-ui"
 
 // ─── WarehousePicker ──────────────────────────────────────────────
 //
@@ -163,8 +164,9 @@ export function WarehousePicker({
             placeholder="Paste an HTTP path"
             value={httpPath}
             onCommit={(value) => onSelect(value.trim())}
-            className="focus-ring w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
-            style={fieldStyle}
+            field="large"
+            className="w-full font-mono"
+            style={required ? { borderColor: 'var(--warning-border-emphasis)' } : undefined}
           />
           <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
             From a warehouse's Connection details tab, or an all-purpose cluster's JDBC/ODBC tab.
@@ -284,13 +286,6 @@ type CatalogItem = { name: string; comment: string }
 type SchemaItem = { name: string; comment: string }
 type TableItem = { name: string; full_name: string; table_type: string; comment: string }
 
-const SELECT_STYLE = {
-  background: 'var(--bg-input)',
-  border: '1px solid var(--border)',
-  color: 'var(--text-primary)',
-}
-const SELECT_CLASS = "w-full px-2.5 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-40"
-
 function CatalogSchemaSelects({
   catalog,
   schema,
@@ -329,7 +324,7 @@ function CatalogSchemaSelects({
 
   return (
     <>
-      <select
+      <Select fieldSize="large"
         aria-label="Catalog"
         value={catalog}
         onFocus={refreshCatalogs}
@@ -338,8 +333,7 @@ function CatalogSchemaSelects({
           onCatalogChange(cat)
           if (cat) refreshSchemas(cat)
         }}
-        className={SELECT_CLASS}
-        style={SELECT_STYLE}
+        className="w-full"
       >
         <option value="">{loadingCatalogs ? "Loading..." : "Select catalog..."}</option>
         {catalog && catalogs.every((c) => c.name !== catalog) && (
@@ -348,16 +342,15 @@ function CatalogSchemaSelects({
         {catalogs.map((c) => (
           <option key={c.name} value={c.name}>{c.name}{c.comment ? ` - ${c.comment}` : ""}</option>
         ))}
-      </select>
+      </Select>
 
-      <select
+      <Select fieldSize="large"
         aria-label="Schema"
         value={schema}
         disabled={!catalog}
         onFocus={() => { if (catalog) refreshSchemas(catalog) }}
         onChange={(e) => onSchemaChange(e.target.value)}
-        className={SELECT_CLASS}
-        style={SELECT_STYLE}
+        className="w-full"
       >
         <option value="">{loadingSchemas ? "Loading..." : catalog ? "Select schema..." : "Select catalog first"}</option>
         {schema && schemaItems.every((s) => s.name !== schema) && (
@@ -366,7 +359,7 @@ function CatalogSchemaSelects({
         {schemaItems.map((s) => (
           <option key={s.name} value={s.name}>{s.name}{s.comment ? ` - ${s.comment}` : ""}</option>
         ))}
-      </select>
+      </Select>
     </>
   )
 }
@@ -478,7 +471,7 @@ export function CatalogTablePicker({
           onError={setError}
         />
 
-        <select
+        <Select fieldSize="large"
           aria-label="Table"
           value={tableName}
           disabled={!dbSchema}
@@ -488,8 +481,7 @@ export function CatalogTablePicker({
             setTableName(tbl)
             choose(tbl ? `${catalog}.${dbSchema}.${tbl}` : "")
           }}
-          className={SELECT_CLASS}
-          style={SELECT_STYLE}
+          className="w-full"
         >
           <option value="">{loadingTables ? "Loading..." : dbSchema ? "Select table..." : "Select schema first"}</option>
           {tableName && tableItems.every((t) => t.name !== tableName) && (
@@ -500,7 +492,7 @@ export function CatalogTablePicker({
               {t.name}{t.table_type ? ` (${t.table_type})` : ""}{t.comment ? ` - ${t.comment}` : ""}
             </option>
           ))}
-        </select>
+        </Select>
       </div>
 
       {table && (
@@ -604,8 +596,9 @@ export function TargetTablePicker({
           disabled={!dbSchema}
           value={draftName}
           onCommit={commitName}
-          className="focus-ring w-full px-2.5 py-1.5 text-xs rounded-lg disabled:opacity-40"
-          style={{ ...SELECT_STYLE, borderColor: nameValid ? 'var(--border)' : 'var(--danger)' }}
+          aria-invalid={nameValid ? undefined : true}
+          field="large"
+          className="w-full"
         />
         <datalist id="databricks-target-tables">
           {(tables ?? []).map((t) => (

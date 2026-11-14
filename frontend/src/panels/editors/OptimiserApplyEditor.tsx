@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react"
-import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { InputSourcesBar } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
@@ -12,6 +12,7 @@ import { resolveLoadedVersion } from "../../utils/mlflowModelMetadata"
 import { readJson } from "../../api/client"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField } from "../../components/form"
+import { Select } from "../../haute-ui"
 
 type ArtifactMeta = {
   version: string
@@ -192,10 +193,9 @@ export default function OptimiserApplyEditor({
           >
             Ratebook Input
           </label>
-          <select
+          <Select fieldSize="large"
             id="optimiser-apply-ratebook-input"
-            className="w-full px-2.5 py-1.5 rounded-lg text-[12px] focus:outline-none focus:ring-2"
-            style={INPUT_STYLE}
+            className="w-full"
             value={ratebookInput}
             onChange={(e) => onUpdate("ratebook_input", e.target.value)}
           >
@@ -208,7 +208,7 @@ export default function OptimiserApplyEditor({
                 {source.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       )}
 
@@ -237,8 +237,8 @@ export default function OptimiserApplyEditor({
           </label>
           <CommittedTextField
             type="text"
-            className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono focus:outline-none focus:ring-2"
-            style={INPUT_STYLE}
+            field="large"
+            className="w-full font-mono"
             value={artifactPath}
             onCommit={(v) => onUpdate("artifact_path", v)}
             placeholder="artifacts/optimiser_v1.json"
@@ -274,8 +274,8 @@ export default function OptimiserApplyEditor({
         </label>
         <CommittedTextField
           type="text"
-          className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono focus:outline-none focus:ring-2"
-          style={INPUT_STYLE}
+          field="large"
+          className="w-full font-mono"
           value={versionColumn}
           onCommit={(v) => onUpdate("version_column", v)}
           placeholder="__optimiser_version__"
@@ -292,8 +292,8 @@ export default function OptimiserApplyEditor({
         </label>
         <CommittedTextField
           type="text"
-          className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono focus:outline-none focus:ring-2"
-          style={INPUT_STYLE}
+          field="large"
+          className="w-full font-mono"
           value={optimisedValueColumn}
           onCommit={(v) => onUpdate("optimised_value_column", v)}
           placeholder="optimised_value"

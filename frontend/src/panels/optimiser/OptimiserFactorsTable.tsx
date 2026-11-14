@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Search } from "lucide-react"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { getDtypeColor } from "../../utils/dtypeColors"
 import { MAX_ANALYSIS_COLUMNS, type OptimiserInputs } from "./solveReadiness"
+import { Input, Select } from "../../haute-ui"
 
 type Column = { name: string; dtype: string }
 
@@ -20,7 +21,6 @@ type OptimiserFactorsTableProps = {
   onUpdate: OnUpdateConfig
   accentColor: string
   labelClassName: string
-  inputStyle: CSSProperties
 }
 
 type FactorRow = { name: string; dtype: string | null; levels: number | null }
@@ -48,7 +48,6 @@ export default function OptimiserFactorsTable({
   onUpdate,
   accentColor,
   labelClassName,
-  inputStyle,
 }: OptimiserFactorsTableProps) {
   const selectId = useId()
   const [filter, setFilter] = useState("")
@@ -152,12 +151,12 @@ export default function OptimiserFactorsTable({
         <label htmlFor={selectId} className="text-[11px]" style={{ color: "var(--text-muted)" }}>
           Validation input
         </label>
-        <select
+        <Select
+          fieldSize="large"
           id={selectId}
           value={analysisInput}
           onChange={(event) => chooseInput(event.target.value)}
-          className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs"
-          style={inputStyle}
+          className="w-full mt-0.5"
         >
           <option value="">{dataInputLabel}</option>
           {missingExplicitAnalysisInput && analysisInput && (
@@ -166,7 +165,7 @@ export default function OptimiserFactorsTable({
           {otherInputs.map((input) => (
             <option key={input.name} value={input.name}>{input.label}</option>
           ))}
-        </select>
+        </Select>
         {missingExplicitAnalysisInput && (
           <div
             className="mt-1 px-2.5 py-1.5 rounded text-[11px]"
@@ -191,10 +190,10 @@ export default function OptimiserFactorsTable({
             size={13}
             style={{ color: "var(--text-muted)" }}
           />
-          <input
+          <Input
+            fieldSize="large"
             aria-label="Search factors"
-            className="w-full rounded-lg py-2 pl-8 pr-2.5 text-xs outline-none"
-            style={inputStyle}
+            className="w-full pl-8"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
             placeholder="Search factors"

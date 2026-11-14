@@ -52,7 +52,8 @@ describe("haute-ui's stylesheets", () => {
     expect(tokens.size).toBeGreaterThan(0)
     const css = Object.values(STYLESHEETS).join("\n")
     const used = new Set([...css.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]))
-    expect([...used].filter((name) => !tokens.has(name))).toEqual([])
+    // Two are not tokens: a node's editor sets them on a field for its own focus colour.
+    expect([...used].filter((name) => !tokens.has(name))).toEqual(["--focus-ring-border", "--focus-ring-shadow"])
   })
 
   it.each(Object.entries(STYLESHEETS))("%s takes colours only from tokens", (_file, css) => {
@@ -106,6 +107,7 @@ describe("haute-ui's stylesheets", () => {
     ["field.css", ".field", "min-width", "0"],
     ["field.css", ".field-compact", "padding-block", "0.125rem"],
     ["field.css", ".field-large", "padding", "0.375rem 0.625rem"],
+    ["field.css", ".field:disabled", "opacity", "0.5"],
     ["field.css", '.field[aria-invalid="true"]', "border-color", "var(--danger-border-strong)"],
     ["field.css", ".field:focus-visible", "outline", "2px solid transparent"],
     ["palette.css", ".palette", "width", "180px"],
@@ -133,9 +135,10 @@ describe("haute-ui's stylesheets", () => {
   it("draws a field's keyboard focus as index.css's focus-ring does", () => {
     const helper = declarations(ruleBody(INDEX_CSS, ".focus-ring:focus-visible"))
     const field = declarations(ruleBody(STYLESHEETS["field.css"], ".field:focus-visible"))
-    expect(helper.get("border-color")).toBe(`var(--focus-ring-border, ${field.get("border-color")})`)
-    expect(helper.get("box-shadow")).toBe(`0 0 0 2px var(--focus-ring-shadow, var(--accent-soft))`)
-    expect(field.get("box-shadow")).toBe("0 0 0 2px var(--accent-soft)")
+    // The same two declarations, a node's own focus colour honoured by both.
+    expect(field.get("border-color")).toBe("var(--focus-ring-border, var(--accent-ring))")
+    expect(field.get("border-color")).toBe(helper.get("border-color"))
+    expect(field.get("box-shadow")).toBe(helper.get("box-shadow"))
   })
 
   it("keeps an invalid field's border while it is focused, and a switched-on toggle's press visible", () => {

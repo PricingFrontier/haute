@@ -14,8 +14,6 @@ import { apiErrorMessage } from "../../api/errors"
 // The input's look is the form kit's, which every panel shares.
 export { INPUT_STYLE }
 
-export const SELECT_STYLE = INPUT_STYLE
-
 // ─── Shared Types ─────────────────────────────────────────────────
 
 export type OnUpdateConfigResult =

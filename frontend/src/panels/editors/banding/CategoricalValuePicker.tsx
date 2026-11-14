@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Input } from "../../../haute-ui"
 import { withAlpha } from "../../../utils/color"
 
 interface CategoricalValuePickerProps {
@@ -39,18 +40,13 @@ export function CategoricalValuePicker({
       </div>
 
       {showSearch && (
-        <input
+        <Input
           type="text"
           aria-label="Filter available values"
           placeholder="Filter values..."
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          className="w-full px-2 py-1 rounded text-[11px] font-mono focus:outline-none"
-          style={{
-            background: "var(--bg-panel)",
-            border: "1px solid var(--border)",
-            color: "var(--text-primary)",
-          }}
+          className="w-full font-mono"
         />
       )}
 

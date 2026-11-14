@@ -9,6 +9,7 @@ import { MODEL_COLORS } from "../../theme/colors"
 import { ViewSwitch } from "../ViewSwitch"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import ShapBeeswarm from "./ShapBeeswarm"
+import { Input, Select } from "../../haute-ui"
 
 interface FeaturesTabProps {
   result: TrainResult
@@ -84,20 +85,15 @@ export function FeaturesTab({ result }: FeaturesTabProps) {
         {!beeswarm && (
           <label className="ml-auto text-[12px]" style={{ color: "var(--text-secondary)" }}>
             Features shown
-            <select
+            <Select
               aria-label="Features shown"
               value={shown}
               onChange={(event) => setShown(event.target.value as "20" | "all")}
-              className="ml-1 rounded border px-1 py-0.5 text-[13px]"
-              style={{
-                background: "var(--bg-input)",
-                borderColor: "var(--border)",
-                color: "var(--text-primary)",
-              }}
+              className="ml-1"
             >
               <option value="20">Top 20</option>
               <option value="all">All</option>
-            </select>
+            </Select>
           </label>
         )}
       </div>
@@ -112,16 +108,11 @@ export function FeaturesTab({ result }: FeaturesTabProps) {
         <>
           <label className="block text-[13px]" style={{ color: "var(--text-secondary)" }}>
             Search importance features
-            <input
+            <Input
               aria-label="Search importance features"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              className="mt-1 w-full rounded border px-2 py-1 text-[13px]"
-              style={{
-                background: "var(--bg-input)",
-                borderColor: "var(--border)",
-                color: "var(--text-primary)",
-              }}
+              className="mt-1 w-full"
             />
           </label>
           <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>

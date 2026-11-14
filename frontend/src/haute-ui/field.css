@@ -25,13 +25,19 @@
 .field-large {
   padding: 0.375rem 0.625rem;
 }
+/* A field that cannot be changed fades by half, as a disabled kit button's label does. */
+.field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 /* Keyboard focus, as index.css's .focus-ring draws it and as the kit's buttons do: the
-   border in the accent and a soft ring round it. The outline stays, transparent, for a
-   forced-colours mode to draw. */
+   border in the accent and a soft ring round it. A node's editor may name its own colour
+   for the two through the custom properties .focus-ring reads. The outline stays,
+   transparent, for a forced-colours mode to draw. */
 .field:focus-visible {
   outline: 2px solid transparent;
-  border-color: var(--accent-ring);
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  border-color: var(--focus-ring-border, var(--accent-ring));
+  box-shadow: 0 0 0 2px var(--focus-ring-shadow, var(--accent-soft));
 }
 /* A value that cannot be kept: the border in the danger colour, focused or not. */
 .field[aria-invalid="true"] {

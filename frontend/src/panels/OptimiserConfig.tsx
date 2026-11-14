@@ -34,6 +34,7 @@ import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import { resolveOptimiserPane } from "./optimiser/optimiserPanes"
 import { FieldHelpIcon } from "./modelling/FieldHelpIcon"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
+import { Select } from "../haute-ui"
 
 type OptimiserConfigProps = {
   /** The node being configured: its solve job, results and remembered pane. */
@@ -392,7 +393,6 @@ export default function OptimiserConfig({
     window.setTimeout(() => solveIfReadyRef.current(), 0)
   }
 
-  const inputStyle = { background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }
   const dataInputColumnNames = dataInputColumns.map((column) => column.name)
   const pane = resolveOptimiserPane(activePane)
   let paneBody: ReactElement
@@ -426,18 +426,18 @@ export default function OptimiserConfig({
           <label className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>Objectives & Constraints</label>
           <div className="mt-1.5">
             {inputNodes.length > 0 ? (
-              <select
+              <Select
+                fieldSize="large"
                 value={dataInput}
                 onChange={(e) => onUpdate("data_input", e.target.value)}
-                className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs"
-                style={inputStyle}
+                className="w-full mt-0.5"
               >
                 <option value="">Select input...</option>
                 {missingExplicitDataInput && dataInput && <option value={dataInput}>Missing input</option>}
                 {inputNodes.map(n => (
                   <option key={n.name} value={n.name}>{n.label}</option>
                 ))}
-              </select>
+              </Select>
             ) : (
               <div className="mt-0.5 text-[11px] py-2 text-center" style={{ color: "var(--text-muted)" }}>
                 No inputs connected.
@@ -471,16 +471,16 @@ export default function OptimiserConfig({
           <label className={SECTION_LABEL_CLASS} style={{ color: "var(--text-muted)" }}>Objective</label>
           <div className="mt-1.5">
             <label className="text-xs" style={{ color: "var(--text-secondary)" }}>Column to maximise</label>
-            <select
+            <Select
+              fieldSize="large"
               value={objective}
               onChange={(e) => onUpdate("objective", e.target.value)}
-              className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-              style={inputStyle}
+              className="w-full mt-0.5 font-mono"
             >
               <option value="">Select objective...</option>
               <SavedValueOption value={objective} options={dataInputColumnNames} />
               {dataInputColumns.map(c => <option key={c.name} value={c.name}>{c.name} ({c.dtype})</option>)}
-            </select>
+            </Select>
           </div>
         </div>
 
@@ -495,16 +495,16 @@ export default function OptimiserConfig({
             ].map(field => (
               <div key={field.key}>
                 <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>{field.label}</label>
-                <select
+                <Select
+                  fieldSize="large"
                   value={field.value}
                   onChange={(e) => onUpdate(field.key, e.target.value)}
-                  className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-                  style={inputStyle}
+                  className="w-full mt-0.5 font-mono"
                 >
                   <option value="">Select {field.label.toLowerCase()}...</option>
                   <SavedValueOption value={field.value} options={dataInputColumnNames} />
                   {dataInputColumns.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-                </select>
+                </Select>
               </div>
             ))}
           </div>
@@ -522,12 +522,12 @@ export default function OptimiserConfig({
                 Rating Factor Source
               </label>
               {bandingNodes.length > 0 ? (
-                <select
+                <Select
+                  fieldSize="large"
                   aria-label="Rating Factor Source"
                   value={bandingSource}
                   onChange={(e) => handleBandingSourceChange(e.target.value)}
-                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs"
-                  style={inputStyle}
+                  className="w-full mt-1"
                 >
                   <option value="">Select input...</option>
                   {missingExplicitBandingSource && bandingSource && (
@@ -536,7 +536,7 @@ export default function OptimiserConfig({
                   {bandingNodes.map(bn => (
                     <option key={bn.name} value={bn.name}>{bn.label}</option>
                   ))}
-                </select>
+                </Select>
               ) : (
                 <div className="mt-1 text-[11px] py-2 text-center" style={{ color: "var(--text-muted)" }}>
                   No Banding nodes found. Add a Banding node to define rating factors.
@@ -585,7 +585,6 @@ export default function OptimiserConfig({
           onUpdate={onUpdate}
           accentColor={accentColor}
           labelClassName={SECTION_LABEL_CLASS}
-          inputStyle={inputStyle}
         />
       </>
     )
@@ -638,8 +637,8 @@ export default function OptimiserConfig({
                 type="number" min={1} step={1}
                 value={String(maxIter)}
                 onCommit={(v) => onUpdate("max_iter", safeParseInt(v, 50))}
-                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                style={inputStyle}
+                field="regular"
+                className="w-full mt-0.5 font-mono"
               />
             </div>
             <div>
@@ -648,8 +647,8 @@ export default function OptimiserConfig({
                 type="number" step={0.000001}
                 value={String(tolerance)}
                 onCommit={(v) => onUpdate("tolerance", safeParseFloat(v, 1e-6))}
-                className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                style={inputStyle}
+                field="regular"
+                className="w-full mt-0.5 font-mono"
               />
             </div>
           </div>
@@ -661,8 +660,8 @@ export default function OptimiserConfig({
                   type="number" min={1} step={1}
                   value={String(maxCdIterations)}
                   onCommit={(v) => onUpdate("max_cd_iterations", safeParseInt(v, 10))}
-                  className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                  style={inputStyle}
+                  field="regular"
+                  className="w-full mt-0.5 font-mono"
                 />
               </div>
               <div>
@@ -671,8 +670,8 @@ export default function OptimiserConfig({
                   type="number" step={0.0001}
                   value={String(cdTolerance)}
                   onCommit={(v) => onUpdate("cd_tolerance", safeParseFloat(v, 1e-3))}
-                  className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
-                  style={inputStyle}
+                  field="regular"
+                  className="w-full mt-0.5 font-mono"
                 />
               </div>
             </div>
@@ -745,8 +744,8 @@ export default function OptimiserConfig({
             placeholder={mlflowExperimentDefault}
             value={configField(config, "mlflow_experiment", "")}
             onCommit={(v) => onUpdate("mlflow_experiment", v)}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-            style={inputStyle}
+            field="large"
+            className="w-full mt-0.5 font-mono"
           />
         </div>
       </section>
