@@ -11,7 +11,9 @@ second way: 83 online solves and 23 ratebook solves of a few quotes each,
 their totals recomputed from the rows and the online ones checked against
 every assignment enumerated. The main session ran each finding again
 through the routes, the solver ones on books of 3,000 and 5,000 quotes with
-the node's default settings.
+the node's default settings. `OPM-05` comes from the plan's phase 5, a
+reader from a second model family (Codex), and was run through the routes
+by a worker and again by the main session on 13 November.
 
 ## Priorities
 
@@ -21,6 +23,7 @@ the node's default settings.
 | OPM-02 | Planned | P2 | A solve with one binding constraint converges and meets its bound, as point 0 of its own frontier does. |
 | OPM-03 | Decision | P2 | A ratebook solve that ends short of a bound says so in its status and warning, not only in the Summary table. |
 | OPM-04 | Planned | P2 | Solving a node again ends the solver process of its earlier solve, so tuning a constraint does not hold one process per press for fifteen minutes. |
+| OPM-05 | Planned | P3 | A Float16 analysis column is binned and broken down as a number, as a Float64 one is. |
 
 ## Planned improvements
 
@@ -202,3 +205,25 @@ their Quotes pages answers as it does after the retention window.
 
 **Evidence:** `src/haute/routes/_optimiser_session.py::SolverSession`;
 `src/haute/routes/_job_store.py`; `specs/optimiser/high-level.md`.
+
+### OPM-05 — A Float16 analysis column is broken down as a number
+**Why:** Reproduced on 13 November 2026 through the routes. A solve was
+given two analysis columns with the same values, `score_f64` as Float64
+and `score_f16` as Float16. The first is binned as a number, and its
+breakdown answers with 20 levels. The second is called categorical and is
+not available: "about 2,513 distinct values; at most 1,800 (estimated) can
+be broken down", and asking for its breakdown answers 422. The
+specification bins "an analysis column of an integer, float or decimal
+dtype" as a number. The list of float types the solve reads holds
+`Float32` and `Float64` by name.
+
+**Plan:** Add Float16 to the list, or decide the family from the type as
+`RTG-07` proposes.
+
+**Acceptance:** In the run above `score_f16` is binned as a number and its
+breakdown answers as `score_f64`'s does.
+
+**Dependencies:** `RTG-07` and `XPL-02` are the same list in other places.
+
+**Evidence:** `src/haute/routes/_optimiser_quotes.py`;
+`specs/optimiser/low-level.md`.

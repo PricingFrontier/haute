@@ -12,7 +12,8 @@ come from the plan's browser sweep of the editors' fields on 11 November;
 the main session re-ran them in a browser and from the command line.
 `RTG-05` and `RTG-06` come from the plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit;
-both were reproduced through the executor on 13 November.
+both were reproduced through the executor on 13 November. `RTG-07` comes
+from the same reader and was reproduced the same way on that day.
 
 ## Priorities
 
@@ -24,6 +25,7 @@ both were reproduced through the executor on 13 November.
 | RTG-04 | Planned | P3 | A Rating table with a Default and no entries prices the Default, instead of stopping the run for a column it did not create. |
 | RTG-05 | Planned | P3 | A breakpoint band named with the number 0 in the settings file is a band, or is refused by name; its rows no longer fall to the default in silence. |
 | RTG-06 | Planned | P3 | A Rating Step on a factor column of Null type prices every row at the default, instead of refusing a table with distinct entries as holding duplicates. |
+| RTG-07 | Planned | P2 | A Float16 factor's NaN and infinity take a Banding's default, as a Float32's and a Float64's do, instead of the top band. |
 
 ## Planned improvements
 
@@ -231,3 +233,30 @@ column's type.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_rating.py`; `specs/rating/high-level.md`.
+
+### RTG-07 — A Float16 factor's NaN and infinity take the default band
+**Why:** Reproduced on 13 November 2026 through the executor. A Banding
+with number breakpoints was given the same values twice, in a Float64
+column and in a Float16 column. For 5, 2, 1.5 and 999 the two agree. For
+NaN and for infinity the Float64 column takes the default, "unknown", and
+the Float16 column takes the top band, "high". Nothing is said, and a
+Rating Step after it prices the top band's rate for a value that is
+missing. The specification says "Float columns have NaN/Infinity sanitised
+to null before rule matching". The code that does it names `Float32` and
+`Float64`, so the third float type is passed through, and NaN compares
+above every breakpoint. A Parquet file written from a pandas float16
+column, as a memory "downcast" helper leaves one, is read as Float16
+(`FES-02` is the editor's side of the same type).
+
+**Plan:** Ask the type whether it is a float, as the engine can say,
+in place of the two names.
+
+**Acceptance:** In the run above the Float16 column takes "unknown" for NaN
+and for both infinities. A test holds the three float types beside each
+other.
+
+**Dependencies:** `XPL-02` and `OPM-05` are the same list of two names in
+other places; `FES-02` is the editor's.
+
+**Evidence:** `src/haute/_rating.py::banding_comparison_expr`;
+`specs/rating/high-level.md`.
