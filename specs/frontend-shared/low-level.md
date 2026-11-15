@@ -869,7 +869,8 @@ same Vitest config.
   announced — a duplicate announcement leaving the epoch untouched while a new generation
   raises it once, and a reset making the next announcement count again — a refused point held
   as the node's `refused` problem and a failed lookup as its `failed` problem, neither toasting,
-  the node's Refresh asking for the point again after either, a failed build kept with the stale
+  the node's Refresh asking for the point again after either, including a failed recheck of
+  data it still shows as current, a failed build kept with the stale
   point it could not refresh, a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress

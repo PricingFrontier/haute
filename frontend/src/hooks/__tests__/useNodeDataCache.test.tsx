@@ -178,6 +178,28 @@ describe("useNodeDataCache", () => {
     expect(mockRun).not.toHaveBeenCalled()
   })
 
+  it("asks for the point again on Refresh when a recheck of current data failed", async () => {
+    mockGetPoint.mockResolvedValueOnce(point())
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("current"))
+    mockGetPoint.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+
+    await act(async () => {
+      useNodeDataStore.getState().bumpEpoch()
+    })
+    await waitFor(() => expect(result.current.problem?.kind).toBe("failed"))
+    expect(result.current.availability).toBe("current")
+    mockGetPoint.mockResolvedValue(point())
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(result.current.problem).toBeNull())
+    expect(mockGetPoint).toHaveBeenCalledTimes(3)
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
   it("keeps stale data and the failed refresh as two facts", async () => {
     mockGetPoint.mockResolvedValue(
       point({ state: "stale", generation: { ...point().generation!, fresh: false } }),

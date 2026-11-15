@@ -207,7 +207,11 @@ export default function useNodeDataCache({
   // Why the last inspection or build for this identity got nothing. It is the
   // node's state, not an event, so it is shown with the node rather than raised
   // as a toast.
-  const [problem, setProblem] = useState<({ configHash: string } & NodeDataProblem) | null>(null)
+  // `during` says which failed: a read is asked again on Refresh, whatever point
+  // is kept from before; a build is retried by building.
+  const [problem, setProblem] = useState<
+    ({ configHash: string; during: "read" | "build" } & NodeDataProblem) | null
+  >(null)
   // Raised by the node's Refresh to ask for the point again after a failure.
   const [readAttempt, setReadAttempt] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -317,7 +321,12 @@ export default function useNodeDataCache({
         }
         // A 400 is the backend refusing to name a point for this graph.
         const refused = (err as { status?: unknown } | null)?.status === 400
-        setProblem({ configHash, kind: refused ? "refused" : "failed", reason: apiErrorMessage(err) })
+        setProblem({
+          configHash,
+          during: "read",
+          kind: refused ? "refused" : "failed",
+          reason: apiErrorMessage(err),
+        })
       })
     return () => controller.abort()
     // Re-asks on the consumer's identity, on the node-data epoch, which the
@@ -503,7 +512,7 @@ export default function useNodeDataCache({
         // Cancelling is otherwise the outcome the user asked for, not a
         // failure. The abort arrives as a DOMException, not an Error instance.
         if (name === "AbortError") return
-        setProblem({ configHash, kind: "failed", reason: detail })
+        setProblem({ configHash, during: "build", kind: "failed", reason: detail })
         addToast("error", `Data caching failed: ${detail}`)
       } finally {
         setSubmitting(false)
@@ -550,12 +559,14 @@ export default function useNodeDataCache({
   const bringUpToDate = useCallback(() => {
     const { availability, busy, canBuild, enabled, run, refresh, currentProblem } = latest.current
     if (!enabled) return
-    // With no answer, a failed or refused inspection is asked again; otherwise
-    // `checking` has no answer yet, so there is nothing to decide against.
-    if (availability === "checking") {
-      if (currentProblem) setReadAttempt((attempt) => attempt + 1)
+    // A failed or refused inspection is asked again, whatever point is kept
+    // from an earlier answer; the new answer decides what Refresh does next.
+    if (currentProblem?.during === "read") {
+      setReadAttempt((attempt) => attempt + 1)
       return
     }
+    // `checking` has no answer yet, so there is nothing to decide against.
+    if (availability === "checking") return
     if (!canBuild || busy) return
     if (availability === "current" || availability === "building") return
     void (availability === "missing" ? run() : refresh())

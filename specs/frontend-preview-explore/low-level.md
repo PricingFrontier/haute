@@ -125,11 +125,12 @@
    tabpanel until that module is ready.
 4. Explore shows no cache state of its own. The node's Refresh button brings its data up to date
    through `refreshNodeDataCache(nodeId)`, which asks every consumer registered for that node to
-   do so: `missing` sends a plain build; `stale`, `partial` and `corrupt` send a refresh, which is
-   also the recovery path from an unreadable snapshot; `current` and `building` do nothing, so a
-   Refresh pressed to re-read a node's generated fields never recomputes a dataset that has not
-   changed; and `checking` asks for the point again when the last inspection failed or was
-   refused, and otherwise does nothing. While the data is built or profiled, a progress bar runs under the
+   do so: when the consumer's last inspection failed or was refused, it asks for the point again,
+   whatever point it keeps from an earlier answer, and the new answer decides the next Refresh;
+   otherwise `missing` sends a plain build; `stale`, `partial` and `corrupt` send a refresh, which
+   is also the recovery path from an unreadable snapshot; and `current`, `building` and
+   `checking` do nothing, so a Refresh pressed to re-read a node's generated fields never
+   recomputes a dataset that has not changed. While the data is built or profiled, a progress bar runs under the
    frame's header. The subtitle names the source and, while the profile runs or after it fails,
    the profile's progress or failure.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
