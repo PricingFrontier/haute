@@ -65,11 +65,8 @@ describe("WorkbenchInputEditor", () => {
     expect(screen.queryAllByRole("textbox")).toEqual([])
     expect(screen.queryByRole("note")).not.toBeInTheDocument()
 
-    // It reads no file: previews run on nulls, so there is no sample to choose.
+    // It reads no file, so there is no sample to choose.
     expect(screen.queryByText("Preview Data")).not.toBeInTheDocument()
-    expect(screen.getByTestId("workbench-input-preview-note")).toHaveTextContent(
-      "Previews run on one row of nulls per table until the workbench supplies values.",
-    )
   })
 
   it("shows each fetch's tables as it lands, and none before the first", () => {
@@ -79,17 +76,6 @@ describe("WorkbenchInputEditor", () => {
     act(() => fetched())
     expect(screen.getByTestId("workbench-table-policy_details_input")).toBeInTheDocument()
     expect(screen.getByTestId("workbench-input-tables")).not.toHaveTextContent("No tables yet.")
-  })
-
-  it("drops the preview note while the workbench supplies values", () => {
-    fetched({ policy_details: { state: "NY" } })
-    renderEditor()
-    expect(screen.queryByTestId("workbench-input-preview-note")).not.toBeInTheDocument()
-
-    act(() => fetched({}))
-    expect(screen.getByTestId("workbench-input-preview-note")).toHaveTextContent(
-      "Previews run on one row of nulls per table until the workbench supplies values.",
-    )
   })
 
   it("says what stops a table's port being a port, judging the port's name rather than the table's", () => {

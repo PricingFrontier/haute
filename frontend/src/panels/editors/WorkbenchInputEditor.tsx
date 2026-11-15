@@ -23,15 +23,9 @@ export default function WorkbenchInputEditor({
   const workbench = useWorkbenchStore((state) => state.tables)
   const tables = workbenchNodeTables(NODE_TYPES.WORKBENCH_INPUT, workbench)
   const ports = tables.map((table) => table.port)
-  const hasSample = workbench !== null && Object.keys(workbench.sample).length > 0
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="workbench-input-editor">
-      {!hasSample && (
-        <p data-testid="workbench-input-preview-note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Previews run on one row of nulls per table until the workbench supplies values.
-        </p>
-      )}
 
       <section data-testid="workbench-input-tables" className="space-y-1.5">
         <WorkbenchTablesHeader empty={tables.length === 0} />
