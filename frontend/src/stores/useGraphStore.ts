@@ -64,6 +64,8 @@ import { create } from "zustand"
 import type { Node } from "@xyflow/react"
 import {
   EMPTY_SNAPSHOT,
+  authoredEdgeForm,
+  authoredNodeForm,
   serializeSnapshot,
   selectIsDirty,
   cloneGraphSnapshot,
@@ -74,6 +76,7 @@ import { isPlainObject } from "../types/guards"
 import type { PipelineEdge } from "../types/node"
 import type { GlobalConstantDraft } from "../utils/globalConstants"
 import {
+  READ_ONLY_REASON,
   childAnnotations,
   liftSubmodelCanvas,
   projectSubmodelFocus,
@@ -820,6 +823,9 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     const edges = change.edges ?? state.edges
     let submodels = change.submodels ?? state.submodels
     let annotations: Partial<GraphStore> = {}
+    // A canvas write inside an open submodel ends the gesture it belongs to,
+    // whether or not it changed the document.
+    let endsGesture = false
     if (focus && (nodes !== state.nodes || edges !== state.edges)) {
       // A drag frame moves the canvas only; the move reaches the definition when it ends.
       if (
@@ -843,6 +849,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       })
       if (lifted.kind === "refused") return { refused: lifted.reason }
       liftBase = null
+      endsGesture = true
       if (lifted.kind === "definition") {
         submodels = { ...submodels, [focus.definitionId]: lifted.definition }
       }
@@ -863,7 +870,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         redoStack: [],
       }
     }
-    if (changed || history) pendingGesture = null
+    if (changed || history || endsGesture) pendingGesture = null
     return {
       patch: {
         ...historyPatch,
@@ -881,6 +888,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     const state = get()
     const planned = commitGraphChange(state, change(state), history)
     if ("refused" in planned) {
+      // A refused drag end puts back the canvas the document agrees with.
+      if (liftBase) {
+        const base = liftBase
+        liftBase = null
+        set({ nodes: base.nodes, edges: base.edges })
+      }
       refuse(planned.refused)
       return
     }
@@ -1095,24 +1108,44 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (focus === null) {
         throw new Error("A boundary edit needs an open submodel.")
       }
+      // The definition holds its children in their authored form, as a canvas
+      // write leaves them: presentation and annotations stay on the view.
+      const open = edit.submodels[focus.definitionId]
+      const submodels = isSubmodelDefinition(open, focus.definitionId)
+        ? {
+            ...edit.submodels,
+            [focus.definitionId]: {
+              ...open,
+              graph: {
+                ...open.graph,
+                nodes: open.graph.nodes.map(authoredNodeForm),
+                edges: (open.graph.edges ?? []).map((edge) => authoredEdgeForm(edge as PipelineEdge)),
+              },
+            },
+          }
+        : edit.submodels
       const nextFocus: SubmodelFocus = { ...focus, rootNodes: edit.parentNodes, rootEdges: edit.parentEdges }
       const fields: GraphFields = {
         ...state,
         nodes: edit.viewNodes,
         edges: edit.viewEdges,
-        submodels: edit.submodels,
+        submodels,
         focus: nextFocus,
       }
       const patch = derivedPatch(state, fields)
       const changed = patch.persistedFingerprint !== persistedFingerprintOf(state)
       endGesture()
+      if (changed && focus.readOnly) {
+        refuse(READ_ONLY_REASON)
+        return
+      }
       set({
         ...(changed
           ? { undoStack: appendHistoryEntry(state.undoStack, captureDocument(state)), redoStack: [] }
           : {}),
         nodes: edit.viewNodes,
         edges: edit.viewEdges,
-        submodels: edit.submodels,
+        submodels,
         focus: nextFocus,
         submodelAnnotations: { ...state.submodelAnnotations, [focus.instanceId]: childAnnotations(edit.viewNodes) },
         ...patch,

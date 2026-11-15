@@ -161,6 +161,14 @@ describe("liftSubmodelCanvas", () => {
     expect(childAnnotations(previewed.nodes)).toEqual({ score: { _columns: [{ name: "premium", dtype: "Float64" }] } })
   })
 
+  it("refuses, rather than throws on, a new edge to a card that names no port", () => {
+    const { view } = document()
+    const input = card(view.nodes, "input")
+    const dropped = lift({ ...view, edges: [...view.edges, { id: "dropped", source: input.id, sourceHandle: "policy", target: "spare" }] })
+
+    expect(dropped).toMatchObject({ kind: "refused", reason: expect.stringContaining("boundary") })
+  })
+
   it("refuses an authored change to a read-only copy", () => {
     const { view } = document()
     const configured = { ...view, nodes: mapNodes(view.nodes, "score", (node) => ({ ...node, data: { ...node.data, config: { how: "left" } } })) }

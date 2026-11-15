@@ -51,6 +51,10 @@ interface CanvasGraph {
 const BOUNDARY_ACTIONS_REASON =
   "A submodel's inputs and outputs change only through its boundary: connect to or from its Input and Output cards, or remove an input from the Input card."
 
+/** Why a read-only copy's definition does not change. */
+export const READ_ONLY_REASON =
+  "This submodel instance is read-only. Edit the original submodel to change its definition."
+
 export function isSubmodelCard(node: Node): boolean {
   return node.type === NODE_TYPES.SUBMODEL_PORT || nodeData(node).nodeType === NODE_TYPES.SUBMODEL_PORT
 }
@@ -64,16 +68,15 @@ interface BoundaryEdge {
   childHandle: string | null
 }
 
-function boundaryEdge(edge: Edge, cardIds: ReadonlySet<string>): BoundaryEdge | null {
+/** The boundary edge `edge` is: null when it touches no card, "unnamed" when it names no port. */
+function boundaryEdge(edge: Edge, cardIds: ReadonlySet<string>): BoundaryEdge | "unnamed" | null {
   if (!cardIds.has(edge.source) && !cardIds.has(edge.target)) return null
   const info = isPlainObject(edge.data) && isPlainObject(edge.data.submodelBoundary)
     ? edge.data.submodelBoundary
     : null
   const direction = info?.direction
   const port = info?.name
-  if ((direction !== "input" && direction !== "output") || typeof port !== "string") {
-    throw new Error(`Submodel boundary edge ${edge.id} has no port`)
-  }
+  if ((direction !== "input" && direction !== "output") || typeof port !== "string") return "unnamed"
   return direction === "input"
     ? { edge, direction, port, child: edge.target, childHandle: edge.targetHandle ?? null }
     : { edge, direction, port, child: edge.source, childHandle: edge.sourceHandle ?? null }
@@ -130,11 +133,14 @@ export function liftSubmodelCanvas({
   const previousBoundary = new Map<string, BoundaryEdge>()
   for (const edge of previous.edges) {
     const boundary = boundaryEdge(edge, cardIds)
+    if (boundary === "unnamed") throw new Error(`Submodel boundary edge ${edge.id} has no port`)
     if (boundary) previousBoundary.set(edge.id, boundary)
   }
   const nextBoundary: BoundaryEdge[] = []
   for (const edge of next.edges) {
     const boundary = boundaryEdge(edge, cardIds)
+    // A new edge to or from a card (a drop or a paste) is a boundary action's to make.
+    if (boundary === "unnamed") return { kind: "refused", reason: BOUNDARY_ACTIONS_REASON }
     if (boundary) nextBoundary.push(boundary)
   }
   if (
@@ -177,9 +183,7 @@ export function liftSubmodelCanvas({
       return before.childHandle === boundary.childHandle
     })
   if (unchanged) return { kind: "canvas" }
-  if (readOnly) {
-    return { kind: "refused", reason: "This submodel instance is read-only. Edit the original submodel to change its definition." }
-  }
+  if (readOnly) return { kind: "refused", reason: READ_ONLY_REASON }
 
   const targetsOf = (port: string): SubmodelEndpoint[] =>
     nextBoundary

@@ -284,6 +284,80 @@ describe("useGraphStore with a submodel open", () => {
     expect(() => store().enterSubmodelView(OPEN)).not.toThrow()
   })
 
+  it("keeps a boundary edit's definition in its authored form, its annotations on the view", () => {
+    store().enterSubmodelView(OPEN)
+    const columns = [{ name: "premium", dtype: "Float64" }]
+    // The rebuild a boundary action runs hands back canvas objects as the definition's children.
+    const viewNodes = store().nodes.map((node) => (node.id === "score" ? { ...node, selected: true, data: { ...node.data, _columns: columns } } : node))
+    const children = viewNodes.filter((node) => node.type !== "submodelPort")
+    const focus = store().focus!
+
+    store().commitSubmodelBoundaryEdit({
+      viewNodes,
+      viewEdges: store().edges,
+      parentNodes: focus.rootNodes,
+      parentEdges: focus.rootEdges,
+      submodels: { [DEFINITION_ID]: { ...openDefinition(), graph: { ...openDefinition().graph, nodes: children }, inputPorts: [] } },
+    })
+
+    expect(child("score")).not.toHaveProperty("selected")
+    expect(child("score").data).not.toHaveProperty("_columns")
+    expect(onCanvas("score").data._columns).toEqual(columns)
+    expect(store().submodelAnnotations[OPEN.instanceId]).toEqual({ score: { _columns: columns } })
+    expect(store().undoStack).toHaveLength(1)
+  })
+
+  it("refuses a boundary edit that would change a read-only copy's definition", () => {
+    store().enterSubmodelView(COPY)
+    const focus = store().focus!
+    const before = store().persistedFingerprint
+
+    store().commitSubmodelBoundaryEdit({
+      viewNodes: store().nodes,
+      viewEdges: store().edges,
+      parentNodes: focus.rootNodes,
+      parentEdges: focus.rootEdges,
+      submodels: { [DEFINITION_ID]: { ...openDefinition(), inputPorts: [] } },
+    })
+
+    expect(lastToast()).toContain("read-only")
+    expect(openDefinition().inputPorts).toHaveLength(1)
+    expect(store().persistedFingerprint).toBe(before)
+    expect(store().canUndo()).toBe(false)
+  })
+
+  it("puts back the canvas when the write that ends a drag is refused, and takes the next write as usual", () => {
+    store().enterSubmodelView(COPY)
+    const move = (x: number, dragging: boolean) =>
+      store().setNodesRaw((nodes) => nodes.map((node) => (node.id === "prepare" ? { ...node, position: { x, y: 100 }, dragging } : node)))
+
+    store().pushSnapshot()
+    move(160, true)
+    move(160, false)
+
+    expect(lastToast()).toContain("read-only")
+    expect(onCanvas("prepare").position).toEqual({ x: 100, y: 100 })
+    expect(onCanvas("prepare").dragging).toBeFalsy()
+    store().setNodesRaw((nodes) => nodes.map((node) => (node.id === "prepare" ? { ...node, selected: true } : node)))
+    expect(onCanvas("prepare").selected).toBe(true)
+    expect(store().canUndo()).toBe(false)
+  })
+
+  it("ends a gesture that changed nothing, so a later write records no step of it", () => {
+    store().enterSubmodelView(OPEN)
+    const card = store().nodes.find((node) => node.type === "submodelPort")!
+
+    // A card moved: the canvas's alone.
+    store().pushSnapshot()
+    store().setNodesRaw((nodes) => nodes.map((node) => (node.id === card.id ? { ...node, position: { x: -500, y: 0 } } : node)))
+    expect(store().canUndo()).toBe(false)
+
+    // A raw write after it is no part of that gesture.
+    store().setNodesRaw((nodes) => nodes.map((node) => (node.id === "score" ? { ...node, data: { ...node.data, config: { how: "left" } } } : node)))
+    expect(child("score").data.config).toEqual({ how: "left" })
+    expect(store().canUndo()).toBe(false)
+  })
+
   it("refuses to leave a view that is not open", () => {
     expect(() => store().exitSubmodelView()).toThrow("No submodel is open")
   })
