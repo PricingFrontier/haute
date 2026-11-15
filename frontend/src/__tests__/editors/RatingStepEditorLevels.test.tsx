@@ -595,6 +595,35 @@ describe("RatingStepEditor levels", () => {
     expect(basis).not.toHaveTextContent("HTTP 422")
   })
 
+  it("says why there is nothing to read when the server refuses the node's data point", async () => {
+    const message = "Node 'Rating' must have exactly one incoming connection to read its data (found 0)."
+    mockGetNodeDataPoint.mockRejectedValue(Object.assign(new ApiError(message, 400), { detail: message }))
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    const basis = await screen.findByTestId("rating-levels-basis")
+    await waitFor(() => expect(basis).toHaveTextContent(message))
+    expect(mockGetRatingLevels).not.toHaveBeenCalled()
+  })
+
+  it("says reading the data failed when its data point cannot be read", async () => {
+    mockGetNodeDataPoint.mockRejectedValue(
+      Object.assign(new ApiError("HTTP 500", 500), { detail: "server down" }),
+    )
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    const basis = await screen.findByTestId("rating-levels-basis")
+    await waitFor(() => expect(basis).toHaveTextContent("Couldn't read the data: server down"))
+    expect(mockGetRatingLevels).not.toHaveBeenCalled()
+  })
+
   it("abandons a request the editor has already superseded", async () => {
     const signals: AbortSignal[] = []
     mockGetRatingLevels.mockImplementation((args: { signal?: AbortSignal }) => {

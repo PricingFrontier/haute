@@ -85,7 +85,6 @@ specification before code changes.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SUBE-01 | Planned | P2 | Every whole-data editor shows one status the data cache derives: a failed read says it failed and why, and is never shown as "Counting…". |
 | SUBE-02 | Planned | P1 | The store owns one authored document and a focus; the canvas is its projection; edits are document commands; history is one list of document steps, one step per edit, wherever made. |
 | SUBE-03 | Planned | P2 | Every request that runs the graph goes through one gateway that snapshots the document, target and source together; no panel builds a request graph. |
 | SUBE-04 | Planned | P2 | Results, annotations and caches are keyed by occurrence-aware address, so an owner and its read-only copies never show each other's previews, columns or training results. |
@@ -93,35 +92,6 @@ specification before code changes.
 | SUBE-06 | Planned | P2 | Opening a submodel is immediate, saving works inside a submodel, and a reload keeps the open submodel when it still exists. |
 
 ## Planned improvements
-
-### SUBE-01 — One data-cache status for whole-data editors
-**Why:** A data-cache point request that fails with anything but a 400 raises a toast and
-leaves the cache with no point, which reads as `checking`; the Banding editor then shows
-"Counting…" for good. Each whole-data editor (Banding, Rating levels, Explore relationships)
-assembles its own status line from several fields of the cache and of the whole-data answer,
-so the editors disagree: Rating levels never shows a refusal.
-
-**Plan:** Add a `failed` state with its reason to the cache's availability, alongside the
-existing refusal, keeping data freshness (current, stale) and the last operation's outcome
-(refused, failed) as separate facts so "stale data, refresh failed" stays representable.
-`useWholeDataAnswer` derives one presentation status from them — counting, ready (with its
-basis), stale, building, refused (reason), failed (reason) — and exports one text helper the
-three editors render. Refresh asks for the point again after a failure. Specify the status
-values and their text in the frontend-shared and node-editors low-level designs first.
-
-**Acceptance:** A point request failing with 409, 500 or a network error shows "Couldn't
-read the data: <reason>" in Banding, Rating levels and Explore relationships, never
-"Counting…"; a 400 shows the server's reason in all three; Refresh after a failure asks again
-and shows the result; stale data whose refresh failed shows both facts. Tests drive each
-status through the cache hook with a mocked client and assert the text each editor renders.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useNodeDataCache.ts`;
-`frontend/src/panels/editors/shared/useWholeDataAnswer.ts`;
-`frontend/src/panels/editors/BandingEditor.tsx`;
-`frontend/src/panels/editors/RatingStepEditor.tsx`;
-`frontend/src/panels/explore/ExploreRelationshipsPane.tsx`.
 
 ### SUBE-02 — One authored document, a focus, and document commands
 **Why:** The real pipeline is rebuilt from the canvas stand-in by a passive effect after each

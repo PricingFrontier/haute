@@ -10,14 +10,16 @@ import { makeExploreColumnStat } from "../../../test-utils/factories"
 const mocks = vi.hoisted(() => ({
   relationships: vi.fn(),
   run: vi.fn(),
-  availability: "current" as "current" | "stale" | "missing",
+  availability: "current" as "current" | "stale" | "missing" | "checking",
+  problem: null as { kind: "refused" | "failed"; reason: string } | null,
 }))
 
 vi.mock("../../../api/exploreRelationships", () => ({
   getExploreRelationships: mocks.relationships,
 }))
-vi.mock("../../../hooks/useNodeDataCache", () => ({
-  default: () => ({ availability: mocks.availability, dataVersion: "v1", run: mocks.run }),
+vi.mock("../../../hooks/useNodeDataCache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../hooks/useNodeDataCache")>()),
+  default: () => ({ availability: mocks.availability, problem: mocks.problem, dataVersion: "v1", run: mocks.run }),
 }))
 vi.mock("../../../stores/useDocumentStatusStore", () => ({
   captureDocumentExecutionFence: () => ({}),
@@ -111,6 +113,7 @@ describe("ExploreRelationshipsPane", () => {
     vi.useFakeTimers()
     mocks.relationships.mockReset()
     mocks.availability = "current"
+    mocks.problem = null
   })
   afterEach(() => {
     cleanup()
@@ -221,7 +224,29 @@ describe("ExploreRelationshipsPane", () => {
     await settle()
 
     expect(mocks.relationships).not.toHaveBeenCalled()
-    expect(screen.getByText(/cache it to analyse the whole dataset/)).toBeInTheDocument()
+    expect(screen.getByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
+  })
+
+  it("says why there is nothing to analyse when the server refuses the node's data point", async () => {
+    mocks.availability = "checking"
+    mocks.problem = { kind: "refused", reason: "Node 'explore' must have exactly one incoming connection." }
+    renderPane()
+    fireEvent.click(within(screen.getByRole("group", { name: /Key columns/ })).getByLabelText("region"))
+    await settle()
+
+    expect(mocks.relationships).not.toHaveBeenCalled()
+    expect(screen.getByText("Node 'explore' must have exactly one incoming connection.")).toBeInTheDocument()
+  })
+
+  it("says reading the data failed, never that it is waiting, when its data point cannot be read", async () => {
+    mocks.availability = "checking"
+    mocks.problem = { kind: "failed", reason: "server down" }
+    renderPane()
+    fireEvent.click(within(screen.getByRole("group", { name: /Key columns/ })).getByLabelText("region"))
+    await settle()
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the data: server down")
+    expect(screen.queryByText("Waiting to analyse…")).toBeNull()
   })
 
   it("offers to cache again when the server has no cached data for the question", async () => {

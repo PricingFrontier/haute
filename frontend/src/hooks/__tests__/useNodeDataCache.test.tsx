@@ -8,7 +8,11 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
 import useNodeWorkStore, { stopNodeWork } from "../../stores/useNodeWorkStore"
 import useGraphStore from "../../stores/useGraphStore"
-import useNodeDataCache, { deriveAvailability, refreshNodeDataCache } from "../useNodeDataCache"
+import useNodeDataCache, {
+  deriveAvailability,
+  nodeDataProblemText,
+  refreshNodeDataCache,
+} from "../useNodeDataCache"
 
 vi.mock("../../api/client", () => ({
   getNodeDataPoint: vi.fn(),
@@ -139,21 +143,55 @@ describe("useNodeDataCache", () => {
     mockGetPoint.mockRejectedValue(Object.assign(new Error(message), { status: 400, detail: message }))
     const { result } = renderCache("explore")
 
-    await waitFor(() => expect(result.current.unreadable).toBe(message))
+    await waitFor(() => expect(result.current.problem).toEqual({ kind: "refused", reason: message }))
     expect(result.current.point).toBeNull()
     expect(useToastStore.getState().toasts).toEqual([])
+    expect(nodeDataProblemText(result.current.problem!)).toBe(message)
   })
 
-  it("raises a failed point lookup as a toast", async () => {
-    mockGetPoint.mockRejectedValue(Object.assign(new Error("server down"), { status: 500, detail: "server down" }))
+  it.each([
+    ["a conflict", 409, "The workbench is off"],
+    ["a server error", 500, "server down"],
+  ])("holds a point lookup failing with %s as the node's state, not a toast", async (_name, status, detail) => {
+    mockGetPoint.mockRejectedValue(Object.assign(new Error(detail), { status, detail }))
     const { result } = renderCache("explore")
 
-    await waitFor(() =>
-      expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([
-        "Data cache inspection failed: server down",
-      ]),
+    await waitFor(() => expect(result.current.problem).toEqual({ kind: "failed", reason: detail }))
+    expect(result.current.availability).toBe("checking")
+    expect(useToastStore.getState().toasts).toEqual([])
+    expect(nodeDataProblemText(result.current.problem!)).toBe(`Couldn't read the data: ${detail}`)
+  })
+
+  it("asks for the point again when the node's Refresh is pressed after a failed lookup", async () => {
+    mockGetPoint.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.problem?.kind).toBe("failed"))
+    mockGetPoint.mockResolvedValue(point())
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(result.current.availability).toBe("current"))
+    expect(mockGetPoint).toHaveBeenCalledTimes(2)
+    expect(result.current.problem).toBeNull()
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  it("keeps stale data and the failed refresh as two facts", async () => {
+    mockGetPoint.mockResolvedValue(
+      point({ state: "stale", generation: { ...point().generation!, fresh: false } }),
     )
-    expect(result.current.unreadable).toBeNull()
+    mockRun.mockRejectedValue(Object.assign(new Error("disk full"), { status: 500, detail: "disk full" }))
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("stale"))
+
+    await act(async () => {
+      await result.current.refresh()
+    })
+
+    expect(result.current.availability).toBe("stale")
+    expect(result.current.problem).toEqual({ kind: "failed", reason: "disk full" })
   })
 
   it("gives two consumers of one point their own availability from one slot entry", async () => {

@@ -23,6 +23,7 @@ import {
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
 import useRatingLevels from "./rating/useRatingLevels"
+import { wholeDataStatusText } from "./shared/useWholeDataAnswer"
 import type { SimpleNode } from "./_shared"
 import { useGraph } from "../useGraph"
 
@@ -218,8 +219,7 @@ export default function RatingStepEditor({
   const {
     levels: datasetLevels,
     totalRows: datasetRows,
-    basis: levelsBasis,
-    error: levelsError,
+    status: levelsStatus,
   } = useRatingLevels({
     node,
     allNodes,
@@ -471,12 +471,17 @@ export default function RatingStepEditor({
   const selectedSlice =
     sliceLevel !== null && sliceLevels.includes(sliceLevel) ? sliceLevel : sliceLevels[0]
 
+  // Rating works from the preview until the whole dataset answers, so it says so
+  // while counting and before the data is cached; the data's other states are
+  // worded as every whole-data editor words them.
   const levelsBasisLabel =
-    levelsBasis === "all"
+    levelsStatus.kind === "ready"
       ? `Levels from all rows · ${datasetRows.toLocaleString()}`
-      : levelsBasis === "stale"
-        ? "Cached data is out of date"
-        : `Levels from a sample · ${(previewRows?.length ?? 0).toLocaleString()} rows`
+      : levelsStatus.kind === "counting" || levelsStatus.kind === "missing"
+        ? `Levels from a sample · ${(previewRows?.length ?? 0).toLocaleString()} rows`
+        : wholeDataStatusText(levelsStatus)
+  const levelsFailed =
+    levelsStatus.kind === "failed" || (levelsStatus.kind === "stale" && levelsStatus.failure !== null)
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
@@ -491,10 +496,10 @@ export default function RatingStepEditor({
         <div className="flex items-center justify-between gap-2" data-testid="rating-levels-basis">
           <span
             className="text-[11px]"
-            style={{ color: levelsError ? "var(--danger)" : "var(--text-muted)" }}
-            title={levelsError ?? undefined}
+            style={{ color: levelsFailed ? "var(--danger)" : "var(--text-muted)" }}
+            title={levelsFailed ? levelsBasisLabel ?? undefined : undefined}
           >
-            {levelsError ? `Reading the whole dataset failed: ${levelsError}` : levelsBasisLabel}
+            {levelsBasisLabel}
           </span>
         </div>
       )}

@@ -353,7 +353,7 @@ describe("BandingEditor statistics", () => {
       vi.advanceTimersByTime(300)
     })
 
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     expect(screen.queryByText(/^Sample/)).toBeNull()
     expect(screen.queryByTestId("banding-histogram")).toBeNull()
     const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
@@ -371,7 +371,7 @@ describe("BandingEditor statistics", () => {
     })
 
     await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     expect(screen.queryByText("Counting…")).toBeNull()
     const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
     expect(cells.filter((text) => /^\d+$/.test(text) || text === "…")).toEqual([])
@@ -392,7 +392,7 @@ describe("BandingEditor statistics", () => {
     await act(async () => {
       vi.advanceTimersByTime(300)
     })
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     await waitFor(() => expect(mockGetNodeDataPoint.mock.calls.length).toBeGreaterThan(1))
 
     await act(async () => {
@@ -414,7 +414,7 @@ describe("BandingEditor statistics", () => {
     })
 
     expect(
-      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+      await screen.findByText("Cached data is out of date · Refresh this node to read all rows"),
     ).toBeInTheDocument()
     expect(mockGetBandingStats).not.toHaveBeenCalled()
   })
@@ -675,7 +675,7 @@ describe("BandingEditor statistics", () => {
     })
 
     expect(
-      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+      await screen.findByText("Cached data is out of date · Refresh this node to read all rows"),
     ).toBeInTheDocument()
     expect(screen.queryByText("All rows · 1,000")).toBeNull()
   })
@@ -706,6 +706,20 @@ describe("BandingEditor statistics", () => {
     })
 
     expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("says reading the data failed, never Counting…, when its data point cannot be read", async () => {
+    mockGetNodeDataPoint.mockRejectedValue(
+      Object.assign(new ApiError("HTTP 409", 409), { detail: "The workbench is off" }),
+    )
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(await screen.findByText("Couldn't read the data: The workbench is off")).toBeInTheDocument()
     expect(screen.queryByText("Counting…")).toBeNull()
     expect(mockGetBandingStats).not.toHaveBeenCalled()
   })

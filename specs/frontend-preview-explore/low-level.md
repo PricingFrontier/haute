@@ -38,7 +38,7 @@
 | `frontend/src/panels/explore/ExploreResultCardChrome.tsx` | Result-card chrome shared by the Pivots and Charts panes: the centered empty state and the Cancel/Starting/Retry run-status action cluster. |
 | `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/chartData.ts`, `frontend/src/panels/explore/chartOptions.ts`, `frontend/src/panels/explore/chartRuntime.ts`, `frontend/src/panels/explore/chartTheme.ts`, `frontend/src/panels/explore/ComboChart.tsx`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Versioned chart parsing/linkage/presets; pure typed pivot adapter; safe renderer options; narrow ECharts registration (Bar and Line, and Pie for the workbench's Chart)/lifecycle/accessibility, `setOption` passing a new option's merge settings through; `chartThemeTokens`, the chart theme read from the page's tokens, with `prefersReducedMotion` and `useChartEnvironmentRevision` (the one theme and reduced-motion observer, a revision that changes with either) beside it; enabled-card state dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. The Dataset Snapshot card's Cached time reads by the app's one relative-time rule (`relativeTime`), with the full time on hover. |
-| `frontend/src/panels/explore/ExploreRelationshipsPane.tsx`, `frontend/src/api/exploreRelationships.ts` | The Explore preview's Relationships pane and its split endpoint module: target, optional weight, features (after a target) and key columns chosen in pane state; asked through `useWholeDataAnswer`, so it waits for cached data, debounces, and aborts a superseded question; answers render as a strength-ranked table with expandable levels and a key-check sentence. The response is checked by the generated `explore` validators, loaded with it. An answer that the data must be cached first, while the local point looks current, offers a Cache data action (`cache.run`) instead of waiting. |
+| `frontend/src/panels/explore/ExploreRelationshipsPane.tsx`, `frontend/src/api/exploreRelationships.ts` | The Explore preview's Relationships pane and its split endpoint module: target, optional weight, features (after a target) and key columns chosen in pane state; asked through `useWholeDataAnswer`, so it waits for cached data, debounces, and aborts a superseded question; answers render as a strength-ranked table with expandable levels and a key-check sentence. The response is checked by the generated `explore` validators, loaded with it. An answer that the data must be cached first, while the local point looks current, offers a Cache data action (`cache.run`) instead of waiting. Without an answer it says why with `wholeDataStatusText` (caching, not cached, out of date, the server's refusal, or "Couldn't read the data: …" as an alert), and words analysing and waiting itself. |
 | `frontend/src/panels/explore/DistributionSparkline.tsx`, `frontend/src/panels/explore/distribution.ts` | The Numeric Summary card's per-field distribution: a bar chart of the profile's server-binned histogram, and the text that names it (bin count and span, or why there is none) for its accessible name and export. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
@@ -126,9 +126,10 @@
 4. Explore shows no cache state of its own. The node's Refresh button brings its data up to date
    through `refreshNodeDataCache(nodeId)`, which asks every consumer registered for that node to
    do so: `missing` sends a plain build; `stale`, `partial` and `corrupt` send a refresh, which is
-   also the recovery path from an unreadable snapshot; `current`, `building` and `checking` do
-   nothing, so a Refresh pressed to re-read a node's generated fields never recomputes a dataset
-   that has not changed. While the data is built or profiled, a progress bar runs under the
+   also the recovery path from an unreadable snapshot; `current` and `building` do nothing, so a
+   Refresh pressed to re-read a node's generated fields never recomputes a dataset that has not
+   changed; and `checking` asks for the point again when the last inspection failed or was
+   refused, and otherwise does nothing. While the data is built or profiled, a progress bar runs under the
    frame's header. The subtitle names the source and, while the profile runs or after it fails,
    the profile's progress or failure.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
@@ -484,7 +485,8 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
 Preview `loading` and `error` statuses are ordinary render branches. A failed build or profile
 request toasts and leaves the panes showing the state the point reports, never fabricated
 statistics. A node the graph gives nothing to read, such as an Explore node not yet connected,
-says why in the frame's status line (the cache's `unreadable`) instead of toasting. Actionable profile execution metrics render in the shared diagnostics banner. Utility
+says why in the frame's status line (the cache's `problem`, worded by `nodeDataProblemText`)
+instead of toasting, as does a node whose data could not be read. Actionable profile execution metrics render in the shared diagnostics banner. Utility
 syntax errors remain inline and block a requested file switch; other file-operation failures
 toast or display action-local text. Point/profile/card shape is assumed to meet the API contract;
 optional overview settings alone are parsed defensively.

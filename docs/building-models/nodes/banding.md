@@ -14,8 +14,9 @@ A Banding node takes a single input and outputs it with one new banded column pe
 The **INPUT** chip at the top names the node's connection; its × removes the connection. Next to it, a line says which rows the counts and charts describe:
 
 - **All rows ·** and the row count, when the node's input data is cached: every count below is for the whole dataset.
-- "Not cached · Refresh this node to count all rows" or "Cached data is out of date · Refresh this node to count all rows" until you refresh the node; "Caching the data…" and "Counting…" while that happens.
+- "Not cached · Refresh this node to read all rows" or "Cached data is out of date · Refresh this node to read all rows" until you refresh the node; "Caching the data…" and "Counting…" while that happens.
 - Why there is nothing to count, when the node has no data to read yet, such as before its input is connected.
+- "Couldn't read the data:" and the reason, when reading it failed, or "Cached data is out of date · Refreshing it failed:" and the reason, when a refresh failed. Refresh the node to try again.
 
 In a workbench project the node bands the quote being priced, not a dataset, so there is no such line and none of the counts or the histogram below.
 

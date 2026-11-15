@@ -5,7 +5,7 @@ import type { BandingStatsResponse } from "../../../api/types"
 import type { NodeDataCache } from "../../../hooks/useNodeDataCache"
 import type { SimpleEdge, SimpleNode } from "../_shared"
 import type { BandingFactor } from "../../../types/banding"
-import useWholeDataAnswer, { type WholeDataBasis } from "../shared/useWholeDataAnswer"
+import useWholeDataAnswer, { type WholeDataBasis, type WholeDataStatus } from "../shared/useWholeDataAnswer"
 
 /** Where the numbers on screen came from. */
 export type BandingStatsBasis = WholeDataBasis
@@ -26,6 +26,8 @@ export interface BandingStatsState {
   loading: boolean
   basis: BandingStatsBasis
   error: string | null
+  /** What the editor says about the data it reads. */
+  status: WholeDataStatus
 }
 
 export interface UseBandingStatsInput {
@@ -81,7 +83,7 @@ export default function useBandingStats({
     [factor, histogramBins],
   )
   const outputColumn = factor?.output_column ?? ""
-  const { cache, answer, answerIsCurrent, cacheRequired, loading, basis, error } = useWholeDataAnswer<BandingStatsResponse>({
+  const { cache, answer, answerIsCurrent, cacheRequired, loading, basis, error, status } = useWholeDataAnswer<BandingStatsResponse>({
     node,
     allNodes,
     edges,
@@ -108,5 +110,5 @@ export default function useBandingStats({
     },
     failureMessage: "the data could not be counted",
   })
-  return { cache, stats: answer, current: answerIsCurrent, cacheRequired, loading, basis, error }
+  return { cache, stats: answer, current: answerIsCurrent, cacheRequired, loading, basis, error, status }
 }
