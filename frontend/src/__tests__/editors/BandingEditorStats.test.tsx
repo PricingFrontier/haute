@@ -17,6 +17,7 @@ import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import type { BandingStatsResponse, NodeDataPointResponse } from "../../api/types"
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
@@ -202,6 +203,7 @@ describe("BandingEditor statistics", () => {
   afterEach(() => {
     vi.useRealTimers()
     cleanup()
+    useWorkbenchStore.setState({ enabled: false })
   })
 
   it("counts the whole dataset once the point it reads is cached", async () => {
@@ -674,5 +676,22 @@ describe("BandingEditor statistics", () => {
       await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
     ).toBeInTheDocument()
     expect(screen.queryByText("All rows · 1,000")).toBeNull()
+  })
+
+  it("asks nothing and shows no counts in a workbench project, which bands the quote being priced", async () => {
+    useWorkbenchStore.setState({ enabled: true })
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(mockGetNodeDataPoint).not.toHaveBeenCalled()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("banding-data-basis")).toBeNull()
+    expect(screen.queryByRole("columnheader", { name: "Matches" })).toBeNull()
+    expect(screen.queryByText(/of \d+ rows/)).toBeNull()
+    expect(screen.queryByTestId("banding-histogram")).toBeNull()
+    // The rules are still there to edit.
+    expect(screen.getByRole("textbox", { name: "Breakpoint 1 label" })).toHaveValue("low")
   })
 })

@@ -27,6 +27,7 @@ import { BandingHistogram } from "./banding/BandingHistogram"
 import useBandingStats from "./banding/useBandingStats"
 import { useGraph } from "../useGraph"
 import useUIStore from "../../stores/useUIStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
 import { ImportParamValues } from "./banding/ImportParamValues"
@@ -86,9 +87,12 @@ export default function BandingEditor({
   const colMap = Object.fromEntries(upstreamColumns.map(c => [c.name, c.dtype]))
 
   // The whole dataset this node reads, when it is cached: the counts, values
-  // and distribution below are execution's rather than a sample's.
+  // and distribution below are execution's rather than a sample's. A workbench
+  // project bands the quote being priced, so there is no dataset to count: the
+  // editor asks nothing and shows no counts.
   const graph = useGraph()
-  const node = nodeId ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
+  const workbench = useWorkbenchStore((state) => state.enabled)
+  const node = nodeId && !workbench ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
   const { cache, stats, current: statsCurrent, cacheRequired, error: statsError } = useBandingStats({
     node,
     allNodes: graph.allNodes,

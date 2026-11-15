@@ -16,6 +16,8 @@ The **INPUT** chip at the top names the node's connection; its × removes the co
 - **All rows ·** and the row count, when the node's input data is cached: every count below is for the whole dataset.
 - "Not cached · Refresh this node to count all rows" or "Cached data is out of date · Refresh this node to count all rows" until you refresh the node; "Caching the data…" and "Counting…" while that happens.
 
+In a workbench project the node bands the quote being priced, not a dataset, so there is no such line and none of the counts or the histogram below.
+
 ### The factor list
 
 Each banded column is a **factor**. The list shows one row per factor: a dot (green when complete, amber when not), the factor's input column, an arrow, its output column - the name of the new banded column, or its input column until it has one - the number of rules, and a bin to remove it (when there is more than one). Hover a row for what an incomplete factor still needs: "No input column", "No output column" or "No rules yet". Click a row to edit that factor below the list; what is wrong with its output column ("No output column", or "Factor 2 also writes age_band") is also said above its settings.
