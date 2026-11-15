@@ -21,6 +21,11 @@ model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
 
+`MLR-10` comes from the review plan's phase 5, a reader
+from a second model family (Codex) over the code changed since the 31
+October audit. A worker drove each journey in a browser and the main
+session ran each again on 15 November 2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -34,6 +39,7 @@ worker built each run and the main session ran each again on 14 November
 | MLR-07 | Planned | P3 | A model file logged again over the same path of a run is the one that scores. |
 | MLR-08 | Planned | P3 | A logged model takes a part-year or a missing exposure whatever type its training exposure had. |
 | MLR-09 | Planned | P3 | A GLM trained on the canvas logs its family, link, terms and penalty to MLflow, as a scripted run does. |
+| MLR-10 | Planned | P2 | Retry after the experiment was changed logs to the new experiment, or names the one the run is in. |
 
 ## Planned improvements
 
@@ -335,3 +341,26 @@ holds, with the same values.
 **Evidence:** `src/haute/routes/modelling.py`;
 `src/haute/modelling/_train_config.py`;
 `specs/mlflow-model-registry/low-level.md`.
+
+### MLR-10 — Retry after a changed experiment does not show the old run as the new one
+**Why:** Reproduced on 15 November 2026 in the browser with a local
+MLflow folder. A trained model was logged to experiment `motor-2026`; the
+server logged the run, but the answer was dropped, so the panel showed a
+failure and Retry. The experiment was changed to `motor-2027` and Retry
+pressed. The request carries `motor-2027` with the first attempt's
+operation id; the server answers with the stored receipt for
+`motor-2026`. The panel shows success and the run id beside a box reading
+`motor-2027`. On disk there is one run in `motor-2026` and none in
+`motor-2027`.
+
+**Plan:** Start a new operation id when a setting that the log request
+carries changes. On the server, refuse a repeated operation id whose
+request differs from the stored one.
+
+**Acceptance:** The journey above ends with a run in `motor-2027`, or
+with the panel naming `motor-2026` as where the run was logged.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/modelling/MlflowExportSection.tsx`;
+`src/haute/routes/modelling.py`.

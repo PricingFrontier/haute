@@ -20,6 +20,11 @@ model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
 
+`CLI-10` and `CLI-11` come from the review plan's phase 4, a sweep
+of the server and the commands on Linux (WSL2) under memory limits,
+signals and pipes. The main session ran each case again on 15 November
+2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -33,6 +38,8 @@ worker built each run and the main session ran each again on 14 November
 | CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
 | CLI-08 | Planned | P3 | `haute run` refused for memory prints one line with the limit and the setting that raises it, not a traceback. |
 | CLI-09 | Planned | P3 | A second `haute init` lists the `.gitattributes` it writes, and the file is recorded like the others. |
+| CLI-10 | Planned | P3 | `haute serve` starts on its port straight after the last server there was stopped, with a browser tab still open. |
+| CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
 
@@ -314,3 +321,49 @@ not captured.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/cli/_init_cmd.py`; `specs/cli/high-level.md`.
+
+### CLI-10 — `haute serve` restarts on its port straight after it is stopped
+**Why:** Reproduced on 15 November 2026 on Linux (WSL2, kernel 6.18). A
+server that answered one request on a kept-alive connection, as a browser
+tab holds, was stopped with SIGTERM and started again at once on the same
+port. The second start exits 1 with "Error: port 28197 already in use. Use
+--port to choose another." although nothing listens there: the old
+connection sits in FIN-WAIT-2 for up to a minute. The pre-flight probe
+binds a plain socket, and on Linux a plain bind is refused while an old
+connection lingers. Uvicorn itself binds with `SO_REUSEADDR`, so the
+server would have started. The same restart works on Windows.
+
+**Plan:** On POSIX, set `SO_REUSEADDR` on the probe, as the server's own
+bind does. A second listening server is still refused, because that option
+does not let two sockets listen on one port there.
+
+**Acceptance:** The restart above serves. A start while another server
+listens on the port still ends with the "already in use" line.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_serve.py::_port_is_available`;
+`specs/cli/high-level.md`.
+
+### CLI-11 — A command piped into `head` ends quietly
+**Why:** Reproduced on 15 November 2026 on Linux with a valid two-node
+project. `haute lint | head -1` prints "✗ Parse error: [Errno 32] Broken
+pipe", then Python's "Exception ignored ... BrokenPipeError" notice, and
+exits 120. `haute run --node rated | head -1` prints "Error parsing
+pipeline: [Errno 32] Broken pipe" the same way. Nothing is wrong with the
+pipeline: the reader closed the pipe, the parser's next log line to
+standard output raised an `OSError`, and both commands catch `OSError`
+around the parse and call it a parse error. `| less` quit early does the
+same.
+
+**Plan:** Handle a closed standard output once, at the command group: end
+without a message and without the interpreter's notice. Keep the parse
+handlers from naming it a parse error.
+
+**Acceptance:** Both commands above print the one line `head` asked for,
+write nothing to standard error, and never print "Parse error".
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_lint.py`; `src/haute/cli/_run.py`;
+`src/haute/cli/_helpers.py`.

@@ -15,6 +15,11 @@ model family (Codex) over the code changed since the 31 October audit;
 both were reproduced through the executor on 13 November. `RTG-07` comes
 from the same reader and was reproduced the same way on that day.
 
+`RTG-08` comes from the review plan's phase 5, a reader
+from a second model family (Codex) over the code changed since the 31
+October audit. A worker drove each journey in a browser and the main
+session ran each again on 15 November 2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -26,6 +31,7 @@ from the same reader and was reproduced the same way on that day.
 | RTG-05 | Planned | P3 | A breakpoint band named with the number 0 in the settings file is a band, or is refused by name; its rows no longer fall to the default in silence. |
 | RTG-06 | Planned | P3 | A Rating Step on a factor column of Null type prices every row at the default, instead of refusing a table with distinct entries as holding duplicates. |
 | RTG-07 | Planned | P2 | A Float16 factor's NaN and infinity take a Banding's default, as a Float32's and a Float64's do, instead of the top band. |
+| RTG-08 | Planned | P2 | A band label typed with a trailing space is saved as the Rating table lists it, so its entry prices the rows. |
 
 ## Planned improvements
 
@@ -259,4 +265,28 @@ other.
 other places; `FES-02` is the editor's.
 
 **Evidence:** `src/haute/_rating.py::banding_comparison_expr`;
+`specs/rating/high-level.md`.
+
+### RTG-08 — A band label typed with a trailing space prices as its rating entry says
+**Why:** Reproduced on 15 November 2026 in the browser. In a Banding node
+the label of one rule was typed as "Standard" followed by a space (pasting
+does the same). The banding saves the label with its space. The Rating
+Step below lists the level as "Standard", and the 1.25 filled against it
+is saved under "Standard". The preview and `haute run` then give every
+such row the band "Standard " and the default 1.0: the entry the analyst
+filled is never matched, and nothing on screen says so. With no trailing
+space the same journey prices 1.25. The editor trims a label when it
+lists levels for the rating table; the engine matches the exact text.
+
+**Plan:** Use one rule for a band label in the Banding editor, the
+Rating table's level list and the engine: trim the label when it is
+entered, as Import already does, so the saved label is the listed one.
+
+**Acceptance:** The journey above saves "Standard" and prices 1.25. A
+label that differs from another only by edge spaces is refused or merged
+when it is entered, not left to price the default.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/utils/banding.ts`; `src/haute/_rating.py`;
 `specs/rating/high-level.md`.

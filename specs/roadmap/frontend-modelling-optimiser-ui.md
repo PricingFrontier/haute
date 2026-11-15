@@ -12,12 +12,19 @@ browser. `FEM-02` comes from the plan's browser sweep of what happens
 around an open editor on 11 November; the main session ran it again in a
 browser and with real t-boost fits.
 
+`FEM-03` and `FEM-04` come from the review plan's phase 5, a reader
+from a second model family (Codex) over the code changed since the 31
+October audit. A worker drove each journey in a browser and the main
+session ran each again on 15 November 2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FEM-01 | Planned | P3 | A missing objective or constraint value in the optimiser's data preview is reported as missing: not drawn as zero, and not a crashed pane. |
 | FEM-02 | Planned | P3 | A t-boost model trained again while one of its three-way tables is on screen shows the new table, not a crashed result pane. |
+| FEM-03 | Planned | P2 | After Undo the search space box shows the range the training request carries. |
+| FEM-04 | Planned | P3 | The open Optimiser panel asks for a new estimate when Undo changes a global constant. |
 
 ## Planned improvements
 
@@ -97,3 +104,45 @@ every axis. Nothing is thrown, and the table shown is the new result's.
 `frontend/src/panels/ModellingPreview.tsx`;
 `src/haute/modelling/_tboost.py::_report_axis`;
 `docs/building-models/nodes/model-training.md`.
+
+### FEM-03 — After Undo the search space box shows what training will use
+**Why:** Reproduced on 15 November 2026 in the browser. With "Tune
+parameters" on, the search space was set to `{"depth":[4,6]}` and then to
+`{"depth":[8,10]}`. Toolbar Undo, with the panel open, leaves the box
+showing `{"depth":[8,10]}`; the training request then carries
+`{"depth":[4,6]}`. The box keeps a draft of the typed text, and the draft
+wins over the configuration Undo restored. The analyst tunes over a
+range other than the one on screen.
+
+**Plan:** Drop the draft when the node's configuration changes from
+outside the box (Undo, Redo, live sync), so the box shows the restored
+value.
+
+**Acceptance:** After the Undo above the box and the training request
+both hold `{"depth":[4,6]}`.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/ModellingConfig.tsx`;
+`specs/frontend-modelling-optimiser-ui/high-level.md`.
+
+### FEM-04 — The optimiser's estimate follows a constant changed by Undo
+**Why:** Reproduced on 15 November 2026 in the browser. A global constant
+that limits the rows reaching an Optimiser was changed from 40 to 20; the
+open Solve tab sent an estimate request carrying 20. Toolbar Undo put the
+constant back to 40, and no estimate request followed. Closing and
+opening the panel sent one carrying 40. A worker's run saw the panel keep
+"Quotes 4, Total rows 20" until then; in the main session's run the
+estimate itself was refused for memory, so only the requests were seen.
+The key that decides when to ask again leaves out the constants and the
+shared code at the top of the file.
+
+**Plan:** Include the global constants and the preamble in the key that
+triggers a new estimate.
+
+**Acceptance:** The Undo above sends an estimate request carrying 40
+while the panel stays open.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/panels/OptimiserConfig.tsx`.
