@@ -150,7 +150,7 @@ export function BreakpointGrid({
                   zIndex: 1,
                 }}
               >
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: "var(--text-muted)", width: temporal ? 120 : 70 }}>
+                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: "var(--text-muted)" }}>
                   Up to <span style={{ fontWeight: "normal", opacity: 0.6 }}>{rightClosed ? "(incl.)" : "(excl.)"}</span>
                 </th>
                 <th className="text-left px-2 py-1.5 font-semibold" style={{ color: "var(--text-muted)" }}>
