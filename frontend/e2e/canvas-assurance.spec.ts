@@ -221,7 +221,7 @@ test.describe("frontend canvas assurance", () => {
     await expect(page.getByRole("button", { name: "Undo", exact: true })).toBeDisabled()
     // Banding shows numbers only for the whole dataset, so its data is cached
     // first; until then it says so rather than counting the preview.
-    await expect(bandingPanel.getByText("Not cached · Refresh this node to count all rows")).toBeVisible()
+    await expect(bandingPanel.getByText("Not cached · Refresh this node to read all rows")).toBeVisible()
     await page.getByRole("button", { name: "Refresh", exact: true }).click()
     await expect(bandingPanel.getByText(/^All rows · /)).toBeVisible({ timeout: 60_000 })
     await expect(bandingPanel.getByRole("img", { name: "Distribution histogram" })).toBeVisible()
