@@ -233,9 +233,9 @@ candidate, with the error toast.
   marker ellipse.
 - **Submodel nodes** use the same opaque card, full-width coloured header,
   and frame-row presentation as a full-detail API-input node. The header
-  retains the package icon and `SUBMODEL` identity and shows the occurrence
-  alias in its right-hand badge. The body does not expose the backing file or
-  repeat the name. A canonical occurrence resolves `config.definition_id`
+  keeps the package icon and is titled with the occurrence alias in
+  primary-foreground text, with no type label or badge. The body does not
+  expose the backing file or repeat the name. A canonical occurrence resolves `config.definition_id`
   against the typed definition registry, derives its accessible child count
   from the definition graph, renders one generic left-side `inputs` socket, and
   renders every public output row with its `out__<name>` handle and
