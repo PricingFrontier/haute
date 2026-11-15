@@ -40,7 +40,7 @@ export default function WorkbenchInputEditor({
         }}
       >
         <Radio size={14} />
-        <span>This node receives live API requests at deploy time</span>
+        <span>This node receives each quote the underwriter app prices</span>
       </div>
 
       <p data-testid="workbench-input-preview-note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>

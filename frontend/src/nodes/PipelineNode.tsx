@@ -157,6 +157,9 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
   const knownType = isKnownNodeType(nodeData.nodeType)
   const nodeType: NodeTypeValue = knownType ? nodeData.nodeType : NODE_TYPES.POLARS
   const isDeployInput = knownType && isRequestInputType(nodeType)
+  // Only the Quote Input is a scoring API's entry point: a workbench project deploys
+  // the underwriter app, which prices in-process (specs/workbench).
+  const showApiBadge = knownType && nodeType === NODE_TYPES.API_INPUT
   const isWorkbenchOutput = knownType && nodeType === NODE_TYPES.WORKBENCH_OUTPUT
   // A workbench node's ports are the tables the workbench store fetched (specs/workbench),
   // so a fetch re-renders the workbench nodes alone.
@@ -387,7 +390,7 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
         >
           {typeLabel}
         </span>
-        {isDeployInput && (
+        {showApiBadge && (
           <span
             className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
             style={{ background: `${accent}1f`, color: accent, border: `1px solid ${accent}33` }}
@@ -409,7 +412,7 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
         )}
         {visualStatus && (
           <span
-            className={`${isDeployInput || loadAvailability !== "ready" ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${visualStatus === "running" ? "animate-pulse-dot" : ""}`}
+            className={`${showApiBadge || loadAvailability !== "ready" ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${visualStatus === "running" ? "animate-pulse-dot" : ""}`}
             style={{ backgroundColor: statusColors[visualStatus] }}
             role="status"
             aria-label={`Node ${visualStatus}`}
@@ -417,7 +420,7 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
         )}
         {showStandaloneWarning && (
           <span
-            className={`${!nodeData._status && !isDeployInput ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0`}
+            className={`${!nodeData._status && !showApiBadge ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0`}
             style={{ backgroundColor: "var(--warning-strong)" }}
             role="status"
             aria-label="Node has schema warnings"
