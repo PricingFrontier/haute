@@ -67,7 +67,11 @@ specification before code changes.
   parses a runtime key.
 - **Two versions, never restored.** The **semantic generation** advances with every accepted
   semantic command, Undo, Redo, navigation and reload, and never with a layout-only change; it is
-  monotonic, and history never restores it. It fences prepared transactions and late responses.
+  monotonic, and history never restores it. It fences prepared document transactions and
+  publication bound to a view (an answer shown in the panel that asked). It does not fence
+  background jobs: a training or solve start acknowledgement and its outcome are admitted under
+  the document, target and job identity they were captured with, whatever the user has navigated
+  to since, and whether the result is still current is checked separately.
   **Request freshness** compares semantic content (the structural fingerprint, which excludes
   layout), so two documents with identical content are equally fresh even though their
   generations differ.
@@ -257,8 +261,10 @@ with no flash of the other's; columns from one occurrence's preview never appear
 in the saved definition; a stale cached preview is never shown as current. With one editor kept
 mounted while the view switches from the owner to a copy with the owner's request still pending,
 the copy is queried afresh, the owner's late answer or error is not shown in the copy, and Refresh
-and Stop act on the copy's request only. Tests cover each store and each of these hook paths with
-two occurrences of one definition.
+and Stop act on the copy's request only. Starting training in occurrence A, navigating to B
+before the start is acknowledged, and letting training complete keeps the job tracked, shows none
+of A's result in B, and shows A's result, with its freshness, on returning to A. Tests cover each
+store and each of these hook paths with two occurrences of one definition.
 
 **Dependencies:** SUBE-02, SUBE-03.
 
@@ -302,9 +308,13 @@ replacing "the editor never sends an occurrence as a preview target".
    reload. A schema test fails on any node-naming field not so typed, and the generated
    TypeScript contracts brand the key so an answer can only be read through its addresses.
 4. Answers also carry **frame provenance**: for every occurrence port in the executed graph,
-   the runtime endpoint (key and handle) that port resolves to, keeping every alias when
-   several ports resolve to one endpoint. Schema information for an occurrence's Input card
-   comes from it, including ports that were not the requested target.
+   either `bound` with the runtime endpoint (key and handle) it resolves to, keeping every alias
+   when several ports resolve to one endpoint, or `unbound` when no parent edge supplies it, as a
+   declared input may legitimately be. Building provenance never fails or invents an endpoint
+   for an unbound port; only a request whose target is that port is refused, by name. Schema
+   information for an occurrence's Input card comes from it, including ports that were not the
+   requested target, and a bound port whose columns are missing is shown as missing data, not as
+   unbound.
 5. **Persisted artifacts carry their own provenance.** A cached snapshot records, when it is
    written, its document origin (pipeline source file), the address of its owner at that time
    and the owner's label. The cached-data list describes each owner either as a node of the
@@ -327,7 +337,8 @@ Input card fed by another submodel's output reads that output's producing node a
 public outputs of one producer node preview their own frames; a reused copy's training and
 preview target the copy. Previewing a child of occurrence A while two of A's input ports receive
 different frames from one producer inside occurrence B gives both Input-card rows their own
-columns. A cached submodel node whose occurrence is then deleted is still listed, after a reload
+columns. Previewing a runnable child of an occurrence with an unused, unbound public input
+succeeds and marks that input unbound; requesting that input directly is refused by name. A cached submodel node whose occurrence is then deleted is still listed, after a reload
 and a server restart, under its recorded label and pipeline; two pipelines with identical node
 ids list distinct, correctly labelled owners. A two-table Workbench preview runs once. A preview
 inside a submodel followed by Trace traces the preview's own generations, or gives the expiry
