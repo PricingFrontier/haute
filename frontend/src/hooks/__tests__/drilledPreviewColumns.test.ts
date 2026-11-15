@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
-import { makeEdge, makeNode, makePreviewResponse } from "../../test-utils/factories"
+import { makeEdge, makeIdentifiedNode, makeNode, makePreviewResponse } from "../../test-utils/factories"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 import { applyPreviewResultColumnsToNodes } from "../usePipelineAPI"
 
@@ -33,7 +33,7 @@ const occurrence = (id: string) => makeNode(id, "submodel", {
 })
 
 function drilledView(): Node[] {
-  const children = [makeNode("bands", "banding"), makeNode("prepare"), makeNode("item_bands", "banding")]
+  const children = [makeIdentifiedNode("bands", "banding"), makeIdentifiedNode("prepare"), makeIdentifiedNode("item_bands", "banding")]
   const parentEdges: PipelineEdge[] = [
     { id: "feed-policy", source: "workbench", sourceHandle: "policy_frame", target: "pricing", targetHandle: "in__policy" },
     { id: "feed-items", source: "items_source", target: "pricing", targetHandle: "in__items" },

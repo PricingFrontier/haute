@@ -4,10 +4,7 @@ import type { ViewLevel } from "../components/BreadcrumbBar"
 import { normalizeEdges } from "../utils/graphHelpers"
 import { serializeSnapshot, toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { buildSubmodelViewGraph } from "../utils/submodelViewGraph"
-import {
-  resolveCanonicalGraphIdentities,
-  resolveEditorGraphIdentities,
-} from "../utils/editorIdentities"
+import { resolveCanonicalGraphIdentities } from "../utils/editorIdentities"
 import { createNodeInstance, createSubmodel, dissolveSubmodel } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
@@ -44,7 +41,6 @@ interface SubmodelNavParams {
   pipelineNameRef: React.MutableRefObject<string>
   fitView: (options?: { padding?: number }) => void
   reservedApiInputFrameLabels: ReadonlySet<string>
-  resolveGraphIdentities?: typeof resolveEditorGraphIdentities
   resolveCanonicalIdentities?: typeof resolveCanonicalGraphIdentities
 }
 
@@ -56,7 +52,7 @@ const STALE_CREATE_SUBMODEL =
 
 export interface SubmodelNavReturn {
   viewStack: ViewLevel[]
-  handleDrillIntoSubmodel: (nodeId: string) => Promise<void>
+  handleDrillIntoSubmodel: (nodeId: string) => void
   handleBreadcrumbNavigate: (depth: number) => void
   resetToAuthoritativeRoot: (sourceFile: string, pipelineName: string) => void
   handleDocumentReload: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
@@ -88,46 +84,6 @@ interface TransformRequestContext {
   pipelineName: string
   sourceRevision: string
   preservedBlocks: string[]
-}
-
-interface DrillRequestContext {
-  serial: number
-  nodeId: string
-  definitionId: string
-  alias: string
-  readOnly: boolean
-  submodelFile: string
-  parentGraphPresent: boolean
-  viewStackSnapshot: string
-  activeSubmodelIdentityKey: string
-  refSnapshot: string
-  storeSnapshot: string
-  sourceFile: string
-  pipelineName: string
-  sourceRevision: string
-  preservedBlocks: string
-  documentFence: string
-}
-
-function serializeViewStackIdentity(viewStack: readonly ViewLevel[]): string {
-  return JSON.stringify(
-    viewStack.map((level) =>
-      level.type === "submodel"
-        ? {
-            type: level.type,
-            name: level.name,
-            file: level.file,
-            instanceId: level.instanceId,
-            definitionId: level.definitionId,
-            readOnly: level.readOnly ?? false,
-          }
-        : {
-            type: level.type,
-            name: level.name,
-            file: level.file,
-          },
-    ),
-  )
 }
 
 function documentNavigationFence(): { fence: string; allowed: boolean } {
@@ -194,7 +150,7 @@ export default function useSubmodelNavigation({
   setNodesRaw, setEdgesRaw,
   setSelectedNode, setLastSelectedId, setPreviewData, cancelPreview, clearTrace,
   preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
-  fitView, reservedApiInputFrameLabels, resolveGraphIdentities = resolveEditorGraphIdentities,
+  fitView, reservedApiInputFrameLabels,
   resolveCanonicalIdentities = resolveCanonicalGraphIdentities,
 }: SubmodelNavParams): SubmodelNavReturn {
   const addToast = useToastStore((s) => s.addToast)
@@ -259,112 +215,6 @@ export default function useSubmodelNavigation({
     preservedBlocksRef,
     sourceFileRef,
     sourceRevisionRef,
-  ])
-
-  const beginDrillRequest = useCallback((
-    occurrence: CanonicalOccurrence,
-    parentNodes: Node[],
-    parentEdges: Edge[],
-  ): DrillRequestContext => {
-    const storeState = useGraphStore.getState()
-    const docFence = documentNavigationFence()
-    return {
-      serial: ++transformRequestSerialRef.current,
-      nodeId: occurrence.instanceId,
-      definitionId: occurrence.definitionId,
-      alias: occurrence.alias,
-      readOnly: occurrence.readOnly,
-      submodelFile: occurrence.definition.file,
-      parentGraphPresent: parentGraphRef.current !== null,
-      viewStackSnapshot: serializeViewStackIdentity(viewStackRef.current),
-      activeSubmodelIdentityKey: JSON.stringify([
-        activeSubmodelIdentityRef.current?.instanceId ?? null,
-        activeSubmodelIdentityRef.current?.definitionId ?? null,
-      ]),
-      refSnapshot: serializeSnapshot({
-        nodes: parentNodes,
-        edges: parentEdges,
-        preamble: preambleRef.current,
-        submodels: submodelsRef.current,
-      }),
-      storeSnapshot: serializeSnapshot({
-        nodes: storeState.nodes,
-        edges: storeState.edges,
-        preamble: storeState.preamble,
-        submodels: storeState.submodels,
-      }),
-      sourceFile: sourceFileRef.current,
-      pipelineName: pipelineNameRef.current,
-      sourceRevision: sourceRevisionRef.current,
-      preservedBlocks: JSON.stringify(preservedBlocksRef.current),
-      documentFence: docFence.fence,
-    }
-  }, [
-    parentGraphRef,
-    pipelineNameRef,
-    preambleRef,
-    preservedBlocksRef,
-    sourceFileRef,
-    sourceRevisionRef,
-    submodelsRef,
-  ])
-
-  const drillRequestIsStale = useCallback((request: DrillRequestContext): boolean => {
-    const currentStore = useGraphStore.getState()
-    const currentDoc = documentNavigationFence()
-    if (
-      !currentDoc.allowed
-      || currentDoc.fence !== request.documentFence
-      || transformRequestSerialRef.current !== request.serial
-      || (parentGraphRef.current !== null) !== request.parentGraphPresent
-      || serializeViewStackIdentity(viewStackRef.current) !== request.viewStackSnapshot
-      || JSON.stringify([
-        activeSubmodelIdentityRef.current?.instanceId ?? null,
-        activeSubmodelIdentityRef.current?.definitionId ?? null,
-      ]) !== request.activeSubmodelIdentityKey
-      || sourceFileRef.current !== request.sourceFile
-      || pipelineNameRef.current !== request.pipelineName
-      || sourceRevisionRef.current !== request.sourceRevision
-      || JSON.stringify(preservedBlocksRef.current) !== request.preservedBlocks
-      || serializeSnapshot({
-        nodes: graphRef.current.nodes,
-        edges: graphRef.current.edges,
-        preamble: preambleRef.current,
-        submodels: submodelsRef.current,
-      }) !== request.refSnapshot
-      || serializeSnapshot({
-        nodes: currentStore.nodes,
-        edges: currentStore.edges,
-        preamble: currentStore.preamble,
-        submodels: currentStore.submodels,
-      }) !== request.storeSnapshot
-    ) {
-      return true
-    }
-    try {
-      const currentOccurrence = canonicalOccurrence(
-        request.nodeId,
-        graphRef.current.nodes,
-        submodelsRef.current,
-      )
-      return (
-        currentOccurrence.definitionId !== request.definitionId
-        || currentOccurrence.alias !== request.alias
-        || currentOccurrence.readOnly !== request.readOnly
-        || currentOccurrence.definition.file !== request.submodelFile
-      )
-    } catch {
-      return true
-    }
-  }, [
-    graphRef,
-    parentGraphRef,
-    pipelineNameRef,
-    preambleRef,
-    preservedBlocksRef,
-    sourceFileRef,
-    sourceRevisionRef,
-    submodelsRef,
   ])
 
   const createSubmodelTransform = useCallback(async (
@@ -448,15 +298,19 @@ export default function useSubmodelNavigation({
   const handleCreateNodeInstance = useCallback((nodeId: string) =>
     createSubmodelTransform({ nodeId }), [createSubmodelTransform])
 
-  const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
+  // Opening a submodel is a projection of the document the editor holds, so it
+  // asks the server nothing and commits at once.
+  const handleDrillIntoSubmodel = useCallback((nodeId: string) => {
     try {
       const parentNodes = [...graphRef.current.nodes]
       const parentEdges = [...graphRef.current.edges]
       const occurrence = canonicalOccurrence(nodeId, parentNodes, submodelsRef.current)
-      const request = beginDrillRequest(occurrence, parentNodes, parentEdges)
       if (!documentNavigationFence().allowed) {
         return
       }
+      // A create or dissolve still waiting on the server belongs to the view
+      // being left.
+      transformRequestSerialRef.current += 1
       const displayName = occurrence.label
       const smGraph = occurrence.definition.graph
       const parentSourceFile = sourceFileRef.current
@@ -475,21 +329,11 @@ export default function useSubmodelNavigation({
         parentNodes,
         parentEdges,
       })
-      const resolved = await resolveGraphIdentities({
-        nodes: projected.nodes,
-        edges: projected.edges,
-        submodels: submodelsRef.current,
-        reservedApiInputFrameLabels,
-      })
-      if (drillRequestIsStale(request)) {
-        return
-      }
 
-      // Commit navigation only after projection and identity resolution succeed.
       // The store swaps the canvas and its history first: it refuses a view
       // that cannot open, before anything else changes.
-      useGraphStore.getState().enterSubmodelView({ nodes: resolved.nodes, edges: resolved.edges })
-      graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
+      useGraphStore.getState().enterSubmodelView({ nodes: projected.nodes, edges: projected.edges })
+      graphRef.current = { nodes: projected.nodes, edges: projected.edges }
       setActiveSubmodelIdentity({
         instanceId: occurrence.instanceId,
         definitionId: occurrence.definitionId,
@@ -535,7 +379,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${apiErrorMessage(err)}`)
     }
-  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, fitView, addToast, reservedApiInputFrameLabels, resolveGraphIdentities, beginDrillRequest, drillRequestIsStale, leaveView])
+  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, fitView, addToast, leaveView])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current

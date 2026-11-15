@@ -573,23 +573,25 @@ candidate, with the error toast.
   together with its revision, for the snapshot it saved; edits made since stay
   dirty.
 - **Submodel navigation.** Drilling resolves a canonical occurrence from its
-  node type and `{definition_id, alias}` config, loads the shared definition by
-  definition id, verifies any returned identity, and builds boundary nodes from
-  that definition's structured ports and the selected occurrence's parent
-  bindings. Pending drill-in is bound to the initiating document, source file
-  and revision, navigation stack, occurrence identity, and graph/submodel
-  snapshot; it is invalidated by a document reload, another navigation or
-  transform request, any parent graph or submodel change, or loss of submodel
-  management capability, and rechecked after identity resolution and again
-  immediately before committing the child nodes/edges, source path, parent
-  snapshot, and view stack together. If the request has been superseded, it
-  returns without mutating the current graph, source path, or navigation stack.
+  node type and `{definition_id, alias}` config and projects the view from the
+  document the editor holds: the shared definition's children and edges, and
+  boundary cards built from that definition's structured ports and the selected
+  occurrence's parent bindings. Opening a submodel asks the server nothing, so it
+  commits at once. Every node of the view is named as a loaded document names
+  it: the children carry the identities the document gave them, and a boundary
+  card's identity follows from its direction and its declared ports alone (its
+  label is its name, and each port, already a canonical identifier, names its own
+  frame), which the shared fixture
+  `tests/fixtures/ui_contracts/submodel_port_identities.json` holds the server's
+  resolver to. Opening is refused while the document cannot manage submodels,
+  and opening supersedes a create or dissolve still waiting on the server.
   The view keeps the definition's authored child positions; only the two
   boundary cards are placed, the Input card left of the children and the Output
   card right of them, so a visit that edits nothing changes nothing in the
-  document. Projection and identity resolution must both finish before the view
-  stack, graph, source-file refs, or selection mutate; any failure leaves the
-  parent view byte-for-byte unchanged and reports one error toast. A successful
+  document. The projection finishes before the view stack, graph, source-file
+  refs, or selection mutate; a failure (such as a child with no identity to name
+  its frame by) leaves the parent view byte-for-byte unchanged and reports one
+  error toast. A successful
   frame records both `instanceId` and `definitionId`, so two occurrences of one
   definition navigate and return independently, and announces when edits affect
   more than one occurrence. Drilling into any occurrence, original or read-only

@@ -11,7 +11,7 @@ import useSubmodelNavigation from "../useSubmodelNavigation"
 import useSubmodelBoundaryEditing from "../useSubmodelBoundaryEditing"
 import useToastStore from "../../stores/useToastStore"
 import useGraphStore from "../../stores/useGraphStore"
-import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makeEdge, makeIdentifiedNode, makeNode } from "../../test-utils/factories"
 import { normalizeEdges } from "../../utils/graphHelpers"
 
 vi.mock("../../api/client", () => ({
@@ -32,8 +32,8 @@ const definition: SubmodelDefinition = {
   file: "modules/pricing.py",
   graph: {
     nodes: [
-      makeNode("child1", "edgeJoin", { data: { label: "Claims frame" } }),
-      makeNode("child2", "polars", { data: { label: "Quote frame" } }),
+      makeIdentifiedNode("child1", "edgeJoin", { data: { label: "Claims frame" } }),
+      makeIdentifiedNode("child2", "polars", { data: { label: "Quote frame" } }),
     ],
     edges: [],
   },
@@ -77,7 +77,6 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     pipelineNameRef: { current: "test" },
     fitView: vi.fn(),
     reservedApiInputFrameLabels: new Set<string>(),
-    resolveGraphIdentities: vi.fn(async ({ nodes, edges }) => ({ nodes: [...nodes], edges: [...edges] })),
     ...overrides,
   }
 }
@@ -105,16 +104,8 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
         edges: [],
       },
     }
-    // Nodes carry the identities the server's resolver gives them.
-    const handles = { claims: "claims", quote: "quote", claims_result: "claims_result" }
     const params = makeParams({
       submodelsRef: { current: { [DEFINITION_ID]: positioned } as Record<string, unknown> },
-      resolveGraphIdentities: vi.fn(async ({ nodes, edges }) => ({
-        nodes: nodes.map((node: Node) => node.type === "submodelPort"
-          ? { ...node, data: { ...node.data, _functionName: node.id, _defaultInputName: null, _sourceHandleInputNames: handles } }
-          : { ...node, data: { ...node.data, _functionName: node.id, _defaultInputName: node.id, _sourceHandleInputNames: { result: `${node.id}_result` } } }),
-        edges: [...edges],
-      })),
     })
     params.graphRef.current = {
       nodes: [makeNode("src1"), makeNode("tgt1"), occurrence()],
@@ -154,7 +145,6 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
         submodelsRef: params.submodelsRef,
         setNodesAndEdgesAndSubmodels: useGraphStore.getState().setNodesAndEdgesAndSubmodels,
         reservedApiInputFrameLabels: new Set<string>(),
-        resolveGraphIdentities: params.resolveGraphIdentities,
       })
       return navigation
     })

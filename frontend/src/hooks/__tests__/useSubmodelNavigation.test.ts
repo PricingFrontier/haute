@@ -73,7 +73,6 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     pipelineNameRef: { current: "test" },
     fitView: vi.fn(),
     reservedApiInputFrameLabels: new Set<string>(),
-    resolveGraphIdentities: vi.fn(async ({ nodes, edges }) => ({ nodes: [...nodes], edges: [...edges] })),
     resolveCanonicalIdentities: vi.fn(async ({ nodes, edges, submodels }) => ({
       nodes: [...nodes],
       edges: [...edges],
@@ -536,7 +535,7 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
-  it("resolves identities for an unsaved embedded graph before publishing its drilled view", async () => {
+  it("opens an unsaved embedded graph at once, naming its cards from their ports without asking the server", () => {
     const apiInput = makeNode("Quote_Input_1", "apiInput", {
       data: {
         label: "Quote_Input_1",
@@ -548,6 +547,9 @@ describe("useSubmodelNavigation", () => {
             columns: [{ name: "quote_id", selected: true }],
           }],
         },
+        _functionName: "Quote_Input_1",
+        _defaultInputName: null,
+        _sourceHandleInputNames: { quote_info: "quote_info" },
       },
     })
     const embeddedDefinition: SubmodelDefinition = {
@@ -557,70 +559,42 @@ describe("useSubmodelNavigation", () => {
         source: { nodeId: apiInput.id, handleId: "quote_info" },
       }],
     }
-    const resolvedEdgeData = { _inputName: "quote_info" }
-    const resolveGraphIdentities = vi.fn(async ({ nodes, edges }: {
-      nodes: readonly Node[]
-      edges: readonly Edge[]
-    }) => ({
-      nodes: nodes.map((node) => ({
-        ...node,
-        data: {
-          ...node.data,
-          _functionName: String(node.data.label),
-          _defaultInputName: null,
-          _sourceHandleInputNames: node.id === apiInput.id
-            ? { quote_info: "quote_info" }
-            : {},
-        },
-      })),
-      edges: edges.map((edge) => ({
-        ...edge,
-        data: { ...edge.data, ...resolvedEdgeData },
-      })),
-    }))
     const params = makeParams({
       submodelsRef: { current: { [DEFINITION_ID]: embeddedDefinition } },
-      resolveGraphIdentities,
     })
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
-    await act(async () => {
-      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
-    })
+    act(() => result.current.handleDrillIntoSubmodel(INSTANCE_ID))
 
-    expect(resolveGraphIdentities).toHaveBeenCalledOnce()
-    expect(resolveGraphIdentities).toHaveBeenCalledWith(expect.objectContaining({
-      nodes: expect.arrayContaining([
-        expect.objectContaining({ id: apiInput.id }),
-        expect.objectContaining({ type: "submodelPort" }),
-      ]),
-      edges: expect.arrayContaining([
-        expect.objectContaining({ source: apiInput.id, sourceHandle: "quote_info" }),
-      ]),
-      submodels: params.submodelsRef.current,
-      reservedApiInputFrameLabels: params.reservedApiInputFrameLabels,
-    }))
-    const publishedNodes = useGraphStore.getState().nodes
-    expect(publishedNodes.find((node) => node.id === apiInput.id)?.data._sourceHandleInputNames).toEqual({
+    expect(result.current.viewStack).toHaveLength(2)
+    const published = useGraphStore.getState().nodes
+    expect(published.find((node) => node.id === apiInput.id)?.data._sourceHandleInputNames).toEqual({
       quote_info: "quote_info",
     })
+    expect(published.filter((node) => node.type === "submodelPort").map((node) => node.data._functionName).sort())
+      .toEqual(["INPUT", "OUTPUT"])
     expect(useGraphStore.getState().edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ data: expect.objectContaining(resolvedEdgeData) }),
+      expect.objectContaining({ source: apiInput.id, data: expect.objectContaining({ _inputName: "quote_info" }) }),
     ]))
   })
 
-  it("leaves navigation untouched when drilled-view identity resolution fails", async () => {
+  it("leaves navigation untouched when the view cannot be projected", () => {
+    // A child with no editor identity cannot name the frame it sends the Output card.
+    const unnamed = makeNode("child1")
     const params = makeParams({
       sourceFileRef: { current: "pipelines/main.py" },
-      resolveGraphIdentities: vi.fn(async () => {
-        throw new Error("identity service unavailable")
-      }),
+      submodelsRef: {
+        current: {
+          [DEFINITION_ID]: {
+            ...makeDefinition([unnamed]),
+            outputPorts: [{ name: "result", source: { nodeId: unnamed.id, handleId: null } }],
+          },
+        },
+      },
     })
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
-    await act(async () => {
-      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
-    })
+    act(() => result.current.handleDrillIntoSubmodel(INSTANCE_ID))
 
     expect(params.parentGraphRef.current).toBeNull()
     expect(params.sourceFileRef.current).toBe("pipelines/main.py")
@@ -629,7 +603,7 @@ describe("useSubmodelNavigation", () => {
     expect(result.current.viewStack).toHaveLength(1)
     expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
       type: "error",
-      text: expect.stringContaining("identity service unavailable"),
+      text: expect.stringContaining("no authoritative default identity"),
     })
   })
 
@@ -1436,181 +1410,21 @@ describe("useSubmodelNavigation", () => {
     },
   )
 
-  it.each(["identity"] as const)(
-    "discards a pending drill-in when another document loads during %s await",
-    async (stage) => {
-      let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
-      const params = makeParams({
-        sourceFileRef: { current: "pipelines/first.py" },
-        pipelineNameRef: { current: "first" },
-        setNodesRaw: vi.fn((nodes: Node[]) => {
-          params.graphRef.current = { ...params.graphRef.current, nodes }
-          useGraphStore.getState().setNodesRaw(nodes)
-        }),
-        setEdgesRaw: vi.fn((edges: Edge[]) => {
-          params.graphRef.current = { ...params.graphRef.current, edges }
-          useGraphStore.getState().setEdgesRaw(edges)
-        }),
-      })
-      seedCanonicalGraph(params)
-      if (stage === "identity") {
-        params.resolveGraphIdentities = vi.fn(
-          () =>
-            new Promise((resolve) => {
-              resolveIdentities = resolve
-            }),
-        )
-      }
+  it("does not open a submodel while the document cannot manage submodels", async () => {
+    const { default: useDocumentStatusStore } = await import("../../stores/useDocumentStatusStore")
+    useDocumentStatusStore.getState().reset()
+    const params = makeParams({ sourceFileRef: { current: "pipelines/main.py" } })
+    seedCanonicalGraph(params)
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    useDocumentStatusStore.getState().setSystemFailure("transport lost")
 
-      const { result } = renderHook(() => useSubmodelNavigation(params))
-      let drillPromise!: Promise<void>
-      await act(async () => {
-        drillPromise = result.current.handleDrillIntoSubmodel(INSTANCE_ID)
-      })
+    act(() => result.current.handleDrillIntoSubmodel(INSTANCE_ID))
 
-      const nextDocNodes = [makeNode("fresh_root", "polars")]
-      const nextSubmodels = {}
-      act(() => {
-        params.graphRef.current = { nodes: nextDocNodes, edges: [] }
-        params.submodelsRef.current = nextSubmodels
-        params.sourceFileRef.current = "pipelines/second.py"
-        params.pipelineNameRef.current = "second"
-        params.sourceRevisionRef.current = "second-rev-1"
-        useGraphStore.getState().loadGraphSnapshot({
-          nodes: nextDocNodes,
-          edges: [],
-          preamble: "",
-          submodels: nextSubmodels,
-        })
-        result.current.resetToAuthoritativeRoot("pipelines/second.py", "second")
-      })
-
-      await act(async () => {
-        if (stage === "identity") {
-          resolveIdentities({ nodes: [makeNode("child1")], edges: [] })
-        }
-        await drillPromise
-      })
-
-      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["fresh_root"])
-      expect(params.graphRef.current.nodes.map((node) => node.id)).toEqual(["fresh_root"])
-      expect(params.sourceFileRef.current).toBe("pipelines/second.py")
-      expect(params.parentGraphRef.current).toBeNull()
-      expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
-      expect(result.current.viewStack).toEqual([
-        { type: "pipeline", name: "second", file: "pipelines/second.py" },
-      ])
-    },
-  )
-
-  it.each([
-    ["occurrence removed", "identity"],
-    ["occurrence edited", "identity"],
-    ["document reloaded at root", "identity"],
-    ["capability lost", "identity"],
-  ] as const)(
-    "discards a pending drill-in on %s during %s await and preserves subsequent coherent drill and return",
-    async (mutation, stage) => {
-      const { default: useDocumentStatusStore } = await import("../../stores/useDocumentStatusStore")
-      useDocumentStatusStore.getState().reset()
-      let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
-
-      const params = makeParams({
-        sourceFileRef: { current: "pipelines/main.py" },
-        pipelineNameRef: { current: "main" },
-        setNodesRaw: vi.fn((nodes: Node[]) => {
-          params.graphRef.current = { ...params.graphRef.current, nodes }
-          useGraphStore.getState().setNodesRaw(nodes)
-        }),
-        setEdgesRaw: vi.fn((edges: Edge[]) => {
-          params.graphRef.current = { ...params.graphRef.current, edges }
-          useGraphStore.getState().setEdgesRaw(edges)
-        }),
-      })
-      seedCanonicalGraph(params)
-
-      if (stage === "identity") {
-        vi.mocked(params.resolveGraphIdentities).mockImplementationOnce(
-          () =>
-            new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
-              resolveIdentities = resolve
-            }),
-        )
-      }
-
-      const { result } = renderHook(() => useSubmodelNavigation(params))
-      let drillPromise!: Promise<void>
-      await act(async () => {
-        drillPromise = result.current.handleDrillIntoSubmodel(INSTANCE_ID)
-      })
-
-      act(() => {
-        if (mutation === "occurrence removed") {
-          const withoutOccurrence = params.graphRef.current.nodes.filter(
-            (node) => node.id !== INSTANCE_ID,
-          )
-          params.graphRef.current = { nodes: withoutOccurrence, edges: [] }
-          useGraphStore.getState().setNodesRaw(withoutOccurrence)
-        } else if (mutation === "occurrence edited") {
-          const editedNodes = params.graphRef.current.nodes.map((node) =>
-            node.id === "n1" ? { ...node, position: { x: 320, y: 180 } } : node,
-          )
-          params.graphRef.current = { nodes: editedNodes, edges: [] }
-          useGraphStore.getState().setNodesRaw(editedNodes)
-        } else if (mutation === "document reloaded at root") {
-          const reloadedNodes = [makeNode("reloaded_n1"), makeOccurrence()]
-          params.graphRef.current = { nodes: reloadedNodes, edges: [] }
-          useGraphStore.getState().setNodesRaw(reloadedNodes)
-          result.current.handleDocumentReload({ nodes: reloadedNodes, edges: [] })
-        } else if (mutation === "capability lost") {
-          useDocumentStatusStore.getState().setSystemFailure("transport lost")
-        }
-      })
-
-      const expectedNodesBeforeResolve = params.graphRef.current.nodes
-
-      await act(async () => {
-        if (stage === "identity") {
-          resolveIdentities({ nodes: [makeNode("child1")], edges: [] })
-        }
-        await drillPromise
-      })
-
-      expect(params.graphRef.current.nodes).toEqual(expectedNodesBeforeResolve)
-      expect(useGraphStore.getState().nodes).toEqual(expectedNodesBeforeResolve)
-      expect(params.sourceFileRef.current).toBe("pipelines/main.py")
-      expect(params.parentGraphRef.current).toBeNull()
-      expect(result.current.viewStack).toHaveLength(1)
-
-      // Restore healthy state and verify an unchanged drill succeeds and navigates back coherently
-      useDocumentStatusStore.getState().reset()
-      const coherentParentNodes = [
-        makeNode("n1", "polars", { position: { x: 42, y: 84 } }),
-        makeOccurrence(),
-      ]
-      params.graphRef.current = { nodes: coherentParentNodes, edges: [] }
-      useGraphStore.getState().loadGraphSnapshot({
-        nodes: coherentParentNodes,
-        edges: [],
-        preamble: "",
-        submodels: params.submodelsRef.current,
-      })
-
-      await act(async () => {
-        await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
-      })
-      expect(result.current.viewStack).toHaveLength(2)
-      expect(params.sourceFileRef.current).toBe("modules/pricing.py")
-      expect(params.parentGraphRef.current?.nodes).toEqual(coherentParentNodes)
-
-      act(() => {
-        result.current.handleBreadcrumbNavigate(0)
-      })
-      expect(result.current.viewStack).toHaveLength(1)
-      expect(params.sourceFileRef.current).toBe("pipelines/main.py")
-      expect(useGraphStore.getState().nodes).toEqual(coherentParentNodes)
-    },
-  )
+    expect(result.current.viewStack).toHaveLength(1)
+    expect(useGraphStore.getState().submodelView).toBeNull()
+    expect(params.parentGraphRef.current).toBeNull()
+    useDocumentStatusStore.getState().reset()
+  })
 
   it("isolates Undo/Redo history per navigation level and keeps a clean drill-in clean", async () => {
     const params = makeParams()

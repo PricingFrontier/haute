@@ -39,6 +39,28 @@ export function makeNode(
   } as Node
 }
 
+/**
+ * A node carrying the editor identities a loaded document gives it (named by its
+ * id), as a submodel's children always do, so a view projected from it can name
+ * its edges.
+ */
+export function makeIdentifiedNode(
+  id: string,
+  nodeType = "polars",
+  overrides: Partial<Node> = {},
+): Node {
+  const { data: dataOverrides, ...rest } = overrides
+  return makeNode(id, nodeType, {
+    ...rest,
+    data: {
+      _functionName: id,
+      _defaultInputName: id,
+      _sourceHandleInputNames: {},
+      ...dataOverrides,
+    },
+  })
+}
+
 // ---------------------------------------------------------------------------
 // makeEdge — React Flow Edge
 // ---------------------------------------------------------------------------

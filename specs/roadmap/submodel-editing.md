@@ -89,7 +89,7 @@ specification before code changes.
 | SUBE-03 | Planned | P2 | Every request that runs the graph goes through one gateway that snapshots the document, target and source together; no panel builds a request graph. |
 | SUBE-04 | Planned | P2 | Results, annotations and caches are keyed by occurrence-aware address, so an owner and its read-only copies never show each other's previews, columns or training results. |
 | SUBE-05 | Planned | P2 | Requests name nodes and frames by address, the server resolves them and labels every node an answer names with its address; the browser's runtime-id code is removed. |
-| SUBE-06 | Planned | P2 | Opening a submodel is immediate, saving works inside a submodel, and a reload keeps the open submodel when it still exists. |
+| SUBE-06 | Planned | P2 | Saving works inside a submodel, and a reload keeps the open submodel when it still exists. |
 
 ## Planned improvements
 
@@ -108,6 +108,11 @@ publishes the uncommitted candidate into the refs requests read.
 **Plan:** Specify the model first in the submodels and graph-canvas high- and low-level
 designs (the Target model above), replacing the rules for the submodel view's own history, the
 collapsed visit and the reconciled parent graph.
+0. The projection asks the server nothing, so it can be redrawn from any document (Undo
+   included): a boundary card's identity is a fixed function of its direction and its declared
+   ports (its label is its name, and each port, already a canonical identifier, names its own
+   frame), built by the projection and held to the server's resolver by a shared fixture.
+   Opening a submodel therefore commits at once.
 1. The store holds the document and `focus`; `nodes`/`edges` are the projection, built from
    the existing pure projection (`buildSubmodelViewGraph`) without its history carriers, and
    memoised per node. This package defines the shared contracts later packages consume: the
@@ -140,6 +145,8 @@ collapsed visit and the reconciled parent graph.
    (`afterCommitEffects`) is deleted with its callers here; SUBE-03 then replaces the bridge.
 
 **Acceptance:**
+- Opening a submodel shows it with no server round trip, and its cards are named as the server's
+  resolver names a `submodelPort` node.
 - An edit inside a submodel followed by a request sent from an effect in the same commit sends
   the edited document, with `afterCommitEffects` removed.
 - A refused edit changes neither the document nor the canvas, and leaving the submodel keeps
@@ -330,21 +337,17 @@ contract test covers every node-naming answer field.
 `src/haute/routes/pipeline.py`; `src/haute/routes/cache.py`; `src/haute/_node_snapshots.py`;
 `frontend/src/workbench/priceSample.ts::priceSample`; `frontend/src/hooks/useTracing.ts`.
 
-### SUBE-06 — Immediate navigation, save and reload inside a submodel
-**Why:** Opening a submodel waits for the server to name the Input and Output cards, which are
-dressed as executable nodes. Saving inside a submodel is refused, and a reload returns to the
-main pipeline; both follow only from the canvas not being the document.
+### SUBE-06 — Save and reload inside a submodel
+**Why:** Saving inside a submodel is refused, and a reload returns to the main pipeline; both
+follow only from the canvas not being the document.
 
-**Plan:** Specify in the submodels and graph-canvas designs. Make the Input and Output cards view
-objects that reference the definition's declared ports, with no executable name; the server
-returns any naming metadata it owns with the editor document, so opening a submodel is a
-synchronous focus change. Save serialises the document whatever the focus, and records that
+**Plan:** Specify in the submodels and graph-canvas designs. Save serialises the document whatever
+the focus, and records that
 exact document as saved. A clean external reload replaces the document atomically, keeps the
 focus when the same occurrence and definition still exist, and otherwise shows the root with a
 notice; dirty-document conflict handling and execution fences stay as they are.
 
 **Acceptance:**
-- Opening a submodel shows it with no server round trip.
 - Save inside a submodel saves the whole pipeline and leaves the view clean; an edit accepted
   while a save is in flight stays dirty after the save completes (the save acknowledges the
   exact document it sent).
@@ -357,5 +360,4 @@ notice; dirty-document conflict handling and execution fences stay as they are.
 **Dependencies:** SUBE-02.
 
 **Evidence:** `frontend/src/hooks/useSubmodelNavigation.ts`;
-`frontend/src/utils/editorIdentities.ts`; `frontend/src/hooks/usePipelineAPI.ts`;
-`frontend/src/hooks/useWebSocketSync.ts`.
+`frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/hooks/useWebSocketSync.ts`.

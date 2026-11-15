@@ -21,7 +21,7 @@ import { toSimpleEdge, toSimpleNode } from "../../hooks/usePanelGraphContext"
 import { applyPreviewResultColumnsToNodes } from "../../hooks/usePipelineAPI"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
-import { makeNode as factoryNode, makePreviewResponse } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNode as factoryNode, makePreviewResponse } from "../../test-utils/factories"
 
 const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
@@ -3180,7 +3180,7 @@ describe("NodePanel", () => {
     it("gives a drilled banding fed by the submodel's Input card that port's columns, still after adding a factor", () => {
       const policy = [{ name: "policy_id", dtype: "String" }, { name: "age", dtype: "Int64" }]
       const children = [
-        factoryNode("bands", "banding", { data: { label: "bands", nodeType: "banding", config: { factors: [] } } }),
+        makeIdentifiedNode("bands", "banding", { data: { label: "bands", nodeType: "banding", config: { factors: [] } } }),
       ]
       const view = buildSubmodelViewGraph({
         submodelName: "pricing",
