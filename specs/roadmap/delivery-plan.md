@@ -41,14 +41,26 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | Phase | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---|---:|---|---|---|---|---|
 | J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |
+| K | 24 | Whole-data status | `SUBE-01` | — | M | Small and independent of the submodel work; ends the "Counting…" that hides a failed read. |
+| L | 25 | One document | `SUBE-02`, `SUBE-03`, `SUBE-04` | — | L | The store owns the document before anything else moves, so requests and results move onto it once. Chosen over server addressing first (2026-11-15) because it fixes the dropped edits, the stale pipeline and the split history, and server addressing then lands on one gateway. |
+| M | 26 | Server addresses | `SUBE-05` | 25 | L | Requests and answers name nodes by address through the gateway; removes the browser's runtime-id code. |
+| N | 27 | Navigation and lifecycle | `SUBE-06` | 25 | M | Immediate opening, save and reload inside a submodel, once the canvas is the document's projection. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
 ## User-visible changes in this plan
 
-None of the scheduled rounds changes what a user sees or relies on. A package
-that does is listed here, with the date it was decided, so an objection can be
-raised before its round starts.
+A package that changes what a user sees or relies on is listed here, with the
+date it was decided, so an objection can be raised before its round starts.
+
+- `SUBE-02` (2026-11-15): Undo inside a submodel takes one step per edit, as on
+  the main canvas, instead of one step for the whole visit, and Undo of a step
+  made in another view switches to that view.
+- `SUBE-01`, `SUBE-05` (2026-11-15): failed whole-data reads say so; node status
+  colours, timings and diagnostics show inside submodels; the cached-data list
+  names submodel nodes by label.
+- `SUBE-06` (2026-11-15): Save works inside a submodel, and a reload keeps the
+  open submodel when it still exists.
 
 ## Not scheduled
 
