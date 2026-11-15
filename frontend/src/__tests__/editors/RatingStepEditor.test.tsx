@@ -30,6 +30,24 @@ function render(
 
 // Helpers
 
+/** Opens a factor dropdown and reads its options, each as "name (N levels)", then closes it. */
+function factorOptions(label: string): string[] {
+  fireEvent.click(screen.getByRole("button", { name: label }))
+  const menu = screen.getByRole("listbox", { name: `${label} options` })
+  const options = within(menu).queryAllByRole("option").map(option => `${option.children[0]?.textContent} (${option.children[1]?.textContent})`)
+  fireEvent.keyDown(screen.getByRole("combobox", { name: `Search ${label}` }), { key: "Escape" })
+  return options
+}
+
+/** Chooses a column in a factor dropdown by clicking its option. */
+function chooseFactor(label: string, column: string) {
+  fireEvent.click(screen.getByRole("button", { name: label }))
+  // An option reads its name, then its count of levels: match the name.
+  const option = screen.getAllByRole("option").find(candidate => candidate.firstElementChild?.textContent === column)
+  if (!option) throw new Error(`No ${column} option`)
+  fireEvent.click(option)
+}
+
 /** Create a banding node that provides levels for the rating editor. */
 function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNode {
   return {
@@ -80,7 +98,7 @@ const BANDING_NODES: SimpleNode[] = [
 
 afterEach(() => {
   cleanup()
-  useUIStore.setState({ ratingStepEditorSections: {}, explorePanes: {}, explorePreviewPanes: {} })
+  useUIStore.setState({ explorePanes: {}, explorePreviewPanes: {} })
 })
 
 // Tests
@@ -89,6 +107,7 @@ describe("RatingStepEditor", () => {
   it("warns once for configured zero-level Banding outputs without restoring stale levels", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             factors: ["empty_one"], output_column: "factor", default_value: "1.0",
@@ -112,14 +131,15 @@ describe("RatingStepEditor", () => {
       ] },
     )
     expect(screen.getByRole("alert")).toHaveTextContent(/empty_one.*empty_two/)
-    const addFactor = screen.getByRole("combobox", { name: "Add factor" })
-    expect(Array.from((addFactor as HTMLSelectElement).options).map(option => option.value)).toContain("healthy")
-    expect(Array.from((addFactor as HTMLSelectElement).options).map(option => option.value)).not.toContain("empty_one")
+    const offered = factorOptions("Add factor")
+    expect(offered.some(option => option.startsWith("healthy "))).toBe(true)
+    expect(offered.some(option => option.startsWith("empty_one "))).toBe(false)
   })
 
   it("renders with default empty table", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -128,7 +148,7 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: [] }
     )
-    expect(screen.getByText(/Rating Tables\s+.\s+1 table/)).toBeTruthy()
+    expect(screen.queryByText(/Rating Tables/)).toBeNull()
     expect(screen.getByRole("button", { name: /^Table 1 problem$/ })).toBeTruthy()
     expect(screen.queryByText("Table Name")).toBeNull()
     expect(screen.queryByPlaceholderText("Age Factor")).toBeNull()
@@ -137,6 +157,7 @@ describe("RatingStepEditor", () => {
   it("shows healthy and problem status markers in the rating table selector", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [
             {
@@ -179,17 +200,222 @@ describe("RatingStepEditor", () => {
     )
 
     const selector = screen.getByRole("group", { name: "Rating tables" })
-    expect(within(selector).getByRole("button", { name: /^age_factor healthy$/i })).toContainHTML("var(--success)")
-    expect(within(selector).getByRole("button", { name: /^Table 2 problem$/i })).toContainHTML("var(--warning-strong)")
-    expect(within(selector).getByRole("button", { name: /^region_factor problem$/i })).toContainHTML("var(--warning-strong)")
+    // The dot leads the row, beside the row's button.
+    const row = (name: RegExp) => within(selector).getByRole("button", { name }).parentElement!
+    expect(row(/^age_factor healthy$/i)).toContainHTML("var(--success)")
+    expect(row(/^Table 2 problem$/i)).toContainHTML("var(--warning-strong)")
+    expect(row(/^region_factor problem$/i)).toContainHTML("var(--warning-strong)")
     for (const duplicate of within(selector).getAllByRole("button", { name: /^duplicate_factor problem$/i })) {
-      expect(duplicate).toContainHTML("var(--warning-strong)")
+      expect(duplicate.parentElement!).toContainHTML("var(--warning-strong)")
     }
+  })
+
+  describe("the table list", () => {
+    const rated = (output_column: string, entries: Record<string, string | number>[]) => ({
+      factors: ["age_band"],
+      output_column,
+      default_value: "1.0",
+      entries,
+    })
+    const THREE = {
+      tables: [
+        rated("age_factor", [{ age_band: "young", value: 1.1 }]),
+        rated("region_factor", [{ age_band: "young", value: 1.2 }, { age_band: "old", value: 0.9 }]),
+        rated("cover_factor", []),
+      ],
+    }
+    const tableRow = (name: string) =>
+      within(screen.getByRole("group", { name: "Rating tables" }))
+        .getByRole("button", { name: new RegExp(`^${name} (healthy|problem)$`) })
+    const outputs = (onUpdate: ReturnType<typeof vi.fn>) =>
+      (onUpdate.mock.lastCall![1] as { output_column: string }[]).map((table) => table.output_column)
+
+    it("spells out each table's factors and entries, as Banding does its rules", () => {
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      expect(tableRow("age_factor")).toHaveTextContent("1 factor1 entry")
+      expect(tableRow("region_factor")).toHaveTextContent("1 factor2 entries")
+      expect(tableRow("cover_factor")).toHaveTextContent("1 factor0 entries")
+    })
+
+    it("adds a table with the Add table button under the list", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const add = screen.getByRole("button", { name: "Add table" })
+      expect(screen.getByRole("group", { name: "Rating tables" }).nextElementSibling).toBe(add)
+      fireEvent.click(add)
+      expect(onUpdate.mock.lastCall![0]).toBe("tables")
+      expect(onUpdate.mock.lastCall![1]).toHaveLength(4)
+    })
+
+    it("moves a table dragged onto another, keeping it selected", () => {
+      const onUpdate = vi.fn()
+      const { rerender } = render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const row = (name: string) => tableRow(name).parentElement as HTMLElement
+      expect(row("age_factor")).toHaveAttribute("draggable", "true")
+      expect(within(row("age_factor")).getByTitle("Drag to reorder")).toBeInTheDocument()
+      const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" }
+      fireEvent.dragStart(row("age_factor"), { dataTransfer })
+      fireEvent.dragOver(row("cover_factor"), { dataTransfer })
+      fireEvent.drop(row("cover_factor"), { dataTransfer })
+
+      expect(onUpdate.mock.lastCall![0]).toBe("tables")
+      expect(outputs(onUpdate)).toEqual(["region_factor", "cover_factor", "age_factor"])
+      rerender(
+        <GraphProvider allNodes={BANDING_NODES} edges={[]}>
+          <RatingStepEditor
+            section="tables"
+            config={{ tables: onUpdate.mock.lastCall![1] }}
+            onUpdate={onUpdate}
+            inputSources={[]}
+            accentColor="#14b8a6"
+          />
+        </GraphProvider>,
+      )
+      expect(tableRow("age_factor")).toHaveAttribute("aria-pressed", "true")
+    })
+
+    it("renames a table's output column in its row: a double-click opens it, Enter keeps it", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.doubleClick(tableRow("region_factor"))
+      const box = screen.getByRole("textbox", { name: "Rename region_factor" })
+      expect(box).toHaveValue("region_factor")
+      expect(box).toHaveFocus()
+      // While the name is typed, a drag in the box selects text rather than moving the row.
+      expect(box.closest("[draggable]")).toHaveAttribute("draggable", "false")
+      fireEvent.change(box, { target: { value: "  area_factor " } })
+      fireEvent.keyDown(box, { key: "Enter" })
+      fireEvent.blur(box)
+
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+      expect(outputs(onUpdate)).toEqual(["age_factor", "area_factor", "cover_factor"])
+      expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+    })
+
+    it("opens the selected table's name with a click in its box, while a click on another row only selects it", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const nameOf = (name: string) => within(tableRow(name)).getByText(name)
+      fireEvent.click(nameOf("region_factor"))
+      expect(tableRow("region_factor")).toHaveAttribute("aria-pressed", "true")
+      expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+
+      fireEvent.click(nameOf("region_factor"))
+      const box = screen.getByRole("textbox", { name: "Rename region_factor" })
+      // It opens in the name's place: the row keeps its badges.
+      expect(box.closest("[draggable]")).toHaveTextContent("1 factor")
+      fireEvent.keyDown(box, { key: "Escape" })
+      // A click elsewhere on the selected row (its badges) does not rename.
+      fireEvent.click(within(tableRow("region_factor")).getByText("1 factor"))
+      expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("opens the name with F2 and keeps the old one on Escape, a blank one or the same one", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const rename = (keys: (box: HTMLElement) => void) => {
+        fireEvent.keyDown(tableRow("age_factor"), { key: "F2" })
+        keys(screen.getByRole("textbox", { name: "Rename age_factor" }))
+        expect(screen.queryByRole("textbox", { name: /^Rename / })).toBeNull()
+      }
+      rename((box) => {
+        fireEvent.change(box, { target: { value: "other" } })
+        fireEvent.keyDown(box, { key: "Escape" })
+      })
+      rename((box) => {
+        fireEvent.change(box, { target: { value: "   " } })
+        fireEvent.keyDown(box, { key: "Enter" })
+      })
+      rename((box) => fireEvent.blur(box))
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("starts an unnamed table's box empty, never from its stand-in name", () => {
+      const onUpdate = vi.fn()
+      const config = { tables: [THREE.tables[0], { ...THREE.tables[1], output_column: "" }] }
+      render(
+        <RatingStepEditor section="tables" config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.doubleClick(tableRow("Table 2"))
+      const box = screen.getByRole("textbox", { name: "Rename Table 2" })
+      expect(box).toHaveValue("")
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(onUpdate).not.toHaveBeenCalled()
+
+      fireEvent.doubleClick(tableRow("Table 2"))
+      fireEvent.change(screen.getByRole("textbox", { name: "Rename Table 2" }), { target: { value: "region_factor" } })
+      fireEvent.blur(screen.getByRole("textbox", { name: "Rename Table 2" }))
+      expect(outputs(onUpdate)).toEqual(["age_factor", "region_factor"])
+    })
+
+    it("takes a name another table has, and marks both", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.doubleClick(tableRow("cover_factor"))
+      const box = screen.getByRole("textbox", { name: "Rename cover_factor" })
+      fireEvent.change(box, { target: { value: "age_factor" } })
+      expect(box).not.toHaveAttribute("aria-invalid")
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(outputs(onUpdate)).toEqual(["age_factor", "region_factor", "age_factor"])
+    })
+
+    it("moves a table with Alt+Up/Down from the keyboard", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      fireEvent.keyDown(tableRow("region_factor"), { key: "ArrowDown", altKey: true })
+      expect(outputs(onUpdate)).toEqual(["age_factor", "cover_factor", "region_factor"])
+      fireEvent.keyDown(tableRow("age_factor"), { key: "ArrowUp", altKey: true })
+      // Already first: nothing to move.
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+    })
+
+    it("looks the same with one table as with several: the grip and the bin's place stay", () => {
+      const onUpdate = vi.fn()
+      render(
+        <RatingStepEditor section="tables" config={{ tables: [THREE.tables[0]] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: BANDING_NODES },
+      )
+      const row = tableRow("age_factor").parentElement as HTMLElement
+      expect(row).toHaveAttribute("draggable", "true")
+      expect(within(row).getByTitle("Drag to reorder")).toBeInTheDocument()
+      // The last table cannot be removed, so its bin is only a kept place.
+      expect(within(row).queryByRole("button", { name: /^Remove / })).toBeNull()
+      expect(row.lastElementChild).toHaveAttribute("aria-hidden", "true")
+      fireEvent.keyDown(tableRow("age_factor"), { key: "ArrowDown", altKey: true })
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
   })
 
   it("summarises why a selected rating table has problems", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [
             { factors: [], output_column: " ", default_value: "1.0", entries: [] },
@@ -220,7 +446,8 @@ describe("RatingStepEditor", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: /^duplicate_factor problem$/i })[0])
 
-    expect(screen.getByLabelText("Output Column")).toHaveAttribute("aria-invalid", "true")
+    // With no Output Column field, the summary says what is wrong with the name.
+    expect(screen.queryByLabelText("Output Column")).toBeNull()
     expect(screen.getByText("Output column name must be unique")).toBeTruthy()
   })
 
@@ -234,6 +461,7 @@ describe("RatingStepEditor", () => {
 
     render(
       <RatingStepEditor
+        section="tables"
         config={{ tables }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -251,33 +479,28 @@ describe("RatingStepEditor", () => {
     expect(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i })).toBeTruthy()
     expect(within(selector).queryByRole("button", { name: /factor_01/i })).toBeNull()
     expect(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i })).toHaveAttribute("aria-pressed", "true")
-    expect(screen.getByLabelText("Output Column")).toHaveValue("telematics_adjustment")
 
     fireEvent.click(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i }))
 
-    expect(screen.getByLabelText("Output Column")).toHaveValue("telematics_adjustment")
+    expect(within(selector).getByRole("button", { name: /^telematics_adjustment healthy$/i })).toHaveAttribute("aria-pressed", "true")
   })
 
-  it.each([
-    { label: "Output Column", before: "age_factor", after: "region_factor", key: "output_column" },
-    { label: "Default", before: "1.5", after: "2.5", key: "default_value" },
-  ])("shows $label as undo leaves it, and a blur then commits nothing", ({ label, before, after, key }) => {
-    const table = (value: string) => ({ factors: [], output_column: "age_factor", default_value: "1.0", entries: [], [key]: value })
+  it("shows Default as undo leaves it, and a blur then commits nothing", () => {
+    const table = (value: string) => ({ factors: [], output_column: "age_factor", default_value: value, entries: [] })
     const onUpdate = vi.fn()
     const view = render(
-      <RatingStepEditor config={{ tables: [table(before)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+      <RatingStepEditor section="tables" config={{ tables: [table("1.5")] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
     )
-    const input = screen.getByLabelText(label) as HTMLInputElement
-    expect(input.value).toBe(before)
+    expect((screen.getByLabelText("Default") as HTMLInputElement).value).toBe("1.5")
 
     // An undo (or a broadcast) changes the value while the field is on screen.
     view.rerender(
       <GraphProvider allNodes={[]} edges={[]}>
-        <RatingStepEditor config={{ tables: [table(after)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+        <RatingStepEditor section="tables" config={{ tables: [table("2.5")] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
-    expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(after)
-    fireEvent.blur(screen.getByLabelText(label))
+    expect((screen.getByLabelText("Default") as HTMLInputElement).value).toBe("2.5")
+    fireEvent.blur(screen.getByLabelText("Default"))
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
@@ -292,12 +515,12 @@ describe("RatingStepEditor", () => {
       combined_outputs: [combined(value)],
     })
     const view = render(
-      <RatingStepEditor config={config(before)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+      <RatingStepEditor section="combined" config={config(before)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
     )
     expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(before)
     view.rerender(
       <GraphProvider allNodes={[]} edges={[]}>
-        <RatingStepEditor config={config(after)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
+        <RatingStepEditor section="combined" config={config(after)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
     expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(after)
@@ -305,108 +528,67 @@ describe("RatingStepEditor", () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
-  it("commits the output column on Enter", () => {
+  describe("On miss and Default, under the table", () => {
+    const table = (extra: Record<string, unknown> = {}) => ({ factors: [], output_column: "af", entries: [], ...extra })
+    const editor = (config: Record<string, unknown>, onUpdate = vi.fn()) => {
+      render(
+        <RatingStepEditor section="tables" config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
+        { allNodes: [] },
+      )
+      return onUpdate
+    }
+
+    it("offers Leave empty and Use default, never Stop the run", () => {
+      editor({ tables: [table()] })
+      const onMiss = screen.getByLabelText("On miss") as HTMLSelectElement
+      expect(Array.from(onMiss.options).map((option) => option.textContent)).toEqual(["Leave empty", "Use default"])
+    })
+
+    it("starts a table without a default on Leave empty, its Default box off and empty", () => {
+      editor({ tables: [table()] })
+      expect(screen.getByLabelText("On miss")).toHaveValue("empty")
+      expect(screen.getByLabelText("Default")).toBeDisabled()
+      expect(screen.getByLabelText("Default")).toHaveValue(null)
+    })
+
+    it.each([["1.0"], [1.25]])("reads a table whose default is %j as Use default, as the engine does", (defaultValue) => {
+      editor({ tables: [table({ default_value: defaultValue })] })
+      expect(screen.getByLabelText("On miss")).toHaveValue("default")
+      expect(screen.getByLabelText("Default")).toBeEnabled()
+      expect(screen.getByLabelText("Default")).toHaveValue(Number(defaultValue))
+    })
+
+    it("writes a default of 1.0 on Use default, and removes it on Leave empty", () => {
+      const onUpdate = editor({ tables: [table()] })
+      fireEvent.change(screen.getByLabelText("On miss"), { target: { value: "default" } })
+      expect(onUpdate).toHaveBeenLastCalledWith("tables", [table({ default_value: "1.0" })])
+
+      cleanup()
+      const second = editor({ tables: [table({ default_value: "1.3" })] })
+      fireEvent.change(screen.getByLabelText("On miss"), { target: { value: "empty" } })
+      expect(second).toHaveBeenLastCalledWith("tables", [table()])
+    })
+
+    it("sits under the table, after its rates", () => {
+      editor({
+        tables: [{ factors: ["age_band"], output_column: "af", entries: [{ age_band: "young", value: 1.1 }] }],
+      })
+      const onMiss = screen.getByLabelText("On miss")
+      const rates = screen.getByText("n=1")
+      const rebuild = screen.getByRole("button", { name: /Rebuild from factor levels/ })
+      const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+      // The table, then Rebuild from factor levels, then On miss and Default.
+      expect(follows(screen.getByRole("region", { name: "age_band rating grid" }), rebuild)).toBe(true)
+      expect(follows(rates, rebuild)).toBe(true)
+      expect(follows(rebuild, onMiss)).toBe(true)
+    })
+  })
+
+  it("clearing Default removes it, so the table's misses are left empty", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
-        config={{ tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }] }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-    )
-    const input = screen.getByLabelText("Output Column")
-    fireEvent.change(input, { target: { value: "age_factor" } })
-    fireEvent.keyDown(input, { key: "Enter" })
-    expect(onUpdate).toHaveBeenCalledWith("tables", [expect.objectContaining({ output_column: "age_factor" })])
-  })
-
-  it("persists only the output column on blur", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        config={{
-          tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }],
-        }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    fireEvent.change(outputColumnInput, { target: { value: "age_factor" } })
-    fireEvent.blur(outputColumnInput)
-
-    expect(onUpdate).toHaveBeenCalledWith("tables", [
-      expect.objectContaining({ output_column: "age_factor" }),
-    ])
-  })
-
-  it("keeps a table's on_missing and absent default through an edit", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        config={{
-          tables: [{ factors: [], output_column: "", on_missing: "neutral", entries: [] }],
-        }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByLabelText("Default")).toHaveValue(null)
-    expect(screen.getByLabelText("On miss")).toHaveValue("neutral")
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    fireEvent.change(outputColumnInput, { target: { value: "age_factor" } })
-    fireEvent.blur(outputColumnInput)
-
-    expect(onUpdate).toHaveBeenLastCalledWith("tables", [
-      { factors: [], output_column: "age_factor", on_missing: "neutral", entries: [] },
-    ])
-  })
-
-  it("sets on_missing while Default is empty", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        config={{ tables: [{ factors: [], output_column: "af", entries: [] }] }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    const onMiss = screen.getByLabelText("On miss")
-    expect(onMiss).toHaveValue("error")
-    fireEvent.change(onMiss, { target: { value: "neutral" } })
-    expect(onUpdate).toHaveBeenLastCalledWith("tables", [
-      { factors: [], output_column: "af", on_missing: "neutral", entries: [] },
-    ])
-
-  })
-
-  it("disables On miss while a default fills every miss", () => {
-    render(
-      <RatingStepEditor
-        config={{ tables: [{ factors: [], output_column: "af", default_value: "1.0", entries: [] }] }}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-    expect(screen.getByLabelText("On miss")).toBeDisabled()
-  })
-
-  it("clearing Default removes it, so a miss stops the run", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
+        section="tables"
         config={{ tables: [{ factors: [], output_column: "af", default_value: "1.0", entries: [] }] }}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -424,113 +606,56 @@ describe("RatingStepEditor", () => {
     ])
   })
 
-  it("renders the top rating section selector without persisting section changes", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        config={{}}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByRole("radiogroup", { name: "Rating section" })).toBeTruthy()
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByRole("radio", { name: /Combined/ })).toBeTruthy()
-
-    fireEvent.click(screen.getByRole("radio", { name: /Combined/ }))
-    expect(screen.getByRole("radio", { name: /Combined/ })).toHaveAttribute("aria-checked", "true")
-    expect(onUpdate).not.toHaveBeenCalledWith("mode", "combined")
-  })
-
-  it("restores the last selected rating section when reopening the same node", () => {
+  describe("the node panel's Tables and Combined tabs", () => {
     const config = {
-      code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
       tables: [
-        { name: "Age Factor", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { factors: [], output_column: "region_factor", default_value: "1.0", entries: [] },
       ],
+      combined_outputs: [{ output_column: "technical_price", operation: "multiply", base_value: "1.0" }],
     }
-
-    const { unmount } = render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_1"
-      />,
-      { allNodes: [] },
+    const input = [{ sourceNodeId: "src", name: "source_data", sourceLabel: "Source Data", edgeId: "e1" }]
+    const editor = (section: "tables" | "combined" | "all") => (
+      <RatingStepEditor section={section} config={config} onUpdate={vi.fn()} inputSources={input} accentColor="#14b8a6" />
     )
 
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
+    it("shows the input and the tables on Tables, and no combined output", () => {
+      render(editor("tables"), { allNodes: [] })
+      expect(screen.getByText("source_data")).toBeTruthy()
+      expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
+      expect(screen.queryByRole("tablist", { name: "Combined outputs" })).toBeNull()
+      expect(screen.queryByRole("radiogroup", { name: "Rating section" })).toBeNull()
+    })
 
-    fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText(/Rating Tables/)).toBeTruthy()
+    it("shows only the combined outputs on Combined", () => {
+      render(editor("combined"), { allNodes: [] })
+      expect(screen.getByRole("tablist", { name: "Combined outputs" })).toBeTruthy()
+      expect(screen.getByLabelText("Combined Output Column")).toHaveValue("technical_price")
+      expect(screen.queryByRole("group", { name: "Rating tables" })).toBeNull()
+      expect(screen.queryByText("source_data")).toBeNull()
+    })
 
-    unmount()
+    it("shows both in the comparison view, which cannot switch tabs", () => {
+      render(editor("all"), { allNodes: [] })
+      expect(screen.getByRole("group", { name: "Rating tables" })).toBeTruthy()
+      expect(screen.getByRole("tablist", { name: "Combined outputs" })).toBeTruthy()
+    })
 
-    render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_1"
-      />,
-      { allNodes: [] },
-    )
-
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText(/Rating Tables/)).toBeTruthy()
-    expect(screen.queryByText("Polars Code")).toBeNull()
-  })
-
-  it("scopes the remembered rating section to the node id", () => {
-    const config = {
-      code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
-      tables: [
-        { name: "Age Factor", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
-      ],
-    }
-
-    const { unmount } = render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_1"
-      />,
-      { allNodes: [] },
-    )
-
-    fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
-    unmount()
-
-    render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-        nodeId="rating_2"
-      />,
-      { allNodes: [] },
-    )
-
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
+    it("keeps the selected table across a visit to Combined", () => {
+      const view = render(editor("tables"), { allNodes: [] })
+      fireEvent.click(screen.getByRole("button", { name: /^region_factor (healthy|problem)$/ }))
+      const rerender = (section: "tables" | "combined") =>
+        view.rerender(<GraphProvider allNodes={[]} edges={[]}>{editor(section)}</GraphProvider>)
+      rerender("combined")
+      rerender("tables")
+      expect(screen.getByRole("button", { name: /^region_factor (healthy|problem)$/ })).toHaveAttribute("aria-pressed", "true")
+    })
   })
 
   it("'Select at least one factor' shown when no factors", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -542,9 +667,10 @@ describe("RatingStepEditor", () => {
     expect(screen.getByText("Select at least one factor to populate the rating table")).toBeTruthy()
   })
 
-  it("flags a blank table output column and does not show placeholder text", () => {
+  it("says a blank table output column is required, with no Output Column field", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -554,15 +680,14 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    expect(outputColumnInput.getAttribute("placeholder")).toBeNull()
-    expect(outputColumnInput).toHaveAttribute("aria-invalid", "true")
+    expect(screen.queryByLabelText("Output Column")).toBeNull()
     expect(screen.getByText("Output column is required")).toBeTruthy()
   })
 
   it("does not flag a populated table output column", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{ name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] }],
         }}
@@ -574,15 +699,13 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    const outputColumnInput = screen.getByLabelText("Output Column")
-    expect(outputColumnInput.getAttribute("placeholder")).toBeNull()
-    expect(outputColumnInput).toHaveAttribute("aria-invalid", "false")
     expect(screen.queryByText("Output column is required")).toBeNull()
   })
 
   it("allows the Combined section to have no configured output", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           tables: [
             { name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
@@ -597,7 +720,6 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    fireEvent.click(screen.getByRole("radio", { name: /Combined/ }))
     expect(screen.getByText("No combined output")).toBeTruthy()
     expect(screen.queryByLabelText("Combined Output Column")).toBeNull()
     expect(screen.queryByText("Combined output column is required")).toBeNull()
@@ -606,6 +728,7 @@ describe("RatingStepEditor", () => {
   it("flags an explicitly blank combined output column and does not show placeholder text", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [{ output_column: "", operation: "multiply", base_value: "1.0" }],
         }}
@@ -625,6 +748,7 @@ describe("RatingStepEditor", () => {
   it("surfaces invalid configured combined outputs without masking them", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [
             { output_column: "", operation: "divide" },
@@ -652,6 +776,7 @@ describe("RatingStepEditor", () => {
   it("treats whitespace-only table output columns as blank", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [
             { name: "T1", factors: [], output_column: "   ", default_value: "1.0", entries: [] },
@@ -666,13 +791,13 @@ describe("RatingStepEditor", () => {
       { allNodes: [] }
     )
 
-    expect(screen.getByLabelText("Output Column")).toHaveAttribute("aria-invalid", "true")
     expect(screen.getByText("Output column is required")).toBeTruthy()
   })
 
   it("treats whitespace-only combined output columns as blank", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [{ output_column: "\t ", operation: "multiply", base_value: "1.0" }],
         }}
@@ -704,6 +829,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -713,7 +839,8 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
     // OneWayEditor renders "age_band" column header and "Relativity" header
-    expect(screen.getByText("age_band")).toBeTruthy()
+    // The one-way editor's heading, not the factor's own option.
+    expect(screen.getByText("age_band", { ignore: "option, button span" })).toBeTruthy()
     expect(screen.getByText("Relativity")).toBeTruthy()
     // The "select at least one factor" message should NOT be shown
     expect(screen.queryByText("Select at least one factor to populate the rating table")).toBeNull()
@@ -738,6 +865,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -757,6 +885,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -795,6 +924,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -827,6 +957,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -851,6 +982,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -876,6 +1008,7 @@ describe("RatingStepEditor", () => {
   it("shows operation select for a configured one-table combined output", () => {
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           tables: [
             { name: "T1", factors: [], output_column: "af", default_value: "1.0", entries: [] },
@@ -908,6 +1041,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -927,6 +1061,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="combined"
         config={{
           combined_outputs: [
             { output_column: "combined", operation: "multiply", base_value: "1.0" },
@@ -958,6 +1093,7 @@ describe("RatingStepEditor", () => {
 
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -967,7 +1103,6 @@ describe("RatingStepEditor", () => {
     )
 
     const tablist = screen.getByRole("tablist", { name: "Combined outputs" })
-    expect(screen.getByRole("radio", { name: /Combined set/ })).toBeTruthy()
     expect(tablist.className).toContain("overflow-x-auto")
     expect(screen.getAllByText("technical_price").length).toBeGreaterThan(0)
     expect(screen.getByText("loaded_price")).toBeTruthy()
@@ -1007,6 +1142,7 @@ describe("RatingStepEditor", () => {
 
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1038,6 +1174,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1052,6 +1189,7 @@ describe("RatingStepEditor", () => {
   it("rebuild button not shown when no factors selected", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1076,6 +1214,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1101,6 +1240,7 @@ describe("RatingStepEditor", () => {
   it("shows factor count label", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1115,6 +1255,7 @@ describe("RatingStepEditor", () => {
   it("shows factor dropdown with available banding columns", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1123,16 +1264,54 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: BANDING_NODES }
     )
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
-    const options = Array.from(addSelect.options).map(o => o.textContent)
-    expect(options).toContain("+ Add factor...")
+    // With no factor yet, Add factor is the first factor's slot.
+    expect(screen.getByRole("button", { name: "Add factor" })).toHaveTextContent("Select factor...")
+    const options = factorOptions("Add factor")
     expect(options.some(o => o?.includes("age_band"))).toBe(true)
     expect(options.some(o => o?.includes("region"))).toBe(true)
+  })
+
+  it("offers a factor's slot the columns with levels the table's other factors do not use, each with its count of levels", () => {
+    render(
+      <RatingStepEditor
+        section="tables"
+        config={{ tables: [{ factors: ["age_band", "region"], output_column: "f", default_value: "1.0", entries: [] }] }}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#14b8a6"
+      />,
+      { allNodes: [...BANDING_NODES, makeBandingNode("single", ["only"])] },
+    )
+
+    expect(factorOptions("Factor 1")).toEqual(["age_band (3 levels)", "vehicle_type (3 levels)", "single (1 level)"])
+    expect(screen.getByRole("button", { name: "Factor 2" })).toHaveAttribute("title", "region (2 levels)")
+  })
+
+  it("lays the factors out on one line with + Add factor after them, until there are three", () => {
+    const table = (factors: string[]) => ({ tables: [{ factors, output_column: "f", default_value: "1.0", entries: [] }] })
+    const view = render(
+      <RatingStepEditor section="tables" config={table(["age_band"])} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />,
+      { allNodes: BANDING_NODES },
+    )
+    const first = screen.getByRole("button", { name: "Factor 1" })
+    const add = screen.getByRole("button", { name: "Add factor" })
+    // One line: the factor's slot and Add factor share a row.
+    expect(add.parentElement!.parentElement).toBe(first.parentElement!.parentElement!.parentElement)
+    expect(add).toHaveTextContent("Add factor")
+
+    view.rerender(
+      <GraphProvider allNodes={BANDING_NODES} edges={[]}>
+        <RatingStepEditor section="tables" config={table(["age_band", "region", "vehicle_type"])} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />
+      </GraphProvider>,
+    )
+    expect(screen.getAllByRole("button", { name: /^Factor \d$/ })).toHaveLength(3)
+    expect(screen.queryByRole("button", { name: "Add factor" })).toBeNull()
   })
 
   it("shows raw string/categorical preview columns in the add factor dropdown but hides numeric columns", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1151,8 +1330,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
-    const options = Array.from(addSelect.options).map(o => o.textContent)
+    const options = factorOptions("Add factor")
     expect(options.some(o => o?.includes("age_band"))).toBe(true)
     expect(options.some(o => o?.includes("channel (2 levels)"))).toBe(true)
     expect(options.some(o => o?.includes("segment (2 levels)"))).toBe(true)
@@ -1163,6 +1341,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1180,7 +1359,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Add factor" }), { target: { value: "channel" } })
+    chooseFactor("Add factor", "channel")
 
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
@@ -1198,6 +1377,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1208,7 +1388,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Add factor" }), { target: { value: "value" } })
+    chooseFactor("Add factor", "value")
 
     expect(onUpdate).not.toHaveBeenCalled()
     expect(screen.getByTestId("rating-factor-limit")).toHaveTextContent(
@@ -1220,6 +1400,7 @@ describe("RatingStepEditor", () => {
   it("uses preview-derived raw string factor levels without showing an explanatory warning", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Channel Factor",
@@ -1255,6 +1436,7 @@ describe("RatingStepEditor", () => {
   it("uses saved raw factor entries as levels before preview rows are available", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Channel Factor",
@@ -1282,6 +1464,7 @@ describe("RatingStepEditor", () => {
   it("uses preview and saved entries for unbanded channel and cover_type levels without raw-level helper UI", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Channel Cover Factor",
@@ -1327,6 +1510,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "Age Factor",
@@ -1370,6 +1554,7 @@ describe("RatingStepEditor", () => {
   it("shows breakpoint banding columns in the add factor dropdown", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1385,8 +1570,7 @@ describe("RatingStepEditor", () => {
       }
     )
 
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" }) as HTMLSelectElement
-    const options = Array.from(addSelect.options).map(o => o.textContent)
+    const options = factorOptions("Add factor")
     expect(options.some(o => o?.includes("proposer_age_band"))).toBe(true)
     expect(options.some(o => o?.includes("vehicle_age_band"))).toBe(true)
     expect(options.some(o => o?.includes("channel_band"))).toBe(true)
@@ -1407,6 +1591,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1416,12 +1601,15 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES }
     )
     expect(screen.getByRole("button", { name: /^age_factor healthy$/ })).toBeTruthy()
-    expect(screen.getByText(/2 entries/)).toBeTruthy()
+    // The grid's own stats line counts the rates; no second line names the table and its range.
+    expect(screen.getByText("n=2")).toBeTruthy()
+    expect(screen.queryByText(/entries · range/)).toBeNull()
   })
 
   it("renders input sources bar when inputs provided", () => {
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={vi.fn()}
         inputSources={[{ sourceNodeId: "test-source", name: "source_data", sourceLabel: "Source Data", edgeId: "e1" }]}
@@ -1443,6 +1631,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="combined"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1462,6 +1651,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{}}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -1470,8 +1660,7 @@ describe("RatingStepEditor", () => {
       />,
       { allNodes: BANDING_NODES }
     )
-    const addSelect = screen.getByRole("combobox", { name: "Add factor" })
-    fireEvent.change(addSelect, { target: { value: "age_band" } })
+    chooseFactor("Add factor", "age_band")
     // Should update tables with the new factor
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({ factors: ["age_band"] }),
@@ -1482,6 +1671,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "T1",
@@ -1499,7 +1689,7 @@ describe("RatingStepEditor", () => {
       { allNodes: BANDING_NODES },
     )
 
-    fireEvent.change(screen.getAllByRole("combobox", { name: "Add factor" }).at(-1)!, { target: { value: "region" } })
+    chooseFactor("Add factor", "region")
 
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
@@ -1513,6 +1703,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     const { container } = render(
       <RatingStepEditor
+        section="tables"
         config={{
           tables: [{
             name: "T1",
@@ -1562,6 +1753,7 @@ describe("RatingStepEditor", () => {
     }
     render(
       <RatingStepEditor
+        section="tables"
         config={config}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -1572,11 +1764,12 @@ describe("RatingStepEditor", () => {
     )
     // Factors count should show 3/3
     expect(screen.getByText("Factors (3/3)")).toBeTruthy()
-    expect(screen.getByRole("combobox", { name: "Factor 1" })).toHaveValue("age_band")
-    expect(screen.getByRole("combobox", { name: "Factor 2" })).toHaveValue("region")
-    expect(screen.getByRole("combobox", { name: "Factor 3" })).toHaveValue("vehicle_type")
+    expect(screen.getByRole("button", { name: "Factor 1" })).toHaveTextContent("age_band")
+    expect(screen.getByRole("button", { name: "Factor 2" })).toHaveTextContent("region")
+    expect(screen.getByRole("button", { name: "Factor 3" })).toHaveTextContent("vehicle_type")
     // The 3rd factor (vehicle_type) should appear as the slice selector label
-    expect(screen.getByText("vehicle_type")).toBeTruthy()
+    // The slice's label, not the factor's own option.
+    expect(screen.getByText("vehicle_type", { ignore: "option, button span" })).toBeTruthy()
     expect(screen.getByRole("combobox", { name: "vehicle_type slice" })).toBeInTheDocument()
   })
 })

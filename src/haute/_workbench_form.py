@@ -137,6 +137,9 @@ ImportMode = Literal["replace", "append", "update"]
 #: value as the quote holds it or as the sheets show it, in its column's format.
 ExportHeaders = Literal["names", "labels"]
 ExportValues = Literal["raw", "formatted"]
+#: What heads a block's columns in an Excel workbook of cells: their labels, their names,
+#: or nothing, its rows starting at its top-left cell.
+ExportHeader = Literal["labels", "names", "none"]
 
 #: The furthest down a workbook's sheet an Import's header row can be, as the view's
 #: properties panel takes it (``frontend/src/utils/workbenchForm.ts``).
@@ -668,6 +671,51 @@ class ExcelExport(_FileExport):
     format: Literal["excel"]
 
 
+class ExportCell(_Strict):
+    """A cell an Excel workbook of cells holds: the value of a one-row table's column, by
+    ``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the
+    sheet named ``sheet``, and the column's label in the cell at ``label_cell`` of that
+    sheet. The addresses and the name are the form's as typed: their problems are the
+    view's to show and the export's to refuse (:mod:`haute._workbench_export`)."""
+
+    table: str
+    column: str
+    sheet: str
+    cell: str
+    #: Where the column's label is written, an address such as ``A3``; blank for none.
+    label_cell: str
+
+
+class ExportBlock(_Strict):
+    """A table's rows an Excel workbook of cells holds as a block: the chosen ``columns`` of
+    the table ``table``, by name in the order chosen, rightward from the cell at ``cell``
+    (an address such as ``A12``) of the sheet named ``sheet``, the block's top-left corner,
+    under a ``header`` of their labels or their names, or none, and a row for each of the
+    table's rows in the quote. Its names and address are the form's as typed: their
+    problems are the view's to show and the export's to refuse
+    (:mod:`haute._workbench_export`)."""
+
+    table: str
+    columns: list[str]
+    sheet: str
+    cell: str
+    header: ExportHeader
+
+
+class ExcelCellsExport(_Strict):
+    """An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, and
+    chosen tables, each a block of its rows from a cell, under a file name made as a
+    ``_FileExport``'s is. Its cells and blocks say what it writes, so the Export exports no
+    tables."""
+
+    format: Literal["excel_cells"]
+    file_name: str
+    #: In the order chosen; a column may be written into more than one cell.
+    cells: list[ExportCell]
+    #: In the order chosen; a table may be written as more than one block.
+    blocks: list[ExportBlock]
+
+
 class TableName(_Strict):
     """A table an Export writes to a database, by name, and the name of the table it is
     written to there."""
@@ -687,13 +735,16 @@ class SqlExport(_Strict):
     table_names: list[TableName]
 
 
-ExportTarget = Annotated[CsvExport | ExcelExport | SqlExport, Field(discriminator="format")]
+ExportTarget = Annotated[
+    CsvExport | ExcelExport | ExcelCellsExport | SqlExport, Field(discriminator="format")
+]
 
 
 class ExportWidget(_Placed):
     """An Export: a button an underwriter presses to take the quote's tables out to a file
-    or a database. It shows no schema columns and takes nothing typed; nothing runs it yet,
-    so it is drawn disabled where the sheets are used."""
+    or a database. It shows no schema columns and takes nothing typed. Only an Excel
+    workbook of cells runs yet, in Preview; every other is drawn disabled where the sheets
+    are used."""
 
     type: Literal["export"]
     #: The text on the button.
@@ -706,6 +757,8 @@ class ExportWidget(_Placed):
     @model_validator(mode="after")
     def _exports_each_table_once(self) -> ExportWidget:
         _check_once(self.id, "tables", self.tables)
+        if isinstance(self.target, ExcelCellsExport) and self.tables:
+            raise ValueError(f"widget {self.id} writes cells, so it exports no tables")
         if isinstance(self.target, SqlExport):
             named = [entry.table for entry in self.target.table_names]
             _check_once(self.id, "table names", named)

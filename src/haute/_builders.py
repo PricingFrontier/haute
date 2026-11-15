@@ -1966,15 +1966,14 @@ def _ratebook_lookup_table(
 ) -> dict[str, Any]:
     """Convert one saved factor table into a rating-table lookup spec.
 
-    Miss policy (3b.5): the spec deliberately opts in to ``on_missing:
-    "neutral"`` with NO ``default_value``.  An optimiser relativity is a
-    multiplicative adjustment on an already-rated price, so a level the
-    solver never saw keeps the base price (factor 1.0) — failing the whole
-    apply would turn one novel quote into a deploy-scoring outage.  Unlike
-    the old blanket ``default_value: "1.0"``, the neutral path is LOUD: the
-    rating miss guard counts every miss and logs ``rating_table_lookup_misses``
-    (table, count, missing keys) at materialisation, and the explainability
-    ladder flags the row as ``unseen``.
+    Miss policy (3b.5): the spec deliberately has NO ``default_value``, so a
+    miss leaves its factor empty. An optimiser relativity is a multiplicative
+    adjustment on an already-rated price, so a level the solver never saw
+    keeps the base price (factor 1.0). Unlike a blanket ``default_value:
+    "1.0"``, an empty factor is LOUD: the rating miss guard counts every miss
+    and logs ``rating_table_lookup_misses`` (table, count, missing keys) at
+    materialisation, and the explainability ladder flags the row as
+    ``unseen``.
     """
     join_columns = [str(record["column"]) for record in dtype_records]
     is_composite = len(join_columns) > 1
@@ -1999,7 +1998,6 @@ def _ratebook_lookup_table(
         "factors": join_columns,
         "output_column": f"{name}_optimised_factor",
         "entries": lookup_entries,
-        "on_missing": "neutral",
     }
 
 

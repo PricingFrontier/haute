@@ -16,6 +16,7 @@ import {
   extractTableEntryFactorLevels,
   mergeFactorLevels,
   ratingTableStatus,
+  tableUsesDefault,
 } from "../../panels/editors/rating/ratingTableUtils"
 
 // ─── normaliseRatingTables ───────────────────────────────────────
@@ -49,17 +50,32 @@ describe("normaliseRatingTables", () => {
     expect(result[0]).not.toHaveProperty("default_value")
   })
 
-  it("keeps a table's on_missing and leaves an absent default_value absent", () => {
+  it("leaves an absent default_value absent and a null one null", () => {
     const result = normaliseRatingTables({
       tables: [
-        { factors: ["age"], output_column: "af", on_missing: "neutral", entries: [] },
+        { factors: ["age"], output_column: "af", entries: [] },
         { factors: ["age"], output_column: "bf", default_value: null, entries: [] },
       ],
     })
     expect(result).toEqual([
-      { factors: ["age"], output_column: "af", on_missing: "neutral", entries: [] },
+      { factors: ["age"], output_column: "af", entries: [] },
       { factors: ["age"], output_column: "bf", default_value: null, entries: [] },
     ])
+  })
+
+  it.each([
+    [undefined, false],
+    [null, false],
+    ["", false],
+    ["  ", false],
+    ["1.0", true],
+    [1.25, true],
+    [0, true],
+  ])("reads a default_value of %j as Use default: %s, the engine's rule", (defaultValue, uses) => {
+    const [table] = normaliseRatingTables({
+      tables: [{ factors: ["age"], output_column: "af", default_value: defaultValue, entries: [] }],
+    })
+    expect(tableUsesDefault(table)).toBe(uses)
   })
 
   it("returns default table when tables is empty array", () => {

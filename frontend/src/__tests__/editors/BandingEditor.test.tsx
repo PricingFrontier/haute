@@ -103,6 +103,18 @@ function rowOf(name: string) {
   return within(columnList()).getByRole("button", { name: new RegExp(`^${name} (complete|incomplete)$`) })
 }
 
+/** Choose a factor's input column from its row's dropdown, searched by its name. */
+function chooseInputColumn(factorName: string, column: string) {
+  fireEvent.click(screen.getByRole("button", { name: `${factorName} input column` }))
+  fireEvent.change(screen.getByRole("combobox", { name: `Search ${factorName} input column` }), {
+    target: { value: column },
+  })
+  // An option reads its name, then its type: match the name.
+  const option = screen.getAllByRole("option").find((candidate) => candidate.firstElementChild?.textContent === column)
+  if (!option) throw new Error(`No ${column} option`)
+  fireEvent.click(option)
+}
+
 describe("BandingEditor", () => {
   // ─── Existing tests (updated for terminology changes) ─────────
 
@@ -148,7 +160,7 @@ describe("BandingEditor", () => {
     const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add banding" }))
 
     const factors = onUpdate.mock.calls[0][1]
     expect(factors).toHaveLength(2)
@@ -169,7 +181,7 @@ describe("BandingEditor", () => {
     const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add banding" }))
 
     const factors = onUpdate.mock.calls[0][1]
     expect(factors[1]).toEqual({ banding: "breakpoints", column: "", output_column: "", rules: [], default: null })
@@ -251,12 +263,11 @@ describe("BandingEditor", () => {
         accentColor="#22d3ee"
       />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("age"))
-    })
-    expect(colSelect).toBeTruthy()
+    // A dropdown with a search box, never a box to type a name into.
+    fireEvent.click(screen.getByRole("button", { name: "Column 1 input column" }))
+    expect(screen.getByRole("combobox", { name: "Search Column 1 input column" })).toBeInTheDocument()
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["ageint64", "regionUtf8"])
+    expect(screen.queryByRole("textbox", { name: /input column/ })).toBeNull()
   })
 
   it("column selection auto-detects type for numeric dtype -> breakpoints", () => {
@@ -277,12 +288,7 @@ describe("BandingEditor", () => {
         accentColor="#22d3ee"
       />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("age"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "age" } })
+    chooseInputColumn("Column 1", "age")
 
     // Should auto-detect to breakpoints for int64 dtype
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
@@ -308,12 +314,7 @@ describe("BandingEditor", () => {
         accentColor="#22d3ee"
       />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("region"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "region" } })
+    chooseInputColumn("Column 1", "region")
 
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ column: "region", banding: "categorical" }),
@@ -432,7 +433,7 @@ describe("BandingEditor", () => {
     expect(screen.getByRole("radio", { name: "Numeric" })).toHaveAttribute("aria-checked", "true")
     fireEvent.click(rowOf("region_group"))
     expect(screen.getByRole("radio", { name: "Categorical" })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByLabelText("Output Column")).toHaveValue("region_group")
+    expect(rowOf("region_group")).toHaveAttribute("aria-pressed", "true")
   })
 
   describe("factor list", () => {
@@ -454,7 +455,6 @@ describe("BandingEditor", () => {
       expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["cover_band complete"])
       // The selected factor was filtered out, so the one in view is edited.
       expect(rowOf("cover_band")).toHaveAttribute("aria-pressed", "true")
-      expect(screen.getByLabelText("Output Column")).toHaveValue("cover_band")
     })
 
     it("marks both active factors that write one output column", () => {
@@ -468,27 +468,28 @@ describe("BandingEditor", () => {
       ])
     })
 
-    it("refuses an output column another active factor writes, keeping the typed name", () => {
-      const onUpdate = vi.fn()
-      const config = { factors: [factor("age", "age_band"), factor("driver_age", "driver_band")] }
-      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
-      fireEvent.click(rowOf("driver_band"))
-      const output = screen.getByLabelText("Output Column")
-      fireEvent.change(output, { target: { value: "age_band" } })
-      fireEvent.blur(output)
-      expect(onUpdate).not.toHaveBeenCalled()
-      expect(output).toHaveValue("age_band")
-      expect(screen.getByTestId("banding-output-column-error")).toHaveTextContent("Factor 1 also writes age_band")
+    it("has no Output Column field, and says above the selected factor what is wrong with its name", () => {
+      // Saved that way (renaming refuses it): two active factors writing one column.
+      const config = { factors: [factor("age", "age_band"), factor("driver_age", "age_band")] }
+      renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      expect(screen.queryByLabelText("Output Column")).toBeNull()
+      expect(screen.getByTestId("banding-factor-name-issues")).toHaveTextContent("Factor 2 also writes age_band")
+    })
+
+    it("says a new factor has no output column, and leaves its other gaps to where they are filled", () => {
+      renderEditor(<BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      expect(screen.getByTestId("banding-factor-name-issues")).toHaveTextContent(/^No output column$/)
     })
 
     it("lets a draft factor share an output column, since it writes nothing", () => {
       const onUpdate = vi.fn()
       const config = { factors: [factor("age", "age_band"), { ...factor("driver_age", ""), rules: [] }] }
       renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
-      fireEvent.click(rowOf("driver_age"))
-      const output = screen.getByLabelText("Output Column")
-      fireEvent.change(output, { target: { value: "age_band" } })
-      fireEvent.blur(output)
+      fireEvent.doubleClick(rowOf("driver_age"))
+      const box = screen.getByRole("textbox", { name: "Rename driver_age" })
+      fireEvent.change(box, { target: { value: "age_band" } })
+      expect(box).not.toHaveAttribute("aria-invalid")
+      fireEvent.keyDown(box, { key: "Enter" })
       expect(outputs(onUpdate)).toEqual(["age_band", "age_band"])
     })
 
@@ -526,6 +527,54 @@ describe("BandingEditor", () => {
         </GraphProvider>,
       )
       expect(rowOf("first")).toHaveAttribute("aria-pressed", "true")
+    })
+
+    it("shows the grip with one factor too, as with several", () => {
+      renderEditor(
+        <BandingEditor config={{ factors: [THREE.factors[0]] }} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
+      )
+      const row = rowOf("first").parentElement as HTMLElement
+      expect(within(row).getByTitle("Drag to reorder")).toBeInTheDocument()
+      expect(row.lastElementChild).toHaveAttribute("aria-hidden", "true")
+    })
+
+    it("renames a factor's output column in its row", () => {
+      const onUpdate = vi.fn()
+      renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.doubleClick(rowOf("second"))
+      const box = screen.getByRole("textbox", { name: "Rename second" })
+      expect(box).toHaveValue("second")
+      fireEvent.change(box, { target: { value: "region_band" } })
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+      expect(outputs(onUpdate)).toEqual(["first", "region_band", "cover_band"])
+    })
+
+    it("starts a factor named by its input column with an empty box, never writing the input column", () => {
+      const onUpdate = vi.fn()
+      const config = { factors: [factor("age", "first"), factor("region", "")] }
+      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.keyDown(rowOf("region"), { key: "F2" })
+      const box = screen.getByRole("textbox", { name: "Rename region" })
+      expect(box).toHaveValue("")
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("refuses a name another factor writes, saying why", () => {
+      const onUpdate = vi.fn()
+      renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.doubleClick(rowOf("cover_band"))
+      const box = screen.getByRole("textbox", { name: "Rename cover_band" })
+      fireEvent.change(box, { target: { value: "first" } })
+      expect(box).toHaveAttribute("aria-invalid", "true")
+      expect(within(columnList()).getByText("Factor 1 also writes first")).toBeInTheDocument()
+      // Enter keeps the box open on the refused name; leaving it drops the name.
+      fireEvent.keyDown(box, { key: "Enter" })
+      expect(screen.getByRole("textbox", { name: "Rename cover_band" })).toBeInTheDocument()
+      fireEvent.blur(box)
+      expect(screen.queryByRole("textbox", { name: "Rename cover_band" })).toBeNull()
+      expect(onUpdate).not.toHaveBeenCalled()
     })
 
     it("moves a factor with Alt+Up/Down from the keyboard", () => {
@@ -634,12 +683,7 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("age"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "age" } })
+    chooseInputColumn("Column 1", "age")
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ banding: "breakpoints" }),
     ]))
@@ -705,12 +749,7 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
     )
-    const selects = screen.getAllByRole("combobox")
-    const colSelect = selects.find(s => {
-      const opts = Array.from((s as HTMLSelectElement).options)
-      return opts.some(o => o.textContent?.includes("driver_age"))
-    })!
-    fireEvent.change(colSelect, { target: { value: "driver_age" } })
+    chooseInputColumn("Column 1", "driver_age")
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ output_column: "driver_age_band" }),
     ]))
@@ -731,6 +770,7 @@ describe("BandingEditor", () => {
     )
     const row = rowOf("age_band").parentElement as HTMLElement
     expect(within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+      "age_band input column",
       "age_band complete",
       "Remove age_band column",
     ])
@@ -1070,36 +1110,86 @@ describe("BandingEditor", () => {
 
   // ─── Feature 18: Accessibility — labels linked to inputs ──────────
 
-  it("Input Column label is linked to its input via htmlFor", () => {
-    const config = {
-      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
+  describe("a factor's input column, in its row", () => {
+    const columns = [
+      { name: "age", dtype: "Int64" },
+      { name: "region", dtype: "String" },
+    ]
+    const two = {
+      factors: [
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [{ upper: 30, label: "young" }] },
+        { banding: "categorical", column: "region", output_column: "region_band", rules: [{ value: "N", assignment: "North" }] },
+      ],
     }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const label = screen.getByText("Input Column")
-    expect(label.getAttribute("for")).toBeTruthy()
+
+    it("sits before an arrow to the factor's name, and is no longer a field below the list", () => {
+      renderEditor(<BandingEditor config={two} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      const row = rowOf("age_band").parentElement as HTMLElement
+      const input = within(row).getByRole("button", { name: "age_band input column" })
+      expect(input).toHaveTextContent("age")
+      // Input first, then the name: the dropdown comes before the row's button.
+      expect(input.compareDocumentPosition(rowOf("age_band")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(input).toHaveAttribute("title", "age (Int64)")
+      expect(screen.queryByText("Input Column")).toBeNull()
+    })
+
+    it("searches the input's columns, listing each with its type", () => {
+      renderEditor(<BandingEditor config={two} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      fireEvent.click(screen.getByRole("button", { name: "age_band input column" }))
+      const search = screen.getByRole("combobox", { name: "Search age_band input column" })
+      fireEvent.change(search, { target: { value: "reg" } })
+      expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["regionString"])
+      // The menu opens over the page, so the factor list cannot clip it.
+      expect(columnList().contains(search)).toBe(false)
+    })
+
+    it("selects the row it belongs to before changing its column", () => {
+      const onUpdate = vi.fn()
+      renderEditor(<BandingEditor config={two} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      expect(rowOf("age_band")).toHaveAttribute("aria-pressed", "true")
+      const regionInput = screen.getByRole("button", { name: "region_band input column" })
+      // Off the tab order until its row is selected: Tab reaches the list once.
+      expect(regionInput).toHaveAttribute("tabindex", "-1")
+      fireEvent.focus(regionInput)
+      expect(rowOf("region_band")).toHaveAttribute("aria-pressed", "true")
+      expect(onUpdate).not.toHaveBeenCalled()
+
+      // A number column makes it Numeric, clearing the rules now on screen, and
+      // the suggested name follows the column.
+      chooseInputColumn("region_band", "age")
+      const [, factors] = onUpdate.mock.lastCall!
+      expect(factors[1]).toMatchObject({ column: "age", banding: "breakpoints", rules: [], output_column: "age_band" })
+      expect(factors[0]).toEqual(two.factors[0])
+    })
+
+    it("keeps a saved column the input no longer has, and offers no free text while no columns are known", () => {
+      const config = { factors: [{ banding: "categorical", column: "gone", output_column: "gone_band", rules: [] }] }
+      const view = renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />)
+      const saved = screen.getByRole("button", { name: "gone_band input column" })
+      expect(saved).toHaveTextContent("gone")
+      expect(saved).toHaveAttribute("title", "gone is not in the input's columns")
+      view.unmount()
+
+      renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      expect(screen.queryByRole("textbox", { name: "gone_band input column" })).toBeNull()
+      fireEvent.click(screen.getByRole("button", { name: "gone_band input column" }))
+      expect(screen.getByText("No columns known yet.")).toBeInTheDocument()
+    })
   })
 
-  it("Output Column label is linked to its input via htmlFor", () => {
+  it("puts the Add banding button under the list, as wide as it", () => {
     const config = {
       factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const label = screen.getByText("Output Column")
-    expect(label.getAttribute("for")).toBeTruthy()
-  })
-
-  it("Add column button has aria-label", () => {
-    const config = {
-      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    expect(screen.getByLabelText("Add column")).toBeTruthy()
+    const add = screen.getByRole("button", { name: "Add banding" })
+    expect(add).toHaveTextContent("Add banding")
+    expect(add.className).toContain("w-full")
+    // It follows the list, and is the only add control: none beside the search.
+    expect(columnList().nextElementSibling).toBe(add)
+    expect(screen.getAllByRole("button", { name: "Add banding" })).toHaveLength(1)
   })
 
   // ─── Feature 19: No dangling ARIA references ─────────────────────
@@ -1195,7 +1285,7 @@ describe("BandingEditor on a date column", () => {
     )
     expect(screen.getByText("Numeric").closest("button")).toBeDisabled()
 
-    fireEvent.change(screen.getByLabelText("Input Column"), { target: { value: column } })
+    chooseInputColumn("region_band", column)
     const factors = onUpdate.mock.calls[0][1]
     expect(factors[0]).toMatchObject({ column, banding: "breakpoints" })
 
@@ -1284,7 +1374,9 @@ describe("BandingEditor saved input column", () => {
         accentColor="#22d3ee"
       />,
     )
-    expect(screen.getByDisplayValue("old_age (not in input)")).toBeInTheDocument()
+    const saved = screen.getByRole("button", { name: "age_band input column" })
+    expect(saved).toHaveTextContent("old_age")
+    expect(saved).toHaveAttribute("title", "old_age is not in the input's columns")
   })
 })
 

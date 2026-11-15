@@ -24,8 +24,9 @@ import contextvars
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
+from urllib.parse import quote as url_quoted
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from fastapi.concurrency import run_in_threadpool
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
@@ -35,6 +36,12 @@ from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._workbench_app import ResolvedRelease, resolve_release
 from haute._workbench_config import WorkbenchConfig, WorkbenchError, read_workbench_config
+from haute._workbench_export import (
+    XLSX_MEDIA_TYPE,
+    ExportRefusedError,
+    StaleExportError,
+    preview_export,
+)
 from haute._workbench_folder import (
     FormFolderNameError,
     folder_files,
@@ -87,6 +94,7 @@ from haute.routes._save_pipeline import (
     capture_save_in_ledger,
 )
 from haute.schemas import (
+    WorkbenchExportRequest,
     WorkbenchFormResponse,
     WorkbenchFormSaveRequest,
     WorkbenchFormSaveResponse,
@@ -361,6 +369,41 @@ async def store_sql(body: WorkbenchStoreSqlRequest) -> WorkbenchStoreSqlResponse
     saved or not, from the form the default branch holds, or from none."""
     config = await _enabled_config()
     return await run_in_threadpool(_store_sql, config, body)
+
+
+def _attachment(file_name: str) -> str:
+    """A ``Content-Disposition`` naming *file_name*: whole in ``filename*``, and in
+    ``filename`` with each character outside printable ASCII written ``_``, for a client
+    that reads only that."""
+    plain = "".join(char if " " <= char <= "~" else "_" for char in file_name)
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{url_quoted(file_name, safe='')}"
+
+
+@router.post(
+    "/export",
+    response_class=Response,
+    responses={200: {"content": {XLSX_MEDIA_TYPE: {}}, "description": "The workbook."}},
+)
+async def export_workbench_file(body: WorkbenchExportRequest) -> Response:
+    """An Export to an Excel workbook of cells of a form the view holds, saved or not, run on
+    what Preview's last pricing gave: the workbook's bytes, named by the Export's file name.
+    Nothing is written to disk."""
+    await _enabled_config()
+    try:
+        file_name, data = await run_in_threadpool(
+            preview_export, body.form, body.component, body.sample, body.tables
+        )
+    except ExportRefusedError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from None
+    except StaleExportError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from None
+    except WorkbenchTablesError as exc:
+        raise contract_error_http_exception(exc) from exc
+    return Response(
+        content=data,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": _attachment(file_name)},
+    )
 
 
 def _store_catalogue(

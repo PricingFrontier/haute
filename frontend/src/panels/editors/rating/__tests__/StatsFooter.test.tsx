@@ -17,4 +17,15 @@ describe("StatsFooter", () => {
     expect(container.textContent).toContain("avg 5.556")
     expect(container.textContent).toContain("max 9.877")
   })
+
+  it("puts its actions on the same line, after the stats, and keeps the line for them without stats", () => {
+    const stats = { min: 1, max: 1, avg: 1, count: 16 }
+    const { container, rerender } = render(<StatsFooter stats={stats} actions={<button type="button">Copy</button>} />)
+    const line = container.firstElementChild as HTMLElement
+    expect(line.textContent).toBe("n=16min 1.000avg 1.000max 1.000Copy")
+    expect(line.lastElementChild).toHaveClass("ml-auto")
+
+    rerender(<StatsFooter stats={null} actions={<button type="button">Copy</button>} />)
+    expect(container.textContent).toBe("Copy")
+  })
 })

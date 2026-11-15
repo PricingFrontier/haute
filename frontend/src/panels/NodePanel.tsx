@@ -852,7 +852,7 @@ type NodeEditorTabStripProps = {
   tabs: NodePanelTab[]
   activeTab: NodePanelTab
   onSelect: (tab: NodePanelTab) => void
-  /** What the config tab is called for this node; a Transform's config is its Polars steps or code. */
+  /** What the config tab is called for this node: a Transform's config is its Polars steps or code, a Rating Step's its tables. */
   configLabel?: string
 }
 
@@ -866,7 +866,7 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = 
           <button
             key={tab}
             onClick={() => onSelect(tab)}
-            className={`flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
+            className={`flex-1 px-1.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
               isActive ? "" : " hover:bg-[var(--bg-hover)]"
             }`}
             style={isActive
@@ -1367,6 +1367,8 @@ function NodePanelContent({
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
   const showColumnsTab = isKnownNodeType && !NO_COLUMNS_TAB.has(nodeType)
   const showPolarsTab = isKnownNodeType && POLARS_TAB_TYPES.has(nodeType)
+  // A Rating Step's config is its tables; its combined outputs are a tab of their own.
+  const showCombinedTab = isKnownNodeType && nodeType === NODE_TYPES.RATING_STEP
   const showExplorePanes = isKnownNodeType && nodeType === NODE_TYPES.EXPLORE
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
@@ -1416,6 +1418,7 @@ function NodePanelContent({
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
       activeOptimiserPane={activeOptimiserPane}
+      ratingSection={showCombinedTab && activeTab === "combined" ? "combined" : "tables"}
       onOptimiserPaneIssuesChange={onOptimiserPaneIssuesChange}
       onUpdateNodeConfig={handleOtherNodeConfigUpdate}
       onModellingPaneIssuesChange={onModellingPaneIssuesChange}
@@ -1443,6 +1446,7 @@ function NodePanelContent({
   const schemaWarnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
   const editorTabs: NodePanelTab[] = [
     "config",
+    ...(showCombinedTab ? ["combined" as const] : []),
     ...(showPolarsTab ? ["polars" as const] : []),
     ...(showColumnsTab ? ["columns" as const] : []),
   ]
@@ -1475,7 +1479,7 @@ function NodePanelContent({
         tabs={editorTabs}
         activeTab={activeTab}
         onSelect={selectTab}
-        configLabel={nodeType === NODE_TYPES.POLARS ? "Transform" : undefined}
+        configLabel={nodeType === NODE_TYPES.POLARS ? "Transform" : showCombinedTab ? "Tables" : undefined}
       />
 
       {showExplorePanes && (

@@ -2221,6 +2221,46 @@ describe("usePipelineAPI", () => {
     expect(result.current.previewData?.nodeId).toBe("nb_batch")
   })
 
+  it("records a drilled preview's columns on the child it names and on the root nodes kept while drilled in", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    const policy = [{ name: "policy_id", dtype: "String" }]
+    const banded = [...policy, { name: "age_band", dtype: "String" }]
+    mockPreview.mockResolvedValue(makePreviewResponse({
+      node_id: "submodel_runtime/pricing/bands",
+      status: "ok",
+      columns: banded,
+      node_columns: { workbench: policy, "submodel_runtime/pricing/bands": banded },
+      node_frame_columns: { workbench: { policy_frame: policy } },
+    }))
+    const child = makeNode("bands", NODE_TYPES.BANDING)
+    const params = makeParams({
+      activeSubmodelIdentity: makeActiveSubmodelIdentity(),
+      parentGraphRef: {
+        current: {
+          nodes: [makeNode("workbench", NODE_TYPES.DATA_INPUT), makeNode("pricing", NODE_TYPES.SUBMODEL)],
+          edges: [],
+          submodels: { definition_pricing: {} },
+        },
+      },
+    })
+    params.graphRef.current = { nodes: [child], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => { result.current.fetchPreview(child, { debounceMs: 0 }) })
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+
+    const update = vi.mocked(params.setNodesRaw).mock.calls.at(-1)?.[0] as (nodes: Node[]) => Node[]
+    expect(update([child])[0].data).toMatchObject({ _columns: banded, _columnsSource: "live" })
+    const [workbench, occurrence] = params.parentGraphRef.current!.nodes
+    expect(workbench.data).toMatchObject({
+      _columns: policy,
+      _frameColumns: { policy_frame: policy },
+      _columnsSource: "live",
+    })
+    expect(occurrence.data._columns).toBeUndefined()
+  })
+
   it("discovers downstream columns after join deselection", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     const remainingColumns = [{ name: "quote_id", dtype: "i64" }]

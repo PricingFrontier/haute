@@ -64,6 +64,7 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
           activeExplorePane="overview"
           activeModellingPane="target"
           activeOptimiserPane="data"
+          ratingSection="all"
           onShowPivots={doNothing}
           loadPivotFilterMembers={noFilterMembers}
           exploreConfigHash={null}

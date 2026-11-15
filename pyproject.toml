@@ -71,7 +71,7 @@ dependencies = [
     # Native structural filter for exact, complete structured-input inference.
     "msgspec>=0.21.1,<0.22",
     "price-contour>=0.8.0,<0.9",
-    "rustystats>=0.10.0,<0.11",
+    "rustystats>=0.11.1,<0.12",
     # Core: Model Scoring and the MLflow registry are first-class palette
     # features. The extra below pins supported Databricks clients and adds SQL.
     "mlflow>=3.11.0,<4",
@@ -108,6 +108,10 @@ dependencies = [
     # One reader for process and host memory on every platform: resident, private and
     # virtual bytes for worker caps and supervision, and host available RAM.
     "psutil>=7.0,<8",
+    # Direct dependency (not just transitive via databricks-sql-connector): the workbench's
+    # Export writes an Excel workbook of cells through it (haute._workbench_export), and a
+    # template, filled in place, will need it too. Floor: the version the lock has exercised.
+    "openpyxl>=3.1.5,<4",
 ]
 
 [project.urls]
@@ -645,6 +649,7 @@ module = [
     "sklearn.*",
     "price_contour.*",
     "interpret.*",
+    "openpyxl.*",
 ]
 ignore_missing_imports = true
 

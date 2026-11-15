@@ -859,21 +859,38 @@ reconciliation rather than dropping them or committing a second mutation.
     invalidateStaleColumnStashes(nds, activeSource)), [activeSource,
     setNodesRaw])`) runs on mount and on every `activeSource` change:
     `invalidateStaleColumnStashes` scans for any node with a column stash
-    (`_columns`/`_availableColumns` defined) whose `_columnsSource` doesn't
+    (`_columns`/`_availableColumns`/`_frameColumns` defined; a submodel
+    occurrence and a drilled view's Input card hold only per-frame columns)
+    whose `_columnsSource` doesn't
     match the current `activeSource` — including a stash with no
     `_columnsSource` at all, treated as unknown provenance — and only calls
     `setNodesRaw` (a new array) if at least one node qualifies; a no-op
     scan returns the input array unchanged. A qualifying node has
-    `_columns`/`_availableColumns`/`_schemaWarnings`/`_columnsSource`
+    `_columns`/`_availableColumns`/`_frameColumns`/`_schemaWarnings`/`_columnsSource`
     deleted from its data via destructuring, returning it to the
-    pre-preview state.
+    pre-preview state. The same scan runs over the root graph kept while
+    drilled in (`parentGraphRef`), whose stashes seed the Input card on the
+    next drill-in (`columnStashSourceIdentity.test.ts`).
 17. **No downstream cascade.** A preview previews its target and nothing
     below it. The response's `node_columns`/`node_available_columns`/
     `node_frame_columns` maps already carry every *ancestor*'s schema — the
     preview route asks the executor for them with
     `include_schema_metadata=True`, which resolves them without
     materialising those ancestors — and `applyPreviewSchemaMapsToNodes`
-    writes them onto node data. The readers of a column stash are: an
+    writes them onto node data. Drilled into a submodel occurrence, the maps
+    hold each child under its qualified runtime id, so the child's columns
+    are read from that key (`previewSchemaKey`, never the bare local id,
+    which may name a root node); the Input card, which runs nothing, gets
+    `_frameColumns` keyed by port, each the columns of the parent edge
+    feeding that port of this occurrence (`boundaryInputFrames`, the
+    parent's frame for the edge's source handle, else its flat columns).
+    Ports a preview did not reach keep their columns while the source is
+    unchanged (`drilledPreviewColumns.test.ts`). The maps' root ids are
+    recorded on the root graph kept while drilled in
+    (`recordRootPreviewColumns`), so they return with it; drilling into an
+    occurrence again starts the Input card from the feeding root nodes'
+    source-tagged stashes (`buildSubmodelViewGraph`), which a preview served
+    from the cache, sending nothing, would otherwise leave empty. The readers of a column stash are: an
     editor, which reads its own node's `_columns` or an upstream source's
     through `NodePanel.edgeSourceColumns`; the save-time edge-join gate,
     which reads *any* join's two inputs and therefore only reports a

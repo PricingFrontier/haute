@@ -17,13 +17,13 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore, { type SchemaDetails } from "../../stores/useWorkbenchViewStore"
 import { type Block, IDENTITY_NAMES, isIdentityColumn } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
-import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, keptUses, moveSchemaColumn, moveSchemaTable, nameTaken, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { DatabaseMark } from "../StoreCompare"
 import { TableDatabaseDetails } from "../ColumnDatabaseDetails"
 import { ColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, schemaColumns, selectAll, usedBy } from "./schemaText"
+import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, keptBy, schemaColumns, selectAll, usedBy } from "./schemaText"
 
 const ROWS: ReadonlyArray<{ value: SchemaTable["rows"]; label: string; title: string }> = [
   { value: "one", label: "One row", title: "One row per quote, such as policy details" },
@@ -68,12 +68,15 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
   const block = useRef<HTMLElement>(null)
   const shown = fieldUses(form, table.name).length
   const tested = conditionUses(form, table.name).length
-  const used = buttonUses(form, table.name).length
+  // An Export of cells keeps it, as a problem, so it is counted apart.
+  const kept = keptUses(form, table.name).length
+  const used = buttonUses(form, table.name).length - kept
   const uses = shown + tested + used
   // A table a sheet shows, a condition tests or an Import or an Export uses is deleted once the question is answered yes.
   const remove = async () => {
-    const text = `Its columns are ${usedBy(shown, tested, used)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`
-    if (uses > 0 && !(await confirmed({ title: `Delete table ${table.name}?`, text, confirm: "Delete", danger: true }))) return
+    const taken = uses > 0 ? [`Its columns are ${usedBy(shown, tested, used)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`] : []
+    const text = [...taken, ...(kept > 0 ? [keptBy(kept, "its columns")] : [])].join(" ")
+    if (uses + kept > 0 && !(await confirmed({ title: `Delete table ${table.name}?`, text, confirm: "Delete", danger: true }))) return
     change((f) => removeSchemaTable(f, table.name))
   }
   const refocus = useRefocusAfterMove<HTMLInputElement>()

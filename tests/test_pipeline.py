@@ -393,26 +393,23 @@ class TestPipeline:
             p.run(source="batch")
         assert _scenario_ctx.get() == "batch"  # reset despite error
 
-    def test_run_raises_typed_rating_miss_from_a_lazy_output(self):
-        from haute._rating import RatingTableMissError, _apply_rating_table
+    def test_run_raises_a_typed_rating_error_from_a_lazy_output(self):
+        from haute._rating import _combine_rating_columns
+        from haute.errors import RatingExtremaUndefinedError
 
-        p = Pipeline("rating_miss")
+        p = Pipeline("rating_extrema")
 
         @p.data_input
         def source() -> pl.DataFrame:
-            return pl.DataFrame({"region": ["north", "missing"]})
+            return pl.DataFrame({"a": [1.0, None], "b": [2.0, None]})
 
         @p.polars
         def rated(source: pl.DataFrame) -> pl.LazyFrame:
-            table = {
-                "factors": ["region"],
-                "output_column": "factor",
-                "entries": [{"region": "north", "value": 2.0}],
-            }
-            return _apply_rating_table(source.lazy(), table)
+            # Row 2 has no value to take the minimum of: the guard raises while collecting.
+            return _combine_rating_columns(source.lazy(), ["a", "b"], "min", "lowest")
 
         p.connect("source", "rated")
-        with pytest.raises(RatingTableMissError):
+        with pytest.raises(RatingExtremaUndefinedError):
             p.run(source="batch")
         assert _scenario_ctx.get() == "batch"
 

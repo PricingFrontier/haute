@@ -18,7 +18,10 @@ import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { adaptPipelineEditorDocument } from "../../types/pipelineDocument"
 import { toSimpleEdge, toSimpleNode } from "../../hooks/usePanelGraphContext"
+import { applyPreviewResultColumnsToNodes } from "../../hooks/usePipelineAPI"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
+import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
+import { makeNode as factoryNode, makePreviewResponse } from "../../test-utils/factories"
 
 const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
@@ -117,6 +120,7 @@ vi.mock("../LazyNodeEditors", async () => {
     <div
       data-testid="RatingStepEditor"
       data-node-id={props.nodeId ? String(props.nodeId) : undefined}
+      data-section={String(props.section)}
       data-preview-rows={props.previewRows ? JSON.stringify(props.previewRows) : undefined}
       data-upstream-columns={props.upstreamColumns ? JSON.stringify(props.upstreamColumns) : undefined}
     />
@@ -1067,11 +1071,11 @@ describe("NodePanel", () => {
   })
 
   it.each([
-    ["externalFile", "loaded file, assign to", ["claims"]],
-    ["scenarioExpander", "expanded data", []],
-    ["ratingStep", "use", []],
-    ["modelScore", "Post-processing Code (optional)", []],
-  ])("shows the Polars tab and the stepped pane in frame mode for %s nodes", (nodeType, hint, eligible) => {
+    ["externalFile", "loaded file, assign to", ["claims"], /^config$/i],
+    ["scenarioExpander", "expanded data", [], /^config$/i],
+    ["ratingStep", "use", [], /^tables$/i],
+    ["modelScore", "Post-processing Code (optional)", [], /^config$/i],
+  ])("shows the Polars tab and the stepped pane in frame mode for %s nodes", (nodeType, hint, eligible, configTab) => {
     steppedCodePaneProps.length = 0
     const claims = makeNode({ id: "claims_src", data: { label: "claims", description: "", nodeType: "polars", config: {} } })
     const node = makeNode({ data: { label: "Code node", description: "", nodeType, config: { steps: [] } } })
@@ -1081,7 +1085,7 @@ describe("NodePanel", () => {
       edges: [{ id: "e1", source: "claims_src", target: node.id }],
     })
 
-    expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: configTab })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /^transform$/i })).toBeInTheDocument()
     expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
 
@@ -1273,6 +1277,25 @@ describe("NodePanel", () => {
   it("renders RatingStepEditor for ratingStep nodes", () => {
     renderPanel({ node: makeNode({ id: "rating_1", data: { label: "RS", description: "", nodeType: "ratingStep", config: {} } }) })
     expect(screen.getByTestId("RatingStepEditor")).toHaveAttribute("data-node-id", "rating_1")
+  })
+
+  it("gives a Rating Step Tables and Combined tabs in place of Config, each showing its part of the editor", () => {
+    renderPanel({ node: makeNode({ id: "rating_1", data: { label: "RS", description: "", nodeType: "ratingStep", config: {} } }) })
+    const tabs = screen.getAllByRole("button", { name: /^(tables|combined|transform|columns|config)$/i })
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Tables", "combined", "Transform", "columns"])
+    expect(screen.getByTestId("RatingStepEditor")).toHaveAttribute("data-section", "tables")
+
+    fireEvent.click(screen.getByRole("button", { name: /^combined$/i }))
+    expect(screen.getByTestId("RatingStepEditor")).toHaveAttribute("data-section", "combined")
+
+    fireEvent.click(screen.getByRole("button", { name: /^tables$/i }))
+    expect(screen.getByTestId("RatingStepEditor")).toHaveAttribute("data-section", "tables")
+  })
+
+  it("keeps the Config tab, and no Combined tab, on other nodes", () => {
+    renderPanel({ node: makeNode({ data: { label: "Band", description: "", nodeType: "banding", config: {} } }) })
+    expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^(tables|combined)$/i })).toBeNull()
   })
 
   it("renders ModellingConfig for modelling nodes", () => {
@@ -3152,6 +3175,60 @@ describe("NodePanel", () => {
         { name: "income", dtype: "Float64" },
         { name: "region", dtype: "Utf8" },
       ])
+    })
+
+    it("gives a drilled banding fed by the submodel's Input card that port's columns, still after adding a factor", () => {
+      const policy = [{ name: "policy_id", dtype: "String" }, { name: "age", dtype: "Int64" }]
+      const children = [
+        factoryNode("bands", "banding", { data: { label: "bands", nodeType: "banding", config: { factors: [] } } }),
+      ]
+      const view = buildSubmodelViewGraph({
+        submodelName: "pricing",
+        instanceId: "pricing",
+        definition: {
+          definitionId: "definition_pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: children, edges: [] },
+          inputPorts: [{ name: "policy", targets: [{ nodeId: "bands", handleId: null }] }],
+          outputPorts: [{ name: "banded", source: { nodeId: "bands", handleId: null } }],
+        },
+        childNodes: children,
+        childEdges: [],
+        parentNodes: [
+          factoryNode("workbench"),
+          factoryNode("pricing", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } } }),
+        ],
+        parentEdges: [{ id: "feed", source: "workbench", sourceHandle: "policy_frame", target: "pricing", targetHandle: "in__policy" }],
+      })
+      // Navigation names the Input card's handles once the view is built.
+      const viewNodes = view.nodes.map((node) => (node.type === "submodelPort"
+        ? { ...node, data: { ...node.data, _sourceHandleInputNames: { policy: "policy" } } }
+        : node))
+      // Previewing the banding answers under runtime ids, with the parent's frames.
+      const previewed = applyPreviewResultColumnsToNodes(viewNodes, "bands", makePreviewResponse({
+        node_columns: { "submodel_runtime/pricing/bands": policy },
+        node_frame_columns: { workbench: { policy_frame: policy } },
+      }), "live", 1, { instanceId: "pricing", definitionId: "definition_pricing" })
+      const allNodes = previewed.map(toSimpleNode)
+      const edges = view.edges.map(toSimpleEdge)
+      const bands = allNodes.find((node) => node.id === "bands")!
+
+      const { props, rerender } = renderPanel({ node: bands, edges, allNodes })
+      expect(bandingEditorProps.at(-1)?.upstreamColumns).toEqual(policy)
+
+      // Add banding clears the banding's own preview, never its input's.
+      const onUpdate = bandingEditorProps.at(-1)?.onUpdate as (key: string, value: unknown) => void
+      act(() => { onUpdate("factors", [{ banding: "breakpoints", column: "", output_column: "", rules: [] }]) })
+      const [, edited] = (props.onUpdateNode as ReturnType<typeof vi.fn>).mock.calls.at(-1) as [string, SimpleNode["data"]]
+      const editedBands = { ...bands, data: edited }
+      const editedNodes = allNodes.map((node) => (node.id === "bands" ? editedBands : node))
+      rerender(
+        <GraphProvider allNodes={editedNodes} edges={edges}>
+          <NodePanel {...props} node={editedBands} />
+        </GraphProvider>,
+      )
+      expect(edited._columns).toBeUndefined()
+      expect(bandingEditorProps.at(-1)?.upstreamColumns).toEqual(policy)
     })
 
     it("passes upstream columns to ModellingConfig when upstream nodes have _columns", () => {

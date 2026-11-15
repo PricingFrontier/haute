@@ -12,10 +12,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { createWidget, findSection, findWidget, updateWidget } from "../../utils/workbenchForm"
+import { createWidget, findSection, findWidget, removeSchemaColumn, removeSchemaTable, setExportCellColumn, updateWidget } from "../../utils/workbenchForm"
 import { answerQuestion, asked } from "../../test-utils/question"
 import PropertiesPanel from "../PropertiesPanel"
-import type { ExportWidget, FieldRef, FormSpec, ImportWidget, Section } from "../../api/types"
+import type { ExcelCellsExport, ExportWidget, FieldRef, FormSpec, ImportWidget, Section } from "../../api/types"
 import { COMPONENT_COLOR } from "../widgetKinds"
 import { addTo, chartWidget, column, coverForm, currentForm, fieldsWidget, headingWidget, loadForm, sectionedForm, sheetForm, table, widgetsOf } from "./fixtures"
 
@@ -1319,6 +1319,135 @@ describe("PropertiesPanel", () => {
     expect(exported().target).toEqual({ format: "sql", connection: "", table_names: [{ table: "premiums", name: "quote_premiums" }] })
     fireEvent.click(screen.getByRole("checkbox", { name: "premiums" }))
     expect(exported()).toMatchObject({ tables: ["policy"], target: { table_names: [] } })
+  })
+
+  it("lays an Export's Excel out as cells, a row for each with its field, sheet, address and label's address, one added under the last", () => {
+    const form = sheetForm()
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
+    loadForm(form)
+    select("w_out")
+    render(<PropertiesPanel />)
+    const exported = () => findWidget(currentForm(), "w_out")!.widget as ExportWidget
+    const cells = () => (exported().target as ExcelCellsExport).cells
+    const commit = (name: string, value: string) => {
+      const field = screen.getByRole("textbox", { name })
+      fireEvent.change(field, { target: { value } })
+      fireEvent.blur(field)
+    }
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "policy" }))
+    fireEvent.click(screen.getByRole("radio", { name: "Excel" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Layout" }), { target: { value: "cells" } })
+    expect(exported()).toMatchObject({ tables: [], target: { format: "excel_cells", file_name: "{quote_reference}-{quote_option}", cells: [] } })
+    // The Format still shows Excel; a workbook of cells has no headers, values or tables.
+    expect(exported()).toMatchObject({ target: { blocks: [] } })
+    expect(screen.getByRole("radio", { name: "Excel" })).toHaveAttribute("aria-checked", "true")
+    for (const gone of ["Headers", "Values"]) expect(screen.queryByRole("combobox", { name: gone })).not.toBeInTheDocument()
+    expect(screen.queryByRole("checkbox", { name: "policy" })).not.toBeInTheDocument()
+
+    // Add a cell offers the one-row tables' columns, by table and label, and shows itself again.
+    const add = screen.getByRole("combobox", { name: "Add a cell" })
+    expect(choices(add)).toEqual([["", "Add a cell"], ["policy:state", "State"], ["policy:year", "Year"]])
+    fireEvent.change(add, { target: { value: "policy:state" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:year" } })
+    expect(screen.getByRole("combobox", { name: "Add a cell" })).toHaveValue("")
+    expect(cells()).toEqual([
+      { table: "policy", column: "state", sheet: "Sheet1", cell: "A1", label_cell: "" },
+      { table: "policy", column: "year", sheet: "Sheet1", cell: "A2", label_cell: "" },
+    ])
+    expect(screen.getByText("2 written")).toBeInTheDocument()
+
+    commit("Cell 1 sheet", "Slip")
+    commit("Cell 2 address", " b7 ")
+    commit("Cell 2 label address", " a7 ")
+    fireEvent.change(screen.getByRole("combobox", { name: "Cell 1 field" }), { target: { value: "policy:year" } })
+    expect(cells()).toEqual([
+      { table: "policy", column: "year", sheet: "Slip", cell: "A1", label_cell: "" },
+      { table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7" },
+    ])
+    expect(screen.getByRole("textbox", { name: "Cell 2 address" })).toHaveValue("B7")
+    expect(screen.getByRole("textbox", { name: "Cell 2 label address" })).toHaveValue("A7")
+
+    // The next cell goes under the last, its label under the last's label.
+    fireEvent.change(screen.getByRole("combobox", { name: "Add a cell" }), { target: { value: "policy:state" } })
+    expect(cells()[2]).toEqual({ table: "policy", column: "state", sheet: "Sheet1", cell: "B8", label_cell: "A8" })
+    fireEvent.click(screen.getByRole("button", { name: "Remove cell 3" }))
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove cell 1" }))
+    expect(cells()).toEqual([{ table: "policy", column: "year", sheet: "Sheet1", cell: "B7", label_cell: "A7" }])
+
+    // A cell whose column is gone, or of a many-row table, shows it first, disabled.
+    act(() => useWorkbenchFormStore.getState().change((spec) => setExportCellColumn(spec, "w_out", 0, { table: "policy", column: "gone" })))
+    const missing = screen.getByRole("combobox", { name: "Cell 1 field" })
+    expect(choices(missing)[0]).toEqual(["policy:gone", "Missing column"])
+    expect(missing.querySelector("option")).toBeDisabled()
+    act(() => useWorkbenchFormStore.getState().change((spec) => setExportCellColumn(spec, "w_out", 0, { table: "equipment", column: "value" })))
+    expect(choices(screen.getByRole("combobox", { name: "Cell 1 field" }))[0]).toEqual(["equipment:value", "Value"])
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Layout" }), { target: { value: "tables" } })
+    expect(exported().target).toEqual({ file_name: "{quote_reference}-{quote_option}", headers: "names", values: "raw", format: "excel" })
+  })
+
+  it("lays an Export's tables out as blocks, each with its sheet, its top-left cell, its header and its columns in an order of its own", () => {
+    const form = sheetForm()
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
+    loadForm(form)
+    select("w_out")
+    render(<PropertiesPanel />)
+    const blocks = () => ((findWidget(currentForm(), "w_out")!.widget as ExportWidget).target as ExcelCellsExport).blocks
+    const commit = (name: string, value: string) => {
+      const field = screen.getByRole("textbox", { name })
+      fireEvent.change(field, { target: { value } })
+      fireEvent.blur(field)
+    }
+    const change = (edit: (spec: FormSpec) => FormSpec) => act(() => useWorkbenchFormStore.getState().change(edit))
+
+    fireEvent.click(screen.getByRole("radio", { name: "Excel" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Layout" }), { target: { value: "cells" } })
+
+    // Add a table offers each table a sheet shows columns of, and shows itself again.
+    const add = screen.getByRole("combobox", { name: "Add a table" })
+    expect(choices(add)).toEqual([["", "Add a table"], ["policy", "policy"], ["equipment", "equipment"], ["premiums", "premiums"]])
+    fireEvent.change(add, { target: { value: "equipment" } })
+    expect(screen.getByRole("combobox", { name: "Add a table" })).toHaveValue("")
+    expect(blocks()).toEqual([{ table: "equipment", columns: [], sheet: "equipment", cell: "A1", header: "labels" }])
+    expect(screen.getByText("1 written")).toBeInTheDocument()
+
+    commit("Table 1 sheet", "Slip")
+    commit("Table 1 address", " a12 ")
+    fireEvent.change(screen.getByRole("combobox", { name: "Table 1 header" }), { target: { value: "names" } })
+    expect(blocks()[0]).toMatchObject({ sheet: "Slip", cell: "A12", header: "names" })
+    expect(screen.getByRole("textbox", { name: "Table 1 address" })).toHaveValue("A12")
+    expect(choices(screen.getByRole("combobox", { name: "Table 1 header" }))).toEqual([["labels", "Labels"], ["names", "Names"], ["none", "None"]])
+
+    // Add a column offers the table's columns as a sheet shows them, the index among them,
+    // that the block does not hold yet, each by its label.
+    const addColumn = () => screen.getByRole("combobox", { name: "Table 1 add a column" })
+    expect(choices(addColumn())).toEqual([["", "Add a column"], ["row_number", "Row number"], ["item", "Item"], ["value", "Value"]])
+    fireEvent.change(addColumn(), { target: { value: "value" } })
+    fireEvent.change(addColumn(), { target: { value: "item" } })
+    expect(addColumn()).toHaveValue("")
+    expect(choices(addColumn())).toEqual([["", "Add a column"], ["row_number", "Row number"]])
+    expect(blocks()[0].columns).toEqual(["value", "item"])
+    const rows = () => within(screen.getByRole("list", { name: "Table 1 columns" })).getAllByRole("listitem")
+    expect(rows().map((row) => row.getAttribute("aria-label"))).toEqual(["Value", "Item"])
+
+    // Alt+Up moves a column up the order, which is the order left to right; its cross takes it out.
+    fireEvent.keyDown(rows()[1], { key: "ArrowUp", altKey: true })
+    expect(blocks()[0].columns).toEqual(["item", "value"])
+    expect(rows().map((row) => row.getAttribute("aria-label"))).toEqual(["Item", "Value"])
+    fireEvent.click(screen.getByRole("button", { name: "Remove Value from table 1" }))
+    expect(blocks()[0].columns).toEqual(["item"])
+
+    // A column, then a table, gone from the schema stays, shown as missing.
+    change((spec) => removeSchemaColumn(spec, "equipment", "item"))
+    expect(rows().map((row) => row.getAttribute("aria-label"))).toEqual(["Missing column"])
+    change((spec) => removeSchemaTable(spec, "equipment"))
+    expect(screen.getByText("Missing table")).toBeInTheDocument()
+    expect(choices(addColumn())).toEqual([["", "Add a column"]])
+    fireEvent.click(screen.getByRole("button", { name: "Remove table 1" }))
+    expect(blocks()).toEqual([])
+    expect(screen.queryByRole("combobox", { name: "Table 1 header" })).not.toBeInTheDocument()
   })
 
   it("shows another section's panel as it is selected, and closes as a component is", () => {

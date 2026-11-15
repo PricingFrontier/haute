@@ -2,6 +2,8 @@ import type { Edge, Node } from "@xyflow/react"
 import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
+  nodeData,
+  type ColumnInfo,
   type PipelineEdge,
   type ParentOutputState,
   type SubmodelBoundaryEdgeData,
@@ -155,6 +157,7 @@ function buildCanonicalSubmodelViewGraph(
   }
 
   const inputPorts: SubmodelPortData["ports"] = []
+  const inputFeeds: [string, PipelineEdge][] = []
   const inputExternalIds: string[] = []
   const outputExternalIds: string[] = []
   const syntheticEdges: Edge[] = []
@@ -176,6 +179,7 @@ function buildCanonicalSubmodelViewGraph(
     for (const consumer of activeConsumers) {
       if (!inputExternalIds.includes(consumer.source)) inputExternalIds.push(consumer.source)
     }
+    if (activeConsumers[0]) inputFeeds.push([port.name, activeConsumers[0]])
     for (const [index, target] of port.targets.entries()) {
       if (!childIds.has(target.nodeId)) {
         throw new Error(
@@ -235,7 +239,7 @@ function buildCanonicalSubmodelViewGraph(
   return {
     nodes: [
       ...childNodes,
-      boundaryNode(
+      withInputColumns(boundaryNode(
         inputId,
         cardPositions.input,
         "input",
@@ -244,7 +248,7 @@ function buildCanonicalSubmodelViewGraph(
         instanceId,
         definition.definitionId,
         (parentEdges as PipelineEdge[]).map((edge) => edge.id),
-      ),
+      ), parentNodes, inputFeeds),
       boundaryNode(
         outputId,
         cardPositions.output,
@@ -262,6 +266,33 @@ function buildCanonicalSubmodelViewGraph(
 }
 
 type BoundaryData = SubmodelPortData & { nodeType: typeof NODE_TYPES.SUBMODEL_PORT }
+
+/**
+ * The Input card runs nothing, so its ports start with the columns the parent
+ * nodes feeding them last recorded: an editor fed by the card lists them
+ * before any preview of this view, and after one served from the cache.
+ * A stash without a source tag was invalidated, so it seeds nothing; ports
+ * fed under another source than the first seeded one are left for a preview.
+ */
+function withInputColumns(
+  card: Node<BoundaryData>,
+  parentNodes: readonly Node[],
+  feeds: readonly [string, PipelineEdge][],
+): Node<BoundaryData> {
+  const frames: Record<string, ColumnInfo[]> = {}
+  let source: string | undefined
+  for (const [port, edge] of feeds) {
+    const feeder = parentNodes.find((node) => node.id === edge.source)
+    const data = feeder ? nodeData(feeder) : undefined
+    if (!data?._columnsSource || (source !== undefined && data._columnsSource !== source)) continue
+    const columns = (edge.sourceHandle ? data._frameColumns?.[edge.sourceHandle] : undefined) ?? data._columns
+    if (!columns) continue
+    frames[port] = columns
+    source = data._columnsSource
+  }
+  if (source === undefined) return card
+  return { ...card, data: { ...card.data, _frameColumns: frames, _columnsSource: source } }
+}
 function stableId(kind: string, values: readonly (string | null)[]): string { return `submodel-view__${kind}__${encodeURIComponent(JSON.stringify(values))}` }
 function uniqueEdgeId(base: string, occupied: Set<string>): string { let candidate = base; let suffix = 1; while (occupied.has(candidate)) candidate = `${base}__${suffix++}`; occupied.add(candidate); return candidate }
 function boundaryNode(

@@ -359,9 +359,9 @@ def test_a_join_failing_for_another_reason_keeps_its_execution_failure(project: 
     }
 
 
-def test_a_rating_miss_guard_that_raises_keeps_its_measurements(project: Path) -> None:
-    """One miss in twenty is informational, but a guard that raised makes it advisory
-    and replaces the node's execution failure."""
+def test_a_rating_table_without_a_default_completes_on_a_miss(project: Path) -> None:
+    """A miss never fails its node: one miss in twenty is reported as informational,
+    graded by its share alone, and there is no execution failure."""
     pl.DataFrame({"region": ["north"] * 19 + ["west"], "premium": [1.0] * 20}).write_parquet(
         project / "data" / "quotes.parquet"
     )
@@ -389,16 +389,12 @@ def test_a_rating_miss_guard_that_raises_keeps_its_measurements(project: Path) -
     outcome = _measure(graph, "rated")
 
     record = outcome.records["rated"]
-    assert record["status"] == "failed"
-    assert (record["error"]["class"], record["error"]["type"]) == (
-        "validation",
-        "RatingTableMissError",
-    )
-    assert record["error"]["text"] is None and record["error"]["withheld"]
+    assert record["status"] == "checked"
+    assert "error" not in record
     assert record["inputs"] == [{"input": "quotes", "rows": 20, "truncated": False}]
     assert record["rating"][0]["missed"] == 1
     assert [(finding["kind"], finding["severity"]) for finding in outcome.findings] == [
-        ("rating_misses", "advisory")
+        ("rating_misses", "informational")
     ]
 
 

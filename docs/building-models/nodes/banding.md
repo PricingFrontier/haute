@@ -18,19 +18,19 @@ The **INPUT** chip at the top names the node's connection; its × removes the co
 
 ### The factor list
 
-Each banded column is a **factor**. The list shows one row per factor, named by its output column (or its input column until it has one), with a dot (green when complete, amber when not), the number of rules, and a bin to remove it (when there is more than one). Hover a row for what an incomplete factor still needs: "No input column", "No output column" or "No rules yet". Click a row to edit that factor below the list.
+Each banded column is a **factor**. The list shows one row per factor: a dot (green when complete, amber when not), the factor's input column, an arrow, its output column - the name of the new banded column, or its input column until it has one - the number of rules, and a bin to remove it (when there is more than one). Hover a row for what an incomplete factor still needs: "No input column", "No output column" or "No rules yet". Click a row to edit that factor below the list; what is wrong with its output column ("No output column", or "Factor 2 also writes age_band") is also said above its settings.
 
+- The input column is a dropdown of the input's columns: open it and type to search them, each listed with its type (hover the closed dropdown for its column's type). Until the input has been previewed, it says no columns are known yet; a saved column the input no longer has keeps showing, its box marked. Choosing a column selects its row, sets **TYPE** to match it - **Numeric** for a number or date, otherwise **Categorical**, clearing the rules if the type changes - and names the factor's output column as the column name with `_band` added, unless you have named it yourself.
 - The search box finds a factor by its output or input column; **All** and **Issues** (with the number of incomplete factors) filter the list.
-- The + button beside the filter adds a factor, starting as **Numeric**.
+- **Add banding**, under the list, adds a factor, starting as **Numeric**.
 - Drag a row onto another, or use **Alt+Up** and **Alt+Down**, to reorder: the factors are applied in list order.
+- The selected factor's name sits in a box: click in it, double-click any row, or press **F2** on a row, to name or rename its output column in the row: **Enter** or clicking away keeps the new name, **Escape** keeps the old one. Two factors cannot write the same column, so a name another factor already writes is refused, with the reason under the box.
 
 ### Editing a factor
 
 | Field | What it does |
 |---|---|
 | **TYPE** | **Numeric** bands numbers and dates by breakpoints; **Categorical** maps exact values to groups. **Numeric** is unavailable for a column that is neither a number nor a date (its tooltip names the column's type). Switching type puts the current rules aside, and switching back restores them until the pipeline is reloaded. |
-| **INPUT COLUMN** | The column to band, chosen from the input's columns (each with its type). Choosing a column sets **TYPE** to match it - **Numeric** for a number or date, otherwise **Categorical**, clearing the rules if the type changes - and fills in **OUTPUT COLUMN** as the column name with `_band` added, unless you have typed your own. |
-| **OUTPUT COLUMN** | The name of the new banded column. Two factors cannot write the same column: both are marked ("Factor 2 also writes age_band"), and the run refuses them. |
 | **DEFAULT** (unmatched rows) | The band given to rows that match no rule, with the number of such rows beside it once the data is counted ("12 of 5000 rows"). Leave it empty to give them a missing value. |
 
 With the data counted, a **Numeric** factor shows a histogram of the whole dataset with the band boundaries drawn over it.
@@ -85,9 +85,9 @@ The **COLUMNS** tab chooses which columns the node passes on (see [Working with 
 
 A node that bands `driver_age` and groups `fuel_type`:
 
-1. Connect your data to a Banding node and choose `driver_age` as the **INPUT COLUMN**. **TYPE** switches to **Numeric** and **OUTPUT COLUMN** becomes `driver_age_band`; change it to `age_band`.
+1. Connect your data to a Banding node and choose `driver_age` as the first factor's input column, at the left of its row. **TYPE** switches to **Numeric** and the factor is named `driver_age_band`; double-click the name and rename it `age_band`.
 2. Click **Add manually**, then **Add** twice, and fill in the breakpoints: **Up to** `25` → `18-25`, `65` → `26-65`, and an empty **Up to** → `65+`. Type `Unknown` as the **DEFAULT**.
-3. Click the + button to add a second factor, choose `fuel_type` as the **INPUT COLUMN** (**TYPE** becomes **Categorical**) and change the **OUTPUT COLUMN** to `fuel_band`.
+3. Click **Add banding** to add a second factor, choose `fuel_type` as its input column (**TYPE** becomes **Categorical**) and rename it `fuel_band`.
 4. Click the chips `Petrol`, `Diesel` and `Electric` under **Available values**, and set their **Maps To** to `Standard`, `Standard` and `Green`. Type `Other` as the **DEFAULT**.
 
 **Before and after:**
@@ -115,8 +115,8 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
     | Setting in the editor | Stored as |
     |---|---|
     | **TYPE** | `factors[].banding`: `"breakpoints"` (**Numeric**) or `"categorical"` (**Categorical**) |
-    | **INPUT COLUMN** | `factors[].column` |
-    | **OUTPUT COLUMN** | `factors[].output_column` |
+    | A factor's input column in the list | `factors[].column` |
+    | A factor's name in the list | `factors[].output_column` |
     | **DEFAULT** | `factors[].default` (`null` when empty) |
     | **BREAKPOINTS** | `factors[].rules`: one `{"upper": ..., "label": ...}` a band, its **Up to** boundary and its **Band name**, in order, an open-ended final band with no `upper` |
     | **RULES** | `factors[].rules`: a map from each **Value** to its **Maps To** group |

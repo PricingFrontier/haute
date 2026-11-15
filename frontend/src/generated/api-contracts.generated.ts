@@ -3759,7 +3759,8 @@ export interface RatingCombinedOutput {
  */
 export interface RatingTable {
   /**
-   * The value of a factor combination the table does not hold; `null` for none.
+   * The value every factor combination the table does not hold takes; absent or `null` leaves
+   * such a combination empty.
    */
   default_value?: string | number | null;
   /**
@@ -3781,11 +3782,6 @@ export interface RatingTable {
    * The factor columns the table is keyed by, at most three.
    */
   factors?: string[];
-  /**
-   * With no default, whether a missing combination fails the run (`error`) or takes the neutral
-   * value (`neutral`).
-   */
-  on_missing?: 'error' | 'neutral';
   /**
    * The column the looked-up value is written to.
    */
@@ -5921,8 +5917,9 @@ export interface QueryParameter {
 }
 /**
  * An Export: a button an underwriter presses to take the quote's tables out to a file
- * or a database. It shows no schema columns and takes nothing typed; nothing runs it yet,
- * so it is drawn disabled where the sheets are used.
+ * or a database. It shows no schema columns and takes nothing typed. Only an Excel
+ * workbook of cells runs yet, in Preview; every other is drawn disabled where the sheets
+ * are used.
  */
 export interface ExportWidget {
   h: number;
@@ -5931,7 +5928,7 @@ export interface ExportWidget {
   name: string;
   show_when: ShowWhen;
   tables: string[];
-  target: CsvExport | ExcelExport | SqlExport;
+  target: CsvExport | ExcelExport | ExcelCellsExport | SqlExport;
   type: 'export';
   w: number;
   x: number;
@@ -5955,6 +5952,48 @@ export interface ExcelExport {
   format: 'excel';
   headers: 'names' | 'labels';
   values: 'raw' | 'formatted';
+}
+/**
+ * An Excel workbook Haute makes holding chosen fields, each in a cell of a sheet, and
+ * chosen tables, each a block of its rows from a cell, under a file name made as a
+ * ``_FileExport``'s is. Its cells and blocks say what it writes, so the Export exports no
+ * tables.
+ */
+export interface ExcelCellsExport {
+  blocks: ExportBlock[];
+  cells: ExportCell[];
+  file_name: string;
+  format: 'excel_cells';
+}
+/**
+ * A table's rows an Excel workbook of cells holds as a block: the chosen ``columns`` of
+ * the table ``table``, by name in the order chosen, rightward from the cell at ``cell``
+ * (an address such as ``A12``) of the sheet named ``sheet``, the block's top-left corner,
+ * under a ``header`` of their labels or their names, or none, and a row for each of the
+ * table's rows in the quote. Its names and address are the form's as typed: their
+ * problems are the view's to show and the export's to refuse
+ * (:mod:`haute._workbench_export`).
+ */
+export interface ExportBlock {
+  cell: string;
+  columns: string[];
+  header: 'labels' | 'names' | 'none';
+  sheet: string;
+  table: string;
+}
+/**
+ * A cell an Excel workbook of cells holds: the value of a one-row table's column, by
+ * ``table`` and ``column``, in the cell at ``cell`` (an address such as ``B3``) of the
+ * sheet named ``sheet``, and the column's label in the cell at ``label_cell`` of that
+ * sheet. The addresses and the name are the form's as typed: their problems are the
+ * view's to show and the export's to refuse (:mod:`haute._workbench_export`).
+ */
+export interface ExportCell {
+  cell: string;
+  column: string;
+  label_cell: string;
+  sheet: string;
+  table: string;
 }
 /**
  * The tables an Export writes to a database on a named connection, each to the table

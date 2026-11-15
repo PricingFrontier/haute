@@ -73,6 +73,18 @@ describe("buildSubmodelViewGraph", () => {
     expect(graph.edges.find((edge) => edge.sourceHandle === "policy")?.data)
       .toMatchObject({ submodelBoundary: { parentEdges: [parentEdges[0]] } })
   })
+  it("starts the Input card with the columns its parent feeds last recorded, never an invalidated stash", () => {
+    const policy = [{ name: "policy_id", dtype: "String" }]
+    const children = [makeNode("prepare"), makeNode("score")]
+    const feed: PipelineEdge = { id: "feed", source: "api", sourceHandle: "quotes", target: "pricing", targetHandle: "in__policy" }
+    const build = (api: Node) => buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "pricing", definition: makeDefinition(children), childNodes: children, childEdges: [], parentNodes: [api, instance()], parentEdges: [feed] })
+    const recorded = makeNode("api", "apiInput", { data: { label: "api", nodeType: "apiInput", _frameColumns: { quotes: policy }, _columns: [{ name: "other_frame", dtype: "String" }], _columnsSource: "live" } })
+
+    expect(boundary(build(recorded).nodes, "input").data).toMatchObject({ _frameColumns: { policy }, _columnsSource: "live" })
+    // A source switch strips the tag along with the stash it vouched for.
+    const invalidated = makeNode("api", "apiInput", { data: { label: "api", nodeType: "apiInput", _frameColumns: { quotes: policy } } })
+    expect(boundary(build(invalidated).nodes, "input").data._frameColumns).toBeUndefined()
+  })
   it("rejects undeclared parent handles", () => {
     const children = [makeNode("prepare"), makeNode("score")]
     expect(() => buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "pricing", definition: makeDefinition(children), childNodes: children, childEdges: [], parentNodes: [instance()], parentEdges: [{ id: "bad", source: "api", target: "pricing", targetHandle: "in__unknown" }] })).toThrow(/undeclared input handle/)
