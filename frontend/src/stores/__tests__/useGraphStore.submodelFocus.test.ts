@@ -358,6 +358,28 @@ describe("useGraphStore with a submodel open", () => {
     expect(store().canUndo()).toBe(false)
   })
 
+  it("advances the semantic generation with every change but a move, and with every Undo, Redo, view change and load", () => {
+    const generation = () => store().semanticGeneration
+    const advances = (action: () => void) => {
+      const before = generation()
+      action()
+      return generation() > before
+    }
+    const moveRoot = (x: number) => store().setNodes((nodes) => nodes.map((node) => (node.id === "api" ? { ...node, position: { x, y: 0 } } : node)))
+
+    expect(advances(() => moveRoot(40))).toBe(false)
+    expect(advances(() => store().setNodesRaw((nodes) => nodes.map((node) => ({ ...node, selected: true }))))).toBe(false)
+    expect(advances(() => store().setNodes((nodes) => nodes.map((node) => (node.id === "api" ? { ...node, data: { ...node.data, label: "Policies" } } : node))))).toBe(true)
+    expect(advances(() => store().enterSubmodelView(OPEN))).toBe(true)
+    expect(advances(() => store().setNodesRaw((nodes) => nodes.map((node) => (node.id === "score" ? { ...node, position: { x: 450, y: 120 } } : node))))).toBe(false)
+    expect(advances(() => store().setNodesRaw((nodes) => nodes.map((node) => (node.id === "score" ? { ...node, data: { ...node.data, _columns: [] } } : node))))).toBe(false)
+    expect(advances(() => configure("score", { how: "left" }))).toBe(true)
+    expect(advances(() => store().undo())).toBe(true)
+    expect(advances(() => store().redo())).toBe(true)
+    expect(advances(() => store().exitSubmodelView())).toBe(true)
+    expect(advances(() => load())).toBe(true)
+  })
+
   it("refuses to leave a view that is not open", () => {
     expect(() => store().exitSubmodelView()).toThrow("No submodel is open")
   })

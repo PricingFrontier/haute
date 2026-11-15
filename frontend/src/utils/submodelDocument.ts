@@ -38,8 +38,8 @@ export interface SubmodelFocusIdentity {
 export type SubmodelCanvasLift =
   /** Nothing authored changed (a selection, a preview's columns): the write is the canvas's alone. */
   | { kind: "canvas" }
-  /** The open definition as the write leaves it. */
-  | { kind: "definition"; definition: SubmodelDefinition }
+  /** The open definition as the write leaves it; `layoutOnly` when only children moved. */
+  | { kind: "definition"; definition: SubmodelDefinition; layoutOnly: boolean }
   /** The write cannot apply; nothing changes. */
   | { kind: "refused"; reason: string }
 
@@ -91,6 +91,12 @@ function sameAuthoredNode(previous: Node | undefined, next: Node): boolean {
   if (previous === next) return true
   if (!previous) return false
   return canonicalJson(authoredNodeForm(previous)) === canonicalJson(authoredNodeForm(next))
+}
+
+function samePlacedElsewhere(previous: Node | undefined, next: Node): boolean {
+  if (!previous) return false
+  return canonicalJson({ ...authoredNodeForm(previous), position: null })
+    === canonicalJson({ ...authoredNodeForm(next), position: null })
 }
 
 function sameAuthoredEdge(previous: Edge | undefined, next: Edge): boolean {
@@ -173,16 +179,24 @@ export function liftSubmodelCanvas({
       .filter((edge) => !previousBoundary.has(edge.id))
       .map((edge) => [edge.id, edge]),
   )
-  const unchanged =
-    children.length === previousChildren.size
-    && children.every((node) => sameAuthoredNode(previousChildren.get(node.id), node))
-    && internal.length === previousInternal.size
+  const sameEdgesAndHandles =
+    internal.length === previousInternal.size
     && internal.every((edge) => sameAuthoredEdge(previousInternal.get(edge.id), edge))
     && nextBoundary.every((boundary) => {
       const before = previousBoundary.get(boundary.edge.id)!
       return before.childHandle === boundary.childHandle
     })
-  if (unchanged) return { kind: "canvas" }
+  const sameChildren = children.length === previousChildren.size
+  if (
+    sameChildren
+    && sameEdgesAndHandles
+    && children.every((node) => sameAuthoredNode(previousChildren.get(node.id), node))
+  ) {
+    return { kind: "canvas" }
+  }
+  const layoutOnly = sameChildren
+    && sameEdgesAndHandles
+    && children.every((node) => samePlacedElsewhere(previousChildren.get(node.id), node))
   if (readOnly) return { kind: "refused", reason: READ_ONLY_REASON }
 
   const targetsOf = (port: string): SubmodelEndpoint[] =>
@@ -196,6 +210,7 @@ export function liftSubmodelCanvas({
   })
   return {
     kind: "definition",
+    layoutOnly,
     definition: {
       ...definition,
       graph: {

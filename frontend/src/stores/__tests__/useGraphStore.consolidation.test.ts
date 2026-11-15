@@ -301,6 +301,7 @@ describe("useGraphStore - consolidation", () => {
         },
         submodelAnnotations: { "dirty-instance": { child: { _columns: [] } } },
         navigationSerial: 47,
+        semanticGeneration: 53,
       }
       expect(new Set(Object.keys(dirtied))).toEqual(new Set(Object.keys(pristine)))
 

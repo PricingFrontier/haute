@@ -535,10 +535,11 @@ describe("useSubmodelBoundaryEditing", () => {
       })
     })
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
-    // A structural change — a node leaving the view — is what voids a pending
-    // gesture; a re-rendered but structurally identical graph does not.
-    const externallyChanged = store().nodes.filter((node) => node.id !== "child_b")
-    useGraphStore.setState({ nodes: externallyChanged })
+    // A semantic edit made meanwhile — a node leaving the view — voids the
+    // pending gesture; a re-render or a move does not.
+    act(() => store().setNodesRaw((nodes) => nodes.filter((node) => node.id !== "child_b")))
+    const externallyChanged = store().nodes
+    expect(externallyChanged.map((node) => node.id)).not.toContain("child_b")
     const graphRefBefore = fixture.graphRef.current
     const submodelsBefore = store().submodels
     const candidate = resolveGraphIdentities.mock.calls[0]![0]
@@ -556,6 +557,83 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(focus().rootNodes).toBe(fixture.parentNodes)
     expect(focus().rootEdges).toBe(fixture.parentEdges)
     expect(fixture.graphRef.current).toBe(graphRefBefore)
+  })
+
+  it("keeps a node moved while identities resolve, and still commits the edit", async () => {
+    const fixture = makeFixture()
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => { finishResolution = resolve })
+    const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+
+    act(() => {
+      result.current.commitBoundaryConnection({ source: "child_a", sourceHandle: null, target: output.id, targetHandle: null })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    const moveTo = (x: number, dragging: boolean) => store().setNodesRaw((nodes) =>
+      nodes.map((node) => (node.id === "child_b" ? { ...node, position: { x, y: 640 }, dragging } : node)))
+    act(() => {
+      store().pushSnapshot()
+      moveTo(500, true)
+      moveTo(520, false)
+    })
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 520, y: 640 })
+
+    const candidate = resolveGraphIdentities.mock.calls[0]![0]
+    const resolvedParentNodes = candidate.nodes.map((node) => node.id === PLACEHOLDER_ID
+      ? { ...node, data: { ...node.data, _sourceHandleInputNames: { out__child_a_input: "Public_child_a_input" } } }
+      : node)
+    await act(async () => {
+      finishResolution({ nodes: resolvedParentNodes, edges: [...candidate.edges] as PipelineEdge[] })
+      await identityResolution
+    })
+
+    await vi.waitFor(() => expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input"]))
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 520, y: 640 })
+    expect(store().nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 520, y: 640 })
+    expect(store().undoStack).toHaveLength(2)
+  })
+
+  it.each([
+    ["an Undo and a Redo back to the same document", () => {
+      store().undo()
+      store().redo()
+    }],
+    ["leaving the submodel and opening it again", (fixture: Fixture) => {
+      store().exitSubmodelView()
+      focusView(fixture)
+    }],
+  ] as const)("discards an edit waiting on identities after %s", async (_label, meanwhile) => {
+    const fixture = makeFixture()
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => { finishResolution = resolve })
+    const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
+    // An earlier step for Undo and Redo to cross.
+    act(() => store().setNodes((nodes) => nodes.map((node) => (
+      node.id === "child_b" ? { ...node, data: { ...node.data, config: { code: "df = child_a" } } } : node))))
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+
+    act(() => {
+      result.current.commitBoundaryConnection({ source: "child_a", sourceHandle: null, target: output.id, targetHandle: null })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    const documentBefore = store().persistedFingerprint
+    act(() => meanwhile(fixture))
+    expect(store().persistedFingerprint).toBe(documentBefore)
+
+    const candidate = resolveGraphIdentities.mock.calls[0]![0]
+    await act(async () => {
+      finishResolution({ nodes: [...candidate.nodes], edges: [...candidate.edges] as PipelineEdge[] })
+      await identityResolution
+    })
+
+    await vi.waitFor(() => expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed"))
+    expect(storedDefinition().outputPorts).toEqual([])
+    expect(store().persistedFingerprint).toBe(documentBefore)
   })
 
   it("resolves stale parent output handles after an unbound output is removed and reused", async () => {
@@ -965,7 +1043,7 @@ describe("useSubmodelBoundaryEditing", () => {
       expect(store().nodes.map((node) => node.id)).not.toContain("child_a")
     })
 
-    it("voids the gesture when a node is removed while identities resolve", async () => {
+    it("voids the gesture when the document is edited while identities resolve", async () => {
       const fixture = makeUnresolvedFixture()
       const { resolutions, resolveGraphIdentities } = deferredResolver()
       openInStore(fixture)
@@ -980,8 +1058,10 @@ describe("useSubmodelBoundaryEditing", () => {
         )).toBe("pending")
       })
 
-      const externallyChanged = store().nodes.filter((node) => node.id !== "child_b")
-      useGraphStore.setState({ nodes: externallyChanged })
+      // A semantic edit made meanwhile voids the gesture.
+      act(() => store().setNodes((nodes) => nodes.map((node) => (
+        node.id === "child_b" ? { ...node, data: { ...node.data, config: { code: "df = child_a" } } } : node))))
+      const externallyChanged = store().nodes
       const submodelsBefore = store().submodels
       const request = resolveGraphIdentities.mock.calls[0]![0]
       await act(async () => resolutions[0]!.resolve({
@@ -989,7 +1069,7 @@ describe("useSubmodelBoundaryEditing", () => {
       }))
 
       expect(settled).toEqual([false])
-      expect(store().undoStack).toHaveLength(0)
+      expect(store().undoStack).toHaveLength(1)
       expect(store().nodes).toBe(externallyChanged)
       expect(store().submodels).toBe(submodelsBefore)
       expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()

@@ -178,6 +178,12 @@ export interface GraphStore {
   submodelAnnotations: Record<string, Record<string, Record<string, unknown>>>
   /** Advances whenever the open view changes (opening, leaving, Undo or Redo moving it, a load). */
   navigationSerial: number
+  /**
+   * Advances with every change to the document other than moving nodes, and with
+   * every Undo, Redo, view change and load, even one back to identical content: an
+   * edit prepared against one generation commits only while it is still current.
+   */
+  semanticGeneration: number
 
   // History-aware actions
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -397,6 +403,22 @@ function hasOnlyNodeUiFieldChanges(current: Node[], next: Node[]): boolean {
     }
   }
   return changed
+}
+
+/**
+ * Whether `next` only moves nodes of `current`: the same nodes in the same order,
+ * each the same object or differing only in its position and presentation fields.
+ */
+function onlyNodesMoved(current: Node[], next: Node[]): boolean {
+  if (current.length !== next.length) return false
+  return next.every((node, index) => {
+    const previous = current[index]
+    if (previous === node) return true
+    if (previous.id !== node.id || previous.data !== node.data) return false
+    const keys = new Set([...Object.keys(previous), ...Object.keys(node)])
+    return [...keys].every((key) => key === "position" || REACT_FLOW_NODE_UI_FIELDS.has(key)
+      || Object.is((previous as unknown as Record<string, unknown>)[key], (node as unknown as Record<string, unknown>)[key]))
+  })
 }
 
 function hasOnlyNodePositionChanges(current: Node[], next: Node[]): boolean {
@@ -754,6 +776,7 @@ function createInitialGraphState(): GraphStoreData {
     focus: null,
     submodelAnnotations: {},
     navigationSerial: 0,
+    semanticGeneration: 0,
   }
 }
 
@@ -826,6 +849,15 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // A canvas write inside an open submodel ends the gesture it belongs to,
     // whether or not it changed the document.
     let endsGesture = false
+    const onlyCanvas = (change.submodels === undefined || change.submodels === state.submodels)
+      && (change.preamble === undefined || change.preamble === state.preamble)
+      && (change.globalConstants === undefined || change.globalConstants === state.globalConstants)
+    // Whether the change only moves nodes, which leaves the semantic generation as it is.
+    let layoutOnly = !focus
+      && onlyCanvas
+      && edges === state.edges
+      && nodes !== state.nodes
+      && onlyNodesMoved(state.nodes, nodes)
     if (focus && (nodes !== state.nodes || edges !== state.edges)) {
       // A drag frame moves the canvas only; the move reaches the definition when it ends.
       if (
@@ -850,6 +882,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (lifted.kind === "refused") return { refused: lifted.reason }
       liftBase = null
       endsGesture = true
+      layoutOnly = onlyCanvas && (lifted.kind === "canvas" || lifted.layoutOnly)
       if (lifted.kind === "definition") {
         submodels = { ...submodels, [focus.definitionId]: lifted.definition }
       }
@@ -874,6 +907,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     return {
       patch: {
         ...historyPatch,
+        ...(changed && !layoutOnly ? { semanticGeneration: state.semanticGeneration + 1 } : {}),
         ...change,
         nodes,
         edges,
@@ -947,6 +981,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         ...fields,
         ...derivedPatch(state, fields),
         ...(viewChanged ? { navigationSerial: state.navigationSerial + 1 } : {}),
+        semanticGeneration: state.semanticGeneration + 1,
       },
       notice,
     }
@@ -1006,7 +1041,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
             dirty: computeDirtyForPositionOnlyNodes(state, nodes),
           }
         }
-        return { nodes, ...derivedPatch(state, { ...state, nodes }, !sameStructural) }
+        const patch = derivedPatch(state, { ...state, nodes }, !sameStructural)
+        return {
+          nodes,
+          ...patch,
+          ...(patch.persistedFingerprint !== state.persistedFingerprint
+            ? { semanticGeneration: state.semanticGeneration + 1 }
+            : {}),
+        }
       })
     },
 
@@ -1021,7 +1063,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         if (hasOnlyEdgeUiFieldChanges(state.edges, edges)) {
           return { edges }
         }
-        return { edges, ...derivedPatch(state, { ...state, edges }, !sameStructural) }
+        const patch = derivedPatch(state, { ...state, edges }, !sameStructural)
+        return {
+          edges,
+          ...patch,
+          ...(patch.persistedFingerprint !== state.persistedFingerprint
+            ? { semanticGeneration: state.semanticGeneration + 1 }
+            : {}),
+        }
       })
     },
 
@@ -1081,6 +1130,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         edges: canvas.edges,
         focus,
         navigationSerial: state.navigationSerial + 1,
+        semanticGeneration: state.semanticGeneration + 1,
         ...derivedPatch(state, fields),
       })
     },
@@ -1098,6 +1148,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         edges: focus.rootEdges,
         focus: null,
         navigationSerial: state.navigationSerial + 1,
+        semanticGeneration: state.semanticGeneration + 1,
         ...derivedPatch(state, fields),
       })
     },
@@ -1141,7 +1192,11 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       }
       set({
         ...(changed
-          ? { undoStack: appendHistoryEntry(state.undoStack, captureDocument(state)), redoStack: [] }
+          ? {
+              undoStack: appendHistoryEntry(state.undoStack, captureDocument(state)),
+              redoStack: [],
+              semanticGeneration: state.semanticGeneration + 1,
+            }
           : {}),
         nodes: edit.viewNodes,
         edges: edit.viewEdges,
@@ -1199,6 +1254,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           redoStack: state.redoStack.filter(isVcEntry),
           submodelAnnotations: {},
           navigationSerial: state.navigationSerial + (state.focus ? 1 : 0),
+          semanticGeneration: state.semanticGeneration + 1,
           structuralFingerprint: structuralFingerprintOf(fields),
           structuralVersion: state.structuralVersion + 1,
           panelContextFingerprint: computePanelContextFingerprint(loaded.nodes, loaded.edges),

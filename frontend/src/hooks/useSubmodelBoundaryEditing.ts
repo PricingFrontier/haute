@@ -26,7 +26,6 @@ import {
 import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
-import { structuralFingerprint } from "../utils/structuralFingerprint"
 import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
 import { captureParentOutputState } from "../utils/submodelViewGraph"
 
@@ -115,15 +114,44 @@ function focusedOccurrence() {
   return { focus, submodelName: name }
 }
 
-const canvasFingerprint = () => {
-  const { nodes, edges } = useGraphStore.getState()
-  return structuralFingerprint({ nodes, edges })
+/** `nodes` placed where `placedNodes` has nodes of the same ids. */
+function placedAs(nodes: Node[], placedNodes: readonly Node[]): Node[] {
+  const positions = new Map(placedNodes.map((node) => [node.id, node.position]))
+  return nodes.map((node) => {
+    const position = positions.get(node.id)
+    return position && (position.x !== node.position.x || position.y !== node.position.y)
+      ? { ...node, position }
+      : node
+  })
 }
-const rootFingerprint = () => {
-  const { focus } = useGraphStore.getState()
-  return structuralFingerprint(focus ? { nodes: focus.rootNodes, edges: focus.rootEdges } : null)
+
+/**
+ * `result` with the layout the document has now. A boundary edit moves no node, so
+ * one prepared before nodes were moved (while it waited for server names, or built
+ * on such a candidate) keeps those moves: the canvas's presentation, the open
+ * definition's children and the pipeline's own nodes keep where they are.
+ */
+function withCurrentLayout(result: SubmodelBoundaryEditResult): SubmodelBoundaryEditResult {
+  const { nodes, focus, submodels } = useGraphStore.getState()
+  const merged = mergeViewPresentation(result, nodes)
+  const definition = merged.submodels[merged.definitionId]
+  const current = submodels[merged.definitionId]
+  const placedSubmodels = isSubmodelDefinition(definition, merged.definitionId)
+    && isSubmodelDefinition(current, merged.definitionId)
+    ? {
+        ...merged.submodels,
+        [merged.definitionId]: {
+          ...definition,
+          graph: { ...definition.graph, nodes: placedAs(definition.graph.nodes, current.graph.nodes) },
+        },
+      }
+    : merged.submodels
+  return {
+    ...merged,
+    parentNodes: focus ? placedAs(merged.parentNodes, focus.rootNodes) : merged.parentNodes,
+    submodels: placedSubmodels,
+  }
 }
-const submodelsFingerprint = () => structuralFingerprint({ submodels: useGraphStore.getState().submodels })
 
 export default function useSubmodelBoundaryEditing({
   graphRef,
@@ -134,12 +162,12 @@ export default function useSubmodelBoundaryEditing({
 }: UseSubmodelBoundaryEditingParams) {
   const addToast = useToastStore((store) => store.addToast)
   const identityRequestSerialRef = useRef(0)
+  // An edit waiting for server names, prepared at one semantic generation of
+  // the document: it commits, and later boundary gestures build on it, only while
+  // that generation is current.
   const pendingBoundaryCandidateRef = useRef<{
     result: SubmodelBoundaryEditResult
-    expectedViewFingerprint: string
-    expectedParentFingerprint: string
-    expectedSubmodelsFingerprint: string
-    submodelName: string
+    generation: number
     instanceId: string
     definitionId: string
   } | null>(null)
@@ -153,17 +181,20 @@ export default function useSubmodelBoundaryEditing({
     const open = focusedOccurrence()
     if (open === null) return null
     const { focus, submodelName } = open
-    const { nodes: currentNodes, edges: currentEdges, submodels: currentSubmodels } = useGraphStore.getState()
+    const {
+      nodes: currentNodes,
+      edges: currentEdges,
+      submodels: currentSubmodels,
+      semanticGeneration,
+    } = useGraphStore.getState()
     const pending = pendingBoundaryCandidateRef.current
     if (
       pending
-      && pending.expectedViewFingerprint === canvasFingerprint()
-      && pending.expectedParentFingerprint === rootFingerprint()
-      && pending.expectedSubmodelsFingerprint === submodelsFingerprint()
+      && pending.generation === semanticGeneration
       && pending.instanceId === focus.instanceId
       && pending.definitionId === focus.definitionId
     ) {
-      return mergeViewPresentation(pending.result, currentNodes)
+      return withCurrentLayout(pending.result)
     }
     return {
       submodelName,
@@ -204,15 +235,9 @@ export default function useSubmodelBoundaryEditing({
       onSettled?.(true)
       return true
     }
-    const expectedViewFingerprint = canvasFingerprint()
-    const expectedParentFingerprint = rootFingerprint()
-    const expectedSubmodelsFingerprint = submodelsFingerprint()
     const candidate = {
       result,
-      expectedViewFingerprint,
-      expectedParentFingerprint,
-      expectedSubmodelsFingerprint,
-      submodelName: result.submodelName,
+      generation: useGraphStore.getState().semanticGeneration,
       instanceId: result.instanceId,
       definitionId: result.definitionId,
     }
@@ -229,12 +254,12 @@ export default function useSubmodelBoundaryEditing({
         onSettled?.(false)
         return
       }
-      const focus = useGraphStore.getState().focus
+      // A semantic edit, Undo, Redo, navigation or a reload made meanwhile, even one
+      // back to identical content, voids the candidate; moving nodes does not.
+      const { focus, semanticGeneration } = useGraphStore.getState()
       if (
         focus === null
-        || canvasFingerprint() !== expectedViewFingerprint
-        || rootFingerprint() !== expectedParentFingerprint
-        || submodelsFingerprint() !== expectedSubmodelsFingerprint
+        || semanticGeneration !== candidate.generation
         || focus.instanceId !== candidate.instanceId
         || focus.definitionId !== candidate.definitionId
       ) {
@@ -250,17 +275,16 @@ export default function useSubmodelBoundaryEditing({
       if (pendingBoundaryCandidateRef.current === candidate) {
         pendingBoundaryCandidateRef.current = null
       }
-      const merged = mergeViewPresentation(result, useGraphStore.getState().nodes)
       const previousParent = { nodes: focus.rootNodes, edges: focus.rootEdges, submodels: useGraphStore.getState().submodels }
       const rebound = reconcileGraphInputBindings(previousParent, {
         nodes: resolved.nodes, edges: resolved.edges, submodels: result.submodels,
       })
       if (!rebound.ok) throw new Error(rebound.error)
-      commit({
-        ...merged,
+      commit(withCurrentLayout({
+        ...result,
         parentNodes: rebound.nodes,
         parentEdges: rebound.edges,
-      })
+      }))
       onSettled?.(true)
     }).catch((error: unknown) => {
       if (identityRequestSerialRef.current !== serial) {

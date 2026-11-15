@@ -27,7 +27,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/panels/editors/SubmodelPortEditor.tsx` | Renders the drilled boundary inspector body. Input reuses the standard `InputSourcesBar` chip/remove presentation for its declared public frames and exposes no mutation control when read-only, and below it shows, per public input port, the messages of the document's input-binding violations whose `binding` is that port of its definition (`submodel-port-<name>-violation`); Output has no editable interface list. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble, openNode}` identity. |
-| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries; every history-aware setter, the raw preamble/submodel/constant setters and undo/redo commit through one `commitGraphChange`, which records an undo step only when the change moves the authored fingerprint of the state before it, computed afresh), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. While a submodel is open, `focus` names the occurrence on the canvas and keeps the pipeline's own nodes and edges (`rootNodes`/`rootEdges`), so the store holds the one authored document throughout: `enterSubmodelView` draws the occurrence from it (`projectSubmodelFocus`) and `exitSubmodelView` shows the pipeline again, both navigation that leaves history and the dirty state as they are and advances `navigationSerial`. Every canvas write there goes through `commitGraphChange`, which lifts it into the open definition (`liftSubmodelCanvas`) in the same update, or refuses it whole with a toast; a drag's frames move the canvas only and reach the definition with the write that ends the drag. A boundary action commits view, pipeline and definitions as one step (`commitSubmodelBoundaryEdit`), with the open definition's children in their authored form, and is refused on a read-only copy when it would change the document; a refused write that ends a drag puts back the canvas the document agrees with; and `setRootNodesRaw` writes the pipeline's own nodes behind the open submodel (a preview's columns) without one. Execution annotations stay on the view, kept per occurrence in `submodelAnnotations`, never in the definition. History entries are documents recording the view their step was made in (`focus`): Undo or Redo shows that view, or the main pipeline with a notice when its occurrence is gone, and a gesture begun with `pushSnapshot` is recorded only when its first write changes the document, so one gesture is one step or none, and the gesture ends with its first canvas write that is not a drag frame, changed or not. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. Every node setter (`setNodes`, `setNodesAndEdges`, `setNodesAndEdgesAndSubmodels`, `setNodesRaw`) stores positions on whole pixels through the exported `wholePositions`, rounding with `Math.round` and keeping a node already whole, and the array, as they are (READ-11). |
+| `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries; every history-aware setter, the raw preamble/submodel/constant setters and undo/redo commit through one `commitGraphChange`, which records an undo step only when the change moves the authored fingerprint of the state before it, computed afresh), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. While a submodel is open, `focus` names the occurrence on the canvas and keeps the pipeline's own nodes and edges (`rootNodes`/`rootEdges`), so the store holds the one authored document throughout: `enterSubmodelView` draws the occurrence from it (`projectSubmodelFocus`) and `exitSubmodelView` shows the pipeline again, both navigation that leaves history and the dirty state as they are and advances `navigationSerial`. Every canvas write there goes through `commitGraphChange`, which lifts it into the open definition (`liftSubmodelCanvas`) in the same update, or refuses it whole with a toast; a drag's frames move the canvas only and reach the definition with the write that ends the drag. A boundary action commits view, pipeline and definitions as one step (`commitSubmodelBoundaryEdit`), with the open definition's children in their authored form, and is refused on a read-only copy when it would change the document; a refused write that ends a drag puts back the canvas the document agrees with; and `setRootNodesRaw` writes the pipeline's own nodes behind the open submodel (a preview's columns) without one. Execution annotations stay on the view, kept per occurrence in `submodelAnnotations`, never in the definition. History entries are documents recording the view their step was made in (`focus`): Undo or Redo shows that view, or the main pipeline with a notice when its occurrence is gone, and a gesture begun with `pushSnapshot` is recorded only when its first write changes the document, so one gesture is one step or none, and the gesture ends with its first canvas write that is not a drag frame, changed or not. `semanticGeneration` advances with every change to the document but a move, and with every Undo, Redo, view change and load even back to identical content, so an edit prepared against one generation (a boundary edit waiting for server names) commits only while it is current. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. Every node setter (`setNodes`, `setNodesAndEdges`, `setNodesAndEdgesAndSubmodels`, `setNodesRaw`) stores positions on whole pixels through the exported `wholePositions`, rounding with `Math.round` and keeping a node already whole, and the array, as they are (READ-11). |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/createAfterIdentity.ts` | `createAfterIdentity`, the one resolve-then-commit path of every canvas creation (Duplicate, Create Instance, palette and connection drops, Edge Join insertion, paste): fenced on the kind's request serial, the document and view on the canvas (source file, execution generation and the store's `navigationSerial`), the graph's `structuralFingerprint`, every node's name and the authored data of the nodes the creation depends on, applying onto the live graph; and `authoredNodeData`, a node's data without its underscore-prefixed fields, which a copy is built from. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout fenced on the initiating document, navigation scope, and graph topology (merging returned positions by node id onto live nodes while preserving live data and selection, or rejecting an obsolete layout with a toast). Resolver rejection, malformed output, or graph replacement leaves state untouched. |
@@ -1077,17 +1077,19 @@ reconciliation rather than dropping them or committing a second mutation.
     resolution for the accumulated edit, so the latest request includes every
     accepted gesture. Superseded responses and superseded failures are ignored; an
     externally stale or current failed resolution clears the pending candidate,
-    reports the error, and leaves both published views unchanged. External
-    staleness is a structural fingerprint comparison
-    (`utils/structuralFingerprint.ts`: sorted node ids with `type` and
-    `data.nodeType`, sorted edge ids with their four endpoint fields, and each
-    definition's id with its sorted port names for input and output ports),
-    captured when the request is issued and compared in the response guard
-    alongside the serial and drilled-identity guards. Positions, selection,
-    dragging, dimensions, and all other node data are excluded, so a click or a
-    drag during resolution extends the candidate; committing it merges the
-    current view nodes' `position`, `selected`, `dragging`, `measured`, `width`,
-    and `height` by id so the move is not reverted. A shared-node deletion whose
+    reports the error, and leaves both published views unchanged. The
+    candidate is a prepared transaction: it records the graph store's
+    `semanticGeneration` when it is prepared, and the response guard compares
+    it alongside the serial and drilled-identity guards. The generation
+    advances with every change to the document but a move, and with every
+    Undo, Redo, view change and load, so a superseding edit, Undo then Redo
+    back to identical content, or leaving the submodel and opening it again
+    discards the candidate, while a click or a move during resolution leaves it
+    current. Committing it (and building a later gesture on it) keeps the
+    layout the document has then (`withCurrentLayout`): the view nodes'
+    `position`, `selected`, `dragging`, `measured`, `width` and `height`, the
+    open definition's child positions and the pipeline's own node positions,
+    by id, so a move made meanwhile is not reverted. A shared-node deletion whose
     commit went asynchronous reports `"pending"` and settles its caller through
     an `onSettled(committed)` callback, so selection, preview, cached-result and
     dialog cleanup only runs once the commit actually lands. The projection
@@ -1585,8 +1587,9 @@ again through the editor and save paths.
     a preview's columns stay on the occurrence's view; a boundary edit stores its definition
     without the canvas's selection or annotations, and is refused on a read-only copy; a
     refused drag end puts the canvas back; a gesture that changed nothing records no later
-    step; saving and undoing inside a submodel keep the dirty state right; a load closes the
-    view.
+    step; the semantic generation advances with every change but a move, a selection or a
+    preview's columns, and with every Undo, Redo, view change and load; saving and undoing
+    inside a submodel keep the dirty state right; a load closes the view.
   - `frontend/src/stores/__tests__/useGraphStore.undoAtomicity.test.ts` — single- and multi-node delete
     (mixing connected/unconnected nodes), pure-edge delete, and paste are
     each exactly one undo entry regardless of selection size; redo replays
@@ -1931,6 +1934,12 @@ again through the editor and save paths.
     authored change to a read-only copy; leaves the definition alone for a selection or a
     preview's columns; `projectSubmodelFocus` draws an occurrence with its annotations and
     card positions, and refuses one the document no longer holds.
+  - `frontend/src/hooks/__tests__/useSubmodelBoundaryEditing.test.ts` — each boundary
+    action as one step of the document, with Undo and Redo restoring parent bindings,
+    their order, output names and consumer mappings; the collapsed generic input at the
+    root; and the prepared transaction of an edit waiting on server names: a move made
+    meanwhile is kept and the edit commits, while a superseding edit, Undo then Redo back
+    to the same document, or leaving and reopening the submodel discards it.
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.boundaryPorts.test.ts`,
     `frontend/src/utils/__tests__/submodelViewGraph.test.ts`, and
     `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — canonical
