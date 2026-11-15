@@ -1,9 +1,7 @@
 import type { ReactNode } from "react"
-import { Radio } from "lucide-react"
 import type { WorkbenchTable } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { apiInputLabelIssue, apiInputLabelIssueMessage } from "../../utils/apiInputPorts"
-import { withAlpha } from "../../utils/color"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { workbenchNodeTables } from "../../utils/workbenchTables"
 
@@ -18,10 +16,8 @@ const SECTION_LABEL = "text-[11px] font-bold uppercase tracking-[0.08em]"
  * edits them.
  */
 export default function WorkbenchInputEditor({
-  accentColor,
   reservedFrameLabels,
 }: {
-  accentColor: string
   reservedFrameLabels: ReadonlySet<string>
 }) {
   const workbench = useWorkbenchStore((state) => state.tables)
@@ -31,23 +27,11 @@ export default function WorkbenchInputEditor({
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="workbench-input-editor">
-      <div
-        className="flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-medium"
-        style={{
-          background: withAlpha(accentColor, 0.1),
-          border: `1px solid ${withAlpha(accentColor, 0.3)}`,
-          color: accentColor,
-        }}
-      >
-        <Radio size={14} />
-        <span>This node receives each quote the underwriter app prices</span>
-      </div>
-
-      <p data-testid="workbench-input-preview-note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-        {hasSample
-          ? "Previews run on the workbench's sample values, read as a request is: a table with many rows and nothing typed has none."
-          : "Previews run on one row of nulls per table until the workbench supplies values."}
-      </p>
+      {!hasSample && (
+        <p data-testid="workbench-input-preview-note" className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+          Previews run on one row of nulls per table until the workbench supplies values.
+        </p>
+      )}
 
       <section data-testid="workbench-input-tables" className="space-y-1.5">
         <WorkbenchTablesHeader empty={tables.length === 0} />

@@ -162,10 +162,7 @@ export function NodeConfigEditor({
 
     case NODE_TYPES.WORKBENCH_INPUT:
       return (
-        <WorkbenchInputEditor
-          accentColor={accentColor}
-          reservedFrameLabels={reservedApiInputFrameLabels}
-        />
+        <WorkbenchInputEditor reservedFrameLabels={reservedApiInputFrameLabels} />
       )
 
     case NODE_TYPES.WORKBENCH_OUTPUT:
