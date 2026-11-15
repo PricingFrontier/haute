@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
 import { normalizeEdges } from "../utils/graphHelpers"
 import { serializeSnapshot, toCanonicalGraphPayload } from "../utils/graphSnapshot"
-import { buildSubmodelViewGraph } from "../utils/submodelViewGraph"
 import { resolveCanonicalGraphIdentities } from "../utils/editorIdentities"
 import { createNodeInstance, createSubmodel, dissolveSubmodel } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -16,13 +15,9 @@ import {
   isSubmodelInstanceConfig,
   type SubmodelDefinition,
 } from "../types/node"
-import type { DrilledOccurrenceIdentity } from "../utils/submodelRuntimeTarget"
 
 interface SubmodelNavParams {
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
-  activeSubmodelIdentity?: DrilledOccurrenceIdentity | null
-  setActiveSubmodelIdentity: (identity: DrilledOccurrenceIdentity | null) => void
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (nodes: Node[]) => void
   setEdgesRaw: (edges: Edge[]) => void
@@ -146,7 +141,7 @@ function instanceCount(nodes: Node[], definitionId: string): number {
 }
 
 export default function useSubmodelNavigation({
-  graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
+  graphRef, submodelsRef,
   setNodesRaw, setEdgesRaw,
   setSelectedNode, setLastSelectedId, setPreviewData, cancelPreview, clearTrace,
   preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
@@ -156,12 +151,8 @@ export default function useSubmodelNavigation({
   const addToast = useToastStore((s) => s.addToast)
   const [viewStack, setViewStack] = useState<ViewLevel[]>([{ type: "pipeline", name: "main", file: "" }])
   const viewStackRef = useRef(viewStack)
-  const activeSubmodelIdentityRef = useRef(activeSubmodelIdentity)
   const transformRequestSerialRef = useRef(0)
   useEffect(() => { viewStackRef.current = viewStack }, [viewStack])
-  useEffect(() => {
-    activeSubmodelIdentityRef.current = activeSubmodelIdentity
-  }, [activeSubmodelIdentity])
 
   /**
    * What belongs to the view being left ends with it: the side panels, the
@@ -198,7 +189,7 @@ export default function useSubmodelNavigation({
   const transformRequestIsStale = useCallback((request: TransformRequestContext): boolean => {
     const current = useGraphStore.getState()
     return transformRequestSerialRef.current !== request.serial
-      || parentGraphRef.current !== null
+      || useGraphStore.getState().focus !== null
       || sourceFileRef.current !== request.sourceFile
       || pipelineNameRef.current !== request.pipelineName
       || sourceRevisionRef.current !== request.sourceRevision
@@ -210,7 +201,6 @@ export default function useSubmodelNavigation({
         submodels: current.submodels,
       }) !== request.snapshot
   }, [
-    parentGraphRef,
     pipelineNameRef,
     preservedBlocksRef,
     sourceFileRef,
@@ -220,7 +210,7 @@ export default function useSubmodelNavigation({
   const createSubmodelTransform = useCallback(async (
     selection: { name: string; nodeIds: string[] } | { nodeId: string },
   ): Promise<SubmodelCreateResult> => {
-    if (parentGraphRef.current) {
+    if (useGraphStore.getState().focus !== null) {
       return { ok: false, error: "Return to the main pipeline before creating a submodel." }
     }
     try {
@@ -291,7 +281,7 @@ export default function useSubmodelNavigation({
         error: `Create submodel failed: ${apiErrorMessage(err)}`,
       }
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
+  }, [graphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
 
   const handleCreateSubmodel = useCallback((name: string, nodeIds: string[]) =>
     createSubmodelTransform({ name, nodeIds }), [createSubmodelTransform])
@@ -302,9 +292,8 @@ export default function useSubmodelNavigation({
   // asks the server nothing and commits at once.
   const handleDrillIntoSubmodel = useCallback((nodeId: string) => {
     try {
-      const parentNodes = [...graphRef.current.nodes]
-      const parentEdges = [...graphRef.current.edges]
-      const occurrence = canonicalOccurrence(nodeId, parentNodes, submodelsRef.current)
+      const { nodes: parentNodes, submodels } = useGraphStore.getState()
+      const occurrence = canonicalOccurrence(nodeId, parentNodes, submodels)
       if (!documentNavigationFence().allowed) {
         return
       }
@@ -312,61 +301,30 @@ export default function useSubmodelNavigation({
       // being left.
       transformRequestSerialRef.current += 1
       const displayName = occurrence.label
-      const smGraph = occurrence.definition.graph
       const parentSourceFile = sourceFileRef.current
       const submodelSourceFile = occurrence.definition.file
-      const childEdges = normalizeEdges(smGraph.edges ?? [])
-      const liveDefinition = {
-        ...occurrence.definition,
-        graph: { ...smGraph, nodes: smGraph.nodes ?? [], edges: childEdges },
-      }
-      const projected = buildSubmodelViewGraph({
-        submodelName: displayName,
-        instanceId: occurrence.instanceId,
-        definition: liveDefinition,
-        childNodes: smGraph.nodes ?? [],
-        childEdges,
-        parentNodes,
-        parentEdges,
-      })
 
-      // The store swaps the canvas and its history first: it refuses a view
-      // that cannot open, before anything else changes.
-      useGraphStore.getState().enterSubmodelView({ nodes: projected.nodes, edges: projected.edges })
-      graphRef.current = { nodes: projected.nodes, edges: projected.edges }
-      setActiveSubmodelIdentity({
+      // The store draws the view from the document, and refuses one that
+      // cannot open before anything else changes.
+      useGraphStore.getState().enterSubmodelView({
         instanceId: occurrence.instanceId,
         definitionId: occurrence.definitionId,
       })
-      parentGraphRef.current = {
-        nodes: parentNodes,
-        edges: parentEdges,
-        submodels: { ...submodelsRef.current },
-      }
-      setViewStack((prev) => {
-        const updated = [...prev]
-        if (updated.length > 0) {
-          updated[updated.length - 1] = {
-            ...updated[updated.length - 1],
-            file: parentSourceFile,
-            _savedNodes: parentNodes,
-            _savedEdges: parentEdges,
-          }
-        }
-        const nextStack = [
-          ...updated,
-          {
-            type: "submodel" as const,
-            name: displayName,
-            file: submodelSourceFile,
-            instanceId: occurrence.instanceId,
-            definitionId: occurrence.definitionId,
-            readOnly: occurrence.readOnly,
-          },
-        ]
-        viewStackRef.current = nextStack
-        return nextStack
-      })
+      const { nodes, edges } = useGraphStore.getState()
+      graphRef.current = { nodes, edges }
+      const nextStack: ViewLevel[] = [
+        { ...viewStackRef.current[0], file: parentSourceFile },
+        {
+          type: "submodel",
+          name: displayName,
+          file: submodelSourceFile,
+          instanceId: occurrence.instanceId,
+          definitionId: occurrence.definitionId,
+          readOnly: occurrence.readOnly,
+        },
+      ]
+      viewStackRef.current = nextStack
+      setViewStack(nextStack)
       sourceFileRef.current = submodelSourceFile
       leaveView()
       const count = instanceCount(parentNodes, occurrence.definitionId)
@@ -379,41 +337,32 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${apiErrorMessage(err)}`)
     }
-  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, fitView, addToast, leaveView])
+  }, [graphRef, sourceFileRef, fitView, addToast, leaveView])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
     if (depth >= prev.length - 1) return
     // Submodels do not nest (the store refuses a second view), so every
     // breadcrumb below the active one is the main pipeline.
-    const root = parentGraphRef.current
-    if (depth !== 0 || !root) {
+    if (depth !== 0 || useGraphStore.getState().focus === null) {
       throw new Error(`Breadcrumb ${depth} has no root graph to return to`)
     }
     transformRequestSerialRef.current += 1
     const target = prev[0]
-    const rootEdges = normalizeEdges(root.edges)
-    useGraphStore.getState().exitSubmodelView({
-      nodes: root.nodes,
-      edges: rootEdges,
-      submodels: root.submodels,
-    })
-    graphRef.current = { nodes: root.nodes, edges: rootEdges }
-    submodelsRef.current = root.submodels
-    parentGraphRef.current = null
+    useGraphStore.getState().exitSubmodelView()
+    const { nodes, edges, submodels } = useGraphStore.getState()
+    graphRef.current = { nodes, edges }
+    submodelsRef.current = submodels
     sourceFileRef.current = target.file
-    setActiveSubmodelIdentity(null)
     const nextStack = prev.slice(0, 1)
     viewStackRef.current = nextStack
     setViewStack(nextStack)
     leaveView()
     setTimeout(() => fitView({ padding: 0.8 }), 100)
-  }, [graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef, sourceFileRef, fitView, leaveView])
+  }, [graphRef, submodelsRef, sourceFileRef, fitView, leaveView])
 
   const resetToAuthoritativeRoot = useCallback((sourceFile: string, pipelineName: string) => {
     transformRequestSerialRef.current += 1
-    parentGraphRef.current = null
-    setActiveSubmodelIdentity(null)
     const rootView: ViewLevel[] = [{
       type: "pipeline",
       name: pipelineName || "main",
@@ -421,7 +370,41 @@ export default function useSubmodelNavigation({
     }]
     viewStackRef.current = rootView
     setViewStack(rootView)
-  }, [parentGraphRef, setActiveSubmodelIdentity])
+  }, [])
+
+  // The store's focus is the open view, whatever moved it: an Undo or Redo of a
+  // step made in another view shows that view, and one whose submodel is gone
+  // shows the main pipeline. The breadcrumbs and source file follow it, and
+  // what belonged to the view left ends, as when the user navigates.
+  const focusKey = useGraphStore((state) =>
+    state.focus ? JSON.stringify([state.focus.instanceId, state.focus.definitionId]) : null,
+  )
+  useLayoutEffect(() => {
+    const top = viewStackRef.current[viewStackRef.current.length - 1]
+    const shown = top?.type === "submodel" ? JSON.stringify([top.instanceId, top.definitionId]) : null
+    if (shown === focusKey) return
+    transformRequestSerialRef.current += 1
+    const root = viewStackRef.current[0]
+    const { focus, submodels } = useGraphStore.getState()
+    let nextStack: ViewLevel[] = [root]
+    if (focus) {
+      const occurrence = canonicalOccurrence(focus.instanceId, focus.rootNodes, submodels)
+      nextStack = [root, {
+        type: "submodel",
+        name: occurrence.label,
+        file: occurrence.definition.file,
+        instanceId: occurrence.instanceId,
+        definitionId: occurrence.definitionId,
+        readOnly: occurrence.readOnly,
+      }]
+      sourceFileRef.current = occurrence.definition.file
+    } else {
+      sourceFileRef.current = root.file
+    }
+    viewStackRef.current = nextStack
+    setViewStack(nextStack)
+    leaveView()
+  }, [focusKey, leaveView, sourceFileRef])
 
   const handleDocumentReload = useCallback((
     reloaded: { nodes: Node[]; edges: Edge[] },
@@ -429,16 +412,10 @@ export default function useSubmodelNavigation({
     transformRequestSerialRef.current += 1
     const { nodes: reloadedNodes, edges: reloadedEdges } = reloaded
     const activeView = viewStackRef.current[viewStackRef.current.length - 1]
-    const drilledInstanceId =
-      activeSubmodelIdentity?.instanceId ??
-      (activeView?.type === "submodel" ? activeView.instanceId : null)
-    if (!drilledInstanceId) return
+    if (activeView?.type !== "submodel") return
 
-    // The synchronizer has installed a new root snapshot. Drop every cached
-    // child view, even if the occurrence survives, so breadcrumbs and canvas
-    // always describe the same document.
-    parentGraphRef.current = null
-    setActiveSubmodelIdentity(null)
+    // The synchronizer has installed a new root snapshot, which closed the
+    // open submodel, so breadcrumbs and canvas describe the same document.
     const rootFile = viewStackRef.current[0]?.file || sourceFileRef.current
     const rootName = viewStackRef.current[0]?.name || pipelineNameRef.current || "main"
     sourceFileRef.current = rootFile
@@ -456,9 +433,6 @@ export default function useSubmodelNavigation({
     setPreviewData(null)
     setTimeout(() => fitView({ padding: 0.8 }), 100)
   }, [
-    activeSubmodelIdentity,
-    parentGraphRef,
-    setActiveSubmodelIdentity,
     sourceFileRef,
     pipelineNameRef,
     setNodesRaw,
@@ -470,7 +444,7 @@ export default function useSubmodelNavigation({
   ])
 
   const handleDissolveSubmodel = useCallback(async (instanceId: string) => {
-    if (parentGraphRef.current) {
+    if (useGraphStore.getState().focus !== null) {
       addToast("error", "Return to the main pipeline before dissolving a submodel.")
       return
     }
@@ -528,7 +502,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${apiErrorMessage(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
+  }, [graphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
 
   return {
     viewStack,

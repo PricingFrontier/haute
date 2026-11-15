@@ -75,7 +75,7 @@ describe("useNodeHandlers", () => {
     }))
     const { result } = renderHook(() => {
       const navigation = useSubmodelNavigation({
-        ...params, parentGraphRef: { current: null }, setActiveSubmodelIdentity: vi.fn(),
+        ...params,
         submodelsRef: { current: {} }, setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(),
         cancelPreview: vi.fn(), clearTrace: vi.fn(),
         preambleRef: { current: "" }, sourceRevisionRef, preservedBlocksRef: { current: [] },

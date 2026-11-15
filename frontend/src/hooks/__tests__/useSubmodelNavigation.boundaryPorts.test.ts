@@ -1,7 +1,7 @@
 /**
  * Drilling into a submodel: its declared boundaries become Input and Output cards, an
  * undeclared parent handle is refused, an untouched visit leaves the document and its history
- * clean, and breadcrumb navigation clears the parent graph only on returning to the top level.
+ * clean, and breadcrumb navigation closes the open submodel only on returning to the top level.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
@@ -59,8 +59,6 @@ function occurrence() {
 function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[0]> = {}) {
   return {
     graphRef: { current: { nodes: [occurrence()] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null as { nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null },
-    setActiveSubmodelIdentity: vi.fn(),
     submodelsRef: { current: { [DEFINITION_ID]: definition } as Record<string, unknown> },
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
@@ -79,6 +77,16 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     reservedApiInputFrameLabels: new Set<string>(),
     ...overrides,
   }
+}
+
+/** Load the params' graph into the store, as App's canvas refs mirror it. */
+function seed(params: ReturnType<typeof makeParams>) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: params.graphRef.current.nodes,
+    edges: params.graphRef.current.edges,
+    preamble: "",
+    submodels: params.submodelsRef.current,
+  })
 }
 
 describe("useSubmodelNavigation - canonical port building and drill-in navigation", () => {
@@ -129,19 +137,8 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
 
     const { result } = renderHook(() => {
       const navigation = useSubmodelNavigation(params)
-      const nodes = useGraphStore((state) => state.nodes)
-      const edges = useGraphStore((state) => state.edges)
-      const submodels = useGraphStore((state) => state.submodels)
-      const view = navigation.viewStack.at(-1)
       useSubmodelBoundaryEditing({
-        activeSubmodelName: view?.type === "submodel" ? view.name : null,
-        activeSubmodelInstanceId: view?.type === "submodel" ? view.instanceId ?? null : null,
-        activeSubmodelDefinitionId: view?.type === "submodel" ? view.definitionId ?? null : null,
-        nodes,
-        edges,
-        submodels,
         graphRef: params.graphRef,
-        parentGraphRef: params.parentGraphRef,
         submodelsRef: params.submodelsRef,
         setNodesAndEdgesAndSubmodels: useGraphStore.getState().setNodesAndEdgesAndSubmodels,
         reservedApiInputFrameLabels: new Set<string>(),
@@ -154,7 +151,7 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
     })
     expect(result.current.viewStack).toHaveLength(2)
     expect(useGraphStore.getState().dirty).toBe(false)
-    expect(params.parentGraphRef.current).not.toBeNull()
+    expect(useGraphStore.getState().focus).not.toBeNull()
 
     act(() => result.current.handleBreadcrumbNavigate(0))
 
@@ -178,6 +175,7 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
         { ...makeEdge(INSTANCE_ID, "tgt1"), id: "output-claims", sourceHandle: "out__claims_result" } as Edge,
       ],
     }
+    seed(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -214,6 +212,7 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
         },
       },
     })
+    seed(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -221,27 +220,26 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
     })
 
     expect(result.current.viewStack).toHaveLength(1)
-    expect(useGraphStore.getState().submodelView).toBeNull()
+    expect(useGraphStore.getState().focus).toBeNull()
     expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "error", text: expect.stringContaining("undeclared") }),
     ]))
   })
 
-  it("handleBreadcrumbNavigate clears parentGraphRef only when returning to depth 0", async () => {
+  it("handleBreadcrumbNavigate closes the open submodel only when returning to depth 0", async () => {
     vi.useFakeTimers()
     const params = makeParams()
+    seed(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
-    expect(params.parentGraphRef.current).not.toBeNull()
-    expect(params.setActiveSubmodelIdentity).toHaveBeenCalledWith({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID })
+    expect(useGraphStore.getState().focus).toMatchObject({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID })
 
     act(() => {
       result.current.handleBreadcrumbNavigate(0)
     })
-    expect(params.parentGraphRef.current).toBeNull()
-    expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
+    expect(useGraphStore.getState().focus).toBeNull()
     expect(result.current.viewStack).toHaveLength(1)
     vi.useRealTimers()
   })
@@ -257,12 +255,13 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
         },
       },
     })
+    seed(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
     expect(mockLoad).not.toHaveBeenCalled()
     expect(result.current.viewStack).toHaveLength(1)
-    expect(useGraphStore.getState().submodelView).toBeNull()
+    expect(useGraphStore.getState().focus).toBeNull()
   })
 })

@@ -44,7 +44,7 @@ const inputNode = {
 } as Node
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [inputNode], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [inputNode], edges: [], preamble: "" })),
 }))
 
 import {
@@ -71,7 +71,6 @@ function makeParams() {
   return {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),

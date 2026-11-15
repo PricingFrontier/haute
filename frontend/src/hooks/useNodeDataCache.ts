@@ -22,7 +22,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { afterCommitEffects, nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
+import { nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -303,9 +303,8 @@ export default function useNodeDataCache({
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     const controller = new AbortController()
-    // Asked once this commit's effects have all run, so an edit inside an open
-    // submodel has reached the whole pipeline the request sends.
-    void afterCommitEffects()
+    // Started in the chain so a request that cannot be built is caught with the rest.
+    void Promise.resolve()
       .then(() => (controller.signal.aborted ? null : fetchPoint(controller.signal)))
       .then((fresh) => {
         if (!fresh || controller.signal.aborted) return

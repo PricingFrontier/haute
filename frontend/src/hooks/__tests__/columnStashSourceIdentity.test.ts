@@ -50,7 +50,8 @@ vi.mock("../../api/client", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
-import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNode, makeEdge } from "../../test-utils/factories"
+import type { SubmodelDefinition } from "../../types/node"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 
 const mockLoad = vi.mocked(loadPipeline)
@@ -65,7 +66,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   return {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodesRaw,
@@ -174,34 +174,55 @@ describe("column-stash source identity (cache-key completeness)", () => {
     expect(nodes[0].data._columnsSource).toBeUndefined()
   })
 
-  it("invalidates per-frame stashes, on screen and on the root graph kept while drilled in, when the active source changes", async () => {
+  it("invalidates per-frame stashes, on screen and on the pipeline's own nodes behind an open submodel, when the active source changes", async () => {
     vi.useRealTimers()
     const frames = { policy: LIVE_COLUMNS }
-    // A drilled view's Input card holds only per-frame columns.
-    const inputCard = makeNode("input-card", "submodelPort")
-    inputCard.data = { ...inputCard.data, _frameColumns: frames, _columnsSource: "live" }
-    const kept = makeNode("kept")
-    kept.data = { ...kept.data, _frameColumns: frames, _columnsSource: "staging" }
     const feeder = makeStashedNode("workbench", "live")
     feeder.data = { ...feeder.data, _frameColumns: frames }
-    const root = { nodes: [feeder, makeNode("pricing", "submodel")], edges: [], submodels: {} }
-    const params = makeParams({ parentGraphRef: { current: root } })
-    params.graphRef.current = { nodes: [inputCard, kept], edges: [] }
+    const occurrence = makeNode("pricing", "submodel", {
+      data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
+    })
+    const definition: SubmodelDefinition = {
+      definitionId: "definition_pricing",
+      file: "modules/pricing.py",
+      graph: { nodes: [makeIdentifiedNode("kept")], edges: [] },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "kept", handleId: null }] }],
+      outputPorts: [{ name: "premium", source: { nodeId: "kept", handleId: null } }],
+    }
+    const params = makeParams()
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    act(() => { useGraphStore.getState().setNodesRaw([inputCard, kept]) })
+    act(() => {
+      const store = useGraphStore.getState()
+      store.loadGraphSnapshot({
+        nodes: [feeder, occurrence],
+        edges: [{ id: "feed", source: "workbench", target: "pricing", targetHandle: "in__policy" }],
+        preamble: "",
+        submodels: { definition_pricing: definition },
+      })
+      store.enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+      // A drilled view's Input card holds only per-frame columns.
+      store.setNodesRaw((nodes) => nodes.map((node) => {
+        if (node.type === "submodelPort" && node.data.portDirection === "input") {
+          return { ...node, data: { ...node.data, _frameColumns: frames, _columnsSource: "live" } }
+        }
+        return node.id === "kept" ? { ...node, data: { ...node.data, _frameColumns: frames, _columnsSource: "staging" } } : node
+      }))
+    })
+    const rootBefore = useGraphStore.getState().focus!.rootNodes
 
     act(() => { useSettingsStore.getState().setActiveSource("staging") })
 
-    const [card, keptNode] = useGraphStore.getState().nodes
+    const { nodes, focus } = useGraphStore.getState()
+    const card = nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "input")!
     expect(card.data._frameColumns).toBeUndefined()
     expect(card.data._columnsSource).toBeUndefined()
-    expect(keptNode.data._frameColumns).toEqual(frames)
-    const [rootFeeder, occurrence] = params.parentGraphRef.current!.nodes
+    expect(nodes.find((node) => node.id === "kept")!.data._frameColumns).toEqual(frames)
+    const [rootFeeder, rootOccurrence] = focus!.rootNodes
     expect(rootFeeder.data._frameColumns).toBeUndefined()
     expect(rootFeeder.data._columns).toBeUndefined()
-    expect(occurrence).toBe(root.nodes[1])
+    expect(rootOccurrence).toBe(rootBefore[1])
   })
 
   it("keeps a stash captured under the current source (no gratuitous invalidation)", async () => {

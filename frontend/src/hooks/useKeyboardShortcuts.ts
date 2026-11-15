@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import type { Node, Edge, NodeChange } from "@xyflow/react"
+import type { Node, Edge, EdgeChange, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -150,6 +150,8 @@ interface KeyboardShortcutsParams {
     nodeChanges?: NodeChange[],
     onSettled?: (committed: boolean) => void,
   ) => SharedNodeDeletionResult
+  /** Removes edges that include a submodel's boundary edges; false when none is one. */
+  onBoundaryEdgesChange?: (changes: EdgeChange[]) => boolean
 }
 
 function assertResolvedPasteMatchesCandidate(
@@ -187,6 +189,7 @@ export default function useKeyboardShortcuts({
   isInsideSubmodel, readOnly, existingSingletonTypes,
   resolveGraphIdentities,
   commitSharedNodeDeletion,
+  onBoundaryEdgesChange,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
@@ -426,7 +429,10 @@ export default function useKeyboardShortcuts({
           if (!cleanedUp) cleanupAfterRemoval()
         } else {
           // Pure-edge delete: only edges selected, no nodes — a single setEdges
-          // is already one snapshot.
+          // is already one snapshot. A submodel's boundary edges are removed by
+          // its boundary action, which removes the rest with them.
+          const removals: EdgeChange[] = [...selectedEdgeIds].map((id) => ({ type: "remove", id }))
+          if (onBoundaryEdgesChange?.(removals)) return
           setEdges(currentEdges.filter((ed) => !selectedEdgeIds.has(ed.id)))
         }
       }
@@ -440,6 +446,6 @@ export default function useKeyboardShortcuts({
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
     existingSingletonTypes,
-    resolveGraphIdentities, commitSharedNodeDeletion,
+    resolveGraphIdentities, commitSharedNodeDeletion, onBoundaryEdgesChange,
   ])
 }

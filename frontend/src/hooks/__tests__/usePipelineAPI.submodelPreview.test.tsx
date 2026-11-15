@@ -43,7 +43,7 @@ function fixture(instance = true, sameChild = false, outputCount = 2) {
   const nodes = [occurrence]
   const params: Parameters<typeof usePipelineAPI>[0] = {
     selectedNode: occurrence, graphRef: { current: { nodes, edges: [] } },
-    parentGraphRef: { current: null }, activeSubmodelIdentity: null,
+    activeSubmodelIdentity: null,
     submodelsRef: { current: submodels }, setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(), setPreamble: vi.fn(),
     preambleRef: { current: "" }, pipelineNameRef: { current: "test" }, descriptionRef: { current: "" },
     sourceFileRef: { current: "main.py" }, sourceRevisionRef: { current: "revision-test" },

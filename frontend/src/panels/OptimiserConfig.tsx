@@ -22,7 +22,7 @@ import { CommittedTextField, SavedValueOption } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
-import { afterCommitEffects, nodeRequestTarget } from "../utils/nodeRequestTarget"
+import { nodeRequestTarget } from "../utils/nodeRequestTarget"
 import { useGraph } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
@@ -210,7 +210,6 @@ export default function OptimiserConfig({
   // The hook owns the abort / toast / loading lifecycle.
   const solveEstimateEndpoint = useCallback(
     async (_payload: void, { signal }: { signal: AbortSignal }) => {
-      await afterCommitEffects()
       const target = requestTarget()
       return estimateOptimiserSolve({
         graph: target.graph,

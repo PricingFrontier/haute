@@ -14,12 +14,13 @@ type Graph = { nodes: Node[]; edges: Edge[] }
 
 /**
  * The document and the view on the canvas: a reload or a live update adopted
- * starts a new execution generation, and each entry into a submodel view a new
- * view context (the root's is null), however alike their graphs are.
+ * starts a new execution generation, and each change of view (opening a
+ * submodel, returning, or an Undo that moves between them) a new navigation
+ * serial, however alike their graphs are.
  */
 function canvasScope(): readonly unknown[] {
   const status = useDocumentStatusStore.getState()
-  return [status.sourceFile, status.executionGeneration, useGraphStore.getState().submodelView?.entrySnapshot ?? null]
+  return [status.sourceFile, status.executionGeneration, useGraphStore.getState().navigationSerial]
 }
 
 /** Every node's name: a creation's name was allocated against them, and an edge's input name copies its source's. */

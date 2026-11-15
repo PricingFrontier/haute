@@ -1,4 +1,3 @@
-import type { Node, Edge } from "@xyflow/react"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 import type { PipelineEdge } from "../types/node"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
@@ -109,19 +108,19 @@ export function graphForRequestIdentity(
   return graphObjectForRequestIdentity(graph)
 }
 
-/** Resolve graph payload from ref objects (parentGraph takes priority). */
-export function resolveGraphFromRefs(
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>,
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>,
-  preambleRef: React.MutableRefObject<string>,
-) {
-  const graph = parentGraphRef.current
-    ? { nodes: parentGraphRef.current.nodes, edges: parentGraphRef.current.edges, submodels: parentGraphRef.current.submodels, preamble: preambleRef.current }
-    : { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current, preamble: preambleRef.current }
+/**
+ * The document the graph store holds, as a request payload: the pipeline's own
+ * nodes and edges (also while a submodel is open), every definition, the
+ * preamble and the global constants. The store applies every edit before it
+ * returns, so a request built from this right after an edit carries it.
+ */
+export function documentGraphPayload() {
+  const state = useGraphStore.getState()
   return toCanonicalGraphPayload({
-    ...graph,
-    edges: graph.edges as PipelineEdge[],
+    nodes: state.focus ? state.focus.rootNodes : state.nodes,
+    edges: (state.focus ? state.focus.rootEdges : state.edges) as PipelineEdge[],
+    submodels: state.submodels,
+    preamble: state.preamble,
     ...storeGlobalConstants(),
   })
 }

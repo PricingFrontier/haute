@@ -28,7 +28,7 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { apiErrorMessage } from "../api/errors"
-import { afterCommitEffects, nodeRequestTarget, requestNodeNamer } from "../utils/nodeRequestTarget"
+import { nodeRequestTarget, requestNodeNamer } from "../utils/nodeRequestTarget"
 import {
   effectiveMetrics,
   trainingConfigurationIssues,
@@ -518,7 +518,6 @@ export default function ModellingConfig({
       const run = ++latestEstimate.current
       setEstimateWaiting(false)
       try {
-        await afterCommitEffects()
         return await estimateAfterSupersededPreviews(
           () => {
             const target = requestTarget()

@@ -11,7 +11,7 @@ import {
   type NodeStatus,
 } from "../types/node"
 import { traceCell } from "../api/client"
-import { resolveGraphFromRefs } from "../utils/buildGraph"
+import { documentGraphPayload } from "../utils/buildGraph"
 import {
   qualifiedRuntimeNodeId,
   runtimeNodeIdForVisibleNode,
@@ -40,11 +40,8 @@ interface TracingParams {
   edges: Edge[]
   submodels: Record<string, unknown>
   selectedNode: Node | null
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
   activeSubmodelIdentity: DrilledOccurrenceIdentity | null
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
-  preambleRef: React.MutableRefObject<string>
   nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
   /** The node a trace card or derivation row points at, ringed while a trace shows. */
@@ -231,8 +228,7 @@ const IDLE_TRACE_STATE: TraceRequestState = { status: "idle" }
 
 export default function useTracing({
   nodes, edges, submodels, selectedNode,
-  graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
-  preambleRef,
+  activeSubmodelIdentity, submodelsRef,
   nodeStatuses,
   hoveredNodeId,
   traceFocusNodeId = null,
@@ -375,7 +371,7 @@ export default function useTracing({
       ? submodelOutputPreview(selectedNode, submodelsRef.current, previewOutputHandle)
       : undefined
     if (output === null) return
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const graph = documentGraphPayload()
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
     traceAbort.current?.abort()
@@ -485,7 +481,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
+  }, [selectedNode, activeSubmodelIdentity, submodelsRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

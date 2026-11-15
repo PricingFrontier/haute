@@ -12,7 +12,7 @@ import {
 } from "../api/client"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { syncConnectionId } from "../api/syncConnection"
-import { resolveGraphFromRefs } from "../utils/buildGraph"
+import { documentGraphPayload } from "../utils/buildGraph"
 import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
@@ -58,7 +58,6 @@ import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalCo
 interface PipelineAPIParams {
   selectedNode: Node | null
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[] }>
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
   activeSubmodelIdentity: DrilledOccurrenceIdentity | null
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -432,27 +431,20 @@ function applyPreviewSchemaMapsToNodes(
   })
 }
 
-type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
-
 /**
  * A drilled preview's schema maps also name root nodes, such as the parents
- * feeding the occurrence. Recorded on the root graph kept while drilled in,
- * they return with it, and seed the Input card the next time an occurrence
- * is drilled into (`buildSubmodelViewGraph`), even when that preview is
- * served from the cache.
+ * feeding the occurrence. Recorded on the pipeline's own nodes in the
+ * document, they seed the Input card the next time an occurrence is opened
+ * (`buildSubmodelViewGraph`), even when that preview is served from the cache.
  */
 function recordRootPreviewColumns(
-  parentGraphRef: ParentGraphRef,
   result: PreviewNodeResponse,
   source: string,
   structuralVersion: number,
 ): void {
-  const root = parentGraphRef.current
-  if (!root) return
-  parentGraphRef.current = {
-    ...root,
-    nodes: applyPreviewSchemaMapsToNodes(root.nodes, result, source, structuralVersion, null),
-  }
+  useGraphStore.getState().setRootNodesRaw((nodes) =>
+    applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion, null),
+  )
 }
 
 /**
@@ -553,7 +545,7 @@ function isLostAnswer(err: unknown): boolean {
 
 export default function usePipelineAPI({
   selectedNode,
-  graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
+  graphRef, activeSubmodelIdentity, submodelsRef,
   setNodesRaw,
   preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   nodeIdCounter: nodeIdCounterRef,
@@ -650,7 +642,7 @@ export default function usePipelineAPI({
   // shared snapshot, or outside every target's lineage, is never built.
   const ensureSnapshotsForPreviews = useCallback(
     async (
-      graph: ReturnType<typeof resolveGraphFromRefs>,
+      graph: ReturnType<typeof documentGraphPayload>,
       targets: PreviewInputTarget[],
       signal: AbortSignal,
     ) => {
@@ -678,15 +670,13 @@ export default function usePipelineAPI({
   // stashes of unknown provenance gets them stripped and lazily re-filled.
   useEffect(() => {
     setNodesRaw((nds) => invalidateStaleColumnStashes(nds, activeSource))
-    // The root graph kept while drilled in holds stashes too
-    // (`recordRootPreviewColumns`): they return with it and seed the Input
-    // card on the next drill-in, so they answer to the same invariant.
-    const root = parentGraphRef.current
-    if (root) {
-      const nodes = invalidateStaleColumnStashes(root.nodes, activeSource)
-      if (nodes !== root.nodes) parentGraphRef.current = { ...root, nodes }
+    // While a submodel is open the pipeline's own nodes hold stashes too
+    // (`recordRootPreviewColumns`): they seed the Input card on the next
+    // drill-in, so they answer to the same invariant.
+    if (useGraphStore.getState().focus !== null) {
+      useGraphStore.getState().setRootNodesRaw((nodes) => invalidateStaleColumnStashes(nodes, activeSource))
     }
-  }, [activeSource, setNodesRaw, parentGraphRef])
+  }, [activeSource, setNodesRaw])
 
   const adoptPipelineDocument = useCallback((
     data: import("../types/pipelineDocument").PipelineEditorDocument,
@@ -922,7 +912,7 @@ export default function usePipelineAPI({
       setPreviewData(occurrencePreviewData(makePreviewData(node.id, label, { status: "loading" }), output))
     }
 
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const graph = documentGraphPayload()
     const controller = new AbortController()
     previewAbort.current = controller
 
@@ -1067,7 +1057,7 @@ export default function usePipelineAPI({
         }
         if (result.columns) {
           setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, output ? targetNodeId : node.id, result, snapshotSource, structuralVersion, output ? null : activeSubmodelIdentity))
-          if (activeSubmodelIdentity && !output) recordRootPreviewColumns(parentGraphRef, result, snapshotSource, structuralVersion)
+          if (activeSubmodelIdentity && !output) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
         }
       })
       .catch((err: unknown) => {
@@ -1104,7 +1094,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped, portLabelFor, outputFor])
+  }, [graphRef, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped, portLabelFor, outputFor])
 
   useEffect(() => {
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
@@ -1291,7 +1281,7 @@ export default function usePipelineAPI({
       setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))
     }
 
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const graph = documentGraphPayload()
 
     // Capture settings once so every upstream preview in this refresh
     // uses the same snapshot (Issues #33/#34).
@@ -1357,7 +1347,7 @@ export default function usePipelineAPI({
               if (!requestStillCurrent()) return
               if (result.columns) {
                 setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion, activeSubmodelIdentity))
-                if (activeSubmodelIdentity) recordRootPreviewColumns(parentGraphRef, result, snapshotSource, structuralVersion)
+                if (activeSubmodelIdentity) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
               }
             })
             .catch((err: unknown) => {
@@ -1423,7 +1413,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, portLabelFor])
+  }, [fetchPreviewImmediate, previewDebounce, graphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, portLabelFor])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
@@ -1461,7 +1451,7 @@ export default function usePipelineAPI({
       previewRequestSeq.current === requestId &&
       useGraphStore.getState().structuralVersion === structuralVersion &&
       documentStillCurrent()
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const graph = documentGraphPayload()
     const recoveryPreview = snapshotDocumentStatus === "degraded"
     if (recoveryPreview && activeSubmodelIdentity !== null) {
       controller.abort()
@@ -1560,7 +1550,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId && stopRetry.current === null) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [previewDebounce, fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor])
+  }, [previewDebounce, fetchPreviewImmediate, graphRef, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
@@ -1571,7 +1561,7 @@ export default function usePipelineAPI({
       addToast("error", documentReadOnlyReason())
       return false
     }
-    if (parentGraphRef.current) {
+    if (useGraphStore.getState().focus !== null) {
       addToast("error", "Return to the main pipeline before saving.")
       return false
     }
@@ -1711,7 +1701,7 @@ export default function usePipelineAPI({
     } finally {
       settleSave()
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
+  }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   // In automatic calculation, the displayed preview is fetched again once a
   // snapshot is published, refreshed, or cleared after its request was sent: its rows may have been

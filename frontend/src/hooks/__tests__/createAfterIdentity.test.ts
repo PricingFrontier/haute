@@ -40,7 +40,7 @@ const refusal = ["error", "Node creation was not applied because the graph chang
 describe("createAfterIdentity", () => {
   beforeEach(() => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "rating/main.py" }))
-    useGraphStore.setState({ submodelView: null })
+    useGraphStore.getState().resetForTests()
   })
 
   it("applies onto the live graph after a selection or a drag", async () => {
@@ -67,10 +67,10 @@ describe("createAfterIdentity", () => {
     expect(creation.addToast).toHaveBeenCalledWith(...refusal)
   })
 
-  it("is refused when the canvas moves into a submodel view", async () => {
+  it("is refused when the canvas changes view, as opening a submodel does", async () => {
     const graphRef = { current: graphOf() }
     const creation = pendingCreation(graphRef)
-    useGraphStore.getState().enterSubmodelView(graphOf())
+    useGraphStore.setState((state) => ({ navigationSerial: state.navigationSerial + 1 }))
     graphRef.current = graphOf()
 
     await creation.finish()

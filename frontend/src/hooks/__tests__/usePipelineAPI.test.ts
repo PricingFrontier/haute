@@ -65,7 +65,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -100,7 +100,7 @@ import {
   savePipeline,
   getTrainStatus,
 } from "../../api/client"
-import { resolveGraphFromRefs } from "../../utils/buildGraph"
+import { documentGraphPayload } from "../../utils/buildGraph"
 import { makeEdge, makeInputCacheSnapshot, makeNode, makeTrainResult, makeTrainStatus } from "../../test-utils/factories"
 
 // A preview that waits on a cache build crosses several effects and mocked
@@ -114,13 +114,38 @@ const mockSave = vi.mocked(savePipeline)
 const mockBuildInputCache = vi.mocked(buildInputCache)
 const mockGetInputCacheJob = vi.mocked(getInputCacheJob)
 const mockGetInputCacheStatus = vi.mocked(getInputCacheStatus)
-const mockResolveGraphFromRefs = vi.mocked(resolveGraphFromRefs)
+const mockDocumentGraphPayload = vi.mocked(documentGraphPayload)
+
+/**
+ * The refs of the latest `makeParams`: the canvas the request payload mock reads
+ * for the main pipeline, as App's canvas refs mirror the graph store.
+ */
+let documentRefs: Pick<ReturnType<typeof makeParams>, "graphRef" | "submodelsRef" | "preambleRef"> | null = null
+
+/** The request payload as `documentGraphPayload` builds it: the pipeline's own graph, also with a submodel open. */
+function payloadFromDocument() {
+  const refs = documentRefs!
+  const { focus, submodels } = useGraphStore.getState()
+  const graph = focus
+    ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble: refs.preambleRef.current }
+    : { nodes: refs.graphRef.current.nodes, edges: refs.graphRef.current.edges, submodels: refs.submodelsRef.current, preamble: refs.preambleRef.current }
+  return graph as unknown as ReturnType<typeof documentGraphPayload>
+}
+
+/** Open occurrence `pricing` of `definition_pricing` over `rootNodes`, as the store does on a drill-in. */
+function openPricing(rootNodes: Node[]) {
+  act(() => {
+    useGraphStore.setState({
+      focus: { ...makeActiveSubmodelIdentity(), readOnly: false, rootNodes, rootEdges: [] },
+      submodels: { definition_pricing: {} },
+    })
+  })
+}
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
-  return {
+  const params = {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
@@ -136,6 +161,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
+  documentRefs = params
+  return params
 }
 
 it("ignores an obsolete save conflict after a document reload", async () => {
@@ -303,6 +330,8 @@ describe("usePipelineAPI", () => {
       lastSavedSnapshot: null,
       undoStack: [],
       redoStack: [],
+      focus: null,
+      submodelAnnotations: {},
     })
     useNodeResultsStore.setState({ previews: {}, columnCache: {}, trainJobs: {}, trainResults: {}, solveJobs: {}, pivotJobs: {}, pivotStartClaims: {} })
     mockLoad.mockReset()
@@ -312,23 +341,8 @@ describe("usePipelineAPI", () => {
     mockGetInputCacheJob.mockReset()
     mockGetInputCacheStatus.mockReset()
     vi.mocked(previewInputs).mockReset().mockResolvedValue({ input_node_ids: [] })
-    mockResolveGraphFromRefs.mockReset()
-    mockResolveGraphFromRefs.mockImplementation((graphRef, parentGraphRef, submodelsRef, preambleRef) => {
-      if (parentGraphRef.current) {
-        return {
-          nodes: parentGraphRef.current.nodes,
-          edges: parentGraphRef.current.edges,
-          submodels: parentGraphRef.current.submodels,
-          preamble: preambleRef.current,
-        }
-      }
-      return {
-        nodes: graphRef.current.nodes,
-        edges: graphRef.current.edges,
-        submodels: submodelsRef.current,
-        preamble: preambleRef.current,
-      }
-    })
+    mockDocumentGraphPayload.mockReset()
+    mockDocumentGraphPayload.mockImplementation(payloadFromDocument)
 
     mockSave.mockReset()
   })
@@ -1322,18 +1336,11 @@ describe("usePipelineAPI", () => {
   it("handleSave is blocked while drilled into a submodel", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
-    const params = makeParams({
-      parentGraphRef: {
-        current: {
-          nodes: [makeNode("parent")],
-          edges: [],
-          submodels: { pricing: {} },
-        },
-      },
-    })
+    const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("child")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    openPricing([makeNode("parent")])
 
     await act(async () => {
       result.current.handleSave()
@@ -2193,22 +2200,14 @@ describe("usePipelineAPI", () => {
       column_count: 1,
     }))
     const child = makeNode("nb_batch", NODE_TYPES.DATA_INPUT)
-    const params = makeParams({
-      activeSubmodelIdentity: makeActiveSubmodelIdentity(),
-      parentGraphRef: {
-        current: {
-          nodes: [makeNode("pricing", NODE_TYPES.SUBMODEL)],
-          edges: [],
-          submodels: { definition_pricing: {} },
-        },
-      },
-    })
+    const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
     params.graphRef.current = {
       nodes: [child],
       edges: [],
     }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    openPricing([makeNode("pricing", NODE_TYPES.SUBMODEL)])
 
     act(() => {
       result.current.fetchPreview(child, { debounceMs: 0 })
@@ -2221,7 +2220,7 @@ describe("usePipelineAPI", () => {
     expect(result.current.previewData?.nodeId).toBe("nb_batch")
   })
 
-  it("records a drilled preview's columns on the child it names and on the root nodes kept while drilled in", async () => {
+  it("records a drilled preview's columns on the child it names and on the pipeline's own nodes behind it", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     const policy = [{ name: "policy_id", dtype: "String" }]
     const banded = [...policy, { name: "age_band", dtype: "String" }]
@@ -2233,26 +2232,18 @@ describe("usePipelineAPI", () => {
       node_frame_columns: { workbench: { policy_frame: policy } },
     }))
     const child = makeNode("bands", NODE_TYPES.BANDING)
-    const params = makeParams({
-      activeSubmodelIdentity: makeActiveSubmodelIdentity(),
-      parentGraphRef: {
-        current: {
-          nodes: [makeNode("workbench", NODE_TYPES.DATA_INPUT), makeNode("pricing", NODE_TYPES.SUBMODEL)],
-          edges: [],
-          submodels: { definition_pricing: {} },
-        },
-      },
-    })
+    const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
     params.graphRef.current = { nodes: [child], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    openPricing([makeNode("workbench", NODE_TYPES.DATA_INPUT), makeNode("pricing", NODE_TYPES.SUBMODEL)])
 
     act(() => { result.current.fetchPreview(child, { debounceMs: 0 }) })
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
 
     const update = vi.mocked(params.setNodesRaw).mock.calls.at(-1)?.[0] as (nodes: Node[]) => Node[]
     expect(update([child])[0].data).toMatchObject({ _columns: banded, _columnsSource: "live" })
-    const [workbench, occurrence] = params.parentGraphRef.current!.nodes
+    const [workbench, occurrence] = useGraphStore.getState().focus!.rootNodes
     expect(workbench.data).toMatchObject({
       _columns: policy,
       _frameColumns: { policy_frame: policy },

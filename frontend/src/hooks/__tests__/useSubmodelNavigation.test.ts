@@ -52,11 +52,10 @@ function makeOccurrence(instanceId = INSTANCE_ID, instanceOf?: string) {
   })
 }
 
+/** Hook params over a document the graph store holds, as App's canvas refs mirror the store. */
 function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[0]> = {}) {
-  return {
+  const params = {
     graphRef: { current: { nodes: [makeNode("n1"), makeNode("n2"), makeOccurrence()] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null as { nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null },
-    setActiveSubmodelIdentity: vi.fn(),
     submodelsRef: { current: { [DEFINITION_ID]: makeDefinition() } as Record<string, unknown> },
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
@@ -80,6 +79,8 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     })),
     ...overrides,
   }
+  seedCanonicalGraph(params)
+  return params
 }
 
 function seedCanonicalGraph(params: ReturnType<typeof makeParams>) {
@@ -129,15 +130,8 @@ describe("useSubmodelNavigation", () => {
   })
 
   it("handleCreateSubmodel refuses while a drilled view is active", async () => {
-    const params = makeParams({
-      parentGraphRef: {
-        current: {
-          nodes: [] as Node[],
-          edges: [] as Edge[],
-          submodels: {} as Record<string, unknown>,
-        },
-      },
-    })
+    const params = makeParams()
+    act(() => useGraphStore.getState().enterSubmodelView({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID }))
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     let outcome: unknown
@@ -330,15 +324,8 @@ describe("useSubmodelNavigation", () => {
   })
 
   it("handleDissolveSubmodel refuses while a drilled view is active", async () => {
-    const params = makeParams({
-      parentGraphRef: {
-        current: {
-          nodes: [] as Node[],
-          edges: [] as Edge[],
-          submodels: {} as Record<string, unknown>,
-        },
-      },
-    })
+    const params = makeParams()
+    act(() => useGraphStore.getState().enterSubmodelView({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID }))
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -407,11 +394,6 @@ describe("useSubmodelNavigation", () => {
     ]
     const currentEdges: Edge[] = []
     const currentSubmodels = {}
-    useGraphStore.setState({
-      nodes: currentNodes,
-      edges: currentEdges,
-      submodels: currentSubmodels,
-    })
     mockCreate.mockResolvedValue({
       status: "ok",
       submodel_file: "modules/two_inputs.py",
@@ -427,6 +409,11 @@ describe("useSubmodelNavigation", () => {
         },
       },
       submodelsRef: { current: { stale_definition: makeDefinition() } },
+    })
+    useGraphStore.setState({
+      nodes: currentNodes,
+      edges: currentEdges,
+      submodels: currentSubmodels,
     })
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
@@ -455,6 +442,7 @@ describe("useSubmodelNavigation", () => {
       },
     })
     const definition = makeDefinition([child])
+    const params = makeParams()
     useGraphStore.getState().loadGraphSnapshot({
       nodes: [root],
       edges: [],
@@ -462,7 +450,6 @@ describe("useSubmodelNavigation", () => {
       submodels: { [DEFINITION_ID]: definition },
     })
     mockCreate.mockResolvedValue(makeCreateResponse({ nodes: [], edges: [], submodels: {} }))
-    const params = makeParams()
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -529,7 +516,7 @@ describe("useSubmodelNavigation", () => {
     })
     expect(result.current.viewStack).toHaveLength(2)
     expect(result.current.viewStack[1]).toMatchObject({ type: "submodel", name: "pricing" })
-    expect(params.setActiveSubmodelIdentity).toHaveBeenCalledWith({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID })
+    expect(useGraphStore.getState().focus).toMatchObject({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID })
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toContain("child1")
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
     vi.useRealTimers()
@@ -596,10 +583,8 @@ describe("useSubmodelNavigation", () => {
 
     act(() => result.current.handleDrillIntoSubmodel(INSTANCE_ID))
 
-    expect(params.parentGraphRef.current).toBeNull()
     expect(params.sourceFileRef.current).toBe("pipelines/main.py")
-    expect(useGraphStore.getState().submodelView).toBeNull()
-    expect(params.setActiveSubmodelIdentity).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().focus).toBeNull()
     expect(result.current.viewStack).toHaveLength(1)
     expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
       type: "error",
@@ -720,7 +705,7 @@ describe("useSubmodelNavigation", () => {
     })
     expect(result.current.viewStack).toHaveLength(1)
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["n1", "n2", INSTANCE_ID])
-    expect(useGraphStore.getState().submodelView).toBeNull()
+    expect(useGraphStore.getState().focus).toBeNull()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
     vi.useRealTimers()
   })
@@ -732,20 +717,20 @@ describe("useSubmodelNavigation", () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
     expect(result.current.viewStack).toHaveLength(2)
-    expect(params.parentGraphRef.current).not.toBeNull()
     vi.mocked(params.setNodesRaw).mockClear()
     vi.mocked(params.setEdgesRaw).mockClear()
     vi.mocked(params.setSelectedNode).mockClear()
 
+    // Adoption installs the authoritative document, which closes the view.
     act(() => {
+      seedCanonicalGraph(params)
       result.current.resetToAuthoritativeRoot("repaired.py", "repaired")
     })
 
     expect(result.current.viewStack).toEqual([
       { type: "pipeline", name: "repaired", file: "repaired.py" },
     ])
-    expect(params.parentGraphRef.current).toBeNull()
-    expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
+    expect(useGraphStore.getState().focus).toBeNull()
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setSelectedNode).not.toHaveBeenCalled()
@@ -769,26 +754,24 @@ describe("useSubmodelNavigation", () => {
       await result.current.handleDrillIntoSubmodel("pricing")
     })
     expect(result.current.viewStack).toHaveLength(2)
-    expect(params.setActiveSubmodelIdentity).toHaveBeenCalledWith({
-      instanceId: "pricing",
-      definitionId: DEFINITION_ID,
-    })
+    expect(useGraphStore.getState().focus).toMatchObject({ instanceId: "pricing", definitionId: DEFINITION_ID })
 
+    // The synchronizer installs the reloaded document, then tells navigation.
     const reloadedNodes = [makeNode("other_node", "polars"), ...(retained ? [makeOccurrence()] : [])]
     act(() => {
+      useGraphStore.getState().loadGraphSnapshot({ nodes: reloadedNodes, edges: [], preamble: "", submodels: params.submodelsRef.current })
       result.current.handleDocumentReload({ nodes: reloadedNodes, edges: [] })
     })
 
     expect(result.current.viewStack).toHaveLength(1)
     expect(result.current.viewStack[0]).toMatchObject({ type: "pipeline" })
-    expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
-    expect(params.parentGraphRef.current).toBeNull()
+    expect(useGraphStore.getState().focus).toBeNull()
     expect(params.setNodesRaw).toHaveBeenLastCalledWith(reloadedNodes)
     expect(params.setEdgesRaw).toHaveBeenLastCalledWith([])
     vi.useRealTimers()
   })
 
-  it("handleBreadcrumbNavigate restores the reconciled parent graph and metadata", async () => {
+  it("handleBreadcrumbNavigate shows the pipeline's own graph as the document holds it", async () => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({
       status: "ok",
@@ -811,11 +794,10 @@ describe("useSubmodelNavigation", () => {
     const updatedSubmodels = {
       [DEFINITION_ID]: makeDefinition([makeNode("child1")]),
     }
-    params.parentGraphRef.current = {
-      nodes: updatedNodes,
-      edges: updatedEdges,
-      submodels: updatedSubmodels,
-    }
+    act(() => {
+      const { focus } = useGraphStore.getState()
+      useGraphStore.setState({ focus: { ...focus!, rootNodes: updatedNodes, rootEdges: updatedEdges }, submodels: updatedSubmodels })
+    })
 
     act(() => {
       result.current.handleBreadcrumbNavigate(0)
@@ -890,13 +872,9 @@ describe("useSubmodelNavigation", () => {
       },
     }
     const editedSubmodels = { ...params.submodelsRef.current, [DEFINITION_ID]: editedDefinition }
-    // This models the canonical editor commit that has already reconciled the
-    // definition; the assertions below cover the navigation boundary only.
-    params.submodelsRef.current = editedSubmodels
-    params.parentGraphRef.current = {
-      ...params.parentGraphRef.current!,
-      submodels: editedSubmodels,
-    }
+    // This models an editor commit that has changed the definition; the
+    // assertions below cover the navigation boundary only.
+    act(() => useGraphStore.setState({ submodels: editedSubmodels }))
 
     act(() => {
       result.current.handleBreadcrumbNavigate(0)
@@ -1230,6 +1208,10 @@ describe("useSubmodelNavigation", () => {
 
   it("creates one dirty undoable edit without advancing the persisted revision", async () => {
     const originalNodes = [makeNode("n1"), makeNode("n2")]
+    const params = makeParams({
+      preambleRef: { current: "PARENT = 1" },
+      preservedBlocksRef: { current: ["KEEP = 0"] },
+    })
     useGraphStore.getState().loadGraphSnapshot({
       nodes: originalNodes,
       edges: [],
@@ -1249,10 +1231,6 @@ describe("useSubmodelNavigation", () => {
         preamble: "PARENT = 1\nCHILD_HELPER = 2",
         preserved_blocks: ["KEEP = 1"],
       },
-    })
-    const params = makeParams({
-      preambleRef: { current: "PARENT = 1" },
-      preservedBlocksRef: { current: ["KEEP = 0"] },
     })
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
@@ -1397,8 +1375,13 @@ describe("useSubmodelNavigation", () => {
         return response
       })
       if (failure === "identity failure") vi.mocked(params.resolveCanonicalIdentities).mockRejectedValue(new Error("Identity failed"))
-      if (failure === "drilled") params.parentGraphRef.current = { nodes: [], edges: [], submodels: {} }
       const { result } = renderHook(() => useSubmodelNavigation(params))
+      if (failure === "drilled") {
+        // A submodel open in the store, its canvas left as it was.
+        const { nodes, edges } = useGraphStore.getState()
+        act(() => useGraphStore.setState({ focus: { instanceId: INSTANCE_ID, definitionId: DEFINITION_ID, readOnly: false, rootNodes: nodes, rootEdges: edges } }))
+        vi.mocked(params.setSelectedNode).mockClear()
+      }
       let outcome: unknown
       await act(async () => { outcome = await result.current.handleCreateNodeInstance("n1") })
       expect(outcome).toEqual({ ok: false, error: expect.any(String) })
@@ -1421,71 +1404,52 @@ describe("useSubmodelNavigation", () => {
     act(() => result.current.handleDrillIntoSubmodel(INSTANCE_ID))
 
     expect(result.current.viewStack).toHaveLength(1)
-    expect(useGraphStore.getState().submodelView).toBeNull()
-    expect(params.parentGraphRef.current).toBeNull()
+    expect(useGraphStore.getState().focus).toBeNull()
     useDocumentStatusStore.getState().reset()
   })
 
-  it("isolates Undo/Redo history per navigation level and keeps a clean drill-in clean", async () => {
+  it("keeps one history across views: each edit one step, a clean visit none, Undo showing the view a step was made in", async () => {
     const params = makeParams()
-    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
-    const drill = async () => {
-      await act(async () => {
-        await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
-      })
-    }
+    const drill = () => act(() => result.current.handleDrillIntoSubmodel(INSTANCE_ID))
+    const leave = () => act(() => result.current.handleBreadcrumbNavigate(0))
     const nodeIds = () => useGraphStore.getState().nodes.map((node) => node.id)
     const definitionChildIds = () =>
       (useGraphStore.getState().submodels[DEFINITION_ID] as SubmodelDefinition).graph.nodes.map((node) => node.id)
 
     // A clean root drills into a clean view, and leaving it unchanged adds no history.
-    await drill()
+    drill()
     expect(result.current.viewStack).toHaveLength(2)
     expect(useGraphStore.getState().dirty).toBe(false)
     expect(useGraphStore.getState().isDirty()).toBe(false)
-    act(() => result.current.handleBreadcrumbNavigate(0))
+    leave()
     expect(useGraphStore.getState().dirty).toBe(false)
     expect(useGraphStore.getState().canUndo()).toBe(false)
 
-    // A root edit stays on the root's history: Undo in the view cannot reach it.
-    const rootWithN3 = [...params.graphRef.current.nodes, makeNode("n3")]
-    act(() => {
-      params.graphRef.current = { ...params.graphRef.current, nodes: rootWithN3 }
-      useGraphStore.getState().setNodes(rootWithN3)
-    })
-    expect(useGraphStore.getState().dirty).toBe(true)
-    await drill()
-    expect(useGraphStore.getState().canUndo()).toBe(false)
-    expect(useGraphStore.getState().dirty).toBe(true)
+    // A root edit is one step, undoable from inside the view: Undo shows the main pipeline.
+    act(() => useGraphStore.getState().setNodes((nodes) => [...nodes, makeNode("n3")]))
+    drill()
     act(() => useGraphStore.getState().undo())
-    expect(nodeIds()).toContain("child1")
-    expect(nodeIds()).not.toContain("n1")
-
-    // A view edit is undoable in the view; the boundary editor reconciles it
-    // into the parent graph, as the canonical editor commit does.
-    act(() => useGraphStore.getState().setNodes((nodes) => [...nodes, makeNode("child2")]))
-    expect(useGraphStore.getState().canUndo()).toBe(true)
-    const reconciledSubmodels = {
-      [DEFINITION_ID]: makeDefinition([makeNode("child1"), makeNode("child2")]),
-    }
-    params.parentGraphRef.current = { ...params.parentGraphRef.current!, submodels: reconciledSubmodels }
-
-    // Back at the root, one Undo reverts the whole visit and nothing else.
-    act(() => result.current.handleBreadcrumbNavigate(0))
-    expect(nodeIds()).toEqual(["n1", "n2", INSTANCE_ID, "n3"])
-    expect(definitionChildIds()).toEqual(["child1", "child2"])
-    act(() => useGraphStore.getState().undo())
-    expect(nodeIds()).toEqual(["n1", "n2", INSTANCE_ID, "n3"])
-    expect(useGraphStore.getState().nodes.some((node) => node.type === "submodelPort")).toBe(false)
-    expect(definitionChildIds()).toEqual(["child1"])
-    expect(useGraphStore.getState().dirty).toBe(true)
-
-    // Redo re-applies the visit; two Undos then reach the saved document.
+    expect(result.current.viewStack).toHaveLength(1)
+    expect(nodeIds()).toEqual(["n1", "n2", INSTANCE_ID])
     act(() => useGraphStore.getState().redo())
+    expect(nodeIds()).toEqual(["n1", "n2", INSTANCE_ID, "n3"])
+
+    // An edit in the view is one step of the definition, undoable from the root: Undo shows the view.
+    drill()
+    act(() => useGraphStore.getState().setNodes((nodes) => [...nodes, makeNode("child2")]))
     expect(definitionChildIds()).toEqual(["child1", "child2"])
+    leave()
     act(() => useGraphStore.getState().undo())
+    expect(result.current.viewStack).toHaveLength(2)
+    expect(params.sourceFileRef.current).toBe("modules/pricing.py")
+    expect(definitionChildIds()).toEqual(["child1"])
+    expect(nodeIds()).not.toContain("child2")
+
+    // The next Undo is the root edit's: the main pipeline again, back at the saved document.
     act(() => useGraphStore.getState().undo())
+    expect(result.current.viewStack).toHaveLength(1)
+    expect(params.sourceFileRef.current).toBe("test.py")
     expect(nodeIds()).toEqual(["n1", "n2", INSTANCE_ID])
     expect(useGraphStore.getState().dirty).toBe(false)
   })
@@ -1547,7 +1511,7 @@ describe("useSubmodelNavigation", () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
     const view = useGraphStore.getState().nodes
-    expect(() => useGraphStore.getState().enterSubmodelView({ nodes: [], edges: [] }))
+    expect(() => useGraphStore.getState().enterSubmodelView({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID }))
       .toThrow("already open")
     expect(useGraphStore.getState().nodes).toBe(view)
   })

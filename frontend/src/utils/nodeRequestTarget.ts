@@ -30,15 +30,6 @@ export function setDrilledRequestScope(resolve: (() => DrilledRequestScope | nul
   resolveScope = resolve
 }
 
-/**
- * Resolves once the effects of the commit in progress have run. App brings the whole
- * pipeline up to date with an edit inside the open submodel in an effect of its own,
- * which runs after its children's, so a request an effect sends waits for this first.
- */
-export function afterCommitEffects(): Promise<void> {
-  return Promise.resolve()
-}
-
 export interface NodeRequestTarget {
   graph: GraphPayload
   /** The node's id in `graph`. */

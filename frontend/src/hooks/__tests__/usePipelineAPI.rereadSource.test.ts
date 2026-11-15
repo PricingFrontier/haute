@@ -7,7 +7,6 @@ import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import type { MutableRefObject } from "react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -40,13 +39,26 @@ vi.mock("../../api/client", () => ({
   },
 }))
 
+// The canvas refs of the latest `makeParams`, which the request payload mock
+// reads, as App's canvas refs mirror the graph store.
+const documentRefs = vi.hoisted(() => ({
+  current: null as null | {
+    graphRef: { current: { nodes: unknown[]; edges: unknown[] } }
+    submodelsRef: { current: Record<string, unknown> }
+    preambleRef: { current: string }
+  },
+}))
+
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn((graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>) => ({
-    nodes: graphRef.current.nodes,
-    edges: graphRef.current.edges,
-    submodels: {},
-    preamble: "",
-  })),
+  documentGraphPayload: vi.fn(() => {
+    const refs = documentRefs.current!
+    return {
+      nodes: refs.graphRef.current.nodes,
+      edges: refs.graphRef.current.edges,
+      submodels: refs.submodelsRef.current,
+      preamble: refs.preambleRef.current,
+    }
+  }),
 }))
 
 import {
@@ -109,10 +121,9 @@ const okPreview = makePreviewResponse({
 })
 
 function makeParams() {
-  return {
+  const params = {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
@@ -127,6 +138,8 @@ function makeParams() {
     preservedBlocksRef: { current: [] as string[] },
     nodeIdCounter: { current: 0 },
   }
+  documentRefs.current = params
+  return params
 }
 
 async function renderPipelineAPI(nodes: Node[]) {

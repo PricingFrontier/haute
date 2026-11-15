@@ -271,9 +271,9 @@ candidate, with the error toast.
   interface retirement. Both composite nodes remain visible when empty and
   keep their current canvas positions while structured endpoints change.
   Reconciliation is definition-based and atomic: stale or malformed port
-  bindings fail visibly instead of becoming draft child-id edges. When history
-  restores a non-drilled snapshot while a drilled view is active, reconciliation
-  is a no-op and the parent refs keep their last synchronized state. Each
+  bindings fail visibly instead of becoming draft child-id edges. A boundary
+  edit is one step of the document, so Undo and Redo restore the definition
+  and the parent pipeline together, whichever view is open. Each
   composite records the external parent node ids it represents, so flat-graph trace
   steps still highlight the corresponding Input or Output card after the
   per-parent markers are collapsed. Input-to-child and child-to-Output edges

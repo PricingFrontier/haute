@@ -45,7 +45,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -86,7 +86,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   return {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),

@@ -7,7 +7,6 @@ import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import type { MutableRefObject } from "react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -38,20 +37,26 @@ vi.mock("../../api/client", () => ({
   },
 }))
 
+// The canvas refs of the latest `makeParams`, which the request payload mock
+// reads, as App's canvas refs mirror the graph store.
+const documentRefs = vi.hoisted(() => ({
+  current: null as null | {
+    graphRef: { current: { nodes: unknown[]; edges: unknown[] } }
+    submodelsRef: { current: Record<string, unknown> }
+    preambleRef: { current: string }
+  },
+}))
+
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(
-    (
-      graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
-      _parentGraphRef: unknown,
-      submodelsRef: MutableRefObject<Record<string, unknown>>,
-      preambleRef: MutableRefObject<string>,
-    ) => ({
-      nodes: graphRef.current.nodes,
-      edges: graphRef.current.edges,
-      submodels: submodelsRef.current,
-      preamble: preambleRef.current,
-    }),
-  ),
+  documentGraphPayload: vi.fn(() => {
+    const refs = documentRefs.current!
+    return {
+      nodes: refs.graphRef.current.nodes,
+      edges: refs.graphRef.current.edges,
+      submodels: refs.submodelsRef.current,
+      preamble: refs.preambleRef.current,
+    }
+  }),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -77,10 +82,9 @@ const mockPreview = vi.mocked(previewNode)
 type PreviewEnvelope = Awaited<ReturnType<typeof previewNode>>
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
-  return {
+  const params = {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
@@ -96,6 +100,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
+  documentRefs.current = params
+  return params
 }
 
 function envelope(nodeId: string): PreviewEnvelope {

@@ -4,7 +4,7 @@ import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphS
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { afterCommitEffects, nodeRequestTarget } from "../utils/nodeRequestTarget"
+import { nodeRequestTarget } from "../utils/nodeRequestTarget"
 import { columnFingerprint } from "../utils/columnFingerprint"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 
@@ -143,9 +143,7 @@ export function useDataInputColumns(
     const controller = new AbortController()
     // Fetch fresh columns (cached value shown meanwhile)
     const requestStructuralVersion = structuralVersion
-    // Asked once this commit's effects have all run, so an edit inside an open
-    // submodel has reached the whole pipeline the request sends.
-    afterCommitEffects()
+    Promise.resolve()
       .then(() => {
         const target = nodeRequestTarget(allNodesRef.current, edgesRef.current, submodels, dataInput)
         return previewNode({

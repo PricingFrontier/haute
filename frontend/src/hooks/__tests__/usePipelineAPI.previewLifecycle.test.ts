@@ -51,7 +51,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 vi.mock("../ensureInputSnapshots", () => ({
@@ -77,7 +77,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewInputs, previewNode } from "../../api/client"
-import { resolveGraphFromRefs } from "../../utils/buildGraph"
+import { documentGraphPayload } from "../../utils/buildGraph"
 import { ensureInputSnapshots } from "../ensureInputSnapshots"
 import { makeNode } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
@@ -90,7 +90,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   return {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
@@ -141,8 +140,8 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     mockLoad.mockReset()
     mockPreview.mockReset()
     vi.mocked(ensureInputSnapshots).mockReset().mockResolvedValue(undefined)
-    vi.mocked(resolveGraphFromRefs).mockReset().mockReturnValue(
-      { nodes: [], edges: [], preamble: "" } as unknown as ReturnType<typeof resolveGraphFromRefs>,
+    vi.mocked(documentGraphPayload).mockReset().mockReturnValue(
+      { nodes: [], edges: [], preamble: "" } as unknown as ReturnType<typeof documentGraphPayload>,
     )
     vi.mocked(previewInputs).mockClear()
   })
@@ -195,11 +194,11 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     const node = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
     // The graph each request sends is the one the editor holds when it is resolved.
-    vi.mocked(resolveGraphFromRefs).mockImplementation((graphRef) => ({
-      nodes: graphRef.current.nodes,
-      edges: graphRef.current.edges,
+    vi.mocked(documentGraphPayload).mockImplementation(() => ({
+      nodes: params.graphRef.current.nodes,
+      edges: params.graphRef.current.edges,
       preamble: "",
-    }) as unknown as ReturnType<typeof resolveGraphFromRefs>)
+    }) as unknown as ReturnType<typeof documentGraphPayload>)
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     params.graphRef.current = { nodes: [node], edges: [] }

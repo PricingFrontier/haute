@@ -308,7 +308,7 @@ The view's host is in files other components own. `frontend/src/App.tsx`
 ([frontend-graph-canvas](../frontend-graph-canvas/low-level.md)) hides and fences the
 pipeline editor while `activeView` is the workbench's, swaps the lazy `WorkbenchToolbar` for
 `Toolbar`, renders the lazy `WorkbenchView` over the pipeline region with
-`resolveWorkbenchGraph` (the whole document from its refs, through `resolveGraphFromRefs`),
+`resolveWorkbenchGraph` (the whole document, through `documentGraphPayload`),
 gives both toolbars the same `requestSave`, `requestCommit`, `wsStatus` and `sourceSelectionTrusted`, and the view `requestSave`
 for Ctrl/Cmd+S, and ends the palette column with `ViewSwitcher` while the workbench is
 enabled;
@@ -1446,7 +1446,7 @@ no longer has; and `InputSource` in
     read live each time (`refused()`): before the form is saved, after the form's save,
     after the tables fetch and after the pending commits, since each is a wait during
     which a submodel can open, the assistant's turn start or the document change. The
-    fence: inside a submodel (`parentGraphRef`), during the assistant's turn
+    fence: inside a submodel (the graph store's `focus`), during the assistant's turn
     (`useUIStore.assistantTurn`, "The assistant is working on the pipeline: wait for its
     turn to finish, then save."), and a document whose `can_mutate` or `can_save` is false
     or whose graph is not synchronised (`documentReadOnlyReason`, the pipeline save's own

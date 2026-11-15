@@ -13,7 +13,7 @@ import type {
 import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
-import { afterCommitEffects, nodeRequestTarget } from "../../utils/nodeRequestTarget"
+import { nodeRequestTarget } from "../../utils/nodeRequestTarget"
 import { useGraph } from "../useGraph"
 import { EditorLabel } from "../../components/form"
 import { TargetTablePicker, WarehousePicker } from "./_DatabricksSelector"
@@ -317,7 +317,7 @@ export default function DataOutputEditor({
   useEffect(() => {
     if (!ready) return
     const controller = new AbortController()
-    void afterCommitEffects()
+    void Promise.resolve()
       .then(() => resolveOutputDestination({ ...requestTarget(), signal: controller.signal }))
       .then(
         (response) => {

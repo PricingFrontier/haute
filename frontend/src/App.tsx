@@ -44,7 +44,7 @@ import PipelineLoadFailureView from "./components/PipelineLoadFailureView"
 import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
 import NameViolationsBanner from "./components/NameViolationsBanner"
 import { useNameViolationRevalidation } from "./hooks/useNameViolationRevalidation"
-import { resolveGraphFromRefs } from "./utils/buildGraph"
+import { documentGraphPayload } from "./utils/buildGraph"
 import { setDrilledRequestScope } from "./utils/nodeRequestTarget"
 import { namingContextGraph as buildNamingContextGraph } from "./utils/namingContext"
 import type { PipelineNameViolation } from "./types/pipelineDocument"
@@ -896,8 +896,15 @@ function FlowEditor() {
   const submodelsRef = useRef<Record<string, unknown>>({})
   const clipboard = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   const graphRef = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
-  const parentGraphRef = useRef<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>(null)
-  const [activeSubmodelIdentity, setActiveSubmodelIdentity] = useState<DrilledOccurrenceIdentity | null>(null)
+  // The open occurrence is the store's focus, whatever opened it (a double-click, Undo or Redo).
+  const focusInstanceId = useGraphStore((state) => state.focus?.instanceId ?? null)
+  const focusDefinitionId = useGraphStore((state) => state.focus?.definitionId ?? null)
+  const activeSubmodelIdentity = useMemo<DrilledOccurrenceIdentity | null>(
+    () => (focusInstanceId !== null && focusDefinitionId !== null
+      ? { instanceId: focusInstanceId, definitionId: focusDefinitionId }
+      : null),
+    [focusDefinitionId, focusInstanceId],
+  )
   const preambleRef = useRef("")
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
@@ -923,15 +930,14 @@ function FlowEditor() {
 
   // A panel's request about a node of an open submodel sends the whole pipeline and
   // the node's id in this occurrence (utils/nodeRequestTarget), as Preview does.
-  const activeSubmodelIdentityRef = useRef(activeSubmodelIdentity)
-  useLayoutEffect(() => {
-    activeSubmodelIdentityRef.current = activeSubmodelIdentity
-  }, [activeSubmodelIdentity])
   useLayoutEffect(() => {
     setDrilledRequestScope(() => {
-      const occurrence = activeSubmodelIdentityRef.current
-      if (!occurrence || !parentGraphRef.current) return null
-      return { graph: resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef), occurrence }
+      const focus = useGraphStore.getState().focus
+      if (!focus) return null
+      return {
+        graph: documentGraphPayload(),
+        occurrence: { instanceId: focus.instanceId, definitionId: focus.definitionId },
+      }
     })
     return () => setDrilledRequestScope(null)
   }, [])
@@ -964,7 +970,7 @@ function FlowEditor() {
   // and new or renamed nodes are scoped to that definition.
   const namingScope = activeSubmodelIdentity?.definitionId ?? null
   const namingContextGraph = useCallback(() => buildNamingContextGraph({
-    graph: resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+    graph: documentGraphPayload(),
     preservedBlocks: preservedBlocksRef.current,
     drilledDefinition: namingScope,
     liveNodes: graphRef.current.nodes,
@@ -972,7 +978,7 @@ function FlowEditor() {
   }), [namingScope])
   const readNamingContextKey = useCallback(() => JSON.stringify([
     graphRef.current.nodes.map((node) => [node.id, node.data?.label, (node.data?.config as Record<string, unknown> | undefined)?.alias]),
-    parentGraphRef.current?.nodes.map((node) => [node.id, node.data?.label]),
+    useGraphStore.getState().focus?.rootNodes.map((node) => [node.id, node.data?.label]),
     submodelsRef.current,
     preambleRef.current,
   ]), [])
@@ -1050,7 +1056,7 @@ function FlowEditor() {
     fetchPreview, cancelPreview, stopPreview, refreshPreview, previewNodeFrame, handleSave, adoptPipelineDocument,
   } = usePipelineAPI({
     selectedNode,
-    graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
+    graphRef, activeSubmodelIdentity, submodelsRef,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
     nodeIdCounter,
@@ -1105,8 +1111,7 @@ function FlowEditor() {
   } = useTracing({
     nodes, edges, selectedNode,
     submodels,
-    graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
-    preambleRef,
+    activeSubmodelIdentity, submodelsRef,
     nodeStatuses,
     hoveredNodeId,
     traceFocusNodeId,
@@ -1157,7 +1162,7 @@ function FlowEditor() {
     handleDocumentReload,
     handleCreateSubmodel, handleCreateNodeInstance, handleDissolveSubmodel,
   } = useSubmodelNavigation({
-    graphRef, parentGraphRef, activeSubmodelIdentity, setActiveSubmodelIdentity, submodelsRef,
+    graphRef, submodelsRef,
     setNodesRaw, setEdgesRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     cancelPreview, clearTrace,
@@ -1170,12 +1175,9 @@ function FlowEditor() {
     handleDocumentReloadRef.current = handleDocumentReload
   }, [handleDocumentReload])
 
-  // Drilling replaces the visible graph in the store. The reactive navigation
-  // snapshot retains the root graph while a definition is on screen, so the
-  // document-wide singleton policy does not depend on the current view.
-  const documentRootNodes = viewStack.length > 1
-    ? (viewStack[0]._savedNodes ?? nodes)
-    : nodes
+  // The document-wide singleton policy reads the pipeline's own nodes, also
+  // while a submodel is on the canvas.
+  const documentRootNodes = useGraphStore((state) => state.focus?.rootNodes ?? state.nodes)
   const existingSingletonTypes = useMemo(
     () => singletonTypesInDocument(documentRootNodes, submodels),
     [documentRootNodes, submodels],
@@ -1183,8 +1185,6 @@ function FlowEditor() {
 
   const activeView = viewStack[viewStack.length - 1]
   const activeSubmodelName = activeView?.type === "submodel" ? activeView.name : null
-  const activeSubmodelInstanceId = activeView?.type === "submodel" ? activeView.instanceId ?? null : null
-  const activeSubmodelDefinitionId = activeView?.type === "submodel" ? activeView.definitionId ?? null : null
   const activeSubmodelReadOnly = activeView?.type === "submodel" && activeView.readOnly
   const documentReadOnly = documentCapabilities?.can_mutate !== true || !documentGraphSynchronized
   const documentCanExecute = documentCapabilities?.can_execute === true && documentGraphSynchronized
@@ -1210,14 +1210,7 @@ function FlowEditor() {
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
   } = useSubmodelBoundaryEditing({
-    activeSubmodelName,
-    activeSubmodelInstanceId,
-    activeSubmodelDefinitionId,
-    nodes,
-    edges,
-    submodels,
     graphRef,
-    parentGraphRef,
     submodelsRef,
     setNodesAndEdgesAndSubmodels,
     reservedApiInputFrameLabels,
@@ -1469,7 +1462,7 @@ function FlowEditor() {
     // form ahead of a pipeline that is not, and refused after, it saves no pipeline
     // on a fence that closed meanwhile.
     const refused = (): boolean => {
-      if (parentGraphRef.current) {
+      if (useGraphStore.getState().focus !== null) {
         addToast("error", "Return to the main pipeline before saving.")
         return true
       }
@@ -1633,6 +1626,7 @@ function FlowEditor() {
     existingSingletonTypes,
     resolveGraphIdentities: resolveCandidateGraphIdentities,
     commitSharedNodeDeletion,
+    onBoundaryEdgesChange,
   })
 
   const {
@@ -1767,7 +1761,7 @@ function FlowEditor() {
   // The workbench prices its sample on the document as it is then: the whole pipeline,
   // even while a submodel is open.
   const resolveWorkbenchGraph = useCallback(
-    () => resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+    () => documentGraphPayload(),
     [],
   )
 

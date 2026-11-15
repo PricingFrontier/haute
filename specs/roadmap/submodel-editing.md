@@ -174,7 +174,8 @@ results move onto the document once.
 `frontend/src/utils/submodelViewGraph.ts::buildSubmodelViewGraph`;
 `frontend/src/hooks/useSubmodelNavigation.ts`; `frontend/src/stores/useGraphStore.ts`;
 `frontend/src/hooks/useGraphCommitController.ts`;
-`frontend/src/utils/buildGraph.ts::resolveGraphFromRefs`.
+`frontend/src/utils/submodelDocument.ts::liftSubmodelCanvas`;
+`frontend/src/utils/buildGraph.ts::documentGraphPayload`.
 
 ### SUBE-03 — One request gateway
 **Why:** Panels built request graphs from the canvas they hold; inside a submodel every such
@@ -208,7 +209,7 @@ belongs to one render.
 **Dependencies:** SUBE-02.
 
 **Evidence:** `frontend/src/utils/nodeRequestTarget.ts::nodeRequestTarget`;
-`frontend/src/utils/nodeRequestTarget.ts::afterCommitEffects`;
+`frontend/src/utils/nodeRequestTarget.ts::setDrilledRequestScope`;
 `frontend/src/components/ReadOnlyNodeConfig.tsx`; `frontend/src/hooks/usePipelineAPI.ts`;
 `frontend/src/hooks/useTracing.ts`; `frontend/src/api/client.ts`.
 

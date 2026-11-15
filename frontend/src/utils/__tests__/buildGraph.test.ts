@@ -6,14 +6,13 @@
  * 2. buildGraph: node type fallback (type || data.nodeType)
  * 3. buildGraph: position is always zeroed out
  * 4. buildGraph: optional submodels and preamble
- * 5. resolveGraphFromRefs: uses parentGraphRef when available
- * 6. resolveGraphFromRefs: falls back to graphRef when parentGraphRef is null
- * 7. buildGraph: empty inputs
+ * 5. documentGraphPayload: the pipeline's own graph, also with a submodel open
+ * 6. buildGraph: empty inputs
  */
 import { afterEach, describe, it, expect } from "vitest"
-import type { Node, Edge } from "@xyflow/react"
-import { buildGraph, graphForRequestIdentity, resolveGraphFromRefs } from "../buildGraph"
-import { makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
+import { buildGraph, documentGraphPayload, graphForRequestIdentity } from "../buildGraph"
+import { makeIdentifiedNode, makeNode, makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
+import type { SubmodelDefinition } from "../../types/node"
 import useGraphStore from "../../stores/useGraphStore"
 
 describe("buildGraph", () => {
@@ -265,79 +264,58 @@ describe("graphForRequestIdentity", () => {
   })
 })
 
-describe("resolveGraphFromRefs", () => {
-  it("returns parentGraphRef contents when parentGraphRef is not null", () => {
-    // Catches: when inside a submodel, the preview API needs the PARENT
-    // graph (with submodel definitions). If resolveGraphFromRefs ignores
-    // parentGraphRef, previewing inside submodels would send the wrong
-    // graph and produce incorrect results.
-    const parentNodes = [{ id: "p1" }] as Node[]
-    const parentEdges = [{ id: "pe1", source: "p1", target: "p2" }] as Edge[]
-    const parentSubmodels = { sub1: { nodes: [], edges: [] } }
-
-    const graphRef = { current: { nodes: [] as Node[], edges: [] as Edge[] } }
-    const parentGraphRef = {
-      current: {
-        nodes: parentNodes,
-        edges: parentEdges,
-        submodels: parentSubmodels,
-      },
-    }
-    const submodelsRef = { current: {} }
-    const preambleRef = { current: "import numpy" }
-
-    const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
-
-    expect(result.nodes).toEqual(parentNodes)
-    expect(result.nodes).not.toBe(parentNodes)
-    expect(result.edges).toEqual(parentEdges)
-    expect(result.edges).not.toBe(parentEdges)
-    expect(result.submodels).toEqual(parentSubmodels)
-    expect(result.submodels).not.toBe(parentSubmodels)
-    expect(result.preamble).toBe("import numpy")
+describe("documentGraphPayload", () => {
+  afterEach(() => {
+    useGraphStore.getState().resetForTests()
   })
 
-  it("falls back to graphRef when parentGraphRef.current is null", () => {
-    // Catches: when at the top level (not inside a submodel),
-    // parentGraphRef is null, and the regular graphRef should be used.
-    const nodes = [{ id: "n1" }] as Node[]
-    const edges = [{ id: "e1", source: "n1", target: "n2" }] as Edge[]
-    const submodels = { s: {} }
+  function loadDocument() {
+    const definition: SubmodelDefinition = {
+      definitionId: "definition_pricing",
+      file: "modules/pricing.py",
+      graph: { nodes: [makeIdentifiedNode("score")], edges: [] },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "score", handleId: null }] }],
+      outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: null } }],
+    }
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [
+        makeIdentifiedNode("api"),
+        makeNode("pricing", "submodel", {
+          data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
+        }),
+      ],
+      edges: [{ id: "feed", source: "api", target: "pricing", targetHandle: "in__policy" }],
+      preamble: "import numpy",
+      submodels: { definition_pricing: definition },
+    })
+  }
 
-    const graphRef = { current: { nodes, edges } }
-    const parentGraphRef = { current: null }
-    const submodelsRef = { current: submodels }
-    const preambleRef = { current: "# preamble" }
+  it("sends the pipeline's own graph, with every definition and the preamble", () => {
+    loadDocument()
 
-    const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const graph = documentGraphPayload()
 
-    expect(result.nodes).toEqual(nodes)
-    expect(result.nodes).not.toBe(nodes)
-    expect(result.edges).toEqual(edges)
-    expect(result.edges).not.toBe(edges)
-    expect(result.submodels).toEqual(submodels)
-    expect(result.submodels).not.toBe(submodels)
-    expect(result.preamble).toBe("# preamble")
+    expect(graph.nodes.map((node) => node.id)).toEqual(["api", "pricing"])
+    expect(graph.edges.map((edge) => edge.id)).toEqual(["feed"])
+    expect(Object.keys(graph.submodels ?? {})).toEqual(["definition_pricing"])
+    expect(graph.preamble).toBe("import numpy")
   })
 
-  it("always uses preambleRef regardless of which graph ref is active", () => {
-    // Catches: if preamble were accidentally sourced from parentGraphRef
-    // (which doesn't have a preamble field), editing preamble while
-    // inside a submodel would use stale data.
-    const graphRef = { current: { nodes: [] as Node[], edges: [] as Edge[] } }
-    const parentGraphRef = {
-      current: {
-        nodes: [] as Node[],
-        edges: [] as Edge[],
-        submodels: {},
-      },
-    }
-    const submodelsRef = { current: {} }
-    const preambleRef = { current: "import pandas as pd" }
+  it("sends the pipeline's own graph while a submodel is open, with an edit made inside it", () => {
+    // Catches: a request from inside a submodel sending the open view (whose
+    // nodes stand in the document twice) instead of the whole pipeline, or
+    // the definition as it was before the edit just made.
+    loadDocument()
+    useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+    useGraphStore.getState().setNodes((nodes) => nodes.map((node) => (
+      node.id === "score" ? { ...node, data: { ...node.data, config: { how: "left" } } } : node
+    )))
 
-    const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const graph = documentGraphPayload()
 
-    expect(result.preamble).toBe("import pandas as pd")
+    expect(graph.nodes.map((node) => node.id)).toEqual(["api", "pricing"])
+    const definition = graph.submodels?.definition_pricing as SubmodelDefinition
+    expect(definition.graph.nodes.map((node) => node.data.config)).toEqual([{ how: "left" }])
   })
 })
 
@@ -351,12 +329,7 @@ describe("global constants in built graphs", () => {
       { name: "rate", type: "float", split: true, value: "", bySource: { live: "1.5", nb_batch: "2.5" } },
       { name: "broken", type: "integer", split: false, value: "x", bySource: {} },
     ])
-    const graphRef = { current: { nodes: [] as Node[], edges: [] as Edge[] } }
-
-    for (const graph of [
-      buildGraph([], []),
-      resolveGraphFromRefs(graphRef, { current: null }, { current: {} }, { current: "" }),
-    ]) {
+    for (const graph of [buildGraph([], []), documentGraphPayload()]) {
       expect(graph.global_constants).toEqual([
         { name: "rate", type: "float", by_source: { live: 1.5, nb_batch: 2.5 } },
       ])
