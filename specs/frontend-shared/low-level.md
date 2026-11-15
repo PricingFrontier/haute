@@ -32,7 +32,7 @@
 | `frontend/src/utils/configHash.ts` | `hashConfig`, a node config's identity: its `canonicalJson`. Remembered training handles keep it, so its output must not change. |
 | `frontend/src/utils/trainEstimate.ts` | `nextTrainEstimate`, a training's remaining time from the rate between its last two progress samples (rounds, or fits while tuning). |
 | `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress and whether this tab started it (`startedHere`, as a profile job also records), or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
-| `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
+| `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. Its requests send the graph and node id `nodeRequestTarget` gives (inside an open submodel, the whole pipeline and the node's runtime id), and it asks for the point once the commit's effects have all run, so an edit inside an open submodel has reached the whole pipeline first. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, the preamble, and the Global Constants. |
@@ -780,11 +780,16 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    asking about, so neither another document's answer nor an action started before an edit can
    reach the shared store or strand the consumer without an answer. An answer is kept with the
    identity and the fence it answered for, so a consumer stops showing it the moment either
-   moves on, and inspections also abort in flight. An inspection the backend refuses (400: the
-   graph as it stands gives the node nothing to read, such as a Banding, Rating Step or blank
-   Explore node without exactly one input) is the node's state, not an event: its message is
-   held as the consumer's `unreadable` for that identity, and connecting the input clears it.
-   Any other failed inspection toasts.
+   moves on, and inspections also abort in flight. A failed inspection is the node's state, not
+   an event: the consumer's `problem` holds it for that identity, with no toast — `refused` with
+   the backend's message when it refuses to name a point (400: the graph as it stands gives the
+   node nothing to read, such as a Banding, Rating Step or blank Explore node without exactly
+   one input), and `failed` with the reason for any other failure (a conflict, a server error,
+   the network). A failed `run` or `refresh` also sets `failed`, and toasts as the result of the
+   action. The point and the problem are separate facts, so stale data whose refresh failed is
+   both. The next answer or build response for the identity clears it, and connecting the input
+   changes the identity. `nodeDataProblemText` words it: the backend's message for `refused`,
+   "Couldn't read the data: <reason>" for `failed`.
 3. `stores/useNodeDataStore.ts` keeps one entry per slot, so consumers of the same point share
    the generation and the running build. `run` and `refresh` post `/api/node-data/run`; a
    `started` or `joined` response registers the build under the slot, and `useBackgroundJobs`
@@ -863,7 +868,10 @@ same Vitest config.
   two consumers, the epoch rising only when the data changes or a preview's own capture is
   announced — a duplicate announcement leaving the epoch untouched while a new generation
   raises it once, and a reset making the next announcement count again — a refused point held
-  as the node's `unreadable` with no toast while a failed lookup toasts, a build adopted from
+  as the node's `refused` problem and a failed lookup as its `failed` problem, neither toasting,
+  the node's Refresh asking for the point again after either, including a failed recheck of
+  data it still shows as current, a failed build kept with the stale
+  point it could not refresh, a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress
   from a build either of them started, a build this tab started stopped by another consumer

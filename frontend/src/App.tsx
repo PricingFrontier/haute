@@ -45,6 +45,7 @@ import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
 import NameViolationsBanner from "./components/NameViolationsBanner"
 import { useNameViolationRevalidation } from "./hooks/useNameViolationRevalidation"
 import { resolveGraphFromRefs } from "./utils/buildGraph"
+import { setDrilledRequestScope } from "./utils/nodeRequestTarget"
 import { namingContextGraph as buildNamingContextGraph } from "./utils/namingContext"
 import type { PipelineNameViolation } from "./types/pipelineDocument"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
@@ -919,6 +920,21 @@ function FlowEditor() {
   useLayoutEffect(() => {
     submodelsRef.current = submodels
   }, [submodels])
+
+  // A panel's request about a node of an open submodel sends the whole pipeline and
+  // the node's id in this occurrence (utils/nodeRequestTarget), as Preview does.
+  const activeSubmodelIdentityRef = useRef(activeSubmodelIdentity)
+  useLayoutEffect(() => {
+    activeSubmodelIdentityRef.current = activeSubmodelIdentity
+  }, [activeSubmodelIdentity])
+  useLayoutEffect(() => {
+    setDrilledRequestScope(() => {
+      const occurrence = activeSubmodelIdentityRef.current
+      if (!occurrence || !parentGraphRef.current) return null
+      return { graph: resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef), occurrence }
+    })
+    return () => setDrilledRequestScope(null)
+  }, [])
 
   const panelGraph = usePanelGraphContext()
   const selectedNode = selectedNodeState && panelGraph.getNode(selectedNodeState.id)

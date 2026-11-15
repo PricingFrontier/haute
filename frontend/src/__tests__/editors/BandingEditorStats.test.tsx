@@ -17,6 +17,8 @@ import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import { setDrilledRequestScope } from "../../utils/nodeRequestTarget"
 import type { BandingStatsResponse, NodeDataPointResponse } from "../../api/types"
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
@@ -202,6 +204,8 @@ describe("BandingEditor statistics", () => {
   afterEach(() => {
     vi.useRealTimers()
     cleanup()
+    useWorkbenchStore.setState({ enabled: false })
+    setDrilledRequestScope(null)
   })
 
   it("counts the whole dataset once the point it reads is cached", async () => {
@@ -349,7 +353,7 @@ describe("BandingEditor statistics", () => {
       vi.advanceTimersByTime(300)
     })
 
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     expect(screen.queryByText(/^Sample/)).toBeNull()
     expect(screen.queryByTestId("banding-histogram")).toBeNull()
     const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
@@ -367,7 +371,7 @@ describe("BandingEditor statistics", () => {
     })
 
     await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     expect(screen.queryByText("Counting…")).toBeNull()
     const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
     expect(cells.filter((text) => /^\d+$/.test(text) || text === "…")).toEqual([])
@@ -388,7 +392,7 @@ describe("BandingEditor statistics", () => {
     await act(async () => {
       vi.advanceTimersByTime(300)
     })
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     await waitFor(() => expect(mockGetNodeDataPoint.mock.calls.length).toBeGreaterThan(1))
 
     await act(async () => {
@@ -410,7 +414,7 @@ describe("BandingEditor statistics", () => {
     })
 
     expect(
-      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+      await screen.findByText("Cached data is out of date · Refresh this node to read all rows"),
     ).toBeInTheDocument()
     expect(mockGetBandingStats).not.toHaveBeenCalled()
   })
@@ -671,8 +675,73 @@ describe("BandingEditor statistics", () => {
     })
 
     expect(
-      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+      await screen.findByText("Cached data is out of date · Refresh this node to read all rows"),
     ).toBeInTheDocument()
     expect(screen.queryByText("All rows · 1,000")).toBeNull()
+  })
+
+  it("asks nothing and shows no counts in a workbench project, which bands the quote being priced", async () => {
+    useWorkbenchStore.setState({ enabled: true })
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(mockGetNodeDataPoint).not.toHaveBeenCalled()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("banding-data-basis")).toBeNull()
+    expect(screen.queryByRole("columnheader", { name: "Matches" })).toBeNull()
+    expect(screen.queryByText(/of \d+ rows/)).toBeNull()
+    expect(screen.queryByTestId("banding-histogram")).toBeNull()
+    // The rules are still there to edit.
+    expect(screen.getByRole("textbox", { name: "Breakpoint 1 label" })).toHaveValue("low")
+  })
+
+  it("says why there is nothing to count when the server finds no data for the node to read", async () => {
+    const message = "Node 'Banding' must have exactly one incoming connection to read its data (found 0)."
+    mockGetNodeDataPoint.mockRejectedValue(Object.assign(new ApiError(message, 400), { detail: message }))
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("says reading the data failed, never Counting…, when its data point cannot be read", async () => {
+    mockGetNodeDataPoint.mockRejectedValue(
+      Object.assign(new ApiError("HTTP 409", 409), { detail: "The workbench is off" }),
+    )
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(await screen.findByText("Couldn't read the data: The workbench is off")).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("asks about a node of an open submodel with the whole pipeline and the node's runtime id", async () => {
+    // The drilled view beside its own definition names each node twice, which
+    // the server refuses; Preview sends the whole pipeline instead, and so does this.
+    const root = { nodes: [], edges: [], submodels: {}, preamble: "" }
+    setDrilledRequestScope(() => ({
+      graph: root as never,
+      occurrence: { instanceId: "br_rating", definitionId: "br_rating" },
+    }))
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
+    expect(mockGetNodeDataPoint.mock.calls[0][0].graph).toBe(root)
+    expect(mockGetNodeDataPoint.mock.calls[0][0].node_id).toBe("submodel_runtime/br_rating/banding_1")
+    expect(mockGetBandingStats.mock.calls[0][0].graph).toBe(root)
+    expect(mockGetBandingStats.mock.calls[0][0].node_id).toBe("submodel_runtime/br_rating/banding_1")
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
   })
 })

@@ -35,7 +35,7 @@ const tables: WorkbenchTable[] = [
 const fetched = (sample: Record<string, unknown> = {}) =>
   useWorkbenchStore.setState({ tables: { tables, sample, responseTables: [], fetch: 1 } })
 function renderEditor() {
-  return render(<WorkbenchInputEditor accentColor="#E69F00" reservedFrameLabels={RESERVED} />)
+  return render(<WorkbenchInputEditor reservedFrameLabels={RESERVED} />)
 }
 
 describe("WorkbenchInputEditor", () => {
@@ -65,11 +65,8 @@ describe("WorkbenchInputEditor", () => {
     expect(screen.queryAllByRole("textbox")).toEqual([])
     expect(screen.queryByRole("note")).not.toBeInTheDocument()
 
-    // It reads no file: previews run on nulls, so there is no sample to choose.
+    // It reads no file, so there is no sample to choose.
     expect(screen.queryByText("Preview Data")).not.toBeInTheDocument()
-    expect(screen.getByTestId("workbench-input-preview-note")).toHaveTextContent(
-      "Previews run on one row of nulls per table until the workbench supplies values.",
-    )
   })
 
   it("shows each fetch's tables as it lands, and none before the first", () => {
@@ -79,19 +76,6 @@ describe("WorkbenchInputEditor", () => {
     act(() => fetched())
     expect(screen.getByTestId("workbench-table-policy_details_input")).toBeInTheDocument()
     expect(screen.getByTestId("workbench-input-tables")).not.toHaveTextContent("No tables yet.")
-  })
-
-  it("says previews run on the workbench's sample once it supplies values", () => {
-    fetched({ policy_details: { state: "NY" } })
-    renderEditor()
-    expect(screen.getByTestId("workbench-input-preview-note")).toHaveTextContent(
-      "Previews run on the workbench's sample values, read as a request is: a table with many rows and nothing typed has none.",
-    )
-
-    act(() => fetched({}))
-    expect(screen.getByTestId("workbench-input-preview-note")).toHaveTextContent(
-      "Previews run on one row of nulls per table until the workbench supplies values.",
-    )
   })
 
   it("says what stops a table's port being a port, judging the port's name rather than the table's", () => {
@@ -106,7 +90,7 @@ describe("WorkbenchInputEditor", () => {
 
   it("says a port is reserved when its name is one of the document's reserved labels", () => {
     fetched()
-    render(<WorkbenchInputEditor accentColor="#E69F00" reservedFrameLabels={new Set(["pl_input"])} />)
+    render(<WorkbenchInputEditor reservedFrameLabels={new Set(["pl_input"])} />)
 
     expect(within(screen.getByTestId("workbench-table-pl_input")).getByRole("alert")).toHaveTextContent(
       "cannot be a Python hard keyword or a name node code binds itself",

@@ -17,7 +17,7 @@ import { apiErrorMessage } from "../api/errors"
 import type { CacheNodeEntry, CacheNodesResponse } from "../api/types"
 import { formatByteSize } from "../utils/formatBytes"
 import { formatDuration } from "../utils/formatValue"
-import { buildGraph } from "../utils/buildGraph"
+import { pipelineRequestGraph } from "../utils/nodeRequestTarget"
 import usePanelGraphContext, { toSimpleEdge, toSimpleNode } from "../hooks/usePanelGraphContext"
 import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore, {
@@ -536,9 +536,10 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
     (controller: AbortController) => {
       // Read the graph from the store at the moment of the request rather than
       // subscribing to it. Subscribing would make any edit, websocket resync or
-      // load re-issue the request while the pane is open.
+      // load re-issue the request while the pane is open. Inside an open submodel
+      // the request sends the whole pipeline, which holds every cached node.
       const { nodes: storeNodes, edges, submodels } = useGraphStore.getState()
-      const graph = buildGraph(storeNodes.map(toSimpleNode), edges.map(toSimpleEdge), submodels)
+      const graph = pipelineRequestGraph(storeNodes.map(toSimpleNode), edges.map(toSimpleEdge), submodels)
       return fetchCacheNodes({ graph, source: activeSource }, { signal: controller.signal })
     },
     [activeSource],

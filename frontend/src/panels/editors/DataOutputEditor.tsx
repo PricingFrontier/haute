@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   resolveOutputDestination,
   writeOutput,
@@ -13,6 +13,7 @@ import type {
 import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
+import { afterCommitEffects, nodeRequestTarget } from "../../utils/nodeRequestTarget"
 import { useGraph } from "../useGraph"
 import { EditorLabel } from "../../components/form"
 import { TargetTablePicker, WarehousePicker } from "./_DatabricksSelector"
@@ -256,6 +257,14 @@ export default function DataOutputEditor({
       ),
     }
   }, [allNodes, config, edges, nodeId, preamble, submodels])
+  // What a request sends: the graph above outside a submodel. Inside one it is
+  // the whole pipeline, which App has brought up to date with this node by the
+  // time a request is sent (the destination waits for the commit's effects;
+  // Write is a click); `graph` still names the request's identity.
+  const requestTarget = useCallback(() => {
+    const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
+    return target.nodeId === nodeId ? { graph, nodeId } : { graph: target.graph, nodeId: target.nodeId }
+  }, [allNodes, edges, graph, nodeId, submodels])
   const identity = useMemo(
     () =>
       JSON.stringify({
@@ -308,24 +317,22 @@ export default function DataOutputEditor({
   useEffect(() => {
     if (!ready) return
     const controller = new AbortController()
-    void resolveOutputDestination({
-      graph,
-      nodeId,
-      signal: controller.signal,
-    }).then(
-      (response) => {
-        if (!controller.signal.aborted) {
-          setDestinationState({ identity, response })
-        }
-      },
-      (caught: unknown) => {
-        if (controller.signal.aborted) return
-        const message = apiErrorMessage(caught, "Could not resolve output destination.")
-        setDestinationState({ identity, error: message })
-      },
-    )
+    void afterCommitEffects()
+      .then(() => resolveOutputDestination({ ...requestTarget(), signal: controller.signal }))
+      .then(
+        (response) => {
+          if (!controller.signal.aborted) {
+            setDestinationState({ identity, response })
+          }
+        },
+        (caught: unknown) => {
+          if (controller.signal.aborted) return
+          const message = apiErrorMessage(caught, "Could not resolve output destination.")
+          setDestinationState({ identity, error: message })
+        },
+      )
     return () => controller.abort()
-  }, [graph, identity, nodeId, ready])
+  }, [identity, ready, requestTarget])
 
   const write = async (overwrite: boolean) => {
     if (!ready || isWriting) return
@@ -335,8 +342,7 @@ export default function DataOutputEditor({
     if (requestId === null) return
     try {
       const response = await writeOutput({
-        graph,
-        nodeId,
+        ...requestTarget(),
         source: activeSource,
         overwrite,
       })

@@ -12,7 +12,7 @@ A Rating Step takes a single input and outputs it with one new column per rating
 
 ## The TABLES tab
 
-The **INPUT** chip at the top names the node's connection; its × removes the connection. When a table rates on a column of the input, a line says where the column's levels come from: **Levels from all rows ·** and the row count once the node's input data is cached, **Levels from a sample ·** and the number of preview rows until then, or "Cached data is out of date".
+The **INPUT** chip at the top names the node's connection; its × removes the connection. When a table rates on a column of the input, a line says where the column's levels come from: **Levels from all rows ·** and the row count once the node's input data is cached, **Levels from a sample ·** and the number of preview rows until then, "Caching the data…" while it is cached, or "Cached data is out of date · Refresh this node to read all rows". When the node has no data to read yet, the line says why; when reading the data failed, it says "Couldn't read the data:" and the reason, and Refresh tries again.
 
 If a Banding node's output has no labelled rule, a warning names it: "Banding outputs … have no valid levels. Add a labelled Banding rule before using them as rating factors."
 

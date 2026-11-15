@@ -18,7 +18,7 @@ import {
 import useNodeResultsStore, { type SolveProgress } from "../../stores/useNodeResultsStore"
 import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
-import { buildGraph } from "../../utils/buildGraph"
+import { nodeRequestTarget } from "../../utils/nodeRequestTarget"
 import {
   executionJobStatusFromReason,
   executionMetricsFromError,
@@ -88,7 +88,8 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, edges, sub
   const { startSolveJob, failSolveJob } = useNodeResultsStore.getState()
   const startupFailureId = `startup-failure:${nodeId}`
   try {
-    const result = await solveOptimiser({ graph: buildGraph(allNodes, edges, submodels), node_id: nodeId })
+    const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
+    const result = await solveOptimiser({ graph: target.graph, node_id: target.nodeId })
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     if (result.status === "started" && result.job_id) {
       startSolveJob(nodeId, result.job_id, nodeLabel, constraints, configHash, source, structuralVersion)

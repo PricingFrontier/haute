@@ -144,11 +144,16 @@ backend API modules own validation and persistence.
   tables rate on, so a level absent from the preview can still be given a rate. Without a
   current point — or with one the node has moved on from — Rating says so and falls back to the
   preview sample rather than presenting a sample's answer as the data's, and a failure is shown
-  in place of its label, carrying the server's own message. Banding never shows a number from
+  in place of its label, carrying the server's own message. Every whole-data editor (Banding,
+  Rating, Explore's Relationships) words the state of the data the same way, from one status:
+  "Caching the data…", "Not cached · Refresh this node to read all rows", "Cached data is out of
+  date · Refresh this node to read all rows" (or "· Refreshing it failed: …" when a refresh
+  failed), the server's reason when it finds nothing for the node to read, and "Couldn't read
+  the data: …" when reading it failed — never "Counting…" for data that could not be read.
+  Banding never shows a number from
   the preview: its per-rule counts, its "x of N rows" and its histogram come only from the whole
-  dataset. Until that answer is there, its label says why — "Counting…", "Caching the data…",
-  "Not cached · Refresh this node to count all rows", "Cached data is out of date · Refresh this
-  node to count all rows", or the failure in the server's words — the counts show as pending
+  dataset. Until that answer is there, its label says why — "Counting…" or one of those
+  states — the counts show as pending
   while they are being counted and are absent otherwise, and there is no histogram or "x of N
   rows". A server answer that the data needs caching, which can come for a point that looked
   current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts,

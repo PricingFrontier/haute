@@ -25,8 +25,10 @@ import { BandingRulesGrid } from "./banding/BandingRulesGrid"
 import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
 import useBandingStats from "./banding/useBandingStats"
+import { wholeDataStatusText } from "./shared/useWholeDataAnswer"
 import { useGraph } from "../useGraph"
 import useUIStore from "../../stores/useUIStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
 import { ImportParamValues } from "./banding/ImportParamValues"
@@ -86,10 +88,13 @@ export default function BandingEditor({
   const colMap = Object.fromEntries(upstreamColumns.map(c => [c.name, c.dtype]))
 
   // The whole dataset this node reads, when it is cached: the counts, values
-  // and distribution below are execution's rather than a sample's.
+  // and distribution below are execution's rather than a sample's. A workbench
+  // project bands the quote being priced, so there is no dataset to count: the
+  // editor asks nothing and shows no counts.
   const graph = useGraph()
-  const node = nodeId ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
-  const { cache, stats, current: statsCurrent, cacheRequired, error: statsError } = useBandingStats({
+  const workbench = useWorkbenchStore((state) => state.enabled)
+  const node = nodeId && !workbench ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
+  const { stats, current: statsCurrent, status } = useBandingStats({
     node,
     allNodes: graph.allNodes,
     edges: graph.edges,
@@ -257,15 +262,11 @@ export default function BandingEditor({
   // While the answer to a rule edit is on its way, the last answer still
   // describes the column, so it stays: categorical counts follow the edit from
   // the data's value counts, and a count not yet known is pending (null).
-  const availability = cache.availability
   // The whole dataset's answer is on its way (rather than needing a Refresh,
-  // which the server can say even of a point that looked current).
+  // which the server can say even of a point that looked current, or never
+  // coming, when the data cannot be read).
   const counting =
-    node !== null &&
-    !stats &&
-    !statsError &&
-    !cacheRequired &&
-    (availability === "checking" || availability === "current" || availability === "building")
+    node !== null && !stats && (status.kind === "counting" || status.kind === "building")
   const wholeDataCounts = (() => {
     const rules = factor.rules || []
     if (!stats || !rules.length) return undefined
@@ -408,19 +409,14 @@ export default function BandingEditor({
   )
 
 
-  // Whose rows the numbers describe, or why there are none yet.
-  const REFRESH = "Refresh this node to count all rows"
-  const statusLabel = statsError
-    ? `Counting the whole dataset failed: ${statsError}`
-    : stats
-      ? `All rows · ${totalRows.toLocaleString()}`
-      : availability === "building"
-        ? "Caching the data…"
-        : availability === "stale"
-          ? `Cached data is out of date · ${REFRESH}`
-          : counting
-            ? "Counting…"
-            : `Not cached · ${REFRESH}`
+  // Whose rows the numbers describe, or why there are none yet. A failure is
+  // said even while the last answer stays on screen.
+  const statusText = wholeDataStatusText(status)
+  const failed = status.kind === "failed" || (status.kind === "stale" && status.failure !== null)
+  const statusLabel =
+    status.kind === "failed" || status.kind === "refused" || !stats
+      ? statusText ?? "Counting…"
+      : `All rows · ${totalRows.toLocaleString()}`
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
@@ -430,8 +426,8 @@ export default function BandingEditor({
         <div className="flex items-center justify-between gap-2" data-testid="banding-data-basis">
           <span
             className="text-[11px]"
-            style={{ color: statsError ? "var(--danger)" : "var(--text-muted)" }}
-            title={statsError ?? undefined}
+            style={{ color: failed ? "var(--danger)" : "var(--text-muted)" }}
+            title={failed ? statusLabel : undefined}
           >
             {statusLabel}
           </span>

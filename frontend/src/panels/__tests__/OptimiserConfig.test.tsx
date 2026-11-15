@@ -9,6 +9,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore, { type OptimiserPane } from "../../stores/useUIStore"
 import useGraphStore from "../../stores/useGraphStore"
 import { buildGraph } from "../../utils/buildGraph"
+import { setDrilledRequestScope } from "../../utils/nodeRequestTarget"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import { solveConfigHash } from "../optimiser/solveActions"
 import type { SimpleNode, SimpleEdge } from "../editors/_shared"
@@ -1615,6 +1616,31 @@ describe("OptimiserConfig", () => {
       expect(mockSolveOptimiser).toHaveBeenCalledWith(
         expect.objectContaining({ node_id: "opt_1" }),
       )
+    })
+
+    it("inside an open submodel the estimate, solve and auto range send the whole pipeline", async () => {
+      const whole = { nodes: [{ id: "pricing", data: { label: "pricing", nodeType: "submodel" } }], edges: [] }
+      setDrilledRequestScope(() => ({
+        graph: whole as unknown as ReturnType<typeof buildGraph>,
+        occurrence: { instanceId: "pricing", definitionId: "pricing" },
+      }))
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
+      mockStartOptimiserFrontierAutoRange.mockReturnValue(new Promise(() => {}))
+      try {
+        const config = { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 35 } } }
+        renderConfig(makeProps({ config }))
+        const sent = expect.objectContaining({ graph: whole, node_id: "submodel_runtime/pricing/opt_1" })
+        await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledWith(sent))
+        fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+        await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(sent))
+        cleanup()
+        // Auto range fills the frontier's missing ranges.
+        renderConfig(makeProps({ activePane: "constraints", config: { ...config, frontier_ranges: { loss_ratio: {} } } }))
+        fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+        await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith(sent))
+      } finally {
+        setDrilledRequestScope(null)
+      }
     })
 
     it("preserves structured execution metrics when solve admission fails", async () => {

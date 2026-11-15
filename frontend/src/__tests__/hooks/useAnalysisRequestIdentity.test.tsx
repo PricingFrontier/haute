@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import useBandingStats from "../../panels/editors/banding/useBandingStats"
 import useRatingLevels from "../../panels/editors/rating/useRatingLevels"
-import { WHOLE_DATA_DEBOUNCE_MS } from "../../panels/editors/shared/useWholeDataAnswer"
+import {
+  WHOLE_DATA_DEBOUNCE_MS,
+  wholeDataStatus,
+  wholeDataStatusText,
+  type WholeDataStatusInput,
+} from "../../panels/editors/shared/useWholeDataAnswer"
 
 const mocks = vi.hoisted(() => ({
   stats: vi.fn(),
@@ -17,8 +22,9 @@ vi.mock("../../api/client", () => ({
   getBandingStats: mocks.stats,
   getRatingLevels: mocks.levels,
 }))
-vi.mock("../../hooks/useNodeDataCache", () => ({
-  default: () => ({ availability: mocks.availability, dataVersion: mocks.dataVersion }),
+vi.mock("../../hooks/useNodeDataCache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hooks/useNodeDataCache")>()),
+  default: () => ({ availability: mocks.availability, dataVersion: mocks.dataVersion, problem: null }),
 }))
 vi.mock("../../stores/useDocumentStatusStore", () => ({
   captureDocumentExecutionFence: () => ({}),
@@ -202,5 +208,43 @@ describe("analysis request identity", () => {
     expect(hook.result.current.levels).toEqual({})
     expect(hook.result.current.error).toBeNull()
     expect(hook.result.current.loading).toBe(true)
+  })
+})
+
+describe("wholeDataStatus", () => {
+  const base: WholeDataStatusInput = {
+    availability: "current",
+    problem: null,
+    answered: false,
+    cacheRequired: false,
+    error: null,
+  }
+  const failed = { kind: "failed" as const, reason: "server down" }
+
+  it.each<[string, Partial<WholeDataStatusInput>, string | null]>([
+    ["no point yet", { availability: "checking" }, null],
+    ["a current point awaiting its answer", {}, null],
+    ["the answer", { answered: true }, null],
+    ["a build", { availability: "building" }, "Caching the data…"],
+    ["nothing cached", { availability: "missing" }, "Not cached · Refresh this node to read all rows"],
+    ["a partial generation", { availability: "partial" }, "Not cached · Refresh this node to read all rows"],
+    ["a server asking for caching again", { cacheRequired: true }, "Not cached · Refresh this node to read all rows"],
+    ["data out of date", { availability: "stale" }, "Cached data is out of date · Refresh this node to read all rows"],
+    [
+      "data out of date whose refresh failed",
+      { availability: "stale", problem: failed },
+      "Cached data is out of date · Refreshing it failed: server down",
+    ],
+    ["a refused point", { availability: "checking", problem: { kind: "refused", reason: "No input" } }, "No input"],
+    ["a failed point read", { availability: "checking", problem: failed }, "Couldn't read the data: server down"],
+    ["a failed question", { error: "bad rules" }, "Couldn't read the data: bad rules"],
+  ])("words %s", (_name, input, text) => {
+    expect(wholeDataStatusText(wholeDataStatus({ ...base, ...input }))).toBe(text)
+  })
+
+  it("never calls data that could not be read counting", () => {
+    for (const availability of ["checking", "current", "missing"] as const) {
+      expect(wholeDataStatus({ ...base, availability, problem: failed }).kind).toBe("failed")
+    }
   })
 })

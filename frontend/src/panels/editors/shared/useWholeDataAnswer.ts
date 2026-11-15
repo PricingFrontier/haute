@@ -2,14 +2,14 @@ import { useEffect, useRef, useState } from "react"
 
 import { apiErrorMessage } from "../../../api/errors"
 import type { GraphPayload } from "../../../api/types"
-import useNodeDataCache, { type NodeDataCache } from "../../../hooks/useNodeDataCache"
+import useNodeDataCache, { nodeDataProblemText, type NodeDataCache } from "../../../hooks/useNodeDataCache"
 import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../../../stores/useDocumentStatusStore"
 import useNodeDataStore from "../../../stores/useNodeDataStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
-import { buildGraph } from "../../../utils/buildGraph"
+import { nodeRequestTarget } from "../../../utils/nodeRequestTarget"
 import type { SimpleEdge, SimpleNode } from "../_shared"
 
 /** How long an editor waits after the last edit before asking about it. */
@@ -17,6 +17,78 @@ export const WHOLE_DATA_DEBOUNCE_MS = 250
 
 /** Where the numbers on screen came from. */
 export type WholeDataBasis = "all" | "sample" | "stale"
+
+/**
+ * What a whole-data editor says about the data it reads, as one value: the
+ * answer is `ready`, it is `counting` (no answer yet), or the data is being
+ * cached, is not cached, is out of date (with the reason a refresh failed),
+ * must be cached again, or could not be read (`refused`: the server finds
+ * nothing for the node to read; `failed`: a failed read, build or question).
+ */
+export type WholeDataStatus =
+  | { kind: "ready" }
+  | { kind: "counting" }
+  | { kind: "building" }
+  | { kind: "missing" }
+  | { kind: "stale"; failure: string | null }
+  | { kind: "cacheRequired" }
+  | { kind: "refused"; reason: string }
+  | { kind: "failed"; reason: string }
+
+export interface WholeDataStatusInput {
+  availability: NodeDataCache["availability"]
+  problem: NodeDataCache["problem"]
+  /** The editor's answer describes all rows of the data it reads now. */
+  answered: boolean
+  cacheRequired: boolean
+  /** The whole-data question failed, with the server's reason. */
+  error: string | null
+}
+
+/** The one status a whole-data editor shows, from the cache's facts and its own answer. */
+export function wholeDataStatus({
+  availability,
+  problem,
+  answered,
+  cacheRequired,
+  error,
+}: WholeDataStatusInput): WholeDataStatus {
+  if (problem?.kind === "refused") return { kind: "refused", reason: problem.reason }
+  if (availability === "building") return { kind: "building" }
+  if (availability === "stale") return { kind: "stale", failure: problem?.reason ?? null }
+  if (problem) return { kind: "failed", reason: problem.reason }
+  if (availability === "checking") return { kind: "counting" }
+  if (availability !== "current") return { kind: "missing" }
+  if (error) return { kind: "failed", reason: error }
+  if (cacheRequired) return { kind: "cacheRequired" }
+  return answered ? { kind: "ready" } : { kind: "counting" }
+}
+
+const REFRESH_HINT = "Refresh this node to read all rows"
+
+/**
+ * The words every whole-data editor shows for the states that describe the
+ * data. Null for `ready` and `counting`, which each editor words itself.
+ */
+export function wholeDataStatusText(status: WholeDataStatus): string | null {
+  switch (status.kind) {
+    case "ready":
+    case "counting":
+      return null
+    case "building":
+      return "Caching the data…"
+    case "missing":
+    case "cacheRequired":
+      return `Not cached · ${REFRESH_HINT}`
+    case "stale":
+      return status.failure
+        ? `Cached data is out of date · Refreshing it failed: ${status.failure}`
+        : `Cached data is out of date · ${REFRESH_HINT}`
+    case "refused":
+    case "failed":
+      return nodeDataProblemText(status)
+  }
+}
 
 /** What every whole-dataset answer says about the data it read. */
 export interface WholeDataResponse {
@@ -28,7 +100,9 @@ export interface WholeDataResponse {
 export interface WholeDataQuestion {
   /** The editor's `askedFor`, for the request to read back. */
   asked: string
+  /** The graph to send: inside an open submodel, the whole pipeline. */
   graph: GraphPayload
+  /** The node's id in `graph`: inside an open submodel, its runtime id. */
   nodeId: string
   source: string
   signal: AbortSignal
@@ -77,6 +151,8 @@ export interface WholeDataAnswer<TResponse> {
   loading: boolean
   basis: WholeDataBasis
   error: string | null
+  /** What the editor says about the data it reads ({@link wholeDataStatus}). */
+  status: WholeDataStatus
 }
 
 interface Tagged<T> {
@@ -145,10 +221,11 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
       question.controller = controller
       inFlight.current = question
       setLoading({ identity: requestIdentity, value: true })
+      const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
       askRef.current({
         asked: askedFor,
-        graph: buildGraph(allNodes, edges, submodels),
-        nodeId,
+        graph: target.graph,
+        nodeId: target.nodeId,
         source: activeSource,
         signal: controller.signal,
       })
@@ -205,13 +282,22 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
     available === "current" &&
     matching?.status === "ok" &&
     matching.data_version === dataVersion
+  const cacheRequired = available === "current" && answered && matching?.status === "cache_required"
+  const questionError = error?.identity === requestIdentity ? error.value : null
   return {
     cache,
     answer: current ? matching : null,
     answerIsCurrent: current && answered,
-    cacheRequired: available === "current" && answered && matching?.status === "cache_required",
+    cacheRequired,
     loading: loading?.identity === requestIdentity ? loading.value : false,
-    error: error?.identity === requestIdentity ? error.value : null,
+    error: questionError,
     basis: current ? "all" : available === "stale" ? "stale" : "sample",
+    status: wholeDataStatus({
+      availability: available,
+      problem: cache.problem,
+      answered: current,
+      cacheRequired,
+      error: questionError,
+    }),
   }
 }

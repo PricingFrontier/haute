@@ -22,7 +22,7 @@ import { CommittedTextField, SavedValueOption } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
-import { buildGraph } from "../utils/buildGraph"
+import { afterCommitEffects, nodeRequestTarget } from "../utils/nodeRequestTarget"
 import { useGraph } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
@@ -152,17 +152,17 @@ export default function OptimiserConfig({
     effectiveBandingNode,
   } = resolvedInputs
 
-  // buildGraph reads the preamble and constants from the store; listing them
+  // The graph reads the preamble and constants from the store; listing them
   // renews the callback, so an edit made after mount reaches the next request.
   const globalConstants = useGraphStore((s) => s.globalConstants)
   const preamble = useGraphStore((s) => s.preamble)
-  const buildGraphCb = useCallback(
+  const requestTarget = useCallback(
     () => {
       void globalConstants
       void preamble
-      return buildGraph(allNodes, edges, submodels)
+      return nodeRequestTarget(allNodes, edges, submodels, nodeId)
     },
-    [allNodes, edges, submodels, globalConstants, preamble],
+    [allNodes, edges, submodels, nodeId, globalConstants, preamble],
   )
   // The estimate reads the graph upstream of this node, so edits to the node
   // itself (which move the global structural version) must not re-request it.
@@ -209,14 +209,17 @@ export default function OptimiserConfig({
   // user knows what volume of scored data the solver will process.
   // The hook owns the abort / toast / loading lifecycle.
   const solveEstimateEndpoint = useCallback(
-    (_payload: void, { signal }: { signal: AbortSignal }) =>
-      estimateOptimiserSolve({
-        graph: buildGraphCb(),
-        node_id: nodeId,
+    async (_payload: void, { signal }: { signal: AbortSignal }) => {
+      await afterCommitEffects()
+      const target = requestTarget()
+      return estimateOptimiserSolve({
+        graph: target.graph,
+        node_id: target.nodeId,
         source: activeSource,
         signal,
-      }),
-    [buildGraphCb, nodeId, activeSource],
+      })
+    },
+    [requestTarget, activeSource],
   )
   const {
     isStale,
@@ -613,7 +616,7 @@ export default function OptimiserConfig({
           canAutoRange={canAutoRange}
           accentColor={accentColor}
           labelClassName={SECTION_LABEL_CLASS}
-          buildGraph={buildGraphCb}
+          requestTarget={requestTarget}
           nodeId={nodeId}
           onUpdate={onUpdate}
           onRemoveConstraint={handleRemoveConstraint}

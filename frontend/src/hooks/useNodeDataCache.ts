@@ -22,7 +22,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { buildGraph } from "../utils/buildGraph"
+import { afterCommitEffects, nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -39,6 +39,23 @@ export type NodeDataAvailability =
   | "building"
   | "corrupt"
 
+/**
+ * Why the last inspection or build for the current identity got nothing:
+ * `refused` when the backend refuses to name a point (the graph as it stands
+ * gives the node nothing to read, such as a node waiting for its input), and
+ * `failed` for any other failure. It is a separate fact from the point, so
+ * stale data whose refresh failed is both.
+ */
+export interface NodeDataProblem {
+  kind: "refused" | "failed"
+  reason: string
+}
+
+/** The words every consumer shows for a {@link NodeDataProblem}. */
+export function nodeDataProblemText(problem: NodeDataProblem): string {
+  return problem.kind === "refused" ? problem.reason : `Couldn't read the data: ${problem.reason}`
+}
+
 export interface NodeDataCache {
   point: NodeDataPointResponse | null
   availability: NodeDataAvailability
@@ -54,11 +71,12 @@ export interface NodeDataCache {
   columns: NodeDataColumns | null
   demand: NodeDataColumns | null
   /**
-   * Why the node has no data to read as the pipeline stands, such as a node
-   * still waiting for its input. It holds for the current identity only, so
-   * connecting the input clears it.
+   * Why the last inspection or build got nothing, for the current identity
+   * only: the next answer clears it, and connecting the input changes the
+   * identity. The node's Refresh asks for the point again while it is set and
+   * there is no point.
    */
-  unreadable: string | null
+  problem: NodeDataProblem | null
   /** True when this consumer has no build action: the point is read directly. */
   readsDirectly: boolean
   canBuild: boolean
@@ -132,9 +150,9 @@ export function refreshNodeDataCache(nodeId: string): void {
   for (const handler of nodeDataRefreshHandlers.get(nodeId) ?? []) handler()
 }
 
-function producerNode(allNodes: SimpleNode[], point: NodeDataPointResponse | null): SimpleNode | null {
-  if (!point) return null
-  return allNodes.find((candidate) => candidate.id === point.point.producer_node_id) ?? null
+function producerNode(target: NodeRequestTarget | null, point: NodeDataPointResponse | null): SimpleNode | null {
+  if (!point || !target) return null
+  return target.nodeNamed(point.point.producer_node_id)
 }
 
 /**
@@ -186,10 +204,16 @@ export default function useNodeDataCache({
     fence: DocumentExecutionFence
     point: NodeDataPointResponse
   } | null>(null)
-  // The backend's refusal to name a point for this identity: the graph as it
-  // stands has nothing for the node to read. It is the node's state, not an
-  // event, so it is shown with the node rather than raised as a toast.
-  const [refused, setRefused] = useState<{ configHash: string; message: string } | null>(null)
+  // Why the last inspection or build for this identity got nothing. It is the
+  // node's state, not an event, so it is shown with the node rather than raised
+  // as a toast.
+  // `during` says which failed: a read is asked again on Refresh, whatever point
+  // is kept from before; a build is retried by building.
+  const [problem, setProblem] = useState<
+    ({ configHash: string; during: "read" | "build" } & NodeDataProblem) | null
+  >(null)
+  // Raised by the node's Refresh to ask for the point again after a failure.
+  const [readAttempt, setReadAttempt] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   // Set by a Stop that arrives before the build's job id; the build honours it
   // as soon as the id arrives, instead of Stop finding nothing to cancel.
@@ -225,28 +249,31 @@ export default function useNodeDataCache({
   }, [nodeId, ownedRunning, setWorkRunning, workKey])
   useEffect(() => () => setWorkRunning(workKey, null), [setWorkRunning, workKey])
 
-  // buildGraph reads the preamble and constants from the store; listing them
-  // renews the callback, so an edit made after mount reaches the next request.
-  const graphPayload = useCallback(
-    () => {
+  // The graph and node id a request sends: inside an open submodel, the whole
+  // pipeline and the node's runtime id. The graph reads the preamble and constants
+  // from the store; listing them renews the callback, so an edit made after mount
+  // reaches the next request.
+  const requestTarget = useCallback(
+    (): NodeRequestTarget | null => {
       void globalConstants
       void preamble
-      return buildGraph(allNodes, edges, submodels)
+      return nodeId ? nodeRequestTarget(allNodes, edges, submodels, nodeId) : null
     },
-    [allNodes, edges, preamble, submodels, globalConstants],
+    [allNodes, edges, nodeId, preamble, submodels, globalConstants],
   )
 
   const fetchPoint = useCallback(
     (signal?: AbortSignal): Promise<NodeDataPointResponse | null> => {
-      if (!nodeId) return Promise.resolve(null)
+      const target = requestTarget()
+      if (!target) return Promise.resolve(null)
       return getNodeDataPoint({
-        graph: graphPayload(),
-        node_id: nodeId,
+        graph: target.graph,
+        node_id: target.nodeId,
         source: activeSource,
         signal,
       })
     },
-    [activeSource, graphPayload, nodeId],
+    [activeSource, requestTarget],
   )
 
   const publish = useCallback(
@@ -256,6 +283,7 @@ export default function useNodeDataCache({
       if (currentIdentity.current !== identity) return
       observePoint(fresh, activeSource, identity)
       setAnswered({ configHash: identity, fence, point: fresh })
+      setProblem((previous) => (previous?.configHash === identity ? null : previous))
     },
     [activeSource, observePoint],
   )
@@ -275,7 +303,10 @@ export default function useNodeDataCache({
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     const controller = new AbortController()
-    void fetchPoint(controller.signal)
+    // Asked once this commit's effects have all run, so an edit inside an open
+    // submodel has reached the whole pipeline the request sends.
+    void afterCommitEffects()
+      .then(() => (controller.signal.aborted ? null : fetchPoint(controller.signal)))
       .then((fresh) => {
         if (!fresh || controller.signal.aborted) return
         publish(fresh, configHash, fence)
@@ -289,29 +320,29 @@ export default function useNodeDataCache({
           return
         }
         // A 400 is the backend refusing to name a point for this graph.
-        if ((err as { status?: unknown } | null)?.status === 400) {
-          setRefused({ configHash, message: apiErrorMessage(err) })
-          return
-        }
-        addToast(
-          "error",
-          `Data cache inspection failed: ${apiErrorMessage(err)}`,
-        )
+        const refused = (err as { status?: unknown } | null)?.status === 400
+        setProblem({
+          configHash,
+          during: "read",
+          kind: refused ? "refused" : "failed",
+          reason: apiErrorMessage(err),
+        })
       })
     return () => controller.abort()
-    // Re-asks on the consumer's identity and on the node-data epoch, which the
+    // Re-asks on the consumer's identity, on the node-data epoch, which the
     // store raises whenever any consumer observes a published, widened,
-    // evicted, or cleared generation. The graph objects themselves are excluded
-    // deliberately: a render that keeps the same identity hash would otherwise
-    // re-fire the request on unrelated edits such as a node drag.
+    // evicted, or cleared generation, and when the node's Refresh asks again
+    // after a failure. The graph objects themselves are excluded deliberately:
+    // a render that keeps the same identity hash would otherwise re-fire the
+    // request on unrelated edits such as a node drag.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addToast, configHash, enabled, epoch, nodeId])
+  }, [configHash, enabled, epoch, nodeId, readAttempt])
 
   const clearDelegatedData = useCallback(
     async (target: NodeDataPointResponse) => {
       // A point that reads directly has nothing cached to clear.
       if (target.reads_directly) return
-      const producer = producerNode(allNodes, target)
+      const producer = producerNode(requestTarget(), target)
       const config = (producer?.data.config ?? null) as Record<string, unknown> | null
       if (!config) return
       if (target.kind === "api_input_table") {
@@ -322,12 +353,12 @@ export default function useNodeDataCache({
       }
       await clearInputCache({ schema_version: 1, config })
     },
-    [allNodes],
+    [requestTarget],
   )
 
   const buildDelegated = useCallback(
     async (target: NodeDataPointResponse, force: boolean, fence: DocumentExecutionFence) => {
-      const producer = producerNode(allNodes, target)
+      const producer = producerNode(requestTarget(), target)
       if (!producer) throw new Error("The delegated data point has no producer node")
       const { cancelInputSnapshotBuild, ensureInputSnapshots } = await import(
         "./ensureInputSnapshots"
@@ -394,11 +425,11 @@ export default function useNodeDataCache({
     },
     [
       addToast,
-      allNodes,
       finishDelegatedBuild,
       nodeLabel,
       readPoint,
       reportDelegatedProgress,
+      requestTarget,
       retainDelegatedBuild,
       startDelegatedBuild,
     ],
@@ -419,14 +450,16 @@ export default function useNodeDataCache({
   const build = useCallback(
     async (refresh: boolean) => {
       if (!nodeId || !configHash || busy) return
+      const target = requestTarget()
+      if (!target) return
       const fence = captureDocumentExecutionFence()
       if (!isDocumentExecutionFenceCurrent(fence)) return
       stopRequested.current = false
       setSubmitting(true)
       try {
         const response = await runNodeData({
-          graph: graphPayload(),
-          node_id: nodeId,
+          graph: target.graph,
+          node_id: target.nodeId,
           source: activeSource,
           refresh,
         })
@@ -479,6 +512,7 @@ export default function useNodeDataCache({
         // Cancelling is otherwise the outcome the user asked for, not a
         // failure. The abort arrives as a DOMException, not an Error instance.
         if (name === "AbortError") return
+        setProblem({ configHash, during: "build", kind: "failed", reason: detail })
         addToast("error", `Data caching failed: ${detail}`)
       } finally {
         setSubmitting(false)
@@ -491,10 +525,10 @@ export default function useNodeDataCache({
       busy,
       cancelOwnedJob,
       configHash,
-      graphPayload,
       nodeId,
       nodeLabel,
       publish,
+      requestTarget,
       startJob,
     ],
   )
@@ -516,18 +550,25 @@ export default function useNodeDataCache({
   // registered, so a handler registered on an early render still decides
   // against what the consumer holds now. It settles one commit after the
   // render it describes, which a user's click is never inside.
-  const latest = useRef({ availability, busy, canBuild, enabled, run, refresh })
+  const currentProblem = problem && problem.configHash === configHash ? problem : null
+  const latest = useRef({ availability, busy, canBuild, enabled, run, refresh, currentProblem })
   useEffect(() => {
-    latest.current = { availability, busy, canBuild, enabled, run, refresh }
+    latest.current = { availability, busy, canBuild, enabled, run, refresh, currentProblem }
   })
 
   const bringUpToDate = useCallback(() => {
-    const { availability, busy, canBuild, enabled, run, refresh } = latest.current
-    if (!enabled || !canBuild || busy) return
-    // `checking` has no answer yet, so there is nothing to decide against.
-    if (availability === "current" || availability === "building" || availability === "checking") {
+    const { availability, busy, canBuild, enabled, run, refresh, currentProblem } = latest.current
+    if (!enabled) return
+    // A failed or refused inspection is asked again, whatever point is kept
+    // from an earlier answer; the new answer decides what Refresh does next.
+    if (currentProblem?.during === "read") {
+      setReadAttempt((attempt) => attempt + 1)
       return
     }
+    // `checking` has no answer yet, so there is nothing to decide against.
+    if (availability === "checking") return
+    if (!canBuild || busy) return
+    if (availability === "current" || availability === "building") return
     void (availability === "missing" ? run() : refresh())
   }, [])
 
@@ -568,12 +609,14 @@ export default function useNodeDataCache({
 
   const clear = useCallback(async () => {
     if (!nodeId || !configHash) return
+    const target = requestTarget()
+    if (!target) return
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     try {
       const response = await clearNodeData({
-        graph: graphPayload(),
-        node_id: nodeId,
+        graph: target.graph,
+        node_id: target.nodeId,
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence)) return
@@ -592,10 +635,10 @@ export default function useNodeDataCache({
     addToast,
     clearDelegatedData,
     configHash,
-    graphPayload,
     nodeId,
     publish,
     readPoint,
+    requestTarget,
   ])
 
   return {
@@ -611,7 +654,7 @@ export default function useNodeDataCache({
     dataVersion: point?.data_version ?? null,
     columns: point?.generation?.columns ?? null,
     demand: point?.demand ?? null,
-    unreadable: !point && refused && refused.configHash === configHash ? refused.message : null,
+    problem: currentProblem ? { kind: currentProblem.kind, reason: currentProblem.reason } : null,
     readsDirectly: point?.reads_directly ?? false,
     canBuild,
     run,

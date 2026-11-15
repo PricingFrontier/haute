@@ -1227,6 +1227,11 @@ describe("PipelineNode", () => {
     expect(screen.getByText("API")).toBeInTheDocument()
   })
 
+  it("shows no API badge on a Workbench Input, which the underwriter app feeds in-process", () => {
+    renderNode({ label: "quote", nodeType: NODE_TYPES.WORKBENCH_INPUT, config: {}, _sourceHandleInputNames: {} })
+    expect(screen.queryByText("API")).toBeNull()
+  })
+
   // ── Aria label includes trace active ───────────────────────────
 
   it("includes trace active in aria-label when active", () => {

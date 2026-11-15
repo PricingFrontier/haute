@@ -49,7 +49,7 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
   // Entry group (orange) — pipeline starts here
   // Palette: Okabe-Ito / Wong CVD-safe — each functional group gets a distinct hue
   [NODE_TYPES.API_INPUT]:          { icon: Radio,              color: NODE_GROUP_COLORS.entry, label: "QUOTE IN",       name: "Quote Input",          description: "Live API input for deployment (max 1)",                       defaultConfig: nodeDefaults[NODE_TYPES.API_INPUT], shape: "pill" },
-  [NODE_TYPES.WORKBENCH_INPUT]:    { icon: ClipboardList,      color: NODE_GROUP_COLORS.entry, label: "WORKBENCH IN",   name: "Workbench Input",      description: "Live API input with the workbench's tables (max 1)",          defaultConfig: nodeDefaults[NODE_TYPES.WORKBENCH_INPUT], shape: "pill" },
+  [NODE_TYPES.WORKBENCH_INPUT]:    { icon: ClipboardList,      color: NODE_GROUP_COLORS.entry, label: "WORKBENCH IN",   name: "Workbench Input",      description: "Entry point for quotes keyed in through the workbench (max 1)", defaultConfig: nodeDefaults[NODE_TYPES.WORKBENCH_INPUT], shape: "pill" },
   [NODE_TYPES.LIVE_SWITCH]:        { icon: ToggleLeft,         color: NODE_GROUP_COLORS.entry, label: "SWITCH",         name: "Source Switch",        description: "Switch between live API and batch data",                      defaultConfig: nodeDefaults[NODE_TYPES.LIVE_SWITCH], shape: "pill" },
   // Exit (vermillion) — pipeline destination
   [NODE_TYPES.OUTPUT]:             { icon: CircleDot,          color: NODE_GROUP_COLORS.exit, label: "QUOTE OUT",      name: "Quote Response",       description: "Final price / prediction",                                    defaultConfig: nodeDefaults[NODE_TYPES.OUTPUT], shape: "pill" },
