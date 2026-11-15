@@ -9,7 +9,7 @@ import { makeNode } from "../../test-utils/factories"
 import { normalizeEdges } from "../../utils/graphHelpers"
 import { getLayoutedElements } from "../../utils/layout"
 import useSubmodelNavigation from "../useSubmodelNavigation"
-import useGraphStore from "../../stores/useGraphStore"
+import useGraphStore, { canvasGraph, resetGraphStoreForTests } from "../../stores/useGraphStore"
 import type { SubmodelDefinition } from "../../types/node"
 import { createNodeInstance } from "../../api/client"
 
@@ -23,7 +23,6 @@ vi.mock("../../utils/layout", () => ({
 
 function makeParams() {
   return {
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     nodeIdCounter: { current: 10 },
     lastSelectedNodeRef: { current: null as Node | null },
     setNodes: vi.fn(),
@@ -37,8 +36,14 @@ function makeParams() {
   }
 }
 
+/** The canvas the handlers read, as the graph store holds it. */
+function showGraph(nodes: Node[], edges: Edge[] = []) {
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels: {} })
+}
+
 describe("useNodeHandlers", () => {
   beforeEach(() => {
+    resetGraphStoreForTests()
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     vi.mocked(getLayoutedElements).mockReset()
     vi.mocked(getLayoutedElements).mockImplementation(async (nodes: Node[]) => nodes)
@@ -52,7 +57,6 @@ describe("useNodeHandlers", () => {
   it.each(["polars", "externalFile", "modelling"])("a plain node's Create Instance commits the resolved wrapped graph as one undo step", async (nodeType) => {
     const original = makeNode("rate_calc", nodeType)
     const params = makeParams()
-    params.graphRef.current = { nodes: [original], edges: [] }
     useGraphStore.getState().loadGraphSnapshot({ nodes: [original], edges: [], submodels: {}, preamble: "" })
     const occurrence = (name: string, instanceOf?: string) => makeNode(name, "submodel", {
       data: { label: name, nodeType: "submodel", config: {
@@ -76,9 +80,9 @@ describe("useNodeHandlers", () => {
     const { result } = renderHook(() => {
       const navigation = useSubmodelNavigation({
         ...params,
-        submodelsRef: { current: {} }, setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(),
+        setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(),
         cancelPreview: vi.fn(), clearTrace: vi.fn(),
-        preambleRef: { current: "" }, sourceRevisionRef, preservedBlocksRef: { current: [] },
+        sourceRevisionRef, preservedBlocksRef: { current: [] },
         descriptionRef: { current: "" }, sourceFileRef: { current: "pipeline.py" },
         pipelineNameRef: { current: "main" }, reservedApiInputFrameLabels: new Set(),
         resolveCanonicalIdentities,
@@ -106,7 +110,7 @@ describe("useNodeHandlers", () => {
     "scenarioExpander", "explore", "optimiser", "optimiserApply", "externalFile", "modelling"])(
     "wraps the proven type %s instead of creating an ordinary instance", async (nodeType) => {
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("original", nodeType)], edges: [] }
+      showGraph([makeNode("original", nodeType)])
       const createWrappedNodeInstance = vi.fn(async () => ({ ok: true as const }))
       const { result } = renderHook(() => useNodeHandlers({ ...params, createWrappedNodeInstance }))
       await act(async () => { await result.current.handleCreateInstance("original") })
@@ -118,7 +122,7 @@ describe("useNodeHandlers", () => {
   it.each(["dataOutput"])(
     "refuses Create Instance for Data Output without changing the graph", async (nodeType) => {
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("original", nodeType)], edges: [] }
+      showGraph([makeNode("original", nodeType)])
       const createWrappedNodeInstance = vi.fn()
       const { result } = renderHook(() => useNodeHandlers({ ...params, createWrappedNodeInstance }))
       await act(async () => { await result.current.handleCreateInstance("original") })
@@ -134,7 +138,7 @@ describe("useNodeHandlers", () => {
     const n1 = makeNode("n1")
     const n2 = makeNode("n2")
     const edges = [{ id: "e1", source: "n1", target: "n2" } as Edge]
-    params.graphRef.current = { nodes: [n1, n2], edges }
+    showGraph([n1, n2], edges)
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleDeleteNode("n1")
@@ -154,7 +158,7 @@ describe("useNodeHandlers", () => {
   it("uses a committed shared deletion without a raw graph setter while cleaning selection", () => {
     const n1 = makeNode("n1")
     const params = makeParams()
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const commitSharedNodeDeletion = vi.fn(() => "committed" as const)
     const { result } = renderHook(() => useNodeHandlers({
       ...params,
@@ -168,7 +172,7 @@ describe("useNodeHandlers", () => {
 
   it("leaves graph and cleanup untouched when shared deletion is blocked", () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    showGraph([makeNode("n1")])
     const commitSharedNodeDeletion = vi.fn(() => "blocked" as const)
     const { result } = renderHook(() => useNodeHandlers({
       ...params,
@@ -182,7 +186,7 @@ describe("useNodeHandlers", () => {
 
   it("defers cleanup of a pending shared deletion until the identity commit lands", () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    showGraph([makeNode("n1")])
     let settle: ((committed: boolean) => void) | undefined
     const commitSharedNodeDeletion = vi.fn(
       (
@@ -213,7 +217,7 @@ describe("useNodeHandlers", () => {
 
   it("keeps a pending shared deletion's state when the identity commit fails", () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    showGraph([makeNode("n1")])
     let settle: ((committed: boolean) => void) | undefined
     const commitSharedNodeDeletion = vi.fn(
       (
@@ -246,7 +250,7 @@ describe("useNodeHandlers", () => {
         config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
-    params.graphRef.current = { nodes: [owner], edges: [] }
+    showGraph([owner])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     act(() => {
@@ -266,7 +270,7 @@ describe("useNodeHandlers", () => {
         config: {},
       },
     })
-    params.graphRef.current = { nodes: [malformed], edges: [] }
+    showGraph([malformed])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     act(() => {
@@ -291,12 +295,9 @@ describe("useNodeHandlers", () => {
       },
     })
     const upstream = makeNode("upstream", "polars")
-    params.graphRef.current = {
-      nodes: [upstream, copy],
-      edges: [
-        { id: "bind", source: "upstream", target: copy.id, targetHandle: "in__policy" } as Edge,
-      ],
-    }
+    showGraph([upstream, copy], [
+      { id: "bind", source: "upstream", target: copy.id, targetHandle: "in__policy" } as Edge,
+    ])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     act(() => {
@@ -305,16 +306,16 @@ describe("useNodeHandlers", () => {
 
     expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
     const [nodesUpdater, edgesUpdater] = params.setNodesAndEdges.mock.calls[0]
-    expect((nodesUpdater as (n: Node[]) => Node[])(params.graphRef.current.nodes)
+    expect((nodesUpdater as (n: Node[]) => Node[])(useGraphStore.getState().nodes)
       .map((node) => node.id)).toEqual(["upstream"])
-    expect((edgesUpdater as (e: Edge[]) => Edge[])(params.graphRef.current.edges)).toEqual([])
+    expect((edgesUpdater as (e: Edge[]) => Edge[])(useGraphStore.getState().edges)).toEqual([])
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("handleDeleteNode clears selected node if it was selected", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleDeleteNode("n1")
@@ -328,7 +329,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
     const n2 = makeNode("n2")
-    params.graphRef.current = { nodes: [n1, n2], edges: [] }
+    showGraph([n1, n2])
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleDeleteNode("n1")
@@ -345,7 +346,7 @@ describe("useNodeHandlers", () => {
     }])
     const n1 = makeNode("n1")
     n1.position = { x: 100, y: 200 }
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
     await act(async () => {
       await result.current.handleDuplicateNode("n1")
@@ -361,7 +362,7 @@ describe("useNodeHandlers", () => {
 
   it("leaves duplicate creation untouched when identity resolution rejects", async () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    showGraph([makeNode("n1")])
     params.resolveNodeIdentities = vi.fn(async () => { throw new Error("identity service unavailable") })
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -374,7 +375,7 @@ describe("useNodeHandlers", () => {
 
   it("rejects malformed duplicate identity output atomically", async () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    showGraph([makeNode("n1")])
     params.resolveNodeIdentities = vi.fn(async () => [makeNode("wrong")])
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -391,7 +392,7 @@ describe("useNodeHandlers", () => {
     const original = makeNode("n1", "polars", {
       data: { label: "Node n1", nodeType: "polars", config: { code: "x" }, _recoveryId: "n1@4", _columns: [{ name: "a" }] },
     })
-    params.graphRef.current = { nodes: [original], edges: [] }
+    showGraph([original])
     params.resolveNodeIdentities = vi.fn((nodes: readonly Node[]) => new Promise<Node[]>((done) => { resolve = done; void nodes }))
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -400,7 +401,7 @@ describe("useNodeHandlers", () => {
     expect(Object.keys(candidate.data).filter((key) => key.startsWith("_"))).toEqual([])
     expect(candidate.data).toMatchObject({ config: { code: "x" } })
     // Selecting the original replaces the graph object but not its structure.
-    params.graphRef.current = { nodes: [{ ...original, selected: true }], edges: [] }
+    useGraphStore.setState({ nodes: [{ ...original, selected: true }], edges: [] })
     await act(async () => { resolve([candidate]); await pending })
 
     expect(params.setNodes).toHaveBeenCalledTimes(1)
@@ -410,12 +411,12 @@ describe("useNodeHandlers", () => {
   it("rejects a stale duplicate identity result after graph replacement", async () => {
     let resolve!: (nodes: Node[]) => void
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    showGraph([makeNode("n1")])
     params.resolveNodeIdentities = vi.fn(() => new Promise<Node[]>((done) => { resolve = done }))
     const { result } = renderHook(() => useNodeHandlers(params))
 
     const pending = result.current.handleDuplicateNode("n1")
-    params.graphRef.current = { nodes: [makeNode("replacement")], edges: [] }
+    useGraphStore.setState({ nodes: [makeNode("replacement")], edges: [] })
     await act(async () => { resolve([makeNode("polars_11")]); await pending })
 
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -432,7 +433,7 @@ describe("useNodeHandlers", () => {
         config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
-    params.graphRef.current = { nodes: [submodel], edges: [] }
+    showGraph([submodel])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     act(() => {
@@ -447,7 +448,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const apiNode = makeNode("api1")
     apiNode.data = { ...apiNode.data, nodeType: "apiInput" }
-    params.graphRef.current = { nodes: [apiNode], edges: [] }
+    showGraph([apiNode])
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleDuplicateNode("api1")
@@ -459,7 +460,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const outputNode = makeNode("out1")
     outputNode.data = { ...outputNode.data, nodeType: "output" }
-    params.graphRef.current = { nodes: [outputNode], edges: [] }
+    showGraph([outputNode])
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleDuplicateNode("out1")
@@ -469,7 +470,7 @@ describe("useNodeHandlers", () => {
 
   it("handleDuplicateNode does nothing if node not found", () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [], edges: [] }
+    showGraph([])
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleDuplicateNode("nonexistent")
@@ -486,7 +487,7 @@ describe("useNodeHandlers", () => {
       const params = makeParams()
       const singleton = makeNode("only1")
       singleton.data = { ...singleton.data, nodeType }
-      params.graphRef.current = { nodes: [singleton], edges: [] }
+      showGraph([singleton])
       const { result } = renderHook(() => useNodeHandlers(params))
       act(() => {
         result.current.handleCreateInstance("only1")
@@ -501,7 +502,7 @@ describe("useNodeHandlers", () => {
     const params = makeParams()
     const sourceSwitch = makeNode("switch_1")
     sourceSwitch.data = { ...sourceSwitch.data, nodeType: "liveSwitch" }
-    params.graphRef.current = { nodes: [sourceSwitch], edges: [] }
+    showGraph([sourceSwitch])
     const { result } = renderHook(() => useNodeHandlers(params))
     act(() => {
       result.current.handleCreateInstance("switch_1")
@@ -536,7 +537,7 @@ describe("useNodeHandlers", () => {
         },
       },
     })
-    params.graphRef.current = { nodes: [source, existing], edges: [] }
+    showGraph([source, existing])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
@@ -572,7 +573,7 @@ describe("useNodeHandlers", () => {
         config: { definition_id: "definition_inputs", alias: "inputs" },
       },
     })
-    params.graphRef.current = { nodes: [source], edges: [] }
+    showGraph([source])
     params.submodels = {
       definition_inputs: {
         definitionId: "definition_inputs",
@@ -623,15 +624,16 @@ describe("useNodeHandlers", () => {
           },
         },
       }))
-    params.graphRef.current = { nodes: [owner, ...copies], edges: [] }
+    showGraph([owner, ...copies])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
       await result.current.handleCreateInstance("scoring_10")
     })
 
-    const created = params.setNodes.mock.calls[0][0](params.graphRef.current.nodes)
-      .find((node: Node) => node.selected && !params.graphRef.current.nodes.includes(node))
+    const canvasNodes = useGraphStore.getState().nodes
+    const created = params.setNodes.mock.calls[0][0](canvasNodes)
+      .find((node: Node) => node.selected && !canvasNodes.includes(node))
     expect((created?.data.config as { alias?: string }).alias).toBe("scoring_11")
   })
 
@@ -652,10 +654,7 @@ describe("useNodeHandlers", () => {
       },
     })
     const nodeIdOccupier = makeNode("scoring_2")
-    params.graphRef.current = {
-      nodes: [source, aliasOccupier, nodeIdOccupier],
-      edges: [],
-    }
+    showGraph([source, aliasOccupier, nodeIdOccupier])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
@@ -680,7 +679,7 @@ describe("useNodeHandlers", () => {
         config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
-    params.graphRef.current = { nodes: [source], edges: [] }
+    showGraph([source])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
@@ -707,7 +706,7 @@ describe("useNodeHandlers", () => {
         config: { alias: "scoring" },
       },
     })
-    params.graphRef.current = { nodes: [source], edges: [] }
+    showGraph([source])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     act(() => {
@@ -731,7 +730,7 @@ describe("useNodeHandlers", () => {
         },
       },
     })
-    params.graphRef.current = { nodes: [source], edges: [] }
+    showGraph([source])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     act(() => {
@@ -767,7 +766,7 @@ describe("useNodeHandlers", () => {
         },
       },
     })
-    params.graphRef.current = { nodes: [base, source], edges: [] }
+    showGraph([base, source])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
@@ -787,7 +786,7 @@ describe("useNodeHandlers", () => {
     vi.useFakeTimers()
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
     await act(async () => {
       await result.current.handleAutoLayout()
@@ -803,7 +802,7 @@ describe("useNodeHandlers", () => {
   it("forwards React Flow's internal-node lookup to the layout utility", async () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
@@ -820,7 +819,7 @@ describe("useNodeHandlers", () => {
     }))
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     expect(result.current.isAutoLayouting).toBe(false)
@@ -847,7 +846,7 @@ describe("useNodeHandlers", () => {
     }))
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
@@ -875,7 +874,7 @@ describe("useNodeHandlers", () => {
       .mockImplementationOnce(async (nodes: Node[]) => nodes)
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     const { result } = renderHook(() => useNodeHandlers(params))
     let thrown: unknown
 
@@ -901,7 +900,7 @@ describe("useNodeHandlers", () => {
 
   it("handleAutoLayout does nothing with empty graph", async () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [], edges: [] }
+    showGraph([])
     const { result } = renderHook(() => useNodeHandlers(params))
     await act(async () => {
       await result.current.handleAutoLayout()
@@ -940,16 +939,8 @@ describe("useNodeHandlers", () => {
       preamble: "",
     })
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: useGraphStore.getState().nodes,
-      edges: useGraphStore.getState().edges,
-    }
     params.setNodes = vi.fn((updater: (nds: Node[]) => Node[]) => {
       useGraphStore.getState().setNodes(updater)
-      params.graphRef.current = {
-        nodes: useGraphStore.getState().nodes,
-        edges: useGraphStore.getState().edges,
-      }
     })
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1013,7 +1004,7 @@ describe("useNodeHandlers", () => {
     const n2 = makeNode("n2", "polars", { position: { x: 20, y: 20 } })
     const n3 = makeNode("n3", "polars", { position: { x: 40, y: 40 } })
     const params = makeParams()
-    params.graphRef.current = { nodes: [n1, n2], edges: [] }
+    showGraph([n1, n2])
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -1023,7 +1014,7 @@ describe("useNodeHandlers", () => {
     })
 
     // Delete n2 and add n3 while layout is in flight
-    params.graphRef.current = { nodes: [n1, n3], edges: [] }
+    useGraphStore.setState({ nodes: [n1, n3], edges: [] })
 
     await act(async () => {
       resolveLayout([
@@ -1035,7 +1026,7 @@ describe("useNodeHandlers", () => {
 
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.fitView).not.toHaveBeenCalled()
-    expect(params.graphRef.current.nodes.map((node) => node.id)).toEqual(["n1", "n3"])
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["n1", "n3"])
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(
       /Auto-layout was not applied because the graph changed/,
     )
@@ -1056,7 +1047,7 @@ describe("useNodeHandlers", () => {
       data: { label: "other_doc", nodeType: "polars", config: { code: "df = other" } },
     })
     const params = makeParams()
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -1068,7 +1059,7 @@ describe("useNodeHandlers", () => {
     // Simulate switching/reloading the document (even with the same node id)
     act(() => {
       useDocumentStatusStore.getState().reset()
-      params.graphRef.current = { nodes: [otherDocNode], edges: [] }
+      useGraphStore.setState({ nodes: [otherDocNode], edges: [] })
     })
 
     await act(async () => {
@@ -1078,7 +1069,7 @@ describe("useNodeHandlers", () => {
 
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.fitView).not.toHaveBeenCalled()
-    expect(params.graphRef.current.nodes[0]).toEqual(otherDocNode)
+    expect(useGraphStore.getState().nodes[0]).toEqual(otherDocNode)
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(
       /Auto-layout was not applied because the graph changed/,
     )
@@ -1087,6 +1078,7 @@ describe("useNodeHandlers", () => {
 
 describe("useNodeHandlers - handleRenameNode", () => {
   beforeEach(() => {
+    resetGraphStoreForTests()
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     useUIStore.setState({ renameDialog: null, submodelDialog: null })
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
@@ -1103,7 +1095,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
     // in the context menu and nothing would happen.
     const params = makeParams()
     const n1 = makeNode("n1", "polars", { data: { label: "My Transform", nodeType: "polars", config: {} } })
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -1118,12 +1110,12 @@ describe("useNodeHandlers - handleRenameNode", () => {
     })
   })
 
-  it("does nothing when the node is not found in graphRef", () => {
+  it("does nothing when the node is not on the canvas", () => {
     // Catches: if the early return guard is removed, setRenameDialog
     // would be called with undefined data, potentially crashing the
     // RenameDialog component.
     const params = makeParams()
-    params.graphRef.current = { nodes: [], edges: [] }
+    showGraph([])
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -1140,7 +1132,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
     // skip selection because the ref still points to the deleted node.
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     params.lastSelectedNodeRef.current = n1
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1158,7 +1150,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
     const n2 = makeNode("n2")
-    params.graphRef.current = { nodes: [n1, n2], edges: [] }
+    showGraph([n1, n2])
     params.lastSelectedNodeRef.current = n2
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1175,7 +1167,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
   it("handleDeleteNode clears renameDialog when it references the deleted node", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     useUIStore.setState({ renameDialog: { nodeId: "n1", currentLabel: "Test" } })
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1190,7 +1182,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
   it("handleDeleteNode does NOT clear renameDialog when it references a different node", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     useUIStore.setState({ renameDialog: { nodeId: "n2", currentLabel: "Other" } })
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1207,7 +1199,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
   it("handleDeleteNode clears submodelDialog when it references the deleted node", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     useUIStore.setState({ submodelDialog: { nodeIds: ["n1", "n2"] } })
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1222,7 +1214,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
   it("handleDeleteNode does NOT clear submodelDialog when it does not reference the deleted node", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     useUIStore.setState({ submodelDialog: { nodeIds: ["n3", "n4"] } })
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1237,7 +1229,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
   it("handleDeleteNode handles null submodelDialog and renameDialog gracefully", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     useUIStore.setState({ submodelDialog: null, renameDialog: null })
 
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -1254,7 +1246,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
   it("rejects an instance whose resolved identity does not match", async () => {
     const params = makeParams()
     const source = makeNode("source", "submodel", { data: { label: "score", nodeType: "submodel", config: { definition_id: "def", alias: "score" } } })
-    params.graphRef.current = { nodes: [source], edges: [] }
+    showGraph([source])
     params.resolveNodeIdentities = vi.fn(async () => [makeNode("wrong")])
     const { result } = renderHook(() => useNodeHandlers(params))
     await act(async () => { await result.current.handleCreateInstance("source") })
@@ -1263,8 +1255,8 @@ describe("useNodeHandlers - handleRenameNode", () => {
 
   it("refuses a plain-node instance when its parent document transform is unavailable", async () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("source")], edges: [] }
-    const graph = params.graphRef.current
+    showGraph([makeNode("source")])
+    const graph = canvasGraph()
     const { result } = renderHook(() => useNodeHandlers(params))
 
     await act(async () => {
@@ -1273,7 +1265,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
       )
     })
 
-    expect(params.graphRef.current).toBe(graph)
+    expect(canvasGraph()).toBe(graph)
     expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
@@ -1282,8 +1274,8 @@ describe("useNodeHandlers - handleRenameNode", () => {
 
   it("reports a refused wrap without committing or selecting an instance", async () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("source")], edges: [] }
-    const graph = params.graphRef.current
+    showGraph([makeNode("source")])
+    const graph = canvasGraph()
     const createWrappedNodeInstance = vi.fn(async () => ({
       ok: false as const, error: "The pipeline changed; reload before creating an instance.",
     }))
@@ -1295,7 +1287,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
     expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
       type: "error", text: "The pipeline changed; reload before creating an instance.",
     })
-    expect(params.graphRef.current).toBe(graph)
+    expect(canvasGraph()).toBe(graph)
     expect(params.resolveNodeIdentities).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
@@ -1304,7 +1296,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
 
   it("applies automatic layout to a non-empty graph", async () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("layout")], edges: [] }
+    showGraph([makeNode("layout")])
     const { result } = renderHook(() => useNodeHandlers(params))
     await act(async () => { await result.current.handleAutoLayout() })
     expect(params.setNodes).toHaveBeenCalled()
@@ -1319,7 +1311,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
         config: { definition_id: "definition_source", alias: "source" },
       },
     })
-    params.graphRef.current = { nodes: [source], edges: [] }
+    showGraph([source])
     let resolveIdentity!: (nodes: Node[]) => void
     params.resolveNodeIdentities = vi.fn(() => new Promise((resolve) => {
       resolveIdentity = resolve
@@ -1338,7 +1330,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
 
     const editedGraph = { nodes: [source, makeNode("newer-edit")], edges: [] }
     act(() => {
-      params.graphRef.current = editedGraph
+      useGraphStore.setState(editedGraph)
       resolveIdentity([...requestedNodes])
     })
     await act(async () => {
@@ -1347,7 +1339,8 @@ describe("useNodeHandlers - handleRenameNode", () => {
 
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setSelectedNode).not.toHaveBeenCalled()
-    expect(params.graphRef.current).toBe(editedGraph)
+    expect(useGraphStore.getState().nodes).toBe(editedGraph.nodes)
+    expect(useGraphStore.getState().edges).toBe(editedGraph.edges)
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
   })
 })

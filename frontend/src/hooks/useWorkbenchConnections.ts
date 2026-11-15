@@ -1,15 +1,14 @@
-import { useCallback, useEffect, useRef, type MutableRefObject } from "react"
-import type { Edge, Node } from "@xyflow/react"
+import { useCallback, useEffect, useRef } from "react"
+import type { Edge } from "@xyflow/react"
 
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
-import useGraphStore from "../stores/useGraphStore"
+import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { workbenchDisconnections } from "../utils/workbenchTables"
 
 export type UseWorkbenchConnectionsOptions = {
   /** The graph the editor shows: the pipeline's top level, or the open submodel's. */
-  graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   /** Replace the shown graph's edges without an undo step. */
   commitEdges: (edges: Edge[]) => void
   /** The document can change. */
@@ -44,7 +43,7 @@ function tablesGoneWarning(label: string, nodeType: unknown, count: number): str
 }
 
 export default function useWorkbenchConnections({
-  graphRef,
+  
   commitEdges,
   editable,
   addToast,
@@ -75,15 +74,14 @@ export default function useWorkbenchConnections({
     ) {
       return false
     }
-    const held = workbenchDisconnections(graphRef.current, tables)
+    const held = workbenchDisconnections(canvasGraph(), tables)
     if (held === null) return true
-    graphRef.current = { ...graphRef.current, edges: held.edges }
     commitEdges(held.edges)
     for (const { node, edges: removed } of held.removed) {
       addToast("warning", tablesGoneWarning(String(node.data.label ?? node.id), node.data.nodeType, removed.length))
     }
     return true
-  }, [addToast, commitEdges, graphRef])
+  }, [addToast, commitEdges])
 
   useEffect(() => {
     if (editable) holdConnections()

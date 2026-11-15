@@ -24,7 +24,7 @@
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -65,13 +65,10 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   )
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodesRaw,
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -138,7 +135,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     }))
     const A = makeNode("A")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
     useSettingsStore.setState({ activeSource: "staging" })
 
@@ -158,7 +154,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     vi.useRealTimers()
     const A = makeStashedNode("A", "live")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "live" }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -229,7 +224,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     vi.useRealTimers()
     const A = makeStashedNode("A", "staging")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
     useSettingsStore.setState({ activeSource: "staging" })
 
@@ -248,7 +242,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     vi.useRealTimers()
     const A = makeStashedNode("A") // no _columnsSource - unknown provenance
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -275,7 +268,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A", "live")
     const B = makeNode("B")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A, B], edges: [makeEdge("A", "B")] }
     useSettingsStore.setState({ activeSource: "staging" })
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A, B], edges: [makeEdge("A", "B")], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
 

@@ -1,3 +1,4 @@
+import { canvasGraph } from "../stores/useGraphStore"
 import { useEffect, useRef } from "react"
 import type { Node, Edge, EdgeChange, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
@@ -129,7 +130,6 @@ interface KeyboardShortcutsParams {
   undo: () => void
   redo: () => void
   fitView: (options?: { padding?: number }) => void
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   clipboard: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   nodeIdCounter: React.MutableRefObject<number>
   setSelectedNode: (node: Node | null) => void
@@ -184,7 +184,7 @@ function assertResolvedPasteMatchesCandidate(
 export default function useKeyboardShortcuts({
   enabled,
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
-  graphRef, clipboard, nodeIdCounter,
+  clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
   isInsideSubmodel, readOnly, existingSingletonTypes,
   resolveGraphIdentities,
@@ -231,7 +231,7 @@ export default function useKeyboardShortcuts({
 
       // Ctrl+C → copy selected nodes
       if (BINDING_BY_ID.copy.matches?.(e, mod) && !isTyping) {
-        const { nodes: currentNodes, edges: currentEdges } = graphRef.current
+        const { nodes: currentNodes, edges: currentEdges } = canvasGraph()
         const selected = currentNodes.filter((n) => n.selected)
         if (selected.length === 0) return
         const selectedIds = new Set(selected.map((n) => n.id))
@@ -252,7 +252,7 @@ export default function useKeyboardShortcuts({
         const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current
         if (copiedNodes.length === 0) return
         e.preventDefault()
-        const capturedGraph = graphRef.current
+        const capturedGraph = canvasGraph()
         // Submodel boundaries do not create a second singleton scope. Include
         // the immediate graph too in case it changed before React re-rendered.
         const occupiedSingletonTypes = new Set<string>(existingSingletonTypes)
@@ -294,7 +294,7 @@ export default function useKeyboardShortcuts({
           return [withEdgeIdentity(ed, { source: newSource, target: newTarget })]
         })
         void createAfterIdentity({
-          graphRef,
+          
           serialRef: pasteRequestSerialRef,
           resolve: async () => {
             const resolved = await resolveGraphIdentities(newNodes, newEdges)
@@ -356,7 +356,7 @@ export default function useKeyboardShortcuts({
       if (BINDING_BY_ID.groupSubmodel.matches?.(e, mod) && !isTyping) {
         e.preventDefault()
         requestSubmodelCreation({
-          nodes: graphRef.current.nodes,
+          nodes: canvasGraph().nodes,
           readOnly,
           isInsideSubmodel,
           setSubmodelDialog,
@@ -371,7 +371,7 @@ export default function useKeyboardShortcuts({
           e.preventDefault()
           return
         }
-        const { nodes: currentNodes, edges: currentEdges } = graphRef.current
+        const { nodes: currentNodes, edges: currentEdges } = canvasGraph()
         const selectedNodeIds = new Set(currentNodes.filter((n) => n.selected).map((n) => n.id))
         const selectedEdgeIds = new Set(currentEdges.filter((ed) => ed.selected).map((ed) => ed.id))
         if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
@@ -442,7 +442,7 @@ export default function useKeyboardShortcuts({
   }, [
     enabled,
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
-    graphRef, clipboard, nodeIdCounter,
+    clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
     existingSingletonTypes,

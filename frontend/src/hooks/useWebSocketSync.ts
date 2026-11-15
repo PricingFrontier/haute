@@ -34,8 +34,6 @@ import {
 export type WsStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected"
 
 interface WebSocketSyncParams {
-  preambleRef: React.MutableRefObject<string>
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
   sourceFileRef?: React.MutableRefObject<string>
   sourceRevisionRef: React.MutableRefObject<string>
   preservedBlocksRef: React.MutableRefObject<string[]>
@@ -218,7 +216,7 @@ async function parsePipelineDocumentUpdateFrame(
 }
 
 export default function useWebSocketSync({
-  preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
+  sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   graphRefreshingRef, nodeIdCounter, fitView, enabled = true, onDocumentReload,
 }: WebSocketSyncParams): WsStatus {
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
@@ -445,16 +443,12 @@ export default function useWebSocketSync({
             const nodesToApply = newNodes
 
             const previousPreservedBlocks = preservedBlocksRef.current
-            const previousPreamble = preambleRef.current
-            const previousSubmodels = submodelsRef.current
             const nextPreamble = frame.document.preamble ?? ""
 
             graphRefreshingRef.current += 1
             activeSelectionGuardIncrements += 1
             try {
               preservedBlocksRef.current = [...frame.document.preserved_blocks]
-              submodelsRef.current = adapted.submodels
-              preambleRef.current = nextPreamble
               // A document from disk is a reload: set-aside Banding rules go with it.
               useUIStore.getState().clearBandingRuleStash()
               useGraphStore.getState().loadGraphSnapshot({
@@ -470,8 +464,6 @@ export default function useWebSocketSync({
               setSyncBanner(null)
             } catch (err) {
               preservedBlocksRef.current = previousPreservedBlocks
-              submodelsRef.current = previousSubmodels
-              preambleRef.current = previousPreamble
               throw err
             } finally {
               scheduleDelayed(releaseSelectionGuard, SELECTION_CHANGE_GUARD_MS)
@@ -604,7 +596,7 @@ export default function useWebSocketSync({
       ws?.close()
     }
   }, [
-    enabled, preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef,
+    enabled, sourceFileRef, sourceRevisionRef,
     preservedBlocksRef, nodeIdCounter, fitView, setSyncBanner, addToast,
     graphRefreshingRef,
   ])

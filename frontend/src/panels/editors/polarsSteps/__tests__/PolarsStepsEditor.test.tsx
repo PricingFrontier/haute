@@ -614,6 +614,8 @@ const addGross: Step = {
 }
 
 function mountCanvasShortcuts(nodes: Node[]) {
+  // The canvas the shortcuts act on, as the graph store holds it.
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges: [], preamble: "", submodels: {} })
   const params = {
     enabled: true,
     handleSave: vi.fn(),
@@ -623,7 +625,6 @@ function mountCanvasShortcuts(nodes: Node[]) {
     undo: vi.fn(),
     redo: vi.fn(),
     fitView: vi.fn(),
-    graphRef: { current: { nodes, edges: [] as Edge[] } },
     clipboard: { current: { nodes: [{ id: "copied", position: { x: 0, y: 0 }, data: { label: "Copied" } } as Node], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     setSelectedNode: vi.fn(),

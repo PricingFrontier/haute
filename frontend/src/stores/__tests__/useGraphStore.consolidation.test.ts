@@ -9,7 +9,7 @@
  *      / `useEdgesState`) plus `past`/`future` refs and `canUndo`/`canRedo`.
  *   2. `App.tsx` local `useState` — `preamble`.
  *   3. `App.tsx` refs — `lastSavedRef` (JSON snapshot for dirty derivation),
- *      `preambleRef` (live mirror).
+ *      a live preamble mirror.
  *   4. `useUIStore.dirty` — boolean flag, imperatively set from the
  *      compare-last-state effect in `App.tsx`.
  *

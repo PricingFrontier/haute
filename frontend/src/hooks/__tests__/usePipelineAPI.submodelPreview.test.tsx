@@ -42,16 +42,13 @@ function fixture(instance = true, sameChild = false, outputCount = 2) {
   } }
   const nodes = [occurrence]
   const params: Parameters<typeof usePipelineAPI>[0] = {
-    selectedNode: occurrence, graphRef: { current: { nodes, edges: [] } },
+    selectedNode: occurrence,
     activeSubmodelIdentity: null,
-    submodelsRef: { current: submodels }, setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(), setPreamble: vi.fn(),
-    preambleRef: { current: "" }, pipelineNameRef: { current: "test" }, descriptionRef: { current: "" },
+    // The store's own raw setter, as the editor passes it.
+    setNodesRaw: (update) => useGraphStore.getState().setNodesRaw(update), setEdgesRaw: vi.fn(), setPreamble: vi.fn(),
+    pipelineNameRef: { current: "test" }, descriptionRef: { current: "" },
     sourceFileRef: { current: "main.py" }, sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] }, nodeIdCounter: { current: 0 },
-  }
-  params.setNodesRaw = (update) => {
-    const graph = params.graphRef.current
-    params.graphRef.current = { ...graph, nodes: typeof update === "function" ? update(graph.nodes) : update }
   }
   vi.mocked(loadPipeline).mockResolvedValue(makeLoadedPipeline({ nodes, submodels }))
   return { occurrence, names, params }
@@ -108,7 +105,7 @@ describe("submodel occurrence previews", () => {
       label: "renamed", config: { ...nodeData(hook.occurrence).config, alias: "renamed" },
       _sourceHandleInputNames: { out__premium: "renamed_premium", out__audit: "renamed_audit" },
     } }
-    hook.params.graphRef.current = { nodes: [renamed], edges: [] }
+    useGraphStore.setState({ nodes: [renamed], edges: [] })
     hook.params.selectedNode = renamed
     hook.rerender()
     vi.mocked(previewNode).mockResolvedValueOnce(response(33))
@@ -264,7 +261,7 @@ describe("submodel occurrence previews", () => {
       node_frame_columns: { again: { out__premium: columns } } }))
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
-    const data = hook.params.graphRef.current.nodes[0].data
+    const data = useGraphStore.getState().nodes[0].data
     expect(data._frameColumns).toEqual({ out__premium: columns })
     expect(data._columns).toBeUndefined()
     expect(hook.result.current.previewData?.frame_columns).toEqual({ again_premium: columns, again_audit: [] })

@@ -17,8 +17,6 @@ import {
 } from "../types/node"
 
 interface SubmodelNavParams {
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (nodes: Node[]) => void
   setEdgesRaw: (edges: Edge[]) => void
   setSelectedNode: (node: Node | null) => void
@@ -28,7 +26,6 @@ interface SubmodelNavParams {
   cancelPreview: () => void
   /** Abandon any in-flight trace and clear the trace on show. */
   clearTrace: () => void
-  preambleRef: React.MutableRefObject<string>
   sourceRevisionRef: React.MutableRefObject<string>
   preservedBlocksRef: React.MutableRefObject<string[]>
   descriptionRef: React.MutableRefObject<string>
@@ -141,10 +138,10 @@ function instanceCount(nodes: Node[], definitionId: string): number {
 }
 
 export default function useSubmodelNavigation({
-  graphRef, submodelsRef,
+  
   setNodesRaw, setEdgesRaw,
   setSelectedNode, setLastSelectedId, setPreviewData, cancelPreview, clearTrace,
-  preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
+  sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView, reservedApiInputFrameLabels,
   resolveCanonicalIdentities = resolveCanonicalGraphIdentities,
 }: SubmodelNavParams): SubmodelNavReturn {
@@ -255,9 +252,6 @@ export default function useSubmodelNavigation({
         if ("instance_name" in data && !selected) {
           throw new Error(`Create Instance returned no occurrence ${data.instance_name}. Reload the pipeline and retry.`)
         }
-        graphRef.current = { nodes: committedNodes, edges: resolved.edges }
-        submodelsRef.current = resolved.submodels
-        preambleRef.current = nextPreamble
         preservedBlocksRef.current = nextPreservedBlocks
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
           committedNodes,
@@ -281,7 +275,7 @@ export default function useSubmodelNavigation({
         error: `Create submodel failed: ${apiErrorMessage(err)}`,
       }
     }
-  }, [graphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
+  }, [preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
 
   const handleCreateSubmodel = useCallback((name: string, nodeIds: string[]) =>
     createSubmodelTransform({ name, nodeIds }), [createSubmodelTransform])
@@ -310,8 +304,6 @@ export default function useSubmodelNavigation({
         instanceId: occurrence.instanceId,
         definitionId: occurrence.definitionId,
       })
-      const { nodes, edges } = useGraphStore.getState()
-      graphRef.current = { nodes, edges }
       const nextStack: ViewLevel[] = [
         { ...viewStackRef.current[0], file: parentSourceFile },
         {
@@ -337,7 +329,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${apiErrorMessage(err)}`)
     }
-  }, [graphRef, sourceFileRef, fitView, addToast, leaveView])
+  }, [sourceFileRef, fitView, addToast, leaveView])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
@@ -350,16 +342,13 @@ export default function useSubmodelNavigation({
     transformRequestSerialRef.current += 1
     const target = prev[0]
     useGraphStore.getState().exitSubmodelView()
-    const { nodes, edges, submodels } = useGraphStore.getState()
-    graphRef.current = { nodes, edges }
-    submodelsRef.current = submodels
     sourceFileRef.current = target.file
     const nextStack = prev.slice(0, 1)
     viewStackRef.current = nextStack
     setViewStack(nextStack)
     leaveView()
     setTimeout(() => fitView({ padding: 0.8 }), 100)
-  }, [graphRef, submodelsRef, sourceFileRef, fitView, leaveView])
+  }, [sourceFileRef, fitView, leaveView])
 
   const resetToAuthoritativeRoot = useCallback((sourceFile: string, pipelineName: string) => {
     transformRequestSerialRef.current += 1
@@ -486,10 +475,7 @@ export default function useSubmodelNavigation({
           addToast("error", "Dissolve submodel was not applied because the workspace changed while the transform was running.")
           return
         }
-        graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
-        preambleRef.current = nextPreamble
         preservedBlocksRef.current = flat.preserved_blocks ?? request.preservedBlocks
-        submodelsRef.current = resolved.submodels
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
           resolved.nodes,
           resolved.edges,
@@ -502,7 +488,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${apiErrorMessage(err)}`)
     }
-  }, [graphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
+  }, [preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
 
   return {
     viewStack,

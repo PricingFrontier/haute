@@ -64,7 +64,6 @@ import { create } from "zustand"
 import type { Node } from "@xyflow/react"
 import {
   EMPTY_SNAPSHOT,
-  authoredEdgeForm,
   authoredNodeForm,
   serializeSnapshot,
   selectIsDirty,
@@ -78,6 +77,7 @@ import type { GlobalConstantDraft } from "../utils/globalConstants"
 import {
   READ_ONLY_REASON,
   childAnnotations,
+  definitionEdgeForm,
   liftSubmodelCanvas,
   projectSubmodelFocus,
   type SubmodelFocusIdentity,
@@ -974,6 +974,16 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         notice = "The submodel that step was made in is gone, so the main pipeline is shown."
       }
     }
+    // A step undone or redone from inside a submodel that takes the submodel away
+    // (its occurrence created or deleted by the step) shows the main pipeline too.
+    const open = state.focus
+    if (notice === null && open !== null && focus === null) {
+      const occurrence = document.nodes.find((node) => node.id === open.instanceId)
+      const config = occurrence?.data.config
+      if (!occurrence || !isSubmodelInstanceConfig(config) || config.definition_id !== open.definitionId) {
+        notice = "The submodel that was open is gone, so the main pipeline is shown."
+      }
+    }
     const fields: GraphFields = { ...document, nodes: canvas.nodes, edges: canvas.edges, focus }
     const viewChanged = focusKey(focusIdentity(state.focus)) !== focusKey(focusIdentity(focus))
     return {
@@ -1170,7 +1180,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
               graph: {
                 ...open.graph,
                 nodes: open.graph.nodes.map(authoredNodeForm),
-                edges: (open.graph.edges ?? []).map((edge) => authoredEdgeForm(edge as PipelineEdge)),
+                edges: (open.graph.edges ?? []).map(definitionEdgeForm),
               },
             },
           }
@@ -1421,6 +1431,20 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
   }
 })
+
+let canvasSeen: { nodes: Node[]; edges: PipelineEdge[] } | null = null
+
+/**
+ * The canvas as one object, the same object while its nodes and edges are the
+ * same: for readers that capture the graph and later ask whether it changed.
+ */
+export function canvasGraph(): { nodes: Node[]; edges: PipelineEdge[] } {
+  const { nodes, edges } = useGraphStore.getState()
+  if (canvasSeen === null || canvasSeen.nodes !== nodes || canvasSeen.edges !== edges) {
+    canvasSeen = { nodes, edges }
+  }
+  return canvasSeen
+}
 
 // Convenience wrapper for suites that import the store statically (parity
 // with resetOutputWriteStoreForTests); consumed by the undoAtomicity and

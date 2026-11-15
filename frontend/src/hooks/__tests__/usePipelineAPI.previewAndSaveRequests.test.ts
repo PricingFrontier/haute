@@ -10,7 +10,7 @@ import type { PreviewNodeResponse } from "../../api/types"
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -85,14 +85,11 @@ async function advanceTimers(ms: number) {
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -255,10 +252,10 @@ describe("usePipelineAPI - preview and save requests", () => {
       })
 
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
 
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [] })
 
       // Fire two saves without awaiting the first
       await act(async () => {
@@ -276,9 +273,9 @@ describe("usePipelineAPI - preview and save requests", () => {
       let answer!: (response: Awaited<ReturnType<typeof savePipeline>>) => void
       mockSave.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [] })
       const sourceFile = useDocumentStatusStore.getState().sourceFile
       expect(pendingSavesSettled(sourceFile)).toBeNull()
 
@@ -394,12 +391,11 @@ describe("usePipelineAPI - preview and save requests", () => {
       })
 
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
-      // markSaved captures from useGraphStore, keep the two in sync.
-      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
 
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+      // The canvas the saves send, after the load sets the empty graph it loaded.
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
 
       await act(async () => {
         result.current.handleSave()
@@ -414,9 +410,10 @@ describe("usePipelineAPI - preview and save requests", () => {
         expect(toasts.some((t) => t.type === "error")).toBe(true)
       })
 
-      // After the first success, lastSavedSnapshot should be non-null.
-      // The failing second save's catch block must NOT touch it.
+      // After the first success, lastSavedSnapshot is the graph that save sent,
+      // not the loaded one. The failing second save's catch block must NOT touch it.
       expect(useGraphStore.getState().lastSavedSnapshot).not.toBeNull()
+      expect(useGraphStore.getState().lastSavedSnapshot!.nodes.map((node) => node.id)).toEqual(["n1"])
     })
   })
 

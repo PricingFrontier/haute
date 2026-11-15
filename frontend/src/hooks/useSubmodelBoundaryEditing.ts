@@ -23,13 +23,12 @@ import {
   type SubmodelBoundaryEditResult,
   type SubmodelBoundaryEditState,
 } from "../utils/submodelBoundaryEditing"
-import useGraphStore from "../stores/useGraphStore"
+import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
 import { captureParentOutputState } from "../utils/submodelViewGraph"
 
-type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type Setter = (nodes: Node[] | ((nodes: Node[]) => Node[]), edges: Edge[] | ((edges: Edge[]) => Edge[]), submodels: Record<string, unknown>) => void
 
 /**
@@ -39,8 +38,6 @@ type Setter = (nodes: Node[] | ((nodes: Node[]) => Node[]), edges: Edge[] | ((ed
  * `commitSubmodelBoundaryEdit`, one undo step.
  */
 export interface UseSubmodelBoundaryEditingParams {
-  graphRef: GraphRef
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesAndEdgesAndSubmodels: Setter
   reservedApiInputFrameLabels: ReadonlySet<string>
   resolveGraphIdentities?: typeof resolveEditorGraphIdentities
@@ -154,8 +151,8 @@ function withCurrentLayout(result: SubmodelBoundaryEditResult): SubmodelBoundary
 }
 
 export default function useSubmodelBoundaryEditing({
-  graphRef,
-  submodelsRef,
+  
+  
   setNodesAndEdgesAndSubmodels,
   reservedApiInputFrameLabels,
   resolveGraphIdentities = resolveEditorGraphIdentities,
@@ -220,10 +217,7 @@ export default function useSubmodelBoundaryEditing({
       parentEdges: result.parentEdges,
       submodels: result.submodels,
     })
-    const { nodes, edges, submodels } = useGraphStore.getState()
-    graphRef.current = { nodes, edges }
-    submodelsRef.current = submodels
-  }, [graphRef, submodelsRef])
+  }, [])
   const commitWithParentIdentities = useCallback((
     result: SubmodelBoundaryEditResult,
     onSettled?: (committed: boolean) => void,
@@ -314,13 +308,11 @@ export default function useSubmodelBoundaryEditing({
       if (!current) {
         if (useGraphStore.getState().focus !== null) return false
         const created = connectSubmodelInputFromParentConnection({
-          nodes: graphRef.current.nodes,
-          edges: graphRef.current.edges as PipelineEdge[],
-          submodels: submodelsRef.current,
+          nodes: canvasGraph().nodes,
+          edges: canvasGraph().edges as PipelineEdge[],
+          submodels: useGraphStore.getState().submodels,
         }, connection)
         if (!created) return false
-        graphRef.current = { nodes: created.nodes, edges: created.edges }
-        submodelsRef.current = created.submodels
         setNodesAndEdgesAndSubmodels(
           created.nodes,
           created.edges,
@@ -341,10 +333,10 @@ export default function useSubmodelBoundaryEditing({
   }, [
     state,
     commitWithParentIdentities,
-    graphRef,
+    
     reportBoundaryError,
     setNodesAndEdgesAndSubmodels,
-    submodelsRef,
+    
   ])
 
   const deleteBoundaryEdge = useCallback((id: string): boolean => {

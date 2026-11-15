@@ -90,6 +90,7 @@ specification before code changes.
 | SUBE-04 | Planned | P2 | Results, annotations and caches are keyed by occurrence-aware address, so an owner and its read-only copies never show each other's previews, columns or training results. |
 | SUBE-05 | Planned | P2 | Requests name nodes and frames by address, the server resolves them and labels every node an answer names with its address; the browser's runtime-id code is removed. |
 | SUBE-06 | Planned | P2 | Saving works inside a submodel, and a reload keeps the open submodel when it still exists. |
+| SUBE-07 | Planned | P2 | Boundary actions edit the document directly: the Input and Output cards carry no parent bindings, and no edit rebuilds a definition from the canvas. |
 
 ## Planned improvements
 
@@ -139,8 +140,9 @@ collapsed visit and the reconciled parent graph.
    changes during resolution do not invalidate it, and committing applies the semantic change on
    top of the current document, keeping the layout changes made meanwhile. The candidate is never
    visible to the projection, history or requests.
-6. Delete `parentGraphRef`, the passive reconcile effect, the history carriers and the
-   App-level `graphRef`/`submodelsRef` mirrors; readers use the store. The bridge's scope
+6. Delete `parentGraphRef`, the passive reconcile effect and the App-level
+   `graphRef`/`submodelsRef`/`preambleRef` mirrors; readers use the store. The history
+   carriers the boundary actions still read move out in SUBE-07. The bridge's scope
    (`setDrilledRequestScope`) reads the store's document synchronously, and its one-tick wait
    (`afterCommitEffects`) is deleted with its callers here; SUBE-03 then replaces the bridge.
 
@@ -362,3 +364,34 @@ notice; dirty-document conflict handling and execution fences stay as they are.
 
 **Evidence:** `frontend/src/hooks/useSubmodelNavigation.ts`;
 `frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/hooks/useWebSocketSync.ts`.
+
+### SUBE-07 — Boundary actions as document commands
+**Why:** Canvas writes inside a submodel change the document directly (SUBE-02), but the
+boundary actions (connect to or from a card, remove an input, delete a child a port uses,
+remove a boundary edge) still run the generic rebuild of a definition from the canvas
+(`reconcileCanonicalSubmodelBoundaryState`). The rebuild reads the parent bindings back from
+fields the projection writes onto the cards (`ports[].parentEdges`, `_parentEdgeOrder`,
+`_parentBindingScope`, `_parentOutputState`), so the cards carry document facts and the store
+has to strip what the rebuild copies from the canvas.
+
+**Plan:** Specify the boundary commands in the submodels low-level design: bind and unbind a
+public input, declare and retire a port, rename a port, and route a port to a child. Each
+reads the document (definition, occurrences and their parent edges), applies one transaction
+and returns the new document, or refuses with its reason; the projection draws the cards from
+the document with no binding fields beyond what the cards display. Move each caller of the
+rebuild in `useSubmodelBoundaryEditing` onto a command, then delete the rebuild, the carriers
+and the store's stripping of boundary results.
+
+**Acceptance:**
+- No card's data holds a parent edge, an edge order, a binding scope or an output state.
+- Every boundary action is one undo step, refused whole with its reason when it cannot apply,
+  and leaves no canvas object in a definition.
+- The existing boundary suites (`frontend/src/hooks/__tests__/useSubmodelBoundaryEditing.test.ts`,
+  `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`) pass against the commands,
+  including parent edge order and output identities across Undo and Redo.
+
+**Dependencies:** SUBE-02.
+
+**Evidence:** `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts::reconcileCanonicalSubmodelBoundaryState`;
+`frontend/src/utils/submodelViewGraph.ts::captureParentOutputState`;
+`frontend/src/hooks/useSubmodelBoundaryEditing.ts`.

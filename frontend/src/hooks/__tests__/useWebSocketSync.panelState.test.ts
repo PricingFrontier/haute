@@ -120,8 +120,6 @@ const SOURCE_FILE = "rating/main.py"
 
 function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    preambleRef: { current: "" },
-    submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },

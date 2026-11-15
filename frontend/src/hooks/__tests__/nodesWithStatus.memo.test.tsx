@@ -72,7 +72,6 @@ function makeParams(overrides: Partial<TracingParams> = {}): TracingParams {
     selectedNode: null,
     activeSubmodelIdentity: null,
     submodels: {},
-    submodelsRef: { current: {} },
     nodeStatuses: {} as Record<string, NodeStatus>,
     hoveredNodeId: null,
     ...overrides,

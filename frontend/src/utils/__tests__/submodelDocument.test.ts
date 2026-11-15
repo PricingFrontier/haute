@@ -4,9 +4,10 @@ import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../t
 import { makeIdentifiedNode, makeNode } from "../../test-utils/factories"
 import { reconcileCanonicalSubmodelBoundaryState } from "../canonicalSubmodelBoundaryEditing"
 import { canonicalJson } from "../canonicalJson"
-import { authoredEdgeForm, authoredNodeForm, serializeSnapshot } from "../graphSnapshot"
+import { authoredNodeForm, serializeSnapshot } from "../graphSnapshot"
 import {
   childAnnotations,
+  definitionEdgeForm,
   liftSubmodelCanvas,
   projectSubmodelFocus,
   type SubmodelCanvasLift,
@@ -81,7 +82,7 @@ function oracle(next: { nodes: Node[]; edges: Edge[] }) {
 function authored(definition: SubmodelDefinition) {
   return canonicalJson({
     nodes: definition.graph.nodes.map(authoredNodeForm),
-    edges: definition.graph.edges.map((edge) => authoredEdgeForm(edge as PipelineEdge)),
+    edges: definition.graph.edges.map(definitionEdgeForm),
     inputPorts: definition.inputPorts,
     outputPorts: definition.outputPorts,
   })

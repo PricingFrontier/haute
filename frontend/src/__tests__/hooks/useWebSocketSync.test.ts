@@ -159,8 +159,6 @@ function makeHookParams(sourceFile = "") {
     setEdgesRaw: vi.fn(),
     setSubmodelsRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
-    submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
@@ -630,11 +628,12 @@ describe("useWebSocketSync", () => {
       )
     })
 
-    it("rolls request mirrors back when the graph snapshot cannot be applied", async () => {
+    it("keeps the store as it was and rolls the preserved blocks back when the graph snapshot cannot be applied", async () => {
       const params = makeHookParams("rating/main.py")
       params.preservedBlocksRef.current = ["old block"]
-      params.preambleRef.current = "old preamble"
-      params.submodelsRef.current = { old: { definitionId: "old" } }
+      const graphStore = useGraphStore.getState() as unknown as { preamble: string; submodels: Record<string, unknown> }
+      graphStore.preamble = "old preamble"
+      graphStore.submodels = { old: { definitionId: "old" } }
       vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockImplementationOnce(() => {
         throw new Error("snapshot store failed")
       })
@@ -654,8 +653,8 @@ describe("useWebSocketSync", () => {
       })
 
       expect(params.preservedBlocksRef.current).toEqual(["old block"])
-      expect(params.preambleRef.current).toBe("old preamble")
-      expect(params.submodelsRef.current).toEqual({ old: { definitionId: "old" } })
+      expect(graphStore.preamble).toBe("old preamble")
+      expect(graphStore.submodels).toEqual({ old: { definitionId: "old" } })
       expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
         "error",
         expect.stringContaining("snapshot store failed"),

@@ -1,5 +1,5 @@
+import { canvasGraph } from "../stores/useGraphStore"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { Edge, Node } from "@xyflow/react"
 import { saveNodeScoped } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
@@ -18,7 +18,6 @@ type UpdateNode = (id: string, data: Record<string, unknown>) => OnUpdateConfigR
 interface UseScopedNodeSaveArgs {
   scopedEditingActive: boolean
   selectedNodeId: string | null
-  graphRef: React.RefObject<{ nodes: Node[]; edges: Edge[] }>
   onUpdateNode: UpdateNode
   /** Adopt the authoritative response and the fingerprint it names; owns selection retention. */
   applyDocument: (document: PipelineEditorDocument, documentFingerprint: string, savedNodeId: string) => void
@@ -40,7 +39,7 @@ interface UseScopedNodeSaveArgs {
 export function useScopedNodeSave({
   scopedEditingActive,
   selectedNodeId,
-  graphRef,
+  
   onUpdateNode,
   applyDocument,
 }: UseScopedNodeSaveArgs) {
@@ -61,10 +60,10 @@ export function useScopedNodeSave({
 
   const nodeLabel = useCallback(
     (id: string): string => {
-      const node = graphRef.current?.nodes.find((item) => item.id === id)
+      const node = canvasGraph()?.nodes.find((item) => item.id === id)
       return String((node?.data as HauteNodeData | undefined)?.label ?? id)
     },
-    [graphRef],
+    [],
   )
 
   const handlePanelUpdateNode = useCallback<UpdateNode>(
@@ -99,7 +98,7 @@ export function useScopedNodeSave({
     if (inFlightRef.current) {
       return { ok: false, error: "A node save is already in flight." }
     }
-    const target = graphRef.current?.nodes.find((item) => item.id === selectedNodeId)
+    const target = canvasGraph()?.nodes.find((item) => item.id === selectedNodeId)
     const data = target?.data as HauteNodeData | undefined
     const state = useDocumentStatusStore.getState()
     if (
@@ -144,7 +143,7 @@ export function useScopedNodeSave({
       inFlightRef.current = false
       setScopedSaveInFlight(false)
     }
-  }, [applyDocument, graphRef, nodeLabel, selectedNodeId])
+  }, [applyDocument, nodeLabel, selectedNodeId])
 
   return { handlePanelUpdateNode, handleScopedSave, scopedSaveInFlight }
 }

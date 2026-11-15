@@ -8,7 +8,7 @@
  */
 import { makeSavePipelineResponse } from "../../test-utils/factories"
 import { cleanup, fireEvent, render, screen, waitFor, renderHook, act } from "@testing-library/react"
-import type { Edge, Node } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/client", async () => {
@@ -46,13 +46,10 @@ const mockCapture = vi.mocked(captureFiles)
 function makeParams() {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },

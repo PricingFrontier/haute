@@ -99,10 +99,20 @@ function samePlacedElsewhere(previous: Node | undefined, next: Node): boolean {
     === canonicalJson({ ...authoredNodeForm(next), position: null })
 }
 
+/**
+ * An internal edge as the definition holds it: its authored form without the
+ * rendering the projection gives every edge (`type: "default"`, `animated: false`,
+ * `normalizeEdges`), which no edge of a pipeline sets otherwise.
+ */
+export function definitionEdgeForm(edge: Edge): PipelineEdge {
+  const { type: _type, animated: _animated, ...authored } = authoredEdgeForm(edge as PipelineEdge) as PipelineEdge
+  return authored as PipelineEdge
+}
+
 function sameAuthoredEdge(previous: Edge | undefined, next: Edge): boolean {
   if (previous === next) return true
   if (!previous) return false
-  return canonicalJson(authoredEdgeForm(previous as PipelineEdge)) === canonicalJson(authoredEdgeForm(next as PipelineEdge))
+  return canonicalJson(definitionEdgeForm(previous)) === canonicalJson(definitionEdgeForm(next))
 }
 
 /**
@@ -216,7 +226,7 @@ export function liftSubmodelCanvas({
       graph: {
         ...definition.graph,
         nodes: children.map(authoredNodeForm),
-        edges: internal.map((edge) => authoredEdgeForm(edge as PipelineEdge)),
+        edges: internal.map(definitionEdgeForm),
       },
       inputPorts: definition.inputPorts.map((port) => ({ name: port.name, targets: targetsOf(port.name) })),
       outputPorts,

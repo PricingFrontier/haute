@@ -18,7 +18,7 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
+import useGraphStore, { captureGraphSnapshot , canvasGraph } from "../stores/useGraphStore"
 import { reportSaveCapture } from "../stores/saveCapture"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
@@ -57,14 +57,11 @@ import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalCo
 
 interface PipelineAPIParams {
   selectedNode: Node | null
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[] }>
   activeSubmodelIdentity: DrilledOccurrenceIdentity | null
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[]) => void
   setSubmodelsRaw?: (submodels: Record<string, unknown>) => void
   setPreamble: (p: string) => void
-  preambleRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
   descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
@@ -545,9 +542,9 @@ function isLostAnswer(err: unknown): boolean {
 
 export default function usePipelineAPI({
   selectedNode,
-  graphRef, activeSubmodelIdentity, submodelsRef,
+  activeSubmodelIdentity, 
   setNodesRaw,
-  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
+  pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
@@ -587,9 +584,9 @@ export default function usePipelineAPI({
   const chosenFrames = useRef(new Map<string, string>())
   const outputFor = useCallback((node: Node) =>
     effectiveNodeType(node) === NODE_TYPES.SUBMODEL
-      ? submodelOutputPreview(node, submodelsRef.current, chosenFrames.current.get(node.id))
+      ? submodelOutputPreview(node, useGraphStore.getState().submodels, chosenFrames.current.get(node.id))
       : undefined,
-  [submodelsRef])
+  [])
   const portLabelFor = useCallback(
     (node: Node) => effectiveNodeType(node) === NODE_TYPES.SUBMODEL
       ? outputFor(node)?.outputName
@@ -690,15 +687,12 @@ export default function usePipelineAPI({
     const pipelineEdges = adapted.edges
     const loadedPreamble = data.preamble ?? ""
     const loadedSubmodels = adapted.submodels
-    preambleRef.current = loadedPreamble
-    submodelsRef.current = loadedSubmodels
     sourceRevisionRef.current = data.source_revision ?? ""
     preservedBlocksRef.current = data.preserved_blocks
     useDocumentStatusStore.getState().loadDocumentStatus(data, false, documentFingerprint)
     // Rules set aside by a Banding type switch last until the pipeline reloads.
     useUIStore.getState().clearBandingRuleStash()
     const normalizedEdges = normalizeEdges(pipelineEdges)
-    graphRef.current = { nodes: pipelineNodes, edges: normalizedEdges }
     useGraphStore.getState().loadGraphSnapshot({
       nodes: pipelineNodes,
       edges: normalizedEdges,
@@ -716,7 +710,7 @@ export default function usePipelineAPI({
       if (data.active_source) useSettingsStore.getState().setActiveSource(data.active_source)
     }
     nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
-  }, [graphRef, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef])
+  }, [pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, nodeIdCounterRef])
 
   // Initial pipeline load
   useEffect(() => {
@@ -854,7 +848,7 @@ export default function usePipelineAPI({
 
     const label = output?.outputName ?? nodeLabel(node)
     const cacheKey = output?.cacheKey ?? node.id
-    const targetNodeId = output?.nodeId ?? runtimeNodeIdForVisibleNode(graphRef.current.nodes, node.id, activeSubmodelIdentity)
+    const targetNodeId = output?.nodeId ?? runtimeNodeIdForVisibleNode(canvasGraph().nodes, node.id, activeSubmodelIdentity)
     const { getPreview, setPreview: storePreview } = useNodeResultsStore.getState()
     const structuralVersion = useGraphStore.getState().structuralVersion
 
@@ -947,7 +941,7 @@ export default function usePipelineAPI({
         // is, as a new request, rather than execute the obsolete graph; only a
         // graph that keeps changing stops with the refresh instruction.
         const restarts = options?.preparationRestarts ?? 0
-        const current = graphRef.current.nodes.find((candidate) => candidate.id === node.id)
+        const current = canvasGraph().nodes.find((candidate) => candidate.id === node.id)
         const restart = fetchPreviewImmediateRef.current
         if (current && restart && restarts < MAX_PREVIEW_PREPARATION_RESTARTS) {
           restart(current, undefined, {
@@ -987,7 +981,7 @@ export default function usePipelineAPI({
     // so the preview starts again as a new request: at the raised epoch, for the
     // graph as it now is. A stopped, superseded or deleted one runs nothing more.
     const previewAfterReread = (): never => {
-      const current = graphRef.current.nodes.find((candidate) => candidate.id === node.id)
+      const current = canvasGraph().nodes.find((candidate) => candidate.id === node.id)
       const restart = fetchPreviewImmediateRef.current
       if (
         current &&
@@ -1039,7 +1033,7 @@ export default function usePipelineAPI({
           // node: a node deleted mid-flight has already had its panel
           // cleared by handleDeleteNode and must stay cleared.
           setPreviewData((prev) => (prev?.nodeId === node.id ? preview : prev))
-          if (graphRef.current.nodes.some((n) => n.id === node.id)) {
+          if (canvasGraph().nodes.some((n) => n.id === node.id)) {
             // Tagged with the fetch-time structuralVersion, so the next
             // preview sees a context mismatch and refetches in the
             // background instead of trusting this entry.
@@ -1094,7 +1088,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [graphRef, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped, portLabelFor, outputFor])
+  }, [activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped, portLabelFor, outputFor])
 
   useEffect(() => {
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
@@ -1249,7 +1243,7 @@ export default function usePipelineAPI({
       useGraphStore.getState().structuralVersion === structuralVersion &&
       documentStillCurrent()
 
-    const { nodes, edges } = graphRef.current
+    const { nodes, edges } = canvasGraph()
     const nodeMap = new Map(nodes.map((n) => [n.id, n]))
 
     // Occurrences have no flat _columns to fill: the target's schema maps
@@ -1330,7 +1324,7 @@ export default function usePipelineAPI({
           previewNode({
             graph,
             nodeId: runtimeNodeIdForVisibleNode(
-              graphRef.current.nodes,
+              canvasGraph().nodes,
               upstream.id,
               activeSubmodelIdentity,
             ),
@@ -1368,7 +1362,7 @@ export default function usePipelineAPI({
       graph,
       [node, ...staleUpstream].map((previewed) => ({
         nodeId: runtimeNodeIdForVisibleNode(
-          graphRef.current.nodes,
+          canvasGraph().nodes,
           previewed.id,
           activeSubmodelIdentity,
         ),
@@ -1413,10 +1407,10 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, previewDebounce, graphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, portLabelFor])
+  }, [fetchPreviewImmediate, previewDebounce, activeSubmodelIdentity, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, portLabelFor])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
-    const node = graphRef.current.nodes.find((n) => n.id === nodeId)
+    const node = canvasGraph().nodes.find((n) => n.id === nodeId)
     if (!node || !canPreviewNode(node)) return
     if (effectiveNodeType(node) === NODE_TYPES.SUBMODEL) {
       const handle = submodelOutputHandle(node, portLabel)
@@ -1466,7 +1460,7 @@ export default function usePipelineAPI({
           [
             {
               nodeId: runtimeNodeIdForVisibleNode(
-                graphRef.current.nodes,
+                canvasGraph().nodes,
                 node.id,
                 activeSubmodelIdentity,
               ),
@@ -1498,7 +1492,7 @@ export default function usePipelineAPI({
           previewNode({
             graph,
             nodeId: runtimeNodeIdForVisibleNode(
-              graphRef.current.nodes,
+              canvasGraph().nodes,
               node.id,
               activeSubmodelIdentity,
             ),
@@ -1550,7 +1544,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId && stopRetry.current === null) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [previewDebounce, fetchPreviewImmediate, graphRef, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor])
+  }, [previewDebounce, fetchPreviewImmediate, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
@@ -1565,7 +1559,7 @@ export default function usePipelineAPI({
       addToast("error", "Return to the main pipeline before saving.")
       return false
     }
-    const { nodes: n, edges: e } = graphRef.current
+    const { nodes: n, edges: e } = canvasGraph()
     // Warn about broken config references before saving
     const refWarnings = validateConfigRefs(n)
     if (refWarnings.length > 0) {
@@ -1600,8 +1594,8 @@ export default function usePipelineAPI({
     // flight, so we mark *this* snapshot saved (not the live store) and only
     // if a newer save hasn't already landed (concurrency guard via
     // saveRequestSeq / appliedSaveSeq).
-    const savePreamble = preambleRef.current
-    const saveSubmodels = structuredClone(submodelsRef.current)
+    const savePreamble = useGraphStore.getState().preamble
+    const saveSubmodels = structuredClone(useGraphStore.getState().submodels)
     const saveSourceRevision = sourceRevisionRef.current
     const saveSourceFile = documentStatus.sourceFile
     const savedSnapshot = captureGraphSnapshot({
@@ -1701,7 +1695,7 @@ export default function usePipelineAPI({
     } finally {
       settleSave()
     }
-  }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
+  }, [descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   // In automatic calculation, the displayed preview is fetched again once a
   // snapshot is published, refreshed, or cleared after its request was sent: its rows may have been
@@ -1723,9 +1717,9 @@ export default function usePipelineAPI({
     }
     const stored = useNodeResultsStore.getState().previews[previewData.cacheKey ?? previewData.nodeId]
     if (!stored || stored.data !== previewData || stored.nodeDataEpoch === nodeDataEpoch) return
-    const node = graphRef.current.nodes.find((candidate) => candidate.id === previewData.nodeId)
+    const node = canvasGraph().nodes.find((candidate) => candidate.id === previewData.nodeId)
     if (node) fetchPreviewImmediate(node)
-  }, [nodeDataEpoch, previewData, previewBusy, fetchPreviewImmediate, previewNodeFrame, graphRef])
+  }, [nodeDataEpoch, previewData, previewBusy, fetchPreviewImmediate, previewNodeFrame])
 
   const selectedNodeId = selectedNode?.id ?? null
 

@@ -41,7 +41,6 @@ interface TracingParams {
   submodels: Record<string, unknown>
   selectedNode: Node | null
   activeSubmodelIdentity: DrilledOccurrenceIdentity | null
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
   nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
   /** The node a trace card or derivation row points at, ringed while a trace shows. */
@@ -228,7 +227,7 @@ const IDLE_TRACE_STATE: TraceRequestState = { status: "idle" }
 
 export default function useTracing({
   nodes, edges, submodels, selectedNode,
-  activeSubmodelIdentity, submodelsRef,
+  activeSubmodelIdentity, 
   nodeStatuses,
   hoveredNodeId,
   traceFocusNodeId = null,
@@ -368,7 +367,7 @@ export default function useTracing({
         current.capabilities?.can_execute === true
     }
     const output = nodeData(selectedNode).nodeType === NODE_TYPES.SUBMODEL
-      ? submodelOutputPreview(selectedNode, submodelsRef.current, previewOutputHandle)
+      ? submodelOutputPreview(selectedNode, useGraphStore.getState().submodels, previewOutputHandle)
       : undefined
     if (output === null) return
     const graph = documentGraphPayload()
@@ -481,7 +480,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, activeSubmodelIdentity, submodelsRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
+  }, [selectedNode, activeSubmodelIdentity, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

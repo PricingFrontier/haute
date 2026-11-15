@@ -58,8 +58,6 @@ function occurrence() {
 
 function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[0]> = {}) {
   return {
-    graphRef: { current: { nodes: [occurrence()] as Node[], edges: [] as Edge[] } },
-    submodelsRef: { current: { [DEFINITION_ID]: definition } as Record<string, unknown> },
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setSelectedNode: vi.fn(),
@@ -67,7 +65,6 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     cancelPreview: vi.fn(),
     clearTrace: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
     sourceRevisionRef: { current: "revision-test" },
@@ -79,13 +76,16 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
   }
 }
 
-/** Load the params' graph into the store, as App's canvas refs mirror it. */
-function seed(params: ReturnType<typeof makeParams>) {
+type CanvasDocument = { nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> }
+
+/** Load the document the hooks read into the graph store: the occurrence and its definition unless overridden. */
+function seed(pipeline: Partial<CanvasDocument> = {}) {
   useGraphStore.getState().loadGraphSnapshot({
-    nodes: params.graphRef.current.nodes,
-    edges: params.graphRef.current.edges,
+    nodes: [occurrence()],
+    edges: [],
+    submodels: { [DEFINITION_ID]: definition },
+    ...pipeline,
     preamble: "",
-    submodels: params.submodelsRef.current,
   })
 }
 
@@ -112,10 +112,8 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
         edges: [],
       },
     }
-    const params = makeParams({
-      submodelsRef: { current: { [DEFINITION_ID]: positioned } as Record<string, unknown> },
-    })
-    params.graphRef.current = {
+    const params = makeParams()
+    seed({
       nodes: [makeNode("src1"), makeNode("tgt1"), occurrence()],
       // Loaded edges are normalized, as both document load paths do.
       edges: normalizeEdges([
@@ -123,12 +121,7 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
         { ...makeEdge("src1", INSTANCE_ID), id: "input-quote", sourceHandle: "quote_info", targetHandle: "in__quote" } as Edge,
         { ...makeEdge(INSTANCE_ID, "tgt1"), id: "output-claims", sourceHandle: "out__claims_result" } as Edge,
       ]),
-    }
-    useGraphStore.getState().loadGraphSnapshot({
-      nodes: params.graphRef.current.nodes,
-      edges: params.graphRef.current.edges,
-      preamble: "",
-      submodels: params.submodelsRef.current,
+      submodels: { [DEFINITION_ID]: positioned },
     })
     const saved = useGraphStore.getState().persistedFingerprint
     // An earlier root edit, undone: the root's redo stack must survive the visit.
@@ -138,8 +131,6 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
     const { result } = renderHook(() => {
       const navigation = useSubmodelNavigation(params)
       useSubmodelBoundaryEditing({
-        graphRef: params.graphRef,
-        submodelsRef: params.submodelsRef,
         setNodesAndEdgesAndSubmodels: useGraphStore.getState().setNodesAndEdgesAndSubmodels,
         reservedApiInputFrameLabels: new Set<string>(),
       })
@@ -167,15 +158,14 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
   it("projects declared parent boundaries into Input and Output cards", async () => {
     vi.useFakeTimers()
     const params = makeParams()
-    params.graphRef.current = {
+    seed({
       nodes: [makeNode("src1"), makeNode("tgt1"), occurrence()],
       edges: [
         { ...makeEdge("src1", INSTANCE_ID), id: "input-claims", sourceHandle: "proposer_claims", targetHandle: "in__claims" } as Edge,
         { ...makeEdge("src1", INSTANCE_ID), id: "input-quote", sourceHandle: "quote_info", targetHandle: "in__quote" } as Edge,
         { ...makeEdge(INSTANCE_ID, "tgt1"), id: "output-claims", sourceHandle: "out__claims_result" } as Edge,
       ],
-    }
-    seed(params)
+    })
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -204,15 +194,11 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
   })
 
   it("rejects a parent edge with an undeclared boundary handle", async () => {
-    const params = makeParams({
-      graphRef: {
-        current: {
-          nodes: [makeNode("src1"), occurrence()],
-          edges: [{ ...makeEdge("src1", INSTANCE_ID), targetHandle: "in__missing" } as Edge],
-        },
-      },
+    const params = makeParams()
+    seed({
+      nodes: [makeNode("src1"), occurrence()],
+      edges: [{ ...makeEdge("src1", INSTANCE_ID), targetHandle: "in__missing" } as Edge],
     })
-    seed(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -229,7 +215,7 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
   it("handleBreadcrumbNavigate closes the open submodel only when returning to depth 0", async () => {
     vi.useFakeTimers()
     const params = makeParams()
-    seed(params)
+    seed()
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
@@ -245,17 +231,15 @@ describe("useSubmodelNavigation - canonical port building and drill-in navigatio
   })
 
   it("handleDrillIntoSubmodel no-ops when the embedded graph cannot satisfy its ports", async () => {
-    const params = makeParams({
-      submodelsRef: {
-        current: {
-          [DEFINITION_ID]: {
-            ...definition,
-            graph: { nodes: [], edges: [] },
-          },
+    const params = makeParams()
+    seed({
+      submodels: {
+        [DEFINITION_ID]: {
+          ...definition,
+          graph: { nodes: [], edges: [] },
         },
       },
     })
-    seed(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)

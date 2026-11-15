@@ -2,7 +2,7 @@ import { act, renderHook } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import useSubmodelBoundaryEditing from "../useSubmodelBoundaryEditing"
-import useGraphStore from "../../stores/useGraphStore"
+import useGraphStore, { canvasGraph } from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
@@ -124,10 +124,8 @@ function makeFixture({
     },
   })) as PipelineEdge[]
   const identifiedView = { nodes: viewNodes, edges: viewEdges }
-  const graphRef = { current: { nodes: viewNodes, edges: viewEdges as Edge[] } }
-  const submodelsRef = { current: submodels as Record<string, unknown> }
   const setNodesAndEdgesAndSubmodels = vi.fn()
-  return { childNodes, childEdges, parentNodes, parentEdges, submodels: submodels as Record<string, unknown>, view: identifiedView, graphRef, submodelsRef, setNodesAndEdgesAndSubmodels }
+  return { childNodes, childEdges, parentNodes, parentEdges, submodels: submodels as Record<string, unknown>, view: identifiedView, setNodesAndEdgesAndSubmodels }
 }
 type Fixture = ReturnType<typeof makeFixture>
 
@@ -169,8 +167,6 @@ function openInStore(fixture: Fixture) {
 
 function hookParams(fixture: Fixture) {
   return {
-    graphRef: fixture.graphRef,
-    submodelsRef: fixture.submodelsRef,
     setNodesAndEdgesAndSubmodels: fixture.setNodesAndEdgesAndSubmodels,
     reservedApiInputFrameLabels: new Set<string>(),
     resolveGraphIdentities: vi.fn(async ({ nodes, edges }: GraphIdentityRequest) => ({
@@ -257,7 +253,6 @@ describe("useSubmodelBoundaryEditing", () => {
     fixture.view.nodes = fixture.view.nodes.map((node) => ({
       ...node, data: { ...node.data, ...projected.nodes.find((candidate) => candidate.id === node.id)!.data },
     }))
-    fixture.graphRef.current.nodes = fixture.view.nodes
     const resolveGraphIdentities = vi.fn(async ({ nodes, edges, submodels }: GraphIdentityRequest) => {
       const definition = submodels[DEFINITION_ID] as SubmodelDefinition
       const resolved = nodes.map((node) => node.data.nodeType === "submodel" ? {
@@ -326,10 +321,6 @@ describe("useSubmodelBoundaryEditing", () => {
 
   it("atomically commits a parent-created public input and canonical edge", () => {
     const fixture = makeFixture({ includeInputPort: false })
-    fixture.graphRef.current = {
-      nodes: fixture.parentNodes,
-      edges: fixture.parentEdges,
-    }
     loadParent(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
     act(() => {
@@ -341,13 +332,14 @@ describe("useSubmodelBoundaryEditing", () => {
       })).toBe(true)
     })
     expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+    const [, committedEdges, committedSubmodels] = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0]
+    expect(committedSubmodels[DEFINITION_ID]).toMatchObject({
       inputPorts: [{
         name: "external_input",
         targets: [],
       }],
     })
-    expect(fixture.graphRef.current.edges).toEqual([expect.objectContaining({
+    expect(committedEdges).toEqual([expect.objectContaining({
       source: "external",
       target: PLACEHOLDER_ID,
       targetHandle: "in__external_input",
@@ -383,10 +375,7 @@ describe("useSubmodelBoundaryEditing", () => {
         targetHandle: "in__incoming",
       }),
     ])
-    const definition = fixture.submodelsRef.current[DEFINITION_ID] as {
-      inputPorts: Array<{ targets: Array<{ nodeId: string }> }>
-    }
-    expect(definition.inputPorts[0].targets.map((target) => target.nodeId)).toEqual([
+    expect(storedDefinition().inputPorts[0].targets.map((target) => target.nodeId)).toEqual([
       "child_a",
       "child_b",
     ])
@@ -404,14 +393,14 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(store().undoStack).toHaveLength(1)
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
     expect(focus().rootEdges).toEqual([])
-    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+    expect(storedDefinition()).toMatchObject({
       inputPorts: [],
     })
-    const input = fixture.graphRef.current.nodes.find(
+    const input = store().nodes.find(
       (node) => (node.data as unknown as SubmodelPortData).portDirection === "input",
     )!
     expect((input.data as unknown as SubmodelPortData).ports).toEqual([])
-    expect(fixture.graphRef.current.edges.some((edge) => edge.source === input.id)).toBe(false)
+    expect(store().edges.some((edge) => edge.source === input.id)).toBe(false)
   })
 
   it("restores parent input bindings on undo and redo of an input's removal, keeping the submodel open", () => {
@@ -505,7 +494,7 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(committedParent.data._sourceHandleInputNames).toEqual({
       out__child_a_input: "Public_child_a_input",
     })
-    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+    expect(storedDefinition()).toMatchObject({
       outputPorts: [{ name: "child_a_input" }],
     })
   })
@@ -540,7 +529,7 @@ describe("useSubmodelBoundaryEditing", () => {
     act(() => store().setNodesRaw((nodes) => nodes.filter((node) => node.id !== "child_b")))
     const externallyChanged = store().nodes
     expect(externallyChanged.map((node) => node.id)).not.toContain("child_b")
-    const graphRefBefore = fixture.graphRef.current
+    const canvasBefore = canvasGraph()
     const submodelsBefore = store().submodels
     const candidate = resolveGraphIdentities.mock.calls[0]![0]
     await act(async () => {
@@ -556,7 +545,7 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(store().submodels).toBe(submodelsBefore)
     expect(focus().rootNodes).toBe(fixture.parentNodes)
     expect(focus().rootEdges).toBe(fixture.parentEdges)
-    expect(fixture.graphRef.current).toBe(graphRefBefore)
+    expect(canvasGraph()).toBe(canvasBefore)
   })
 
   it("keeps a node moved while identities resolve, and still commits the edit", async () => {
@@ -827,7 +816,6 @@ describe("useSubmodelBoundaryEditing", () => {
 
   it("does not own ordinary edges or any gesture outside a drilled submodel", () => {
     const fixture = makeFixture()
-    fixture.graphRef.current = { nodes: fixture.parentNodes, edges: fixture.parentEdges }
     loadParent(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 

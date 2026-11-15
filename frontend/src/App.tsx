@@ -71,7 +71,7 @@ import type { PanelGraphContextSnapshot } from "./hooks/usePanelGraphContext"
 import useGraphCommitController from "./hooks/useGraphCommitController"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
-import useGraphStore from "./stores/useGraphStore"
+import useGraphStore, { canvasGraph } from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
 import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
@@ -892,10 +892,8 @@ function FlowEditor() {
   const touchModellingPreview = useNodeResultsStore((s) => s.touchModellingPreview)
   const setPinnedPreviewNodeId = useNodeResultsStore((s) => s.setPinnedPreviewNodeId)
 
-  // Refs
-  const submodelsRef = useRef<Record<string, unknown>>({})
+  // Refs. The document itself is the graph store's: read it there.
   const clipboard = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
-  const graphRef = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   // The open occurrence is the store's focus, whatever opened it (a double-click, Undo or Redo).
   const focusInstanceId = useGraphStore((state) => state.focus?.instanceId ?? null)
   const focusDefinitionId = useGraphStore((state) => state.focus?.definitionId ?? null)
@@ -905,28 +903,12 @@ function FlowEditor() {
       : null),
     [focusDefinitionId, focusInstanceId],
   )
-  const preambleRef = useRef("")
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
   const sourceFileRef = useRef("")
   const sourceRevisionRef = useRef("")
   const preservedBlocksRef = useRef<string[]>([])
   const nodeIdCounter = useRef(0)
-
-  // Keep graphRef in sync so callbacks never see stale state. A layout effect
-  // runs before any descendant's passive effect, so an editor that reacts to
-  // a graph change (a new edge giving a stepped transform its start input) and
-  // commits a node update from its own effect already sees that change; with a
-  // passive effect here the update would replay the edges from before the
-  // change and silently drop the new edge. Cache freshness is versioned inside
-  // useGraphStore, not by an App-level cross-store effect.
-  useLayoutEffect(() => {
-    graphRef.current = { nodes, edges }
-  }, [nodes, edges])
-
-  useLayoutEffect(() => {
-    submodelsRef.current = submodels
-  }, [submodels])
 
   // A panel's request about a node of an open submodel sends the whole pipeline and
   // the node's id in this occurrence (utils/nodeRequestTarget), as Preview does.
@@ -973,14 +955,14 @@ function FlowEditor() {
     graph: documentGraphPayload(),
     preservedBlocks: preservedBlocksRef.current,
     drilledDefinition: namingScope,
-    liveNodes: graphRef.current.nodes,
-    liveEdges: graphRef.current.edges,
+    liveNodes: canvasGraph().nodes,
+    liveEdges: canvasGraph().edges,
   }), [namingScope])
   const readNamingContextKey = useCallback(() => JSON.stringify([
-    graphRef.current.nodes.map((node) => [node.id, node.data?.label, (node.data?.config as Record<string, unknown> | undefined)?.alias]),
+    canvasGraph().nodes.map((node) => [node.id, node.data?.label, (node.data?.config as Record<string, unknown> | undefined)?.alias]),
     useGraphStore.getState().focus?.rootNodes.map((node) => [node.id, node.data?.label]),
-    submodelsRef.current,
-    preambleRef.current,
+    useGraphStore.getState().submodels,
+    useGraphStore.getState().preamble,
   ]), [])
   // Created nodes (palette and edge drops, duplicate, paste, Create Instance)
   // take the first free name the server allocates.
@@ -992,7 +974,7 @@ function FlowEditor() {
       return resolveEditorGraphIdentities({
         nodes: candidateNodes,
         edges: candidateEdges,
-        submodels: submodelsRef.current,
+        submodels: useGraphStore.getState().submodels,
         reservedApiInputFrameLabels,
         naming: { graph: namingContextGraph(), allocate: true, scope: namingScope },
       })
@@ -1011,7 +993,7 @@ function FlowEditor() {
       await resolveEditorGraphIdentities({
         nodes: candidateNodes,
         edges: [],
-        submodels: submodelsRef.current,
+        submodels: useGraphStore.getState().submodels,
         reservedApiInputFrameLabels,
       })
     ).nodes,
@@ -1023,7 +1005,7 @@ function FlowEditor() {
       await resolveEditorGraphIdentities({
         nodes: candidateNodes,
         edges: [],
-        submodels: submodelsRef.current,
+        submodels: useGraphStore.getState().submodels,
         reservedApiInputFrameLabels,
         naming: { graph: namingContextGraph(), allocate: false, scope: namingScope },
       })
@@ -1056,9 +1038,9 @@ function FlowEditor() {
     fetchPreview, cancelPreview, stopPreview, refreshPreview, previewNodeFrame, handleSave, adoptPipelineDocument,
   } = usePipelineAPI({
     selectedNode,
-    graphRef, activeSubmodelIdentity, submodelsRef,
+    activeSubmodelIdentity, 
     setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble,
-    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
+    pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
     nodeIdCounter,
   })
 
@@ -1085,7 +1067,7 @@ function FlowEditor() {
 
   const handleDocumentReloadRef = useRef<((reloaded: { nodes: Node[]; edges: Edge[] }) => void) | null>(null)
   const wsStatus = useWebSocketSync({
-    preambleRef, submodelsRef, graphRefreshingRef, sourceFileRef,
+    graphRefreshingRef, sourceFileRef,
     sourceRevisionRef, preservedBlocksRef, nodeIdCounter, fitView,
     enabled: !loading && loadError === null,
     onDocumentReload: (reloaded) => handleDocumentReloadRef.current?.(reloaded),
@@ -1111,7 +1093,7 @@ function FlowEditor() {
   } = useTracing({
     nodes, edges, selectedNode,
     submodels,
-    activeSubmodelIdentity, submodelsRef,
+    activeSubmodelIdentity, 
     nodeStatuses,
     hoveredNodeId,
     traceFocusNodeId,
@@ -1162,12 +1144,12 @@ function FlowEditor() {
     handleDocumentReload,
     handleCreateSubmodel, handleCreateNodeInstance, handleDissolveSubmodel,
   } = useSubmodelNavigation({
-    graphRef, submodelsRef,
+    
     setNodesRaw, setEdgesRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     cancelPreview, clearTrace,
     setLastSelectedId,
-    preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
+    descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
     reservedApiInputFrameLabels,
   })
@@ -1210,8 +1192,8 @@ function FlowEditor() {
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
   } = useSubmodelBoundaryEditing({
-    graphRef,
-    submodelsRef,
+    
+    
     setNodesAndEdgesAndSubmodels,
     reservedApiInputFrameLabels,
   })
@@ -1239,12 +1221,12 @@ function FlowEditor() {
 
   const isBoundaryConnection = useCallback((connection: Connection | Edge) => {
     if (!activeSubmodelName) return false
-    return graphRef.current.nodes.some(
+    return canvasGraph().nodes.some(
       (node) =>
         (node.id === connection.source || node.id === connection.target)
         && nodeData(node).nodeType === NODE_TYPES.SUBMODEL_PORT,
     )
-  }, [activeSubmodelName, graphRef])
+  }, [activeSubmodelName])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => {
     if (editingReadOnly) return false
@@ -1253,7 +1235,7 @@ function FlowEditor() {
       connection,
       panelGraph.allNodes,
       panelGraph.edges,
-      submodelsRef.current,
+      useGraphStore.getState().submodels,
       useWorkbenchStore.getState().tables,
     ).ok
   }, [editingReadOnly, isBoundaryConnection, panelGraph])
@@ -1270,7 +1252,7 @@ function FlowEditor() {
       connection,
       panelGraph.allNodes,
       panelGraph.edges,
-      submodelsRef.current,
+      useGraphStore.getState().submodels,
       useWorkbenchStore.getState().tables,
     )
   }, [editingReadOnly, isBoundaryConnection, panelGraph])
@@ -1282,7 +1264,7 @@ function FlowEditor() {
     connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
     submodelInputMenu, selectSubmodelInput,
   } = useEdgeHandlers({
-    selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
+    selectedNode, submodels, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
     setSelectedNode, setPreviewData, setContextMenu,
     setLastSelectedId,
@@ -1316,7 +1298,7 @@ function FlowEditor() {
     )
     setPipelineRepairTarget(null)
     if (recoverTargetId) {
-      const restored = graphRef.current.nodes.find((item) => item.id === recoverTargetId)
+      const restored = canvasGraph().nodes.find((item) => item.id === recoverTargetId)
       if (restored) {
         lastSelectedNodeRef.current = null
         activateNode(restored)
@@ -1341,7 +1323,7 @@ function FlowEditor() {
       previousDocumentRevisionRef.current = document.source_revision
       resetToAuthoritativeRoot(document.source_file, document.pipeline_name ?? "main")
       if (selectionUnchanged) {
-        const restored = graphRef.current.nodes.find((item) => item.id === savedNodeId)
+        const restored = canvasGraph().nodes.find((item) => item.id === savedNodeId)
         if (restored) {
           lastSelectedNodeRef.current = null
           activateNode(restored)
@@ -1393,8 +1375,8 @@ function FlowEditor() {
   }, [])
 
   const { onUpdateNode, onRenameNode, waitForPendingCommits, pendingNodeData } = useGraphCommitController({
-    graphRef,
-    submodelsRef,
+    
+    
     readDocumentIdentity,
     readOnly: editingReadOnly && !scopedEditingActive,
     reservedApiInputFrameLabels,
@@ -1425,7 +1407,7 @@ function FlowEditor() {
   // top level and inside a submodel alike: their connections to a table the form no longer
   // has are removed from the graph the editor shows.
   const { holdConnections } = useWorkbenchConnections({
-    graphRef,
+    
     commitEdges: setEdgesRaw,
     editable: !editingReadOnly,
     addToast,
@@ -1437,7 +1419,7 @@ function FlowEditor() {
   } = useScopedNodeSave({
     scopedEditingActive,
     selectedNodeId: selectedNode?.id ?? null,
-    graphRef,
+    
     onUpdateNode,
     applyDocument: applyScopedSaveDocument,
   })
@@ -1616,7 +1598,7 @@ function FlowEditor() {
   useKeyboardShortcuts({
     enabled: pipelineActive,
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
-    graphRef, clipboard, nodeIdCounter,
+    clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     setLastSelectedId,
     clearTrace,
@@ -1633,7 +1615,7 @@ function FlowEditor() {
     handleDeleteNode, handleDuplicateNode,
     handleCreateInstance, handleRenameNode, handleAutoLayout, isAutoLayouting,
   } = useNodeHandlers({
-    graphRef, nodeIdCounter, lastSelectedNodeRef,
+    nodeIdCounter, lastSelectedNodeRef,
     setNodes, setNodesAndEdges, setSelectedNode,
     setLastSelectedId,
     setPreviewData, fitView, getInternalNode,
@@ -1689,7 +1671,7 @@ function FlowEditor() {
   const handleToolbarSubmodelAction = useCallback(() => {
     if (selectedSubmodelId === null) {
       requestSubmodelCreation({
-        nodes: graphRef.current.nodes,
+        nodes: canvasGraph().nodes,
         readOnly: editingReadOnly,
         isInsideSubmodel: viewStack.length > 1,
         setSubmodelDialog,
@@ -1706,19 +1688,19 @@ function FlowEditor() {
     void handleDissolveSubmodel(selectedSubmodelId).finally(() => {
       toolbarDissolveInFlightRef.current = false
     })
-  }, [selectedSubmodelId, graphRef, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
+  }, [selectedSubmodelId, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
   const handleToolbarCreateInstance = useCallback(() => {
     if (editingReadOnly) {
       addToast("info", "This pipeline document is read-only")
       return
     }
-    const currentSelectedIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
+    const currentSelectedIds = canvasGraph().nodes.filter((n) => n.selected).map((n) => n.id)
     if (currentSelectedIds.length !== 1) {
       addToast("info", "Select exactly one node to create an instance of it")
       return
     }
     handleCreateInstance(currentSelectedIds[0])
-  }, [editingReadOnly, graphRef, handleCreateInstance, addToast])
+  }, [editingReadOnly, handleCreateInstance, addToast])
 
   const handleZoomIn = useCallback(() => {
     void zoomIn()
@@ -1776,7 +1758,7 @@ function FlowEditor() {
   // A panel names a node on this canvas (a join its estimate depends on); a
   // missing one is a caller bug, not something to open silently.
   const openCanvasNode = useCallback((nodeId: string) => {
-    const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId)
+    const node = canvasGraph().nodes.find((candidate) => candidate.id === nodeId)
     if (!node) throw new Error(`Node ${nodeId} is not on the canvas`)
     openNode(node)
   }, [openNode])
@@ -1798,8 +1780,8 @@ function FlowEditor() {
   const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
     if (editingReadOnly) return
     const result = swapEdgeJoinInputs({
-      nodes: graphRef.current.nodes,
-      edges: graphRef.current.edges,
+      nodes: canvasGraph().nodes,
+      edges: canvasGraph().edges,
       edgeJoinNodeId: nodeId,
     })
     if (!result.ok) {
@@ -1821,7 +1803,7 @@ function FlowEditor() {
     addToast,
     cancelPreview,
     clearTrace,
-    graphRef,
+    
     lastSelectedNodeRef,
     pushSnapshot,
     setEdgesRaw,
@@ -1831,13 +1813,13 @@ function FlowEditor() {
   ])
 
   const handleSelectRecoveryElement = useCallback((elementId: string) => {
-    const node = graphRef.current.nodes.find((candidate) => candidate.id === elementId)
+    const node = canvasGraph().nodes.find((candidate) => candidate.id === elementId)
     if (!node) return
     activateNode(node)
   }, [activateNode])
 
   const handleNodeSearchSelect = useCallback((nodeId: string) => {
-    const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId) ?? null
+    const node = canvasGraph().nodes.find((candidate) => candidate.id === nodeId) ?? null
     if (!node) return
     activateNode(node)
     centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
@@ -1852,13 +1834,13 @@ function FlowEditor() {
     const definitions = new Set(
       violation.parties.flatMap((party) => (party.submodel === null ? [] : [party.submodel])),
     )
-    const selected = graphRef.current.nodes.filter((node) => (
+    const selected = canvasGraph().nodes.filter((node) => (
       rootIds.has(node.id)
       || (node.data?.nodeType === "submodel"
         && definitions.has(String((node.data?.config as Record<string, unknown> | undefined)?.definition_id)))
     ))
     if (selected.length === 0) return
-    onNodesChange(graphRef.current.nodes.map((node) => ({
+    onNodesChange(canvasGraph().nodes.map((node) => ({
       type: "select" as const,
       id: node.id,
       selected: selected.includes(node),
@@ -1869,7 +1851,7 @@ function FlowEditor() {
   // Point the assistant at a failing node: select it alone, as a click would,
   // and open the panel with its preview error on the next message.
   const handleAskAssistantToFix = useCallback((nodeId: string) => {
-    onNodesChange(graphRef.current.nodes.map((node) => ({
+    onNodesChange(canvasGraph().nodes.map((node) => ({
       type: "select" as const,
       id: node.id,
       selected: node.id === nodeId,
@@ -1878,21 +1860,19 @@ function FlowEditor() {
   }, [askAssistantToFix, onNodesChange])
 
   const handleImportAdded = useCallback((importLine: string) => {
-    const current = preambleRef.current
+    const current = useGraphStore.getState().preamble
     if (current.includes(importLine)) return
     const updated = current ? `${current}\n${importLine}` : importLine
     setPreamble(updated)
-    preambleRef.current = updated
   }, [setPreamble])
 
   const handlePreambleChange = useCallback((value: string) => {
     setPreamble(value)
-    preambleRef.current = value
   }, [setPreamble])
 
   const handlePanelPreviewRefresh = useCallback(() => {
     if (!activePanelNodeId) return
-    const refreshTarget = graphRef.current.nodes.find((node) => node.id === activePanelNodeId)
+    const refreshTarget = canvasGraph().nodes.find((node) => node.id === activePanelNodeId)
     if (!refreshTarget) return
     // Refresh means "bring this node up to date". A structured Quote Input's
     // file is re-read and its tables cached again before the preview, and the

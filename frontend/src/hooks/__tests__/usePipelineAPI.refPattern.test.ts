@@ -23,7 +23,7 @@ import { makeSavePipelineResponse } from "../../test-utils/factories"
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -43,25 +43,14 @@ vi.mock("../../api/client", () => ({
   },
 }))
 
-// The canvas refs of the latest `makeParams`, which the request payload mock
-// reads, as App's canvas refs mirror the graph store.
-const documentRefs = vi.hoisted(() => ({
-  current: null as null | {
-    graphRef: { current: { nodes: unknown[]; edges: unknown[] } }
-    submodelsRef: { current: Record<string, unknown> }
-    preambleRef: { current: string }
-  },
-}))
-
+// The request payload as `documentGraphPayload` builds it from the graph store,
+// without canonicalising: the pipeline's own graph, also with a submodel open.
 vi.mock("../../utils/buildGraph", () => ({
   documentGraphPayload: vi.fn(() => {
-    const refs = documentRefs.current!
-    return {
-      nodes: refs.graphRef.current.nodes,
-      edges: refs.graphRef.current.edges,
-      submodels: refs.submodelsRef.current,
-      preamble: refs.preambleRef.current,
-    }
+    const { nodes, edges, focus, submodels, preamble } = useGraphStore.getState()
+    return focus
+      ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble }
+      : { nodes, edges, submodels, preamble }
   }),
 }))
 
@@ -90,16 +79,13 @@ const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
-  const params = {
+  return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -108,8 +94,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
-  documentRefs.current = params
-  return params
 }
 
 async function advanceTimers(ms: number) {
@@ -190,9 +174,9 @@ describe("usePipelineAPI - settings captured at fetch start (#33, #34)", () => {
     })
 
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({ nodes: [makeNode("n1")], edges: [] })
 
     useSettingsStore.setState({ rowLimit: 100 })
 

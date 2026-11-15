@@ -11,10 +11,11 @@
  * matches the project-wide "fail loudly, no unnecessary fallbacks"
  * principle in CLAUDE.md.
  */
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
+import { resetGraphStoreForTests } from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
 
@@ -30,7 +31,6 @@ vi.mock("@xyflow/react", async () => {
 function makeParams() {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     lastSelectedNodeRef: { current: null as Node | null },
     setNodes: vi.fn(),
@@ -68,6 +68,12 @@ function makeDragEvent(type: string, rawConfig: string | undefined) {
 }
 
 describe("useEdgeHandlers.onDrop - malformed drag JSON fails loudly (#35)", () => {
+  // Each drop lands on an empty canvas, and only its own toasts count.
+  beforeEach(() => {
+    resetGraphStoreForTests()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
+
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
@@ -96,7 +102,7 @@ describe("useEdgeHandlers.onDrop - malformed drag JSON fails loudly (#35)", () =
     expect(threw || toastedError).toBe(true)
   })
 
-  it("malformed drag-config does NOT silently create a node with empty config", () => {
+  it("malformed drag-config does NOT silently create a node with empty config", async () => {
     // This is the key observable behaviour: the bug manifests as an
     // inexplicable node on the canvas.  Post-fix, setNodes must NOT
     // have been called with a node whose config was silently defaulted.
@@ -104,9 +110,11 @@ describe("useEdgeHandlers.onDrop - malformed drag JSON fails loudly (#35)", () =
     const { result } = renderHook(() => useEdgeHandlers(params))
     const event = makeDragEvent(NODE_TYPES.POLARS, "{not json")
 
+    // A created node commits only once its identity resolves, so wait for that.
     try {
-      act(() => {
+      await act(async () => {
         result.current.onDrop(event)
+        await Promise.resolve()
       })
     } catch {
       /* acceptable: the fix may throw */
@@ -161,7 +169,7 @@ describe("useEdgeHandlers.onDrop - malformed drag JSON fails loudly (#35)", () =
     expect(result_nodes[0].data).toMatchObject({ config: {} })
   })
 
-  it("non-object JSON (e.g. a bare array or string) fails loudly", () => {
+  it("non-object JSON (e.g. a bare array or string) fails loudly", async () => {
     // JSON.parse("[1,2,3]") succeeds but the resulting config is not a
     // record — downstream node editors assume an object. Post-fix: an
     // error toast fires (or the drop throws).
@@ -169,10 +177,12 @@ describe("useEdgeHandlers.onDrop - malformed drag JSON fails loudly (#35)", () =
     const { result } = renderHook(() => useEdgeHandlers(params))
     const event = makeDragEvent(NODE_TYPES.POLARS, "[1,2,3]")
 
+    // A created node commits only once its identity resolves, so wait for that.
     let threw = false
     try {
-      act(() => {
+      await act(async () => {
         result.current.onDrop(event)
+        await Promise.resolve()
       })
     } catch {
       threw = true

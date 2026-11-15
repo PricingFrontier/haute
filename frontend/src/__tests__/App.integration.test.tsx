@@ -1531,8 +1531,8 @@ describe("App integration - save pipeline", () => {
     render(<App />)
     await waitForAppReady()
 
-    // Wait for the loaded label to appear so we know graphRef has been
-    // populated (handleSave reads graphRef, not a React-state snapshot).
+    // Wait for the loaded label to appear so we know the graph store holds
+    // the loaded document (handleSave reads the store, not a React-state snapshot).
     await waitFor(() => {
       expect(screen.getByText("Transform A")).toBeInTheDocument()
     })

@@ -117,18 +117,14 @@ const mockGetInputCacheStatus = vi.mocked(getInputCacheStatus)
 const mockDocumentGraphPayload = vi.mocked(documentGraphPayload)
 
 /**
- * The refs of the latest `makeParams`: the canvas the request payload mock reads
- * for the main pipeline, as App's canvas refs mirror the graph store.
+ * The request payload as `documentGraphPayload` builds it from the graph store,
+ * without canonicalising: the pipeline's own graph, also with a submodel open.
  */
-let documentRefs: Pick<ReturnType<typeof makeParams>, "graphRef" | "submodelsRef" | "preambleRef"> | null = null
-
-/** The request payload as `documentGraphPayload` builds it: the pipeline's own graph, also with a submodel open. */
 function payloadFromDocument() {
-  const refs = documentRefs!
-  const { focus, submodels } = useGraphStore.getState()
+  const { nodes, edges, focus, submodels, preamble } = useGraphStore.getState()
   const graph = focus
-    ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble: refs.preambleRef.current }
-    : { nodes: refs.graphRef.current.nodes, edges: refs.graphRef.current.edges, submodels: refs.submodelsRef.current, preamble: refs.preambleRef.current }
+    ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble }
+    : { nodes, edges, submodels, preamble }
   return graph as unknown as ReturnType<typeof documentGraphPayload>
 }
 
@@ -143,16 +139,13 @@ function openPricing(rootNodes: Node[]) {
 }
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
-  const params = {
+  return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -161,8 +154,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
-  documentRefs = params
-  return params
 }
 
 it("ignores an obsolete save conflict after a document reload", async () => {
@@ -202,14 +193,10 @@ function nodeSetterMock(setter: unknown): NodeSetterMock {
 
 function wireGraphStoreNodeSetters(params: ReturnType<typeof makeParams>) {
   params.setNodes = vi.fn((updater: NodeUpdater) => {
-    const nodes = applyNodeUpdater(params.graphRef.current.nodes, updater)
-    params.graphRef.current = { ...params.graphRef.current, nodes }
-    useGraphStore.getState().setNodes(nodes)
+    useGraphStore.getState().setNodes(applyNodeUpdater(useGraphStore.getState().nodes, updater))
   })
   params.setNodesRaw = vi.fn((updater: NodeUpdater) => {
-    const nodes = applyNodeUpdater(params.graphRef.current.nodes, updater)
-    params.graphRef.current = { ...params.graphRef.current, nodes }
-    useGraphStore.getState().setNodesRaw(nodes)
+    useGraphStore.getState().setNodesRaw(applyNodeUpdater(useGraphStore.getState().nodes, updater))
   })
 }
 
@@ -393,10 +380,7 @@ describe("usePipelineAPI", () => {
         pricing: { graph: { nodes: [makeNode("child")], edges: [] } },
       },
     }))
-    const staleSubmodels = useGraphStore.getState().submodels
     const params = makeParams({
-      preambleRef: { current: "import stale" },
-      submodelsRef: { current: staleSubmodels },
       sourceRevisionRef: { current: "revision-stale" },
       preservedBlocksRef: { current: ["STALE = 1"] },
     })
@@ -435,8 +419,6 @@ describe("usePipelineAPI", () => {
     expect(state.undoStack).toEqual([])
     expect(state.redoStack).toEqual([])
     expect(state.dirty).toBe(false)
-    expect(params.preambleRef.current).toBe("import polars as pl")
-    expect(params.submodelsRef.current).toEqual(state.submodels)
     expect(params.sourceRevisionRef.current).toBe("revision-load")
     expect(params.preservedBlocksRef.current).toEqual(["KEEP = 1"])
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
@@ -546,7 +528,6 @@ describe("usePipelineAPI", () => {
       useGraphStore.getState().setSubmodelsRaw(submodels)
     })
     const params = makeParams({
-      submodelsRef: { current: staleSubmodels },
       setSubmodelsRaw,
     })
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -557,8 +538,6 @@ describe("usePipelineAPI", () => {
     expect(toasts.some((t) => t.type === "error" && t.text.includes("Failed to load pipeline"))).toBe(false)
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setPreamble).not.toHaveBeenCalled()
-    expect(params.preambleRef.current).toBe("")
-    expect(params.submodelsRef.current).toEqual({})
     expect(setSubmodelsRaw).not.toHaveBeenCalled()
     expect(useGraphStore.getState().preamble).toBe("")
     expect(useGraphStore.getState().submodels).toEqual({})
@@ -617,13 +596,12 @@ describe("usePipelineAPI", () => {
     const params = makeParams({
       preservedBlocksRef: { current: ["KEEP = 1"] },
     })
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
-    // handleSave reads graphRef for the save payload and marks that
-    // submitted snapshot as saved after the backend accepts it. Keep
-    // graphRef and useGraphStore in sync so isDirty() reports false.
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    // handleSave reads the store's canvas for the save payload and marks that
+    // submitted snapshot as saved after the backend accepts it, so isDirty()
+    // reports false.
+    useGraphStore.getState().setNodesRaw([makeNode("n1")])
     await act(async () => {
       result.current.handleSave()
     })
@@ -649,10 +627,9 @@ describe("usePipelineAPI", () => {
     setSyncConnectionId("tab-1")
     try {
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
-      useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+      useGraphStore.getState().setNodesRaw([makeNode("n1")])
 
       await act(async () => { await result.current.handleSave() })
 
@@ -669,10 +646,9 @@ describe("usePipelineAPI", () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], ...fixture }))
       mockSave.mockResolvedValue(saved)
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
-      useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+      useGraphStore.getState().setNodesRaw([makeNode("n1")])
       return result
     }
 
@@ -743,10 +719,9 @@ describe("usePipelineAPI", () => {
       document_fingerprint: "fingerprint-saved",
     }))
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    useGraphStore.getState().setNodesRaw([makeNode("n1")])
     await act(async () => {
       await result.current.handleSave()
     })
@@ -778,7 +753,6 @@ describe("usePipelineAPI", () => {
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     const editedNode = makeNode("n1")
-    params.graphRef.current = { nodes: [editedNode], edges: [] }
     useGraphStore.getState().setNodes([editedNode])
     await act(async () => {
       await result.current.handleSave()
@@ -808,7 +782,6 @@ describe("usePipelineAPI", () => {
 
     // make the graph dirty first
     const editedNode = makeNode("n1")
-    params.graphRef.current = { nodes: [editedNode], edges: [] }
     useGraphStore.getState().setNodes([editedNode])
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
@@ -838,9 +811,9 @@ describe("usePipelineAPI", () => {
       new ApiError("HTTP 409", 409, "something else"),
     )
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({ nodes: [makeNode("n1")], edges: [] })
 
     let saveResult: boolean | undefined
     await act(async () => {
@@ -866,10 +839,9 @@ describe("usePipelineAPI", () => {
       resolveSave = resolve
     }))
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    useGraphStore.getState().setNodesRaw([makeNode("n1")])
 
     let savePromise!: Promise<boolean>
     act(() => {
@@ -915,10 +887,9 @@ describe("usePipelineAPI", () => {
       resolveSave = resolve
     }))
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    useGraphStore.getState().setNodesRaw([makeNode("n1")])
 
     let savePromise!: Promise<boolean>
     act(() => {
@@ -960,7 +931,6 @@ describe("usePipelineAPI", () => {
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     act(() => {
-      params.graphRef.current = { nodes: [first], edges: [] }
       useGraphStore.getState().setNodesRaw([first])
     })
     let older!: Promise<boolean>
@@ -970,7 +940,6 @@ describe("usePipelineAPI", () => {
     const second = { ...first, data: { ...first.data, config: { selected_columns: ["country"], column_renames: { country: "Country" } } } }
     let newer!: Promise<boolean>
     act(() => {
-      params.graphRef.current = { nodes: [second], edges: [] }
       useGraphStore.getState().setNodes([second])
       newer = result.current.handleSave()
     })
@@ -982,7 +951,6 @@ describe("usePipelineAPI", () => {
     const liveConfig = { ...newestSavedConfig, column_renames: { country: "Nation" } }
     act(() => {
       const live = { ...second, data: { ...second.data, config: liveConfig } }
-      params.graphRef.current = { nodes: [live], edges: [] }
       useGraphStore.getState().setNodes([live])
     })
     const assertNewestSaveState = () => {
@@ -1050,10 +1018,9 @@ describe("usePipelineAPI", () => {
       warnings: ["Transform node 'claims' combines 2 inputs but has no code to combine them."],
     }))
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    useGraphStore.getState().setNodesRaw([makeNode("n1")])
     await act(async () => {
       result.current.handleSave()
     })
@@ -1066,7 +1033,7 @@ describe("usePipelineAPI", () => {
     })
   })
 
-  it("handleSave includes the current submodel mirror in the payload", async () => {
+  it("handleSave includes the store's current submodels in the payload", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const params = makeParams()
@@ -1079,7 +1046,7 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.submodelsRef.current = submodels
+    useGraphStore.setState({ submodels })
 
     await act(async () => {
       await result.current.handleSave()
@@ -1104,7 +1071,6 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [], edges: [boundaryEdge] }
     useGraphStore.setState({ nodes: [], edges: [boundaryEdge], preamble: "" })
     await act(async () => {
       await result.current.handleSave()
@@ -1158,20 +1124,15 @@ describe("usePipelineAPI", () => {
       inputPorts: [],
       outputPorts: [],
     }
-    const params = makeParams({
-      submodelsRef: { current: { definition_pricing: definition } },
-    })
-    params.graphRef.current = { nodes: [root], edges: [] }
+    const params = makeParams()
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [root], edges: [] }
-    params.submodelsRef.current = { definition_pricing: definition }
     useGraphStore.getState().loadGraphSnapshot({
       nodes: [root],
       edges: [],
       preamble: "",
-      submodels: params.submodelsRef.current,
+      submodels: { definition_pricing: definition },
     })
 
     await act(async () => {
@@ -1202,7 +1163,6 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: savedNodes, edges: [] }
     useGraphStore.setState({ nodes: savedNodes, edges: [], preamble: "" })
 
     await act(async () => {
@@ -1214,7 +1174,6 @@ describe("usePipelineAPI", () => {
     }))
 
     act(() => {
-      params.graphRef.current = { nodes: editedNodes, edges: [] }
       useGraphStore.getState().setNodes(editedNodes)
     })
     expect(useGraphStore.getState().isDirty()).toBe(true)
@@ -1246,7 +1205,6 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [savedNode], edges: [savedEdge] }
     useGraphStore.setState({ nodes: [savedNode], edges: [savedEdge], preamble: "" })
 
     await act(async () => {
@@ -1294,18 +1252,16 @@ describe("usePipelineAPI", () => {
     const firstNodes = [makeNode("n1", "polars", { data: { label: "First" } })]
     const secondNodes = [makeNode("n1", "polars", { data: { label: "Second" } })]
     const params = makeParams()
-    params.graphRef.current = { nodes: firstNodes, edges: [] }
-    useGraphStore.setState({ nodes: firstNodes, edges: [], preamble: "" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({ nodes: firstNodes, edges: [], preamble: "" })
 
     await act(async () => {
       result.current.handleSave()
     })
 
     act(() => {
-      params.graphRef.current = { nodes: secondNodes, edges: [] }
       useGraphStore.getState().setNodes(secondNodes)
     })
 
@@ -1337,10 +1293,10 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("child")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     openPricing([makeNode("parent")])
+    useGraphStore.setState({ nodes: [makeNode("child")], edges: [] })
 
     await act(async () => {
       result.current.handleSave()
@@ -1358,7 +1314,6 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockSave.mockRejectedValue(new Error("disk full"))
     const params = makeParams()
-    params.graphRef.current = { nodes: [], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     await act(async () => {
@@ -1380,7 +1335,6 @@ describe("usePipelineAPI", () => {
       ),
     )
     const params = makeParams()
-    params.graphRef.current = { nodes: [], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
@@ -1423,7 +1377,7 @@ describe("usePipelineAPI", () => {
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = graph
+    useGraphStore.setState({ nodes: graph.nodes, edges: graph.edges })
 
     await act(async () => {
       result.current.handleSave()
@@ -1463,7 +1417,7 @@ describe("usePipelineAPI", () => {
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = graph
+    useGraphStore.setState({ nodes: graph.nodes, edges: graph.edges })
 
     // Both inputs carry columns WITHOUT the configured key.
     const { activeSource } = useSettingsStore.getState()
@@ -1732,7 +1686,7 @@ describe("usePipelineAPI", () => {
       }))
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false), { timeout: CACHE_WAIT_TIMEOUT_MS })
-      params.graphRef.current = { nodes: [input, target], edges: [makeEdge(input.id, target.id)] }
+      useGraphStore.setState({ nodes: [input, target], edges: [makeEdge(input.id, target.id)] })
       act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
       await waitFor(
         () => expect(mockBuildInputCache).toHaveBeenCalledOnce(),
@@ -1767,13 +1721,13 @@ describe("usePipelineAPI", () => {
     })
     const target = makeNode("claims")
     const params = makeParams()
-    params.graphRef.current = { nodes: [unfinished, target], edges: [] }
     mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
     }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({ nodes: [unfinished, target], edges: [] })
     act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
 
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
@@ -1807,10 +1761,10 @@ describe("usePipelineAPI", () => {
     vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [input, target],
       edges: [makeEdge(input.id, target.id)],
-    }
+    })
 
     act(() => {
       result.current.fetchPreview(target, { debounceMs: 0 })
@@ -1856,10 +1810,10 @@ describe("usePipelineAPI", () => {
     vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [read.id] })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [read, aboveSeed, target],
       edges: [makeEdge(read.id, target.id), makeEdge(aboveSeed.id, target.id)],
-    }
+    })
 
     act(() => {
       result.current.fetchPreview(target, { debounceMs: 0 })
@@ -1888,12 +1842,12 @@ describe("usePipelineAPI", () => {
     const unused = makeSnapshotInput("unused-input")
     const target = makeNode("target")
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [unused, target],
-      edges: [makeEdge(unused.id, target.id)],
-    }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({
+      nodes: [unused, target],
+      edges: [makeEdge(unused.id, target.id)],
+    })
 
     act(() => {
       result.current.fetchPreview(target, { debounceMs: 0 })
@@ -1924,10 +1878,10 @@ describe("usePipelineAPI", () => {
     vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [input, target],
       edges: [makeEdge(input.id, target.id)],
-    }
+    })
 
     act(() => {
       result.current.fetchPreview(target, { debounceMs: 0 })
@@ -1961,12 +1915,12 @@ describe("usePipelineAPI", () => {
       const input = makeSnapshotInput()
       const target = makeNode("target")
       const params = makeParams()
-      params.graphRef.current = {
-        nodes: [input, target],
-        edges: [makeEdge(input.id, target.id)],
-      }
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+      useGraphStore.setState({
+        nodes: [input, target],
+        edges: [makeEdge(input.id, target.id)],
+      })
 
       act(() => {
         result.current.fetchPreview(target, { debounceMs: 0 })
@@ -2071,12 +2025,12 @@ describe("usePipelineAPI", () => {
     const upstream = makeNode("upstream", NODE_TYPES.POLARS)
     const submodel = makeNode("model_stuff", NODE_TYPES.SUBMODEL)
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [upstream, submodel],
-      edges: [makeEdge("upstream", "model_stuff")],
-    }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({
+      nodes: [upstream, submodel],
+      edges: [makeEdge("upstream", "model_stuff")],
+    })
 
     act(() => {
       result.current.fetchPreview(upstream, { debounceMs: 0 })
@@ -2102,12 +2056,12 @@ describe("usePipelineAPI", () => {
     const upstream = makeNode("upstream", NODE_TYPES.POLARS)
     const port = makeSubmodelPortNode()
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
-    params.graphRef.current = {
-      nodes: [upstream, port],
-      edges: [makeEdge("upstream", port.id)],
-    }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({
+      nodes: [upstream, port],
+      edges: [makeEdge("upstream", port.id)],
+    })
 
     act(() => {
       result.current.fetchPreview(upstream, { debounceMs: 0 })
@@ -2135,12 +2089,12 @@ describe("usePipelineAPI", () => {
     const submodel = makeNode("model_stuff", NODE_TYPES.SUBMODEL)
     const target = makeNode("target", NODE_TYPES.POLARS)
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [submodel, target],
-      edges: [makeEdge("model_stuff", "target")],
-    }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({
+      nodes: [submodel, target],
+      edges: [makeEdge("model_stuff", "target")],
+    })
 
     act(() => {
       result.current.refreshPreview(target)
@@ -2165,12 +2119,12 @@ describe("usePipelineAPI", () => {
     const port = makeSubmodelPortNode()
     const target = makeNode("target", NODE_TYPES.POLARS)
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
-    params.graphRef.current = {
-      nodes: [port, target],
-      edges: [makeEdge(port.id, "target")],
-    }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({
+      nodes: [port, target],
+      edges: [makeEdge(port.id, "target")],
+    })
 
     act(() => {
       result.current.refreshPreview(target)
@@ -2201,13 +2155,13 @@ describe("usePipelineAPI", () => {
     }))
     const child = makeNode("nb_batch", NODE_TYPES.DATA_INPUT)
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
-    params.graphRef.current = {
-      nodes: [child],
-      edges: [],
-    }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     openPricing([makeNode("pricing", NODE_TYPES.SUBMODEL)])
+    useGraphStore.setState({
+      nodes: [child],
+      edges: [],
+    })
 
     act(() => {
       result.current.fetchPreview(child, { debounceMs: 0 })
@@ -2233,10 +2187,10 @@ describe("usePipelineAPI", () => {
     }))
     const child = makeNode("bands", NODE_TYPES.BANDING)
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
-    params.graphRef.current = { nodes: [child], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     openPricing([makeNode("workbench", NODE_TYPES.DATA_INPUT), makeNode("pricing", NODE_TYPES.SUBMODEL)])
+    useGraphStore.setState({ nodes: [child], edges: [] })
 
     act(() => { result.current.fetchPreview(child, { debounceMs: 0 }) })
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
@@ -2275,11 +2229,10 @@ describe("usePipelineAPI", () => {
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
     act(() => {
-      params.graphRef.current = {
-        nodes: [makeNode("join", NODE_TYPES.EDGE_JOIN), makeNode("downstream", NODE_TYPES.POLARS)],
-        edges: [makeEdge("join", "downstream")],
-      }
-      useGraphStore.getState().setNodes(params.graphRef.current.nodes)
+      useGraphStore.getState().setNodesAndEdges(
+        [makeNode("join", NODE_TYPES.EDGE_JOIN), makeNode("downstream", NODE_TYPES.POLARS)],
+        [makeEdge("join", "downstream")],
+      )
       const capturedVersion = useGraphStore.getState().structuralVersion
       params.setNodesRaw((nodes: Node[]) => nodes.map((node) => ({
         ...node,
@@ -2290,11 +2243,11 @@ describe("usePipelineAPI", () => {
         : node))
     })
     act(() => {
-      const target = params.graphRef.current.nodes.find((node) => node.id === "downstream")!
+      const target = useGraphStore.getState().nodes.find((node) => node.id === "downstream")!
       result.current.fetchPreview(target, { debounceMs: 0 })
     })
     await waitFor(() => {
-      const downstream = params.graphRef.current.nodes.find((node) => node.id === "downstream")!
+      const downstream = useGraphStore.getState().nodes.find((node) => node.id === "downstream")!
       expect(downstream.data._columns).toEqual(remainingColumns)
       expect(downstream.data._columnsStructuralVersion).toBe(useGraphStore.getState().structuralVersion)
     })
@@ -2516,9 +2469,9 @@ describe("usePipelineAPI", () => {
       column_count: 1,
     }))
     const params = makeParams()
-    params.graphRef.current = { nodes: [node], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({ nodes: [node], edges: [] })
     nodeSetterMock(params.setNodes).mockClear()
     nodeSetterMock(params.setNodesRaw).mockClear()
 
@@ -2549,9 +2502,9 @@ describe("usePipelineAPI", () => {
     })
 
     const params = makeParams()
-    params.graphRef.current = { nodes: [root], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({ nodes: [root], edges: [] })
 
     act(() => {
       result.current.fetchPreview(root, { debounceMs: 0 })
@@ -2647,7 +2600,6 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
-      params.graphRef.current = { nodes: [node], edges: [] }
       useGraphStore.getState().setNodesRaw([node])
       useGraphStore.getState().markSaved()
       nodeSetterMock(params.setNodes).mockClear()
@@ -2749,10 +2701,7 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
-      nodes: [upstream, target],
-      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
-    }
+    useGraphStore.setState({ edges: [{ id: "upstream-target", source: "upstream", target: "target" }] })
     useGraphStore.getState().setNodesRaw([upstream, target])
 
     act(() => {
@@ -2764,7 +2713,6 @@ describe("usePipelineAPI", () => {
 
     act(() => {
       const edited = { ...upstream, data: { ...upstream.data, config: { selected_columns: ["new"], column_renames: { new: "New" } } } }
-      params.graphRef.current = { nodes: [edited, target], edges: params.graphRef.current.edges }
       useGraphStore.getState().setNodes([edited, target])
       useGraphStore.setState((state) => ({
         structuralVersion: state.structuralVersion + 1,
@@ -2820,7 +2768,6 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
-      params.graphRef.current = { nodes: [upstream, target], edges: [edge] }
       useGraphStore.getState().setNodesRaw([upstream, target])
       useGraphStore.getState().setEdgesRaw([edge])
       useGraphStore.getState().markSaved()
@@ -2877,10 +2824,10 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [upstream, target],
       edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
-    }
+    })
 
     act(() => {
       result.current.refreshPreview(target)
@@ -2919,10 +2866,6 @@ describe("usePipelineAPI", () => {
       },
     })
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [upstream, target, replacement],
-      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
-    }
 
     const abortSignals: AbortSignal[] = []
     mockPreview.mockImplementation(({ signal }) => {
@@ -2932,6 +2875,10 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({
+      nodes: [upstream, target, replacement],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    })
 
     act(() => {
       result.current.refreshPreview(target)
@@ -2976,10 +2923,10 @@ describe("usePipelineAPI", () => {
 
     const { result, unmount } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [upstream, target],
       edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
-    }
+    })
 
     act(() => {
       result.current.refreshPreview(target)
@@ -3030,10 +2977,10 @@ describe("usePipelineAPI", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [target, ...upstreamNodes],
       edges: upstreamIds.map((id) => makeEdge(id, "target")),
-    }
+    })
 
     act(() => {
       result.current.refreshPreview(target)
@@ -3096,13 +3043,13 @@ describe("usePipelineAPI", () => {
     })
     const oldNode = makeNode("old")
     const params = makeParams()
-    params.graphRef.current = {
-      nodes: [oldNode, target],
-      edges: [],
-    }
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.setState({
+      nodes: [oldNode, target],
+      edges: [],
+    })
 
     vi.useFakeTimers()
     try {

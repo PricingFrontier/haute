@@ -13,7 +13,7 @@
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -64,14 +64,11 @@ const mockPreview = vi.mocked(previewNode)
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -144,9 +141,11 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    const [A, B, C] = [makeNode("A"), makeNode("B"), makeNode("C")]
+    useGraphStore.setState({ nodes: [A, B, C], edges: [] })
 
     // 1. Preview A — wait for resolution (not just the loading placeholder)
-    act(() => { result.current.fetchPreview(makeNode("A")) })
+    act(() => { result.current.fetchPreview(A) })
     await waitFor(() => {
       expect(result.current.previewData?.nodeId).toBe("A")
       expect(result.current.previewData?.status).toBe("ok")
@@ -155,12 +154,12 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
 
     // 2. Switch to B — aborts A's request (A already resolved, but for B
     //    we expect the new loading state) and starts B's fetch.
-    act(() => { result.current.fetchPreview(makeNode("B")) })
+    act(() => { result.current.fetchPreview(B) })
 
     // 3. Immediately switch to C — this aborts B's pending request.
     //    Pre-fix: AbortError in B's catch block is swallowed, but the
     //    loading placeholder for C should not let stale A data linger.
-    act(() => { result.current.fetchPreview(makeNode("C")) })
+    act(() => { result.current.fetchPreview(C) })
 
     // After all switches, previewData must reference the LATEST node (C),
     // or a loading state for C — NEVER the stale nodeId "A".
@@ -203,10 +202,12 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    const [A, B] = [makeNode("A"), makeNode("B")]
+    useGraphStore.setState({ nodes: [A, B], edges: [] })
 
     vi.useFakeTimers()
 
-    act(() => { result.current.fetchPreview(makeNode("A")) })
+    act(() => { result.current.fetchPreview(A) })
     // Wait for debounce to fire so A's request is in flight
     await act(async () => {
       vi.advanceTimersByTime(200)
@@ -215,7 +216,7 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
     expect(aSignal).toBeDefined()
 
     // Switch to B: the hook aborts A immediately when selection changes.
-    act(() => { result.current.fetchPreview(makeNode("B")) })
+    act(() => { result.current.fetchPreview(B) })
     expect(aSignal?.aborted).toBe(true)
 
     // Let A's late response race through the .then().

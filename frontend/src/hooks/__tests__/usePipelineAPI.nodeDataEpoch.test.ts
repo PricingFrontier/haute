@@ -45,25 +45,14 @@ vi.mock("../../api/workbench", () => ({
   fetchWorkbenchTables: vi.fn(),
 }))
 
-// The canvas refs of the latest `makeParams`, which the request payload mock
-// reads, as App's canvas refs mirror the graph store.
-const documentRefs = vi.hoisted(() => ({
-  current: null as null | {
-    graphRef: { current: { nodes: unknown[]; edges: unknown[] } }
-    submodelsRef: { current: Record<string, unknown> }
-    preambleRef: { current: string }
-  },
-}))
-
+// The request payload as `documentGraphPayload` builds it from the graph store,
+// without canonicalising: the pipeline's own graph, also with a submodel open.
 vi.mock("../../utils/buildGraph", () => ({
   documentGraphPayload: vi.fn(() => {
-    const refs = documentRefs.current!
-    return {
-      nodes: refs.graphRef.current.nodes,
-      edges: refs.graphRef.current.edges,
-      submodels: refs.submodelsRef.current,
-      preamble: refs.preambleRef.current,
-    }
+    const { nodes, edges, focus, submodels, preamble } = useGraphStore.getState()
+    return focus
+      ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble }
+      : { nodes, edges, submodels, preamble }
   }),
 }))
 
@@ -95,16 +84,13 @@ const mockTables = vi.mocked(fetchWorkbenchTables)
 type PreviewEnvelope = Awaited<ReturnType<typeof previewNode>>
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
-  const params = {
+  return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -113,8 +99,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
-  documentRefs.current = params
-  return params
 }
 
 function captured(nodeId: string): PreviewSeedPlanEntry {
@@ -194,7 +178,7 @@ async function renderLoaded(nodes: Node[], edges: Edge[] = []) {
   const rendered = renderHook(() => usePipelineAPI(params))
   await waitFor(() => expect(rendered.result.current.loading).toBe(false))
   // The canvas as edited after the initial load, which sets the graph it loaded.
-  params.graphRef.current = { nodes, edges }
+  useGraphStore.setState({ nodes, edges })
   return rendered
 }
 

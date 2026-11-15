@@ -7,7 +7,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import { apiErrorMessage } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
-import useGraphStore from "../stores/useGraphStore"
+import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import { structuralFingerprint } from "../utils/structuralFingerprint"
 
 type Graph = { nodes: Node[]; edges: Edge[] }
@@ -42,7 +42,6 @@ function sameAuthoredData(a: Record<string, unknown>, b: Record<string, unknown>
 }
 
 export interface CreateAfterIdentityArgs<T> {
-  graphRef: { readonly current: Graph }
   /** One serial per kind of creation: a newer request supersedes a pending one. */
   serialRef: { current: number }
   /** Nodes the creation was computed from; it is refused if one is edited meanwhile. */
@@ -65,7 +64,7 @@ export interface CreateAfterIdentityArgs<T> {
  * a creation; `apply` reads the live graph, so such a change is kept.
  */
 export async function createAfterIdentity<T>({
-  graphRef,
+  
   serialRef,
   dependsOnNodeIds = [],
   resolve,
@@ -74,7 +73,7 @@ export async function createAfterIdentity<T>({
   action,
   failure,
 }: CreateAfterIdentityArgs<T>): Promise<void> {
-  const captured = graphRef.current
+  const captured = canvasGraph()
   const scope = canvasScope()
   const structure = structuralFingerprint(captured)
   const names = namesOf(captured)
@@ -83,7 +82,7 @@ export async function createAfterIdentity<T>({
   const stillCurrent = (): boolean => {
     if (serialRef.current !== serial) return false
     if (!canvasScope().every((part, index) => Object.is(part, scope[index]))) return false
-    const graph = graphRef.current
+    const graph = canvasGraph()
     if (graph === captured) return true
     return structuralFingerprint(graph) === structure && namesOf(graph) === names && dependencies.every((before, index) => {
       const now = graph.nodes.find((node) => node.id === dependsOnNodeIds[index])
@@ -100,7 +99,7 @@ export async function createAfterIdentity<T>({
       refuse()
       return
     }
-    apply(resolved, graphRef.current)
+    apply(resolved, canvasGraph())
   } catch (err: unknown) {
     if (!stillCurrent()) {
       refuse()

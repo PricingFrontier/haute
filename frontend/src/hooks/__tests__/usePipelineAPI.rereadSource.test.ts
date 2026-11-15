@@ -6,7 +6,7 @@
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -39,25 +39,14 @@ vi.mock("../../api/client", () => ({
   },
 }))
 
-// The canvas refs of the latest `makeParams`, which the request payload mock
-// reads, as App's canvas refs mirror the graph store.
-const documentRefs = vi.hoisted(() => ({
-  current: null as null | {
-    graphRef: { current: { nodes: unknown[]; edges: unknown[] } }
-    submodelsRef: { current: Record<string, unknown> }
-    preambleRef: { current: string }
-  },
-}))
-
+// The request payload as `documentGraphPayload` builds it from the graph store,
+// without canonicalising: the pipeline's own graph, also with a submodel open.
 vi.mock("../../utils/buildGraph", () => ({
   documentGraphPayload: vi.fn(() => {
-    const refs = documentRefs.current!
-    return {
-      nodes: refs.graphRef.current.nodes,
-      edges: refs.graphRef.current.edges,
-      submodels: refs.submodelsRef.current,
-      preamble: refs.preambleRef.current,
-    }
+    const { nodes, edges, focus, submodels, preamble } = useGraphStore.getState()
+    return focus
+      ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble }
+      : { nodes, edges, submodels, preamble }
   }),
 }))
 
@@ -121,16 +110,13 @@ const okPreview = makePreviewResponse({
 })
 
 function makeParams() {
-  const params = {
+  return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -138,8 +124,6 @@ function makeParams() {
     preservedBlocksRef: { current: [] as string[] },
     nodeIdCounter: { current: 0 },
   }
-  documentRefs.current = params
-  return params
 }
 
 async function renderPipelineAPI(nodes: Node[]) {
@@ -147,8 +131,8 @@ async function renderPipelineAPI(nodes: Node[]) {
   const params = makeParams()
   const hook = renderHook(() => usePipelineAPI(params))
   await waitFor(() => expect(hook.result.current.loading).toBe(false))
-  params.graphRef.current = { nodes, edges: [] }
-  return { ...hook, params }
+  useGraphStore.setState({ nodes, edges: [] })
+  return hook
 }
 
 function epoch(): number {
@@ -270,7 +254,7 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
 
   it("previews the graph as it is once the re-read ends, without reading again", async () => {
     const quotes = quoteInput("quotes", quotesConfig)
-    const { result, params } = await renderPipelineAPI([quotes])
+    const { result } = await renderPipelineAPI([quotes])
     let finish!: (value: InputCacheJobStatusResponse) => void
     mockJob.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
 
@@ -280,7 +264,7 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
     // Another node is edited while the file is read.
     const rating = makeNode("rating")
     act(() => {
-      params.graphRef.current = { nodes: [quotes, rating], edges: [] }
+      useGraphStore.setState({ nodes: [quotes, rating], edges: [] })
       useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 }))
     })
     await act(async () => {
@@ -296,7 +280,7 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
 
   it("runs nothing more for a node that left the graph while its file was read", async () => {
     const quotes = quoteInput("quotes", quotesConfig)
-    const { result, params } = await renderPipelineAPI([quotes])
+    const { result } = await renderPipelineAPI([quotes])
     let finish!: (value: InputCacheJobStatusResponse) => void
     mockJob.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
 
@@ -304,7 +288,7 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
     await waitFor(() => expect(mockJob).toHaveBeenCalled(), { timeout: STEP_TIMEOUT_MS })
 
     act(() => {
-      params.graphRef.current = { nodes: [], edges: [] }
+      useGraphStore.setState({ nodes: [], edges: [] })
     })
     await act(async () => {
       finish(job("completed"))

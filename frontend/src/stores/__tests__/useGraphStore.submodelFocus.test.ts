@@ -143,6 +143,23 @@ describe("useGraphStore with a submodel open", () => {
     expect(lastToast()).toBe("The submodel that step was made in is gone, so the main pipeline is shown.")
   })
 
+  it("shows the main pipeline, with a notice, when Undo takes away the occurrence that is open", () => {
+    store().setNodes((nodes) => [...nodes, occurrence("pricing_3")])
+    const created = { instanceId: "pricing_3", definitionId: DEFINITION_ID }
+    store().enterSubmodelView(created)
+
+    store().undo()
+
+    expect(store().focus).toBeNull()
+    expect(store().nodes.map((node) => node.id)).not.toContain("pricing_3")
+    expect(lastToast()).toBe("The submodel that was open is gone, so the main pipeline is shown.")
+
+    // Redo puts the occurrence back and, the step being the main pipeline's, shows it there.
+    store().redo()
+    expect(store().focus).toBeNull()
+    expect(store().nodes.map((node) => node.id)).toContain("pricing_3")
+  })
+
   it("refuses an authored change to a read-only copy, whole, while its canvas still takes a selection", () => {
     store().enterSubmodelView(COPY)
     const before = store().persistedFingerprint
