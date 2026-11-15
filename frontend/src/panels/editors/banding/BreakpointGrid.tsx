@@ -29,7 +29,7 @@ const BOXED_INPUT_CLASS = "w-full px-1 py-0.5 rounded text-[11px] font-mono focu
 const BOXED_LABEL_INPUT_CLASS = `${BOXED_INPUT_CLASS} font-semibold`
 const BOXED_CELL_STYLE = { background: "var(--bg-panel)", border: "1px solid var(--border)", color: "var(--text-primary)" }
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
-const ACTION_BUTTON_CLASS = "accent-hover-btn flex size-6 items-center justify-center rounded"
+const ACTION_BUTTON_CLASS = "accent-hover-btn -my-1 flex size-6 items-center justify-center rounded"
 
 function parseBoundaryValue(boundary: string): number | null {
   const trimmed = boundary.trim()
