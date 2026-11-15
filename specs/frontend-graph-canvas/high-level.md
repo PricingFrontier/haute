@@ -602,18 +602,30 @@ candidate, with the error toast.
   display label. Submodels do not nest: the graph store refuses a second view
   while one is open, so every breadcrumb below the active one is the main
   pipeline.
-- **A submodel view has its own Undo/Redo history.** The graph store swaps the
-  canvas for the child view in one transition that sets the root's undo and redo
-  stacks aside and starts the view with empty ones, so Undo in the view never
-  reaches a root edit. The view is clean exactly when it is unchanged and the root
-  it came from was saved: a save begun at the root that lands while drilled makes
-  the view clean only if it saved the root that was entered. Returning by
-  breadcrumb restores the reconciled parent graph and submodels held for the
-  view, rather than re-fetching them, together with the root's stacks; when the
-  visit changed the document, the root as it was on entry becomes one undo entry
-  (and the redo stack is cleared), so one Undo at the root reverts the whole visit
-  and never puts `submodel_port` cards on the root canvas. A whole-document load
-  ends an open view, keeping only version-control entries from both levels.
+- **An open submodel is a view of the one document.** The graph store holds the
+  authored document at all times: the pipeline's nodes and edges, every submodel
+  definition, the preamble and the global constants. Opening a submodel records
+  which occurrence the canvas shows (its focus), and the canvas is drawn from the
+  document: the definition's children and edges, and Input and Output cards built
+  from its ports and the occurrence's bindings. An edit made inside the submodel
+  changes the document in the same update that changes the canvas: moving,
+  configuring, adding, deleting or connecting a child changes the shared
+  definition, and a boundary edit changes its ports and the bindings of every
+  occurrence that uses them. An edit the document refuses (a public port another
+  occurrence binds, an edit addressed to a read-only copy) changes neither the
+  document nor the canvas, and says why. A request, a save and leaving the
+  submodel all read the document as it stands, with no rebuilt copy to wait for or
+  to lose an edit from. Execution annotations (a preview's columns, statuses)
+  shown on a child belong to that occurrence, not to the shared definition.
+- **One history, one step per edit.** Undo and Redo work as on the main canvas,
+  wherever the edit was made: every edit is one step on one history of the
+  document, and each step records the view it was made in. Undoing or redoing a
+  step made in another view first shows that view; when the submodel it was made
+  in no longer exists, the main pipeline is shown with a notice. Opening and
+  leaving a submodel are navigation, not steps, and leaving shows the main
+  pipeline of the same document. The document is clean exactly when it equals
+  the last saved document. A whole-document load shows the main pipeline and
+  keeps only version-control entries in the history.
 - **Submodel creation is a toolbar action or a keyboard shortcut, not a
   context-menu item.** Selecting two or more nodes and either pressing Ctrl+G
   or clicking the toolbar's Submodel button opens `SubmodelDialog` for the
