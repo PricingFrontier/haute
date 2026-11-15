@@ -16,7 +16,7 @@ import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import { buildGraph } from "../../utils/buildGraph"
+import { nodeRequestTarget } from "../../utils/nodeRequestTarget"
 import {
   executionJobStatusFromReason,
   executionMetricsFromError,
@@ -223,14 +223,16 @@ export default function useExplorePivotActions({
         useNodeResultsStore.getState().pivotStartClaims[key]?.token
           === startToken && isDocumentExecutionFenceCurrent(documentFence)
       setNotice(pivot.id, null)
-      // buildGraph reads the preamble from the store; listing it renews this callback.
+      // The graph reads the preamble from the store; listing it renews this callback.
       void preamble
       const submissionGeneration = beginSubmitting(pivot.id)
 
       try {
+        // Inside an open submodel, the whole pipeline and the node's runtime id.
+        const target = nodeRequestTarget(allNodes, edges, submodels, node.id)
         const response = await runExplorePivot({
-          graph: buildGraph(allNodes, edges, submodels),
-          node_id: node.id,
+          graph: target.graph,
+          node_id: target.nodeId,
           pivot,
           source: activeSource,
         })

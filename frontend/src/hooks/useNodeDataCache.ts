@@ -22,7 +22,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { buildGraph } from "../utils/buildGraph"
+import { nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -132,9 +132,9 @@ export function refreshNodeDataCache(nodeId: string): void {
   for (const handler of nodeDataRefreshHandlers.get(nodeId) ?? []) handler()
 }
 
-function producerNode(allNodes: SimpleNode[], point: NodeDataPointResponse | null): SimpleNode | null {
-  if (!point) return null
-  return allNodes.find((candidate) => candidate.id === point.point.producer_node_id) ?? null
+function producerNode(target: NodeRequestTarget | null, point: NodeDataPointResponse | null): SimpleNode | null {
+  if (!point || !target) return null
+  return target.nodeNamed(point.point.producer_node_id)
 }
 
 /**
@@ -225,28 +225,31 @@ export default function useNodeDataCache({
   }, [nodeId, ownedRunning, setWorkRunning, workKey])
   useEffect(() => () => setWorkRunning(workKey, null), [setWorkRunning, workKey])
 
-  // buildGraph reads the preamble and constants from the store; listing them
-  // renews the callback, so an edit made after mount reaches the next request.
-  const graphPayload = useCallback(
-    () => {
+  // The graph and node id a request sends: inside an open submodel, the whole
+  // pipeline and the node's runtime id. The graph reads the preamble and constants
+  // from the store; listing them renews the callback, so an edit made after mount
+  // reaches the next request.
+  const requestTarget = useCallback(
+    (): NodeRequestTarget | null => {
       void globalConstants
       void preamble
-      return buildGraph(allNodes, edges, submodels)
+      return nodeId ? nodeRequestTarget(allNodes, edges, submodels, nodeId) : null
     },
-    [allNodes, edges, preamble, submodels, globalConstants],
+    [allNodes, edges, nodeId, preamble, submodels, globalConstants],
   )
 
   const fetchPoint = useCallback(
     (signal?: AbortSignal): Promise<NodeDataPointResponse | null> => {
-      if (!nodeId) return Promise.resolve(null)
+      const target = requestTarget()
+      if (!target) return Promise.resolve(null)
       return getNodeDataPoint({
-        graph: graphPayload(),
-        node_id: nodeId,
+        graph: target.graph,
+        node_id: target.nodeId,
         source: activeSource,
         signal,
       })
     },
-    [activeSource, graphPayload, nodeId],
+    [activeSource, requestTarget],
   )
 
   const publish = useCallback(
@@ -275,7 +278,11 @@ export default function useNodeDataCache({
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     const controller = new AbortController()
-    void fetchPoint(controller.signal)
+    // Asked once this commit's effects have all run: inside an open submodel an
+    // edit reaches the whole pipeline a request sends in an effect of App's,
+    // which runs after this one.
+    void Promise.resolve()
+      .then(() => (controller.signal.aborted ? null : fetchPoint(controller.signal)))
       .then((fresh) => {
         if (!fresh || controller.signal.aborted) return
         publish(fresh, configHash, fence)
@@ -311,7 +318,7 @@ export default function useNodeDataCache({
     async (target: NodeDataPointResponse) => {
       // A point that reads directly has nothing cached to clear.
       if (target.reads_directly) return
-      const producer = producerNode(allNodes, target)
+      const producer = producerNode(requestTarget(), target)
       const config = (producer?.data.config ?? null) as Record<string, unknown> | null
       if (!config) return
       if (target.kind === "api_input_table") {
@@ -322,12 +329,12 @@ export default function useNodeDataCache({
       }
       await clearInputCache({ schema_version: 1, config })
     },
-    [allNodes],
+    [requestTarget],
   )
 
   const buildDelegated = useCallback(
     async (target: NodeDataPointResponse, force: boolean, fence: DocumentExecutionFence) => {
-      const producer = producerNode(allNodes, target)
+      const producer = producerNode(requestTarget(), target)
       if (!producer) throw new Error("The delegated data point has no producer node")
       const { cancelInputSnapshotBuild, ensureInputSnapshots } = await import(
         "./ensureInputSnapshots"
@@ -394,11 +401,11 @@ export default function useNodeDataCache({
     },
     [
       addToast,
-      allNodes,
       finishDelegatedBuild,
       nodeLabel,
       readPoint,
       reportDelegatedProgress,
+      requestTarget,
       retainDelegatedBuild,
       startDelegatedBuild,
     ],
@@ -419,14 +426,16 @@ export default function useNodeDataCache({
   const build = useCallback(
     async (refresh: boolean) => {
       if (!nodeId || !configHash || busy) return
+      const target = requestTarget()
+      if (!target) return
       const fence = captureDocumentExecutionFence()
       if (!isDocumentExecutionFenceCurrent(fence)) return
       stopRequested.current = false
       setSubmitting(true)
       try {
         const response = await runNodeData({
-          graph: graphPayload(),
-          node_id: nodeId,
+          graph: target.graph,
+          node_id: target.nodeId,
           source: activeSource,
           refresh,
         })
@@ -491,10 +500,10 @@ export default function useNodeDataCache({
       busy,
       cancelOwnedJob,
       configHash,
-      graphPayload,
       nodeId,
       nodeLabel,
       publish,
+      requestTarget,
       startJob,
     ],
   )
@@ -568,12 +577,14 @@ export default function useNodeDataCache({
 
   const clear = useCallback(async () => {
     if (!nodeId || !configHash) return
+    const target = requestTarget()
+    if (!target) return
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     try {
       const response = await clearNodeData({
-        graph: graphPayload(),
-        node_id: nodeId,
+        graph: target.graph,
+        node_id: target.nodeId,
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence)) return
@@ -592,10 +603,10 @@ export default function useNodeDataCache({
     addToast,
     clearDelegatedData,
     configHash,
-    graphPayload,
     nodeId,
     publish,
     readPoint,
+    requestTarget,
   ])
 
   return {

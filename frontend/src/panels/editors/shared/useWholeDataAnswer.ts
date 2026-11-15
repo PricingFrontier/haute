@@ -9,7 +9,7 @@ import {
 } from "../../../stores/useDocumentStatusStore"
 import useNodeDataStore from "../../../stores/useNodeDataStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
-import { buildGraph } from "../../../utils/buildGraph"
+import { nodeRequestTarget } from "../../../utils/nodeRequestTarget"
 import type { SimpleEdge, SimpleNode } from "../_shared"
 
 /** How long an editor waits after the last edit before asking about it. */
@@ -28,7 +28,9 @@ export interface WholeDataResponse {
 export interface WholeDataQuestion {
   /** The editor's `askedFor`, for the request to read back. */
   asked: string
+  /** The graph to send: inside an open submodel, the whole pipeline. */
   graph: GraphPayload
+  /** The node's id in `graph`: inside an open submodel, its runtime id. */
   nodeId: string
   source: string
   signal: AbortSignal
@@ -145,10 +147,11 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
       question.controller = controller
       inFlight.current = question
       setLoading({ identity: requestIdentity, value: true })
+      const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
       askRef.current({
         asked: askedFor,
-        graph: buildGraph(allNodes, edges, submodels),
-        nodeId,
+        graph: target.graph,
+        nodeId: target.nodeId,
         source: activeSource,
         signal: controller.signal,
       })

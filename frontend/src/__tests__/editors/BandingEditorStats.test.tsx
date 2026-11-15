@@ -18,6 +18,7 @@ import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import { setDrilledRequestScope } from "../../utils/nodeRequestTarget"
 import type { BandingStatsResponse, NodeDataPointResponse } from "../../api/types"
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
@@ -204,6 +205,7 @@ describe("BandingEditor statistics", () => {
     vi.useRealTimers()
     cleanup()
     useWorkbenchStore.setState({ enabled: false })
+    setDrilledRequestScope(null)
   })
 
   it("counts the whole dataset once the point it reads is cached", async () => {
@@ -693,5 +695,39 @@ describe("BandingEditor statistics", () => {
     expect(screen.queryByTestId("banding-histogram")).toBeNull()
     // The rules are still there to edit.
     expect(screen.getByRole("textbox", { name: "Breakpoint 1 label" })).toHaveValue("low")
+  })
+
+  it("says why there is nothing to count when the server finds no data for the node to read", async () => {
+    const message = "Node 'Banding' must have exactly one incoming connection to read its data (found 0)."
+    mockGetNodeDataPoint.mockRejectedValue(Object.assign(new ApiError(message, 400), { detail: message }))
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("asks about a node of an open submodel with the whole pipeline and the node's runtime id", async () => {
+    // The drilled view beside its own definition names each node twice, which
+    // the server refuses; Preview sends the whole pipeline instead, and so does this.
+    const root = { nodes: [], edges: [], submodels: {}, preamble: "" }
+    setDrilledRequestScope(() => ({
+      graph: root as never,
+      occurrence: { instanceId: "br_rating", definitionId: "br_rating" },
+    }))
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
+    expect(mockGetNodeDataPoint.mock.calls[0][0].graph).toBe(root)
+    expect(mockGetNodeDataPoint.mock.calls[0][0].node_id).toBe("submodel_runtime/br_rating/banding_1")
+    expect(mockGetBandingStats.mock.calls[0][0].graph).toBe(root)
+    expect(mockGetBandingStats.mock.calls[0][0].node_id).toBe("submodel_runtime/br_rating/banding_1")
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
   })
 })

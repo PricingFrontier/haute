@@ -9,7 +9,7 @@ import {
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { buildGraph } from "../utils/buildGraph"
+import { nodeRequestTarget } from "../utils/nodeRequestTarget"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { NodeDataCache } from "./useNodeDataCache"
 
@@ -113,11 +113,13 @@ export default function useNodeDataProfile({
       fence = captureDocumentExecutionFence(),
     ) => {
       if (!nodeId || !slotKey) return
-      // buildGraph reads the preamble from the store; listing it renews this callback.
+      // The graph reads the preamble from the store; listing it renews this callback.
       void preamble
+      // Inside an open submodel, the whole pipeline and the node's runtime id.
+      const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
       const response = await getNodeDataProfile({
-        graph: buildGraph(allNodes, edges, submodels),
-        node_id: nodeId,
+        graph: target.graph,
+        node_id: target.nodeId,
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence) || askedEpoch !== useNodeDataStore.getState().epoch) return

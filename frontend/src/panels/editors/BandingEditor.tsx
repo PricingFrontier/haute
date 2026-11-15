@@ -263,12 +263,14 @@ export default function BandingEditor({
   // the data's value counts, and a count not yet known is pending (null).
   const availability = cache.availability
   // The whole dataset's answer is on its way (rather than needing a Refresh,
-  // which the server can say even of a point that looked current).
+  // which the server can say even of a point that looked current, or never
+  // coming, when the server finds no data for the node to read).
   const counting =
     node !== null &&
     !stats &&
     !statsError &&
     !cacheRequired &&
+    !cache.unreadable &&
     (availability === "checking" || availability === "current" || availability === "building")
   const wholeDataCounts = (() => {
     const rules = factor.rules || []
@@ -418,13 +420,15 @@ export default function BandingEditor({
     ? `Counting the whole dataset failed: ${statsError}`
     : stats
       ? `All rows · ${totalRows.toLocaleString()}`
-      : availability === "building"
-        ? "Caching the data…"
-        : availability === "stale"
-          ? `Cached data is out of date · ${REFRESH}`
-          : counting
-            ? "Counting…"
-            : `Not cached · ${REFRESH}`
+      : cache.unreadable
+        ? cache.unreadable
+        : availability === "building"
+          ? "Caching the data…"
+          : availability === "stale"
+            ? `Cached data is out of date · ${REFRESH}`
+            : counting
+              ? "Counting…"
+              : `Not cached · ${REFRESH}`
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">

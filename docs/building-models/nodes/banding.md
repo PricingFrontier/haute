@@ -15,6 +15,7 @@ The **INPUT** chip at the top names the node's connection; its × removes the co
 
 - **All rows ·** and the row count, when the node's input data is cached: every count below is for the whole dataset.
 - "Not cached · Refresh this node to count all rows" or "Cached data is out of date · Refresh this node to count all rows" until you refresh the node; "Caching the data…" and "Counting…" while that happens.
+- Why there is nothing to count, when the node has no data to read yet, such as before its input is connected.
 
 In a workbench project the node bands the quote being priced, not a dataset, so there is no such line and none of the counts or the histogram below.
 
