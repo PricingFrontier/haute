@@ -38,7 +38,7 @@ import PanelShell from "./PanelShell"
 import { SidePanelClose } from "../haute-ui"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
-import { buildGraph } from "../utils/buildGraph"
+import { nodeRequestTarget } from "../utils/nodeRequestTarget"
 import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
@@ -1250,9 +1250,10 @@ function NodePanelContent({
   const loadPivotFilterMembers = useCallback(
     (field: string, search: string, signal: AbortSignal) => {
       if (!node) throw new Error("Explore node is unavailable.")
+      const target = nodeRequestTarget(allNodes, edges, submodels, node.id)
       return fetchExplorePivotMembers({
-        graph: buildGraph(allNodes, edges, submodels),
-        node_id: node.id,
+        graph: target.graph,
+        node_id: target.nodeId,
         field,
         source: activeSource,
         search: search || undefined,

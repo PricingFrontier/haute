@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import type { SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
 import { buildGraph } from "../buildGraph"
-import { nodeRequestTarget, setDrilledRequestScope } from "../nodeRequestTarget"
+import {
+  nodeRequestTarget,
+  pipelineRequestGraph,
+  requestNodeNamer,
+  setDrilledRequestScope,
+} from "../nodeRequestTarget"
 
 function node(id: string, nodeType: string): SimpleNode {
   return { id, data: { label: id, description: "", nodeType, config: {} } }
@@ -39,6 +44,56 @@ describe("nodeRequestTarget", () => {
     expect(target.nodeNamed("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
     expect(target.nodeNamed("workbench_input")?.id).toBe("workbench_input")
     expect(target.nodeNamed("submodel_runtime/other/tables")).toBeNull()
+  })
+
+  it("reads an Input card's port at the parent node feeding it", () => {
+    setDrilledRequestScope(() => ({
+      graph: rootGraph,
+      occurrence: { instanceId: "br rating", definitionId: "br_rating" },
+    }))
+    const parentEdges = (port: string, source: string, sourceHandle: string | null) => [
+      { id: `${port}-other`, source, sourceHandle, target: "another_occurrence", targetHandle: port },
+      { id: port, source, sourceHandle, target: "br rating", targetHandle: port },
+    ]
+    const card = (ports: Array<{ id: string; parentEdges: unknown[] }>): SimpleNode => ({
+      id: "input_card",
+      data: {
+        label: "Input", description: "", nodeType: "submodelPort", config: {},
+        portDirection: "input", instanceId: "br rating", definitionId: "br_rating",
+        ports: ports.map((port) => ({ ...port, label: port.id })),
+      } as unknown as SimpleNode["data"],
+    })
+    const twoPorts = [card([
+      { id: "quotes", parentEdges: parentEdges("quotes", "workbench_input", "quote") },
+      { id: "claims", parentEdges: parentEdges("claims", "claims_join", null) },
+    ]), ...viewNodes]
+
+    const quotes = nodeRequestTarget(twoPorts, viewEdges, {}, "input_card", "quotes")
+    expect(quotes.graph).toBe(rootGraph)
+    expect([quotes.nodeId, quotes.portLabel]).toEqual(["workbench_input", "quote"])
+    const claims = nodeRequestTarget(twoPorts, viewEdges, {}, "input_card", "claims")
+    expect([claims.nodeId, claims.portLabel]).toEqual(["claims_join", undefined])
+    // With no port named, only a card of one port says which frame.
+    expect(nodeRequestTarget(twoPorts, viewEdges, {}, "input_card").nodeId).toBe("submodel_runtime/br%20rating/input_card")
+    const onePort = [card([{ id: "quotes", parentEdges: parentEdges("quotes", "workbench_input", "quote") }])]
+    expect(nodeRequestTarget(onePort, [], {}, "input_card").nodeId).toBe("workbench_input")
+    // Any other node keeps the port the caller reads.
+    expect(nodeRequestTarget(viewNodes, viewEdges, {}, "bands", "out").portLabel).toBe("out")
+  })
+
+  it("sends the whole pipeline for a request about all of it, and names nodes without building a graph", () => {
+    const named = requestNodeNamer(viewNodes)
+    expect(pipelineRequestGraph(viewNodes, viewEdges, {})).toEqual(buildGraph(viewNodes, viewEdges, {}))
+    expect(named("tables")?.id).toBe("tables")
+
+    setDrilledRequestScope(() => ({
+      graph: rootGraph,
+      occurrence: { instanceId: "br rating", definitionId: "br_rating" },
+    }))
+    expect(pipelineRequestGraph(viewNodes, viewEdges, {})).toBe(rootGraph)
+    const drilledNamed = requestNodeNamer(viewNodes)
+    expect(drilledNamed("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
+    expect(drilledNamed("workbench_input")?.id).toBe("workbench_input")
   })
 
   it("sends the graph the caller holds when the registered scope has no submodel open", () => {

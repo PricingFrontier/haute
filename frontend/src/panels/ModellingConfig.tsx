@@ -28,7 +28,7 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { apiErrorMessage } from "../api/errors"
-import { buildGraph } from "../utils/buildGraph"
+import { afterCommitEffects, nodeRequestTarget, requestNodeNamer } from "../utils/nodeRequestTarget"
 import {
   effectiveMetrics,
   trainingConfigurationIssues,
@@ -482,25 +482,31 @@ export default function ModellingConfig({
   // Export settings do not change the trained model, so the stale check and
   // the RAM estimate follow the config without them.
   const trainingIdentity = useMemo(() => trainingIdentityConfig(config), [config])
-  // buildGraph reads the preamble and constants from the store; listing them
+  // The graph reads the preamble and constants from the store; listing them
   // renews the callback, so an edit made after mount reaches the next request.
   const globalConstants = useGraphStore((state) => state.globalConstants)
-  const graph = useCallback(
+  const requestTarget = useCallback(
     () => {
       void globalConstants
       void preamble
-      return buildGraph(allNodes, edges, submodels)
+      return nodeRequestTarget(allNodes, edges, submodels, nodeId)
     },
-    [allNodes, edges, submodels, preamble, globalConstants],
+    [allNodes, edges, submodels, nodeId, preamble, globalConstants],
   )
-  // A node the estimate names may sit inside a submodel, off this canvas; its id still says which.
+  const graph = useCallback(() => requestTarget().graph, [requestTarget])
+  // The estimate names a node by its id in the graph sent. One inside another
+  // submodel is off this canvas; its id still says which.
+  const nodeNamed = useMemo(() => requestNodeNamer(allNodes), [allNodes])
   const canvasNodeLabel = useCallback(
-    (id: string) => allNodes.find((node) => node.id === id)?.data.label || id,
-    [allNodes],
+    (id: string) => nodeNamed(id)?.data.label || id,
+    [nodeNamed],
   )
   const canvasNodeOpener = useCallback(
-    (id: string) => (openNode && allNodes.some((node) => node.id === id) ? () => openNode(id) : null),
-    [allNodes, openNode],
+    (id: string) => {
+      const node = nodeNamed(id)
+      return openNode && node && allNodes.includes(node) ? () => openNode(node.id) : null
+    },
+    [allNodes, nodeNamed, openNode],
   )
   const [estimateWaiting, setEstimateWaiting] = useState(false)
   const latestEstimate = useRef(0)
@@ -512,8 +518,12 @@ export default function ModellingConfig({
       const run = ++latestEstimate.current
       setEstimateWaiting(false)
       try {
+        await afterCommitEffects()
         return await estimateAfterSupersededPreviews(
-          () => estimateTrainingRam({ graph: graph(), node_id: nodeId, source: activeSource }, context),
+          () => {
+            const target = requestTarget()
+            return estimateTrainingRam({ graph: target.graph, node_id: target.nodeId, source: activeSource }, context)
+          },
           context.signal,
           undefined,
           { onWaiting: () => { if (run === latestEstimate.current) setEstimateWaiting(true) } },
@@ -522,7 +532,7 @@ export default function ModellingConfig({
         if (run === latestEstimate.current) setEstimateWaiting(false)
       }
     },
-    [activeSource, graph, nodeId],
+    [activeSource, requestTarget],
   )
   const estimate = useStaleConfigEstimate<TrainEstimate>(
     nodeId,
@@ -560,13 +570,16 @@ export default function ModellingConfig({
   const trainingHash = estimate.configHash
   const dispersionEstimate = useMemo(() => ({
     scope: JSON.stringify([documentKey, nodeId, activeSource, structuralVersion, trainingHash]),
-    run: (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
-      graph: graph(),
-      node_id: nodeId,
-      param,
-      source: activeSource,
-    }, { signal }),
-  }), [activeSource, documentKey, graph, nodeId, structuralVersion, trainingHash])
+    run: (param: DispersionParam, signal: AbortSignal) => {
+      const target = requestTarget()
+      return runDispersionEstimate({
+        graph: target.graph,
+        node_id: target.nodeId,
+        param,
+        source: activeSource,
+      }, { signal })
+    },
+  }), [activeSource, documentKey, nodeId, requestTarget, structuralVersion, trainingHash])
   const onTrain = useCallback(async () => {
     if (hasTrainingConfigurationIssues) return
     const documentFence = captureDocumentExecutionFence()
@@ -575,14 +588,14 @@ export default function ModellingConfig({
     // The lineage is taken from the exact payload submitted, before awaiting, so
     // an edit made while the request is pending never relabels this job; the
     // config hash is this render's training identity for the same reason.
-    const submittedGraph = graph()
-    const lineage = trainingLineage(submittedGraph)
+    const target = requestTarget()
+    const lineage = trainingLineage(target.graph)
     const configHash = trainingHash
     const attempt = { configHash, source: activeSource, structuralVersion }
     try {
       const result = await trainModel({
-        graph: submittedGraph,
-        node_id: nodeId,
+        graph: target.graph,
+        node_id: target.nodeId,
         source: useSettingsStore.getState().activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
@@ -607,7 +620,7 @@ export default function ModellingConfig({
     } finally {
       setSubmitting(false)
     }
-  }, [activeSource, allNodes, failTrainStart, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion, trainingHash])
+  }, [activeSource, allNodes, failTrainStart, hasTrainingConfigurationIssues, nodeId, requestTarget, startTrainJob, structuralVersion, trainingHash])
   const onCancel = useCallback(async () => {
     const job = useNodeResultsStore.getState().trainJobs[nodeId]
     if (!job || cancelling) return

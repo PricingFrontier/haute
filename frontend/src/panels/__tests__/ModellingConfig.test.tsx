@@ -5,6 +5,7 @@ import { ApiError } from "../../api/client"
 import { trainingIdentityConfig } from "../../utils/modellingExportConfig"
 import { trainingLineage } from "../../utils/trainedJobHandles"
 import { buildGraph } from "../../utils/buildGraph"
+import { setDrilledRequestScope } from "../../utils/nodeRequestTarget"
 import { runDispersionEstimate } from "../../api/dispersion"
 import type { SimpleNode as GraphNodeInput } from "../editors/_shared"
 import { GraphProvider } from "../GraphContext"
@@ -262,6 +263,7 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   vi.unstubAllGlobals()
+  setDrilledRequestScope(null)
 })
 
 // ═════════════════════════════════════════════════════════════════
@@ -1629,9 +1631,10 @@ describe("ModellingConfig", () => {
 
   describe("RAM estimate", () => {
     beforeEach(() => { defaultPane = "train" })
-    it("calls estimateTrainingRam on mount", () => {
+    it("calls estimateTrainingRam on mount", async () => {
       renderConfig()
-      expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(1)
+      // Asked once the commit's effects have run.
+      await waitFor(() => expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(1))
       const callArgs = mockEstimateTrainingRam.mock.calls[0][0]
       expect(callArgs).toEqual(
         expect.objectContaining({
@@ -1921,6 +1924,40 @@ describe("ModellingConfig", () => {
       fireEvent.click(await screen.findByRole("button", { name: 'Open "competitor_join"' }))
       expect(openNode).toHaveBeenCalledWith("join")
       expect(screen.getAllByRole("button", { name: /^Open "/ })).toHaveLength(1)
+    })
+
+    it("inside an open submodel asks with the whole pipeline and opens a join it names by runtime id", async () => {
+      const whole = { nodes: [{ id: "pricing", data: { label: "pricing", nodeType: "submodel" } }], edges: [] }
+      setDrilledRequestScope(() => ({
+        graph: whole as unknown as ReturnType<typeof buildGraph>,
+        occurrence: { instanceId: "pricing", definitionId: "pricing" },
+      }))
+      mockEstimateTrainingRam.mockResolvedValue({
+        total_rows: 10_000_000_000,
+        safe_row_limit: 149_958_852,
+        estimated_mb: 50_000,
+        training_mb: 50_000,
+        available_mb: 71_065,
+        bytes_per_row: 5_000,
+        was_downsampled: false,
+        unbounded_join_node_ids: ["submodel_runtime/pricing/join"],
+        warning: null,
+        gpu_vram_estimated_mb: null,
+        gpu_vram_available_mb: null,
+        gpu_warning: null,
+        unavailable: null,
+        evaluation_preview: null,
+      })
+      const join = { id: "join", data: { label: "competitor_join", description: "", nodeType: "edgeJoin" } }
+      const openNode = vi.fn()
+      renderConfig({ allNodes: [join], openNode })
+
+      await waitFor(() => expect(mockEstimateTrainingRam).toHaveBeenCalledWith(
+        expect.objectContaining({ graph: whole, node_id: "submodel_runtime/pricing/node_1" }),
+        expect.anything(),
+      ))
+      fireEvent.click(await screen.findByRole("button", { name: 'Open "competitor_join"' }))
+      expect(openNode).toHaveBeenCalledWith("join")
     })
   })
 

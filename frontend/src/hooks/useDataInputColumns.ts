@@ -4,7 +4,7 @@ import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphS
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { buildGraph } from "../utils/buildGraph"
+import { afterCommitEffects, nodeRequestTarget } from "../utils/nodeRequestTarget"
 import { columnFingerprint } from "../utils/columnFingerprint"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 
@@ -143,14 +143,20 @@ export function useDataInputColumns(
     const controller = new AbortController()
     // Fetch fresh columns (cached value shown meanwhile)
     const requestStructuralVersion = structuralVersion
-    const graph = buildGraph(allNodesRef.current, edgesRef.current, submodels)
-    previewNode({
-      graph,
-      nodeId: dataInput,
-      rowLimit: 1,
-      source: activeSource,
-      signal: controller.signal,
-    })
+    // Asked once this commit's effects have all run, so an edit inside an open
+    // submodel has reached the whole pipeline the request sends.
+    afterCommitEffects()
+      .then(() => {
+        const target = nodeRequestTarget(allNodesRef.current, edgesRef.current, submodels, dataInput)
+        return previewNode({
+          graph: target.graph,
+          nodeId: target.nodeId,
+          portLabel: target.portLabel,
+          rowLimit: 1,
+          source: activeSource,
+          signal: controller.signal,
+        })
+      })
       .then((result) => {
         const fingerprint = columnFingerprint(result.columns)
         // Only update local state if columns actually changed (avoids re-render cascade)

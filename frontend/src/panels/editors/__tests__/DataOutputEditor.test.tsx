@@ -42,6 +42,8 @@ import useOutputWriteStore, {
 } from "../../../stores/useOutputWriteStore"
 import type { SimpleNode } from "../_shared"
 import { makeWriteOutput } from "../../../test-utils/factories"
+import type { buildGraph } from "../../../utils/buildGraph"
+import { setDrilledRequestScope } from "../../../utils/nodeRequestTarget"
 
 const groups: IoCapabilityGroup[] = [
   {
@@ -237,7 +239,10 @@ beforeEach(() => {
   }))
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  setDrilledRequestScope(null)
+})
 
 // The rejected write crosses a mocked request and several effects before the
 // alert renders, which a whole parallel suite run makes slower without making
@@ -349,6 +354,38 @@ describe("DataOutputEditor", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Wrote output. | 2 rows | out.csv",
     )
+  })
+
+  it("inside an open submodel sends the whole pipeline as it stands once the edit reached it", async () => {
+    // App's copy of the whole pipeline takes an edit in an effect that runs
+    // after the editor's own.
+    let wholePath = "first.csv"
+    const whole = () => ({
+      nodes: [{ id: "sinks", data: { nodeType: "submodel" } }],
+      edges: [],
+      submodels: { sinks: { graph: { nodes: [{ id: "output-node", data: { config: { path: wholePath } } }] } } },
+    })
+    setDrilledRequestScope(() => ({
+      graph: whole() as unknown as ReturnType<typeof buildGraph>,
+      occurrence: { instanceId: "sinks", definitionId: "sinks" },
+    }))
+    const config = { output_type: "file", format: "csv", path: "first.csv", arguments: {} }
+    const { rerender, renderElement } = renderEditor(config)
+    await waitFor(() => expect(resolveOutputDestination).toHaveBeenCalledTimes(1))
+
+    rerender(renderElement({ ...config, path: "second.csv" }))
+    wholePath = "second.csv"
+
+    const sent = expect.objectContaining({
+      nodeId: "submodel_runtime/sinks/output-node",
+      graph: expect.objectContaining({
+        submodels: { sinks: { graph: { nodes: [{ id: "output-node", data: { config: { path: "second.csv" } } }] } } },
+      }),
+    })
+    await waitFor(() => expect(resolveOutputDestination).toHaveBeenCalledTimes(2))
+    expect(resolveOutputDestination).toHaveBeenLastCalledWith(sent)
+    fireEvent.click(await screen.findByRole("button", { name: "Write" }))
+    await waitFor(() => expect(writeOutput).toHaveBeenCalledWith(sent))
   })
 
   it("shows the resolved destination and warns on an incompatible suffix", async () => {

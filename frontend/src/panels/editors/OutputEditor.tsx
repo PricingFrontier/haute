@@ -9,7 +9,7 @@ import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel, ValidatedTextField } from "../../components/form"
 import { useGraph } from "../useGraph"
-import { buildGraph } from "../../utils/buildGraph"
+import { nodeRequestTarget } from "../../utils/nodeRequestTarget"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
@@ -370,15 +370,15 @@ export default function OutputEditor({
   const outputStale = assembled !== null && currentAssembled === null
 
   const runOutputPreview = useCallback(() => {
-    // buildGraph reads the preamble from the store; listing it renews this callback.
+    // The graph reads the preamble from the store; listing it renews this callback.
     void preamble
     const reqId = ++outputReqSeq.current
     const key = previewKey
     setAssembled({ key, status: "loading" })
-    const graph = buildGraph(allNodes, edges, submodels)
+    const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
     outputAssembleDryRun({
-      graph,
-      nodeId,
+      graph: target.graph,
+      nodeId: target.nodeId,
       // The live working copy's mapping — the editor's CURRENT (unsaved) state.
       outputMapping: persistedMapping,
       rowLimit: PREVIEW_ROW_LIMIT,
@@ -433,21 +433,22 @@ export default function OutputEditor({
       edge: SimpleEdge,
       columns: string[],
     ): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
-      // buildGraph reads the preamble from the store; listing it renews this callback.
+      // The graph reads the preamble from the store; listing it renews this callback.
       void preamble
       const sourceNode = nodeById[edge.source]
       if (!sourceNode) throw new ApiError("Frame source node not found", 404)
-      const graph = buildGraph(allNodes, edges, submodels)
+      // A frame from the open submodel's Input card reads the parent node feeding that port.
+      const target = nodeRequestTarget(allNodes, edges, submodels, edge.source, edge.sourceHandle)
       const res = await previewNode({
-        graph,
-        nodeId: edge.source,
+        graph: target.graph,
+        nodeId: target.nodeId,
         rowLimit: PREVIEW_ROW_LIMIT,
         source: useSettingsStore.getState().activeSource,
         // Project to this frame's columns where known, so the preview shows the
         // frame's fields (best-effort; the backend tolerates a superset).
         requestedPreviewColumns: columns.length > 0 ? columns : undefined,
         // Select this frame from a multi-frame source via its handle.
-        portLabel: edge.sourceHandle ?? undefined,
+        portLabel: target.portLabel,
       })
       if (res.status !== "ok") {
         throw new ApiError(res.error || "Frame preview failed", 422, res.error ?? undefined)

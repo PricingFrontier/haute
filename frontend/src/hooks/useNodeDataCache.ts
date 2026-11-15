@@ -22,7 +22,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
+import { afterCommitEffects, nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -278,10 +278,9 @@ export default function useNodeDataCache({
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     const controller = new AbortController()
-    // Asked once this commit's effects have all run: inside an open submodel an
-    // edit reaches the whole pipeline a request sends in an effect of App's,
-    // which runs after this one.
-    void Promise.resolve()
+    // Asked once this commit's effects have all run, so an edit inside an open
+    // submodel has reached the whole pipeline the request sends.
+    void afterCommitEffects()
       .then(() => (controller.signal.aborted ? null : fetchPoint(controller.signal)))
       .then((fresh) => {
         if (!fresh || controller.signal.aborted) return

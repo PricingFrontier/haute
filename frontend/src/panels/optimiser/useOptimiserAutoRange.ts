@@ -192,7 +192,8 @@ type ActiveRun = {
 
 export type UseOptimiserAutoRangeOptions = {
   nodeId: string
-  buildGraph: () => GraphPayload
+  /** The graph and this node's id in it that a request about the node sends. */
+  requestTarget: () => { graph: GraphPayload; nodeId: string }
   /** Writes the filled ranges, merged over the constraints' other ranges. */
   writeRanges: (ranges: Record<string, FrontierRange>) => OnUpdateConfigResult
 }
@@ -217,7 +218,7 @@ function autoRangeScopeKey(
  */
 export function useOptimiserAutoRange({
   nodeId,
-  buildGraph,
+  requestTarget,
   writeRanges,
 }: UseOptimiserAutoRangeOptions) {
   const [state, dispatch] = useReducer(reducer, initialState)
@@ -267,9 +268,10 @@ export function useOptimiserAutoRange({
 
   const executeRun = useCallback(async (active: ActiveRun): Promise<void> => {
     try {
+      const target = requestTarget()
       const start = await startOptimiserFrontierAutoRange({
-        graph: buildGraph(),
-        node_id: nodeId,
+        graph: target.graph,
+        node_id: target.nodeId,
         signal: active.controller.signal,
       })
       if (start.status === "started" && start.job_id) active.jobId = start.job_id
@@ -351,7 +353,7 @@ export function useOptimiserAutoRange({
     } finally {
       if (activeRef.current === active) activeRef.current = null
     }
-  }, [buildGraph, isCurrent, nodeId, writeRanges, retire])
+  }, [requestTarget, isCurrent, nodeId, writeRanges, retire])
 
   const run = useCallback((targets: readonly string[]) => {
     const documentFence = captureDocumentExecutionFence()

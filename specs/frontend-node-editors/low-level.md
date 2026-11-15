@@ -69,7 +69,7 @@
 | `frontend/src/panels/editors/shared/CellIssueMark.tsx`, `frontend/src/panels/editors/shared/cellIssueStyle.ts` | An editable grid cell's issue: `CellIssueMark`, the icon at the cell's right edge whose accessible name is the reason (the cell points at it with `aria-describedby`), and `cellIssueStyle`, the cell's danger style for what the save refuses or warning style for what it allows. The banding grids and the rating relativity cell use them. |
 | `frontend/src/panels/editors/shared/tableClipboard.ts` | Clipboard parsing/writing and TSV/CSV download helpers shared by editable grids. `writeClipboardText` accepts immediate text or a promise. Immediate text uses writeText; promised text reserves a ClipboardItem with clipboard.write synchronously inside the user gesture and rejects without copying if the promise fails. Unsupported deferred clipboard writes fail explicitly. Tests exercise delayed successful text and failed validation, preserving the prior clipboard contents. |
 | `frontend/src/panels/editors/shared/useTwoColumnGridClipboard.ts` | The one clipboard of the two banding grids, given each grid's two fields and copy headers: a paste of more than one cell fills the range from the cell pasted into, adding rows, and drops a copied header row (`isGridHeaderRow`, which the categorical grid's whole-rule paste also skips) when pasted into the first column; Copy writes the whole grid as TSV under its headers, and a refused copy is a toast. |
-| `frontend/src/utils/buildGraph.ts` | Cross-component dependency owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md); Data Output consumes the canonical graph payload and request-identity projection. |
+| `frontend/src/utils/buildGraph.ts` | Cross-component dependency owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md); Data Output consumes the canonical graph payload and request-identity projection; its requests' payload comes from `frontend/src/utils/nodeRequestTarget.ts`. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/banding.ts` | Typed config readers and Banding classification owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by node editors. |
 | `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx`, `frontend/src/components/form/ConfigSection.tsx` | Form barrel, committed text/area drafts, config checkboxes, accessible editor labels, and the open heading-and-fields section layout shared by configuration panes, owned by [frontend-shared](../frontend-shared/low-level.md). |
 
@@ -298,6 +298,9 @@ no code panel. Its per-node Zustand entry carries request id, semantic request
 identity, phase, and structured result/error; request-id checks reject late
 results. Test seam: `resetOutputWriteStoreForTests()` clears every per-node
 write entry and the request-id counter. Destination preview comes from `/api/pipeline/output-destination`.
+Inside an open submodel the destination request and Write send the whole pipeline and the node's
+runtime id (`nodeRequestTarget`), built when sent; the destination waits for the commit's effects
+first, so the whole pipeline already holds the edit that asked again.
 The File provider labels its destination **Filename or path**, with help explaining
 that bare filenames go under the project root's `outputs/` folder and explicit paths
 are project-relative. The resolved destination remains visible before writing.
