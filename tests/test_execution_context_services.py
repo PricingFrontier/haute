@@ -37,6 +37,16 @@ from tests.optimiser_fixtures import setup_grid_stub
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
+def _train_request(graph: PipelineGraph, node_id: str) -> Any:
+    """A training request for the pipeline node *node_id*, its target resolved over *graph*
+    as the route resolves it over the flattened document (these graphs have no submodels)."""
+    from haute._node_addresses import resolved_request
+    from haute.schemas import TrainRequest
+
+    body = TrainRequest(graph=graph, target={"occurrence": None, "node_id": node_id})
+    return resolved_request(body, body.graph)
+
+
 class _ImmediateThread:
     """Run a background target inline while preserving the Thread constructor API."""
 
@@ -1091,7 +1101,6 @@ def test_training_start_creates_admitted_training_context(
 ) -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._training_lifecycle import TrainService
-    from haute.schemas import TrainRequest
 
     monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", "1024")
     monkeypatch.setattr(
@@ -1124,7 +1133,7 @@ def test_training_start_creates_admitted_training_context(
             "edges": [],
         }
     )
-    body = TrainRequest(graph=graph, node_id="model")
+    body = _train_request(graph, "model")
     service = TrainService(JobStore())
     captured = {}
     tmp_parquet = tmp_path / "training.parquet"
@@ -1159,7 +1168,6 @@ def test_training_start_maps_admission_failure_to_http_507(
 ) -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._training_lifecycle import TrainService
-    from haute.schemas import TrainRequest
 
     monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", "512")
     monkeypatch.setenv("HAUTE_TRAINING_PROCESS_RSS_LIMIT_MB", "64")
@@ -1202,7 +1210,7 @@ def test_training_start_maps_admission_failure_to_http_507(
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink") as execute_and_sink,
     ):
-        response = service.start(TrainRequest(graph=graph, node_id="model"))
+        response = service.start(_train_request(graph, "model"))
         join_training_preparation(response.job_id)
 
     execute_and_sink.assert_not_called()
@@ -1228,7 +1236,6 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
 ) -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._training_lifecycle import TrainService
-    from haute.schemas import TrainRequest
 
     monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
@@ -1273,7 +1280,7 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
         patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink", side_effect=memory_error),
     ):
-        response = service.start(TrainRequest(graph=graph, node_id="model"))
+        response = service.start(_train_request(graph, "model"))
         join_training_preparation(response.job_id)
 
     job = service._store.require_job(response.job_id)

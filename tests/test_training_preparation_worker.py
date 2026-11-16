@@ -47,6 +47,18 @@ from tests.conftest import make_file_input_config
 _MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
 
 
+# The Modelling node every graph here trains, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
+
+
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    from haute._node_addresses import resolved_request
+
+    return resolved_request(body, body.graph)
+
+
 # ---------------------------------------------------------------------------
 # Graph fixtures
 # ---------------------------------------------------------------------------
@@ -242,7 +254,7 @@ def _drive_preparation(
 ) -> _PreparationRun:
     """Run one full ``_prepare_and_launch_training`` with a stubbed worker."""
     run = run if run is not None else _PreparationRun()
-    body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
+    body = _resolved(TrainRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET}))
     config = dict(body.graph.node_map["train"].data.config)
     run.job_id = run.store.create_job(
         {
@@ -594,7 +606,7 @@ def _spawn_preparation(
 ) -> tuple[_PreparationRun, list[dict[str, Any]]]:
     run = _PreparationRun()
     calls = _record_real_worker(monkeypatch)
-    body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
+    body = _resolved(TrainRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET}))
     config = dict(body.graph.node_map["train"].data.config)
     run.job_id = run.store.create_job(
         {
@@ -686,7 +698,7 @@ class TestHandOffParity:
         assert launched, run.job.get("message")
         through_worker = pl.scan_parquet(launched[0]).collect()
 
-        body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
+        body = _resolved(TrainRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET}))
         direct_path = str(tmp_path / "direct.parquet")
         use_project(Path("/").resolve())
         request = TrainingPreparationRequest(
@@ -720,8 +732,10 @@ class TestExecuteAndSinkRequiresAdmission:
     ) -> None:
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest.model_validate(
-            {"graph": _training_graph(training_parquet), "node_id": "train"}
+        body = _resolved(
+            TrainRequest.model_validate(
+                {"graph": _training_graph(training_parquet), "target": _TRAIN_TARGET}
+            )
         )
         job_id = store.create_job({"status": "running"})
 
@@ -735,8 +749,10 @@ def test_preparation_request_and_outcome_pickle_round_trip(training_parquet: str
 
     from haute.execution import AllExceptColumns
 
-    body = TrainRequest.model_validate(
-        {"graph": _training_graph(training_parquet), "node_id": "train"}
+    body = _resolved(
+        TrainRequest.model_validate(
+            {"graph": _training_graph(training_parquet), "target": _TRAIN_TARGET}
+        )
     )
     request = TrainingPreparationRequest(
         graph=body.graph,
@@ -792,7 +808,7 @@ class TestPreparationCleanupFailsLoud:
         from haute._execution_context import ExecutionProfile
 
         graph = _training_graph(training_parquet)
-        body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
+        body = _resolved(TrainRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET}))
         parquet_path = tmp_path / "prepared.parquet"
         parquet_path.write_bytes(b"partial")
 
@@ -924,8 +940,10 @@ class TestDispersionWorkerMemoryOperation:
         store = JobStore()
         service = TrainService(store)
         graph = _glm_dispersion_graph(training_parquet)
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
+        body = _resolved(
+            DispersionEstimateRequest.model_validate(
+                {"graph": graph, "target": _TRAIN_TARGET, "param": "theta"}
+            )
         )
 
         def raising(function, *args, config=None, **kwargs):
@@ -976,8 +994,10 @@ class TestPreparationTempPathOwnership:
         before = set(temp_root.glob("haute_train_*.parquet"))
 
         run = _PreparationRun()
-        body = TrainRequest.model_validate(
-            {"graph": _training_graph(training_parquet), "node_id": "train"}
+        body = _resolved(
+            TrainRequest.model_validate(
+                {"graph": _training_graph(training_parquet), "target": _TRAIN_TARGET}
+            )
         )
         config = dict(body.graph.node_map["train"].data.config)
         run.job_id = run.store.create_job(

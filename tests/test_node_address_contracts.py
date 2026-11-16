@@ -60,8 +60,8 @@ NODE_KEY_POSITIONS: dict[tuple[str, str], str] = {
     ("CacheNodeEntry", "shares_snapshot_with"): PENDING,
     ("CacheOwnerEntry", "node_id"): PENDING,
     # Modelling and the optimiser.
-    ("TrainEstimateUnavailable", "blocking_node_id"): PENDING,
-    ("TrainEstimateResponse", "unbounded_join_node_ids"): PENDING,
+    ("TrainEstimateUnavailable", "blocking_node_id"): MIGRATED,
+    ("TrainEstimateResponse", "unbounded_join_node_ids"): MIGRATED,
     ("OptimiserInputSummary", "node_id"): PENDING,
     # Execution metrics, which ride on many answers.
     ("ExecutionColumnWidthsPayload", "node_id"): PENDING,

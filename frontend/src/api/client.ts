@@ -1672,7 +1672,8 @@ export function cancelTrain(
 
 export interface TrainModelArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The modelling node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
   timeout?: number
@@ -1692,7 +1693,7 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
 }
 
 export function estimateTrainingRam(
-  payload: { graph: PreparedGraph; node_id: string; source?: string },
+  payload: { graph: PreparedGraph; target: NodeAddressPayload; source?: string },
   options?: { signal?: AbortSignal },
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })

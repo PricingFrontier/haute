@@ -1003,9 +1003,11 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             TraceRequest()
 
-    def test_train_requires_graph_and_node_id(self):
-        with pytest.raises(ValidationError):
+    def test_train_requires_graph_and_target(self):
+        with pytest.raises(ValidationError) as caught:
             TrainRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert {"graph", "target"} <= missing
 
     def test_create_submodel_requires_fields(self):
         with pytest.raises(ValidationError):
@@ -1015,9 +1017,11 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             DissolveSubmodelRequest()
 
-    def test_export_script_requires_node_id(self):
-        with pytest.raises(ValidationError):
+    def test_export_script_requires_target(self):
+        with pytest.raises(ValidationError) as caught:
             ExportScriptRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert "target" in missing
 
     def test_optimiser_solve_requires_fields(self):
         with pytest.raises(ValidationError):

@@ -28,7 +28,9 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { apiErrorMessage } from "../api/errors"
-import { prepareCanvasRequest, answerNodeNamer } from "../utils/requestGateway"
+import { prepareCanvasRequest } from "../utils/requestGateway"
+import { placeAddress } from "../utils/answerAddresses"
+import type { NodeAddressEntry } from "../generated/api-contracts.generated"
 import {
   effectiveMetrics,
   trainingConfigurationIssues,
@@ -284,8 +286,7 @@ type TrainPaneProps = {
   cachedResult: ReturnType<typeof useNodeResultsStore.getState>["trainResults"][string] | undefined
   estimate: UseStaleConfigEstimateResult<TrainEstimate>
   estimateWaiting: boolean
-  nodeLabel: (nodeId: string) => string
-  nodeOpener: (nodeId: string) => (() => void) | null
+  nodeOpener: (address: Pick<NodeAddressEntry, "occurrence" | "node_id">) => (() => void) | null
   submitting: boolean
   cancelling: boolean
   onTrain: () => void
@@ -305,7 +306,6 @@ function TrainPane({
   cachedResult,
   estimate,
   estimateWaiting,
-  nodeLabel,
   nodeOpener,
   submitting,
   cancelling,
@@ -356,7 +356,6 @@ function TrainPane({
         ramEstimateErrorCode={estimate.errorCode}
         estimateWaiting={estimateWaiting}
         rowLimit={rowLimit}
-        nodeLabel={nodeLabel}
         nodeOpener={nodeOpener}
         terminalMetrics={cachedResult?.terminalStatus?.execution_metrics ?? null}
         terminalStatus={cachedResult?.terminalStatus?.status ?? null}
@@ -501,24 +500,17 @@ export default function ModellingConfig({
     [requestScope, allNodes, edges, submodels, nodeId, preamble, globalConstants],
   )
   const graph = useCallback(() => requestTarget().graph, [requestTarget])
-  // The estimate names a node by its id in the graph sent. One inside another
-  // submodel is off this canvas; its id still says which.
-  const nodeNamed = useMemo(() => {
-    // Named in the view the panel shows; its graph renews it.
-    void allNodes
-    return answerNodeNamer()
-  }, [allNodes])
-  const canvasNodeLabel = useCallback(
-    (id: string) => nodeNamed(id)?.data.label || id,
-    [nodeNamed],
-  )
-  // Only a node on this canvas opens: matched by id, since the panel's graph holds copies.
+  // The estimate addresses the nodes it names. Only one shown as itself on this canvas
+  // opens; one inside another submodel is off it.
+  const openOccurrence = useGraphStore((state) => state.focus?.instanceId ?? null)
   const canvasNodeOpener = useCallback(
-    (id: string) => {
-      const node = nodeNamed(id)
-      return openNode && node && allNodes.some((candidate) => candidate.id === node.id) ? () => openNode(node.id) : null
+    (address: Pick<NodeAddressEntry, "occurrence" | "node_id">) => {
+      const place = placeAddress(address, openOccurrence)
+      return openNode && place && !place.viaCard && allNodes.some((candidate) => candidate.id === place.id)
+        ? () => openNode(place.id)
+        : null
     },
-    [allNodes, nodeNamed, openNode],
+    [allNodes, openNode, openOccurrence],
   )
   const [estimateWaiting, setEstimateWaiting] = useState(false)
   const latestEstimate = useRef(0)
@@ -533,7 +525,7 @@ export default function ModellingConfig({
         return await estimateAfterSupersededPreviews(
           () => {
             const target = requestTarget()
-            return estimateTrainingRam({ graph: target.graph, node_id: target.nodeId, source: activeSource }, context)
+            return estimateTrainingRam({ graph: target.graph, target: target.node, source: activeSource }, context)
           },
           context.signal,
           undefined,
@@ -587,7 +579,7 @@ export default function ModellingConfig({
       const target = requestTarget()
       return runDispersionEstimate({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         param,
         source: activeSource,
       }, { signal })
@@ -612,7 +604,7 @@ export default function ModellingConfig({
     try {
       const result = await trainModel({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         source: useSettingsStore.getState().activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
@@ -691,7 +683,6 @@ export default function ModellingConfig({
       cachedResult={cachedResult}
       estimate={estimate}
       estimateWaiting={estimateWaiting}
-      nodeLabel={canvasNodeLabel}
       nodeOpener={canvasNodeOpener}
       submitting={submitting}
       cancelling={cancelling}

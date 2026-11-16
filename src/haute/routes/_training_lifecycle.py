@@ -848,11 +848,10 @@ class TrainService:
                 wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
+            # The training request for the same node, its target already resolved.
             train_body = TrainRequest(
-                graph=body.graph,
-                node_id=body.node_id,
-                source=body.source,
-            )
+                graph=body.graph, target=body.target, source=body.source
+            ).with_node_key(body.node_id)
             tmp_parquet = self._execute_and_sink(
                 train_body,
                 preamble_ns,

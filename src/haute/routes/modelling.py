@@ -16,6 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from haute._file_ops import atomic_copy_files
 from haute._logging import get_logger
+from haute._node_addresses import labelled, resolved_request
 from haute._path_resolution import RuntimePathError
 from haute._project_context import current_project
 from haute.errors import HauteValidationError, RequestRefusedError
@@ -96,7 +97,7 @@ def train_model(body: TrainRequest) -> TrainResponse:
     materialises the training DataFrame and launches the supervised fit worker.
     """
     graph = _prepare_runtime_graph(body.graph)
-    return _train_service.start(body.model_copy(update={"graph": graph}))
+    return _train_service.start(resolved_request(body, graph))
 
 
 @router.get("/gpu", response_model=ModellingGpuStatusResponse)
@@ -233,7 +234,7 @@ def estimate_dispersion(body: DispersionEstimateRequest) -> DispersionEstimateRe
     endpoint never sets one silently.
     """
     graph = _prepare_runtime_graph(body.graph)
-    return _train_service.start_dispersion_estimate(body.model_copy(update={"graph": graph}))
+    return _train_service.start_dispersion_estimate(resolved_request(body, graph))
 
 
 @router.get("/dispersion/status/{job_id}", response_model=DispersionEstimateStatusResponse)
@@ -258,7 +259,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     partition preview.
     """
     graph = _prepare_runtime_graph(body.graph)
-    body = body.model_copy(update={"graph": graph})
+    body = resolved_request(body, graph)
     node = _find_modelling_node(body.graph, body.node_id)
 
     # A size the estimator cannot prove comes back as an unavailable estimate
@@ -325,7 +326,9 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         else None
     )
 
-    return TrainEstimateResponse(
+    return labelled(
+        TrainEstimateResponse,
+        body.graph,
         total_rows=ram_est.total_rows,
         safe_row_limit=safe_limit,
         estimated_mb=data_mb,
@@ -586,6 +589,7 @@ async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
     # Prepared as /train prepares it, so a node inside a submodel is found by its
     # flattened id.
     graph = await run_in_threadpool(_prepare_runtime_graph, body.graph)
+    body = resolved_request(body, graph)
     node = _find_modelling_node(graph, body.node_id)
     config = dict(node.data.config)
 

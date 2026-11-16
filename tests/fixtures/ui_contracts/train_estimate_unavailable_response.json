@@ -16,5 +16,12 @@
   "unavailable": {
     "reason": "row_count_unprovable",
     "blocking_node_id": "explode_items"
+  },
+  "node_addresses": {
+    "explode_items": {
+      "occurrence": null,
+      "node_id": "explode_items",
+      "label": "Explode items"
+    }
   }
 }

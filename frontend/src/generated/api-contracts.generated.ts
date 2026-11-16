@@ -2140,6 +2140,10 @@ export interface GpuFamilyStatus {
   detail: string;
   device: string | null;
 }
+/**
+ * A training estimate. It names nodes by runtime key (the node that blocks the row count,
+ * joins without a key contract), each addressed in ``node_addresses``.
+ */
 export interface TrainEstimateResponse {
   available_mb: number;
   bytes_per_row: number | null;
@@ -2150,11 +2154,14 @@ export interface TrainEstimateResponse {
   gpu_vram_estimated_mb: number | null;
   gpu_vram_rows: number | null;
   gpu_warning: string | null;
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   safe_row_limit: number | null;
   total_rows: number | null;
   training_mb: number | null;
   unavailable: TrainEstimateUnavailable | null;
-  unbounded_join_node_ids: string[];
+  unbounded_join_node_ids: RuntimeNodeKey[];
   warning: string | null;
   was_downsampled: boolean;
 }
@@ -2185,7 +2192,7 @@ export interface EvaluationDateRangePayload {
  * Why a training estimate cannot size its input: one reason from a closed set.
  */
 export interface TrainEstimateUnavailable {
-  blocking_node_id: string | null;
+  blocking_node_id: RuntimeNodeKey | null;
   reason: 'row_count_unprovable' | 'schema_unresolvable';
 }
 export interface DispersionEstimateResponse {

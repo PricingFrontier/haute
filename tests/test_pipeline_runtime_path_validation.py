@@ -131,11 +131,12 @@ def test_modelling_execution_routes_reject_external_graph_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     graph = PipelineGraph(source_file=str(tmp_path.parent / "external" / "pipeline.py"))
+    model = {"occurrence": None, "node_id": "model"}
 
     if route_name == "train":
         monkeypatch.setattr(modelling_routes._train_service, "start", lambda _body: object())
         route = modelling_routes.train_model
-        body = TrainRequest(graph=graph, node_id="model")
+        body = TrainRequest(graph=graph, target=model)
     elif route_name == "dispersion":
         monkeypatch.setattr(
             modelling_routes._train_service,
@@ -145,12 +146,12 @@ def test_modelling_execution_routes_reject_external_graph_source(
         route = modelling_routes.estimate_dispersion
         body = DispersionEstimateRequest(
             graph=graph,
-            node_id="model",
+            target=model,
             param="theta",
         )
     else:
         route = modelling_routes.estimate_training
-        body = TrainEstimateRequest(graph=graph, node_id="model")
+        body = TrainEstimateRequest(graph=graph, target=model)
 
     with pytest.raises(HTTPException) as exc_info:
         route(body)

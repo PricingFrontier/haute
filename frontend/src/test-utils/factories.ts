@@ -367,14 +367,24 @@ import type {
   TrainStatusResponse,
 } from "../api/types"
 
+/** A training estimate's fields, the nodes it names given as the text a fixture names them by. */
+export type TrainEstimateFixture = Omit<Partial<TrainEstimate>, "unavailable" | "unbounded_join_node_ids"> & {
+  unavailable?:
+    | { reason: "row_count_unprovable"; blocking_node_id: FixtureKey }
+    | { reason: "schema_unresolvable"; blocking_node_id: null }
+    | null
+  unbounded_join_node_ids?: FixtureKey[]
+}
+
 /**
- * Create a `TrainEstimate` with sensible defaults.
- *
- * @param overrides – Partial overrides for any TrainEstimate field.
+ * Create a `TrainEstimate` with sensible defaults. Every node it names is addressed as a node
+ * of the pipeline under its own text, unless `node_addresses` says otherwise.
  */
-export function makeTrainEstimate(
-  overrides: Partial<TrainEstimate> = {},
-): TrainEstimate {
+export function makeTrainEstimate(overrides: TrainEstimateFixture = {}): TrainEstimate {
+  const { unavailable = null, unbounded_join_node_ids = [], node_addresses, ...rest } = overrides
+  const blocking = unavailable?.reason === "row_count_unprovable" ? fixtureKey(unavailable.blocking_node_id) : null
+  const joins = unbounded_join_node_ids.map(fixtureKey)
+  const named = [...(blocking ? [blocking] : []), ...joins].map((key) => key as unknown as string)
   return {
     total_rows: 10000,
     safe_row_limit: null,
@@ -388,11 +398,16 @@ export function makeTrainEstimate(
     gpu_vram_rows: null,
     gpu_vram_available_mb: null,
     gpu_warning: null,
-    unavailable: null,
-    unbounded_join_node_ids: [],
     fit_mode: "in_memory",
     evaluation_preview: null,
-    ...overrides,
+    ...rest,
+    unavailable: unavailable === null
+      ? null
+      : blocking
+        ? { reason: "row_count_unprovable", blocking_node_id: blocking }
+        : { reason: "schema_unresolvable", blocking_node_id: null },
+    unbounded_join_node_ids: joins,
+    node_addresses: { ...rootAddresses(...named), ...node_addresses },
   }
 }
 

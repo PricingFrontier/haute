@@ -2255,7 +2255,7 @@ describe("API response guards", () => {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
-      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null, node_addresses: {},
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
         development_rows: 800, final_test_rows: 200, validation_fit_count: 5,
@@ -2330,7 +2330,7 @@ describe("API response guards", () => {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
-      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null, node_addresses: {},
     }
     expect(() => parseTrainEstimateResponse({
       ...estimate,

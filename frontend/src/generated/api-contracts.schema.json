@@ -25526,6 +25526,7 @@
       "type": "object"
     },
     "TrainEstimateResponse": {
+      "description": "A training estimate. It names nodes by runtime key (the node that blocks the row count,\njoins without a key contract), each addressed in ``node_addresses``.",
       "properties": {
         "available_mb": {
           "title": "Available Mb",
@@ -25613,6 +25614,13 @@
           "default": null,
           "title": "Gpu Warning"
         },
+        "node_addresses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NodeAddressEntry"
+          },
+          "title": "Node Addresses",
+          "type": "object"
+        },
         "safe_row_limit": {
           "anyOf": [
             {
@@ -25659,7 +25667,8 @@
         },
         "unbounded_join_node_ids": {
           "items": {
-            "type": "string"
+            "type": "string",
+            "x-haute-node-key": true
           },
           "title": "Unbounded Join Node Ids",
           "type": "array"
@@ -25697,7 +25706,8 @@
         "gpu_warning",
         "unavailable",
         "unbounded_join_node_ids",
-        "fit_mode"
+        "fit_mode",
+        "node_addresses"
       ],
       "title": "TrainEstimateResponse",
       "type": "object"
@@ -25709,7 +25719,8 @@
         "blocking_node_id": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "x-haute-node-key": true
             },
             {
               "type": "null"

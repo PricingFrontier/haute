@@ -10,8 +10,7 @@
  * gateway makes the `PreparedGraph` the client's run functions take. A request sends its
  * target by address (`frameTargetPayload`, and `node` for an operation on a node) and finds
  * the nodes an answer addresses with `nodeAt`; the requests not yet moved onto addresses
- * (SUBE-05) still send the runtime id the gateway's adapter makes, and read the ids an answer
- * names back through `answerNodeNamer`.
+ * (SUBE-05) still send the runtime id the gateway's adapter makes.
  */
 import type { Node } from "@xyflow/react"
 import type { PreparedGraph } from "../api/types"
@@ -28,7 +27,7 @@ import useSettingsStore from "../stores/useSettingsStore"
 import { isSubmodelDefinition, nodeData, type SubmodelPortData } from "../types/node"
 import { documentGraphPayload } from "./buildGraph"
 import { addressKey, childAddress, nodeFrame, rootAddress, type FrameTarget, type NodeAddress } from "./nodeAddress"
-import { encodeRuntimeIdPart, qualifiedRuntimeNodeId } from "./submodelRuntimeTarget"
+import { qualifiedRuntimeNodeId } from "./submodelRuntimeTarget"
 import { NODE_TYPES } from "./nodeTypes"
 
 /** A request prepared where there is no document to run (the comparison view's editors). */
@@ -216,31 +215,6 @@ function definitionNodes(view: ViewAtPreparation, occurrence: string): readonly 
   const definitionId = typeof config?.definition_id === "string" ? config.definition_id : ""
   const definition = view.submodels[definitionId]
   return isSubmodelDefinition(definition, definitionId) ? definition.graph.nodes as readonly Node[] : []
-}
-
-function addressInView(view: ViewAtPreparation, id: string): NodeAddress {
-  if (view.occurrence !== null) {
-    const prefix = qualifiedRuntimeNodeId(view.occurrence, "")
-    if (id.startsWith(prefix)) {
-      const child = view.canvas.find((node) => encodeRuntimeIdPart(node.id) === id.slice(prefix.length))
-      if (child) return childAddress(view.occurrence, child.id)
-    }
-  }
-  return rootAddress(id)
-}
-
-/** The node an answer's id names, in the view a request was prepared in. */
-function namerFor(view: ViewAtPreparation): (id: string) => SimpleNode | null {
-  return (id) => {
-    const address = addressInView(view, id)
-    const pool = address.occurrence === null ? view.rootNodes : view.canvas
-    return (pool.find((node) => node.id === address.node) as unknown as SimpleNode | undefined) ?? null
-  }
-}
-
-/** The nodes an answer names by id, in the view now, without preparing a request. */
-export function answerNodeNamer(): (id: string) => SimpleNode | null {
-  return namerFor(viewNow())
 }
 
 /**

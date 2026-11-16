@@ -769,7 +769,7 @@ describe("client runtime contracts", () => {
   it("trainModel accepts the tightened train contract", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("train_started_response")))
 
-    const result = await trainModel({ graph: dummyGraph, node_id: "model1" })
+    const result = await trainModel({ graph: dummyGraph, target: { occurrence: null, node_id: "model1" } })
 
     expect(result.status).toBe("started")
     expect(result.job_id).toBe("job-1")
@@ -1288,7 +1288,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "estimateTrainingRam",
       response: { ...loadUiContractFixture<Record<string, unknown>>("train_estimate_response"), estimated_mb: "bad" },
-      call: () => estimateTrainingRam({ graph: dummyGraph, node_id: "model1" }),
+      call: () => estimateTrainingRam({ graph: dummyGraph, target: { occurrence: null, node_id: "model1" } }),
       error: "TrainEstimateResponse: invalid contract at /estimated_mb: type",
     },
     {

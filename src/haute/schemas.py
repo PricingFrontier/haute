@@ -3563,9 +3563,8 @@ class SubmodelGraphResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TrainRequest(BaseModel):
+class TrainRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -4205,9 +4204,8 @@ class TrainStatusResponse(BaseModel):
         return self
 
 
-class TrainEstimateRequest(BaseModel):
+class TrainEstimateRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -4329,7 +4327,7 @@ class TrainEstimateUnavailable(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: Literal["row_count_unprovable", "schema_unresolvable"]
-    blocking_node_id: str | None
+    blocking_node_id: RuntimeNodeKey | None
 
     @model_validator(mode="after")
     def _blocking_node_matches_reason(self) -> TrainEstimateUnavailable:
@@ -4342,6 +4340,9 @@ class TrainEstimateUnavailable(BaseModel):
 
 
 class TrainEstimateResponse(BaseModel):
+    """A training estimate. It names nodes by runtime key (the node that blocks the row count,
+    joins without a key contract), each addressed in ``node_addresses``."""
+
     total_rows: int | None
     safe_row_limit: int | None = None
     estimated_mb: float | None
@@ -4358,7 +4359,7 @@ class TrainEstimateResponse(BaseModel):
     gpu_warning: str | None = None
     unavailable: TrainEstimateUnavailable | None
     """Set, with the memory figures null, when the estimate cannot size its input."""
-    unbounded_join_node_ids: list[str]
+    unbounded_join_node_ids: list[RuntimeNodeKey]
     """Joins without a key contract that make ``total_rows`` a worst case, in graph order."""
     fit_mode: Literal["in_memory", "out_of_core"] = "in_memory"
     """``out_of_core`` when a GLM will train on every row in chunks instead of downsampling."""
@@ -4398,8 +4399,10 @@ class TrainEstimateResponse(BaseModel):
             raise ValueError("only a row_count_unprovable estimate lacks a row total")
         return self
 
+    node_addresses: dict[str, NodeAddressEntry]
 
-class DispersionEstimateRequest(BaseModel):
+
+class DispersionEstimateRequest(NodeTargetRequest):
     """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
 
     The estimate is an explicit user action in the config panel: the resolved
@@ -4408,7 +4411,6 @@ class DispersionEstimateRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
     param: Literal["theta", "var_power"]
 
@@ -4432,8 +4434,7 @@ class DispersionEstimateStatusResponse(BaseModel):
     worker_remote_traceback: str | None = None
 
 
-class ExportScriptRequest(BaseModel):
-    node_id: BoundedName
+class ExportScriptRequest(NodeTargetRequest):
     graph: Graph
     data_path: BoundedPath = ""
 

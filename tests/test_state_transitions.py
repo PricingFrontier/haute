@@ -136,7 +136,7 @@ class TestDoubleStartTraining:
                 ],
                 "edges": [{"id": "e1", "source": "src", "target": "m1"}],
             },
-            "node_id": "m1",
+            "target": {"occurrence": None, "node_id": "m1"},
         }
         resp = client.post("/api/modelling/train", json=payload)
         assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
@@ -176,7 +176,7 @@ class TestDoubleStartTraining:
                 ],
                 "edges": [{"id": "e1", "source": "src", "target": "m1"}],
             },
-            "node_id": "m1",
+            "target": {"occurrence": None, "node_id": "m1"},
         }
         resp = client.post("/api/modelling/train", json=payload)
         assert resp.status_code != 409, "Completed job should not block new training"
@@ -327,7 +327,7 @@ class TestExportScript:
                 ],
                 "edges": [{"id": "e1", "source": "src", "target": "m1"}],
             },
-            "node_id": "m1",
+            "target": {"occurrence": None, "node_id": "m1"},
         }
         resp = client.post("/api/modelling/export", json=payload)
         assert resp.status_code == 200

@@ -146,7 +146,7 @@ def test_catboost_avg_top_5_training_allows_contract_free_competitor_join(
     with patch("haute.routes._training_lifecycle.TrainService._launch_background"):
         resp = client.post(
             "/api/modelling/train",
-            json={"graph": graph, "node_id": "avg_top_5"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "avg_top_5"}},
         )
 
     assert resp.status_code == 200, resp.text

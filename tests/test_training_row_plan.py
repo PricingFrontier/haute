@@ -196,7 +196,10 @@ class TestEstimateRoute:
         ):
             response = client.post(
                 "/api/modelling/estimate",
-                json={"graph": _glm_graph(glm_rows), "node_id": "train"},
+                json={
+                    "graph": _glm_graph(glm_rows),
+                    "target": {"occurrence": None, "node_id": "train"},
+                },
             )
 
         assert response.status_code == 200, response.text
@@ -228,7 +231,8 @@ class TestEstimateRoute:
             return_value=_estimate(500, total_rows=800),
         ):
             response = client.post(
-                "/api/modelling/estimate", json={"graph": graph, "node_id": "train"}
+                "/api/modelling/estimate",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "train"}},
             )
 
         assert response.status_code == 200, response.text
@@ -246,10 +250,18 @@ class TestOutOfCoreRun:
         monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 1)
 
         estimate = client.post(
-            "/api/modelling/estimate", json={"graph": _glm_graph(glm_rows), "node_id": "train"}
+            "/api/modelling/estimate",
+            json={
+                "graph": _glm_graph(glm_rows),
+                "target": {"occurrence": None, "node_id": "train"},
+            },
         ).json()
         response = client.post(
-            "/api/modelling/train", json={"graph": _glm_graph(glm_rows), "node_id": "train"}
+            "/api/modelling/train",
+            json={
+                "graph": _glm_graph(glm_rows),
+                "target": {"occurrence": None, "node_id": "train"},
+            },
         )
 
         assert response.status_code == 200, response.text
@@ -265,7 +277,11 @@ class TestOutOfCoreRun:
 
     def test_a_glm_that_fits_trains_in_memory_and_says_so(self, client, glm_rows) -> None:
         response = client.post(
-            "/api/modelling/train", json={"graph": _glm_graph(glm_rows), "node_id": "train"}
+            "/api/modelling/train",
+            json={
+                "graph": _glm_graph(glm_rows),
+                "target": {"occurrence": None, "node_id": "train"},
+            },
         )
 
         status = _poll(client, response.json()["job_id"])
@@ -286,6 +302,7 @@ class TestContracts:
             "bytes_per_row": 100.0,
             "unavailable": None,
             "unbounded_join_node_ids": [],
+            "node_addresses": {},
             "fit_mode": "out_of_core",
         }
         TrainEstimateResponse(**figures)

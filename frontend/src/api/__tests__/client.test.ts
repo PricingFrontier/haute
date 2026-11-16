@@ -326,6 +326,7 @@ function makeTrainEstimateResponse(overrides: Record<string, unknown> = {}) {
     gpu_vram_available_mb: null,
     gpu_warning: null,
     unavailable: null,
+    node_addresses: {},
     ...overrides,
   }
 }
@@ -956,11 +957,12 @@ describe("endpoint contracts", () => {
   })
 
   it("trainModel posts to /api/modelling/train with default source", async () => {
-    await trainModel({ graph: preparedDummyGraph, node_id: "model1" })
+    await trainModel({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "model1" } })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/modelling/train")
     const body = JSON.parse(opts.body)
-    expect(body.node_id).toBe("model1")
+    expect(body.target).toEqual({ occurrence: null, node_id: "model1" })
+    expect(body).not.toHaveProperty("node_id")
     expect(body.source).toBe("live")
   })
 
@@ -1031,7 +1033,7 @@ describe("endpoint contracts", () => {
   })
 
   it("estimateTrainingRam posts to /api/modelling/estimate", async () => {
-    await estimateTrainingRam({ graph: preparedDummyGraph, node_id: "m1" })
+    await estimateTrainingRam({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "m1" } })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/modelling/estimate")
     expect(opts.method).toBe("POST")
@@ -1912,7 +1914,7 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("trainModel body omits streaming_chunk_size", async () => {
-    await trainModel({ graph: preparedDummyGraph, node_id: "model1" })
+    await trainModel({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "model1" } })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

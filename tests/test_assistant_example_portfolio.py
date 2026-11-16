@@ -178,7 +178,10 @@ def test_model_training_and_resulting_model_scoring(
     _prepare_inputs(destination, graph)
     response = client.post(
         "/api/modelling/train",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "train"},
+        json={
+            "graph": graph.model_dump(mode="json"),
+            "target": {"occurrence": None, "node_id": "train"},
+        },
     )
     assert response.status_code == 200, response.text
     job_id = response.json()["job_id"]

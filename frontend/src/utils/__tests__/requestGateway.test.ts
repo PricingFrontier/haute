@@ -9,7 +9,6 @@ import type { GraphPayload, PreparedGraph } from "../../api/types"
 import { addressKey, childAddress, nodeFrame, rootAddress } from "../nodeAddress"
 import {
   RequestScopeError,
-  answerNodeNamer,
   canvasTarget,
   documentRequestScope,
   prepareCanvasRequest,
@@ -217,10 +216,8 @@ describe("the request gateway", () => {
     expect(request.source).toBe("live")
   })
 
-  it("turns addresses into runtime ids for the requests still sent by id, and names nodes without preparing", () => {
+  it("turns addresses into runtime ids for the requests still sent by id", () => {
     expect(runtimeNodeId(rootAddress("workbench_input"))).toBe("workbench_input")
     expect(runtimeNodeId(childAddress(OCCURRENCE, "bands"))).toBe("submodel_runtime/br%20rating/bands")
-    open()
-    expect(answerNodeNamer()("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
   })
 })

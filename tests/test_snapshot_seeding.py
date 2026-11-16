@@ -1644,7 +1644,9 @@ def test_training_ram_estimates_use_only_usable_snapshots(
     monkeypatch.setattr("haute._input_preparation.prepare_input_snapshots", no_execution)
     monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 1024**3)
 
-    response = estimate_training(TrainEstimateRequest(graph=graph, node_id="T"))
+    response = estimate_training(
+        TrainEstimateRequest(graph=graph, target={"occurrence": None, "node_id": "T"})
+    )
     jobs = JobStore()
     seed_job(jobs, "ram", {"status": "running"})
     try:

@@ -419,10 +419,11 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    ("Banding 1 in pricing"), and carry a structured `node: {key, occurrence, node_id, label}`.
 
 **Moving onto addresses.** The operation families move one at a time, each request with its
-answers and its browser readers (SUBE-05). The preview, its inputs, the trace and the
+answers and its browser readers (SUBE-05). The preview, its inputs, the trace, the
 node-data family (a consumer's data point, run, profile and clear, an Explore pivot and its
-members, relationships, banding statistics and rating levels) are on addresses; every other
-request above still sends the runtime key the browser's adapter builds (`node_id`), its
+members, relationships, banding statistics and rating levels) and modelling (training, its
+memory and dispersion estimates, the export script) are on addresses; every other request
+above still sends the runtime key the browser's adapter builds (`node_id`), its
 answers name nodes by plain string, and `tests/test_node_address_contracts.py` lists their fields
 as pending until their family moves.
 

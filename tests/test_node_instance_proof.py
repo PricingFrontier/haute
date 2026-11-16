@@ -481,7 +481,13 @@ def test_one_node_instance_cross_path_proof(
             endpoint = (
                 "/api/modelling/train" if kind == NodeType.MODELLING else "/api/optimiser/solve"
             )
-            started = client.post(endpoint, json={"graph": raw, "node_id": target})
+            # Training names the copy's node by address; the optimiser by its runtime key.
+            body = (
+                {"graph": raw, "target": {"occurrence": "rate_calc_2", "node_id": "rate_calc_node"}}
+                if kind == NodeType.MODELLING
+                else {"graph": raw, "node_id": target}
+            )
+            started = client.post(endpoint, json=body)
             assert started.status_code == 200, started.text
             job_id = started.json()["job_id"]
             deadline = time.monotonic() + 60
@@ -567,8 +573,13 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
             ("rate_calc_2", "rate_calc_2__Risk_model"),
             ("rate_calc_3", "rate_calc_3__Risk_model"),
         ]:
-            target = qualified_runtime_node_id(occurrence, "rate_calc_node")
-            started = client.post("/api/modelling/train", json={"graph": raw, "node_id": target})
+            started = client.post(
+                "/api/modelling/train",
+                json={
+                    "graph": raw,
+                    "target": {"occurrence": occurrence, "node_id": "rate_calc_node"},
+                },
+            )
             assert started.status_code == 200, started.text
             job_id = started.json()["job_id"]
             deadline = time.monotonic() + 60

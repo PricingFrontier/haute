@@ -28,6 +28,7 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._execution_schemas import ExecutionMetricsPayload
+from haute._node_addresses import resolved_request
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._project_context import context_thread
@@ -43,6 +44,8 @@ from tests.conftest import make_ram_estimate
 
 ALL = NodeSnapshotColumns.all()
 _ROWS = 120
+# The Modelling node every graph here trains, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
 _MODELLING = {
     "target": "y",
     "algorithm": "catboost",
@@ -94,6 +97,12 @@ def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def store(project: Path) -> NodeSnapshotStore:
     return NodeSnapshotStore(project)
+
+
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    return resolved_request(body, body.graph)
 
 
 def _data_input(project: Path, name: str) -> dict[str, Any]:
@@ -249,8 +258,8 @@ def _train(
 
         monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
         set_streaming_chunk_size(streaming_chunk_size)
-    body_payload: dict[str, Any] = {"graph": graph, "node_id": "train", "source": source}
-    body = TrainRequest.model_validate(body_payload)
+    body_payload: dict[str, Any] = {"graph": graph, "target": _TRAIN_TARGET, "source": source}
+    body = _resolved(TrainRequest.model_validate(body_payload))
     config = dict(body.graph.node_map["train"].data.config)
     if row_limit is not None:
         monkeypatch.setattr(
@@ -651,7 +660,8 @@ def test_evaluation_preview_seeds_training_capture(
     calls = _counting_builds(monkeypatch)
 
     preview = TrainService(JobStore()).evaluation_preview(
-        TrainEstimateRequest.model_validate({"graph": graph, "node_id": "train"}), row_limit=None
+        _resolved(TrainEstimateRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET})),
+        row_limit=None,
     )
 
     assert preview is not None
@@ -667,7 +677,8 @@ def test_training_widens_evaluation_preview_capture(
 
     graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('y')")
     TrainService(JobStore()).evaluation_preview(
-        TrainEstimateRequest.model_validate({"graph": graph, "node_id": "train"}), row_limit=None
+        _resolved(TrainEstimateRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET})),
+        row_limit=None,
     )
     narrow = store.latest_generation(_identity(store, graph, "B"))
     assert narrow is not None and narrow.columns == NodeSnapshotColumns.of({"y"})
@@ -943,7 +954,7 @@ def test_job_metrics_keep_parent_preparation_with_child_evidence(
 
 
 def _train_to_completion(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
-    response = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+    response = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
     assert response.status_code == 200, response.text
     job_id = response.json()["job_id"]
     deadline = time.monotonic() + 180
@@ -1159,7 +1170,9 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
     training_graph = _chain(project)
     training = _train(monkeypatch, training_graph)
     TrainService(JobStore()).evaluation_preview(
-        TrainEstimateRequest.model_validate({"graph": training_graph, "node_id": "train"}),
+        _resolved(
+            TrainEstimateRequest.model_validate({"graph": training_graph, "target": _TRAIN_TARGET})
+        ),
         row_limit=None,
     )
     optimiser_graph = _online_chain(optimiser_project)

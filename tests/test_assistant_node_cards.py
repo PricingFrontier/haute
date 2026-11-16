@@ -244,7 +244,13 @@ _JOB_ROUTES = {
 
 
 def _run_job(client: Any, route: str, graph: PipelineGraph, node_id: str) -> dict[str, Any]:
-    response = client.post(route, json={"graph": graph.model_dump(mode="json"), "node_id": node_id})
+    body: dict[str, Any] = {"graph": graph.model_dump(mode="json")}
+    # Training names its node by address; the solve still by id.
+    if route == _JOB_ROUTES[NodeType.MODELLING]:
+        body["target"] = {"occurrence": None, "node_id": node_id}
+    else:
+        body["node_id"] = node_id
+    response = client.post(route, json=body)
     assert response.status_code == 200, response.text
     status_url = f"{route}/status/{response.json()['job_id']}"
     deadline = time.monotonic() + 120

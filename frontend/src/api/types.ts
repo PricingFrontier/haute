@@ -1,5 +1,6 @@
 /** Shared API response/request types for the Haute backend. */
 
+import type { RuntimeNodeKey } from "../generated/api-contracts.generated"
 import type { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 
 // Re-export canonical types from their source locations
@@ -343,7 +344,7 @@ export type {
 
 /** Why a training estimate cannot size its input: one reason from a closed set. */
 export type TrainEstimateUnavailable =
-  | { reason: "row_count_unprovable"; blocking_node_id: string }
+  | { reason: "row_count_unprovable"; blocking_node_id: RuntimeNodeKey }
   | { reason: "schema_unresolvable"; blocking_node_id: null }
 
 /**
