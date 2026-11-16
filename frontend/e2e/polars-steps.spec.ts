@@ -3,6 +3,7 @@ import { resolve } from "node:path"
 
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
+import { previewTargetNode } from "../src/test-utils/factories"
 import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
 // The form before READ-22 kept a transform's steps here; the code alone holds them now.
@@ -494,7 +495,7 @@ test.describe("Transform step builder journey", () => {
 
     const recorded = page.waitForResponse(async (response) => {
       if (response.request().method() !== "POST" || !response.url().includes("/api/pipeline/preview")) return false
-      if ((response.request().postDataJSON() as { node_id?: unknown }).node_id !== "browser_rating" || !response.ok()) return false
+      if (previewTargetNode(response.request().postDataJSON()) !== "browser_rating" || !response.ok()) return false
       const result = (await response.json()) as { available_columns?: Array<{ name: string }> }
       return (result.available_columns ?? []).some((column) => column.name === "browser_relativity")
     })

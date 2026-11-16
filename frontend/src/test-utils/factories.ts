@@ -747,6 +747,13 @@ export function targetNodeId(target: FrameTargetPayload): string {
   return target.node_id
 }
 
+/** The pipeline node a preview request's body targets, or null when it targets anything else. */
+export function previewTargetNode(body: unknown): string | null {
+  const target = (body as { target?: Partial<FrameTargetPayload> } | null)?.target
+  if (target?.kind !== "node" || target.occurrence !== null) return null
+  return typeof target.node_id === "string" && target.node_id.length > 0 ? target.node_id : null
+}
+
 /** One entry of a preview answer's frame provenance: what an occurrence's port resolves to. */
 export function occurrencePort(
   occurrence: string,

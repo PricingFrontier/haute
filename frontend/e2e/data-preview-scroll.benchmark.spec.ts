@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
 
-import { makePreviewResponse } from "../src/test-utils/factories"
+import { makePreviewResponse, previewTargetNode } from "../src/test-utils/factories"
 import { resetE2eProject } from "./projectIsolation"
 
 const PREVIEW_ROW_COUNT = 10_000
@@ -28,7 +28,7 @@ const SPARSE_VALUE_COLUMN_INDEXES = [
 ]
 
 type PreviewRequestBody = {
-  node_id?: unknown
+  target?: unknown
   row_limit?: unknown
   requested_preview_columns?: unknown
 }
@@ -77,7 +77,6 @@ const PREVIEW_ROWS = Array.from({ length: PREVIEW_ROW_COUNT }, (_, rowIndex) => 
 function buildPreviewResponseBody(nodeId: string): string {
   return JSON.stringify(makePreviewResponse({
     status: "ok",
-    node_id: nodeId,
     row_count: PREVIEW_ROW_COUNT,
     column_count: PREVIEW_COLUMN_COUNT,
     columns: PREVIEW_COLUMNS,
@@ -100,14 +99,15 @@ async function installSparsePreviewRoute(page: Page): Promise<{ requestCount: ()
   await page.route("**/api/pipeline/preview", async (route) => {
     previewRequestCount += 1
     const body = route.request().postDataJSON() as PreviewRequestBody
-    if (typeof body.node_id !== "string" || body.node_id.length === 0) {
-      throw new Error(`Preview benchmark expected a string node_id, received ${String(body.node_id)}`)
+    const nodeId = previewTargetNode(body)
+    if (nodeId === null) {
+      throw new Error(`Preview benchmark expected a pipeline node target, received ${JSON.stringify(body.target)}`)
     }
 
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: buildPreviewResponseBody(body.node_id),
+      body: buildPreviewResponseBody(nodeId),
     })
   })
 
