@@ -1154,11 +1154,15 @@ class ExecutionProvenance:
         "_preview_seed_plan",
         "_write_outcomes",
         "_full_term",
+        "_node_addresses",
     )
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._full_term: dict[str, FullTermTally] = {}
+        # Every node of the graphs this execution walked, by runtime key: the address the
+        # metrics give each key they name. A worker's travels to its parent with its evidence.
+        self._node_addresses: dict[str, dict[str, Any]] = {}
         self._records: dict[str, list[Any]] = {key: [] for key in _WORKER_RECORD_KEYS}
         self._warnings: list[dict[str, str | None]] = []
         self._preview_seed_plan: tuple[Any, ...] = ()
@@ -1250,19 +1254,62 @@ class ExecutionProvenance:
                 data_output_write_native_reason=native_reason if strategy == "native" else None,
             )
 
-    def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
-        """The records a worker returns to its parent, under their payload keys."""
+    def record_node_addresses(self, flat: Any) -> None:
+        """Address every node of *flat*, a flattened graph this execution walks, so the
+        metrics can address any key they name (specs/server-api/low-level.md, "Node
+        addresses"). Never raises: a node it cannot address is left out."""
+        from haute._node_addresses import address_entry, expansion_of
+
+        keys = [*getattr(flat, "node_map", {}), *expansion_of(flat).occurrences]
+        entries: dict[str, dict[str, Any]] = {}
+        for key in keys:
+            try:
+                entries[key] = address_entry(flat, key).model_dump(mode="json")
+            except ValueError:
+                continue
         with self._lock:
-            evidence = {
+            for key, entry in entries.items():
+                self._node_addresses.setdefault(key, entry)
+
+    def addresses_for(self, payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        """The address of every key *payload*, a metrics payload, names that this execution
+        walked. Never raises: the metrics are reported on failure paths too."""
+        from haute._execution_schemas import ExecutionMetricsPayload
+        from haute._node_addresses import named_keys
+
+        try:
+            named = named_keys(ExecutionMetricsPayload, payload)
+        except Exception:  # noqa: BLE001 - a diagnostic must never hide the run's own error
+            return {}
+        with self._lock:
+            return {
+                key: dict(self._node_addresses[key])
+                for key in sorted(named)
+                if key in self._node_addresses
+            }
+
+    def worker_evidence(self) -> dict[str, Any]:
+        """The records a worker returns to its parent, under their payload keys, and the
+        addresses of the nodes it walked."""
+        with self._lock:
+            evidence: dict[str, Any] = {
                 key: [dict(record.to_dict()) for record in self._records[key]]
                 for key in _WORKER_RECORD_KEYS
             }
             evidence["warnings"] = [dict(warning) for warning in self._warnings]
+            evidence["node_addresses"] = {
+                key: dict(entry) for key, entry in self._node_addresses.items()
+            }
             return evidence
 
     def adopt(self, evidence: Mapping[str, Any]) -> None:
         """Report a worker's evidence, or its whole metrics payload, as this execution's own."""
         with self._lock:
+            addresses = evidence.get("node_addresses")
+            if isinstance(addresses, Mapping):
+                for key, entry in addresses.items():
+                    if isinstance(key, str) and isinstance(entry, Mapping):
+                        self._node_addresses.setdefault(key, dict(entry))
             for key in _WORKER_RECORD_KEYS:
                 self._records[key].extend(
                     _EvidenceRecord(dict(payload)) for payload in evidence.get(key, ())
@@ -1285,7 +1332,9 @@ class ExecutionProvenance:
         earlier worker prepared, read, wrote, and warned about is not lost.
         """
         self.adopt(worker_metrics)
-        return {**worker_metrics, **self.worker_evidence()}
+        merged = {**worker_metrics, **self.worker_evidence()}
+        merged["node_addresses"] = self.addresses_for(merged)
+        return merged
 
     def payload(self) -> dict[str, object]:
         """The write outcomes, records, and warnings as metrics-payload fields."""
@@ -1640,6 +1689,8 @@ class ExecutionContext:
         self.evidence.record_estimate_calibration(
             payload, profile=self.profile, diagnostic=diagnostic
         )
+        # The payload addresses every node it names, so whatever answer carries it does.
+        payload["node_addresses"] = self.provenance.addresses_for(payload)
         self.telemetry.emit_terminal(payload)
         return payload
 

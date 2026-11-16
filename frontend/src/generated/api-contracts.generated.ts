@@ -91,7 +91,7 @@ export type NodeType =
  */
 export interface ExecutionStrategyDiagnosticPayload {
   assumptions?: string[];
-  blocking_node_id?: string | null;
+  blocking_node_id?: RuntimeNodeKey | null;
   blocking_operator?: string | null;
   boundaries: ExecutionStrategyBoundaryCollectionPayload;
   boundedness: 'bounded' | 'unbounded' | 'unknown';
@@ -138,7 +138,7 @@ export interface ExecutionStrategyBoundaryCollectionPayload {
 }
 export interface ExecutionStrategyBoundaryPayload {
   boundary_kind: 'unprojected-streaming-boundary' | 'materialisation-boundary';
-  node_id: string;
+  node_id: RuntimeNodeKey;
   operator: string;
   topological_rank: number;
 }
@@ -148,10 +148,10 @@ export interface ExecutionStrategyBoundaryPayload {
 export interface ExecutionStrategyProjectionCausePayload {
   kind: 'input' | 'node';
   message: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   operation?: string | null;
   operator: string;
-  parent_node_id?: string | null;
+  parent_node_id?: RuntimeNodeKey | null;
   reason_code: string;
   total_count: number;
 }
@@ -167,7 +167,7 @@ export interface ExecutionStrategyProvenancePayload {
   column: string;
   origin_kind: 'seed' | 'contract' | 'expression' | 'join_key' | 'conservative_boundary';
   source_column?: string | null;
-  source_node_id?: string | null;
+  source_node_id?: RuntimeNodeKey | null;
 }
 export interface ExecutionStrategyReasonCollectionPayload {
   /**
@@ -179,9 +179,9 @@ export interface ExecutionStrategyReasonCollectionPayload {
 }
 export interface ExecutionStrategyReasonPayload {
   message?: string | null;
-  node_id?: string | null;
+  node_id?: RuntimeNodeKey | null;
   operator?: string | null;
-  parent_node_id?: string | null;
+  parent_node_id?: RuntimeNodeKey | null;
   reason_code: string;
   topological_rank?: number | null;
 }
@@ -1018,6 +1018,11 @@ export interface PipelineRepairFieldChange {
   path: string;
   reason: string;
 }
+/**
+ * An execution's metrics. They name nodes by runtime key, each addressed in
+ * ``node_addresses`` (specs/server-api/low-level.md, "Node addresses"), so every answer
+ * carrying them does.
+ */
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
   bytes_written: number | null;
@@ -1043,6 +1048,9 @@ export interface ExecutionMetricsPayload {
   memory_pressure_events_truncated: boolean;
   n_checkpoints: number;
   n_collects: number;
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   node_elapsed_ms: {
     [k: string]: number;
   };
@@ -1108,7 +1116,7 @@ export interface ExecutionColumnWidthsCollectionPayload {
 }
 export interface ExecutionColumnWidthsPayload {
   input_width: number | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   output_width: number | null;
   physically_scanned_width: number | null;
   requested_width: number | null;
@@ -1118,7 +1126,7 @@ export interface ExecutionColumnWidthsPayload {
  */
 export interface ExecutionStrategyDiagnosticPayloadOutput {
   assumptions: string[];
-  blocking_node_id: string | null;
+  blocking_node_id: RuntimeNodeKey | null;
   blocking_operator: string | null;
   boundaries: ExecutionStrategyBoundaryCollectionPayload;
   boundedness: 'bounded' | 'unbounded' | 'unknown';
@@ -1161,10 +1169,10 @@ export interface ExecutionStrategyDiagnosticPayloadOutput {
 export interface ExecutionStrategyProjectionCausePayloadOutput {
   kind: 'input' | 'node';
   message: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   operation: string | null;
   operator: string;
-  parent_node_id: string | null;
+  parent_node_id: RuntimeNodeKey | null;
   reason_code: string;
   total_count: number;
 }
@@ -1180,7 +1188,7 @@ export interface ExecutionStrategyProvenancePayloadOutput {
   column: string;
   origin_kind: 'seed' | 'contract' | 'expression' | 'join_key' | 'conservative_boundary';
   source_column: string | null;
-  source_node_id: string | null;
+  source_node_id: RuntimeNodeKey | null;
 }
 export interface ExecutionStrategyReasonCollectionPayloadOutput {
   /**
@@ -1192,9 +1200,9 @@ export interface ExecutionStrategyReasonCollectionPayloadOutput {
 }
 export interface ExecutionStrategyReasonPayloadOutput {
   message: string | null;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   operator: string | null;
-  parent_node_id: string | null;
+  parent_node_id: RuntimeNodeKey | null;
   reason_code: string;
   topological_rank: number | null;
 }
@@ -1209,7 +1217,7 @@ export interface InputPreparationRecordPayload {
   generation_id: string | null;
   identity_digest: string;
   memory_limit_bytes: number | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   row_count: number | null;
   size_bytes: number | null;
   warning_code: string | null;
@@ -1226,7 +1234,7 @@ export interface ExecutionMemoryPressureEventPayload {
   label: string | null;
   memory_baseline_bytes: number | null;
   memory_limit_bytes: number | null;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   operation: string;
   os_reserve_bytes: number | null;
   pressure_ratio: number;
@@ -1243,7 +1251,7 @@ export interface ExecutionMemoryPressureEventPayload {
  * One candidate capture point skipped under cost gating.
  */
 export interface SharedSnapshotCaptureSkipPayload {
-  node_id: string;
+  node_id: RuntimeNodeKey;
   reason: 'cheap_segment' | 'slice_transparent_feeder';
 }
 /**
@@ -1257,7 +1265,7 @@ export interface SharedSnapshotCapturePayload {
   generation_id: string | null;
   identity_digest: string;
   kind: 'structural' | 'materialising' | 'model_score' | 'consumed';
-  node_id: string;
+  node_id: RuntimeNodeKey;
   outcome: 'published' | 'superseded';
   write_blocking_operator: string | null;
   write_chunk_rows: number | null;
@@ -1274,7 +1282,7 @@ export interface SharedSnapshotSeedPayload {
   columns: 'all' | string[];
   generation_id: string;
   identity_digest: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
 }
 export interface ExecutionStageMetricsPayload {
   elapsed_ms: number;
@@ -1282,7 +1290,7 @@ export interface ExecutionStageMetricsPayload {
   n_checkpoints: number;
   n_collects: number;
   name: string;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   operation: string;
   profile: string;
   rss_delta_bytes: number | null;
@@ -1304,7 +1312,7 @@ export interface ExecutionStreamabilityEvidencePayload {
  */
 export interface ExecutionWarningPayload {
   code: string;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   reason: string | null;
 }
 export interface ExplorePivotRunResponse {

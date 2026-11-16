@@ -62,22 +62,22 @@ NODE_KEY_POSITIONS: dict[tuple[str, str], str] = {
     ("TrainEstimateUnavailable", "blocking_node_id"): MIGRATED,
     ("TrainEstimateResponse", "unbounded_join_node_ids"): MIGRATED,
     # Execution metrics, which ride on many answers.
-    ("ExecutionColumnWidthsPayload", "node_id"): PENDING,
-    ("ExecutionMemoryPressureEventPayload", "node_id"): PENDING,
-    ("ExecutionMetricsPayload", "node_elapsed_ms{}"): PENDING,
-    ("ExecutionStageMetricsPayload", "node_id"): PENDING,
-    ("ExecutionStrategyBoundaryPayload", "node_id"): PENDING,
-    ("ExecutionStrategyDiagnosticPayload", "blocking_node_id"): PENDING,
-    ("ExecutionStrategyProjectionCausePayload", "node_id"): PENDING,
-    ("ExecutionStrategyProjectionCausePayload", "parent_node_id"): PENDING,
-    ("ExecutionStrategyProvenancePayload", "source_node_id"): PENDING,
-    ("ExecutionStrategyReasonPayload", "node_id"): PENDING,
-    ("ExecutionStrategyReasonPayload", "parent_node_id"): PENDING,
-    ("ExecutionWarningPayload", "node_id"): PENDING,
-    ("InputPreparationRecordPayload", "node_id"): PENDING,
-    ("SharedSnapshotCapturePayload", "node_id"): PENDING,
-    ("SharedSnapshotCaptureSkipPayload", "node_id"): PENDING,
-    ("SharedSnapshotSeedPayload", "node_id"): PENDING,
+    ("ExecutionColumnWidthsPayload", "node_id"): MIGRATED,
+    ("ExecutionMemoryPressureEventPayload", "node_id"): MIGRATED,
+    ("ExecutionMetricsPayload", "node_elapsed_ms{}"): MIGRATED,
+    ("ExecutionStageMetricsPayload", "node_id"): MIGRATED,
+    ("ExecutionStrategyBoundaryPayload", "node_id"): MIGRATED,
+    ("ExecutionStrategyDiagnosticPayload", "blocking_node_id"): MIGRATED,
+    ("ExecutionStrategyProjectionCausePayload", "node_id"): MIGRATED,
+    ("ExecutionStrategyProjectionCausePayload", "parent_node_id"): MIGRATED,
+    ("ExecutionStrategyProvenancePayload", "source_node_id"): MIGRATED,
+    ("ExecutionStrategyReasonPayload", "node_id"): MIGRATED,
+    ("ExecutionStrategyReasonPayload", "parent_node_id"): MIGRATED,
+    ("ExecutionWarningPayload", "node_id"): MIGRATED,
+    ("InputPreparationRecordPayload", "node_id"): MIGRATED,
+    ("SharedSnapshotCapturePayload", "node_id"): MIGRATED,
+    ("SharedSnapshotCaptureSkipPayload", "node_id"): MIGRATED,
+    ("SharedSnapshotSeedPayload", "node_id"): MIGRATED,
 }
 
 #: Strings that embed a runtime key and are echoed exactly, never read for a node.
@@ -267,6 +267,10 @@ def test_a_trace_through_submodels_addresses_every_node_it_names(
     assert preview.status_code == 200, preview.text
     assert preview.json()["status"] == "ok", preview.text
     _addresses_every_key(schemas.PreviewNodeResponse, graph, preview.json())
+    # The metrics address the nodes they name themselves.
+    _addresses_every_key(
+        execution_schemas.ExecutionMetricsPayload, graph, preview.json()["execution_metrics"]
+    )
 
     traced = client.post(
         "/api/pipeline/trace",
@@ -310,3 +314,20 @@ def test_a_data_point_through_submodels_addresses_its_consumer_and_producer(
         target["occurrence"],
         target["node_id"],
     )
+
+
+def test_a_preview_served_from_the_cache_addresses_its_metrics(client: Any) -> None:
+    # The second preview is the first's cached answer, served without walking the graph.
+    graph = _reuse_graph()
+    body = {
+        "graph": graph.model_dump(mode="json", by_alias=True),
+        "target": node_target("consumer"),
+    }
+    answers = [client.post("/api/pipeline/preview", json=body).json() for _ in range(2)]
+    for answer in answers:
+        assert answer["status"] == "ok", answer
+        _addresses_every_key(
+            execution_schemas.ExecutionMetricsPayload, graph, answer["execution_metrics"]
+        )
+    stages = {stage["name"] for stage in answers[1]["execution_metrics"]["stages"]}
+    assert "preview_cache_hit" in stages

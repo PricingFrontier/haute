@@ -15,7 +15,9 @@ from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
 from haute._config_io import collect_node_configs
+from haute._execution_schemas import ExecutionMetricsPayload
 from haute._flatten import flatten_executable_graph
+from haute._node_addresses import named_keys
 from haute._node_specs import SINK_ONLY_NODE_TYPES
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._project import get_project_root
@@ -500,6 +502,22 @@ def test_one_node_instance_cross_path_proof(
                 job.get("worker_remote_traceback"),
             )
             result = job["result"]
+            # The job's metrics address every node they name, the copy's children by
+            # their occurrence and authored label.
+            metrics = job["execution_metrics"]
+            named = named_keys(ExecutionMetricsPayload, metrics)
+            assert named
+            assert set(metrics["node_addresses"]) == named
+            definition = graph.submodels[  # type: ignore[index]
+                graph.node_map["rate_calc_2"].data.config["definition_id"]
+            ]
+            copy_children = {
+                entry["node_id"]: entry["label"]
+                for entry in metrics["node_addresses"].values()
+                if entry["occurrence"] == "rate_calc_2"
+            }
+            for local, label in copy_children.items():
+                assert label == definition.graph.node_map[local].data.label
             if kind == NodeType.MODELLING:
                 assert result["development_rows"] > 0
                 assert Path(result["model_path"]).is_file()

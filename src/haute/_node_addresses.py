@@ -187,9 +187,10 @@ def labelled(answer_type: type[AnswerT], flat: PipelineGraph, /, **fields: Any) 
 
 
 def named_keys(answer_type: type[BaseModel], data: Any) -> set[str]:
-    """Every runtime key *data*, a JSON form of an *answer_type*, names."""
+    """Every runtime key *data*, a JSON form of an *answer_type*, names, but for those a
+    nested part addressing its own keys names (the execution metrics, a data point)."""
     schema = _schema(answer_type)
-    return set(_keys_at(data, schema, schema.get("$defs", {})))
+    return set(_keys_at(data, schema, schema.get("$defs", {}), top=True))
 
 
 @cache
@@ -197,9 +198,14 @@ def _schema(answer_type: type[BaseModel]) -> dict[str, Any]:
     return answer_type.model_json_schema(by_alias=True)
 
 
-def _keys_at(value: Any, schema: Mapping[str, Any], defs: Mapping[str, Any]) -> Iterator[str]:
+def _keys_at(
+    value: Any, schema: Mapping[str, Any], defs: Mapping[str, Any], *, top: bool = False
+) -> Iterator[str]:
     while "$ref" in schema:
         schema = defs[str(schema["$ref"]).rsplit("/", 1)[-1]]
+    if not top and "node_addresses" in schema.get("properties", {}):
+        # A part that addresses the keys it names answers for them itself.
+        return
     if schema.get(RUNTIME_NODE_KEY_MARKER) and isinstance(value, str):
         yield value
         return

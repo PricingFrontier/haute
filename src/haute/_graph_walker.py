@@ -534,6 +534,9 @@ class _Walk:
 
     def prepare(self) -> None:
         """Everything a walk does once: check, prepare, seed, plan, and build."""
+        if self.context is not None:
+            # The metrics address the nodes they name from the graph walked.
+            self.context.provenance.record_node_addresses(self.request.graph)
         self._check_plan()
         if self.policy.purpose is WalkPurpose.SINK:
             if self.context is not None:

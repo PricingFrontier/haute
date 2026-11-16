@@ -22,6 +22,7 @@ from haute._execution_context import ExecutionAdmission, ExecutionContext, Execu
 from haute._execution_schemas import ExecutionMetricsPayload
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._hashing import content_hash
+from haute._node_addresses import named_keys
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
@@ -1476,6 +1477,10 @@ def test_metrics_report_seeds_captures_and_warnings(
         validated = ExecutionMetricsPayload.model_validate(run.metrics).model_dump(mode="json")
         for key in ("shared_snapshot_seeds", "shared_snapshot_captures", "warnings"):
             assert validated[key] == run.metrics[key]
+        # The metrics address every node they name, a seeded run's too.
+        named = named_keys(ExecutionMetricsPayload, validated)
+        assert named
+        assert set(validated["node_addresses"]) == named
     j_digest = _identity(store, graph, "J").digest
     capture = first.captures["J"]
     assert capture == {

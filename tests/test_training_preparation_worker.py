@@ -423,9 +423,11 @@ class TestInChildFailureOutcomes:
         assert job["error_code"] == error_code
         assert job["http_status_code"] == status_code
         assert job["error_detail"] == detail
-        # The child's metrics, carrying the job's evidence (none for a parquet source).
+        # The child's metrics, carrying the job's evidence (none for a parquet source)
+        # and addressing the nodes they name (none here).
         assert job["execution_metrics"] == {
             "status": "failed",
+            "node_addresses": {},
             "input_preparation": [],
             "shared_snapshot_seeds": [],
             "shared_snapshot_captures": [],

@@ -74,7 +74,7 @@ export type ExecutionStrategyBoundary = GeneratedExecutionStrategyBoundary
 
 export type ExecutionStrategyReason = GeneratedExecutionStrategyReason & {
   topological_rank: number | null
-  node_id: string | null
+  node_id: RuntimeNodeKey | null
   operator: string | null
 }
 

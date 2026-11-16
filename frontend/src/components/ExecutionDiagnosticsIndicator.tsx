@@ -4,6 +4,7 @@ import {
   buildMemoryPressureDiagnostic,
   executionProjectionWarning,
   executionStrategyLocation,
+  metricsNodeName,
 } from "../utils/executionDiagnostics"
 
 type ExecutionDiagnosticsIndicatorProps = {
@@ -18,8 +19,8 @@ type IndicatorContent = {
 }
 
 /** Names the node that kept part of the pipeline full-width, and which part. */
-function projectionCauseExplanation(cause: ExecutionStrategyProjectionCause): string {
-  const node = `'${cause.node_id}' (${cause.operator})`
+function projectionCauseExplanation(cause: ExecutionStrategyProjectionCause, metrics: ExecutionMetrics): string {
+  const node = `'${metricsNodeName(metrics, cause.node_id)}' (${cause.operator})`
   const others = cause.total_count - 1
   const elsewhere = others > 0
     ? ` ${others} other ${others === 1 ? "node" : "nodes"} also kept part of the pipeline full-width.`
@@ -27,7 +28,7 @@ function projectionCauseExplanation(cause: ExecutionStrategyProjectionCause): st
   if (cause.kind === "node") {
     return `Haute could not narrow the columns ${node} reads, so that part of the pipeline read every column.${elsewhere}`
   }
-  const parent = cause.parent_node_id ? `'${cause.parent_node_id}'` : null
+  const parent = cause.parent_node_id ? `'${metricsNodeName(metrics, cause.parent_node_id)}'` : null
   return `${node} stopped Haute narrowing the columns it reads from ${parent ?? "its inputs"}, so ${parent ? `${parent} and the nodes` : "the nodes"} above it read every column.${elsewhere}`
 }
 
@@ -41,7 +42,7 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
   }
 
   if (strategy.status === "warned") {
-    const location = executionStrategyLocation(strategy)
+    const location = executionStrategyLocation(strategy, metrics)
     return {
       severity: "warning",
       title: "Execution ran without a memory estimate",
@@ -51,7 +52,7 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
   }
 
   if (strategy.status === "rejected") {
-    const location = executionStrategyLocation(strategy)
+    const location = executionStrategyLocation(strategy, metrics)
     return {
       severity: "error",
       title: "Execution could not use a safe strategy",
@@ -63,9 +64,9 @@ function strategyIndicator(metrics: ExecutionMetrics): IndicatorContent | null {
   const projectionWarning = executionProjectionWarning(metrics)
   if (!projectionWarning) return null
   const { boundary: projectionBoundary, nodeId, operator, cause } = projectionWarning
-  const location = nodeId ? ` at '${nodeId}'${operator ? ` (${operator})` : ""}` : ""
+  const location = nodeId ? ` at '${metricsNodeName(metrics, nodeId)}'${operator ? ` (${operator})` : ""}` : ""
   const summary = cause
-    ? projectionCauseExplanation(cause)
+    ? projectionCauseExplanation(cause, metrics)
     : `Haute could not safely push the requested columns through the pipeline${location}, so that section stayed full-width.`
 
   return {

@@ -56,7 +56,7 @@ import {
   type SubmodelOutputPreview,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
-import { executionWarningNodeIds } from "../utils/executionDiagnostics"
+import { executionWarnings } from "../utils/executionDiagnostics"
 import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
 import { apiErrorCode, apiErrorMessage, isStaleRevision } from "../api/errors"
@@ -522,10 +522,10 @@ function canvasNodeStatuses(
   // Each key's status is shown where its address sits on the canvas; a collapsed
   // occurrence's card shows the worst of its children's.
   const statuses: Record<string, NodeStatus> = {}
+  // The answer addresses the keys it names; its execution metrics address theirs.
   const place = (key: string) => {
-    const address = result.node_addresses[key]
-    // An execution diagnostic names a key the answer does not address yet: a pipeline node's.
-    return address ? placeAddress(address, openOccurrence) : openOccurrence === null ? { id: key, viaCard: false } : null
+    const address = result.node_addresses[key] ?? result.execution_metrics?.node_addresses[key]
+    return address ? placeAddress(address, openOccurrence) : null
   }
   for (const [key, status] of Object.entries(result.node_statuses ?? {})) {
     const placed = place(key)
@@ -548,11 +548,9 @@ function canvasNodeStatuses(
   }
 
   // The requested node by its canvas id, the nodes a diagnostic implicates by key.
-  for (const id of executionWarningNodeIds(result.execution_metrics, requestedNodeId)) {
-    if (id === requestedNodeId) {
-      if (statuses[id] === "ok") statuses[id] = "warning"
-    } else promoteWarning(id)
-  }
+  const warnings = executionWarnings(result.execution_metrics)
+  if (warnings.requested && statuses[requestedNodeId] === "ok") statuses[requestedNodeId] = "warning"
+  for (const key of warnings.keys) promoteWarning(key)
 
   return statuses
 }

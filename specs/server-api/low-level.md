@@ -403,9 +403,22 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    rating levels, relationships) does; a pivot's result names no node, since it is keyed by the
    data point several Explore nodes can share. A string that embeds a key (a data point's `slot_key`, a seed plan's
    entries) is echoed exactly and never read for a node.
-5. **Jobs.** A job whose answers can name nodes (training, a solve, an auto range, a node-data
-   build, a pivot) records those keys' addresses when it starts, so a status read after the view
-   changed, or after a reload, labels them without the graph.
+5. **Jobs and execution metrics.** The execution metrics (`ExecutionMetricsPayload`) name
+   nodes by key in every node field and in `node_elapsed_ms`, and carry their own
+   `node_addresses`, so every answer carrying them (a preview, a write, and every job's status:
+   training, a solve, an auto range, a node-data build, a pivot) addresses them; an answer's own
+   `node_addresses` covers only the keys outside such a part. The graph walk records the address
+   of every node of the graph it walks on the execution's context
+   (`ExecutionProvenance.record_node_addresses`), and `metrics_payload` addresses the keys the
+   payload names from that table, so a job's status read after the view changed, or after a
+   reload, labels them without the graph. A worker's table travels to its parent with its
+   evidence, and a merged payload is addressed again. Addressing never raises (the metrics are
+   reported on failure paths too): a key the execution did not walk is left out, which
+   `tests/test_node_address_contracts.py` and `tests/test_node_instance_proof.py` check never
+   happens for a real preview (a cached one too), training run or solve. The executor and the
+   optimiser's setup record the table before they prepare inputs, so the metrics of a run that
+   fails before its walk, or of a preview served from the cache, still address what they name.
+   A deployed scorer's metrics, which no browser reads, carry an empty table.
 6. **Frame provenance.** A preview answer carries `occurrence_ports: [{occurrence, direction:
    "input"|"output", port, endpoint: {key, handle} | null}]` for every declared port of every
    occurrence in the executed graph, by instance id: the runtime endpoint the port resolves to (an
@@ -423,9 +436,9 @@ answers and its browser readers (SUBE-05). The preview, its inputs, the trace, t
 node-data family (a consumer's data point, run, profile and clear, an Explore pivot and its
 members, relationships, banding statistics and rating levels), modelling (training, its
 memory and dispersion estimates, the export script), the optimiser (a solve, its estimate and
-auto range), Data Output (a destination, a write, an assembly dry run) and the cached-data
-list (its rows addressed, its other owners described by what they recorded) are on addresses;
-every other request above still sends the runtime key the browser's adapter builds (`node_id`), its
+auto range), Data Output (a destination, a write, an assembly dry run), the cached-data list
+(its rows addressed, its other owners described by what they recorded) and the execution
+metrics are on addresses; every other request above still sends the runtime key the browser's adapter builds (`node_id`), its
 answers name nodes by plain string, and `tests/test_node_address_contracts.py` lists their fields
 as pending until their family moves.
 

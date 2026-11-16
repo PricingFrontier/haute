@@ -641,7 +641,9 @@ reconciliation rather than dropping them or committing a second mutation.
     backend `ok` result to the client-only `warning` state for the requested
     node whenever its completed run displays an execution warning, and for any
     node explicitly implicated by that diagnostic (for example an unprojected-
-    streaming boundary or memory-pressure event). `PipelineNode` likewise treats
+    streaming boundary or memory-pressure event), placed by the address the
+    answer or its metrics give the key (`executionWarnings`); a key neither
+    addresses is not placed. `PipelineNode` likewise treats
     an `ok` result carrying schema warnings as warning-complete. Both paths use
     one yellow completion dot rather than a green success dot plus a duplicate
     warning dot. A schema warning without a completed status remains a

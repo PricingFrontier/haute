@@ -3032,6 +3032,8 @@ class OptimiserSolveService:
         leases and capture staging are held until the worker has exited.
         """
         flattened = _with_flattened_optimiser_graph(body)
+        # Input preparation names nodes before the setup walks the graph.
+        execution_context.provenance.record_node_addresses(flattened.graph)
         with self._setup_execution_failures(flattened, job_id, execution_context):
             plan = resources.enter_context(
                 open_seed_plan(

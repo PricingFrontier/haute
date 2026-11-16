@@ -2442,6 +2442,76 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "warning", n0: "warning" }))
   })
 
+  /** Metrics whose warned strategy blocks at `blockingKey`, addressed as `nodeAddresses` add. */
+  function warnedStrategyMetrics(blockingKey: string, nodeAddresses: PreviewNodeResponse["node_addresses"] = {}) {
+    return makeExecutionMetricsFixture({
+      memory_pressure_event_count: 0,
+      retained_memory_pressure_event_count: 0,
+      memory_pressure_events: [],
+      node_addresses: nodeAddresses,
+      execution_strategy: {
+        schema_version: 1,
+        status: "warned",
+        strategy: "full-width-conservative",
+        profile: "preview_eager",
+        boundedness: "unbounded",
+        reason_code: "materialisation_estimate_unavailable_conservative",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 0, items: [] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: blockingKey,
+        blocking_operator: "group_by",
+        remediation: "Give this aggregation a bounded key set.",
+      },
+    })
+  }
+
+  it("places a diagnostic's node through the metrics' addresses when the answer does not address it", async () => {
+    const child = "submodel_runtime/pricing/aggregate"
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockPreview.mockResolvedValue(makePreviewResponse({
+      status: "ok",
+      node_statuses: { n1: "ok", pricing: "ok" },
+      execution_metrics: warnedStrategyMetrics(child, {
+        [child]: { occurrence: "pricing", node_id: "aggregate", label: "Aggregate" },
+      }),
+    }))
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
+    })
+
+    // The child shows through its collapsed occurrence's card.
+    await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "warning", pricing: "warning" }))
+  })
+
+  it("does not place a diagnostic's key that neither the answer nor the metrics address", async () => {
+    // The canvas node n0 is the answer's key k0; the diagnostic's key "n0" is addressed nowhere,
+    // so it is not guessed to be the pipeline node of that id.
+    const metrics = warnedStrategyMetrics("n0")
+    delete metrics.node_addresses.n0
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    mockPreview.mockResolvedValue(makePreviewResponse({
+      status: "ok",
+      node_statuses: { n1: "ok", k0: "ok" },
+      node_addresses: { ...rootAddresses("n1"), k0: { occurrence: null, node_id: "n0", label: "n0" } },
+      execution_metrics: metrics,
+    }))
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "warning", n0: "ok" }))
+  })
+
   it("promotes successful schema-warning results to warning-complete", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockPreview.mockResolvedValue(makePreviewResponse({

@@ -1167,6 +1167,9 @@ def _execute_graph_core(
     seed_plan_request: SeedPlanRequest | None,  # pragma: no mutate
 ) -> dict[str, NodeResult]:
     """One preview execution, under its leased seed plan when it has one."""
+    # The metrics address the nodes they name from the graph executed, also when a cached
+    # answer is served without walking it, or the run fails before the walk.
+    execution_context.provenance.record_node_addresses(graph)
     # Include enforce_contracts in the cache key so a toggle flips
     # between distinct cache slots instead of serving a stale entry
     # computed under a different enforcement mode.  Without this, the

@@ -310,6 +310,34 @@ describe("DataPreview", () => {
     expect(screen.queryByText(/Boundaries:/)).not.toBeInTheDocument()
   })
 
+  it("names a projection boundary's node by its label and occurrence, not its key", () => {
+    const key = "submodel_runtime/market/competitor_premiums"
+    const metrics = makeExecutionMetricsFixture({
+      memory_pressure_events: [],
+      node_addresses: { [key]: { occurrence: "market", node_id: "competitor_premiums", label: "Competitor premiums" } },
+      execution_strategy: {
+        schema_version: 1,
+        status: "boundary",
+        strategy: "unprojected-streaming-boundary",
+        profile: "preview_eager",
+        boundedness: "bounded",
+        reason_code: "unprojected_streaming_boundary",
+        detail_state: "available",
+        boundaries: { state: "available", total_count: 1, items: [{ topological_rank: 0, node_id: key, operator: "dataInput", boundary_kind: "unprojected-streaming-boundary" }] },
+        reasons: { state: "available", total_count: 0, items: [] },
+        provenance: { state: "available", total_count: 0, items: [] },
+        blocking_node_id: key,
+        blocking_operator: "dataInput",
+        remediation: "Narrow the requested output or define the node's columns.",
+      },
+    })
+    render(<DataPreview data={makePreview({ execution_metrics: metrics })} />)
+
+    fireEvent.click(screen.getByLabelText("Preview execution warning details"))
+    expect(screen.getByText(/at 'Competitor premiums in market' \(dataInput\)/)).toBeInTheDocument()
+    expect(screen.queryByText(/competitor_premiums/)).not.toBeInTheDocument()
+  })
+
   it("keeps an admitted materialisation-only boundary silent unless memory pressure is reported", () => {
     const metrics = makeExecutionMetricsFixture({
       memory_pressure_events: [],

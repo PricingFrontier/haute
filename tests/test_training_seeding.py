@@ -28,7 +28,7 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._execution_schemas import ExecutionMetricsPayload
-from haute._node_addresses import resolved_request
+from haute._node_addresses import named_keys, resolved_request
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._project_context import context_thread
@@ -949,6 +949,11 @@ def test_job_metrics_keep_parent_preparation_with_child_evidence(
         ("src", "reused", None),
         ("src", "reused", "source_unavailable"),
     ]
+    # They address every node they name, the parent's preparation as well as the child's.
+    for run in (first, second, third):
+        named = named_keys(ExecutionMetricsPayload, run.metrics)
+        assert "src" in named
+        assert set(run.metrics["node_addresses"]) == named
     assert first.captures == {"B": "published"}
     assert set(second.seeds) == {"B"}
     assert third.captures == {"B": "published"}

@@ -180,8 +180,12 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
         ),
         (
             ExecutionMetricsPayload,
-            ["cache_direct_fallbacks"],
+            ["node_addresses", "cache_direct_fallbacks"],
             {
+                "node_addresses": {
+                    "type": "object",
+                    "additionalProperties": "ref:NodeAddressEntry",
+                },
                 "cache_direct_fallbacks": {"type": "integer"},
                 "schema_version": {"type": "integer", "default": 1},
                 "operation": {"type": "string", "default": ""},
