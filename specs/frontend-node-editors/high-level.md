@@ -605,7 +605,8 @@ pointing at or focusing a card tints that step's line range (every line of a ste
 spans several), pointing at a line highlights its card, and clicking a line opens that
 card (a line of the start step focuses the start selector). The code fades, with a
 "rendering…" note, only when a render is still pending after 400 ms, so typing does not
-flicker it. A step being built is not an error yet: while no run has failed on the node, a
+flicker it. Until a node's first render has answered, the code is a blank line, never "No
+code yet.", which is said only when there is no code to show and none is pending. A step being built is not an error yet: while no run has failed on the node, a
 render problem is shown as a neutral note, never in the error colour, and the switch to
 code stays disabled. While the latest render fails, the panel keeps the last good code
 dimmed and labelled out of date; a failure that names a step reads "Step 3 isn't finished:

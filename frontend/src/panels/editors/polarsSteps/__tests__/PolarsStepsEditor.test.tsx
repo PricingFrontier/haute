@@ -937,4 +937,13 @@ describe("GeneratedCodePanel", () => {
     expect(pre().style.opacity).toBe("1")
     expect(screen.queryByText("rendering…")).not.toBeInTheDocument()
   })
+
+  it("says there is no code only when a render has none, never while the first render is pending", () => {
+    const props = { start: "input" as const, code: "", error: null }
+    const { rerender } = render(<GeneratedCodePanel {...props} pending />)
+    expect(screen.queryByText("No code yet.")).not.toBeInTheDocument()
+
+    rerender(<GeneratedCodePanel {...props} pending={false} />)
+    expect(screen.getByText("No code yet.")).toBeInTheDocument()
+  })
 })
