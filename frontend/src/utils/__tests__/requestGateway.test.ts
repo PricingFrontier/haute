@@ -6,15 +6,18 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import { makeIdentifiedNode, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
 import type { GraphPayload, PreparedGraph } from "../../api/types"
-import { childAddress, nodeFrame, rootAddress } from "../nodeAddress"
+import { addressKey, childAddress, nodeFrame, rootAddress } from "../nodeAddress"
 import {
   RequestScopeError,
   addressOfRuntimeId,
   answerNodeNamer,
   canvasTarget,
   documentRequestScope,
+  prepareCanvasRequest,
   prepareNodeRequest,
   preparePipelineRequest,
+  resultKey,
+  resultKeysOf,
   runtimeNodeId,
 } from "../requestGateway"
 
@@ -136,6 +139,29 @@ describe("the request gateway", () => {
     useGraphStore.getState().exitSubmodelView()
 
     expect(request.nodeNamed("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
+  })
+
+  it("keys results by occurrence, and gives every key a deleted node's results live under", () => {
+    // A second occurrence of the same definition.
+    useGraphStore.getState().setNodes((nodes) => [...nodes, makeNode("copy", "submodel", {
+      data: { label: "copy", nodeType: "submodel", config: { definition_id: DEFINITION_ID, alias: "copy", instance_of: OCCURRENCE } },
+    })])
+    expect(resultKey("workbench_input")).toBe("workbench_input")
+    // An occurrence takes its children's results with it.
+    expect(resultKeysOf(OCCURRENCE)).toEqual([
+      OCCURRENCE,
+      addressKey(childAddress(OCCURRENCE, "bands")),
+      addressKey(childAddress(OCCURRENCE, "tables")),
+    ])
+
+    open()
+    expect(resultKey("bands")).toBe(addressKey(childAddress(OCCURRENCE, "bands")))
+    expect(prepareCanvasRequest(documentRequestScope, "bands").resultKey).toBe(resultKey("bands"))
+    // A definition's child leaves every occurrence.
+    expect(resultKeysOf("bands")).toEqual([
+      addressKey(childAddress(OCCURRENCE, "bands")),
+      addressKey(childAddress("copy", "bands")),
+    ])
   })
 
   it("refuses a request where there is no document to run, sending nothing", () => {

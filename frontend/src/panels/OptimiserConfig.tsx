@@ -23,7 +23,7 @@ import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
 import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
-import { useGraph, useRequestScope } from "./useGraph"
+import { useGraph, useRequestScope, useResultKey } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
@@ -74,9 +74,10 @@ export default function OptimiserConfig({
 }: OptimiserConfigProps) {
   const requestScope = useRequestScope()
   const { allNodes, edges, submodels } = useGraph()
-  // ── Store-backed state (survives panel unmount) ──
-  const solveJob = useNodeResultsStore((s) => s.solveJobs[nodeId])
-  const cachedResult = useNodeResultsStore((s) => s.solveResults[nodeId])
+  // ── Store-backed state (survives panel unmount), under the node's result key ──
+  const resultKey = useResultKey(nodeId) ?? nodeId
+  const solveJob = useNodeResultsStore((s) => s.solveJobs[resultKey])
+  const cachedResult = useNodeResultsStore((s) => s.solveResults[resultKey])
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
@@ -283,13 +284,13 @@ export default function OptimiserConfig({
   const handleStop = useCallback(async () => {
     setStopping(true)
     try {
-      await stopOptimiserSolve(nodeId)
+      await stopOptimiserSolve(resultKey)
     } catch (error) {
       useToastStore.getState().addToast("error", `Could not stop the optimisation: ${apiErrorMessage(error)}`)
     } finally {
       setStopping(false)
     }
-  }, [nodeId])
+  }, [resultKey])
 
   const effectiveBandingSource = effectiveBandingNode?.name ?? ""
 

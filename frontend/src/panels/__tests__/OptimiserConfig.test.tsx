@@ -67,6 +67,8 @@ vi.mock("../../hooks/useDataInputColumns", () => ({
 }))
 import { useDataInputColumns } from "../../hooks/useDataInputColumns"
 import { documentRequestScope } from "../../utils/requestGateway"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
+import { makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 const mockUseDataInputColumns = vi.mocked(useDataInputColumns)
 
 vi.mock("../../hooks/useConstraintHandlers", () => ({
@@ -340,7 +342,7 @@ beforeEach(() => {
   useGraphStore.getState().resetForTests()
   useGraphStore.setState({ structuralVersion: INITIAL_STRUCTURAL_VERSION })
   useUIStore.setState({ optimiserPanes: {} })
-  useOptimiserPublishStore.setState({ byNode: {} })
+  useOptimiserPublishStore.setState({ byResultKey: {} })
   useNodeResultsStore.setState({
     solveJobs: {},
     solveResults: {},
@@ -3893,5 +3895,174 @@ describe("OptimiserConfig factors table", () => {
     renderConfig(analysisProps({ analysis_columns: ["region"] }))
     showPane("solve")
     expect(screen.getByText("Config changed since last solve")).toBeInTheDocument()
+  })
+})
+
+describe("Solving a child of a submodel with two occurrences", () => {
+  // The owner "pricing" and its read-only copy "pricing_copy" show the same child, opt_1.
+  const OWNER = { instanceId: "pricing", definitionId: "pricing" }
+  const COPY = { instanceId: "pricing_copy", definitionId: "pricing" }
+  const ownerKey = addressKey(childAddress(OWNER.instanceId, "opt_1"))
+  const copyKey = addressKey(childAddress(COPY.instanceId, "opt_1"))
+  const CONFIG = { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 35 } } }
+
+  function loadOccurrences() {
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing",
+      file: "modules/pricing.py",
+      graph: {
+        nodes: [makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Optimiser", nodeType: "optimiser", config: CONFIG } })],
+        edges: [],
+      },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "opt_1", handleId: null }] }],
+      outputPorts: [],
+    }
+    const occurrence = (id: string, instanceOf?: string) => makeIdentifiedNode(id, "submodel", {
+      data: {
+        label: id,
+        nodeType: "submodel",
+        config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) },
+      },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [makeIdentifiedNode("source", "dataInput"), occurrence(OWNER.instanceId), occurrence(COPY.instanceId, OWNER.instanceId)],
+      edges: [
+        { id: "feed", source: "source", target: OWNER.instanceId, targetHandle: "in__policy" },
+        { id: "feed_copy", source: "source", target: COPY.instanceId, targetHandle: "in__policy" },
+      ],
+      preamble: "",
+      submodels: { pricing: definition },
+    })
+  }
+
+  /** Open `view` and render the child's editor there. */
+  function renderIn(view: typeof OWNER, overrides: MakePropsOverrides = {}) {
+    act(() => {
+      const store = useGraphStore.getState()
+      if (store.focus) store.exitSubmodelView()
+      store.enterSubmodelView(view)
+    })
+    return renderConfig(makeProps({ config: CONFIG, ...overrides }))
+  }
+
+  /** What the background poller does: complete every running solve under the key it is kept under. */
+  function completeRunningSolves() {
+    act(() => {
+      for (const key of Object.keys(useNodeResultsStore.getState().solveJobs)) {
+        useNodeResultsStore.getState().completeSolveJob(key, makeSolveResult({ converged: true, iterations: 15 }))
+      }
+    })
+  }
+
+  beforeEach(() => {
+    loadOccurrences()
+  })
+
+  it("keeps a solve completed in the owner's child out of the copy's", async () => {
+    mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_owner", error: null })
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+    await waitFor(() => expect(useNodeResultsStore.getState().solveJobs[ownerKey]?.jobId).toBe("job_owner"))
+    expect(useNodeResultsStore.getState().solveJobs.opt_1).toBeUndefined()
+
+    completeRunningSolves()
+    expect(screen.getByText(/15 iterations/)).toBeInTheDocument()
+
+    cleanup()
+    renderIn(COPY, { activePane: "solve" })
+    expect(screen.queryByText(/15 iterations/)).not.toBeInTheDocument()
+    expect(useNodeResultsStore.getState().solveResults[copyKey]).toBeUndefined()
+  })
+
+  it("keeps a solve started in the owner with the owner when its start is answered after leaving it, and stops it there", async () => {
+    let respond: (value: unknown) => void = () => {}
+    mockSolveOptimiser.mockReturnValue(new Promise((resolve) => { respond = resolve }))
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+    await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+
+    // Navigating away unmounts the panel before the start is answered.
+    cleanup()
+    renderIn(COPY, { activePane: "solve" })
+    await act(async () => {
+      respond({ status: "started", job_id: "job_owner", error: null })
+    })
+
+    expect(useNodeResultsStore.getState().solveJobs[ownerKey]?.jobId).toBe("job_owner")
+    expect(useNodeResultsStore.getState().solveJobs[copyKey]).toBeUndefined()
+    expect(useNodeResultsStore.getState().solveJobs.opt_1).toBeUndefined()
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument()
+
+    cleanup()
+    mockCancelOptimiserSolve.mockResolvedValue({
+      status: "cancelled",
+      progress: 0.4,
+      message: "Cancelled by user",
+      elapsed_seconds: 3,
+      result: null,
+      frontier: null,
+      terminal_reason: "cancelled",
+      execution_metrics: null,
+    })
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+    await waitFor(() => expect(useNodeResultsStore.getState().solveJobs[ownerKey]).toBeUndefined())
+    expect(mockCancelOptimiserSolve).toHaveBeenCalledWith("job_owner")
+    expect(useNodeResultsStore.getState().solveResults[ownerKey]?.failedAttempt?.error).toBe("Cancelled by user")
+    expect(useNodeResultsStore.getState().solveResults[copyKey]).toBeUndefined()
+  })
+
+  it("records a solve refused after leaving the owner with the owner", async () => {
+    let refuse: (reason: unknown) => void = () => {}
+    mockSolveOptimiser.mockReturnValue(new Promise((_, reject) => { refuse = reject }))
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+    await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+
+    cleanup()
+    renderIn(COPY, { activePane: "solve" })
+    await act(async () => {
+      refuse(new Error("The solver ran out of memory"))
+    })
+
+    expect(useNodeResultsStore.getState().solveResults[ownerKey]?.failedAttempt?.error).toContain("The solver ran out of memory")
+    expect(useNodeResultsStore.getState().solveResults[copyKey]).toBeUndefined()
+    expect(useNodeResultsStore.getState().solveResults.opt_1).toBeUndefined()
+    expect(screen.queryByText(/The solver ran out of memory/)).not.toBeInTheDocument()
+  })
+
+  it("keeps a frontier choice and a save made in the owner's Export pane out of the copy's", async () => {
+    const frontier = makeOnlineFrontier(2)
+    const solved = (jobId: string) => ({
+      result: makeSolveResult(),
+      originalResult: makeSolveResult(),
+      jobId,
+      configHash: solveConfigHash(CONFIG),
+      source: "live",
+      structuralVersion: useGraphStore.getState().structuralVersion,
+      constraints: {},
+      nodeLabel: "Optimiser",
+      frontier,
+      selectedPointIndex: null,
+    })
+    useNodeResultsStore.setState({ solveResults: { [ownerKey]: solved("job_owner"), [copyKey]: solved("job_copy") } })
+    mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "p", apply_path: "rating/files/models/owner.json", message: "" })
+    const saveButton = () => screen.getByRole("button", { name: /^Save (to file|outdated result)$/ })
+
+    renderIn(OWNER, { activePane: "export" })
+    fireEvent.change(screen.getByRole("combobox", { name: "Result to publish" }), { target: { value: "1" } })
+    expect(useNodeResultsStore.getState().solveResults[ownerKey]?.selectedPointIndex).toBe(1)
+    expect(useNodeResultsStore.getState().solveResults[copyKey]?.selectedPointIndex).toBeNull()
+    fireEvent.click(saveButton())
+    await waitFor(() => expect(mockSaveOptimiser).toHaveBeenCalledWith(expect.objectContaining({ job_id: "job_owner", point_index: 1 })))
+    expect(await screen.findByTestId("optimiser-save-receipt")).toHaveTextContent("rating/files/models/owner.json")
+    expect(useOptimiserPublishStore.getState().byResultKey[ownerKey]?.saveReceipt?.apply_path).toBe("rating/files/models/owner.json")
+    expect(useOptimiserPublishStore.getState().byResultKey.opt_1).toBeUndefined()
+
+    cleanup()
+    renderIn(COPY, { activePane: "export" })
+    expect(screen.getByRole("combobox", { name: "Result to publish" })).toHaveValue("")
+    expect(saveButton()).toBeInTheDocument()
+    expect(screen.queryByTestId("optimiser-save-receipt")).not.toBeInTheDocument()
   })
 })

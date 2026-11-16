@@ -1,4 +1,4 @@
-import { useRequestScope } from "../panels/useGraph"
+import { useRequestScope, useResultKey } from "../panels/useGraph"
 import { useCallback, useState, useEffect, useRef, useMemo } from "react"
 import { previewNode } from "../api/client"
 import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphStore"
@@ -24,8 +24,9 @@ const EMPTY_COLUMNS: DataInputColumn[] = []
  * Reads the active source from useSettingsStore so source-switch nodes
  * resolve through the same path as the normal preview.
  * Uses AbortController to cancel stale requests on rapid input switching.
- * Cache is keyed by (nodeId, source) so switching sources doesn't serve
- * stale columns from a different data path.
+ * Cache is keyed by (the input's result key, source) so switching sources
+ * doesn't serve stale columns from a different data path, and an input inside
+ * a submodel keeps each occurrence's columns apart.
  */
 export function useDataInputColumns(
   dataInput: string,
@@ -46,8 +47,10 @@ export function useDataInputColumns(
     [fallbackColumns],
   )
 
-  // Source-aware cache key: "nodeId:source"
-  const cacheKey = dataInput ? `${dataInput}:${activeSource}` : ""
+  // Source-aware cache key: "<result key>:source", the input's result key
+  // taken here and used after the fetch.
+  const inputKey = useResultKey(dataInput)
+  const cacheKey = inputKey ? `${inputKey}:${activeSource}` : ""
 
   // Split into two leaf selectors so Zustand's Object.is check works
   // (avoids creating a new object on every store update)
@@ -122,7 +125,7 @@ export function useDataInputColumns(
       }
       return
     }
-    if (!dataInput) {
+    if (!dataInput || !inputKey) {
       if (fallbackColumnsFingerprint !== prevColumnFingerprint.current) {
         prevColumnFingerprint.current = fallbackColumnsFingerprint
         setDataInputColumns(fallbackColumnsRef.current)
@@ -164,7 +167,7 @@ export function useDataInputColumns(
           prevColumnFingerprint.current = fingerprint
           setDataInputColumns(result.columns)
         }
-        setColumnsCache(dataInput, result.columns, requestStructuralVersion, activeSource)
+        setColumnsCache(inputKey, result.columns, requestStructuralVersion, activeSource)
       })
       .catch((e) => {
         if (e instanceof DOMException && e.name === "AbortError") return
@@ -180,6 +183,7 @@ export function useDataInputColumns(
   }, [
     requestScope,
     dataInput,
+    inputKey,
     structuralVersion,
     graphFingerprint,
     submodels,

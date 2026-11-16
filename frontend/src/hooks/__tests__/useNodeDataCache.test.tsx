@@ -37,8 +37,9 @@ import {
   getNodeDataPoint,
   runNodeData,
 } from "../../api/client"
-import { makeNodeDataStatus } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNodeDataStatus } from "../../test-utils/factories"
 import { resultKey } from "../../utils/requestGateway"
+import { COPY, OWNER, childKey, loadTwoOccurrences, openOccurrence } from "../../testSupport/twoOccurrencesFixture"
 
 const mockGetPoint = vi.mocked(getNodeDataPoint)
 const mockRun = vi.mocked(runNodeData)
@@ -164,6 +165,39 @@ describe("useNodeDataCache", () => {
     // Neither the id the answer names nor the bare local id: another occurrence's child shares it.
     expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("explore")
     expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("submodel_runtime/pricing/explore")
+  })
+
+  it("answers the Refresh and Stop of its own occurrence only", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    mockGetPoint.mockResolvedValue(point({ consumer_node_id: "submodel_runtime/pricing/explore", state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-owner",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: canvas.find((node) => node.id === "explore") ?? null, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    // The copy's Refresh asks nothing of the owner's consumer; the owner's builds its data.
+    act(() => refreshNodeDataCache(childKey(COPY, "explore")))
+    expect(mockRun).not.toHaveBeenCalled()
+    act(() => refreshNodeDataCache(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledOnce())
+    expect(mockRun.mock.calls[0][0].node_id).toBe("submodel_runtime/pricing/explore")
+    await waitFor(() => expect(Object.values(useNodeWorkStore.getState().running)).toEqual([childKey(OWNER, "explore")]))
+
+    // Likewise its Stop.
+    await act(async () => stopNodeWork(childKey(COPY, "explore")))
+    expect(mockCancel).not.toHaveBeenCalled()
+    await act(async () => stopNodeWork(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-owner"))
   })
 
   it("holds a refused point as the node's state, not a toast", async () => {

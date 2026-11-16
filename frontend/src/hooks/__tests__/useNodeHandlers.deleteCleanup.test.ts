@@ -19,7 +19,7 @@ vi.mock("../../utils/layout", () => ({
 function makeParams() {
   return {
     nodeIdCounter: { current: 10 },
-    lastSelectedNodeRef: { current: null as Node | null },
+    lastSelectedKeyRef: { current: null as string | null },
     setNodes: vi.fn(),
     setNodesAndEdges: vi.fn(),
     setSelectedNode: vi.fn(),

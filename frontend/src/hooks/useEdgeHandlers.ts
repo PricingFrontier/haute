@@ -53,6 +53,7 @@ import type { FetchPreviewOptions } from "./usePipelineAPI"
 import { createAfterIdentity } from "./createAfterIdentity"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SimpleNode } from "../panels/editors/_shared"
+import { resultKey } from "../utils/requestGateway"
 
 const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 const JSON_API_INPUT_SUFFIXES = [".json", ".jsonl", ".ndjson"] as const
@@ -129,7 +130,8 @@ type UseEdgeHandlersParams = {
   selectedNode: Node | null
   submodels?: Record<string, unknown>
   nodeIdCounter: MutableRefObject<number>
-  lastSelectedNodeRef: MutableRefObject<Node | null>
+  /** The result key of the node whose panel is open (`resultKey`). */
+  lastSelectedKeyRef: MutableRefObject<string | null>
   setNodes: (updater: (nds: Node[]) => Node[]) => void
   setEdges: (updater: (eds: Edge[]) => Edge[]) => void
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -167,7 +169,7 @@ export default function useEdgeHandlers({
   
   submodels,
   nodeIdCounter: nodeIdCounterRef,
-  lastSelectedNodeRef,
+  lastSelectedKeyRef,
   setNodes,
   setEdges,
   setNodesRaw,
@@ -385,7 +387,7 @@ export default function useEdgeHandlers({
             setEdgesRaw(next.edges)
             setSelectedNode(selected)
             setLastSelectedId?.(selected?.id ?? null)
-            lastSelectedNodeRef.current = selected
+            lastSelectedKeyRef.current = selected ? resultKey(selected.id) : null
             clearTrace()
             cancelPreview()
           },
@@ -517,7 +519,7 @@ export default function useEdgeHandlers({
       findEdgeIdAtPoint,
       
       isPaneAtPoint,
-      lastSelectedNodeRef,
+      lastSelectedKeyRef,
       nodeIdCounterRef,
       pushSnapshot,
       reportConnectionValidationFailure,
@@ -607,7 +609,7 @@ export default function useEdgeHandlers({
       setEdgesRaw([...graph.edges, nextEdge])
       setSelectedNode(created)
       setLastSelectedId?.(id)
-      lastSelectedNodeRef.current = created
+      lastSelectedKeyRef.current = resultKey(created.id)
       clearTrace()
       cancelPreview()
     })
@@ -617,7 +619,7 @@ export default function useEdgeHandlers({
     connectionDropMenu,
     createNodeAfterIdentity,
     
-    lastSelectedNodeRef,
+    lastSelectedKeyRef,
     nodeIdCounterRef,
     pushSnapshot,
     reportConnectionValidationFailure,
@@ -636,21 +638,22 @@ export default function useEdgeHandlers({
       // Canvas click or multi-select: deselect but keep panel showing last node
       setSelectedNode(null)
       clearTrace()
-      // Don't clear previewData or lastSelectedNodeRef -- panel stays visible
+      // Don't clear previewData or lastSelectedKeyRef -- panel stays visible
     }
   }, [setSelectedNode, clearTrace, graphRefreshingRef])
 
-  /** Opens a node's panel, refreshing its preview when it is a different node. */
+  /**
+   * Opens a node's panel, refreshing its preview when it is a different node. Nodes are
+   * told apart by result key: a child of the same id in another occurrence is another node.
+   */
   const openNode = useCallback((node: Node) => {
-    const previousNodeId = lastSelectedNodeRef.current
-      ? lastSelectedNodeRef.current.id
-      : selectedNode === node
-        ? selectedNode.id
-        : undefined
-    const shouldRefreshPreview = previousNodeId !== node.id
+    const key = resultKey(node.id)
+    const previousKey = lastSelectedKeyRef.current
+      ?? (selectedNode === node ? key : undefined)
+    const shouldRefreshPreview = previousKey !== key
     setSelectedNode(node)
     setLastSelectedId?.(node.id)
-    lastSelectedNodeRef.current = node
+    lastSelectedKeyRef.current = key
     if (!shouldRefreshPreview) return
 
     clearTrace()
@@ -670,7 +673,7 @@ export default function useEdgeHandlers({
     shouldSkipAutomaticPreview,
     clearTrace,
     setPreviewData,
-    lastSelectedNodeRef,
+    lastSelectedKeyRef,
     setLastSelectedId,
   ])
 

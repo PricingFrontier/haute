@@ -35,6 +35,7 @@ import { SummaryTab } from "./modelling/SummaryTab"
 import { diagnosticsRowCount, diagnosticsSetLabel, headlineMetrics } from "./modelling/diagnosticsSet"
 import { shownFit } from "./modelling/lossHistory"
 import ResultsWorkspace from "./ResultsWorkspace"
+import { useResultKey } from "./useGraph"
 
 export type ModellingPreviewData = {
   result: TrainResult
@@ -47,6 +48,7 @@ export type ModellingPreviewData = {
 
 interface ModellingPreviewProps {
   data: ModellingPreviewData
+  /** The node on the canvas. */
   nodeId: string
   onRefresh?: () => void
 }
@@ -133,8 +135,10 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
     onSearch: setFeatureSearch,
   }
 
+  // A running retrain of this node, kept under its result key (its occurrence's own inside a submodel).
+  const resultKey = useResultKey(nodeId) ?? nodeId
   const trainProgress: TrainProgress | null = useNodeResultsStore(
-    (s) => s.trainJobs[nodeId]?.progress ?? null,
+    (s) => s.trainJobs[resultKey]?.progress ?? null,
   )
 
   const availableTabs = TAB_KEYS.filter((t) => {

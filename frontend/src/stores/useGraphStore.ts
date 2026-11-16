@@ -666,15 +666,20 @@ function computePanelContextPatch(
 
 type GraphFields = Pick<GraphStore, "nodes" | "edges" | "preamble" | "submodels" | "globalConstants" | "focus">
 
-/** The structural fingerprint of the canvas, its definitions, and which view it is. */
+/**
+ * The structural fingerprint of the document: the pipeline's own nodes and edges (also
+ * while a submodel is open), every definition, the preamble and the constants. It is the
+ * clock results are checked against, so opening or leaving a submodel leaves it as it
+ * is, and an edit inside one moves it through the definition.
+ */
 function structuralFingerprintOf(fields: GraphFields): string {
   return computeStructuralFingerprint(
-    fields.nodes,
-    fields.edges,
+    documentNodes(fields),
+    documentEdges(fields),
     fields.preamble,
     fields.globalConstants,
     fields.submodels,
-  ) + (fields.focus ? `||focus:${focusKey(fields.focus)}` : "")
+  )
 }
 
 /** The persisted fingerprint of the document the fields hold. */

@@ -7,9 +7,10 @@
  * and the hook together — they're inseparable in practice.
  */
 
-import { createContext, useContext } from "react"
+import { createContext, useContext, useMemo } from "react"
 import type { SimpleNode, SimpleEdge } from "./editors/_shared"
-import { documentRequestScope, type RequestScope } from "../utils/requestGateway"
+import useGraphStore from "../stores/useGraphStore"
+import { documentRequestScope, resultKey, type RequestScope } from "../utils/requestGateway"
 
 /** Shape exposed by `useGraph()`. */
 export type GraphContextValue = {
@@ -56,4 +57,19 @@ export function useGraph(): GraphContextValue {
 export function useRequestScope(): RequestScope | null {
   const ctx = useContext(GraphContext)
   return ctx === undefined ? documentRequestScope : ctx.requestScope
+}
+
+/**
+ * The key `nodeId`'s results are kept under (`resultKey`), renewed when the open view
+ * changes; null without a node. Read in render, and taken before any await. A view of a
+ * saved version (no request scope) is not the open document's, so its nodes keep their ids.
+ */
+export function useResultKey(nodeId: string | null | undefined): string | null {
+  const occurrence = useGraphStore((state) => state.focus?.instanceId ?? null)
+  const scope = useRequestScope()
+  return useMemo(() => {
+    void occurrence
+    if (!nodeId) return null
+    return scope === null ? nodeId : resultKey(nodeId)
+  }, [nodeId, occurrence, scope])
 }

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import type { Node } from "@xyflow/react"
 import useGraphStore from "../useGraphStore"
 import useToastStore from "../useToastStore"
+import { isSolveResultStale, solveConfigHash } from "../../panels/optimiser/solveActions"
 import { makeIdentifiedNode, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
 
@@ -395,6 +396,24 @@ describe("useGraphStore with a submodel open", () => {
     expect(advances(() => store().redo())).toBe(true)
     expect(advances(() => store().exitSubmodelView())).toBe(true)
     expect(advances(() => load())).toBe(true)
+  })
+
+  it("keeps results current across a visit to a submodel: the structural clock is the document's", () => {
+    const before = store().structuralVersion
+    // A solve finished on the main pipeline, stamped with the clock as it stood.
+    const config = { objective: "profit" }
+    const solved = { configHash: solveConfigHash(config), source: "live", structuralVersion: before }
+
+    store().enterSubmodelView(OPEN)
+    expect(store().structuralVersion).toBe(before)
+    store().exitSubmodelView()
+    expect(store().structuralVersion).toBe(before)
+    expect(isSolveResultStale(solved, config, "live", store().structuralVersion)).toBe(false)
+
+    // A structural edit inside the submodel moves it: the definition changed.
+    store().enterSubmodelView(OPEN)
+    store().setNodes((nodes) => [...nodes, makeIdentifiedNode("extra")])
+    expect(store().structuralVersion).toBeGreaterThan(before)
   })
 
   it("refuses to leave a view that is not open", () => {

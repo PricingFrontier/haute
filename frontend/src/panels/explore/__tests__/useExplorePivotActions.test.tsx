@@ -144,7 +144,7 @@ describe("useExplorePivotActions", () => {
     for (let consumer = 0; consumer < consumers; consumer += 1) {
       renderHook(() => {
         const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
-        useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+        useAutoUpdateExplorePivots({ nodeKey: actions.resultKey, pivots, report, ...actions })
         return actions
       })
     }
@@ -175,7 +175,7 @@ describe("useExplorePivotActions", () => {
     })
     renderHook(() => {
       const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
-      useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+      useAutoUpdateExplorePivots({ nodeKey: actions.resultKey, pivots, report, ...actions })
       return actions
     })
     expect(mockRunExplorePivot).not.toHaveBeenCalled()

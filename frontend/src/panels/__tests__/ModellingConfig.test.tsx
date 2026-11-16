@@ -3,7 +3,7 @@ import { act, render, screen, fireEvent, cleanup, waitFor, within } from "@testi
 import ModellingConfig from "../ModellingConfig"
 import { ApiError } from "../../api/client"
 import { trainingIdentityConfig } from "../../utils/modellingExportConfig"
-import { trainingLineage } from "../../utils/trainedJobHandles"
+import { readTrainedJobHandle, trainingLineage, writeTrainedJobHandle } from "../../utils/trainedJobHandles"
 import { documentGraphPayload } from "../../utils/buildGraph"
 import { runDispersionEstimate } from "../../api/dispersion"
 import type { Node } from "@xyflow/react"
@@ -24,6 +24,7 @@ import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/typ
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { makeIdentifiedNode, makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
 import { documentRequestScope } from "../../utils/requestGateway"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -3233,5 +3234,199 @@ describe("ModellingConfig", () => {
         })
       })
     })
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════
+// Two occurrences of one submodel
+// ═════════════════════════════════════════════════════════════════
+
+describe("Training a child of a submodel with two occurrences", () => {
+  // The owner "pricing" and its read-only copy "pricing_copy" show the same child, node_1.
+  const OWNER = { instanceId: "pricing", definitionId: "pricing" }
+  const COPY = { instanceId: "pricing_copy", definitionId: "pricing" }
+  const ownerKey = addressKey(childAddress(OWNER.instanceId, "node_1"))
+  const copyKey = addressKey(childAddress(COPY.instanceId, "node_1"))
+  const TRAINED = /Model trained - results in preview panel below/
+
+  function loadOccurrences() {
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing",
+      file: "modules/pricing.py",
+      graph: {
+        nodes: [makeIdentifiedNode("node_1", "modelling", { data: { label: "model", nodeType: "modelling", config: {} } })],
+        edges: [],
+      },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "node_1", handleId: null }] }],
+      outputPorts: [],
+    }
+    const occurrence = (id: string, instanceOf?: string) => makeIdentifiedNode(id, "submodel", {
+      data: {
+        label: id,
+        nodeType: "submodel",
+        config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) },
+      },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [makeIdentifiedNode("source", "dataInput"), occurrence(OWNER.instanceId), occurrence(COPY.instanceId, OWNER.instanceId)],
+      edges: [
+        { id: "feed", source: "source", target: OWNER.instanceId, targetHandle: "in__policy" },
+        { id: "feed_copy", source: "source", target: COPY.instanceId, targetHandle: "in__policy" },
+      ],
+      preamble: "",
+      submodels: { pricing: definition },
+    })
+  }
+
+  /** Open `view` and render the child's editor there, as the panel App hands it. */
+  function renderIn(view: typeof OWNER) {
+    act(() => {
+      const store = useGraphStore.getState()
+      if (store.focus) store.exitSubmodelView()
+      store.enterSubmodelView(view)
+    })
+    return renderConfig({ allNodes: useGraphStore.getState().nodes.map(toSimpleNode) })
+  }
+
+  /** What the background poller does: complete every running job under the key it is kept under. */
+  function completeRunningJobs() {
+    act(() => {
+      for (const [key, job] of Object.entries(useNodeResultsStore.getState().trainJobs)) {
+        useNodeResultsStore.getState().completeTrainJob(key, job.jobId, makeTrainResult())
+      }
+    })
+  }
+
+  beforeEach(() => {
+    defaultPane = "train"
+    loadOccurrences()
+  })
+
+  it("keeps a training completed in the owner's child out of the copy's", async () => {
+    mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_owner" })
+    renderIn(OWNER)
+    fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+    await waitFor(() => expect(useNodeResultsStore.getState().trainJobs[ownerKey]?.jobId).toBe("job_owner"))
+    expect(useNodeResultsStore.getState().trainJobs.node_1).toBeUndefined()
+
+    completeRunningJobs()
+    expect(screen.getByText(TRAINED)).toBeTruthy()
+
+    cleanup()
+    renderIn(COPY)
+    expect(screen.queryByText(TRAINED)).toBeNull()
+    expect(useNodeResultsStore.getState().trainResults[copyKey]).toBeUndefined()
+  })
+
+  it("keeps a training started in the owner with the owner when its start is answered after leaving it", async () => {
+    let respond: (value: unknown) => void = () => {}
+    mockTrainModel.mockReturnValue(new Promise((resolve) => { respond = resolve }))
+    renderIn(OWNER)
+    fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+    await waitFor(() => expect(mockTrainModel).toHaveBeenCalledTimes(1))
+
+    // Navigating away unmounts the panel before the start is answered.
+    cleanup()
+    renderIn(COPY)
+    await act(async () => {
+      respond({ status: "started", job_id: "job_owner" })
+    })
+
+    expect(useNodeResultsStore.getState().trainJobs[ownerKey]?.jobId).toBe("job_owner")
+    expect(useNodeResultsStore.getState().trainJobs[copyKey]).toBeUndefined()
+    expect(useNodeResultsStore.getState().trainJobs.node_1).toBeUndefined()
+    expect(screen.queryByRole("button", { name: /Cancel training/ })).toBeNull()
+
+    completeRunningJobs()
+    expect(screen.queryByText(TRAINED)).toBeNull()
+
+    cleanup()
+    renderIn(OWNER)
+    expect(screen.getByText(TRAINED)).toBeTruthy()
+  })
+
+  it("restores after a reload only the occurrence a remembered result was trained in", async () => {
+    useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+    mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_owner" })
+    renderIn(OWNER)
+    fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+    await waitFor(() => expect(Object.keys(useNodeResultsStore.getState().trainJobs)).toHaveLength(1))
+    completeRunningJobs()
+    cleanup()
+
+    // The page reloads: the results are gone from memory, the browser's handle stays.
+    useNodeResultsStore.setState({ trainJobs: {}, trainResults: {}, expiredTrainJobs: {} })
+    mockGetTrainStatus.mockResolvedValue({
+      status: "completed",
+      progress: 1,
+      message: "",
+      iteration: 0,
+      total_iterations: 0,
+      train_loss: {},
+      elapsed_seconds: 1,
+      result: makeTrainResult(),
+    })
+    renderIn(COPY)
+    await act(async () => {})
+    expect(mockGetTrainStatus).not.toHaveBeenCalled()
+    expect(useNodeResultsStore.getState().trainResults[copyKey]).toBeUndefined()
+    expect(useNodeResultsStore.getState().trainResults.node_1).toBeUndefined()
+
+    cleanup()
+    renderIn(OWNER)
+    await waitFor(() => expect(useNodeResultsStore.getState().trainResults[ownerKey]?.jobId).toBe("job_owner"))
+    expect(mockGetTrainStatus).toHaveBeenCalledWith("job_owner", expect.anything())
+  })
+
+  it("records a start refused after leaving the owner with the owner", async () => {
+    let refuse: (reason: unknown) => void = () => {}
+    mockTrainModel.mockReturnValue(new Promise((_, reject) => { refuse = reject }))
+    renderIn(OWNER)
+    fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+    await waitFor(() => expect(mockTrainModel).toHaveBeenCalledTimes(1))
+
+    cleanup()
+    renderIn(COPY)
+    await act(async () => {
+      refuse(new Error("Not enough memory to train"))
+    })
+
+    expect(useNodeResultsStore.getState().trainResults[ownerKey]?.error).toContain("Not enough memory to train")
+    expect(useNodeResultsStore.getState().trainResults[copyKey]).toBeUndefined()
+    expect(useNodeResultsStore.getState().trainResults.node_1).toBeUndefined()
+    expect(screen.queryByText("Training failed")).toBeNull()
+  })
+
+  it("stops the owner's training from the owner and records it there", async () => {
+    mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_owner" })
+    mockCancelTrain.mockResolvedValue({
+      status: "cancelled",
+      progress: 0.3,
+      message: "Cancelled by user",
+      iteration: 3,
+      total_iterations: 10,
+      train_loss: {},
+      elapsed_seconds: 2,
+    })
+    renderIn(OWNER)
+    fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+    fireEvent.click(await screen.findByRole("button", { name: /Cancel training/ }))
+
+    await waitFor(() => expect(useNodeResultsStore.getState().trainJobs[ownerKey]).toBeUndefined())
+    expect(mockCancelTrain).toHaveBeenCalledWith("job_owner")
+    expect(useNodeResultsStore.getState().trainResults[ownerKey]?.error).toBe("Cancelled by user")
+    expect(useNodeResultsStore.getState().trainResults[copyKey]).toBeUndefined()
+  })
+
+  it("says a remembered result is gone from the server only in the occurrence it was trained in", async () => {
+    useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+    writeTrainedJobHandle("rating/main.py", ownerKey, { jobId: "job_gone", configHash: "h", source: "live", lineage: "l" })
+    mockGetTrainStatus.mockRejectedValue(Object.assign(new ApiError("HTTP 404", 404), { status: 404 }))
+
+    renderIn(OWNER)
+
+    await waitFor(() => expect(useNodeResultsStore.getState().expiredTrainJobs[ownerKey]).toBe("job_gone"))
+    expect(readTrainedJobHandle("rating/main.py", ownerKey)).toBeNull()
+    expect(useNodeResultsStore.getState().expiredTrainJobs).toEqual({ [ownerKey]: "job_gone" })
   })
 })

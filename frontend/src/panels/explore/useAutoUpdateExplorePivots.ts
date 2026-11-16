@@ -14,7 +14,8 @@ import {
 } from "./pivotConfig"
 
 type UseAutoUpdateExplorePivotsInput = {
-  nodeId: string
+  /** The Explore node's result key: its results, jobs and claims are kept under it. */
+  nodeKey: string
   pivots: readonly ExplorePivotConfig[]
   report: ExploreDataView | null
   submitting: Readonly<Record<string, boolean>>
@@ -26,14 +27,14 @@ type UseAutoUpdateExplorePivotsInput = {
 }
 
 function automaticAttemptKey(
-  nodeId: string,
+  nodeKey: string,
   pivotId: string,
   dataVersion: string,
   calculationIdentity: string,
   executionGeneration: number,
 ): string {
   return JSON.stringify([
-    nodeId,
+    nodeKey,
     pivotId,
     dataVersion,
     calculationIdentity,
@@ -46,7 +47,7 @@ function automaticAttemptKey(
  * The execution hook remains the single owner of requests and persisted jobs.
  */
 export default function useAutoUpdateExplorePivots({
-  nodeId,
+  nodeKey,
   pivots,
   report,
   submitting,
@@ -76,11 +77,11 @@ export default function useAutoUpdateExplorePivots({
       seenPivotIds.add(pivot.id)
       if (!isPivotConfigured(pivot)) continue
 
-      const resultKey = explorePivotResultKey(nodeId, pivot.id)
+      const resultKey = explorePivotResultKey(nodeKey, pivot.id)
       const cached = pivotResults[resultKey]
       const calculationIdentity = pivotCalculationIdentity(pivot)
       const attemptKey = automaticAttemptKey(
-        nodeId,
+        nodeKey,
         pivot.id,
         report.data_version,
         calculationIdentity,
@@ -127,7 +128,7 @@ export default function useAutoUpdateExplorePivots({
       // authority that serialises concurrently mounted consumers.
       const token = claimAuto(
         resultKey,
-        nodeId,
+        nodeKey,
         report.data_version,
         calculationIdentity,
       )
@@ -145,7 +146,7 @@ export default function useAutoUpdateExplorePivots({
     canExecute,
     claimAuto,
     executionGeneration,
-    nodeId,
+    nodeKey,
     pivotJobs,
     pivotResults,
     pivotStartClaims,

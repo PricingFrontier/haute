@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makeIdentifiedNode, makePreviewResponse } from "../../test-utils/factories"
+import { COPY, OWNER, childKey, loadTwoOccurrences, openOccurrence } from "../../testSupport/twoOccurrencesFixture"
 import { renderHook, cleanup, waitFor, act } from "@testing-library/react"
 import { useDataInputColumns } from "../useDataInputColumns"
 import useGraphStore from "../../stores/useGraphStore"
@@ -583,5 +584,38 @@ describe("useDataInputColumns", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.some((t) => t.type === "warning" && t.text.includes("ds1"))).toBe(true)
     })
+  })
+})
+
+describe("useDataInputColumns for a child in each occurrence of its definition", () => {
+  beforeEach(() => {
+    useNodeResultsStore.setState({ columnCache: {} })
+    useSettingsStore.setState({ activeSource: "live", sources: ["live"] })
+    mockPreview.mockReset()
+  })
+
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("keeps the owner's columns out of the copy, which fetches its own", async () => {
+    act(() => {
+      loadTwoOccurrences([makeIdentifiedNode("ds1", "dataInput")])
+      openOccurrence(OWNER)
+    })
+    mockPreview.mockResolvedValueOnce(makePreviewResponse({ node_id: "ds1", status: "ok", columns: sampleColumns }))
+    const owner = renderHook(() => useDataInputColumns("ds1", nodes, edges))
+    await waitFor(() => expect(owner.result.current).toEqual(sampleColumns))
+    expect(useNodeResultsStore.getState().columnCache).toHaveProperty([`${childKey(OWNER, "ds1")}:live`])
+    owner.unmount()
+
+    act(() => openOccurrence(COPY))
+    mockPreview.mockReturnValueOnce(new Promise(() => {}))
+    const copy = renderHook(() => useDataInputColumns("ds1", nodes, edges))
+
+    expect(copy.result.current).toEqual([])
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2))
+    expect(mockPreview).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/pricing_2/ds1" }))
   })
 })

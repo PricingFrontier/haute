@@ -70,7 +70,7 @@ function Consumer({
   pivots?: readonly ExplorePivotConfig[]
 }) {
   useAutoUpdateExplorePivots({
-    nodeId: NODE_ID,
+    nodeKey: NODE_ID,
     pivots,
     report: activeReport,
     submitting,

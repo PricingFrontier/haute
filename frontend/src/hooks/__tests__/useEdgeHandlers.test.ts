@@ -9,6 +9,8 @@ import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE, SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { validatePipelineConnection } from "../../utils/connectionValidation"
 import type { SimpleNode } from "../../panels/editors/_shared"
+import { COPY, OWNER, childKey, loadTwoOccurrences, onCanvas, openOccurrence } from "../../testSupport/twoOccurrencesFixture"
+import { makeIdentifiedNode } from "../../test-utils/factories"
 
 // Every case starts from an empty canvas.
 beforeEach(() => resetGraphStoreForTests())
@@ -28,7 +30,7 @@ function makeParams() {
   return {
     selectedNode: null as Node | null,
     nodeIdCounter: { current: 0 },
-    lastSelectedNodeRef: { current: null as Node | null },
+    lastSelectedKeyRef: { current: null as string | null },
     setNodes: vi.fn((updater: (nds: Node[]) => Node[]) => updater([])),
     setEdges: vi.fn((updater: (eds: Edge[]) => Edge[]) => updater([])),
     setNodesRaw: vi.fn(),
@@ -1075,7 +1077,7 @@ describe("useEdgeHandlers", () => {
       selected: true,
     })
     expect(params.setSelectedNode).toHaveBeenCalledWith(edgeJoin)
-    expect(params.lastSelectedNodeRef.current).toBe(edgeJoin)
+    expect(params.lastSelectedKeyRef.current).toBe(edgeJoin?.id)
 
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
     expect(nextEdges).toEqual(expect.arrayContaining([
@@ -1276,7 +1278,7 @@ describe("useEdgeHandlers", () => {
       selected: true,
     })
     expect(params.setSelectedNode).toHaveBeenCalledWith(edgeJoin)
-    expect(params.lastSelectedNodeRef.current).toBe(edgeJoin)
+    expect(params.lastSelectedKeyRef.current).toBe(edgeJoin?.id)
 
     const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
     expect(nextEdges).toEqual([
@@ -1446,7 +1448,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.clearTrace).toHaveBeenCalled()
     expect(params.cancelPreview).toHaveBeenCalledOnce()
-    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.lastSelectedKeyRef.current).toBe(node.id)
     expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
   })
 
@@ -1467,7 +1469,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.clearTrace).toHaveBeenCalled()
     expect(params.cancelPreview).toHaveBeenCalledOnce()
-    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.lastSelectedKeyRef.current).toBe(node.id)
     expect(params.fetchPreview).toHaveBeenCalledWith(node, {
       debounceMs: 800,
     })
@@ -1490,7 +1492,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.clearTrace).toHaveBeenCalled()
     expect(params.cancelPreview).toHaveBeenCalledOnce()
-    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.lastSelectedKeyRef.current).toBe(node.id)
     expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
   })
 
@@ -1511,7 +1513,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.clearTrace).toHaveBeenCalled()
     expect(params.cancelPreview).toHaveBeenCalledOnce()
-    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.lastSelectedKeyRef.current).toBe(node.id)
     expect(params.fetchPreview).toHaveBeenCalledWith(node, {})
   })
 
@@ -1536,7 +1538,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.clearTrace).toHaveBeenCalled()
     expect(params.cancelPreview).toHaveBeenCalledOnce()
-    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.lastSelectedKeyRef.current).toBe(node.id)
     expect(params.setPreviewData).toHaveBeenCalledWith(null)
     expect(params.fetchPreview).not.toHaveBeenCalled()
   })
@@ -1628,7 +1630,7 @@ describe("useEdgeHandlers", () => {
     expect(params.setSelectedNode).toHaveBeenCalledWith(node)
     expect(params.clearTrace).toHaveBeenCalled()
     expect(params.cancelPreview).toHaveBeenCalledOnce()
-    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.lastSelectedKeyRef.current).toBe(node.id)
     expect(params.setPreviewData).toHaveBeenCalledWith(null)
     expect(params.fetchPreview).not.toHaveBeenCalled()
   })
@@ -1683,6 +1685,28 @@ describe("useEdgeHandlers", () => {
     expect(params.fetchPreview).toHaveBeenCalledOnce()
   })
 
+  it("onNodeClick fetches a child opened in another occurrence under the same id", () => {
+    // Catches: the open node told apart by canvas id, so the copy's child kept the
+    // owner's preview hidden and asked for none.
+    loadTwoOccurrences([makeIdentifiedNode("rated", "transform")])
+    const params = makeParams()
+    const event = {} as React.MouseEvent
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    openOccurrence(OWNER)
+    const ownerChild = onCanvas("rated")
+    act(() => result.current.onNodeClick(event, ownerChild))
+    openOccurrence(COPY)
+    const copyChild = onCanvas("rated")
+    act(() => result.current.onNodeClick(event, copyChild))
+    // The same child again is the same node.
+    act(() => result.current.onNodeClick(event, copyChild))
+
+    expect(params.fetchPreview).toHaveBeenCalledTimes(2)
+    expect(params.fetchPreview).toHaveBeenNthCalledWith(2, copyChild, {})
+    expect(params.lastSelectedKeyRef.current).toBe(childKey(COPY, "rated"))
+  })
+
   it("onNodeClick fetches rapid distinct selections immediately", () => {
     const params = makeParams()
     const first = { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" } } as Node
@@ -1697,7 +1721,7 @@ describe("useEdgeHandlers", () => {
 
     expect(params.fetchPreview).toHaveBeenNthCalledWith(1, first, {})
     expect(params.fetchPreview).toHaveBeenNthCalledWith(2, second, {})
-    expect(params.lastSelectedNodeRef.current).toBe(second)
+    expect(params.lastSelectedKeyRef.current).toBe(second.id)
   })
 
   it("lets the drilled-boundary adapter atomically own boundary deletion", () => {
@@ -2913,7 +2937,7 @@ describe("useEdgeHandlers connection drop menu", () => {
     })
     expect(params.setSelectedNode).toHaveBeenCalledWith(created)
     expect(params.setLastSelectedId).toHaveBeenCalledWith("banding_1")
-    expect(params.lastSelectedNodeRef.current).toBe(created)
+    expect(params.lastSelectedKeyRef.current).toBe(created.id)
     expect(params.nodeIdCounter.current).toBe(1)
   })
 

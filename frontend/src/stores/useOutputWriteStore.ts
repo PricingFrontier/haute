@@ -16,40 +16,41 @@ export type OutputWriteState = {
 }
 
 type OutputWriteStore = {
+  /** Each Data Output's latest write, by the node's result key (`resultKey`). */
   writes: Record<string, OutputWriteState | undefined>
   nextRequestId: number
-  begin: (nodeId: string, requestIdentity: string) => number | null
+  begin: (nodeKey: string, requestIdentity: string) => number | null
   complete: (
-    nodeId: string,
+    nodeKey: string,
     requestId: number,
     requestIdentity: string,
     state: Omit<OutputWriteState, "requestId" | "requestIdentity">,
   ) => void
-  clear: (nodeId: string, requestId: number) => void
+  clear: (nodeKey: string, requestId: number) => void
   resetForTests: () => void
 }
 
 const useOutputWriteStore = create<OutputWriteStore>()((set) => ({
   writes: {},
   nextRequestId: 0,
-  begin: (nodeId, requestIdentity) => {
+  begin: (nodeKey, requestIdentity) => {
     let requestId = 0
     set((current) => {
-      if (current.writes[nodeId]?.phase === "writing") return current
+      if (current.writes[nodeKey]?.phase === "writing") return current
       requestId = current.nextRequestId + 1
       return {
         nextRequestId: requestId,
         writes: {
           ...current.writes,
-          [nodeId]: { requestId, requestIdentity, phase: "writing" },
+          [nodeKey]: { requestId, requestIdentity, phase: "writing" },
         },
       }
     })
     return requestId || null
   },
-  complete: (nodeId, requestId, requestIdentity, state) =>
+  complete: (nodeKey, requestId, requestIdentity, state) =>
     set((current) => {
-      const active = current.writes[nodeId]
+      const active = current.writes[nodeKey]
       if (
         !active ||
         active.requestId !== requestId ||
@@ -60,18 +61,18 @@ const useOutputWriteStore = create<OutputWriteStore>()((set) => ({
       return {
         writes: {
           ...current.writes,
-          [nodeId]: { requestId, requestIdentity, ...state },
+          [nodeKey]: { requestId, requestIdentity, ...state },
         },
       }
     }),
-  clear: (nodeId, requestId) =>
+  clear: (nodeKey, requestId) =>
     set((current) => {
-      const active = current.writes[nodeId]
+      const active = current.writes[nodeKey]
       if (!active || active.requestId !== requestId || active.phase === "writing") {
         return current
       }
       const writes = { ...current.writes }
-      delete writes[nodeId]
+      delete writes[nodeKey]
       return { writes }
     }),
   resetForTests: () => set({ writes: {}, nextRequestId: 0 }),

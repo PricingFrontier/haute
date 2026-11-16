@@ -8,6 +8,7 @@ import {
   within,
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { Node } from "@xyflow/react"
 
 import type {
   ExplorePivotResult,
@@ -23,6 +24,13 @@ import useNodeResultsStore, {
 import useSettingsStore from "../../../stores/useSettingsStore"
 import type { SimpleNode } from "../../editors/_shared"
 import ExplorePivotsPane from "../ExplorePivotsPane"
+import {
+  COPY,
+  OWNER,
+  childKey,
+  loadTwoOccurrences,
+  openOccurrence,
+} from "../../../testSupport/twoOccurrencesFixture"
 import {
   isPivotFormulaPlacement,
   pivotCalculationIdentity,
@@ -787,5 +795,47 @@ describe("ExplorePivotsPane", () => {
     )
     expect(useNodeResultsStore.getState().pivotJobs[key]).toBeDefined()
     expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible()
+  })
+})
+
+describe("an Explore child in each occurrence of its definition", () => {
+  beforeEach(() => {
+    mockRunExplorePivot.mockReset()
+    resetNodeResultsDerivedCaches()
+    useSettingsStore.setState({ activeSource: "pricing" })
+    useNodeResultsStore.setState({ pivotResults: {}, pivotJobs: {}, pivotStartClaims: {} })
+  })
+
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("keeps the owner's pivot result out of the copy, which calculates its own", async () => {
+    const pivot = makePivot("alpha")
+    const explore = { ...makeNode([pivot]), position: { x: 0, y: 0 } } as unknown as Node
+    act(() => {
+      loadTwoOccurrences([explore])
+      openOccurrence(OWNER)
+    })
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "completed", job_id: "owner-job", cached: true, message: "Completed", result: makeResult(pivot), failure: null,
+    })
+    const owner = renderPane([pivot])
+    expect(await screen.findByText("Current result")).toBeVisible()
+    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ node_id: "submodel_runtime/pricing/explore_1" }))
+    owner.unmount()
+
+    act(() => openOccurrence(COPY))
+    mockRunExplorePivot.mockReturnValueOnce(new Promise<ExplorePivotRunResponse>(() => {}))
+    renderPane([pivot])
+
+    expect(screen.queryByText("Current result")).not.toBeInTheDocument()
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))
+    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ node_id: "submodel_runtime/pricing_2/explore_1" }))
+    const results = useNodeResultsStore.getState().pivotResults
+    expect(results[explorePivotResultKey(childKey(OWNER, "explore_1"), pivot.id)]?.result).toEqual(makeResult(pivot))
+    expect(results).not.toHaveProperty(explorePivotResultKey(childKey(COPY, "explore_1"), pivot.id))
+    expect(results).not.toHaveProperty(explorePivotResultKey("explore_1", pivot.id))
   })
 })

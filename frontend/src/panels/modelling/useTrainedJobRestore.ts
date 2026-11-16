@@ -13,7 +13,8 @@ import {
 /**
  * After a browser reload, puts a node's remembered completed training result
  * back from the job status endpoint (the results store remembers it when the
- * job completes).
+ * job completes). The handle and the result are the ones kept under the node's
+ * result key, `resultKey`: inside a submodel, its occurrence's own.
  *
  * This reads the status once; it is not a polling loop (running jobs are
  * polled by useBackgroundJobs). The restored result is current only when the
@@ -24,7 +25,7 @@ import {
  * showing nothing.
  */
 export function useTrainedJobRestore(
-  nodeId: string,
+  resultKey: string,
   cachedResult: CachedTrainResult | undefined,
   hasTrainJob: boolean,
   graph: () => TrainingLineageInput,
@@ -39,20 +40,20 @@ export function useTrainedJobRestore(
   const markTrainResultExpired = useNodeResultsStore((state) => state.markTrainResultExpired)
   const hasCachedResult = Boolean(cachedResult)
   useEffect(() => {
-    if (!sourceFile || !nodeId || hasCachedResult || hasTrainJob) return
-    const handle = readTrainedJobHandle(sourceFile, nodeId)
+    if (!sourceFile || !resultKey || hasCachedResult || hasTrainJob) return
+    const handle = readTrainedJobHandle(sourceFile, resultKey)
     if (!handle) return
     const controller = new AbortController()
     const forget = () => {
-      clearTrainedJobHandle(sourceFile, nodeId)
-      markTrainResultExpired(nodeId, handle.jobId)
+      clearTrainedJobHandle(sourceFile, resultKey)
+      markTrainResultExpired(resultKey, handle.jobId)
     }
     getTrainStatus(handle.jobId, { signal: controller.signal }).then(
       (status) => {
         if (controller.signal.aborted) return
         if (status.status === "completed" && status.result && status.result.status !== "error") {
           const currentLineage = trainingLineage(graphRef.current())
-          restoreTrainResult(nodeId, {
+          restoreTrainResult(resultKey, {
             result: status.result,
             terminalStatus: status,
             jobId: handle.jobId,
@@ -77,5 +78,5 @@ export function useTrainedJobRestore(
       },
     )
     return () => controller.abort()
-  }, [sourceFile, nodeId, hasCachedResult, hasTrainJob, restoreTrainResult, markTrainResultExpired])
+  }, [sourceFile, resultKey, hasCachedResult, hasTrainJob, restoreTrainResult, markTrainResultExpired])
 }

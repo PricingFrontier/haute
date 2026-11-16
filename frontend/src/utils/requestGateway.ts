@@ -230,6 +230,31 @@ export function canvasTarget(nodeId: string, handle?: string | null): FrameTarge
   return nodeFrame(childAddress(focus.instanceId, nodeId), handle ?? null)
 }
 
+/**
+ * Every key the results of a node about to be deleted from the canvas are kept under:
+ * on the main pipeline, the node's own and, for an occurrence of a submodel, every one
+ * of its children's; inside an open submodel, the child's in every occurrence of the
+ * definition, which all lose it. Taken before the node is deleted.
+ */
+export function resultKeysOf(nodeId: string): string[] {
+  const { focus, nodes, submodels } = useGraphStore.getState()
+  const definitionOf = (node: Node | undefined) => {
+    const config = node ? nodeData(node).config as { definition_id?: unknown } : undefined
+    return typeof config?.definition_id === "string" ? config.definition_id : null
+  }
+  if (focus) {
+    const occurrences = focus.rootNodes.filter((node) => definitionOf(node) === focus.definitionId)
+    return occurrences.map((occurrence) => addressKey(childAddress(occurrence.id, nodeId)))
+  }
+  const keys = [addressKey(rootAddress(nodeId))]
+  const definitionId = definitionOf(nodes.find((node) => node.id === nodeId))
+  const definition = definitionId ? submodels[definitionId] : undefined
+  if (definitionId && isSubmodelDefinition(definition, definitionId)) {
+    for (const child of definition.graph.nodes) keys.push(addressKey(childAddress(nodeId, child.id)))
+  }
+  return keys
+}
+
 /** A request about a canvas node, with the key its results are kept under. */
 export interface PreparedCanvasRequest extends PreparedNodeRequest {
   readonly resultKey: string

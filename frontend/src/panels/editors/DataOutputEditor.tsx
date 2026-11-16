@@ -14,7 +14,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
 import { graphForRequestIdentity } from "../../utils/buildGraph"
 import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
-import { useGraph, useRequestScope } from "../useGraph"
+import { useGraph, useRequestScope, useResultKey } from "../useGraph"
 import { EditorLabel } from "../../components/form"
 import { TargetTablePicker, WarehousePicker } from "./_DatabricksSelector"
 import IoFormatEditor from "./_IoFormatEditor"
@@ -221,7 +221,10 @@ export default function DataOutputEditor({
   const { capabilities, error } = useIoCapabilities()
   const { allNodes, edges, submodels, preamble } = useGraph()
   const activeSource = useSettingsStore((state) => state.activeSource)
-  const writeState = useOutputWriteStore((state) => state.writes[nodeId])
+  // A write is kept under the node's result key: inside a submodel, its
+  // occurrence's, so the owner's write neither shows on nor blocks a copy.
+  const writeKey = useResultKey(nodeId) ?? nodeId
+  const writeState = useOutputWriteStore((state) => state.writes[writeKey])
   const beginWrite = useOutputWriteStore((state) => state.begin)
   const completeWrite = useOutputWriteStore((state) => state.complete)
   const clearWrite = useOutputWriteStore((state) => state.clear)
@@ -257,12 +260,13 @@ export default function DataOutputEditor({
       void preamble
       return JSON.stringify({
         graph: requestScope ? graphForRequestIdentity(requestTarget().graph) : null,
-        nodeId,
+        // The occurrence's node: the same child in another runs other data.
+        node: writeKey,
         config,
         source: activeSource,
       })
     },
-    [activeSource, allNodes, config, edges, nodeId, preamble, requestScope, requestTarget, submodels],
+    [activeSource, allNodes, config, edges, preamble, requestScope, requestTarget, submodels, writeKey],
   )
   const isWriting = writeState?.phase === "writing"
   const visibleState =
@@ -289,18 +293,18 @@ export default function DataOutputEditor({
       writeState.phase !== "writing" &&
       writeState.requestIdentity !== identity
     ) {
-      clearWrite(nodeId, writeState.requestId)
+      clearWrite(writeKey, writeState.requestId)
     }
-  }, [clearWrite, identity, nodeId, writeState])
+  }, [clearWrite, identity, writeKey, writeState])
 
   useEffect(
     () => () => {
-      const active = useOutputWriteStore.getState().writes[nodeId]
+      const active = useOutputWriteStore.getState().writes[writeKey]
       if (active?.phase !== "writing") {
-        clearWrite(nodeId, active?.requestId ?? -1)
+        clearWrite(writeKey, active?.requestId ?? -1)
       }
     },
-    [clearWrite, nodeId],
+    [clearWrite, writeKey],
   )
 
   useEffect(() => {
@@ -327,7 +331,9 @@ export default function DataOutputEditor({
     if (!ready || isWriting) return
     if (overwrite && visibleState?.phase !== "confirm_overwrite") return
     const requestIdentity = identity
-    const requestId = beginWrite(nodeId, requestIdentity)
+    // Taken before the write and used after it.
+    const requestKey = writeKey
+    const requestId = beginWrite(requestKey, requestIdentity)
     if (requestId === null) return
     try {
       const response = await writeOutput({
@@ -335,13 +341,13 @@ export default function DataOutputEditor({
         source: activeSource,
         overwrite,
       })
-      completeWrite(nodeId, requestId, requestIdentity, {
+      completeWrite(requestKey, requestId, requestIdentity, {
         phase: "success",
         result: response,
       })
     } catch (caught) {
       const message = apiErrorMessage(caught, "Output write failed.")
-      completeWrite(nodeId, requestId, requestIdentity, {
+      completeWrite(requestKey, requestId, requestIdentity, {
         phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
         message,
       })

@@ -461,8 +461,9 @@ only to the job it was asked about. The training and pivot actions take that
 job's id (`updateTrainProgress`, `completeTrainJob`, `failTrainJob`,
 `updateExplorePivotProgress`, `completeExplorePivotJob`,
 `failExplorePivotJob`, each `(key, jobId, ...)`) and change nothing unless the
-key's active job has that id; the solve poller checks the node's active solve
-id before calling the solve actions, as `stopOptimiserSolve` does. Cancel
+key's active job has that id; the solve poller checks the active solve id under
+the node's result key before calling the solve actions, as `stopOptimiserSolve`
+(given that key) does. Cancel
 (`cancelPivot`, the modelling panel's Cancel, `stopOptimiserSolve`) captures
 the document fence before sending, drops a reply that arrives after the fence
 moved, and otherwise hands the reply to the store under the id it cancelled:
@@ -879,6 +880,31 @@ Workbench's sample and the cached-data list.
    turns an address into the runtime id a request sends (`qualifiedRuntimeNodeId`), and reads
    the ids an answer names back into addresses.
 
+## Result identity (normative)
+
+Which result a stored answer is, and whether it is current, are separate questions.
+
+1. **Which result.** A result, a cache entry, a background job and a Refresh or Stop
+   registration are kept under the result key of the node they describe (`resultKey`):
+   the node's id on the main pipeline, and its address's key (`addressKey`) for a child of
+   an open submodel, so an owner and its read-only copies, or two instances of one
+   definition, each keep their own. The key is taken when a request is prepared
+   (`prepareCanvasRequest`) or a node is selected, and that one is used after every await;
+   an id an answer names is never turned into a key. The open panel's node is known by its
+   key too, so opening a child of the same id in another occurrence opens another node and
+   asks for its own preview.
+2. **Whether it is current.** A cached result is checked against the source, the frame,
+   the semantic content and the data generation it was made under before it is shown as
+   current.
+3. **Lifetime.** A background job (training, a solve) keeps running when the view
+   changes, and its result stays under the key it was started with, to be shown on
+   returning to that occurrence. Deleting a definition's child clears its results in
+   every occurrence; deleting an occurrence clears its children's.
+4. **Not keyed by node.** Data slots the server names (`slot_key`), pane and draft state,
+   and file paths built from a node's name stay as they are.
+5. **Annotations.** A child's execution annotations (a preview's columns, its notes) live
+   with its occurrence's view (`submodelAnnotations`), never in the definition.
+
 ## Testing
 
 - `frontend/src/utils/__tests__/requestGateway.test.ts` covers the request gateway: a
@@ -888,6 +914,21 @@ Workbench's sample and the cached-data list.
   nodes back; the Input card at a port reads the pipeline's node feeding it and the Output
   card at a port the child producing it; a request without a scope is refused; and the
   runtime-id adapter turns addresses into ids and back.
+- Result identity is covered with two occurrences of one definition (an owner and a
+  read-only copy, from `frontend/src/testSupport/twoOccurrencesFixture.ts`):
+  `frontend/src/hooks/__tests__/usePipelineAPI.submodelPreview.test.tsx` (the copy's child
+  shows no flash of the owner's rows and fetches its own, also in manual calculation),
+  `frontend/src/__tests__/stores/useNodeResultsStore.test.ts` (clearing a pipeline node
+  keeps a drilled child of the same id), `frontend/src/panels/explore/__tests__/ExplorePivotsPane.test.tsx`
+  (the owner's pivot result is absent from the copy),
+  `frontend/src/panels/editors/__tests__/DataOutputEditor.test.tsx` (a write shows and blocks
+  only in its occurrence), `frontend/src/components/__tests__/InputImportButton.test.tsx` (an
+  import runs and stops only in its occurrence), `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`
+  (Refresh and Stop act on their own occurrence), `frontend/src/hooks/__tests__/useDataInputColumns.test.ts`
+  (the owner's columns stay out of the copy) and `frontend/src/hooks/__tests__/useNodeDataProfile.test.tsx`
+  (the copy's profile is asked for after the owner's was stopped), and
+  `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (opening the copy's child after the
+  owner's asks for its preview).
 - `frontend/src/components/__tests__/ReadOnlyNodeConfig.requests.test.tsx` covers the
   comparison view: the Modelling and Optimiser editors of a saved version send no request
   and report no failure, while the same editors under the open pipeline's scope ask for

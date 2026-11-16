@@ -20,18 +20,29 @@ export interface InputImportRun {
 }
 
 interface InputImportState {
+  /** By the result key of the node that started each import (`resultKey`). */
   runs: Record<string, InputImportRun>
 }
 
 /**
  * Imports in flight, by the node that started them. An Import belongs to that
  * node, not to whichever node's panel is open: its progress, its Stop, and its
- * continuation stay with it when the user moves to another node.
+ * continuation stay with it when the user moves to another node, or to the same
+ * child in another occurrence of its submodel.
  */
 const useInputImportStore = create<InputImportState>(() => ({ runs: {} }))
 
-/** The snapshot source *nodeId* reads now, as a comparable key, or null. */
-function currentSourceKey(nodeId: string): string | null {
+/** The open view: the occurrence of a submodel shown, or null for the main pipeline. */
+function openView(): string | null {
+  return useGraphStore.getState().focus?.instanceId ?? null
+}
+
+/**
+ * The snapshot source the canvas node *nodeId* reads now, as a comparable key,
+ * while *view* is still the one open; otherwise, or for a node gone, null.
+ */
+function currentSourceKey(nodeId: string, view: string | null): string | null {
+  if (openView() !== view) return null
   const nodes = useGraphStore.getState().nodes
   const node = nodes.find((candidate) => candidate.id === nodeId)
   if (!node) return null
@@ -39,34 +50,37 @@ function currentSourceKey(nodeId: string): string | null {
   return source ? JSON.stringify(source) : null
 }
 
-function setRun(nodeId: string, run: InputImportRun | null): void {
+function setRun(nodeKey: string, run: InputImportRun | null): void {
   useInputImportStore.setState((state) => {
-    const { [nodeId]: _previous, ...rest } = state.runs
+    const { [nodeKey]: _previous, ...rest } = state.runs
     void _previous
-    return { runs: run === null ? rest : { ...rest, [nodeId]: run } }
+    return { runs: run === null ? rest : { ...rest, [nodeKey]: run } }
   })
 }
 
 /**
- * Re-read *input*'s source and publish it as a new snapshot, on behalf of *nodeId*.
+ * Re-read *input*'s source and publish it as a new snapshot, on behalf of the
+ * node whose results are kept under *nodeKey* (`resultKey`, taken as it starts).
  *
  * Every outcome raises the node-data epoch, since a build can publish before a
- * stop or a failure reaches it. *onImported* runs only after a completed,
- * unstopped import whose node still reads the same source.
+ * stop or a failure reaches it. *onImported* runs, with *nodeKey*, only after a
+ * completed, unstopped import whose node still reads the same source.
  */
 // A retired import's builds that refused to stop are cancelled again this many
 // times, this far apart, before the failure is left to the user.
 const RETIRED_CANCEL_ATTEMPTS = 5
 const RETIRED_CANCEL_INTERVAL_MS = 2_000
 
-export function startInputImport(nodeId: string, input: Pick<Node, "data">, onImported: (nodeId: string) => void): void {
-  if (useInputImportStore.getState().runs[nodeId]) return
+export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data">, onImported: (nodeKey: string) => void): void {
+  if (useInputImportStore.getState().runs[nodeKey]) return
   const source = inputSnapshotSource(input)
   if (!source) return
   const sourceKey = JSON.stringify(source)
   const fence = captureDocumentExecutionFence()
   const controller = new AbortController()
-  const workKey = `import:${nodeId}`
+  const workKey = `import:${nodeKey}`
+  // The view the node is on: its continuation reads it only while that view is open.
+  const view = openView()
   const snapshots = import("../hooks/ensureInputSnapshots")
   // Builds that refused to stop: Stop (or, once retired, the background retry)
   // cancels them again.
@@ -79,7 +93,7 @@ export function startInputImport(nodeId: string, input: Pick<Node, "data">, onIm
   const release = () => {
     if (ended) return false
     ended = true
-    setRun(nodeId, null)
+    setRun(nodeKey, null)
     useNodeWorkStore.getState().setRunning(workKey, null)
     unregisterStop()
     unsubscribeDocument()
@@ -91,8 +105,8 @@ export function startInputImport(nodeId: string, input: Pick<Node, "data">, onIm
     useNodeDataStore.getState().bumpEpoch()
     // A source imported anew is data a price made before did not read.
     if (completed) useDataEpochStore.getState().moved()
-    if (completed && !controller.signal.aborted && currentSourceKey(nodeId) === sourceKey) {
-      onImported(nodeId)
+    if (completed && !controller.signal.aborted && currentSourceKey(input.id, view) === sourceKey) {
+      onImported(nodeKey)
     }
   }
   // Cancel builds that refused to stop again. Returns whether they all stopped.
@@ -112,7 +126,7 @@ export function startInputImport(nodeId: string, input: Pick<Node, "data">, onIm
     }
     addToast("error", "An import from the previous pipeline could not be stopped and may still be running.")
   }
-  const unregisterStop = registerNodeStop(nodeId, () => {
+  const unregisterStop = registerNodeStop(nodeKey, () => {
     if (pending === null) {
       controller.abort()
       return
@@ -132,8 +146,8 @@ export function startInputImport(nodeId: string, input: Pick<Node, "data">, onIm
     else controller.abort()
   })
 
-  setRun(nodeId, { rows: null })
-  useNodeWorkStore.getState().setRunning(workKey, nodeId)
+  setRun(nodeKey, { rows: null })
+  useNodeWorkStore.getState().setRunning(workKey, nodeKey)
   void (async () => {
     const { ensureInputSnapshots } = await snapshots
     try {
@@ -144,7 +158,7 @@ export function startInputImport(nodeId: string, input: Pick<Node, "data">, onIm
           if (controller.signal.aborted) return
           // A count once the build has counted rows: one written in a single
           // pass (a CSV) or an API Input's tables report none until they end.
-          setRun(nodeId, { rows: job.progress.rows > 0 ? job.progress.rows : null })
+          setRun(nodeKey, { rows: job.progress.rows > 0 ? job.progress.rows : null })
         },
       })
     } catch (err) {

@@ -37,7 +37,7 @@ import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPane
 import PanelShell from "./PanelShell"
 import { SidePanelClose } from "../haute-ui"
 import PreviewPanelTabs from "./PreviewPanelTabs"
-import { useGraph, useRequestScope } from "./useGraph"
+import { useGraph, useRequestScope, useResultKey } from "./useGraph"
 import { canvasTarget, prepareNodeRequest, resultKey } from "../utils/requestGateway"
 import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
@@ -1203,10 +1203,12 @@ function NodePanelContent({
     setModellingPaneIssues({ nodeId, panes })
   }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
-  const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
+  // Training and solves are kept under the node's result key (its occurrence's own inside a submodel).
+  const jobKey = useResultKey(node.id) ?? node.id
+  const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[jobKey]))
   const rememberedOptimiserPane = useUIStore((s) => s.optimiserPanes[node.id])
   const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
-  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[node.id]))
+  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[jobKey]))
   // The lazily loaded optimiser editor owns its Solve issues; the panel only badges tabs.
   const [optimiserPaneIssues, setOptimiserPaneIssues] = useState<{ nodeId: string; panes: readonly OptimiserPane[] }>({ nodeId: "", panes: [] })
   const onOptimiserPaneIssuesChange = useCallback((nodeId: string, panes: readonly OptimiserPane[]) => {

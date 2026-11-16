@@ -116,7 +116,7 @@ describe("SubmodelNode", () => {
       useGraphStore.setState((state) => ({ nodes: update(state.nodes) }))
     })
     const { result } = renderHook(() => useNodeHandlers({
-      nodeIdCounter: { current: 0 }, lastSelectedNodeRef: { current: null },
+      nodeIdCounter: { current: 0 }, lastSelectedKeyRef: { current: null },
       setNodes, setNodesAndEdges: vi.fn(), setSelectedNode: vi.fn(), setPreviewData: vi.fn(),
       fitView: vi.fn(),
       submodels: useGraphStore.getState().submodels,

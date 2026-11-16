@@ -1,4 +1,4 @@
-import { useRequestScope } from "../useGraph"
+import { useRequestScope, useResultKey } from "../useGraph"
 import { useCallback, useRef, useState } from "react"
 
 import { cancelExplorePivot, runExplorePivot } from "../../api/client"
@@ -64,6 +64,10 @@ function terminalStatus(
 /**
  * Shared Pivot execution lifecycle used by both Pivot tables and PivotCharts.
  * Charts own no execution endpoint, job, or cache.
+ *
+ * Results, jobs and claims are kept under the Explore node's result key, which
+ * it returns for its consumers to read them by: inside a submodel, its
+ * occurrence's, so the owner and its copies each calculate their own.
  */
 export default function useExplorePivotActions({
   node,
@@ -73,6 +77,8 @@ export default function useExplorePivotActions({
   preamble,
 }: UseExplorePivotActionsInput) {
   const requestScope = useRequestScope()
+  // A node always has one; the hook is null only without a node.
+  const nodeKey = useResultKey(node.id) ?? node.id
   const activeSource = useSettingsStore((state) => state.activeSource)
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
   const startJob = useNodeResultsStore((state) => state.startExplorePivotJob)
@@ -140,9 +146,12 @@ export default function useExplorePivotActions({
     [setCardSubmitting],
   )
 
+  // Both are reached after the request's await, so they take the result key
+  // the request was made under.
   const startStoredJob = useCallback(
     (
       pivot: ExplorePivotConfig,
+      requestKey: string,
       key: string,
       jobId: string,
       calculationIdentity: string,
@@ -151,7 +160,7 @@ export default function useExplorePivotActions({
       startJob(
         key,
         jobId,
-        node.id,
+        requestKey,
         pivot.id,
         nodeLabel,
         pivot.name,
@@ -161,12 +170,13 @@ export default function useExplorePivotActions({
         requestedDataVersion,
       )
     },
-    [activeSource, node.id, nodeLabel, startJob, structuralVersion],
+    [activeSource, nodeLabel, startJob, structuralVersion],
   )
 
   const persistStartFailure = useCallback(
     (
       pivot: ExplorePivotConfig,
+      requestKey: string,
       key: string,
       calculationIdentity: string,
       message: string,
@@ -178,7 +188,7 @@ export default function useExplorePivotActions({
       failStart(
         key,
         {
-          nodeId: node.id,
+          nodeId: requestKey,
           pivotId: pivot.id,
           nodeLabel,
           pivotName: pivot.name,
@@ -191,7 +201,7 @@ export default function useExplorePivotActions({
         terminalStatus(status, message, failure, executionMetrics),
       )
     },
-    [activeSource, failStart, node.id, nodeLabel, structuralVersion],
+    [activeSource, failStart, nodeLabel, structuralVersion],
   )
 
   const updatePivot = useCallback(
@@ -200,7 +210,9 @@ export default function useExplorePivotActions({
       requestedDataVersion: string | null = null,
       autoClaimToken?: number,
     ) => {
-      const key = explorePivotResultKey(node.id, pivot.id)
+      // Taken before the request and used after it.
+      const requestKey = nodeKey
+      const key = explorePivotResultKey(requestKey, pivot.id)
       const documentFence = captureDocumentExecutionFence()
       if (!isPivotConfigured(pivot) || !isDocumentExecutionFenceCurrent(documentFence)) {
         if (autoClaimToken !== undefined) {
@@ -214,7 +226,7 @@ export default function useExplorePivotActions({
           .getState()
           .claimExplorePivotManual(
             key,
-            node.id,
+            requestKey,
             requestedDataVersion,
             calculationIdentity,
           )
@@ -247,6 +259,7 @@ export default function useExplorePivotActions({
           const message = response.failure?.message ?? response.message
           persistStartFailure(
             pivot,
+            requestKey,
             key,
             calculationIdentity,
             message,
@@ -264,6 +277,7 @@ export default function useExplorePivotActions({
           const jobId = response.job_id ?? `cached:${key}`
           startStoredJob(
             pivot,
+            requestKey,
             key,
             jobId,
             calculationIdentity,
@@ -286,6 +300,7 @@ export default function useExplorePivotActions({
         }
         startStoredJob(
           pivot,
+          requestKey,
           key,
           response.job_id,
           calculationIdentity,
@@ -305,6 +320,7 @@ export default function useExplorePivotActions({
         const terminalReason = executionTerminalReasonFromError(error)
         persistStartFailure(
           pivot,
+          requestKey,
           key,
           calculationIdentity,
           apiErrorMessage(error),
@@ -327,6 +343,7 @@ export default function useExplorePivotActions({
       edges,
       endSubmitting,
       node.id,
+      nodeKey,
       persistStartFailure,
       preamble,
       setNotice,
@@ -338,7 +355,7 @@ export default function useExplorePivotActions({
 
   const cancelPivot = useCallback(
     async (pivot: ExplorePivotConfig, jobId: string) => {
-      const key = explorePivotResultKey(node.id, pivot.id)
+      const key = explorePivotResultKey(nodeKey, pivot.id)
       const documentFence = captureDocumentExecutionFence()
       // The reply belongs to the job it cancelled: polling may have retired that
       // job and another started, or the document changed, while it was pending.
@@ -360,8 +377,8 @@ export default function useExplorePivotActions({
         if (replyIsCurrent()) setNotice(pivot.id, { message: apiErrorMessage(error) })
       }
     },
-    [completeJob, failJob, node.id, setNotice],
+    [completeJob, failJob, nodeKey, setNotice],
   )
 
-  return { cancelPivot, notices, submitting, updatePivot }
+  return { cancelPivot, notices, resultKey: nodeKey, submitting, updatePivot }
 }

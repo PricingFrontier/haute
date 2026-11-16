@@ -30,6 +30,7 @@ import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFi
 import { makeAdjustmentReport, makeOnlineFrontierPoint } from "../../panels/optimiser/__tests__/fixtures.ts"
 import { isSolveResultStale, solveConfigHash } from "../../panels/optimiser/solveActions.ts"
 import type { SolveProgress } from "../../stores/useNodeResultsStore.ts"
+import { addressKey, childAddress } from "../../utils/nodeAddress.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
@@ -837,6 +838,20 @@ describe("useNodeResultsStore", () => {
 
       expect(useNodeResultsStore.getState().getPreview("n1")).toBeNull()
       expect(useNodeResultsStore.getState().getPreview("n2")).not.toBeNull()
+    })
+
+    it("keeps a submodel child's preview when a node of the pipeline with its id is cleared", () => {
+      const s = useNodeResultsStore.getState()
+      const childKey = addressKey(childAddress("pricing", "n1"))
+      s.setPreview("n1", makePreviewData({ nodeId: "n1" }), 0)
+      s.setPreview(childKey, makePreviewData({ nodeId: "n1", cacheKey: childKey }), 0)
+
+      s.clearNode("n1")
+
+      expect(useNodeResultsStore.getState().previews).not.toHaveProperty("n1")
+      expect(useNodeResultsStore.getState().previews[childKey]).toBeDefined()
+      s.clearNode(childKey)
+      expect(useNodeResultsStore.getState().previews).toEqual({})
     })
 
     it("clears pinnedPreviewNodeId when clearing the pinned node", () => {

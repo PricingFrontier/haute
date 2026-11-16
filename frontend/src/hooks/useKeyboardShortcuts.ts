@@ -11,6 +11,7 @@ import { requestSubmodelCreation } from "../utils/submodelCreation"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
+import { resultKeysOf } from "../utils/requestGateway"
 
 export interface KeyboardShortcutBinding {
   id:
@@ -390,13 +391,15 @@ export default function useKeyboardShortcuts({
           // Selection, preview and cached-result cleanup only runs once the
           // nodes have actually left the graph; a shared-boundary deletion may
           // still be resolving parent identities and can yet fail.
+          // Every key their results are kept under, taken while they are still there.
+          const removedKeys = [...selectedNodeIds].flatMap(resultKeysOf)
           const cleanupAfterRemoval = () => {
             setSelectedNode(null)
             setLastSelectedId?.(null)
             setPreviewData(null)
             // Clean up store state for deleted nodes
-            for (const nid of selectedNodeIds) {
-              useNodeResultsStore.getState().clearNode(nid)
+            for (const key of removedKeys) {
+              useNodeResultsStore.getState().clearNode(key)
             }
           }
           let cleanedUp = false

@@ -24,7 +24,7 @@ vi.mock("../../utils/layout", () => ({
 function makeParams() {
   return {
     nodeIdCounter: { current: 10 },
-    lastSelectedNodeRef: { current: null as Node | null },
+    lastSelectedKeyRef: { current: null as string | null },
     setNodes: vi.fn(),
     setNodesAndEdges: vi.fn(),
     setSelectedNode: vi.fn(),
@@ -1127,13 +1127,13 @@ describe("useNodeHandlers - handleRenameNode", () => {
     expect(dialog).toBeNull()
   })
 
-  it("handleDeleteNode clears lastSelectedNodeRef when deleting the selected node", () => {
-    // Catches: stale lastSelectedNodeRef causes the next node-click to
+  it("handleDeleteNode clears lastSelectedKeyRef when deleting the selected node", () => {
+    // Catches: stale lastSelectedKeyRef causes the next node-click to
     // skip selection because the ref still points to the deleted node.
     const params = makeParams()
     const n1 = makeNode("n1")
     showGraph([n1])
-    params.lastSelectedNodeRef.current = n1
+    params.lastSelectedKeyRef.current = n1.id
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -1141,17 +1141,17 @@ describe("useNodeHandlers - handleRenameNode", () => {
       result.current.handleDeleteNode("n1")
     })
 
-    expect(params.lastSelectedNodeRef.current).toBeNull()
+    expect(params.lastSelectedKeyRef.current).toBeNull()
   })
 
-  it("handleDeleteNode does NOT clear lastSelectedNodeRef when deleting a different node", () => {
+  it("handleDeleteNode does NOT clear lastSelectedKeyRef when deleting a different node", () => {
     // Catches: if the id guard is missing, deleting any node would
     // clear the selection ref, confusing keyboard navigation.
     const params = makeParams()
     const n1 = makeNode("n1")
     const n2 = makeNode("n2")
     showGraph([n1, n2])
-    params.lastSelectedNodeRef.current = n2
+    params.lastSelectedKeyRef.current = n2.id
 
     const { result } = renderHook(() => useNodeHandlers(params))
 
@@ -1159,7 +1159,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
       result.current.handleDeleteNode("n1")
     })
 
-    expect(params.lastSelectedNodeRef.current).toBe(n2)
+    expect(params.lastSelectedKeyRef.current).toBe(n2.id)
   })
 
   // ── Issue #14: renameDialog cleared on node delete ───────────

@@ -207,7 +207,7 @@ describe("OptimiserPreview", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useOptimiserPublishStore.setState({ byNode: {} })
+    useOptimiserPublishStore.setState({ byResultKey: {} })
     mockSolveState.results = {}
     mockSolveState.columnCache = {}
     mlflowMockState.current = mlflowMockState.base()

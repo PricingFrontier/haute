@@ -32,7 +32,7 @@ function makeParams() {
   return {
     selectedNode: null as Node | null,
     nodeIdCounter: { current: 0 },
-    lastSelectedNodeRef: { current: null as Node | null },
+    lastSelectedKeyRef: { current: null as string | null },
     setNodes: vi.fn(),
     setEdges: vi.fn(),
     setNodesRaw: vi.fn(),

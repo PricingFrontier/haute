@@ -60,12 +60,11 @@ import {
   ExploreConfigCardEmptyState,
   ExploreConfigCardListHeader,
 } from "./ExploreConfigCardList"
-import { useGraph } from "../useGraph"
+import { useGraph, useResultKey } from "../useGraph"
 import type { SimpleNode } from "../editors/_shared"
 import useAutoUpdateExplorePivots from "../explore/useAutoUpdateExplorePivots"
 import useExplorePivotActions from "../explore/useExplorePivotActions"
 import { apiErrorMessage } from "../../api/errors"
-import { resultKey } from "../../utils/requestGateway"
 
 type ChartAxisChange = Partial<
   Pick<ChartAxisConfig, "title" | "minimum" | "maximum" | "number_format">
@@ -105,7 +104,7 @@ function ConfigureSourceScheduler({
   // the version it currently reads under its current identity.
   const activeSource = useSettingsStore((s) => s.activeSource)
   // Kept under the node's result key: inside a submodel, this occurrence's.
-  const consumerKey = resultKey(node.id)
+  const consumerKey = useResultKey(node.id) ?? node.id
   const profileEntry = useNodeDataStore((s) => profileForConsumer(s, consumerKey, currentConfigHash))
   const slot = useNodeDataStore((s) => slotForConsumer(s, consumerKey, currentConfigHash))
   const report = exploreDataView(
@@ -114,7 +113,7 @@ function ConfigureSourceScheduler({
     slot?.producerNodeId,
     activeSource,
   )
-  const { submitting, updatePivot } = useExplorePivotActions({
+  const { resultKey: nodeKey, submitting, updatePivot } = useExplorePivotActions({
     node,
     allNodes: graph.allNodes,
     edges: graph.edges,
@@ -123,7 +122,7 @@ function ConfigureSourceScheduler({
   })
   const pivots = useMemo(() => [pivot], [pivot])
   useAutoUpdateExplorePivots({
-    nodeId: node.id,
+    nodeKey,
     pivots,
     report,
     submitting,
@@ -650,8 +649,9 @@ export default function ExploreChartsConfig({
   const [message, setMessage] = useState<string | null>(null)
   const pivotResults = useNodeResultsStore((s) => s.pivotResults)
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
-  const retainedConsumerKey = resultKey(nodeId)
-  const retainedProfile = useNodeDataStore((s) => profileForConsumer(s, retainedConsumerKey, currentConfigHash))
+  // Kept under the node's result key: inside a submodel, this occurrence's.
+  const nodeKey = useResultKey(nodeId) ?? nodeId
+  const retainedProfile = useNodeDataStore((s) => profileForConsumer(s, nodeKey, currentConfigHash))
   // Parsing deep-clones every card and this editor re-renders on pivot
   // polling ticks, so parse once per config identity, as the Charts pane does.
   const parsedCharts = useMemo(() => parseExploreCharts(config), [config])
@@ -818,7 +818,7 @@ export default function ExploreChartsConfig({
   let dataError: string | null = null
   let sourceStatus: PivotSourceStatus = "unconfigured"
   if (pivot) {
-    const key = explorePivotResultKey(nodeId, pivot.id)
+    const key = explorePivotResultKey(nodeKey, pivot.id)
     const entry = pivotResults[key]
     sourceStatus = pivotSourceStatus(
       pivot,

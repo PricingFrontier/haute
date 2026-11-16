@@ -5,6 +5,7 @@ import {
   trainingLineage,
   writeTrainedJobHandle,
 } from "../trainedJobHandles"
+import { addressKey, childAddress } from "../nodeAddress"
 
 const HANDLE = { jobId: "job_1", configHash: "hash", source: "live", lineage: "lineage" }
 
@@ -31,8 +32,24 @@ describe("trained job handles", () => {
     expect(readTrainedJobHandle("a.py", "node_2")).toEqual(HANDLE)
   })
 
+  it("keeps the handles of one child in two occurrences of a submodel apart", () => {
+    const owner = addressKey(childAddress("pricing", "model"))
+    const copy = addressKey(childAddress("pricing_copy", "model"))
+    writeTrainedJobHandle("a.py", owner, HANDLE)
+
+    expect(readTrainedJobHandle("a.py", owner)).toEqual(HANDLE)
+    expect(readTrainedJobHandle("a.py", copy)).toBeNull()
+    expect(readTrainedJobHandle("a.py", "model")).toBeNull()
+  })
+
+  it("reads none of the handles the earlier format kept under a submodel child's bare id", () => {
+    // Those were saved without their occurrence, so they would be read as a pipeline node's.
+    localStorage.setItem("haute.modelling.trainedJobs.v2", JSON.stringify({ "a.py": { node_1: HANDLE } }))
+    expect(readTrainedJobHandle("a.py", "node_1")).toBeNull()
+  })
+
   it("ignores malformed stored data, including a handle without a lineage", () => {
-    const key = "haute.modelling.trainedJobs.v2"
+    const key = "haute.modelling.trainedJobs.v3"
     localStorage.setItem(key, JSON.stringify({ "a.py": { node_1: { jobId: 3 } } }))
     expect(readTrainedJobHandle("a.py", "node_1")).toBeNull()
     const { lineage: _lineage, ...withoutLineage } = HANDLE

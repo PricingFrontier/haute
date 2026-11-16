@@ -23,6 +23,7 @@ import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 import { makeIdentifiedNode, makeNode as factoryNode, makePreviewResponse } from "../../test-utils/factories"
 import { documentRequestScope } from "../../utils/requestGateway"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
 
 const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
@@ -1465,6 +1466,66 @@ describe("NodePanel", () => {
       "Training is running",
     )
     expect(screen.getByText("Running")).toBeVisible()
+  })
+
+  it("marks Train and Solve only in the occurrence of a submodel whose child runs the job", () => {
+    // The owner "pricing" and its read-only copy "pricing_copy" show the same children.
+    const occurrence = (id: string, instanceOf?: string) => factoryNode(id, "submodel", {
+      data: { label: id, nodeType: "submodel", config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) } },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [occurrence("pricing"), occurrence("pricing_copy", "pricing")],
+      edges: [],
+      preamble: "",
+      submodels: {
+        pricing: {
+          definitionId: "pricing",
+          file: "modules/pricing.py",
+          graph: {
+            nodes: [
+              makeIdentifiedNode("model_1", "modelling", { data: { label: "ML", nodeType: "modelling", config: {} } }),
+              makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Opt", nodeType: "optimiser", config: {} } }),
+            ],
+            edges: [],
+          },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    })
+    const job = { progress: null, error: null, configHash: "hash", source: "live", structuralVersion: 0 }
+    useNodeResultsStore.setState({
+      trainJobs: { [addressKey(childAddress("pricing", "model_1"))]: { ...job, jobId: "train_1", nodeId: "model_1", nodeLabel: "ML" } },
+      solveJobs: { [addressKey(childAddress("pricing", "opt_1"))]: { ...job, jobId: "solve_1", nodeId: "opt_1", nodeLabel: "Opt", constraints: {} } },
+    })
+    const model = makeNode({
+      id: "model_1",
+      data: { label: "ML", description: "", nodeType: "modelling", config: { algorithm: "catboost", loss_function: "RMSE" } },
+    })
+    const optimiser = makeNode({
+      id: "opt_1",
+      data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode: "online" } },
+    })
+    const show = (instanceId: string) => act(() => {
+      const store = useGraphStore.getState()
+      if (store.focus) store.exitSubmodelView()
+      store.enterSubmodelView({ instanceId, definitionId: "pricing" })
+    })
+
+    show("pricing")
+    const owner = renderPanel({ node: model })
+    expect(screen.getByRole("tab", { name: "Train" })).toHaveAccessibleDescription("Training is running")
+    owner.unmount()
+    const ownerOptimiser = renderPanel({ node: optimiser })
+    expect(screen.getByRole("tab", { name: "Solve" })).toHaveAccessibleDescription("Solve is running")
+    ownerOptimiser.unmount()
+
+    show("pricing_copy")
+    const copy = renderPanel({ node: model })
+    expect(screen.getByRole("tab", { name: "Train" })).not.toHaveAccessibleDescription()
+    copy.unmount()
+    renderPanel({ node: optimiser })
+    expect(screen.getByRole("tab", { name: "Solve" })).not.toHaveAccessibleDescription()
   })
 
   it("renders OptimiserConfig for optimiser nodes", () => {

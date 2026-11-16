@@ -49,6 +49,12 @@ import useGraphStore from "../../../stores/useGraphStore"
 import { toSimpleNode } from "../../../hooks/usePanelGraphContext"
 import type { SubmodelDefinition } from "../../../types/node"
 import ReadOnlyNodeConfig from "../../../components/ReadOnlyNodeConfig"
+import {
+  COPY,
+  OWNER,
+  loadTwoOccurrences,
+  openOccurrence,
+} from "../../../testSupport/twoOccurrencesFixture"
 
 const groups: IoCapabilityGroup[] = [
   {
@@ -930,5 +936,50 @@ describe("DataOutputEditor in the comparison view", () => {
 
     expect(resolveOutputDestination).not.toHaveBeenCalled()
     expect(writeOutput).not.toHaveBeenCalled()
+  })
+})
+
+describe("a Data Output child in each occurrence of its definition", () => {
+  // Each view change crosses the capabilities request and several effects, which
+  // a whole parallel suite run makes slower without making it wrong.
+  const SETTLE_TIMEOUT_MS = 10_000
+
+  it("shows and blocks a write only in the occurrence that started it", async () => {
+    const config = { output_type: "file", format: "csv", mode: "sink", path: "out", arguments: {} }
+    act(() => {
+      loadTwoOccurrences([makeIdentifiedNode("output-node", "dataOutput", { data: { label: "output", nodeType: "dataOutput", config } })])
+      openOccurrence(OWNER)
+    })
+    // The panel over the open occurrence's canvas, as App hands it.
+    const element = () => (
+      <GraphProvider requestScope={documentRequestScope} allNodes={useGraphStore.getState().nodes.map(toSimpleNode)} edges={[]}>
+        <DataOutputEditor config={config} onUpdate={vi.fn()} onReplaceConfig={vi.fn()} accentColor="#123456" nodeId="output-node" />
+      </GraphProvider>
+    )
+    let resolveWrite!: (value: ReturnType<typeof makeWriteOutput>) => void
+    vi.mocked(writeOutput).mockReturnValueOnce(new Promise((resolve) => {
+      resolveWrite = resolve
+    }) as ReturnType<typeof writeOutput>)
+    const view = render(element())
+    // The button shows before the capabilities arrive; a click while it is disabled does nothing.
+    const write = await screen.findByRole("button", { name: "Write" })
+    await waitFor(() => expect(write).toBeEnabled(), { timeout: SETTLE_TIMEOUT_MS })
+    fireEvent.click(write)
+    expect(await screen.findByRole("button", { name: "Writing..." }, { timeout: SETTLE_TIMEOUT_MS })).toBeDisabled()
+    expect(writeOutput).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/pricing/output-node" }))
+
+    // The copy in the same panel: the owner's write neither shows nor blocks it.
+    act(() => openOccurrence(COPY))
+    view.rerender(element())
+    await waitFor(() => expect(screen.getByRole("button", { name: "Write" })).toBeEnabled(), { timeout: SETTLE_TIMEOUT_MS })
+    expect(screen.queryByText("Writing output…")).not.toBeInTheDocument()
+    await act(async () => resolveWrite(makeWriteOutput({ status: "ok", message: "Wrote output.", row_count: 3 })))
+    expect(screen.queryByText(/Wrote output/)).not.toBeInTheDocument()
+
+    // Back in the owner, its write's outcome.
+    view.unmount()
+    act(() => openOccurrence(OWNER))
+    render(element())
+    expect(await screen.findByText("Wrote output. | 3 rows", undefined, { timeout: SETTLE_TIMEOUT_MS })).toBeVisible()
   })
 })

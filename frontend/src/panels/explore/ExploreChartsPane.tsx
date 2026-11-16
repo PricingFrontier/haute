@@ -78,7 +78,8 @@ type ChartCardProps = {
   chart: ExploreChartConfig
   pivot: ExplorePivotConfig | null
   missingPivotId: string | null
-  nodeId: string
+  /** The Explore node's result key, which its source Pivot's result is kept under. */
+  nodeKey: string
   report: ExploreDataView | null
   submitting: boolean
   notice?: { message: string; failure?: { remediation: string } | null }
@@ -94,7 +95,7 @@ function ChartCard({
   chart,
   pivot,
   missingPivotId,
-  nodeId,
+  nodeKey,
   report,
   submitting,
   notice,
@@ -102,7 +103,7 @@ function ChartCard({
   onCancel,
   onConfigure,
 }: ChartCardProps) {
-  const key = pivot ? explorePivotResultKey(nodeId, pivot.id) : null
+  const key = pivot ? explorePivotResultKey(nodeKey, pivot.id) : null
   const cached = useNodeResultsStore((state) =>
     key === null ? undefined : state.pivotResults[key],
   )
@@ -271,6 +272,7 @@ export default function ExploreChartsPane({
   const {
     cancelPivot,
     notices,
+    resultKey: nodeKey,
     submitting,
     updatePivot,
   } = useExplorePivotActions({ node, allNodes, edges, submodels, preamble })
@@ -297,7 +299,7 @@ export default function ExploreChartsPane({
     return [...distinct.values()]
   }, [parsedPivots, visibleCharts])
   useAutoUpdateExplorePivots({
-    nodeId: node.id,
+    nodeKey,
     pivots: sourcePivots,
     report,
     submitting,
@@ -376,7 +378,7 @@ export default function ExploreChartsPane({
               missingPivotId={
                 source.status === "missing" ? source.pivotId : null
               }
-              nodeId={node.id}
+              nodeKey={nodeKey}
               report={report}
               submitting={pivot ? submitting[pivot.id] === true : false}
               notice={pivot ? notices[pivot.id] : undefined}

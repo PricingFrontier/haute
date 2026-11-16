@@ -45,7 +45,8 @@ import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
 import NameViolationsBanner from "./components/NameViolationsBanner"
 import { useNameViolationRevalidation } from "./hooks/useNameViolationRevalidation"
 import { documentGraphPayload } from "./utils/buildGraph"
-import { documentRequestScope, preparePipelineRequest } from "./utils/requestGateway"
+import { documentRequestScope, preparePipelineRequest, resultKey } from "./utils/requestGateway"
+import { useResultKey } from "./panels/useGraph"
 import { namingContextGraph as buildNamingContextGraph } from "./utils/namingContext"
 import type { PipelineNameViolation } from "./types/pipelineDocument"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
@@ -285,12 +286,15 @@ function ActiveNodePreviewBody({
   onImported,
   onAskAssistantToFix,
 }: Omit<ActiveNodePreviewProps, "run">) {
+  // The active node's results are kept under its result key: inside a submodel, its
+  // occurrence's, so an owner and its copies each show their own.
+  const activeResultKey = useResultKey(activeNodeId)
   // The preview reads the active node's training and solve results through the store's
   // getters, which are stable props; subscribing to what they read re-renders this memoized
   // pane the moment a result lands.
-  useNodeResultsStore((s) => (activeNodeId === null ? null : s.trainResults[activeNodeId] ?? null))
-  useNodeResultsStore((s) => (activeNodeId === null ? null : s.trainJobs[activeNodeId] ?? null))
-  useNodeResultsStore((s) => (activeNodeId === null ? null : s.solveResults[activeNodeId] ?? null))
+  useNodeResultsStore((s) => (activeResultKey === null ? null : s.trainResults[activeResultKey] ?? null))
+  useNodeResultsStore((s) => (activeResultKey === null ? null : s.trainJobs[activeResultKey] ?? null))
+  useNodeResultsStore((s) => (activeResultKey === null ? null : s.solveResults[activeResultKey] ?? null))
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = Boolean(
     activeNode
@@ -350,7 +354,7 @@ function ActiveNodePreviewBody({
     )
   }
 
-  const modellingPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
+  const modellingPreview = activeResultKey ? getModellingPreview(activeResultKey) : null
   if (documentCanExecute && modellingPreview) {
     return (
       <Suspense fallback={null}>
@@ -358,7 +362,7 @@ function ActiveNodePreviewBody({
       </Suspense>
     )
   }
-  const optimiserPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
+  const optimiserPreview = activeResultKey ? getOptimiserPreview(activeResultKey) : null
   if (documentCanExecute && optimiserPreview) {
     return (
       <Suspense fallback={null}>
@@ -868,7 +872,8 @@ function FlowEditor() {
   const setPreamble = useCallback((value: string) => {
     useGraphStore.getState().setPreambleRaw(value)
   }, [])
-  const lastSelectedNodeRef = useRef<Node | null>(null)
+  // The result key of the node whose panel is open; a child's names its occurrence.
+  const lastSelectedKeyRef = useRef<string | null>(null)
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
   const [pipelineRepairTarget, setPipelineRepairTarget] = useState<PipelineRepairTarget | null>(null)
 
@@ -880,7 +885,7 @@ function FlowEditor() {
 
   const closePanel = useCallback(() => {
     setSelectedNode(null)
-    lastSelectedNodeRef.current = null
+    lastSelectedKeyRef.current = null
     setLastSelectedId(null)
     setPreviewDataRef.current(null)
     closeSidePanes()
@@ -919,13 +924,15 @@ function FlowEditor() {
   const panelNode = panelGraph.getNode(activePanelNodeCandidate)
   const activePanelNodeId = panelNode ? activePanelNodeCandidate : null
   const { handleMoveStart: handleActiveNodeMoveStart, centreNode } = useActiveNodeReveal(activePanelNodeId)
+  // The open node's results, Refresh and Stop are kept under its result key.
+  const activePanelResultKey = useResultKey(activePanelNodeId)
 
   useEffect(() => {
-    setPinnedPreviewNodeId(activePanelNodeId ?? null)
-    if (!activePanelNodeId) return
-    touchModellingPreview(activePanelNodeId)
-    touchOptimiserPreview(activePanelNodeId)
-  }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
+    setPinnedPreviewNodeId(activePanelResultKey ?? null)
+    if (!activePanelResultKey) return
+    touchModellingPreview(activePanelResultKey)
+    touchOptimiserPreview(activePanelResultKey)
+  }, [activePanelResultKey, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
 
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCapabilities = useDocumentStatusStore((s) => s.capabilities)
@@ -1188,8 +1195,9 @@ function FlowEditor() {
   const shouldSkipAutomaticPreview = useCallback(
     (node: Node) => {
       if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
-      const hasPreview = !!getOptimiserPreview(node.id)
-      if (hasPreview) touchOptimiserPreview(node.id)
+      const key = resultKey(node.id)
+      const hasPreview = !!getOptimiserPreview(key)
+      if (hasPreview) touchOptimiserPreview(key)
       return hasPreview
     },
     [getOptimiserPreview, touchOptimiserPreview],
@@ -1251,7 +1259,7 @@ function FlowEditor() {
     connectionDropMenu, closeConnectionDropMenu, createNodeFromConnectionDrop,
     submodelInputMenu, selectSubmodelInput,
   } = useEdgeHandlers({
-    selectedNode, submodels, nodeIdCounter, lastSelectedNodeRef,
+    selectedNode, submodels, nodeIdCounter, lastSelectedKeyRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
     setSelectedNode, setPreviewData, setContextMenu,
     setLastSelectedId,
@@ -1287,7 +1295,7 @@ function FlowEditor() {
     if (recoverTargetId) {
       const restored = canvasGraph().nodes.find((item) => item.id === recoverTargetId)
       if (restored) {
-        lastSelectedNodeRef.current = null
+        lastSelectedKeyRef.current = null
         activateNode(restored)
         return
       }
@@ -1312,7 +1320,7 @@ function FlowEditor() {
       if (selectionUnchanged) {
         const restored = canvasGraph().nodes.find((item) => item.id === savedNodeId)
         if (restored) {
-          lastSelectedNodeRef.current = null
+          lastSelectedKeyRef.current = null
           activateNode(restored)
         } else {
           closePanel()
@@ -1602,7 +1610,7 @@ function FlowEditor() {
     handleDeleteNode, handleDuplicateNode,
     handleCreateInstance, handleRenameNode, handleAutoLayout, isAutoLayouting,
   } = useNodeHandlers({
-    nodeIdCounter, lastSelectedNodeRef,
+    nodeIdCounter, lastSelectedKeyRef,
     setNodes, setNodesAndEdges, setSelectedNode,
     setLastSelectedId,
     setPreviewData, fitView, getInternalNode,
@@ -1702,18 +1710,18 @@ function FlowEditor() {
     setUtilityOpen(true)
     setSelectedNode(null)
     setLastSelectedId(null)
-    lastSelectedNodeRef.current = null
+    lastSelectedKeyRef.current = null
     setPreviewDataRef.current(null)
     setContextMenu(null)
-  }, [setUtilityOpen, setSelectedNode, setLastSelectedId, lastSelectedNodeRef, setPreviewDataRef, setContextMenu])
+  }, [setUtilityOpen, setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewDataRef, setContextMenu])
   const handleOpenConstants = useCallback(() => {
     setConstantsOpen(true)
     setSelectedNode(null)
     setLastSelectedId(null)
-    lastSelectedNodeRef.current = null
+    lastSelectedKeyRef.current = null
     setPreviewDataRef.current(null)
     setContextMenu(null)
-  }, [setConstantsOpen, setSelectedNode, setLastSelectedId, lastSelectedNodeRef, setPreviewDataRef, setContextMenu])
+  }, [setConstantsOpen, setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewDataRef, setContextMenu])
   const handleCloseGit = useCallback(() => {
     setGitOpen(false)
   }, [setGitOpen])
@@ -1782,7 +1790,7 @@ function FlowEditor() {
     setEdgesRaw(result.edges)
     setSelectedNode(selected)
     setLastSelectedId(selected?.id ?? null)
-    lastSelectedNodeRef.current = selected
+    lastSelectedKeyRef.current = selected ? resultKey(selected.id) : null
     clearTrace()
     cancelPreview()
   }, [
@@ -1791,7 +1799,7 @@ function FlowEditor() {
     cancelPreview,
     clearTrace,
     
-    lastSelectedNodeRef,
+    lastSelectedKeyRef,
     pushSnapshot,
     setEdgesRaw,
     setLastSelectedId,
@@ -1867,28 +1875,29 @@ function FlowEditor() {
     // never sees the ask; one that does decides whether anything needs
     // computing, and leaves data that is already current alone.
     refreshPreview(refreshTarget, { rereadSource: true })
-    refreshNodeDataCache(activePanelNodeId)
-  }, [activePanelNodeId, refreshPreview])
+    if (activePanelResultKey) refreshNodeDataCache(activePanelResultKey)
+  }, [activePanelNodeId, activePanelResultKey, refreshPreview])
 
   // An Import re-previews the node it re-read only while that node's panel is
-  // still open: it belongs to its node, and another node's preview is left alone.
-  const refreshTargetRef = useRef({ nodeId: activePanelNodeId, refresh: handlePanelPreviewRefresh })
+  // still open: it belongs to its node, and another node's preview is left alone,
+  // as is the same child's in another occurrence of its submodel.
+  const refreshTargetRef = useRef({ resultKey: activePanelResultKey, refresh: handlePanelPreviewRefresh })
   useEffect(() => {
-    refreshTargetRef.current = { nodeId: activePanelNodeId, refresh: handlePanelPreviewRefresh }
-  }, [activePanelNodeId, handlePanelPreviewRefresh])
-  const handleImported = useCallback((nodeId: string) => {
+    refreshTargetRef.current = { resultKey: activePanelResultKey, refresh: handlePanelPreviewRefresh }
+  }, [activePanelResultKey, handlePanelPreviewRefresh])
+  const handleImported = useCallback((nodeKey: string) => {
     const target = refreshTargetRef.current
-    if (target.nodeId === nodeId) target.refresh()
+    if (target.resultKey === nodeKey) target.refresh()
   }, [])
 
   // Stop covers the preview and any work a consumer of the node started for it
   // (a shared data build, an Import). Training and optimiser runs keep their
   // own cancel buttons and are never stopped here.
-  const nodeWorkRunning = useNodeWorkRunning(activePanelNodeId)
+  const nodeWorkRunning = useNodeWorkRunning(activePanelResultKey)
   const handlePanelStop = useCallback(() => {
     stopPreview()
-    if (activePanelNodeId) stopNodeWork(activePanelNodeId)
-  }, [activePanelNodeId, stopPreview])
+    if (activePanelResultKey) stopNodeWork(activePanelResultKey)
+  }, [activePanelResultKey, stopPreview])
   const previewRun = useMemo<PreviewRun>(
     () => ({ running: previewBusy || nodeWorkRunning, onStop: handlePanelStop }),
     [handlePanelStop, nodeWorkRunning, previewBusy],

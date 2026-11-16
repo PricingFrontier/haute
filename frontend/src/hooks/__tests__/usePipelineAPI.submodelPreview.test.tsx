@@ -15,6 +15,15 @@ import useUIStore from "../../stores/useUIStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { nodeData } from "../../types/node"
+import {
+  COPY,
+  OWNER,
+  childKey,
+  loadTwoOccurrences,
+  onCanvas,
+  openOccurrence,
+  type Occurrence,
+} from "../../testSupport/twoOccurrencesFixture"
 
 vi.mock("../../api/client", async (original) => ({
   ...await original<typeof import("../../api/client")>(),
@@ -294,6 +303,68 @@ describe("submodel occurrence previews", () => {
     expect(previewNode).toHaveBeenCalledOnce()
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
+    expect(previewNode).toHaveBeenCalledOnce()
+  })
+})
+
+describe("a child's preview in each occurrence of its definition", () => {
+  /** The owner's child previewed, then the copy open, as leaving a view leaves no preview shown. */
+  async function previewedInOwner() {
+    // One set of refs: new ones would load the pipeline again.
+    const shared: Parameters<typeof usePipelineAPI>[0] = {
+      selectedNode: null,
+      activeSubmodelIdentity: OWNER,
+      setNodesRaw: (update) => useGraphStore.getState().setNodesRaw(update), setEdgesRaw: vi.fn(), setPreamble: vi.fn(),
+      pipelineNameRef: { current: "test" }, descriptionRef: { current: "" },
+      sourceFileRef: { current: "main.py" }, sourceRevisionRef: { current: "revision-test" },
+      preservedBlocksRef: { current: [] }, nodeIdCounter: { current: 0 },
+    }
+    const params = (occurrence: Occurrence) => ({ ...shared, activeSubmodelIdentity: occurrence })
+    vi.mocked(loadPipeline).mockResolvedValue(makeLoadedPipeline({ nodes: [] }))
+    const hook = renderHook((props: Parameters<typeof usePipelineAPI>[0]) => usePipelineAPI(props), { initialProps: params(OWNER) })
+    await waitFor(() => expect(hook.result.current.loading).toBe(false))
+    act(() => {
+      loadTwoOccurrences([makeNode("prepare")])
+      openOccurrence(OWNER)
+    })
+    act(() => hook.result.current.fetchPreview(onCanvas("prepare"), { debounceMs: 0 }))
+    await waitFor(() => expect(hook.result.current.previewBusy).toBe(false))
+    expect(hook.result.current.previewData).toMatchObject({ nodeId: "prepare", preview: [{ value: 11 }] })
+    act(() => {
+      hook.result.current.cancelPreview()
+      hook.result.current.setPreviewData(null)
+      openOccurrence(COPY)
+    })
+    hook.rerender(params(COPY))
+    return hook
+  }
+
+  it("shows the copy's child none of the owner's rows, and previews it for the copy", async () => {
+    const hook = await previewedInOwner()
+    let answer!: (value: ReturnType<typeof response>) => void
+    vi.mocked(previewNode).mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+
+    act(() => hook.result.current.fetchPreview(onCanvas("prepare"), { debounceMs: 0 }))
+
+    // No flash of the owner's rows while the copy's are fetched.
+    expect(hook.result.current.previewData).toMatchObject({ nodeId: "prepare", status: "loading", preview: [] })
+    await waitFor(() => expect(previewNode).toHaveBeenCalledTimes(2))
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/pricing_2/prepare" }))
+    await act(async () => answer(response(22)))
+    await waitFor(() => expect(hook.result.current.previewData?.preview).toEqual([{ value: 22 }]))
+    const previews = useNodeResultsStore.getState().previews
+    expect(previews[childKey(OWNER, "prepare")]?.data.preview).toEqual([{ value: 11 }])
+    expect(previews[childKey(COPY, "prepare")]?.data.preview).toEqual([{ value: 22 }])
+    expect(previews).not.toHaveProperty("prepare")
+  })
+
+  it("in manual calculation shows the copy's child nothing until Refresh", async () => {
+    const hook = await previewedInOwner()
+    act(() => useUIStore.setState({ calculationMode: "manual" }))
+
+    act(() => hook.result.current.fetchPreview(onCanvas("prepare"), { debounceMs: 0 }))
+
+    expect(hook.result.current.previewData).toBeNull()
     expect(previewNode).toHaveBeenCalledOnce()
   })
 })

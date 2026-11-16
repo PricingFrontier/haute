@@ -14,6 +14,8 @@ import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeNode, makeTrainResult, makeTuningReport } from "../../test-utils/factories"
 import { answerQuestion, asked } from "../../test-utils/question"
+import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
 
 // Mock stores
 vi.mock("../../stores/useNodeResultsStore", () => {
@@ -358,5 +360,47 @@ describe("ModellingPreview", () => {
     const pane = screen.getByRole("tabpanel")
     expect(pane.style.getPropertyValue("--results-accent")).toBe("var(--model-accent)")
     expect(pane.style.getPropertyValue("--results-accent-soft")).toBe("var(--model-accent-soft)")
+  })
+
+  it("shows a training's progress only in the occurrence of a submodel it runs in", () => {
+    // The owner "pricing" and its read-only copy "pricing_copy" show the same child, n1.
+    const occurrence = (id: string, instanceOf?: string) => makeNode(id, "submodel", {
+      data: { label: id, nodeType: "submodel", config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) } },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [occurrence("pricing"), occurrence("pricing_copy", "pricing")],
+      edges: [],
+      preamble: "",
+      submodels: {
+        pricing: {
+          definitionId: "pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [makeNode("n1", "modelling")], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    })
+    const running = { trainJobs: { [addressKey(childAddress("pricing", "n1"))]: { progress: { progress: 0.5 } } } }
+    vi.mocked(useNodeResultsStore).mockImplementation(((selector: (state: typeof running) => unknown) => selector(running)) as never)
+    const show = (instanceId: string) => act(() => {
+      const store = useGraphStore.getState()
+      if (store.focus) store.exitSubmodelView()
+      store.enterSubmodelView({ instanceId, definitionId: "pricing" })
+    })
+    const progressBar = (container: HTMLElement) => container.querySelector("[style*='width: 50%']")
+    try {
+      show("pricing")
+      const owner = render(<ModellingPreview data={makeData()} nodeId="n1" />)
+      expect(progressBar(owner.container)).not.toBeNull()
+      owner.unmount()
+
+      show("pricing_copy")
+      const copy = render(<ModellingPreview data={makeData()} nodeId="n1" />)
+      expect(progressBar(copy.container)).toBeNull()
+    } finally {
+      vi.mocked(useNodeResultsStore).mockImplementation((() => null) as never)
+      useGraphStore.getState().resetForTests()
+    }
   })
 })

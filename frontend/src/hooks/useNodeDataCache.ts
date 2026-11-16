@@ -1,4 +1,4 @@
-import { useRequestScope } from "../panels/useGraph"
+import { useRequestScope, useResultKey } from "../panels/useGraph"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 
 import {
@@ -122,8 +122,9 @@ export function deriveAvailability(
 }
 
 /**
- * The consumers reading each node's data, so the node's Refresh button can ask
- * them to bring it up to date.
+ * The consumers reading each node's data, by the node's result key
+ * (`resultKey`), so the node's Refresh button can ask them to bring it up to
+ * date: inside a submodel, its occurrence's consumers only.
  *
  * This is deliberately not React state: pressing Refresh is a user event, and
  * the build belongs in that event rather than in a render that reacts to it.
@@ -132,23 +133,23 @@ export function deriveAvailability(
  */
 const nodeDataRefreshHandlers = new Map<string, Set<() => void>>()
 
-function registerNodeDataRefresh(nodeId: string, handler: () => void): () => void {
-  const handlers = nodeDataRefreshHandlers.get(nodeId) ?? new Set<() => void>()
+function registerNodeDataRefresh(nodeKey: string, handler: () => void): () => void {
+  const handlers = nodeDataRefreshHandlers.get(nodeKey) ?? new Set<() => void>()
   handlers.add(handler)
-  nodeDataRefreshHandlers.set(nodeId, handlers)
+  nodeDataRefreshHandlers.set(nodeKey, handlers)
   return () => {
     handlers.delete(handler)
-    if (handlers.size === 0) nodeDataRefreshHandlers.delete(nodeId)
+    if (handlers.size === 0) nodeDataRefreshHandlers.delete(nodeKey)
   }
 }
 
 /**
- * Ask whoever reads *nodeId*'s data to cache it if what they hold is missing,
- * stale, partial or unreadable. Nothing happens for a node no open panel reads,
- * or for data that is already current.
+ * Ask whoever reads the data of the node kept under *nodeKey* to cache it if
+ * what they hold is missing, stale, partial or unreadable. Nothing happens for
+ * a node no open panel reads, or for data that is already current.
  */
-export function refreshNodeDataCache(nodeId: string): void {
-  for (const handler of nodeDataRefreshHandlers.get(nodeId) ?? []) handler()
+export function refreshNodeDataCache(nodeKey: string): void {
+  for (const handler of nodeDataRefreshHandlers.get(nodeKey) ?? []) handler()
 }
 
 function producerNode(target: PreparedCanvasRequest | null, point: NodeDataPointResponse | null): SimpleNode | null {
@@ -176,6 +177,8 @@ export default function useNodeDataCache({
 }: UseNodeDataCacheInput): NodeDataCache {
   const requestScope = useRequestScope()
   const nodeId = node?.id ?? null
+  // The node's Refresh, Stop and running work are registered under its result key.
+  const nodeKey = useResultKey(nodeId)
   const nodeLabel = node ? String(node.data.label || node.id) : ""
   const activeSource = useSettingsStore((s) => s.activeSource)
   const addToast = useToastStore((s) => s.addToast)
@@ -247,8 +250,8 @@ export default function useNodeDataCache({
   // client shows as building but is not this node's to stop.
   const ownedRunning = submitting || Boolean(delegatedBuild) || Boolean(job?.startedHere)
   useEffect(() => {
-    setWorkRunning(workKey, ownedRunning && nodeId ? nodeId : null)
-  }, [nodeId, ownedRunning, setWorkRunning, workKey])
+    setWorkRunning(workKey, ownedRunning && nodeKey ? nodeKey : null)
+  }, [nodeKey, ownedRunning, setWorkRunning, workKey])
   useEffect(() => () => setWorkRunning(workKey, null), [setWorkRunning, workKey])
 
   // The graph and node id a request sends: inside an open submodel, the whole
@@ -577,9 +580,9 @@ export default function useNodeDataCache({
   }, [])
 
   useEffect(() => {
-    if (!nodeId) return
-    return registerNodeDataRefresh(nodeId, bringUpToDate)
-  }, [bringUpToDate, nodeId])
+    if (!nodeKey) return
+    return registerNodeDataRefresh(nodeKey, bringUpToDate)
+  }, [bringUpToDate, nodeKey])
 
   const cancel = useCallback(async () => {
     const fence = captureDocumentExecutionFence()
@@ -607,9 +610,9 @@ export default function useNodeDataCache({
     latestCancel.current = cancel
   })
   useEffect(() => {
-    if (!nodeId) return
-    return registerNodeStop(nodeId, () => void latestCancel.current())
-  }, [nodeId])
+    if (!nodeKey) return
+    return registerNodeStop(nodeKey, () => void latestCancel.current())
+  }, [nodeKey])
 
   const clear = useCallback(async () => {
     if (!nodeId || !configHash) return

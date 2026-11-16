@@ -6,6 +6,7 @@ import { apiErrorMessage } from "../api/errors"
 import type { InputCacheSnapshotResponse } from "../api/types"
 import type { SimpleNode } from "../panels/editors/_shared"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "../panels/previewPanelLayout"
+import { useResultKey } from "../panels/useGraph"
 import useInputImportStore, { startInputImport } from "../stores/useInputImportStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import { importedTitle } from "../utils/importedTitle"
@@ -13,8 +14,8 @@ import { inputSnapshotSource } from "../utils/inputSnapshotSource"
 
 export interface InputImportButtonProps {
   node: SimpleNode
-  /** Called with the node id after an import that completed and was not stopped. */
-  onImported: (nodeId: string) => void
+  /** Called with the node's result key after an import that completed and was not stopped. */
+  onImported: (nodeKey: string) => void
 }
 
 /**
@@ -33,7 +34,9 @@ export default function InputImportButton({ node, onImported }: InputImportButto
     return found && found.node_type !== "apiInput" ? found : null
   }, [node])
   const sourceKey = source ? JSON.stringify(source) : null
-  const run = useInputImportStore((s) => s.runs[node.id])
+  // Kept under the node's result key: inside a submodel, its occurrence's.
+  const nodeKey = useResultKey(node.id) ?? node.id
+  const run = useInputImportStore((s) => s.runs[nodeKey])
   // Every import's outcome raises the epoch, so the last-imported time is
   // read again after each one.
   const epoch = useNodeDataStore((s) => s.epoch)
@@ -70,7 +73,7 @@ export default function InputImportButton({ node, onImported }: InputImportButto
   return (
     <button
       type="button"
-      onClick={() => startInputImport(node.id, node, onImported)}
+      onClick={() => startInputImport(nodeKey, node, onImported)}
       disabled={importing}
       className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85] disabled:opacity-70`}
       style={{ border: "1px solid var(--accent)", color: "var(--accent)", background: "transparent" }}

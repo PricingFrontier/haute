@@ -18,7 +18,7 @@ import {
 import useNodeResultsStore, { type SolveProgress } from "../../stores/useNodeResultsStore"
 import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
-import { canvasTarget, prepareNodeRequest, type RequestScope } from "../../utils/requestGateway"
+import { canvasTarget, prepareNodeRequest, resultKey, type RequestScope } from "../../utils/requestGateway"
 import {
   executionJobStatusFromReason,
   executionMetricsFromError,
@@ -75,11 +75,15 @@ type StartSolveArgs = {
  * Submit a solve for an optimiser node and register it for background polling.
  *
  * Resolves once the job is registered (or its start failure recorded); the
- * background poller owns progress and completion.
+ * background poller owns progress and completion. The job is kept under the
+ * node's result key as the view was when the solve was asked for, so a start
+ * answered after the view changed stays with the occurrence it was started in.
  */
 export async function startOptimiserSolve({ nodeId, config, allNodes, requestScope }: StartSolveArgs): Promise<void> {
   const documentFence = captureDocumentExecutionFence()
   if (!isDocumentExecutionFenceCurrent(documentFence)) return
+  // Taken before preparing, which can refuse: its failure is the node's too.
+  const key = resultKey(nodeId)
   const nodeLabel = allNodes.find((candidate) => candidate.id === nodeId)?.data.label || "Optimiser"
   const constraints = (config.constraints ?? {}) as Constraints
   const configHash = solveConfigHash(config)
@@ -92,36 +96,37 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, requestSco
     const result = await solveOptimiser({ graph: target.graph, node_id: target.nodeId })
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     if (result.status === "started" && result.job_id) {
-      startSolveJob(nodeId, result.job_id, nodeLabel, constraints, configHash, source, structuralVersion)
+      startSolveJob(key, result.job_id, nodeLabel, constraints, configHash, source, structuralVersion)
     } else if (result.status === "error") {
-      startSolveJob(nodeId, startupFailureId, nodeLabel, constraints, configHash, source, structuralVersion)
-      failSolveJob(nodeId, result.error || "Unknown error")
+      startSolveJob(key, startupFailureId, nodeLabel, constraints, configHash, source, structuralVersion)
+      failSolveJob(key, result.error || "Unknown error")
     }
   } catch (error) {
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     const message = apiErrorMessage(error)
-    startSolveJob(nodeId, startupFailureId, nodeLabel, constraints, configHash, source, structuralVersion)
-    failSolveJob(nodeId, message, solveFailureStatus(error, message))
+    startSolveJob(key, startupFailureId, nodeLabel, constraints, configHash, source, structuralVersion)
+    failSolveJob(key, message, solveFailureStatus(error, message))
   }
 }
 
 /**
- * Stop the node's running solve and record the server's answer.
+ * Stop the running solve kept under `key` (the node's result key) and record the
+ * server's answer there.
  *
  * Mirrors modelling's Cancel: a job that finished first keeps its result, a
  * stopped job becomes a terminal failure, anything else is progress.
  */
-export async function stopOptimiserSolve(nodeId: string): Promise<void> {
-  const job = useNodeResultsStore.getState().solveJobs[nodeId]
+export async function stopOptimiserSolve(key: string): Promise<void> {
+  const job = useNodeResultsStore.getState().solveJobs[key]
   if (!job) return
   const documentFence = captureDocumentExecutionFence()
   const status = await cancelOptimiserSolve(job.jobId)
   // The reply belongs to the job it cancelled: if polling finished that job and
   // another started meanwhile, or the document changed, it must not touch them.
   if (!isDocumentExecutionFenceCurrent(documentFence)) return
-  if (useNodeResultsStore.getState().solveJobs[nodeId]?.jobId !== job.jobId) return
+  if (useNodeResultsStore.getState().solveJobs[key]?.jobId !== job.jobId) return
   const { completeSolveJob, failSolveJob, updateSolveProgress } = useNodeResultsStore.getState()
-  if (status.status === "completed" && status.result) completeSolveJob(nodeId, status.result, status)
-  else if (FAILED_JOB_STATUSES.has(status.status)) failSolveJob(nodeId, status.message || "Optimisation stopped", status)
-  else updateSolveProgress(nodeId, status)
+  if (status.status === "completed" && status.result) completeSolveJob(key, status.result, status)
+  else if (FAILED_JOB_STATUSES.has(status.status)) failSolveJob(key, status.message || "Optimisation stopped", status)
+  else updateSolveProgress(key, status)
 }

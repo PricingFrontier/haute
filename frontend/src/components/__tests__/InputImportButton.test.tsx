@@ -31,7 +31,15 @@ import {
   getInputCacheStatus,
 } from "../../api/client"
 import InputImportButton from "../InputImportButton"
-import { makeInputCacheSnapshot } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeInputCacheSnapshot } from "../../test-utils/factories"
+import {
+  COPY,
+  OWNER,
+  childKey,
+  loadTwoOccurrences,
+  onCanvas as canvasChild,
+  openOccurrence,
+} from "../../testSupport/twoOccurrencesFixture"
 
 const csvConfig = { input_type: "file", format: "csv", mode: "scan", path: "quotes.csv" }
 const emittingTable = { path: "$[:]", label: "quotes", emit: true, columns: [{ name: "id", path: "$[:].id", selected: true }] }
@@ -331,5 +339,54 @@ describe("importedTitle", () => {
 
   it("says an input with nothing published was never imported", () => {
     expect(importedTitle(snapshot({ generation: null }), now)).toBe("Not imported yet")
+  })
+})
+
+describe("an input child in each occurrence of its definition", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useNodeDataStore.getState().reset()
+    useNodeWorkStore.setState({ running: {} })
+    useInputImportStore.setState({ runs: {} })
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot())
+    vi.mocked(buildInputCache).mockResolvedValue({
+      schema_version: 1, job_id: "import-1", identity_digest: "digest", status: "running", joined: false, forced: true, build_class: "bounded",
+    })
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 1200))
+    vi.mocked(cancelInputCacheJob).mockResolvedValue({ schema_version: 1, job_id: "import-1", cancellation_requested: true, status: "cancelled" })
+  })
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("shows an import running only in the occurrence that started it, whose Stop alone stops it", async () => {
+    act(() => {
+      loadTwoOccurrences([makeIdentifiedNode("csv", "dataInput", { data: { label: "csv", nodeType: "dataInput", config: csvConfig } })])
+      openOccurrence(OWNER)
+    })
+    const shown = () => canvasChild("csv") as unknown as SimpleNode
+    const onImported = vi.fn()
+    const view = render(<InputImportButton node={shown()} onImported={onImported} />)
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("input-import"))
+    })
+    expect(await screen.findByText("Importing · 1,200 rows")).toBeInTheDocument()
+    const ownerKey = childKey(OWNER, "csv")
+    expect(Object.values(useNodeWorkStore.getState().running)).toEqual([ownerKey])
+
+    // The copy in the same panel: the owner's import neither shows nor blocks it.
+    act(() => openOccurrence(COPY))
+    view.rerender(<InputImportButton node={shown()} onImported={onImported} />)
+    expect(screen.getByTestId("input-import")).toBeEnabled()
+    expect(screen.getByTestId("input-import")).not.toHaveTextContent("Importing")
+    // The copy's Stop leaves the owner's import running.
+    await act(async () => stopNodeWork(childKey(COPY, "csv")))
+    expect(cancelInputCacheJob).not.toHaveBeenCalled()
+    expect(useInputImportStore.getState().runs[ownerKey]).toBeDefined()
+
+    await act(async () => stopNodeWork(ownerKey))
+    await waitFor(() => expect(useInputImportStore.getState().runs[ownerKey]).toBeUndefined())
+    expect(cancelInputCacheJob).toHaveBeenCalledWith("import-1")
   })
 })

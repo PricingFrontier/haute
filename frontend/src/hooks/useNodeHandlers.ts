@@ -30,10 +30,12 @@ import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import type { SubmodelCreateResult } from "./useSubmodelNavigation"
 import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
+import { resultKeysOf } from "../utils/requestGateway"
 
 type UseNodeHandlersParams = {
   nodeIdCounter: MutableRefObject<number>
-  lastSelectedNodeRef: MutableRefObject<Node | null>
+  /** The result key of the node whose panel is open (`resultKey`). */
+  lastSelectedKeyRef: MutableRefObject<string | null>
   setNodes: (updater: (nds: Node[]) => Node[]) => void
   setNodesAndEdges: (
     nodes: (nds: Node[]) => Node[],
@@ -105,7 +107,7 @@ function nextSubmodelAlias(alias: string, aliases: Set<string>): string {
 export default function useNodeHandlers({
   
   nodeIdCounter: nodeIdCounterRef,
-  lastSelectedNodeRef,
+  lastSelectedKeyRef,
   setNodes,
   setNodesAndEdges,
   setSelectedNode,
@@ -147,16 +149,19 @@ export default function useNodeHandlers({
     }
     // Selection, preview and cached-result cleanup only runs once the node has
     // actually left the graph; a shared-boundary deletion may still be
-    // resolving parent identities and can yet fail.
+    // resolving parent identities and can yet fail. Its results' keys are
+    // taken while it is still there.
+    const removedKeys = resultKeysOf(id)
     const cleanupAfterRemoval = () => {
       setSelectedNode((prev) => (prev?.id === id ? null : prev))
       setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
       // The node has left the graph by now, and React renders both store
       // updates of this task together, so no render shows the node without
       // its cached result — the same order the keyboard delete uses.
-      clearNode(id)
-      if (lastSelectedNodeRef.current?.id === id) {
-        lastSelectedNodeRef.current = null
+      for (const key of removedKeys) clearNode(key)
+      // The open panel goes with the node, or with a child of a removed occurrence.
+      if (lastSelectedKeyRef.current !== null && removedKeys.includes(lastSelectedKeyRef.current)) {
+        lastSelectedKeyRef.current = null
         setLastSelectedId?.(null)
       }
 
@@ -191,7 +196,7 @@ export default function useNodeHandlers({
       )
     }
     if (!cleanedUp) cleanupAfterRemoval()
-  }, [setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
+  }, [setNodesAndEdges, lastSelectedKeyRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
 
   const handleDuplicateNode = useCallback(async (id: string): Promise<void> => {
     const { nodes: n } = canvasGraph()
