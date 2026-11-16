@@ -34,6 +34,21 @@ describe("the request payload", () => {
     expect(result.nodes[0].data.description).toBe("Important step")
     expect(result.nodes[0].data).not.toBe(useGraphStore.getState().nodes[0].data)
     expect(result.edges.map((edge) => edge.id)).toEqual(["e1"])
+    expect(result.edges).not.toBe(useGraphStore.getState().edges)
+  })
+
+  it("keeps a node's own type over its data's, and data fields it does not know", () => {
+    loadDocument([
+      makeNode("n1", "dataInput", {
+        type: "custom",
+        data: { label: "My Source", nodeType: "dataInput", config: { path: "/data/input.csv" }, extraField: "kept" },
+      }),
+    ])
+
+    const [node] = documentGraphPayload().nodes
+
+    expect(node.type).toBe("custom")
+    expect(node.data).toMatchObject({ label: "My Source", config: { path: "/data/input.csv" }, extraField: "kept" })
   })
 
   it("keeps every submodel definition, as a copy", () => {
