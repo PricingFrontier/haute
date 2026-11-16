@@ -31,6 +31,7 @@ from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_g
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._submodel_ops import create_node_instance_graph
 from tests._git_helpers import git_run, init_repo
+from tests._preview_targets import node_target
 from tests._project import use_project
 from tests.test_deploy_submodels import _score_bundle
 from tests.test_optimiser_apply import _make_ratebook_artifact
@@ -394,7 +395,13 @@ def test_one_node_instance_cross_path_proof(
         target = qualified_runtime_node_id("rate_calc_2", "rate_calc_node")
         raw = graph.model_dump(mode="json", by_alias=True)
         if kind not in SINK_ONLY_NODE_TYPES:
-            preview = client.post("/api/pipeline/preview", json={"graph": raw, "node_id": target})
+            preview = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": raw,
+                    "target": node_target("rate_calc_node", occurrence="rate_calc_2"),
+                },
+            )
             assert preview.status_code == 200, preview.text
             assert preview.json()["preview"] == expected, preview.json()
             traced = client.post(
@@ -648,7 +655,7 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
                 "/api/pipeline/preview",
                 json={
                     "graph": scoring.model_dump(mode="json", by_alias=True),
-                    "node_id": "score",
+                    "target": node_target("score"),
                 },
             )
             assert preview.status_code == 200, preview.text
@@ -722,14 +729,13 @@ def test_node_instance_acceptance_tracks_shared_edits_and_output_rename(
         assert wrapped.status_code == 200, wrapped.text
         graph = PipelineGraph.model_validate(wrapped.json()["graph"])
         graph.edges.append(_edge("claims_data", "rate_calc_2", target_handle="in__policies"))
-        target = qualified_runtime_node_id("rate_calc_2", "rate_calc_node")
 
         def preview():
             response = client.post(
                 "/api/pipeline/preview",
                 json={
                     "graph": graph.model_dump(mode="json", by_alias=True),
-                    "node_id": target,
+                    "target": node_target("rate_calc_node", occurrence="rate_calc_2"),
                 },
             )
             assert response.status_code == 200, response.text

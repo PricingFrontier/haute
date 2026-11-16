@@ -57,7 +57,8 @@ token, ``$D`` the data path under the project root):
     #    emitting table's input snapshot before assembling the document.
     curl -sX POST localhost:8000/api/pipeline/preview -H "X-Haute-Session: $T" \
       -H 'content-type: application/json' \
-      -d '{"graph":<GRAPH>,"node_id":"quote_response"}'
+      -d '{"graph":<GRAPH>,"target":{"kind":"node","occurrence":null,
+           "node_id":"quote_response","port_label":null,"port_labels":null}}'
 """
 
 from __future__ import annotations
@@ -72,6 +73,7 @@ from fastapi.testclient import TestClient
 
 from haute._types import NodeType
 from haute.executor import _preview_cache
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 
 # Reuse the canonical multi-port helpers (same imports test_output_assemble_routes
@@ -197,7 +199,7 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
     # document (proven by test_output_nested_roundtrip.py).
     preview = client.post(
         "/api/pipeline/preview",
-        json={"graph": graph, "node_id": "quote_response"},
+        json={"graph": graph, "target": node_target("quote_response")},
     )
     assert preview.status_code == 200, (
         f"STAGE 3 PREVIEW failed (commit 7 OUTPUT wiring): {preview.text}"

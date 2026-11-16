@@ -48,6 +48,12 @@ from haute._execution_schemas import (
     _validate_diagnostic_collection,
 )
 from haute._graph_utils import is_frame_label
+from haute._node_address_schemas import (
+    FrameTargetPayload,
+    NodeAddressEntry,
+    OccurrencePortProvenance,
+    RuntimeNodeKey,
+)
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, STRUCTURAL_NODE_TYPES, node_spec
 from haute._pipeline_settings import (
     MAX_SIZE_GB,
@@ -2004,21 +2010,21 @@ PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
 
 
 class PreviewNodeRequest(EditorSampleRequest):
+    # A field the request does not define (a node id or port beside the target) is refused,
+    # never silently dropped.
+    model_config = ConfigDict(extra="forbid")
+
     graph: Graph
-    node_id: BoundedName
+    # The frame previewed, by address (specs/server-api/low-level.md, "Node addresses"). A
+    # node target's ``port_label`` picks one frame of a multi-frame node and is part of
+    # the preview cache identity; its ``port_labels`` previews several frames from one run
+    # into ``port_previews`` (the workbench's Preview, a Workbench Output's tables), part of
+    # the supersession identity, not the cache's: every frame of the target is computed and
+    # kept whichever are previewed.
+    target: FrameTargetPayload
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: BoundedName = "live"
     requested_preview_columns: list[BoundedName] | None = Field(
-        default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
-    )
-    # Frame label selected for a multi-frame target. Single-frame targets
-    # ignore it. It is part of the preview cache identity.
-    port_label: BoundedName | None = None
-    # Several frames of a multi-frame target, each previewed from one run into
-    # ``port_previews`` (the workbench's Preview, a Workbench Output's tables). Not with
-    # ``port_label``. Part of the supersession identity, not the cache's: every frame of
-    # the target is computed and kept whichever are previewed.
-    port_labels: list[BoundedName] | None = Field(
         default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
     )
     # Chosen by the client so it can poll this request's step progress. Not part
@@ -2029,12 +2035,6 @@ class PreviewNodeRequest(EditorSampleRequest):
     # Preview pricing its sample). In the cache identity through the nodes' configs. Not
     # with ``workbench_sample``.
     workbench_form: FormSpec | None = None
-
-    @model_validator(mode="after")
-    def _one_frame_or_several(self) -> PreviewNodeRequest:
-        if self.port_label is not None and self.port_labels is not None:
-            raise ValueError("Give port_label for one frame or port_labels for several, not both.")
-        return self
 
     @model_validator(mode="after")
     def _one_form_or_a_sample(self) -> PreviewNodeRequest:
@@ -2078,13 +2078,13 @@ class RecoveryPreviewRequest(BaseModel):
 
 
 class NodeTimingInfo(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     label: str
     timing_ms: float
 
 
 class NodeMemoryInfo(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     label: str
     memory_bytes: int
 
@@ -2121,24 +2121,31 @@ class PreviewNodeResponse(NodeResult):
     """Full preview response — extends ``NodeResult`` with graph-wide metadata.
 
     Inherits all per-node fields (status, row_count, columns, preview, etc.)
-    and adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for
-    the full graph context.
+    and adds ``timings``, ``memory``, and ``node_statuses`` for the full graph
+    context. It names nodes by runtime key, each addressed in ``node_addresses``
+    (specs/server-api/low-level.md, "Node addresses"); it belongs to its request's
+    target, so it does not name that again.
     """
 
-    node_id: str
     timings: list[NodeTimingInfo] = Field(default_factory=list)
     memory: list[NodeMemoryInfo] = Field(default_factory=list)
-    node_statuses: dict[str, NodeExecutionStatus] = Field(default_factory=dict)
-    node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
-    node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_statuses: dict[RuntimeNodeKey, NodeExecutionStatus] = Field(default_factory=dict)
+    node_columns: dict[RuntimeNodeKey, list[ColumnInfo]] = Field(default_factory=dict)
+    node_available_columns: dict[RuntimeNodeKey, list[ColumnInfo]] = Field(default_factory=dict)
     # Per-frame column schemas for multi-frame producers, keyed
-    # node_id → port_label → columns. Only nodes that emit 2+ frames
-    # (a multi-table apiInput today; submodels / external callouts
-    # later) appear here; single-frame nodes are absent and the
-    # consumer falls back to ``node_columns``. Sibling to
-    # ``node_columns`` — additive, never replaces it.
-    node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
-    node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
+    # node key → port_label → columns. Only nodes that emit 2+ frames
+    # (a multi-table apiInput, a collapsed occurrence's output ports
+    # keyed by their ``out__<port>`` handles) appear here; single-frame
+    # nodes are absent and the consumer falls back to ``node_columns``.
+    node_frame_columns: dict[RuntimeNodeKey, dict[str, list[ColumnInfo]]] = Field(
+        default_factory=dict
+    )
+    node_schema_warnings: dict[RuntimeNodeKey, list[SchemaWarning]] = Field(default_factory=dict)
+    # The address and label of every key above.
+    node_addresses: dict[str, NodeAddressEntry]
+    # Every declared port of every occurrence in the executed graph, with the endpoint it
+    # resolves to (frame provenance): an Input card's columns are read through it.
+    occurrence_ports: list[OccurrencePortProvenance]
     execution_metrics: ExecutionMetricsPayload | None = None
     # Every snapshot generation the collected rows were computed from, in
     # topological order; empty when the preview read no snapshot.
@@ -2148,19 +2155,22 @@ class PreviewNodeResponse(NodeResult):
 class PreviewInputsRequest(EditorSampleRequest):
     """Which inputs a preview would read, so the browser prepares only those."""
 
+    model_config = ConfigDict(extra="forbid")
+
     graph: Graph
-    node_id: BoundedName
+    target: FrameTargetPayload
     source: BoundedName = "live"
     requested_preview_columns: list[BoundedName] | None = Field(
         default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
     )
-    port_label: BoundedName | None = None
 
 
 class PreviewInputsResponse(BaseModel):
-    """Snapshot-backed Data Inputs and structured API Inputs, in execution order."""
+    """Snapshot-backed Data Inputs and structured API Inputs, in execution order, each
+    addressed in ``node_addresses``."""
 
-    input_node_ids: list[str]
+    input_node_ids: list[RuntimeNodeKey]
+    node_addresses: dict[str, NodeAddressEntry]
 
 
 # ---------------------------------------------------------------------------

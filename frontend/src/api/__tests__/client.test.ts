@@ -3,6 +3,7 @@ import {
   makeCanonicalGraph,
   makeCanonicalNode,
   makePreviewResponse as makeCompletePreviewResponse,
+  nodeTarget,
   preparedGraph,
 } from "../../test-utils/factories"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
@@ -135,7 +136,6 @@ const preparedDummyGraph = preparedGraph(dummyGraph)
 
 function makePreviewResponse() {
   return makeCompletePreviewResponse({
-    node_id: "node1",
     row_count: 1,
     column_count: 1,
     columns: [{ name: "x", dtype: "Int64" }],
@@ -766,7 +766,7 @@ describe("endpoint contracts", () => {
   })
 
   it("previewNode sends the caller's request id so it can poll its progress", async () => {
-    await previewNode({ graph: preparedGraph({ nodes: [], edges: [] }), nodeId: "n1", rowLimit: 5, requestId: "req-1" })
+    await previewNode({ graph: preparedGraph({ nodes: [], edges: [] }), target: nodeTarget("n1"), rowLimit: 5, requestId: "req-1" })
 
     const [, init] = mockFetch.mock.calls.find(([url]) => url === "/api/pipeline/preview")!
     expect(JSON.parse(init.body as string).request_id).toBe("req-1")
@@ -784,13 +784,14 @@ describe("endpoint contracts", () => {
   })
 
   it("previewNode posts to /api/pipeline/preview with correct body", async () => {
-    await previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
+    await previewNode({ graph: preparedDummyGraph, target: nodeTarget("node1"), rowLimit: 50, source: "live" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/preview")
     expect(opts.method).toBe("POST")
     const body = JSON.parse(opts.body)
     expect(body.graph).toEqual(dummyGraph)
-    expect(body.node_id).toBe("node1")
+    expect(body.target).toEqual({ kind: "node", occurrence: null, node_id: "node1", port_label: null, port_labels: null })
+    expect(body).not.toHaveProperty("node_id")
     expect(body.row_limit).toBe(50)
     expect(body.source).toBe("live")
   })
@@ -1664,7 +1665,7 @@ describe("request() edge cases", () => {
         }),
       )
 
-      const promise = previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, timeout: 5 })
+      const promise = previewNode({ graph: preparedDummyGraph, target: nodeTarget("node1"), rowLimit: 50, timeout: 5 })
       promise.catch(() => {})
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
@@ -1697,8 +1698,8 @@ describe("request() edge cases", () => {
       const controller = new AbortController()
       const signal = controller.signal
       const calls = [
-        previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, signal }),
-        previewInputs({ graph: preparedDummyGraph, nodeId: "node1", signal }),
+        previewNode({ graph: preparedDummyGraph, target: nodeTarget("node1"), rowLimit: 50, signal }),
+        previewInputs({ graph: preparedDummyGraph, target: nodeTarget("node1"), signal }),
         traceCell({ graph: preparedDummyGraph, row_index: 0, target_node_id: "node1", seed_plan: [], signal }),
         writeOutput({ graph: preparedDummyGraph, nodeId: "out", signal }),
         estimateOptimiserSolve({ graph: preparedDummyGraph, node_id: "opt", signal }),
@@ -1815,7 +1816,7 @@ describe("request() edge cases", () => {
     const controller = new AbortController()
     const promise = previewNode({
       graph: preparedDummyGraph,
-      nodeId: "node1",
+      target: nodeTarget("node1"),
       rowLimit: 50,
       signal: controller.signal,
       timeout: 30_000,
@@ -1849,7 +1850,7 @@ describe("request() edge cases", () => {
       const controller = new AbortController()
       const promise = previewNode({
         graph: preparedDummyGraph,
-        nodeId: "node1",
+        target: nodeTarget("node1"),
         rowLimit: 50,
         signal: controller.signal,
         timeout: 10,
@@ -1890,7 +1891,7 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("previewNode body omits streaming_chunk_size", async () => {
-    await previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
+    await previewNode({ graph: preparedDummyGraph, target: nodeTarget("node1"), rowLimit: 50, source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

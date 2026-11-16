@@ -17,6 +17,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import useUIStore from "../../stores/useUIStore"
 import useGitStore from "../../stores/useGitStore"
 import { answerQuestion, asked } from "../../test-utils/question"
+import { runtimeKey } from "../../test-utils/factories"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -304,16 +305,16 @@ describe("Toolbar", () => {
   })
 
   it("formats timing in milliseconds without decimal places and with a space before the unit", () => {
-    const { rerender } = render(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 42.4 }] })} />)
+    const { rerender } = render(<Toolbar {...makeProps({ timings: [{ node_id: runtimeKey("n1"), label: "Node 1", timing_ms: 42.4 }] })} />)
     expect(screen.getByText("42 ms")).toBeInTheDocument()
 
-    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 42.6 }] })} />)
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: runtimeKey("n1"), label: "Node 1", timing_ms: 42.6 }] })} />)
     expect(screen.getByText("43 ms")).toBeInTheDocument()
 
-    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 0 }] })} />)
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: runtimeKey("n1"), label: "Node 1", timing_ms: 0 }] })} />)
     expect(screen.getByText("0 ms")).toBeInTheDocument()
 
-    rerender(<Toolbar {...makeProps({ timings: [{ node_id: "n1", label: "Node 1", timing_ms: 1500 }] })} />)
+    rerender(<Toolbar {...makeProps({ timings: [{ node_id: runtimeKey("n1"), label: "Node 1", timing_ms: 1500 }] })} />)
     expect(screen.getByText("1.50 s")).toBeInTheDocument()
   })
 

@@ -75,6 +75,7 @@ from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.node_data import node_data_service
 from haute.schemas import EditorIdentityRequestNode
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._source_files import source_files
 from tests._workbench_helpers import form_table, without_form_tables, workbench_project
@@ -1213,7 +1214,7 @@ def test_a_misfit_sample_answers_the_preview_route_with_422(
         with TestClient(app, raise_server_exceptions=False) as client:
             response = client.post(
                 "/api/pipeline/preview",
-                json={"graph": graph.model_dump(mode="json"), "node_id": "listed"},
+                json={"graph": graph.model_dump(mode="json"), "target": node_target("listed")},
             )
     finally:
         shutdown_interactive_worker_pool()

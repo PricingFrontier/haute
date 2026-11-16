@@ -72,7 +72,6 @@ function graph(): PreparedGraph {
 
 /** A preview's answer: each table asked for with its rows, as many as it has and not cut short unless said. */
 const ok = (tables: Record<string, Record<string, unknown>[]>, cut: Record<string, number> = {}): PreviewNodeResponse => (makePreviewResponse({
-  node_id: "response",
   status: "ok",
   port_previews: Object.fromEntries(
     Object.entries(tables).map(([label, rows]) => [
@@ -97,11 +96,17 @@ describe("priceSample", () => {
     // Each table's rows read from its port's preview, kept under its table's name, as a response holds them.
     expect(priced).toEqual({ tables: { pricing: [{ premium: 2000 }], layer_premiums: [{ layer: 1 }, { layer: 2 }] } })
     expect(preview).toHaveBeenCalledOnce()
-    const [{ graph: sent, nodeId, source, portLabels, workbenchForm }] = preview.mock.calls[0]
-    expect(nodeId).toBe("response")
+    const [{ graph: sent, target, source, workbenchForm }] = preview.mock.calls[0]
     expect(source).toBe("live")
-    // A table without a column is no port, so nothing to preview.
-    expect(portLabels).toEqual(["pricing_output", "layer_premiums_output"])
+    // The Workbench Output by address, its tables' ports read in one run. A table without
+    // a column is no port, so nothing to preview.
+    expect(target).toEqual({
+      kind: "node",
+      occurrence: null,
+      node_id: "response",
+      port_label: null,
+      port_labels: ["pricing_output", "layer_premiums_output"],
+    })
     expect(workbenchForm).toBe(form)
     expect(sent).toEqual(before)
     expect(document).toEqual(before)
@@ -153,7 +158,6 @@ describe("priceSample", () => {
 
   it("rejects with the preview's error", async () => {
     preview.mockResolvedValue(makePreviewResponse({
-      node_id: "response",
       status: "error",
       error: "Connect a frame to the Workbench Output's 'pricing_output' table.",
     }))

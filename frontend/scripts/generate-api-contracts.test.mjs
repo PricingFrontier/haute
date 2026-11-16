@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CONSTANTS_FILENAME,
   GENERATED_TYPES_FILENAME,
+  brandedNodeKeys,
   extractContractSchema,
   extractModuleContractSchema,
   run,
@@ -229,6 +230,28 @@ test("a shared group's root is compiled once, and every other module checks only
 
   const unshared = { ...schema, "x-haute-shared-response-groups": ["utility"] };
   assert.throws(() => validatorModules(unshared), /holds exactly one model: utility/);
+});
+
+test("a node key is declared as the branded RuntimeNodeKey, and a mapping by node keys keeps a string index", () => {
+  const answer = {
+    type: "object",
+    properties: {
+      target: { type: "string", "x-haute-node-key": true },
+      listed: { type: "array", items: { type: "string", "x-haute-node-key": true } },
+      by_key: { type: "object", propertyNames: { "x-haute-node-key": true }, additionalProperties: { type: "integer" } },
+      label: { type: "string" },
+    },
+  };
+
+  assert.deepEqual(brandedNodeKeys(answer), {
+    type: "object",
+    properties: {
+      target: { type: "string", tsType: "RuntimeNodeKey" },
+      listed: { type: "array", items: { type: "string", tsType: "RuntimeNodeKey" } },
+      by_key: { type: "object", additionalProperties: { type: "integer" } },
+      label: { type: "string" },
+    },
+  });
 });
 
 test("a schema that says nothing of its type is declared unknown, never an object", () => {

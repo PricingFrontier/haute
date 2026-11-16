@@ -71,7 +71,6 @@
     }
   ],
   "notes": [],
-  "node_id": "score",
   "timings": [
     {
       "node_id": "source",
@@ -170,6 +169,19 @@
       }
     ]
   },
+  "node_addresses": {
+    "score": {
+      "occurrence": null,
+      "node_id": "score",
+      "label": "Score"
+    },
+    "source": {
+      "occurrence": null,
+      "node_id": "source",
+      "label": "Source"
+    }
+  },
+  "occurrence_ports": [],
   "execution_metrics": null,
   "seed_plan": [
     {

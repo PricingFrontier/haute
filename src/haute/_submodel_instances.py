@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -19,6 +19,7 @@ from haute._polars_steps import (
     stepped_surface_allows_input_references,
 )
 from haute._types import (
+    ExpandedOccurrence,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -26,6 +27,7 @@ from haute._types import (
     PipelineGraph,
     SubmodelDefinition,
     SubmodelEndpoint,
+    SubmodelExpansion,
     SubmodelInputPort,
     SubmodelInstanceConfig,
     SubmodelOutputPort,
@@ -974,4 +976,65 @@ def expand_submodel_instances(
                 for port in instance.definition.input_ports
                 if port.name in bindings[owner] and port.name in bindings[instance.node.id]
             }
+    previous = graph._submodel_expansion
+    expanded._submodel_expansion = SubmodelExpansion.of(
+        {
+            # An occurrence an earlier expansion recorded, fed by one this expansion
+            # runs, is fed by that occurrence's producing endpoint now.
+            **(
+                {
+                    instance_id: replace(
+                        occurrence,
+                        input_ports={
+                            port: endpoint
+                            if endpoint is None or endpoint.node_id not in selected_ids
+                            else expanded_source(
+                                GraphEdge(
+                                    id="binding",
+                                    source=endpoint.node_id,
+                                    sourceHandle=endpoint.handle_id,
+                                    target=instance_id,
+                                )
+                            )
+                            for port, endpoint in occurrence.input_ports.items()
+                        },
+                    )
+                    for instance_id, occurrence in previous.occurrences.items()
+                }
+                if previous is not None
+                else {}
+            ),
+            **{
+                instance.node.id: _expanded_occurrence(
+                    instance, id_maps[instance.node.id], bindings[instance.node.id]
+                )
+                for instance in selected
+            },
+        }
+    )
     return expanded
+
+
+def _expanded_occurrence(
+    instance: ResolvedSubmodelInstance,
+    id_map: Mapping[str, str],
+    bound: Mapping[str, SubmodelEndpoint],
+) -> ExpandedOccurrence:
+    """The record of one expanded occurrence: every declared port, bound or not, so
+    recording an unbound port never fails (only a request naming it is refused)."""
+    return ExpandedOccurrence(
+        instance_id=instance.node.id,
+        definition_id=instance.config.definition_id,
+        label=instance.node.data.label,
+        children=dict(id_map),
+        child_labels={node.id: node.data.label for node in instance.definition.graph.nodes},
+        input_ports={port.name: bound.get(port.name) for port in instance.definition.input_ports},
+        output_ports={
+            port.name: (
+                SubmodelEndpoint(nodeId=id_map[port.source.node_id], handleId=port.source.handle_id)
+                if port.source.node_id in id_map
+                else None
+            )
+            for port in instance.definition.output_ports
+        },
+    )

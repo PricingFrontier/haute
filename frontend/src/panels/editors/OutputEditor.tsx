@@ -444,18 +444,17 @@ export default function OutputEditor({
       void preamble
       const sourceNode = nodeById[edge.source]
       if (!sourceNode) throw new ApiError("Frame source node not found", 404)
-      // A frame from the open submodel's Input card reads the parent node feeding that port.
+      // The frame by address, its handle with it: a node's frame, an occurrence's output
+      // port on the main pipeline, or the open submodel's Input card at its port.
       const target = prepareNodeRequest(requestScope, canvasTarget(edge.source, edge.sourceHandle))
       const res = await previewNode({
         graph: target.graph,
-        nodeId: target.nodeId,
+        target: target.wireTarget,
         rowLimit: PREVIEW_ROW_LIMIT,
         source: useSettingsStore.getState().activeSource,
         // Project to this frame's columns where known, so the preview shows the
         // frame's fields (best-effort; the backend tolerates a superset).
         requestedPreviewColumns: columns.length > 0 ? columns : undefined,
-        // Select this frame from a multi-frame source via its handle.
-        portLabel: target.portLabel,
       })
       if (res.status !== "ok") {
         throw new ApiError(res.error || "Frame preview failed", 422, res.error ?? undefined)

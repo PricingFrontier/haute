@@ -2,8 +2,12 @@ import type { Node } from "@xyflow/react"
 import { nodeData, type SubmodelPortData } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
 import { canonicalSubmodelBoundary, resolveSubmodelBoundaryNodes } from "./apiInputPorts"
+import { frameKey, type FrameTarget } from "./nodeAddress"
 
 export interface SubmodelOutputPreview {
+  /** The output port read, by address: the server resolves its producing child. */
+  target: FrameTarget
+  /** The producing child's runtime id and port, for the requests still sent by id (Trace). */
   nodeId: string
   portLabel: string | undefined
   outputName: string
@@ -39,13 +43,15 @@ export function submodelOutputPreview(
   const selected = chosenOutputHandle === undefined ? outputs[0] : outputs.find(({ port }) => `out__${port.name}` === chosenOutputHandle)
   if (!selected) throw new Error(`Submodel ${node.id} has no output ${chosenOutputHandle}. Select a declared output.`)
   resolveSubmodelBoundaryNodes(boundary, `out__${selected.port.name}`, "out", submodels)
+  const target: FrameTarget = { kind: "occurrenceOutput", occurrence: node.id, port: selected.port.name }
   return {
+    target,
     nodeId: qualifiedRuntimeNodeId(node.id, selected.port.source.nodeId),
     portLabel: selected.port.source.handleId ?? undefined,
     outputName: selected.outputName,
     outputHandle: `out__${selected.port.name}`,
     outputNames: outputs.map((output) => output.outputName),
-    cacheKey: `submodel_output/${encodeRuntimeIdPart(node.id)}/${encodeRuntimeIdPart(selected.port.name)}`,
+    cacheKey: frameKey(target),
   }
 }
 

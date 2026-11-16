@@ -720,15 +720,86 @@ export function makeInputCacheSnapshot(
 // makePreviewResponse — a whole POST /api/pipeline/preview answer
 // ---------------------------------------------------------------------------
 
-import type { PreviewNodeResponse } from "../api/types"
+import type { PreviewInputsResponse, PreviewNodeResponse } from "../api/types"
+import type { OccurrencePortProvenance, RuntimeNodeKey } from "../generated/api-contracts.generated"
+import type { FrameTargetPayload } from "../utils/requestGateway"
 
-/** A preview response as the server sends it, every field present. */
+/** A runtime key as an answer names it: opaque text the browser only looks up. */
+export function runtimeKey(text: string): RuntimeNodeKey {
+  return text as unknown as RuntimeNodeKey
+}
+
+/** A node frame target as a preview request sends it: a pipeline node, or a child of `occurrence`. */
+export function nodeTarget(
+  nodeId: string,
+  { occurrence = null, portLabel = null, portLabels = null }: {
+    occurrence?: string | null
+    portLabel?: string | null
+    portLabels?: string[] | null
+  } = {},
+): FrameTargetPayload {
+  return { kind: "node", occurrence, node_id: nodeId, port_label: portLabel, port_labels: portLabels }
+}
+
+/** The node a preview request's node target names, by its id in its occurrence (or the pipeline). */
+export function targetNodeId(target: FrameTargetPayload): string {
+  if (target.kind !== "node") throw new Error(`Not a node target: ${JSON.stringify(target)}`)
+  return target.node_id
+}
+
+/** The pipeline node a preview request's body targets, or null when it targets anything else. */
+export function previewTargetNode(body: unknown): string | null {
+  const target = (body as { target?: Partial<FrameTargetPayload> } | null)?.target
+  if (target?.kind !== "node" || target.occurrence !== null) return null
+  return typeof target.node_id === "string" && target.node_id.length > 0 ? target.node_id : null
+}
+
+/** One entry of a preview answer's frame provenance: what an occurrence's port resolves to. */
+export function occurrencePort(
+  occurrence: string,
+  direction: "input" | "output",
+  port: string,
+  endpoint: { key: string; handle?: string | null } | null,
+): OccurrencePortProvenance {
+  return {
+    occurrence,
+    direction,
+    port,
+    endpoint: endpoint ? { key: runtimeKey(endpoint.key), handle: endpoint.handle ?? null } : null,
+  }
+}
+
+/**
+ * Addresses for keys an answer names as the pipeline's own nodes, labelled by their ids:
+ * what the server sends for nodes of a pipeline with no submodel open.
+ */
+export function rootAddresses(...keys: string[]): PreviewNodeResponse["node_addresses"] {
+  return Object.fromEntries(keys.map((key) => [key, { occurrence: null, node_id: key, label: key }]))
+}
+
+/** A preview-inputs answer naming the pipeline's own input nodes `ids`, each addressed. */
+export function makePreviewInputsResponse(...ids: string[]): PreviewInputsResponse {
+  return { input_node_ids: ids.map(runtimeKey), node_addresses: rootAddresses(...ids) }
+}
+
+/**
+ * A preview response as the server sends it, every field present. Unless `overrides`
+ * gives `node_addresses`, every key its maps name is addressed as a pipeline node.
+ */
 export function makePreviewResponse(
   overrides: Partial<PreviewNodeResponse> = {},
 ): PreviewNodeResponse {
+  const named = [
+    ...Object.keys(overrides.node_statuses ?? {}),
+    ...Object.keys(overrides.node_columns ?? {}),
+    ...Object.keys(overrides.node_available_columns ?? {}),
+    ...Object.keys(overrides.node_frame_columns ?? {}),
+    ...Object.keys(overrides.node_schema_warnings ?? {}),
+    ...(overrides.timings ?? []).map((timing) => timing.node_id as unknown as string),
+    ...(overrides.memory ?? []).map((entry) => entry.node_id as unknown as string),
+  ]
   return {
     status: "ok",
-    node_id: "n1",
     row_count: 0,
     column_count: 0,
     columns: [],
@@ -755,7 +826,9 @@ export function makePreviewResponse(
     node_schema_warnings: {},
     execution_metrics: null,
     seed_plan: [],
+    occurrence_ports: [],
     ...overrides,
+    node_addresses: overrides.node_addresses ?? rootAddresses(...new Set(named)),
   }
 }
 

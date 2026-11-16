@@ -22,7 +22,7 @@
  *   - node deleted mid-flight → handleDeleteNode already cleared the panel;
  *     the late response must not resurrect it or re-create cache entries.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, nodeTarget } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node } from "@xyflow/react"
@@ -33,7 +33,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -105,7 +105,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 }
 
 const okEnvelope: PreviewEnvelope = makePreviewResponse({
-  node_id: "browser_apply",
   status: "ok",
   columns: [
     { name: "optimal_scenario_value", dtype: "f64" },
@@ -333,8 +332,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
     expect(mockPreview).toHaveBeenCalledWith(expect.objectContaining({
-      nodeId: applyNode.id,
-      portLabel: "optimised",
+      target: nodeTarget(applyNode.id, { portLabel: "optimised" }),
     }))
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
     expect(result.current.previewData).toMatchObject({

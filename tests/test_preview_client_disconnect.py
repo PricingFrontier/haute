@@ -20,6 +20,7 @@ from fastapi import HTTPException, Request
 from haute.errors import RequestRefusedError
 from haute.routes import pipeline as pipeline_routes
 from haute.schemas import PreviewNodeRequest
+from tests._preview_targets import node_target
 from tests.conftest import make_ready_file_input_config
 
 
@@ -51,7 +52,7 @@ def _body() -> PreviewNodeRequest:
                 ],
                 "edges": [],
             },
-            "node_id": "source",
+            "target": node_target("source"),
             "row_limit": 2,
         }
     )

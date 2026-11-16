@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests import _server_helpers
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._server_helpers import (
     DOCUMENT_FINGERPRINT_HEADER,
@@ -218,13 +219,17 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(),
-                "node_id": node_id,
+                "target": node_target(node_id),
                 "row_limit": 10,
             },
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["node_id"] == node_id
+        assert data["node_addresses"][node_id] == {
+            "occurrence": None,
+            "node_id": node_id,
+            "label": graph.nodes[0].data.label,
+        }
         assert data["status"] == "ok"
         assert data["row_count"] <= 10
         assert len(data["columns"]) > 0
@@ -275,7 +280,7 @@ class TestPreviewNode:
                 "/api/pipeline/preview",
                 json={
                     "graph": graph.model_dump(),
-                    "node_id": graph.nodes[0].id,
+                    "target": node_target(graph.nodes[0].id),
                     "row_limit": 10,
                 },
             )
@@ -318,7 +323,7 @@ class TestPreviewNode:
 
         resp = client.post(
             "/api/pipeline/preview",
-            json={"graph": graph.model_dump(), "node_id": "expander", "row_limit": 10},
+            json={"graph": graph.model_dump(), "target": node_target("expander"), "row_limit": 10},
         )
 
         assert resp.status_code == 422, resp.text
@@ -406,7 +411,7 @@ class TestPreviewNode:
         ) as execute_graph:
             response = client.post(
                 "/api/pipeline/preview",
-                json={"graph": graph, "node_id": "nb_batch"},
+                json={"graph": graph, "target": node_target("nb_batch")},
             )
 
         # The flattener refuses the draft before anything runs, and the preview shows
@@ -430,7 +435,7 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(),
-                "node_id": "transform",
+                "target": node_target("transform"),
                 "row_limit": 10,
             },
         )
@@ -460,7 +465,7 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": {"nodes": [], "edges": []},
-                "node_id": "x",
+                "target": node_target("x"),
             },
         )
         assert resp.status_code == 400
@@ -525,14 +530,13 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph,
-                "node_id": "join",
+                "target": node_target("join"),
                 "row_limit": 10,
             },
         )
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["node_id"] == "join"
         assert data["status"] == "error"
         assert "edgeJoin non-cross joins require join keys" in data["error"]
 
@@ -558,7 +562,7 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(),
-                "node_id": node_id,
+                "target": node_target(node_id),
                 "row_limit": 10,
             },
         )
@@ -1214,7 +1218,7 @@ class TestPipelineTimeouts:
             if endpoint == "trace":
                 body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
             else:
-                body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
+                body = {"graph": graph.model_dump(), "target": node_target(graph.nodes[0].id)}
         else:
             body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
 
@@ -1307,7 +1311,7 @@ class TestPipelineExceptions:
             if endpoint == "trace":
                 body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
             else:
-                body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
+                body = {"graph": graph.model_dump(), "target": node_target(graph.nodes[0].id)}
         else:
             body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
 
@@ -1383,7 +1387,7 @@ class TestPipelineExceptions:
 
         response = client.post(
             "/api/pipeline/preview",
-            json={"graph": graph, "node_id": "api"},
+            json={"graph": graph, "target": node_target("api")},
         )
 
         assert response.status_code == 422
@@ -1417,11 +1421,11 @@ class TestPreviewEdgeCases:
                 "/api/pipeline/preview",
                 json={
                     "graph": graph.model_dump(),
-                    "node_id": "nonexistent_node",
+                    "target": node_target("nonexistent_node"),
                 },
             )
         assert resp.status_code == 404
-        assert "not found in results" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Node 'nonexistent_node' not found"
 
 
 class TestListPipelinesParseError:

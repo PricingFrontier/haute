@@ -13,15 +13,16 @@ import {
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { syncConnectionId } from "../api/syncConnection"
 import {
-  canvasIdNamer,
   canvasNodeAddress,
   documentRequestScope,
+  frameTargetPayload,
   preparePipelineRequest,
   resultKey,
-  runtimeNodeId,
+  type FrameTargetPayload,
 } from "../utils/requestGateway"
-import { childAddress, rootAddress } from "../utils/nodeAddress"
-import type { PreparedGraph } from "../api/types"
+import { addressKey, nodeFrame } from "../utils/nodeAddress"
+import { answerTargetKey, keyText, keysOnCanvas, placeAddress } from "../utils/answerAddresses"
+import type { PreparedGraph, PreviewInputsResponse } from "../api/types"
 import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
@@ -222,8 +223,8 @@ function resultToPreview(
   label: string,
   r: PreviewNodeResponse,
   selectedFrame?: string,
-  /** The id the request ran the node under; the route-level maps name it so. */
-  runtimeId: string = nodeId,
+  /** The key the answer runs the target under (`answerTargetKey`); its maps name it so. */
+  targetKey: string | null = null,
 ): PreviewData {
   return makePreviewData(nodeId, label, {
     status: r.status,
@@ -245,13 +246,12 @@ function resultToPreview(
     execution_metrics: r.execution_metrics ?? null,
     seed_plan: "seed_plan" in r ? r.seed_plan ?? [] : [],
     // Per-frame schema for a multi-frame producer (drives the frame-select
-    // dropdown). Prefer the node's own `frame_columns`; fall back to
-    // `node_frame_columns[nodeId]` (the route-level map) when the per-node
-    // field is absent.
+    // dropdown). Prefer the node's own `frame_columns`; fall back to the
+    // route-level map under the target's key when the per-node field is absent.
     frame_columns:
       r.frame_columns && Object.keys(r.frame_columns).length > 0
         ? r.frame_columns
-        : ("node_frame_columns" in r ? r.node_frame_columns?.[runtimeId] : undefined),
+        : (targetKey !== null && "node_frame_columns" in r ? r.node_frame_columns?.[targetKey] : undefined),
     selected_frame: selectedFrame,
   })
 }
@@ -298,10 +298,36 @@ function canPreviewNode(node: Node): boolean {
 
 /** One preview whose inputs are prepared before it runs. */
 interface PreviewInputTarget {
-  nodeId: string
+  target: FrameTargetPayload
   source: string
   requestedPreviewColumns?: string[]
-  portLabel?: string
+}
+
+/**
+ * The input nodes a preview-inputs answer names, by address key (a pipeline node and a
+ * child of the same id are two inputs): one of the pipeline's own, or a child in its
+ * occurrence's definition, as the prepared document holds them.
+ */
+function inputNodesOf(graph: PreparedGraph, answer: PreviewInputsResponse): Array<[string, Node]> {
+  const nodes: Array<[string, Node]> = []
+  for (const key of answer.input_node_ids) {
+    const address = answer.node_addresses[keyText(key)]
+    if (!address) continue
+    const at = addressKey({ occurrence: address.occurrence, node: address.node_id })
+    if (address.occurrence === null) {
+      const node = graph.nodes.find((candidate) => candidate.id === address.node_id)
+      if (node) nodes.push([at, node as unknown as Node])
+      continue
+    }
+    const occurrence = graph.nodes.find((candidate) => candidate.id === address.occurrence)
+    const config = occurrence?.data?.config as { definition_id?: unknown } | undefined
+    const definition = typeof config?.definition_id === "string"
+      ? (graph.submodels as Record<string, { graph?: { nodes?: unknown[] } } | undefined> | undefined)?.[config.definition_id]
+      : undefined
+    const child = (definition?.graph?.nodes as Node[] | undefined)?.find((candidate) => candidate.id === address.node_id)
+    if (child) nodes.push([at, child])
+  }
+  return nodes
 }
 
 interface PreviewDocumentFence {
@@ -362,52 +388,51 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
 }
 
 /**
- * The id a visible node's columns come back under in a preview's schema maps:
- * its own, or in a drilled submodel view its runtime id in this occurrence.
- */
-function previewSchemaKey(nodeId: string, drilled: DrilledOccurrenceIdentity | null): string {
-  return runtimeNodeId(drilled ? childAddress(drilled.instanceId, nodeId) : rootAddress(nodeId))
-}
-
-/**
- * A drilled view's Input card runs nothing of its own: each of its ports
- * carries the columns of the parent node feeding that port of this
- * occurrence, which the preview's schema maps hold under the parent's id.
+ * An open occurrence's Input card runs nothing of its own: each of its ports
+ * carries the columns of the endpoint feeding that port, as the answer's frame
+ * provenance names it, read from the preview's schema maps under its key.
  */
 function boundaryInputFrames(
   node: Node,
   result: PreviewNodeResponse,
-  drilled: DrilledOccurrenceIdentity,
+  openOccurrence: string,
 ): Record<string, ColumnDef[]> {
   const data = nodeData(node) as Partial<SubmodelPortData>
   const frames: Record<string, ColumnDef[]> = {}
-  if (data.portDirection !== "input" || data.instanceId !== drilled.instanceId) return frames
+  if (data.portDirection !== "input" || data.instanceId !== openOccurrence) return frames
   const nodeColumns: Record<string, ColumnDef[] | undefined> = result.node_columns
   const nodeFrameColumns: Record<string, Record<string, ColumnDef[]> | undefined> = result.node_frame_columns
-  for (const port of data.ports ?? []) {
-    const feed = port.parentEdges.find((edge) => edge.target === drilled.instanceId)
-    if (!feed) continue
-    const handle = feed.sourceHandle
-    const columns = (handle ? nodeFrameColumns[feed.source]?.[handle] : undefined) ?? nodeColumns[feed.source]
-    if (columns) frames[port.id] = columns
+  for (const entry of result.occurrence_ports) {
+    if (entry.occurrence !== openOccurrence || entry.direction !== "input" || !entry.endpoint) continue
+    const key = keyText(entry.endpoint.key)
+    const handle = entry.endpoint.handle
+    const columns = (handle ? nodeFrameColumns[key]?.[handle] : undefined) ?? nodeColumns[key]
+    if (columns) frames[entry.port] = columns
   }
   return frames
 }
 
+/**
+ * Record a preview's schema maps on the nodes they describe, as the canvas open on
+ * `openOccurrence` (null for the main pipeline) shows them: each key is placed by its
+ * address (`keysOnCanvas`); a child of a collapsed occurrence is described by its card's
+ * own entries, never its children's.
+ */
 function applyPreviewSchemaMapsToNodes(
   nodes: Node[],
   result: PreviewNodeResponse,
   source: string,
   structuralVersion: number,
-  drilled: DrilledOccurrenceIdentity | null,
+  openOccurrence: string | null,
 ): Node[] {
   const nodeColumns: Record<string, ColumnDef[] | undefined> = result.node_columns
   const nodeFrameColumns: Record<string, Record<string, ColumnDef[]> | undefined> = result.node_frame_columns
   const nodeAvailableColumns: Record<string, ColumnDef[] | undefined> = result.node_available_columns
   const nodeSchemaWarnings: Record<string, SchemaWarning[] | undefined> = result.node_schema_warnings
+  const keyOf = keysOnCanvas(result.node_addresses, openOccurrence)
   return nodes.map((n) => {
-    if (drilled && nodeData(n).nodeType === NODE_TYPES.SUBMODEL_PORT) {
-      const ports = boundaryInputFrames(n, result, drilled)
+    if (openOccurrence !== null && nodeData(n).nodeType === NODE_TYPES.SUBMODEL_PORT) {
+      const ports = boundaryInputFrames(n, result, openOccurrence)
       if (Object.keys(ports).length === 0) return n
       // Ports this preview did not reach keep their columns from the same source.
       const kept = nodeData(n)._columnsSource === source ? nodeData(n)._frameColumns : undefined
@@ -418,7 +443,8 @@ function applyPreviewSchemaMapsToNodes(
         _columnsStructuralVersion: structuralVersion,
       } }
     }
-    const key = previewSchemaKey(n.id, drilled)
+    const key = keyOf.get(n.id)
+    if (key === undefined) return n
     const columns = nodeColumns[key]
     const frames = nodeFrameColumns[key]
     const warnings = nodeSchemaWarnings[key]
@@ -448,8 +474,8 @@ function applyPreviewSchemaMapsToNodes(
 }
 
 /**
- * A drilled preview's schema maps also name root nodes, such as the parents
- * feeding the occurrence. Recorded on the pipeline's own nodes in the
+ * A preview inside a submodel also names the pipeline's own nodes, such as the
+ * parents feeding the occurrence. Recorded on the pipeline's own nodes in the
  * document, they seed the Input card the next time an occurrence is opened
  * (`buildSubmodelViewGraph`), even when that preview is served from the cache.
  */
@@ -464,9 +490,9 @@ function recordRootPreviewColumns(
 }
 
 /**
- * Record a preview's columns on the nodes on screen. `drilled` is the
- * occurrence a drilled submodel view shows, whose children come back under
- * their runtime ids; null on the root canvas.
+ * Record a preview of canvas node `nodeId` on the nodes on screen, open on
+ * `openOccurrence` (null for the main pipeline). `targetKey` is the key the
+ * answer ran the node under (`answerTargetKey`).
  */
 export function applyPreviewResultColumnsToNodes(
   nodes: Node[],
@@ -474,47 +500,58 @@ export function applyPreviewResultColumnsToNodes(
   result: PreviewNodeResponse,
   source: string,
   structuralVersion: number,
-  drilled: DrilledOccurrenceIdentity | null = null,
+  openOccurrence: string | null,
+  targetKey: string | null,
 ): Node[] {
-  const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion, drilled)
-  const withColumns = previewSchemaKey(nodeId, drilled) in result.node_columns
+  const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion, openOccurrence)
+  const withColumns = targetKey !== null && targetKey in result.node_columns
     ? mapped
     : applyPreviewColumnsToNodes(mapped, nodeId, result.columns, result, source, structuralVersion)
   // The previewed node's notes (a Model Score's full-policy-term note), however its columns came.
   return withColumns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, _notes: result.notes } } : n))
 }
 
+/** A node status's weight when a collapsed occurrence's card shows its children's as one. */
+const STATUS_WEIGHT: Record<NodeStatus, number> = { ok: 0, running: 1, warning: 2, error: 3 }
+
 function canvasNodeStatuses(
   result: PreviewNodeResponse,
   requestedNodeId: string,
-  canvasIdOf: (runtimeId: string) => string | null,
+  openOccurrence: string | null,
 ): Record<string, NodeStatus> {
-  // The answer names nodes by the ids the request ran them under; each node on the
-  // canvas also takes its status under its own id (a child of the open submodel).
-  const statuses: Record<string, NodeStatus> = { ...(result.node_statuses ?? {}) }
-  for (const [runtimeId, status] of Object.entries(result.node_statuses ?? {})) {
-    const canvasId = canvasIdOf(runtimeId)
-    if (canvasId !== null && canvasId !== runtimeId) statuses[canvasId] = status
+  // Each key's status is shown where its address sits on the canvas; a collapsed
+  // occurrence's card shows the worst of its children's.
+  const statuses: Record<string, NodeStatus> = {}
+  const place = (key: string) => {
+    const address = result.node_addresses[key]
+    // An execution diagnostic names a key the answer does not address yet: a pipeline node's.
+    return address ? placeAddress(address, openOccurrence) : openOccurrence === null ? { id: key, viaCard: false } : null
   }
-  const promoteWarning = (runtimeId: string) => {
-    for (const nodeId of new Set([runtimeId, canvasIdOf(runtimeId) ?? runtimeId])) {
-      if (statuses[nodeId] === "ok") statuses[nodeId] = "warning"
+  for (const [key, status] of Object.entries(result.node_statuses ?? {})) {
+    const placed = place(key)
+    if (!placed) continue
+    const shown = statuses[placed.id]
+    if (!placed.viaCard || shown === undefined || STATUS_WEIGHT[status] > STATUS_WEIGHT[shown]) {
+      statuses[placed.id] = status
     }
   }
-
-  for (const [nodeId, warnings] of Object.entries(result.node_schema_warnings ?? {})) {
-    if (warnings.length > 0) promoteWarning(nodeId)
-  }
-  if ((result.schema_warnings?.length ?? 0) > 0) {
-    promoteWarning(requestedNodeId)
+  const promoteWarning = (key: string) => {
+    const nodeId = place(key)?.id
+    if (nodeId !== undefined && statuses[nodeId] === "ok") statuses[nodeId] = "warning"
   }
 
-  const executionWarningIds = executionWarningNodeIds(
-    result.execution_metrics,
-    requestedNodeId,
-  )
-  for (const nodeId of executionWarningIds) {
-    promoteWarning(nodeId)
+  for (const [key, warnings] of Object.entries(result.node_schema_warnings ?? {})) {
+    if (warnings.length > 0) promoteWarning(key)
+  }
+  if ((result.schema_warnings?.length ?? 0) > 0 && statuses[requestedNodeId] === "ok") {
+    statuses[requestedNodeId] = "warning"
+  }
+
+  // The requested node by its canvas id, the nodes a diagnostic implicates by key.
+  for (const id of executionWarningNodeIds(result.execution_metrics, requestedNodeId)) {
+    if (id === requestedNodeId) {
+      if (statuses[id] === "ok") statuses[id] = "warning"
+    } else promoteWarning(id)
   }
 
   return statuses
@@ -679,16 +716,18 @@ export default function usePipelineAPI({
         targets.map((target) =>
           previewInputs({
             graph,
-            nodeId: target.nodeId,
+            target: target.target,
             source: target.source,
             requestedPreviewColumns: target.requestedPreviewColumns,
-            portLabel: target.portLabel,
             signal,
           }),
         ),
       )
-      const wanted = new Set(answers.flatMap((answer) => answer.input_node_ids))
-      return ensureSnapshotsForNodes(graph.nodes.filter((node) => wanted.has(node.id)), signal)
+      const wanted = new Map<string, Node>()
+      for (const answer of answers) {
+        for (const [at, input] of inputNodesOf(graph, answer)) wanted.set(at, input)
+      }
+      return ensureSnapshotsForNodes([...wanted.values()], signal)
     },
     [ensureSnapshotsForNodes],
   )
@@ -883,9 +922,8 @@ export default function usePipelineAPI({
 
     const label = output?.outputName ?? nodeLabel(node)
     const cacheKey = output?.cacheKey ?? nodeKey
-    const targetNodeId = output?.nodeId ?? runtimeNodeId(canvasNodeAddress(node.id))
-    // The answer's ids are read by the view the request is sent from.
-    const canvasIdOf = canvasIdNamer()
+    // The answer's nodes are placed on the canvas the request is sent from.
+    const openOccurrence = useGraphStore.getState().focus?.instanceId ?? null
     const { getPreview, setPreview: storePreview } = useNodeResultsStore.getState()
     const structuralVersion = useGraphStore.getState().structuralVersion
 
@@ -921,6 +959,9 @@ export default function usePipelineAPI({
       documentStillCurrent()
 
     const portLabel = output ? output.portLabel : portLabelFor(node)
+    // What the request reads, by address: the occurrence's output port, or the node's frame.
+    const target = output?.target ?? nodeFrame(canvasNodeAddress(node.id), portLabel ?? null)
+    const wireTarget = frameTargetPayload(target)
     const selectedFrame = output?.outputName ?? portLabel
     const requestedPreviewColumns = output ? undefined : previewColumnNamesForNode(node, snapshotSource, structuralVersion, portLabel)
     // Cache-first: show cached data immediately if available
@@ -1006,11 +1047,10 @@ export default function usePipelineAPI({
       }
       return withProgress((requestId) => previewNode({
           graph,
-          nodeId: targetNodeId,
+          target: wireTarget,
           rowLimit: snapshotRowLimit,
           source: snapshotSource,
           requestedPreviewColumns,
-          portLabel,
           requestId,
           signal: controller.signal,
         }))
@@ -1041,10 +1081,9 @@ export default function usePipelineAPI({
               graph,
               [
                 {
-                  nodeId: targetNodeId,
+                  target: wireTarget,
                   source: snapshotSource,
                   requestedPreviewColumns,
-                  portLabel,
                 },
               ],
               controller.signal,
@@ -1059,7 +1098,8 @@ export default function usePipelineAPI({
         // graph was retained. Results admitted under an older revision/status
         // must never paint the panel or enter its cache.
         if (!documentStillCurrent()) return
-        const preview = keyedPreviewData(resultToPreview(node.id, label, result, portLabel, targetNodeId), output, nodeKey)
+        const targetKey = answerTargetKey(result, target)
+        const preview = keyedPreviewData(resultToPreview(node.id, label, result, portLabel, targetKey), output, nodeKey)
         if (!requestStillCurrent()) {
           // The graph changed while this response was in flight (e.g. an
           // editor mirrored artifact metadata into node config, bumping
@@ -1085,11 +1125,15 @@ export default function usePipelineAPI({
         storePreview(cacheKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
         storedPreview = preview
         if (result.node_statuses) {
-          setNodeStatuses(canvasNodeStatuses(result, node.id, canvasIdOf))
+          setNodeStatuses(canvasNodeStatuses(result, node.id, openOccurrence))
         }
         if (result.columns) {
-          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, output ? targetNodeId : node.id, result, snapshotSource, structuralVersion, output ? null : activeSubmodelIdentity))
-          if (activeSubmodelIdentity && !output) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
+          // An occurrence's output previewed from the main pipeline describes the
+          // occurrence's ports through the answer's maps, never the occurrence itself.
+          setNodesRaw((nds) => output
+            ? applyPreviewSchemaMapsToNodes(nds, result, snapshotSource, structuralVersion, openOccurrence)
+            : applyPreviewResultColumnsToNodes(nds, node.id, result, snapshotSource, structuralVersion, openOccurrence, targetKey))
+          if (openOccurrence !== null && !output) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
         }
       })
       .catch((err: unknown) => {
@@ -1325,6 +1369,8 @@ export default function usePipelineAPI({
     // uses the same snapshot (Issues #33/#34).
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
+    // The answers' nodes are placed on the canvas the refresh is sent from.
+    const openOccurrence = useGraphStore.getState().focus?.instanceId ?? null
 
     const previewStaleUpstream = () => new Promise<void>((resolve) => {
       let nextIndex = 0
@@ -1365,13 +1411,13 @@ export default function usePipelineAPI({
         ) {
           const upstream = staleUpstream[nextIndex++]
           activeCount += 1
+          const upstreamTarget = nodeFrame(canvasNodeAddress(upstream.id), portLabelFor(upstream) ?? null)
           previewNode({
             graph,
-            nodeId: runtimeNodeId(canvasNodeAddress(upstream.id)),
+            target: frameTargetPayload(upstreamTarget),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion, portLabelFor(upstream)),
-            portLabel: portLabelFor(upstream),
             signal: controller.signal,
           })
             .then((result) => {
@@ -1380,8 +1426,9 @@ export default function usePipelineAPI({
               if (noteAnnouncedCaptures(capturedGenerationIds(result))) bumpEpoch()
               if (!requestStillCurrent()) return
               if (result.columns) {
-                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion, activeSubmodelIdentity))
-                if (activeSubmodelIdentity) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
+                const upstreamKey = answerTargetKey(result, upstreamTarget)
+                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion, openOccurrence, upstreamKey))
+                if (openOccurrence !== null) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
               }
             })
             .catch((err: unknown) => {
@@ -1401,10 +1448,9 @@ export default function usePipelineAPI({
     ensureSnapshotsForPreviews(
       graph,
       [node, ...staleUpstream].map((previewed) => ({
-        nodeId: runtimeNodeId(canvasNodeAddress(previewed.id)),
+        target: frameTargetPayload(nodeFrame(canvasNodeAddress(previewed.id), portLabelFor(previewed) ?? null)),
         source: snapshotSource,
         requestedPreviewColumns: previewColumnNamesForNode(previewed, snapshotSource, structuralVersion, portLabelFor(previewed)),
-        portLabel: portLabelFor(previewed),
       })),
       controller.signal,
     )
@@ -1457,7 +1503,8 @@ export default function usePipelineAPI({
       return
     }
     chosenFrames.current.set(resultKey(nodeId), portLabel)
-    const runtimeId = runtimeNodeId(canvasNodeAddress(node.id))
+    const frameTarget = nodeFrame(canvasNodeAddress(node.id), portLabel)
+    const wireFrameTarget = frameTargetPayload(frameTarget)
     // The key the node's results are kept under, taken before the request.
     const nodeKey = resultKey(node.id)
     const requestId = ++previewRequestSeq.current
@@ -1499,9 +1546,8 @@ export default function usePipelineAPI({
           graph,
           [
             {
-              nodeId: runtimeId,
+              target: wireFrameTarget,
               source: snapshotSource,
-              portLabel,
             },
           ],
           controller.signal,
@@ -1527,10 +1573,9 @@ export default function usePipelineAPI({
         return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
           previewNode({
             graph,
-            nodeId: runtimeId,
+            target: wireFrameTarget,
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
-            portLabel,
             requestId: previewRequestId,
             signal: controller.signal,
           }),
@@ -1543,7 +1588,7 @@ export default function usePipelineAPI({
           if (captured) bumpEpoch()
           return
         }
-        const preview = keyedPreviewData(resultToPreview(node.id, label, result, portLabel, runtimeId), undefined, nodeKey)
+        const preview = keyedPreviewData(resultToPreview(node.id, label, result, portLabel, answerTargetKey(result, frameTarget)), undefined, nodeKey)
         // Its own captures leave it current unless something else moved the
         // epoch while it was in flight.
         const currentAt = captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch

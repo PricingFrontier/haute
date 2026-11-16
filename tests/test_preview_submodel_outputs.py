@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._flatten import flatten_graph
+from haute._node_addresses import ResolvedTarget
 from haute._submodel_instances import qualified_runtime_node_id
 from haute._types import (
     GraphEdge,
@@ -17,6 +18,7 @@ from haute._types import (
 )
 from haute.routes.pipeline import _occurrence_output_columns, _preview_response_from_results
 from haute.schemas import ColumnInfo, NodeResult, PreviewNodeRequest
+from tests._preview_targets import node_target
 
 
 def _node(node_id: str, node_type: NodeType = NodeType.POLARS, **config: object) -> GraphNode:
@@ -65,16 +67,16 @@ def test_occurrence_output_columns_are_keyed_by_the_edge_handle() -> None:
         "t": NodeResult(status="ok", columns=premium),
     }
 
-    assert _occurrence_output_columns(_graph(), results) == {
+    assert _occurrence_output_columns(flatten_graph(_graph()), results) == {
         "Inputs": {"out__output_1": premium, "out__claims": claims}
     }
 
 
 def test_occurrence_without_results_reports_nothing() -> None:
-    assert _occurrence_output_columns(_graph(), {}) == {}
+    assert _occurrence_output_columns(flatten_graph(_graph()), {}) == {}
     assert (
         _occurrence_output_columns(
-            _graph(),
+            flatten_graph(_graph()),
             {
                 qualified_runtime_node_id("Inputs", "live_switch"): NodeResult(
                     status="ok", columns=[]
@@ -84,17 +86,21 @@ def test_occurrence_without_results_reports_nothing() -> None:
         == {}
     )
     plain = PipelineGraph(nodes=[_node("t")], edges=[])
-    assert _occurrence_output_columns(plain, {"t": NodeResult(status="ok", columns=[])}) == {}
+    assert (
+        _occurrence_output_columns(flatten_graph(plain), {"t": NodeResult(status="ok", columns=[])})
+        == {}
+    )
 
 
 def test_preview_response_merges_occurrence_output_port_columns() -> None:
     premium = [ColumnInfo(name="premium", dtype="Float64")]
     claims = [ColumnInfo(name="claim_id", dtype="Int64")]
     authored = _graph()
-    body = PreviewNodeRequest(graph=authored, node_id="t")
+    body = PreviewNodeRequest(graph=authored, target=node_target("t"))
     response = _preview_response_from_results(
         flatten_graph(authored),
         body,
+        ResolvedTarget(key="t"),
         {
             "t": NodeResult(status="ok", columns=premium, frame_columns={"ordinary": premium}),
             qualified_runtime_node_id("Inputs", "live_switch"): NodeResult(

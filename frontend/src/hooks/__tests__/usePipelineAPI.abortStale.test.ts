@@ -10,7 +10,7 @@
  * completes, previewData is never cleared, so node B's panel still shows
  * node A's rows.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, targetNodeId } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node } from "@xyflow/react"
@@ -21,7 +21,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -118,10 +118,9 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
 
     // Node A resolves successfully with columns/preview
     // Node B aborts in-flight — pre-fix, previewData stays stuck on A.
-    mockPreview.mockImplementation(async ({ nodeId, signal }) => {
-      if (nodeId === "A") {
+    mockPreview.mockImplementation(async ({ target, signal }) => {
+      if (targetNodeId(target) === "A") {
         return makePreviewResponse({
-          node_id: "A",
           status: "ok",
           row_count: 3,
           column_count: 1,
@@ -177,14 +176,13 @@ describe("usePipelineAPI - aborted preview clears stale data (#31)", () => {
 
     // Simulate a slow request for A that will be aborted mid-flight.
     let aSignal: AbortSignal | undefined
-    mockPreview.mockImplementation(async ({ nodeId, signal }) => {
-      if (nodeId === "A") {
+    mockPreview.mockImplementation(async ({ target, signal }) => {
+      if (targetNodeId(target) === "A") {
         aSignal = signal
         return new Promise((resolve) => {
           // Resolve A only after the user has already moved on.
           setTimeout(() => {
             resolve(makePreviewResponse({
-              node_id: "A",
               status: "ok",
               row_count: 99,
               column_count: 1,

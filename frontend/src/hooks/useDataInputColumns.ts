@@ -153,8 +153,7 @@ export function useDataInputColumns(
         const target = prepareNodeRequest(requestScope, canvasTarget(dataInput))
         return previewNode({
           graph: target.graph,
-          nodeId: target.nodeId,
-          portLabel: target.portLabel,
+          target: target.wireTarget,
           rowLimit: 1,
           source: activeSource,
           signal: controller.signal,

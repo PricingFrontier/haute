@@ -2,7 +2,7 @@
  * A running preview's step progress: polled by its own request id and shown on
  * the loading panel, with the upstream previews a Refresh runs first labelled.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, targetNodeId } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -13,7 +13,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -92,7 +92,6 @@ function hangUntilAborted({ signal }: { signal?: AbortSignal }) {
 }
 
 const okPreview = makePreviewResponse({
-  node_id: "A",
   status: "ok" as const,
   row_count: 3,
   column_count: 1,
@@ -117,7 +116,7 @@ describe("usePipelineAPI - step progress", () => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     for (const mock of [mockLoad, mockPreview, mockBuild, mockStatus, mockJob, mockCancelJob, mockProgress]) mock.mockReset()
     mockPreviewInputs.mockReset()
-    mockPreviewInputs.mockResolvedValue({ input_node_ids: [] })
+    mockPreviewInputs.mockResolvedValue({ input_node_ids: [], node_addresses: {} })
     mockProgress.mockResolvedValue(null)
   })
 
@@ -164,7 +163,7 @@ describe("usePipelineAPI - step progress", () => {
     const target = makeNode("A")
     const { result } = await renderPipelineAPI([upstream, target], [{ id: "e", source: "U", target: "A" }])
     mockPreview.mockImplementation((request) =>
-      request.nodeId === "U" ? hangUntilAborted(request) : Promise.resolve(okPreview),
+      targetNodeId(request.target) === "U" ? hangUntilAborted(request) : Promise.resolve(okPreview),
     )
 
     act(() => result.current.refreshPreview(target))

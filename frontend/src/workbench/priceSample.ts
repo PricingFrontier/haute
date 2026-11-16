@@ -14,6 +14,8 @@ import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, PreparedGraph, WorkbenchTablesResponse } from "../api/types"
 import { submodelGraphFromMetadata } from "../utils/apiInputPorts"
 import { NODE_TYPES } from "../utils/nodeTypes"
+import { nodeFrame, rootAddress } from "../utils/nodeAddress"
+import { frameTargetPayload } from "../utils/requestGateway"
 import { workbenchTablePorts, type PricedSample } from "../utils/workbenchTables"
 
 /** The preview route's most rows: a quote's many-row tables fit. */
@@ -49,10 +51,10 @@ export async function priceSample(
   if (labels.length === 0) return { tables: {} }
   const result = await previewNode({
     graph,
-    nodeId: output.id,
+    // Every table of the Workbench Output, from one run.
+    target: frameTargetPayload(nodeFrame(rootAddress(output.id)), labels),
     rowLimit: ROW_LIMIT,
     source,
-    portLabels: labels,
     workbenchForm: form,
   })
     // The server's reason, such as a sample that does not fit, rather than its status.

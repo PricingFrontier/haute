@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react"
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, nodeTarget, rootAddresses } from "../../test-utils/factories"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import usePipelineAPI from "../usePipelineAPI"
 import DataPreview from "../../panels/DataPreview"
 import { loadPipeline, previewInputs, previewNode, previewRecoveryNode } from "../../api/client"
+import { ensureInputSnapshots } from "../ensureInputSnapshots"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 import { makeNode } from "../../test-utils/factories"
 import useGraphStore from "../../stores/useGraphStore"
@@ -25,10 +26,16 @@ import {
   type Occurrence,
 } from "../../testSupport/twoOccurrencesFixture"
 
+// Preparing the inputs a preview reads, observed rather than run.
+vi.mock("../ensureInputSnapshots", async (original) => ({
+  ...await original<typeof import("../ensureInputSnapshots")>(),
+  ensureInputSnapshots: vi.fn(async () => undefined),
+}))
+
 vi.mock("../../api/client", async (original) => ({
   ...await original<typeof import("../../api/client")>(),
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
 }))
@@ -63,8 +70,13 @@ function fixture(instance = true, sameChild = false, outputCount = 2) {
   return { occurrence, names, params }
 }
 
+/** An occurrence's output port as a preview from the main pipeline reads it, by address. */
+function outputTarget(occurrence: string, port: string) {
+  return { kind: "occurrence_output", occurrence, port }
+}
+
 function response(value: number) {
-  return makePreviewResponse({ node_id: "runtime", columns: [{ name: "value", dtype: "Int64" }],
+  return makePreviewResponse({ columns: [{ name: "value", dtype: "Int64" }],
     preview: [{ value }], row_count: 1, column_count: 1 })
 }
 
@@ -122,7 +134,7 @@ describe("submodel occurrence previews", () => {
     await settled(hook)
     expect(previewNode).toHaveBeenCalledTimes(3)
     expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({
-      nodeId: "submodel_runtime/again/finish", portLabel: "checks",
+      target: outputTarget("again", "audit"),
     }))
     expect(hook.result.current.previewData).toMatchObject({
       nodeLabel: "renamed_audit", selected_frame: "renamed_audit", preview: [{ value: 33 }],
@@ -135,7 +147,7 @@ describe("submodel occurrence previews", () => {
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
     expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({
-      nodeId: `submodel_runtime/${hook.occurrence.id}/finish`, portLabel: undefined,
+      target: outputTarget(hook.occurrence.id, "premium"),
       graph: expect.objectContaining({ submodels: expect.objectContaining({ rating: expect.anything() }) }),
     }))
     expect(hook.result.current.previewData).toMatchObject({ nodeId: hook.occurrence.id, nodeLabel: hook.names[0], selected_frame: hook.names[0], preview: [{ value: 11 }] })
@@ -146,19 +158,19 @@ describe("submodel occurrence previews", () => {
     await settled(hook)
     panel.rerender(<DataPreview data={hook.result.current.previewData} />)
     expect(hook.result.current.previewData).toMatchObject({ nodeLabel: hook.names[1], selected_frame: hook.names[1], preview: [{ value: 22 }] })
-    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: `submodel_runtime/${hook.occurrence.id}/check` }))
-    expect(previewInputs).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: `submodel_runtime/${hook.occurrence.id}/check` }))
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ target: outputTarget(hook.occurrence.id, "audit") }))
+    expect(previewInputs).toHaveBeenLastCalledWith(expect.objectContaining({ target: outputTarget(hook.occurrence.id, "audit") }))
   })
 
   it("keeps two outputs of one child in separate caches and refreshes only the displayed frame", async () => {
     const hook = await loaded(fixture(true, true))
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
-    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/again/finish", portLabel: "prices" }))
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ target: outputTarget("again", "premium") }))
     vi.mocked(previewNode).mockResolvedValueOnce(response(22))
     act(() => hook.result.current.previewNodeFrame("again", "again_audit"))
     await settled(hook)
-    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/again/finish", portLabel: "checks" }))
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ target: outputTarget("again", "audit") }))
     act(() => hook.result.current.previewNodeFrame("again", "again_premium"))
     await settled(hook)
     expect(previewNode).toHaveBeenCalledTimes(2)
@@ -169,7 +181,7 @@ describe("submodel occurrence previews", () => {
     act(() => hook.result.current.refreshPreview(hook.occurrence))
     await settled(hook)
     expect(previewNode).toHaveBeenCalledTimes(3)
-    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ portLabel: "checks" }))
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ target: outputTarget("again", "audit") }))
     expect(hook.result.current.previewData?.preview).toEqual([{ value: 33 }])
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
@@ -224,7 +236,7 @@ describe("submodel occurrence previews", () => {
     vi.mocked(previewNode).mockResolvedValueOnce(response(44))
     act(() => useNodeDataStore.getState().bumpEpoch())
     await waitFor(() => expect(hook.result.current.previewData?.preview).toEqual([{ value: 44 }]))
-    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ portLabel: "checks" }))
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ target: outputTarget("again", "audit") }))
     act(() => useUIStore.setState({ calculationMode: "manual" }))
     render(<DataPreview data={hook.result.current.previewData} />)
     expect(screen.queryByTestId("preview-out-of-date")).toBeNull()
@@ -266,8 +278,9 @@ describe("submodel occurrence previews", () => {
   it("keeps occurrence schemas keyed by public handles after previewing a child frame", async () => {
     const hook = await loaded(fixture(true, true))
     const columns = [{ name: "value", dtype: "Int64" }]
+    // The collapsed occurrence's entries are keyed by its instance id, addressed as the pipeline's node.
     vi.mocked(previewNode).mockResolvedValueOnce(makePreviewResponse({ ...response(11), frame_columns: { prices: columns },
-      node_frame_columns: { again: { out__premium: columns } } }))
+      node_frame_columns: { again: { out__premium: columns } }, node_addresses: rootAddresses("again") }))
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
     const data = useGraphStore.getState().nodes[0].data
@@ -349,7 +362,7 @@ describe("a child's preview in each occurrence of its definition", () => {
     // No flash of the owner's rows while the copy's are fetched.
     expect(hook.result.current.previewData).toMatchObject({ nodeId: "prepare", status: "loading", preview: [] })
     await waitFor(() => expect(previewNode).toHaveBeenCalledTimes(2))
-    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/pricing_2/prepare" }))
+    expect(previewNode).toHaveBeenLastCalledWith(expect.objectContaining({ target: nodeTarget("prepare", { occurrence: "pricing_2" }) }))
     await act(async () => answer(response(22)))
     await waitFor(() => expect(hook.result.current.previewData?.preview).toEqual([{ value: 22 }]))
     const previews = useNodeResultsStore.getState().previews
@@ -366,5 +379,95 @@ describe("a child's preview in each occurrence of its definition", () => {
 
     expect(hook.result.current.previewData).toBeNull()
     expect(previewNode).toHaveBeenCalledOnce()
+  })
+})
+
+describe("an answer's nodes placed by their addresses", () => {
+  it("shows a collapsed occurrence's children's statuses as one on its card, the worst of them", async () => {
+    const hook = await loaded()
+    vi.mocked(previewNode).mockResolvedValueOnce(makePreviewResponse({
+      columns: [{ name: "value", dtype: "Int64" }], preview: [{ value: 1 }], row_count: 1, column_count: 1,
+      // The worse status first, so a card that took the last of them would show "ok".
+      node_statuses: { "submodel_runtime/again/check": "error", "submodel_runtime/again/finish": "ok" },
+      node_addresses: {
+        "submodel_runtime/again/finish": { occurrence: "again", node_id: "finish", label: "finish" },
+        "submodel_runtime/again/check": { occurrence: "again", node_id: "check", label: "check" },
+      },
+    }))
+
+    act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
+    await settled(hook)
+
+    expect(hook.result.current.nodeStatuses).toEqual({ again: "error" })
+  })
+
+  it("prepares an input the preview reads inside a submodel, found by its address in the definition", async () => {
+    vi.mocked(loadPipeline).mockResolvedValue(makeLoadedPipeline({ nodes: [] }))
+    // One set of refs: new ones would load the pipeline again.
+    const params: Parameters<typeof usePipelineAPI>[0] = {
+      selectedNode: null,
+      activeSubmodelIdentity: OWNER,
+      setNodesRaw: (update) => useGraphStore.getState().setNodesRaw(update), setEdgesRaw: vi.fn(), setPreamble: vi.fn(),
+      pipelineNameRef: { current: "test" }, descriptionRef: { current: "" },
+      sourceFileRef: { current: "main.py" }, sourceRevisionRef: { current: "revision-test" },
+      preservedBlocksRef: { current: [] }, nodeIdCounter: { current: 0 },
+    }
+    const hook = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(hook.result.current.loading).toBe(false))
+    act(() => {
+      loadTwoOccurrences([makeNode("quotes", "dataInput"), makeNode("prepare")])
+      openOccurrence(OWNER)
+    })
+    vi.mocked(previewInputs).mockResolvedValueOnce({
+      input_node_ids: ["submodel_runtime/pricing/quotes" as never],
+      node_addresses: { "submodel_runtime/pricing/quotes": { occurrence: "pricing", node_id: "quotes", label: "quotes" } },
+    })
+
+    act(() => hook.result.current.fetchPreview(onCanvas("prepare"), { debounceMs: 0 }))
+    await waitFor(() => expect(hook.result.current.previewBusy).toBe(false))
+
+    expect(previewInputs).toHaveBeenLastCalledWith(expect.objectContaining({ target: nodeTarget("prepare", { occurrence: "pricing" }) }))
+    expect(vi.mocked(ensureInputSnapshots).mock.calls.at(-1)?.[0].map((node) => (node as unknown as { id: string }).id)).toEqual(["quotes"])
+  })
+
+  it("prepares a pipeline input and a submodel's input of the same id, each from its own config", async () => {
+    vi.mocked(loadPipeline).mockResolvedValue(makeLoadedPipeline({ nodes: [] }))
+    // One set of refs: new ones would load the pipeline again.
+    const params: Parameters<typeof usePipelineAPI>[0] = {
+      selectedNode: null,
+      activeSubmodelIdentity: OWNER,
+      setNodesRaw: (update) => useGraphStore.getState().setNodesRaw(update), setEdgesRaw: vi.fn(), setPreamble: vi.fn(),
+      pipelineNameRef: { current: "test" }, descriptionRef: { current: "" },
+      sourceFileRef: { current: "main.py" }, sourceRevisionRef: { current: "revision-test" },
+      preservedBlocksRef: { current: [] }, nodeIdCounter: { current: 0 },
+    }
+    const hook = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(hook.result.current.loading).toBe(false))
+    act(() => {
+      loadTwoOccurrences([
+        makeNode("source", "dataInput", { data: { label: "source", nodeType: "dataInput", config: { path: "claims.csv" } } }),
+        makeNode("prepare"),
+      ])
+      // The pipeline's own `source`, beside the occurrences.
+      useGraphStore.getState().setNodesRaw((nodes) => [
+        ...nodes,
+        makeNode("source", "dataInput", { data: { label: "source", nodeType: "dataInput", config: { path: "policies.csv" } } }),
+      ])
+      openOccurrence(OWNER)
+    })
+    vi.mocked(previewInputs).mockResolvedValueOnce({
+      input_node_ids: ["source" as never, "submodel_runtime/pricing/source" as never],
+      node_addresses: {
+        source: { occurrence: null, node_id: "source", label: "source" },
+        "submodel_runtime/pricing/source": { occurrence: "pricing", node_id: "source", label: "source" },
+      },
+    })
+
+    act(() => hook.result.current.fetchPreview(onCanvas("prepare"), { debounceMs: 0 }))
+    await waitFor(() => expect(hook.result.current.previewBusy).toBe(false))
+
+    const prepared = vi.mocked(ensureInputSnapshots).mock.calls.at(-1)?.[0]
+      .map((node) => (node as unknown as { data: { config: { path: string } } }).data.config.path)
+    expect(prepared?.sort()).toEqual(["claims.csv", "policies.csv"])
   })
 })

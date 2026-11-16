@@ -9,6 +9,7 @@
  */
 
 import { workbenchSampleField } from "./workbenchSample"
+import type { FrameTargetPayload } from "../utils/requestGateway"
 import type { GlobalConstant } from "../utils/globalConstants"
 import { REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type {
@@ -839,17 +840,14 @@ export function saveNodeScoped(
 
 export interface PreviewNodeArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The frame previewed, by address (`frameTargetPayload`): a node's output, one of its
+   * frames (a multi-frame producer's `port_label`, part of the backend preview cache key) or
+   * several of them (`port_labels`, each previewed from one run into `port_previews`), or an
+   * occurrence's input or output port. */
+  target: FrameTargetPayload
   rowLimit: number
   source?: string
   requestedPreviewColumns?: string[]
-  /** Frame/emit-table label to preview for a multi-frame producer (a
-   * multi-table apiInput). Sent as `port_label`; part of the backend preview
-   * cache key, so each frame is a distinct cache entry. */
-  portLabel?: string
-  /** Several frames of a multi-frame producer, each previewed from one run into the
-   * answer's `port_previews`. Sent as `port_labels`; not with `portLabel`. */
-  portLabels?: string[]
   /** A workbench form, saved or not, whose tables and sample every Workbench Input and
    * Workbench Output of the request takes in place of the form folder's. Sent as
    * `workbench_form`. */
@@ -863,12 +861,10 @@ export interface PreviewNodeArgs {
 export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse> {
   const {
     graph,
-    nodeId,
+    target,
     rowLimit,
     source,
     requestedPreviewColumns,
-    portLabel,
-    portLabels,
     workbenchForm,
     requestId,
     signal,
@@ -878,12 +874,10 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     "/api/pipeline/preview",
     {
       graph,
-      node_id: nodeId,
+      target,
       row_limit: rowLimit,
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
-      ...(portLabel !== undefined ? { port_label: portLabel } : {}),
-      ...(portLabels !== undefined ? { port_labels: portLabels } : {}),
       // The form Preview prices, or else the sample the workbench view holds (specs/workbench).
       ...(workbenchForm !== undefined ? { workbench_form: workbenchForm } : workbenchSampleField()),
       ...(requestId !== undefined ? { request_id: requestId } : {}),
@@ -922,15 +916,15 @@ export async function getPreviewProgress(
 
 export interface PreviewInputsArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The frame the preview reads, as `previewNode` names it. */
+  target: FrameTargetPayload
   source?: string
   requestedPreviewColumns?: string[]
-  portLabel?: string
   signal?: AbortSignal
 }
 
 /**
- * The inputs a preview of `nodeId` would read — snapshot-backed Data Inputs
+ * The inputs a preview of `target` would read — snapshot-backed Data Inputs
  * and structured API Inputs — so only those are prepared before it. A preview
  * seeded from shared snapshots reads nothing above its seeds.
  */
@@ -939,12 +933,11 @@ export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsRes
     "/api/pipeline/preview/inputs",
     {
       graph: args.graph,
-      node_id: args.nodeId,
+      target: args.target,
       source: args.source ?? "live",
       ...(args.requestedPreviewColumns
         ? { requested_preview_columns: args.requestedPreviewColumns }
         : {}),
-      ...(args.portLabel !== undefined ? { port_label: args.portLabel } : {}),
       ...workbenchSampleField(),
     },
     // Bounded by the server's pipeline time limit, which answers 504.

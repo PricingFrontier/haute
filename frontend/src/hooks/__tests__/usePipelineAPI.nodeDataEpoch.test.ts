@@ -22,7 +22,7 @@ const STEP_TIMEOUT_MS = 10_000
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -75,7 +75,7 @@ import { loadPipeline, previewNode } from "../../api/client"
 import { fetchWorkbenchTables } from "../../api/workbench"
 import type { WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import { makeNode } from "../../test-utils/factories"
+import { makeNode, makePreviewResponse, nodeTarget } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -115,19 +115,17 @@ function captured(nodeId: string): PreviewSeedPlanEntry {
 }
 
 function envelope(
-  nodeId: string,
   seedPlan: PreviewSeedPlanEntry[] = [],
   column = "premium",
 ): PreviewEnvelope {
-  return {
-    node_id: nodeId,
+  return makePreviewResponse({
     status: "ok",
     row_count: 1,
     column_count: 1,
     columns: [{ name: column, dtype: "f64" }],
     preview: [{ [column]: 1 }],
     seed_plan: seedPlan,
-  } as PreviewEnvelope
+  }) as PreviewEnvelope
 }
 
 function epoch(): number {
@@ -218,7 +216,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("fetches the displayed preview again once a snapshot is published after its request", async () => {
-    mockPreview.mockResolvedValue(envelope("A"))
+    mockPreview.mockResolvedValue(envelope())
     const A = makeNode("A")
     const { result } = await renderLoaded([A])
 
@@ -236,7 +234,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("raises the epoch for a preview's own capture without fetching it again", async () => {
-    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    mockPreview.mockResolvedValue(envelope([captured("join")]))
     const A = makeNode("A")
     const { result } = await renderLoaded([A])
     const before = epoch()
@@ -254,7 +252,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     let resolveFirst!: (value: PreviewEnvelope) => void
     mockPreview
       .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
-      .mockResolvedValue(envelope("A", [captured("join")]))
+      .mockResolvedValue(envelope([captured("join")]))
     const A = makeNode("A")
     const { result } = await renderLoaded([A])
 
@@ -262,7 +260,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
     // Another reader publishes while this preview is in flight.
     act(() => useNodeDataStore.getState().bumpEpoch())
-    await act(async () => { resolveFirst(envelope("A", [captured("join")])) })
+    await act(async () => { resolveFirst(envelope([captured("join")])) })
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
     await settle(result)
@@ -270,10 +268,10 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("shows a stored preview from an older epoch and fetches it again", async () => {
-    mockPreview.mockResolvedValue(envelope("A"))
+    mockPreview.mockResolvedValue(envelope())
     const A = makeNode("A")
     const { result } = await renderLoaded([A])
-    const stored = { ...envelope("A"), nodeId: "A", nodeLabel: "A", error: null } as unknown as PreviewData
+    const stored = { ...envelope(), nodeId: "A", nodeLabel: "A", error: null } as unknown as PreviewData
     useNodeResultsStore.getState().setPreview("A", stored, useGraphStore.getState().structuralVersion, "live", 1000, epoch())
 
     act(() => useNodeDataStore.getState().bumpEpoch())
@@ -287,7 +285,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   it("answers a stored preview from the current epoch without a request", async () => {
     const A = makeNode("A")
     const { result } = await renderLoaded([A])
-    const stored = { ...envelope("A"), nodeId: "A", nodeLabel: "A", error: null } as unknown as PreviewData
+    const stored = { ...envelope(), nodeId: "A", nodeLabel: "A", error: null } as unknown as PreviewData
     useNodeResultsStore.getState().setPreview("A", stored, useGraphStore.getState().structuralVersion, "live", 1000, epoch())
 
     act(() => result.current.fetchPreview(A, { debounceMs: 0 }))
@@ -298,20 +296,20 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("previews a Workbench Output's first table", async () => {
-    mockPreview.mockResolvedValue(envelope("response"))
+    mockPreview.mockResolvedValue(envelope())
     const response = workbenchOutput()
     const { result } = await renderLoaded([response])
 
     act(() => result.current.fetchPreview(response, { debounceMs: 0 }))
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[0][0]).toMatchObject({ nodeId: "response", portLabel: "pricing_output" })
+    expect(mockPreview.mock.calls[0][0]).toMatchObject({ target: nodeTarget("response", { portLabel: "pricing_output" }) })
     await settle(result)
   })
 
   it("previews the table chosen in a Workbench Output's preview on Refresh and selecting it again", async () => {
-    mockPreview.mockImplementation(async ({ nodeId, portLabel }) =>
-      envelope(nodeId, [], portLabel === "layers_output" ? "layer" : "premium"),
+    mockPreview.mockImplementation(async ({ target }) =>
+      envelope([], target.kind === "node" && target.port_label === "layers_output" ? "layer" : "premium"),
     )
     const other = makeNode("other")
     const { result } = await renderLoaded([workbenchOutput(), other])
@@ -341,8 +339,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     act(() => result.current.refreshPreview(response))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(3), { timeout: STEP_TIMEOUT_MS })
     expect(mockPreview.mock.calls[2][0]).toMatchObject({
-      nodeId: "response",
-      portLabel: "layers_output",
+      target: nodeTarget("response", { portLabel: "layers_output" }),
       requestedPreviewColumns: ["layer"],
     })
     await settle(result)
@@ -384,19 +381,19 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
       "claims_input",
     ],
   ] as const)("previews the table chosen in %s's preview on Refresh and selecting it again", async (_label, make, frame) => {
-    mockPreview.mockImplementation(async ({ nodeId }) => envelope(nodeId))
+    mockPreview.mockImplementation(async () => envelope())
     const quote = make()
     const other = makeNode("other")
     const { result } = await renderLoaded([quote, other])
 
     act(() => result.current.previewNodeFrame("quote", frame))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[0][0]).toMatchObject({ nodeId: "quote", portLabel: frame })
+    expect(mockPreview.mock.calls[0][0]).toMatchObject({ target: nodeTarget("quote", { portLabel: frame }) })
     await settle(result)
 
     act(() => result.current.refreshPreview(quote))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "quote", portLabel: frame })
+    expect(mockPreview.mock.calls[1][0]).toMatchObject({ target: nodeTarget("quote", { portLabel: frame }) })
     await settle(result)
 
     act(() => result.current.fetchPreview(other, { debounceMs: 0 }))
@@ -408,7 +405,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("previews a Workbench Output's first table once the table chosen in it is gone", async () => {
-    mockPreview.mockResolvedValue(envelope("response"))
+    mockPreview.mockResolvedValue(envelope())
     const { result } = await renderLoaded([workbenchOutput()])
 
     act(() => result.current.previewNodeFrame("response", "layers_output"))
@@ -418,7 +415,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     fetchedResponseTables(WORKBENCH_TABLES.slice(0, 1))
     act(() => result.current.refreshPreview(workbenchOutput()))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "response", portLabel: "pricing_output" })
+    expect(mockPreview.mock.calls[1][0]).toMatchObject({ target: nodeTarget("response", { portLabel: "pricing_output" }) })
     await settle(result)
   })
 
@@ -427,7 +424,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     // though nothing in the graph changes: the columns recorded before are no projection.
     const policy = (...names: string[]): WorkbenchTable => side("policy", "input", "one", names.map((name) => ({ name, type: "float" as const })))
     await fetchTables({ tables: [policy("exposure", "limit")], sample: {}, response_tables: [], store_columns: {} })
-    mockPreview.mockResolvedValue(envelope("priced", [], "exposure"))
+    mockPreview.mockResolvedValue(envelope([], "exposure"))
     const { result } = await renderLoaded([makeNode("priced")])
     const recordedAt = useGraphStore.getState().structuralVersion
     const priced = makeNode("priced", "polars", {
@@ -459,7 +456,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     // nothing in the graph changes with it.
     const policy: WorkbenchTable = side("policy", "input", "one", [{ name: "exposure", type: "float" }])
     await fetchTables({ tables: [policy], sample: {}, response_tables: [], store_columns: {} })
-    mockPreview.mockResolvedValue(envelope("priced"))
+    mockPreview.mockResolvedValue(envelope())
     const quote = makeNode("quote", "workbenchInput", {
       data: { label: "quote", nodeType: "workbenchInput", config: {}, _sourceHandleInputNames: {} },
     })
@@ -482,7 +479,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("fetches a displayed frame preview again for its frame once a snapshot is published", async () => {
-    mockPreview.mockResolvedValue(envelope("A"))
+    mockPreview.mockResolvedValue(envelope())
     const A = makeNode("A")
     const { result } = await renderLoaded([A])
 
@@ -494,13 +491,13 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     act(() => useNodeDataStore.getState().bumpEpoch())
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "A", portLabel: "claims" })
+    expect(mockPreview.mock.calls[1][0]).toMatchObject({ target: nodeTarget("A", { portLabel: "claims" }) })
     await settle(result)
     expect(mockPreview).toHaveBeenCalledTimes(2)
   })
 
   it("does not fetch a frame preview again for its own capture", async () => {
-    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    mockPreview.mockResolvedValue(envelope([captured("join")]))
     const A = makeNode("A")
     const { result } = await renderLoaded([A])
     const before = epoch()
@@ -514,7 +511,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("leaves the epoch unchanged when a response's captured generation ids were already announced", async () => {
-    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    mockPreview.mockResolvedValue(envelope([captured("join")]))
     const A = makeNode("A")
     const B = makeNode("B")
     const { result } = await renderLoaded([A, B])
@@ -526,7 +523,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     expect(epoch()).toBe(before + 1)
 
     // B returns the same generation id that was already announced by A.
-    mockPreview.mockResolvedValue(envelope("B", [captured("join")]))
+    mockPreview.mockResolvedValue(envelope([captured("join")]))
     act(() => result.current.fetchPreview(B, { debounceMs: 0 }))
     await waitFor(() => expect(result.current.previewData?.nodeId).toBe("B"))
     await settle(result)
@@ -535,7 +532,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("raises the epoch once for a response naming a generation id not seen before", async () => {
-    mockPreview.mockResolvedValue(envelope("A", [captured("join-1")]))
+    mockPreview.mockResolvedValue(envelope([captured("join-1")]))
     const A = makeNode("A")
     const B = makeNode("B")
     const { result } = await renderLoaded([A, B])
@@ -547,7 +544,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     expect(epoch()).toBe(before + 1)
 
     // B returns a new generation id
-    mockPreview.mockResolvedValue(envelope("B", [captured("join-2")]))
+    mockPreview.mockResolvedValue(envelope([captured("join-2")]))
     act(() => result.current.fetchPreview(B, { debounceMs: 0 }))
     await waitFor(() => expect(result.current.previewData?.nodeId).toBe("B"))
     await settle(result)
@@ -563,7 +560,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     useNodeDataStore.getState().noteAnnouncedCaptures(["join-generation"])
     const before = epoch()
 
-    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    mockPreview.mockResolvedValue(envelope([captured("join")]))
     act(() => result.current.previewNodeFrame("A", "claims"))
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
     await settle(result)
@@ -573,7 +570,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     expect(mockPreview).toHaveBeenCalledTimes(1)
 
     // Now a frame preview naming a new generation id
-    mockPreview.mockResolvedValue(envelope("A", [captured("new-join")]))
+    mockPreview.mockResolvedValue(envelope([captured("new-join")]))
     act(() => result.current.previewNodeFrame("A", "policies"))
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
     await settle(result)
@@ -584,7 +581,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   })
 
   it("raises the epoch again for a duplicate announcement after a store reset", async () => {
-    mockPreview.mockResolvedValue(envelope("A", [captured("join")]))
+    mockPreview.mockResolvedValue(envelope([captured("join")]))
     const A = makeNode("A")
     const B = makeNode("B")
     const { result } = await renderLoaded([A, B])
@@ -601,7 +598,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     expect(afterReset).toBe(before + 2)
 
     // Second announcement of the same response raises the epoch again
-    mockPreview.mockResolvedValue(envelope("B", [captured("join")]))
+    mockPreview.mockResolvedValue(envelope([captured("join")]))
     act(() => result.current.fetchPreview(B, { debounceMs: 0 }))
     await waitFor(() => expect(result.current.previewData?.nodeId).toBe("B"))
     await settle(result)

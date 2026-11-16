@@ -50,6 +50,20 @@ export function addressKey(address: NodeAddress): string {
   return `${CHILD_KEY_PREFIX}${JSON.stringify([address.occurrence, address.node])}`
 }
 
+/** Opens a frame target's key: no node id, and no child's key, holds it. */
+const FRAME_KEY_PREFIX = "\u0001"
+
+/**
+ * A frame target as one string, for keying what is kept of a frame read on its own (an
+ * occurrence's output previewed from the main pipeline), apart from every node's key.
+ */
+export function frameKey(target: FrameTarget): string {
+  const parts = target.kind === "node"
+    ? [target.kind, target.address.occurrence, target.address.node, target.port]
+    : [target.kind, target.occurrence, target.port]
+  return `${FRAME_KEY_PREFIX}${JSON.stringify(parts)}`
+}
+
 /** Whether two addresses name the same node. */
 export const sameAddress = (a: NodeAddress, b: NodeAddress): boolean =>
   a.occurrence === b.occurrence && a.node === b.node

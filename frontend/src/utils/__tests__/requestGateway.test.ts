@@ -9,7 +9,6 @@ import type { GraphPayload, PreparedGraph } from "../../api/types"
 import { addressKey, childAddress, nodeFrame, rootAddress } from "../nodeAddress"
 import {
   RequestScopeError,
-  addressOfRuntimeId,
   answerNodeNamer,
   canvasTarget,
   documentRequestScope,
@@ -73,6 +72,8 @@ describe("the request gateway", () => {
     expect(request.nodeId).toBe("workbench_input")
     expect(request.portLabel).toBeUndefined()
     expect(request.target).toEqual(nodeFrame(rootAddress("workbench_input")))
+    // A preview sends the target by address, every field present.
+    expect(request.wireTarget).toEqual({ kind: "node", occurrence: null, node_id: "workbench_input", port_label: null, port_labels: null })
     expect(request.source).toBe("live")
     expect(request.document).toEqual({ sourceFile: "rating/main.py", executionGeneration: 7 })
     expect(request.semanticGeneration).toBe(generation)
@@ -86,6 +87,8 @@ describe("the request gateway", () => {
     expect(request.graph.nodes.map((node) => node.id)).toEqual(["workbench_input", OCCURRENCE])
     expect(request.nodeId).toBe("submodel_runtime/br%20rating/bands")
     expect(request.target).toEqual(nodeFrame(childAddress(OCCURRENCE, "bands")))
+    // A preview sends the child by its occurrence and local id, never a runtime id.
+    expect(request.wireTarget).toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: "bands", port_label: null, port_labels: null })
     // An answer names a node on screen by its runtime id, and one outside the submodel by its own.
     expect(request.nodeNamed("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
     expect(request.nodeNamed("workbench_input")?.id).toBe("workbench_input")
@@ -100,17 +103,30 @@ describe("the request gateway", () => {
     const request = prepareNodeRequest(documentRequestScope, target)
 
     expect(target).toEqual({ kind: "occurrenceInput", occurrence: OCCURRENCE, port: "policy" })
+    expect(request.wireTarget).toEqual({ kind: "occurrence_input", occurrence: OCCURRENCE, port: "policy" })
     expect(request.nodeId).toBe("workbench_input")
     expect(request.portLabel).toBe("policy_frame")
     // A card with one port reads it without a handle.
     expect(canvasTarget(input.id)).toEqual(target)
   })
 
+  it("reads the Input card's runtime feed from the document as it was prepared, whenever it is read", () => {
+    open()
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget(card("input").id, "policy"))
+    useGraphStore.setState({ focus: { ...useGraphStore.getState().focus!, rootEdges: [] } })
+
+    expect(request.nodeId).toBe("workbench_input")
+    expect(request.portLabel).toBe("policy_frame")
+  })
+
   it("reads the Output card's port at the child that produces it", () => {
+    // On the main pipeline, the collapsed occurrence's output handle is the same port.
+    expect(canvasTarget(OCCURRENCE, "out__premium")).toEqual({ kind: "occurrenceOutput", occurrence: OCCURRENCE, port: "premium" })
     open()
 
     const request = prepareNodeRequest(documentRequestScope, canvasTarget(card("output").id, "premium"))
 
+    expect(request.wireTarget).toEqual({ kind: "occurrence_output", occurrence: OCCURRENCE, port: "premium" })
     expect(request.nodeId).toBe("submodel_runtime/br%20rating/tables")
     expect(request.portLabel).toBe("rated")
   })
@@ -123,14 +139,25 @@ describe("the request gateway", () => {
     expect(sent).toBe(built)
   })
 
-  it("reads a card as itself when its port is not named or nothing feeds it yet", () => {
+  it("reads a card as itself when its port is not named", () => {
+    open()
+    const input = card("input")
+
+    expect(canvasTarget(input.id, "not_a_port")).toEqual(nodeFrame(childAddress(OCCURRENCE, input.id), "not_a_port"))
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "not_a_port")).wireTarget)
+      .toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: input.id, port_label: "not_a_port", port_labels: null })
+  })
+
+  it("sends an Input card's port nothing feeds as that port, for the server to refuse by name", () => {
     useGraphStore.getState().setEdges([])
     open()
     const input = card("input")
 
-    expect(canvasTarget(input.id, "policy")).toEqual(nodeFrame(childAddress(OCCURRENCE, input.id), "policy"))
-    expect(prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy")).nodeId)
-      .toBe(`submodel_runtime/br%20rating/${encodeURIComponent(input.id)}`)
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy"))
+
+    expect(request.wireTarget).toEqual({ kind: "occurrence_input", occurrence: OCCURRENCE, port: "policy" })
+    // Only a request still sent by runtime id asks for one, and the port has none.
+    expect(() => request.nodeId).toThrow("Input policy of br rating has nothing connected to it.")
   })
 
   it("names an answer's nodes by the view the request was prepared in, after the view changed", () => {
@@ -178,12 +205,10 @@ describe("the request gateway", () => {
     expect(request.source).toBe("live")
   })
 
-  it("turns addresses into runtime ids and reads answers' ids back, and names nodes without preparing", () => {
+  it("turns addresses into runtime ids for the requests still sent by id, and names nodes without preparing", () => {
     expect(runtimeNodeId(rootAddress("workbench_input"))).toBe("workbench_input")
     expect(runtimeNodeId(childAddress(OCCURRENCE, "bands"))).toBe("submodel_runtime/br%20rating/bands")
     open()
-    expect(addressOfRuntimeId("submodel_runtime/br%20rating/bands")).toEqual(childAddress(OCCURRENCE, "bands"))
-    expect(addressOfRuntimeId("workbench_input")).toEqual(rootAddress("workbench_input"))
     expect(answerNodeNamer()("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
   })
 })

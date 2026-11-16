@@ -20,6 +20,7 @@ from haute.executor import _preview_cache, execute_graph
 from haute.schemas import NodeResult, TraceResponse
 from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
+from tests._preview_targets import node_target
 from tests._process_state import supersession_snapshot
 from tests._project import project_app
 from tests.conftest import build_test_input_snapshot, head_frame_resolver
@@ -835,7 +836,7 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
         endpoint = "/api/pipeline/preview"
         payload = {
             "graph": _single_node_graph_payload(),
-            "node_id": "target",
+            "target": node_target("target"),
             "row_limit": 100,
             "source": "live",
         }

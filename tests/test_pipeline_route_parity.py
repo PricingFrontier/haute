@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
@@ -66,6 +67,8 @@ def _post_payload(endpoint: str, graph: dict, lookup_id: str) -> dict:
             "row_index": 0,
             "target_node_id": lookup_id,
         }
+    if endpoint == "/api/pipeline/preview":
+        return {"graph": graph, "target": node_target(lookup_id)}
     return {
         "graph": graph,
         "node_id": lookup_id,
@@ -75,7 +78,7 @@ def _post_payload(endpoint: str, graph: dict, lookup_id: str) -> dict:
 @pytest.mark.parametrize(
     ("endpoint", "lookup_id", "expected_detail"),
     [
-        ("/api/pipeline/preview", "bad\nnode", "node_id contains control characters"),
+        ("/api/pipeline/preview", "bad\nnode", "target.node_id contains control characters"),
         ("/api/pipeline/trace", "bad\nnode", "target_node_id contains control characters"),
         ("/api/pipeline/write-output", "bad\nnode", "node_id contains control characters"),
     ],

@@ -21,7 +21,7 @@
  *   5. refreshPreview treats an upstream stash captured under a different
  *      source as missing and re-previews that upstream node.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, targetNodeId } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node } from "@xyflow/react"
@@ -32,7 +32,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -127,7 +127,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
   it("stamps the stash with the source the preview ran under", async () => {
     vi.useRealTimers()
     mockPreview.mockResolvedValue(makePreviewResponse({
-      node_id: "A",
       status: "ok",
       columns: LIVE_COLUMNS,
       available_columns: LIVE_COLUMNS,
@@ -257,7 +256,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
   it("refreshPreview re-previews an upstream node whose stash was captured under another source", async () => {
     vi.useRealTimers()
     mockPreview.mockResolvedValue(makePreviewResponse({
-      node_id: "A",
       status: "ok",
       columns: LIVE_COLUMNS,
       available_columns: LIVE_COLUMNS,
@@ -278,7 +276,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     await flushAsyncWork()
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
 
-    const previewedNodeIds = mockPreview.mock.calls.map((c) => c[0].nodeId)
+    const previewedNodeIds = mockPreview.mock.calls.map((c) => targetNodeId(c[0].target))
     expect(previewedNodeIds).toContain("A")
     expect(previewedNodeIds).toContain("B")
   })

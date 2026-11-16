@@ -38,7 +38,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -85,7 +85,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
-import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makeNode, makeEdge, makePreviewResponse, targetNodeId } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -112,7 +112,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 function makeControllablePreview() {
   const callOrder: string[] = []
   const deferreds = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
-  mockPreview.mockImplementation(({ nodeId }: { nodeId: string }) => {
+  mockPreview.mockImplementation(({ target }) => {
+    const nodeId = targetNodeId(target)
     callOrder.push(nodeId)
     return new Promise((resolve, reject) => {
       deferreds.set(nodeId, { resolve: resolve as (v: unknown) => void, reject })
@@ -121,15 +122,14 @@ function makeControllablePreview() {
   return { callOrder, deferreds }
 }
 
-function okResult(nodeId: string, columnName: string) {
-  return {
-    node_id: nodeId,
+function okResult(columnName: string) {
+  return makePreviewResponse({
     status: "ok",
     row_count: 1,
     column_count: 1,
     columns: [{ name: columnName, dtype: "f64" }],
     preview: [{ [columnName]: 1 }],
-  }
+  })
 }
 
 /**
@@ -144,7 +144,7 @@ async function settlePreview(
   columnName: string,
 ) {
   act(() => {
-    deferreds.get(nodeId)!.resolve(okResult(nodeId, columnName))
+    deferreds.get(nodeId)!.resolve(okResult(columnName))
   })
   await waitFor(() => expect(result.current.previewBusy).toBe(false), {
     timeout: PREVIEW_TIMEOUT_MS,

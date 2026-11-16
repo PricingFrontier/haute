@@ -689,9 +689,15 @@ describe("API response guards", () => {
     )
   })
 
-  it("rejects malformed preview node ids", () => {
-    expect(() => parsePreview({ node_id: 42 })).toThrow(
-      "PreviewNodeResponse: invalid contract at /node_id",
+  it("rejects malformed preview node keys and addresses", () => {
+    expect(() => parsePreview({ timings: [{ node_id: 42, label: "Source", timing_ms: 1 }] })).toThrow(
+      "PreviewNodeResponse: invalid contract at /timings/0/node_id",
+    )
+    expect(() => parsePreview({ node_addresses: { source: { occurrence: null, node_id: 42, label: "Source" } } })).toThrow(
+      "PreviewNodeResponse: invalid contract at /node_addresses/source/node_id",
+    )
+    expect(() => parsePreview({ node_addresses: { source: { node_id: "source", label: "Source" } } })).toThrow(
+      "PreviewNodeResponse: invalid contract at /node_addresses/source/occurrence",
     )
   })
 
@@ -723,11 +729,17 @@ describe("API response guards", () => {
     )
   })
 
-  it("parses the inputs a preview would read", () => {
-    expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "quotes"] })).toEqual({
-      input_node_ids: ["policies", "quotes"],
+  it("parses the inputs a preview would read, each addressed", () => {
+    const node_addresses = {
+      policies: { occurrence: null, node_id: "policies", label: "Policies" },
+      "submodel_runtime/pricing/quotes": { occurrence: "pricing", node_id: "quotes", label: "Quotes" },
+    }
+    expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "submodel_runtime/pricing/quotes"], node_addresses })).toEqual({
+      input_node_ids: ["policies", "submodel_runtime/pricing/quotes"],
+      node_addresses,
     })
-    expect(() => parsePreviewInputsResponse({ input_node_ids: [1] })).toThrow(/input_node_ids/)
+    expect(() => parsePreviewInputsResponse({ input_node_ids: [1], node_addresses: {} })).toThrow(/input_node_ids/)
+    expect(() => parsePreviewInputsResponse({ input_node_ids: [] })).toThrow(/node_addresses: required/)
   })
 
   it("parses preview truncation metadata", () => {

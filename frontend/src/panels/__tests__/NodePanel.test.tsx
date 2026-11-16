@@ -21,7 +21,13 @@ import { toSimpleEdge, toSimpleNode } from "../../hooks/usePanelGraphContext"
 import { applyPreviewResultColumnsToNodes } from "../../hooks/usePipelineAPI"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
-import { makeIdentifiedNode, makeNode as factoryNode, makePreviewResponse } from "../../test-utils/factories"
+import {
+  makeIdentifiedNode,
+  makeNode as factoryNode,
+  makePreviewResponse,
+  occurrencePort,
+  rootAddresses,
+} from "../../test-utils/factories"
 import { documentRequestScope } from "../../utils/requestGateway"
 import { addressKey, childAddress } from "../../utils/nodeAddress"
 
@@ -3279,11 +3285,17 @@ describe("NodePanel", () => {
       const viewNodes = view.nodes.map((node) => (node.type === "submodelPort"
         ? { ...node, data: { ...node.data, _sourceHandleInputNames: { policy: "policy" } } }
         : node))
-      // Previewing the banding answers under runtime ids, with the parent's frames.
+      // Previewing the banding answers under runtime keys, each addressed, with the
+      // parent's frames and the Input card port they feed.
       const previewed = applyPreviewResultColumnsToNodes(viewNodes, "bands", makePreviewResponse({
         node_columns: { "submodel_runtime/pricing/bands": policy },
         node_frame_columns: { workbench: { policy_frame: policy } },
-      }), "live", 1, { instanceId: "pricing", definitionId: "definition_pricing" })
+        node_addresses: {
+          ...rootAddresses("workbench"),
+          "submodel_runtime/pricing/bands": { occurrence: "pricing", node_id: "bands", label: "bands" },
+        },
+        occurrence_ports: [occurrencePort("pricing", "input", "policy", { key: "workbench", handle: "policy_frame" })],
+      }), "live", 1, "pricing", "submodel_runtime/pricing/bands")
       const allNodes = previewed.map(toSimpleNode)
       const edges = view.edges.map(toSimpleEdge)
       const bands = allNodes.find((node) => node.id === "bands")!

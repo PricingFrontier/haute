@@ -31,14 +31,14 @@ vi.mock("../../api/client", async () => {
   return {
     ...actual,
     outputAssembleDryRun: vi.fn(),
-    previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
     previewNode: vi.fn(),
   }
 })
 
 // Imported AFTER the mock so these are the mocked references.
 import { outputAssembleDryRun, previewNode } from "../../api/client"
-import { makeOutputDryRun } from "../../test-utils/factories"
+import { makeOutputDryRun, nodeTarget } from "../../test-utils/factories"
 import { documentRequestScope } from "../../utils/requestGateway"
 
 const mockOutputAssembleDryRun = vi.mocked(outputAssembleDryRun)
@@ -1383,7 +1383,6 @@ describe("OutputEditor - per-frame input-data preview", () => {
       { premium: 250, area: "B", power: 90 },
     ]
     mockPreviewNode.mockResolvedValue({
-      node_id: "upstream",
       status: "ok",
       preview: previewRows,
       preview_row_count: 2,
@@ -1401,7 +1400,7 @@ describe("OutputEditor - per-frame input-data preview", () => {
       JSON.stringify(previewRows, null, 2),
     )
     // It previewed the UPSTREAM source node, not the OUTPUT node.
-    expect(mockPreviewNode.mock.calls[0][0].nodeId).toBe("upstream")
+    expect(mockPreviewNode.mock.calls[0][0].target).toEqual(nodeTarget("upstream"))
   })
 
   it("surfaces a preview error for a frame's data", async () => {
@@ -1427,7 +1426,6 @@ describe("OutputEditor - per-frame input-data preview", () => {
     // frame via port_label and the preview is genuinely the drivers rows — no
     // caveat. (Pre-fix this surfaced a "first frame" note.)
     mockPreviewNode.mockResolvedValue({
-      node_id: "api",
       status: "ok",
       preview: [{ driver_id: 7 }],
       preview_row_count: 1,
@@ -1442,13 +1440,11 @@ describe("OutputEditor - per-frame input-data preview", () => {
       expect(screen.getByTestId("output-frame-1-data-preview-json")).toBeTruthy(),
     )
     // The frame's OWN port was selected, and the source node was previewed.
-    expect(mockPreviewNode.mock.calls[0][0].nodeId).toBe("api")
-    expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("drivers")
+    expect(mockPreviewNode.mock.calls[0][0].target).toEqual(nodeTarget("api", { portLabel: "drivers" }))
   })
 
   it("the first frame of a multi-frame source passes its port_label", async () => {
     mockPreviewNode.mockResolvedValue({
-      node_id: "api",
       status: "ok",
       preview: [{ policy_id: 1 }],
       preview_row_count: 1,
@@ -1462,6 +1458,6 @@ describe("OutputEditor - per-frame input-data preview", () => {
     await waitFor(() =>
       expect(screen.getByTestId("output-frame-0-data-preview-json")).toBeTruthy(),
     )
-    expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("policies")
+    expect(mockPreviewNode.mock.calls[0][0].target).toEqual(nodeTarget("api", { portLabel: "policies" }))
   })
 })
