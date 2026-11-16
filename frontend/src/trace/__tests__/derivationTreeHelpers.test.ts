@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { makeTraceStep } from "../../test-utils/factories"
+import { makeTraceStep, runtimeKey } from "../../test-utils/factories"
 import type { TraceColumnDerivation, TraceColumnRead, TraceStep } from "../../types/trace"
 import {
   buildDerivationTree,
@@ -30,7 +30,7 @@ function derivation(
 function read(column: string, ...sources: Array<[string, string]>): TraceColumnRead {
   return {
     column,
-    sources: sources.map(([node_id, sourceColumn]) => ({ node_id, column: sourceColumn, before_code: false })),
+    sources: sources.map(([nodeId, sourceColumn]) => ({ node_id: runtimeKey(nodeId), column: sourceColumn, before_code: false })),
   }
 }
 
@@ -127,7 +127,7 @@ describe("buildDerivationTree", () => {
       ]),
       step("a", "polars", [derivation("either", 1, null, { expression: "f(z)", substituted: "f(3)" })]),
     ]
-    const tree = buildDerivationTree(steps, { node_id: "calc", column: "y", before_code: false })
+    const tree = buildDerivationTree(steps, { node_id: runtimeKey("calc"), column: "y", before_code: false })
 
     const [untraced, orphan, fromA, fromB] = tree.children
     expect([untraced.kind, untraced.note]).toEqual(["untraced", "This node is not in the trace."])
@@ -142,7 +142,7 @@ describe("buildDerivationTree", () => {
   })
 
   it("shows a value generated before the node's code rewrote it as a leaf", () => {
-    const tree = buildDerivationTree(demoSteps, { node_id: "scenarios", column: "premium", before_code: true })
+    const tree = buildDerivationTree(demoSteps, { node_id: runtimeKey("scenarios"), column: "premium", before_code: true })
 
     expect(tree.kind).toBe("before_code")
     expect(tree.children).toEqual([])

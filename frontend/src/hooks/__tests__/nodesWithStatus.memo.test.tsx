@@ -71,7 +71,6 @@ function makeParams(overrides: Partial<TracingParams> = {}): TracingParams {
     edges: [makeEdge("n1", "n2"), makeEdge("n2", "n3")] as Edge[],
     selectedNode: null,
     activeSubmodelIdentity: null,
-    submodels: {},
     nodeStatuses: {} as Record<string, NodeStatus>,
     hoveredNodeId: null,
     ...overrides,

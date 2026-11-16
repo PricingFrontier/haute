@@ -32,6 +32,11 @@ from tests.conftest import (
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
+def _addresses(*keys: str) -> dict[str, dict[str, str | None]]:
+    """A trace answer's ``node_addresses`` for pipeline nodes named by *keys*."""
+    return {key: {"occurrence": None, "node_id": key, "label": key} for key in keys}
+
+
 def test_correlation_telemetry_is_emitted_when_correlation_fails(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -353,6 +358,7 @@ def test_trace_result_schema_requires_a_valid_utc_timestamp(
                 "correlation_diagnostics": [],
                 "generated_at": generated_at,
                 "execution_origin": "fresh_execution",
+                "node_addresses": _addresses("target"),
             }
         )
 
@@ -366,6 +372,7 @@ def test_trace_result_schema_has_no_preview_cache_origin() -> None:
         "omissions": [],
         "correlation_diagnostics": [],
         "generated_at": "2026-07-23T12:00:00+00:00",
+        "node_addresses": _addresses("target"),
     }
     for origin in ("fresh_execution", "trace_cache"):
         assert TraceResultResponse.model_validate({**payload, "execution_origin": origin})
@@ -382,6 +389,7 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
         "correlation_diagnostics": [],
         "generated_at": "2026-07-23T12:00:00+00:00",
         "execution_origin": "fresh_execution",
+        "node_addresses": _addresses("target"),
     }
 
     with pytest.raises(ValidationError, match="omissions"):
@@ -415,6 +423,7 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
                         "node_id": "different-source",
                     }
                 ],
+                "node_addresses": _addresses("target", "source", "different-source"),
             }
         )
 
@@ -432,6 +441,7 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
                         "diagnostic_index": 0,
                     }
                 ],
+                "node_addresses": _addresses("target", "source"),
             }
         )
 
@@ -477,6 +487,7 @@ def test_trace_result_schema_accepts_multiple_matching_omission_diagnostics() ->
         ],
         "generated_at": "2026-07-23T12:00:00+00:00",
         "execution_origin": "fresh_execution",
+        "node_addresses": _addresses("target", "source-a", "source-b"),
     }
 
     result = TraceResultResponse.model_validate(payload)

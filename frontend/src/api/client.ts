@@ -1134,14 +1134,12 @@ export function outputAssembleDryRun(
 export interface TraceCellArgs {
   graph: PreparedGraph
   row_index: number
-  target_node_id: string
+  /** The frame the row is from, by address: the target of the preview it was shown in. */
+  target: FrameTargetPayload
   column?: string | null
   row_limit?: number
   source?: string
   row_values?: Record<string, unknown>
-  /** The table of the preview being traced: a Workbench Output's cell is
-   * traced from the node connected to that table. */
-  port_label?: string
   /** The `seed_plan` of the preview being traced: the trace reads exactly
    * those generations, and none when it is empty. */
   seed_plan: TraceSeedPlanEntry[]

@@ -3,6 +3,7 @@ import {
   makeCanonicalGraph,
   makeCanonicalNode,
   makePreviewResponse as makeCompletePreviewResponse,
+  makeTraceResult,
   nodeTarget,
   preparedGraph,
 } from "../../test-utils/factories"
@@ -161,7 +162,7 @@ function makeSavePipelineResponse() {
 function makeTraceResponse() {
   return {
     status: "ok",
-    trace: {
+    trace: makeTraceResult({
       target_node_id: "n1",
       row_index: 0,
       column: null,
@@ -178,7 +179,7 @@ function makeTraceResponse() {
       generated_at: "2026-07-23T12:00:00+00:00",
       pipeline_source: null,
       execution_origin: "fresh_execution",
-    },
+    }),
   }
 }
 
@@ -900,13 +901,14 @@ describe("endpoint contracts", () => {
       identity_digest: "a".repeat(64),
       generation_id: "generation-1",
     }]
-    await traceCell({ graph: preparedDummyGraph, row_index: 0, target_node_id: "n1", seed_plan: seedPlan })
+    await traceCell({ graph: preparedDummyGraph, row_index: 0, target: nodeTarget("n1"), seed_plan: seedPlan })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/trace")
     expect(opts.method).toBe("POST")
     const body = JSON.parse(opts.body)
     expect(body.row_index).toBe(0)
-    expect(body.target_node_id).toBe("n1")
+    expect(body.target).toEqual(nodeTarget("n1"))
+    expect(body).not.toHaveProperty("target_node_id")
     expect(body.seed_plan).toEqual(seedPlan)
   })
 
@@ -1700,7 +1702,7 @@ describe("request() edge cases", () => {
       const calls = [
         previewNode({ graph: preparedDummyGraph, target: nodeTarget("node1"), rowLimit: 50, signal }),
         previewInputs({ graph: preparedDummyGraph, target: nodeTarget("node1"), signal }),
-        traceCell({ graph: preparedDummyGraph, row_index: 0, target_node_id: "node1", seed_plan: [], signal }),
+        traceCell({ graph: preparedDummyGraph, row_index: 0, target: nodeTarget("node1"), seed_plan: [], signal }),
         writeOutput({ graph: preparedDummyGraph, nodeId: "out", signal }),
         estimateOptimiserSolve({ graph: preparedDummyGraph, node_id: "opt", signal }),
       ]
@@ -1897,7 +1899,7 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("traceCell body omits streaming_chunk_size", async () => {
-    await traceCell({ graph: preparedDummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] })
+    await traceCell({ graph: preparedDummyGraph, row_index: 0, target: nodeTarget("n1"), seed_plan: [] })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

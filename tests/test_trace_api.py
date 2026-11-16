@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from tests._preview_targets import node_target
 from tests._project import use_project
 from tests._worker_http import raise_worker_http
 from tests.conftest import make_edge as _edge
@@ -87,7 +88,7 @@ class TestRequestValidation:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 200
         body = resp.json()
@@ -109,7 +110,7 @@ class TestRequestValidation:
             client,
             graph,
             row_index=0,
-            target_node_id="t",
+            target=node_target("t"),
             column="z",
             row_values={"x": 2, "y": 20, "z": 22},
         )
@@ -133,7 +134,7 @@ class TestRequestValidation:
             client,
             graph,
             row_index=0,
-            target_node_id="t",
+            target=node_target("t"),
             column="z",
             row_values={"x": 999, "y": 20, "z": 22},
         )
@@ -159,7 +160,7 @@ class TestRequestValidation:
             client,
             graph,
             row_index=2,
-            target_node_id="t",
+            target=node_target("t"),
             column="z",
             row_values={"x": 1, "y": 10, "z": 11},
         )
@@ -171,7 +172,8 @@ class TestRequestValidation:
         """POST with a graph containing no nodes returns an error."""
         graph = _g({"nodes": [], "edges": []}).model_dump()
 
-        resp = _trace_post(client, graph, row_index=0)
+        # An empty graph is refused before the target is resolved.
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 400
         body = resp.json()
@@ -182,27 +184,28 @@ class TestRequestValidation:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=-1, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=-1, target=node_target("t"))
 
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "row_index"]]
 
     def test_out_of_bounds_row_index_returns_error(self, client, tmp_path):
         """POST with row_index beyond data length returns an error."""
         p = _simple_parquet(tmp_path)  # 3 rows
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=9999, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=9999, target=node_target("t"))
 
         assert resp.status_code == 400
         body = resp.json()
         assert "detail" in body
 
     def test_nonexistent_target_node_returns_error(self, client, tmp_path):
-        """POST with a target_node_id that does not exist in the graph."""
+        """POST with a target naming a node that does not exist in the graph."""
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="nonexistent_node")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("nonexistent_node"))
 
         assert resp.status_code == 404
         body = resp.json()
@@ -216,16 +219,20 @@ class TestRequestValidation:
 
     def test_missing_graph_field_returns_422(self, client):
         """POST with body missing the required 'graph' field returns 422."""
-        resp = client.post("/api/pipeline/trace", json={"row_index": 0})
+        resp = client.post(
+            "/api/pipeline/trace",
+            json={"row_index": 0, "target": node_target("t"), "seed_plan": []},
+        )
 
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "graph"]]
 
     def test_column_parameter_filters_trace(self, client, tmp_path):
         """POST with column parameter returns a trace filtered to that column."""
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"), column="z")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -254,7 +261,7 @@ class TestRequestValidation:
         )
 
         with patch("haute.routes.pipeline.execute_trace", return_value=result):
-            resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+            resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 200
         waterfall = resp.json()["trace"]["waterfall"]
@@ -265,7 +272,7 @@ class TestRequestValidation:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t", row_limit=10)
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"), row_limit=10)
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -275,7 +282,7 @@ class TestRequestValidation:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t", source="live")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"), source="live")
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -294,7 +301,7 @@ class TestResponseShape:
         """Return a successful trace response body for shape testing."""
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
         assert resp.status_code == 200
         return resp.json()
 
@@ -321,6 +328,7 @@ class TestResponseShape:
             "generated_at",
             "pipeline_source",
             "execution_origin",
+            "node_addresses",
         ]
         for field in required_fields:
             assert field in trace, f"Missing field: {field}"
@@ -382,7 +390,7 @@ class TestResponseShape:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
         trace = resp.json()["trace"]
 
         # Without column filter, output_value is a dict of the full row
@@ -414,7 +422,7 @@ class TestResponseShape:
             },
         )
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 500
         assert resp.json()["detail"] == "Operation failed. Check the server logs for details."
@@ -427,7 +435,8 @@ class TestResponseShape:
         from haute._trace_correlation import _join_no_match_diagnostic
 
         real = pipeline_route.trace_result_to_dict
-        diagnostic = _join_no_match_diagnostic("s", "t", {"x": 1})
+        # The answer addresses every node it names, so the diagnostic names the graph's.
+        diagnostic = _join_no_match_diagnostic("src", "t", {"x": 1})
         assert "seed_node_ids" not in diagnostic
         monkeypatch.setattr(
             pipeline_route,
@@ -435,7 +444,12 @@ class TestResponseShape:
             lambda result: {**real(result), "correlation_diagnostics": [diagnostic]},
         )
 
-        resp = _trace_post(client, _simple_graph(_simple_parquet(tmp_path)), row_index=0)
+        resp = _trace_post(
+            client,
+            _simple_graph(_simple_parquet(tmp_path)),
+            row_index=0,
+            target=node_target("t"),
+        )
 
         assert resp.status_code == 200, resp.text
         [answered] = resp.json()["trace"]["correlation_diagnostics"]
@@ -455,7 +469,7 @@ class TestPipelineIntegration:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') * 2)")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -484,7 +498,7 @@ class TestPipelineIntegration:
             }
         ).model_dump()
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="join")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("join"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -496,7 +510,7 @@ class TestPipelineIntegration:
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
 
         # Trace a column that is added by the transform
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"), column="z")
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -512,7 +526,7 @@ class TestPipelineIntegration:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t", column="z")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"), column="z")
 
         trace = resp.json()["trace"]
         # Scalar value, not a dict
@@ -524,7 +538,7 @@ class TestPipelineIntegration:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         trace = resp.json()["trace"]
         assert isinstance(trace["output_value"], dict)
@@ -537,7 +551,7 @@ class TestPipelineIntegration:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = df.with_columns(INVALID_SYNTAX_HERE===)")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 422
         detail = resp.json()["detail"]
@@ -559,7 +573,7 @@ class TestPipelineIntegration:
 
         graph = _g({"nodes": nodes, "edges": edges}).model_dump()
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t4")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t4"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -577,11 +591,11 @@ class TestPipelineIntegration:
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('x') + pl.col('y'))")
 
         # First call — cold
-        resp1 = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp1 = _trace_post(client, graph, row_index=0, target=node_target("t"))
         assert resp1.status_code == 200
 
         # Second call — should use cache
-        resp2 = _trace_post(client, graph, row_index=1, target_node_id="t")
+        resp2 = _trace_post(client, graph, row_index=1, target=node_target("t"))
         assert resp2.status_code == 200
 
         # Both should succeed (cache doesn't corrupt results)
@@ -608,7 +622,7 @@ class TestErrorHandling:
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = src.with_columns(z=pl.col('nonexistent_col'))")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 422
         detail = resp.json()["detail"]
@@ -639,7 +653,7 @@ class TestErrorHandling:
         monkeypatch.setattr(pipeline_route, "execute_trace", refused)
         graph = _simple_graph(_simple_parquet(tmp_path))
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == status
         assert resp.json()["detail"] == "Worded any way at all."
@@ -693,7 +707,7 @@ class TestErrorHandling:
         # module top-level after the #101 hoist, so the source module's
         # name no longer intercepts it.
         with patch("haute.routes.pipeline.execute_trace", side_effect=slow_trace):
-            resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+            resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 504
 
@@ -704,10 +718,15 @@ class TestErrorHandling:
             json={
                 "graph": {"nodes": "not_a_list", "edges": []},
                 "row_index": 0,
+                "target": node_target("t"),
+                "seed_plan": [],
             },
         )
 
         assert resp.status_code == 422
+        assert {tuple(error["loc"][:3]) for error in resp.json()["detail"]} == {
+            ("body", "graph", "nodes")
+        }
 
     def test_edges_referencing_nonexistent_nodes(self, client, tmp_path):
         """Graph with edges pointing to non-existent nodes returns error."""
@@ -719,7 +738,7 @@ class TestErrorHandling:
             }
         ).model_dump()
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="src")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("src"))
 
         # Should return 200 (the target exists) or error depending on validation
         # The ghost edge is simply ignored since target_node_id is valid
@@ -729,7 +748,8 @@ class TestErrorHandling:
         """Graph with empty nodes list returns error."""
         graph = _g({"nodes": [], "edges": []}).model_dump()
 
-        resp = _trace_post(client, graph, row_index=0)
+        # An empty graph is refused before the target is resolved.
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 400
         body = resp.json()
@@ -743,7 +763,7 @@ class TestErrorHandling:
         # Filter everything out so output has 0 rows
         graph = _simple_graph(p, "df = src.filter(pl.col('x') > 999)")
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 400
         body = resp.json()
@@ -764,7 +784,7 @@ class TestSerialization:
         pl.DataFrame({"x": [1.0, float("nan"), 3.0]}).write_parquet(p)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=1, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=1, target=node_target("t"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -777,14 +797,14 @@ class TestSerialization:
         pl.DataFrame({"x": [float("inf"), float("-inf"), 1.0]}).write_parquet(p)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
         ov = trace["output_value"]
         assert ov["x"] == INF_SENTINEL
 
-        resp = _trace_post(client, graph, row_index=1, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=1, target=node_target("t"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -801,7 +821,7 @@ class TestSerialization:
         ).write_parquet(p)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -816,7 +836,7 @@ class TestSerialization:
         pl.DataFrame({"x": [1e308, -1e308, 1.5]}).write_parquet(p)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -831,7 +851,7 @@ class TestSerialization:
         pl.DataFrame({"flag": [True, False, True]}).write_parquet(p)
         graph = _simple_graph(p)
 
-        resp = _trace_post(client, graph, row_index=0, target_node_id="t")
+        resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 200
         trace = resp.json()["trace"]
@@ -839,6 +859,6 @@ class TestSerialization:
         assert ov["flag"] is True
 
         # Check row 1 is False
-        resp2 = _trace_post(client, graph, row_index=1, target_node_id="t")
+        resp2 = _trace_post(client, graph, row_index=1, target=node_target("t"))
         trace2 = resp2.json()["trace"]
         assert trace2["output_value"]["flag"] is False

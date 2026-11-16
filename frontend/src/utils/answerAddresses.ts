@@ -28,26 +28,43 @@ export interface CanvasPlace {
   readonly viaCard: boolean
 }
 
+/** A boundary card of the open occurrence, and the pipeline's nodes its ports reach. */
+export interface BoundaryCard {
+  readonly id: string
+  readonly direction: "input" | "output"
+  /** What feeds the occurrence's inputs (the Input card), or reads its outputs (the Output card). */
+  readonly externalNodeIds: readonly string[]
+}
+
 /**
  * The one placement of an address on the canvas, by the occurrence open on it (null for
  * the main pipeline):
  *
  * | The address | Canvas at the root | Canvas inside occurrence O |
  * |---|---|---|
- * | A pipeline node `{null, n}` (an occurrence's card when `n` is one) | node `n` | not on the canvas |
+ * | A pipeline node `{null, n}` (an occurrence's card when `n` is one) | node `n` | the boundary card reaching `n`, else not on the canvas |
  * | A child `{O, c}` of the open occurrence | O's card | node `c` |
- * | A child `{P, c}` of another occurrence | P's card | not on the canvas |
+ * | A child `{P, c}` of another occurrence | P's card | the boundary card reaching `P`, else not on the canvas |
+ *
+ * Inside an occurrence, a node outside it shows on a boundary card only for a reader that
+ * passes the cards (the trace, whose path runs through them): on the Input card when it
+ * feeds the occurrence, else on the Output card when it reads from it.
  */
 export function placeAddress(
   address: Pick<NodeAddressEntry, "occurrence" | "node_id">,
   openOccurrence: string | null,
+  boundaries: readonly BoundaryCard[] = [],
 ): CanvasPlace | null {
   if (openOccurrence === null) {
     return address.occurrence === null
       ? { id: address.node_id, viaCard: false }
       : { id: address.occurrence, viaCard: true }
   }
-  return address.occurrence === openOccurrence ? { id: address.node_id, viaCard: false } : null
+  if (address.occurrence === openOccurrence) return { id: address.node_id, viaCard: false }
+  const outside = address.occurrence ?? address.node_id
+  const card = boundaries.find((candidate) => candidate.direction === "input" && candidate.externalNodeIds.includes(outside))
+    ?? boundaries.find((candidate) => candidate.direction === "output" && candidate.externalNodeIds.includes(outside))
+  return card ? { id: card.id, viaCard: true } : null
 }
 
 /**

@@ -1,17 +1,38 @@
+import type { RuntimeNodeKey } from "../generated/api-contracts.generated"
 import type {
   TraceOmission,
   TraceResult,
   TraceStep,
 } from "../types/trace"
+import { keyText } from "../utils/answerAddresses"
 import { sanitiseLabelForFilesystem } from "../utils/apiInputPorts"
 
-export interface TraceExportRow {
-  section: "provenance" | "trace" | "step" | "omission" | "waterfall" | "diagnostic"
-  topologicalRank: number | null
+/** A node as an export names it: by its address, never by the key the trace runs it under. */
+interface ExportNode {
+  /** The submodel occurrence the node is in; empty for a node of the pipeline. */
+  occurrence: string
+  /** The node's id where it is authored: in the pipeline, or in the occurrence's definition. */
   nodeId: string
   nodeName: string
+}
+
+export interface TraceExportRow extends ExportNode {
+  section: "provenance" | "trace" | "step" | "omission" | "waterfall" | "diagnostic"
+  topologicalRank: number | null
   field: string
   value: string
+}
+
+const NO_NODE: ExportNode = { occurrence: "", nodeId: "", nodeName: "" }
+
+function exportNode(trace: TraceResult, key: RuntimeNodeKey, nodeName: string): ExportNode {
+  const address = trace.node_addresses[keyText(key)]
+  return { occurrence: address?.occurrence ?? "", nodeId: address?.node_id ?? "", nodeName }
+}
+
+/** The label of the node the trace explains. */
+function targetLabel(trace: TraceResult): string {
+  return trace.node_addresses[keyText(trace.target_node_id)]?.label ?? ""
 }
 
 function stableJsonValue(value: unknown): unknown {
@@ -44,12 +65,12 @@ function fieldRow(
   field: string,
   value: unknown,
   evidence?: TraceStep | TraceOmission,
+  node: ExportNode = NO_NODE,
 ): TraceExportRow {
   return {
     section,
     topologicalRank: evidence?.topological_rank ?? null,
-    nodeId: evidence?.node_id ?? "",
-    nodeName: evidence?.node_name ?? "",
+    ...node,
     field,
     value: exactTraceValue(value),
   }
@@ -65,7 +86,10 @@ export function buildTraceExportRows(trace: TraceResult): TraceExportRow[] {
     fieldRow("provenance", "generated_at", trace.generated_at),
     fieldRow("provenance", "pipeline_source", trace.pipeline_source),
     fieldRow("provenance", "execution_origin", trace.execution_origin),
-    fieldRow("trace", "target_node_id", trace.target_node_id),
+    // The evidence keeps the keys the trace names nodes by (a derivation's sources, a
+    // diagnostic's nodes); this row gives each its address and label.
+    fieldRow("provenance", "node_addresses", trace.node_addresses),
+    fieldRow("trace", "target", targetLabel(trace), undefined, exportNode(trace, trace.target_node_id, targetLabel(trace))),
     fieldRow("trace", "row_index", trace.row_index),
     fieldRow("trace", "column", trace.column),
     fieldRow("trace", "row_id_column", trace.row_id_column),
@@ -82,27 +106,28 @@ export function buildTraceExportRows(trace: TraceResult): TraceExportRow[] {
   ].sort((left, right) => left.topological_rank - right.topological_rank)
 
   for (const item of evidence) {
+    const node = exportNode(trace, item.node_id, item.node_name)
     if (isOmission(item)) {
       rows.push(
-        fieldRow("omission", "reason", item.reason, item),
-        fieldRow("omission", "diagnostic_index", item.diagnostic_index, item),
+        fieldRow("omission", "reason", item.reason, item, node),
+        fieldRow("omission", "diagnostic_index", item.diagnostic_index, item, node),
       )
       continue
     }
     rows.push(
-      fieldRow("step", "node_type", item.node_type, item),
-      fieldRow("step", "schema_diff", item.schema_diff, item),
-      fieldRow("step", "input_values", item.input_values, item),
-      fieldRow("step", "output_values", item.output_values, item),
-      fieldRow("step", "expression", item.expression, item),
-      fieldRow("step", "calculation", item.calculation, item),
-      fieldRow("step", "derivations", item.derivations, item),
-      fieldRow("step", "node_detail", item.node_detail, item),
-      fieldRow("step", "row_lineage_type", item.row_lineage_type, item),
+      fieldRow("step", "node_type", item.node_type, item, node),
+      fieldRow("step", "schema_diff", item.schema_diff, item, node),
+      fieldRow("step", "input_values", item.input_values, item, node),
+      fieldRow("step", "output_values", item.output_values, item, node),
+      fieldRow("step", "expression", item.expression, item, node),
+      fieldRow("step", "calculation", item.calculation, item, node),
+      fieldRow("step", "derivations", item.derivations, item, node),
+      fieldRow("step", "node_detail", item.node_detail, item, node),
+      fieldRow("step", "row_lineage_type", item.row_lineage_type, item, node),
     )
     if (typeof item.identical_row_count === "number") {
       rows.push(
-        fieldRow("step", "identical_rows", `One of ${item.identical_row_count} identical rows`, item),
+        fieldRow("step", "identical_rows", `One of ${item.identical_row_count} identical rows`, item, node),
       )
     }
   }
@@ -133,11 +158,11 @@ function csvCell(value: string): string {
 }
 
 export function traceRowsToMarkdown(trace: TraceResult, rows: TraceExportRow[]): string {
-  const title = `# Trace: ${trace.column ?? trace.target_node_id}`
-  const header = "| Section | Rank | Node ID | Node | Field | Value |\n| --- | ---: | --- | --- | --- | --- |"
+  const title = `# Trace: ${trace.column ?? targetLabel(trace)}`
+  const header = "| Section | Rank | Submodel | Node ID | Node | Field | Value |\n| --- | ---: | --- | --- | --- | --- | --- |"
   const body = rows.map((row) => (
     `| ${escapeMarkdownCell(row.section)} | ${row.topologicalRank ?? ""} | `
-    + `${escapeMarkdownCell(row.nodeId)} | ${escapeMarkdownCell(row.nodeName)} | `
+    + `${escapeMarkdownCell(row.occurrence)} | ${escapeMarkdownCell(row.nodeId)} | ${escapeMarkdownCell(row.nodeName)} | `
     + `${escapeMarkdownCell(row.field)} | ${escapeMarkdownCell(row.value)} |`
   ))
   return `${title}\n\n${header}\n${body.join("\n")}\n`
@@ -147,13 +172,14 @@ export function traceRowsToCsv(rows: TraceExportRow[]): string {
   const records = rows.map((row) => [
     row.section,
     row.topologicalRank === null ? "" : String(row.topologicalRank),
+    row.occurrence,
     row.nodeId,
     row.nodeName,
     row.field,
     row.value,
   ])
   return [
-    ["section", "topological_rank", "node_id", "node_name", "field", "value"],
+    ["section", "topological_rank", "occurrence", "node_id", "node_name", "field", "value"],
     ...records,
   ].map((record) => record.map(csvCell).join(",")).join("\r\n") + "\r\n"
 }
@@ -179,18 +205,19 @@ export function traceRowsToPrintHtml(trace: TraceResult, rows: TraceExportRow[])
     "<tr>"
     + `<td>${escapeHtml(row.section)}</td>`
     + `<td>${row.topologicalRank ?? ""}</td>`
+    + `<td>${escapeHtml(row.occurrence)}</td>`
     + `<td>${escapeHtml(row.nodeName || row.nodeId)}</td>`
     + `<td>${escapeHtml(row.field)}</td>`
     + `<td>${escapeHtml(row.value)}</td>`
     + "</tr>"
   )).join("")
   return "<!doctype html><html><head><meta charset=\"utf-8\">"
-    + `<title>${escapeHtml(`Trace: ${trace.column ?? trace.target_node_id}`)}</title>`
+    + `<title>${escapeHtml(`Trace: ${trace.column ?? targetLabel(trace)}`)}</title>`
     + "<style>body{font:11px/1.35 system-ui,sans-serif;color:CanvasText}"
     + "table{width:100%;border-collapse:collapse}th,td{padding:4px;border:1px solid GrayText;"
     + "text-align:left;vertical-align:top;overflow-wrap:anywhere}</style></head><body>"
-    + `<h1>${escapeHtml(`Trace: ${trace.column ?? trace.target_node_id}`)}</h1>`
-    + "<table><thead><tr><th>Section</th><th>Rank</th><th>Node</th><th>Field</th>"
+    + `<h1>${escapeHtml(`Trace: ${trace.column ?? targetLabel(trace)}`)}</h1>`
+    + "<table><thead><tr><th>Section</th><th>Rank</th><th>Submodel</th><th>Node</th><th>Field</th>"
     + `<th>Value</th></tr></thead><tbody>${body}</tbody></table></body></html>`
 }
 
@@ -217,7 +244,7 @@ export async function copyTraceMarkdown(
 
 export function traceExportFilename(trace: TraceResult, extension: "md" | "csv"): string {
   const identity = sanitiseLabelForFilesystem(
-    `${trace.target_node_id}-${trace.column ?? `row-${trace.row_index}`}`,
+    `${targetLabel(trace)}-${trace.column ?? `row-${trace.row_index}`}`,
   )
   const timestamp = trace.generated_at.replace(/[:.]/g, "-")
   return `trace-${identity || "result"}-${timestamp}.${extension}`

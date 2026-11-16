@@ -51,6 +51,7 @@ from haute._graph_utils import is_frame_label
 from haute._node_address_schemas import (
     FrameTargetPayload,
     NodeAddressEntry,
+    NodeFrameTargetPayload,
     OccurrencePortProvenance,
     RuntimeNodeKey,
 )
@@ -2188,19 +2189,31 @@ class TraceSeedPlanEntry(BaseModel):
 
 
 class TraceRequest(EditorSampleRequest):
+    # A field the request does not define (a node id or port beside the target) is refused,
+    # never silently dropped.
+    model_config = ConfigDict(extra="forbid")
+
     graph: Graph
+    # The frame the traced row is from, by address (specs/server-api/low-level.md, "Node
+    # addresses"): the target of the preview the row was shown in. A node target's
+    # ``port_label`` is one frame of a multi-frame node, or a Workbench Output's table (the
+    # cell is traced from the node connected to it); a trace reads one frame, so never
+    # ``port_labels``.
+    target: FrameTargetPayload
     row_index: int = Field(default=0, ge=0)
-    target_node_id: BoundedName | None = None
     column: BoundedName | None = None
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: BoundedName = "live"
     row_values: dict[BoundedName, Any] | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
-    # The table of a Workbench Output target the row is from: the cell is traced
-    # from the node connected to it. Ignored for any other target.
-    port_label: BoundedName | None = None
     # The ``seed_plan`` of the preview this trace explains: the trace reads
     # exactly those generations and nothing else, even if snapshots now exist.
     seed_plan: list[TraceSeedPlanEntry] = Field(max_length=MAX_REQUEST_ITEMS)
+
+    @model_validator(mode="after")
+    def _one_frame(self) -> TraceRequest:
+        if isinstance(self.target, NodeFrameTargetPayload) and self.target.port_labels is not None:
+            raise ValueError("A trace reads one frame: name it with port_label, not port_labels.")
+        return self
 
 
 class SchemaDiffResponse(BaseModel):
@@ -2211,7 +2224,7 @@ class SchemaDiffResponse(BaseModel):
 
 
 class TraceColumnSourceResponse(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     column: str
     # The value a node's rule generated before its code rewrote the column.
     before_code: bool
@@ -2241,7 +2254,7 @@ class TraceColumnDerivationResponse(BaseModel):
 
 
 class TraceStepResponse(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     node_name: str
     node_type: str
     schema_diff: SchemaDiffResponse
@@ -2267,7 +2280,7 @@ class TraceStepResponse(BaseModel):
 
 
 class TraceOmissionResponse(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     node_name: str
     node_type: str
     topological_rank: int = Field(ge=0)
@@ -2282,15 +2295,15 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     severity: str
     reason: str
     message: str
-    node_id: str | None = None
-    child_node_id: str | None = None
+    node_id: RuntimeNodeKey | None = None
+    child_node_id: RuntimeNodeKey | None = None
     match_strategy: str | None = None
     match_columns: list[str] = Field(default_factory=list)
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
     # For a node not traced above a snapshot: the seeded node it lies above.
-    seed_node_ids: list[str] = Field(default_factory=list)
+    seed_node_ids: list[RuntimeNodeKey] = Field(default_factory=list)
 
 
 class TraceWaterfallEntryResponse(BaseModel):
@@ -2308,7 +2321,10 @@ class TraceWaterfallErrorResponse(BaseModel):
 
 
 class TraceResultResponse(BaseModel):
-    target_node_id: str
+    """A traced row. It names nodes by runtime key, each addressed in ``node_addresses``
+    (specs/server-api/low-level.md, "Node addresses")."""
+
+    target_node_id: RuntimeNodeKey
     row_index: int
     column: str | None = None
     output_value: Any = None
@@ -2324,6 +2340,7 @@ class TraceResultResponse(BaseModel):
     generated_at: str
     pipeline_source: str | None = None
     execution_origin: Literal["fresh_execution", "trace_cache"]
+    node_addresses: dict[str, NodeAddressEntry]
 
     @field_validator("generated_at")
     @classmethod

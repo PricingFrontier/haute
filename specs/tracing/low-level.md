@@ -213,8 +213,9 @@ resolved is an omission with its continuation's reason, linked to a diagnostic (
 column relevance. Source ids are computed per request from these final parents. The
 continuation is never cached: every click proves again.
 
-1. Validate `nodes` non-empty; resolve `target_node_id` (defaults to the last
-   node in topological order, computed from the node list in *declared* order —
+1. Validate `nodes` non-empty; resolve `target_node_id` (the HTTP route always
+   passes the runtime key its required address target resolves to; a Python caller
+   that gives none gets the last node in topological order, computed from the node list in *declared* order —
    not a set — so the tie-break is deterministic across process invocations,
    independent of CPython hash randomisation).
 2. Call `execution_facade.preview_lineage_cache_key(...)` with target, source,

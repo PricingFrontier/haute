@@ -160,7 +160,7 @@ _ERROR_CASES = [
             "graph": {"nodes": [], "edges": []},
             "seed_plan": [],
             "row_index": 0,
-            "target_node_id": "x",
+            "target": node_target("x"),
             "column": "y",
         },
         400,

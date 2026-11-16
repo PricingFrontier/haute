@@ -1304,7 +1304,7 @@ async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.M
                 json={
                     "seed_plan": [],
                     "graph": _single_node_graph(),
-                    "target_node_id": "target",
+                    "target": node_target("target"),
                     "row_index": 0,
                     "source": "live",
                 },
@@ -1377,7 +1377,7 @@ async def test_trace_targets_use_distinct_supersession_keys(
                 json={
                     "seed_plan": [],
                     "graph": _two_node_graph(),
-                    "target_node_id": target,
+                    "target": node_target(target),
                     "row_index": 0,
                     "source": "live",
                 },
@@ -1449,7 +1449,7 @@ async def test_trace_limits_blocking_workers_across_distinct_keys(
                 json={
                     "seed_plan": [],
                     "graph": _single_node_graph(),
-                    "target_node_id": "target",
+                    "target": node_target("target"),
                     "row_index": 0,
                     "source": source,
                 },
@@ -1529,7 +1529,7 @@ async def test_aborted_trace_request_holds_limiter_until_worker_finishes(
                     json={
                         "seed_plan": [],
                         "graph": _single_node_graph(),
-                        "target_node_id": "target",
+                        "target": node_target("target"),
                         "row_index": 0,
                         "source": source,
                     },
@@ -1669,7 +1669,7 @@ async def test_trace_worker_limit_serializes_different_keys(
                 json={
                     "seed_plan": [],
                     "graph": _single_node_graph(),
-                    "target_node_id": "target",
+                    "target": node_target("target"),
                     "row_index": 0,
                     "source": source,
                 },

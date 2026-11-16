@@ -305,7 +305,9 @@ def test_save_refuses_a_violation_naming_the_node(
 @pytest.mark.parametrize(
     ("route", "fields"),
     [
-        pytest.param("/api/pipeline/trace", {"seed_plan": []}, id="trace"),
+        pytest.param(
+            "/api/pipeline/trace", {"seed_plan": [], "target": node_target("n0")}, id="trace"
+        ),
         pytest.param("/api/pipeline/write-output", {"node_id": "n0"}, id="write-output"),
         pytest.param("/api/pipeline/output-destination", {"node_id": "n0"}, id="destination"),
         pytest.param("/api/output-assemble/dry-run", {"node_id": "n0"}, id="output-dry-run"),

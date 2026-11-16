@@ -1,4 +1,5 @@
 import type { TraceColumnDerivation, TraceColumnSource, TraceStep } from "../types/trace"
+import { keyText } from "../utils/answerAddresses"
 import { isTraceSourceNodeType } from "./traceOrigins"
 import { evaluatedValue, notComputableNote } from "./traceHelpers"
 
@@ -50,7 +51,7 @@ interface StepLookup {
 }
 
 function stepLookup(steps: TraceStep[]): Map<string, StepLookup> {
-  return new Map(steps.map((step, index) => [step.node_id, { step, number: index + 1 }]))
+  return new Map(steps.map((step, index) => [keyText(step.node_id), { step, number: index + 1 }]))
 }
 
 function derivationOf(step: TraceStep, column: string): TraceColumnDerivation | null {
@@ -84,13 +85,14 @@ export function buildDerivationTree(
     depth: number,
     alternativeCount: number,
   ): DerivationTreeNode {
-    const found = byId.get(current.node_id)
+    const nodeId = keyText(current.node_id)
+    const found = byId.get(nodeId)
     const alternatives = alternativeCount > 1 ? `One of ${alternativeCount} nodes this value may have come from.` : null
     const base = {
       key,
       column: current.column,
-      nodeId: current.node_id,
-      nodeName: found?.step.node_name ?? current.node_id,
+      nodeId,
+      nodeName: found?.step.node_name ?? nodeId,
       nodeType: found?.step.node_type ?? null,
       stepNumber: found?.number ?? null,
       expressionText: null,
@@ -122,7 +124,7 @@ export function buildDerivationTree(
       : isTraceSourceNodeType(found.step.node_type)
         ? "loaded"
         : "rule"
-    const pathKey = `${current.node_id}:${current.column}`
+    const pathKey = `${nodeId}:${current.column}`
     const cutOff = path.has(pathKey)
       ? "Already shown above on this path."
       : depth >= maxDepth

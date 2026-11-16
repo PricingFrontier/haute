@@ -1082,6 +1082,7 @@ describe("API response guards", () => {
     expect(parsed.trace?.correlation_diagnostics).toEqual([])
     expect(parsed.trace?.generated_at).toBe("2026-07-23T12:00:00+00:00")
     expect(parsed.trace?.execution_origin).toBe("fresh_execution")
+    expect(parsed.trace?.node_addresses.score).toEqual({ occurrence: null, node_id: "score", label: "Score" })
   })
 
   it("parses a step that is one of several identical rows and rejects a count below two", () => {
@@ -1209,6 +1210,11 @@ describe("API response guards", () => {
 
     expect(() => parseTraceResponse({ ...fixture, trace: withoutOmissions }))
       .toThrow(/omissions/i)
+    // Every key a trace names is addressed: a trace without its addresses is refused.
+    const withoutAddresses = { ...trace }
+    delete withoutAddresses.node_addresses
+    expect(() => parseTraceResponse({ ...fixture, trace: withoutAddresses }))
+      .toThrow(/node_addresses/i)
     expect(() => parseTraceResponse({
       ...fixture,
       trace: { ...trace, execution_origin: "unknown_cache" },

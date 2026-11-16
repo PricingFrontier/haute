@@ -5023,12 +5023,19 @@ export interface TraceResponse {
   status: string;
   trace: TraceResultResponse;
 }
+/**
+ * A traced row. It names nodes by runtime key, each addressed in ``node_addresses``
+ * (specs/server-api/low-level.md, "Node addresses").
+ */
 export interface TraceResultResponse {
   column: string | null;
   correlation_diagnostics: TraceCorrelationDiagnosticResponse[];
   execution_ms: number;
   execution_origin: 'fresh_execution' | 'trace_cache';
   generated_at: string;
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   nodes_in_trace: number;
   omissions: TraceOmissionResponse[];
   output_value: unknown;
@@ -5037,12 +5044,12 @@ export interface TraceResultResponse {
   row_id_value: unknown;
   row_index: number;
   steps: TraceStepResponse[];
-  target_node_id: string;
+  target_node_id: RuntimeNodeKey;
   total_nodes_in_pipeline: number;
   waterfall: TraceWaterfallEntryResponse[] | TraceWaterfallErrorResponse | null;
 }
 export interface TraceCorrelationDiagnosticResponse {
-  child_node_id: string | null;
+  child_node_id: RuntimeNodeKey | null;
   code: string;
   ignored_columns: string[];
   match_columns: string[];
@@ -5050,15 +5057,15 @@ export interface TraceCorrelationDiagnosticResponse {
   matched_row_count: number | null;
   matched_row_indices: number[];
   message: string;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   reason: string;
-  seed_node_ids: string[];
+  seed_node_ids: RuntimeNodeKey[];
   severity: string;
   [k: string]: unknown;
 }
 export interface TraceOmissionResponse {
   diagnostic_index: number;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   node_name: string;
   node_type: string;
   reason: string;
@@ -5081,7 +5088,7 @@ export interface TraceStepResponse {
   node_detail: {
     [k: string]: unknown;
   } | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   node_name: string;
   node_type: string;
   output_values: {
@@ -5110,7 +5117,7 @@ export interface TraceColumnReadResponse {
 export interface TraceColumnSourceResponse {
   before_code: boolean;
   column: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
 }
 export interface SchemaDiffResponse {
   columns_added: string[];

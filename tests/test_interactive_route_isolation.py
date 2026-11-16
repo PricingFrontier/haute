@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
-from haute._node_addresses import ResolvedTarget
+from haute._node_addresses import ResolvedTarget, resolve_target
 from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._source_files import REPO_ROOT
@@ -73,7 +73,7 @@ def test_preview_and_trace_execute_through_spawn_worker(
                 json={
                     "seed_plan": [],
                     "graph": _file_input_graph(),
-                    "target_node_id": "source",
+                    "target": node_target("source"),
                     "row_index": 0,
                     "row_limit": 2,
                 },
@@ -472,16 +472,15 @@ def test_preview_and_trace_worker_targets_execute_directly() -> None:
     preview = _execute_preview_worker(
         graph, preview_body, ResolvedTarget(key="source"), _isolated_budget()
     )
+    trace_body = TraceRequest(
+        graph=preview_body.graph,
+        target=node_target("source"),
+        row_index=0,
+        row_limit=2,
+        seed_plan=[],
+    )
     trace = _execute_trace_worker(
-        graph,
-        TraceRequest(
-            graph=preview_body.graph,
-            target_node_id="source",
-            row_index=0,
-            row_limit=2,
-            seed_plan=[],
-        ),
-        _isolated_budget(),
+        graph, trace_body, resolve_target(graph, trace_body.target), _isolated_budget()
     )
 
     assert preview.status == "ok"
@@ -658,7 +657,7 @@ def test_interactive_route_worker_failures_have_stable_http_status(
         body = TraceRequest.model_validate(
             {
                 "graph": _file_input_graph(),
-                "target_node_id": "source",
+                "target": node_target("source"),
                 "row_index": 0,
                 "row_limit": 2,
                 "seed_plan": [],

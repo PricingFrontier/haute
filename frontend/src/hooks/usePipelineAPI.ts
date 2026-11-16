@@ -1099,7 +1099,7 @@ export default function usePipelineAPI({
         // must never paint the panel or enter its cache.
         if (!documentStillCurrent()) return
         const targetKey = answerTargetKey(result, target)
-        const preview = keyedPreviewData(resultToPreview(node.id, label, result, portLabel, targetKey), output, nodeKey)
+        const preview = keyedPreviewData({ ...resultToPreview(node.id, label, result, portLabel, targetKey), target }, output, nodeKey)
         if (!requestStillCurrent()) {
           // The graph changed while this response was in flight (e.g. an
           // editor mirrored artifact metadata into node config, bumping
@@ -1588,7 +1588,11 @@ export default function usePipelineAPI({
           if (captured) bumpEpoch()
           return
         }
-        const preview = keyedPreviewData(resultToPreview(node.id, label, result, portLabel, answerTargetKey(result, frameTarget)), undefined, nodeKey)
+        const preview = keyedPreviewData(
+          { ...resultToPreview(node.id, label, result, portLabel, answerTargetKey(result, frameTarget)), target: frameTarget },
+          undefined,
+          nodeKey,
+        )
         // Its own captures leave it current unless something else moved the
         // epoch while it was in flight.
         const currentAt = captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch

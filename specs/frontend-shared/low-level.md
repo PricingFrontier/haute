@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/utils/answerAddresses.ts` | Reading the nodes an answer names (see "Request gateway" item 5): `keyText` (the one reading of a `RuntimeNodeKey` as text, to look it up in its answer), `placeAddress` (the canvas placement table), `keysOnCanvas` (an answer's keys by the canvas node they describe) and `answerTargetKey` (the key an answer runs a frame target under: by address, or through its frame provenance). |
+| `frontend/src/utils/answerAddresses.ts` | Reading the nodes an answer names (see "Request gateway" item 5): `keyText` (the one reading of a `RuntimeNodeKey` as text, to look it up in its answer), `placeAddress` (the canvas placement table, boundary cards included for a reader that passes them), `keysOnCanvas` (an answer's keys by the canvas node they describe) and `answerTargetKey` (the key an answer runs a frame target under: by address, or through its frame provenance). |
 | `frontend/src/utils/requestGateway.ts` | The request gateway (see "Request gateway"): `documentRequestScope`, `RequestScopeError`, `preparePipelineRequest` and `prepareNodeRequest` (the whole pipeline, the document's identity and semantic generation, the target and the data source, captured once), `canvasTarget` and `canvasNodeAddress` (a canvas node as a frame target or address: the Input card at a port is the occurrence's input, the Output card at a port its output, and on the main pipeline a collapsed occurrence at an `out__` handle its output port), `frameTargetPayload` and `nodeAddressPayload` (the one conversion of a target to the wire's shape, `wireTarget` on a prepared request), the runtime-id adapter the requests not yet sent by address use (`runtimeNodeId`, and `answerNodeNamer` and a prepared request's `nodeNamed` for the ids their answers name), and `resultKey` and `prepareCanvasRequest` (a canvas node's request together with the key its results are kept under). |
 | `frontend/src/utils/nodeAddress.ts` | `NodeAddress`, `FrameTarget`, `rootAddress`, `childAddress`, `nodeFrame`, `sameAddress`, and `addressKey`: a root node's id as it is, a child's key opening with a character no node id holds. |
 | `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; `validateApiResponse` wraps a parser call in that contract. Every background job poller (train, optimiser, Explore, pivot) reports it as a terminal response error. |
@@ -885,21 +885,24 @@ Workbench's sample and the cached-data list.
    built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.
 5. **Answers by address.** A request sends its target as an address (the gateway converts the
    in-memory `NodeAddress` and `FrameTarget` to the wire's snake_case shape in one function) and
-   never a runtime id. The preview and its inputs do so now; until SUBE-05 moves the other
+   never a runtime id. The preview, its inputs and the trace do so now; until SUBE-05 moves the other
    families, their requests send the runtime id the gateway's adapter builds and read their
    answers' ids back through `nodeNamed`. An answer names nodes by opaque key, each with its address in the
    answer's `node_addresses` ([server API](../../specs/server-api/low-level.md), "Node
    addresses"), and one pure function places an address on the canvas
-   (`placeAddress(address, focus)`):
+   (`placeAddress(address, focus, boundaries)`):
 
    | The key's address | Canvas at the root | Canvas inside occurrence O |
    |---|---|---|
-   | A pipeline node `{null, n}` (an occurrence's card when `n` is one) | node `n` | not on the canvas |
+   | A pipeline node `{null, n}` (an occurrence's card when `n` is one) | node `n` | the boundary card reaching `n`, else not on the canvas |
    | A child `{O, c}` of the open occurrence | O's card | node `c` |
-   | A child `{P, c}` of another occurrence | P's card | not on the canvas |
+   | A child `{P, c}` of another occurrence | P's card | the boundary card reaching `P`, else not on the canvas |
 
-   A collapsed occurrence's card shows its children's statuses as one, the worst of them. Trace
-   reaches a node outside the open occurrence through the Input card its frame provenance names.
+   A collapsed occurrence's card shows its children's statuses as one, the worst of them. Only
+   a reader that passes the open occurrence's boundary cards (the trace, whose path runs
+   through them) places a node outside it on one: on the Input card when it feeds the
+   occurrence, else on the Output card when it reads from it, by each card's
+   `externalNodeIds`; every other reader leaves such a node off the canvas.
    Results are still kept by the request's result key (item 1 of "Result identity"), never by
    a key an answer names.
 

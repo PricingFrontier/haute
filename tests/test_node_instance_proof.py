@@ -408,7 +408,7 @@ def test_one_node_instance_cross_path_proof(
                 "/api/pipeline/trace",
                 json={
                     "graph": raw,
-                    "target_node_id": target,
+                    "target": node_target("rate_calc_node", occurrence="rate_calc_2"),
                     "column": column,
                     "row_index": 0,
                     "row_values": expected[0],
@@ -417,6 +417,7 @@ def test_one_node_instance_cross_path_proof(
             )
             assert traced.status_code == 200, traced.text
             assert traced.json()["trace"]["output_value"] == expected[0][column]
+            assert traced.json()["trace"]["target_node_id"] == target
         columns = (["quote_id"] if "quote_id" in expected[0] else []) + [column]
         response_rows = [{c: row[c] for c in columns} for row in expected]
         assert (

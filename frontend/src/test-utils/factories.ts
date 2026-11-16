@@ -836,12 +836,23 @@ export function makePreviewResponse(
 // Trace factories — a trace as POST /api/pipeline/trace answers it
 // ---------------------------------------------------------------------------
 
-import type { TraceCorrelationDiagnostic, TraceResult, TraceStep } from "../types/trace"
+import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult, TraceStep } from "../types/trace"
+
+/** A node key as a trace fixture names it: plain text, or a key already made. */
+type FixtureKey = string | RuntimeNodeKey
+
+function fixtureKey(key: FixtureKey): RuntimeNodeKey {
+  return typeof key === "string" ? runtimeKey(key) : key
+}
+
+/** A trace step's fields, its key given as the text a fixture names it by. */
+export type TraceStepFixture = Omit<Partial<TraceStep>, "node_id"> & { node_id?: FixtureKey }
 
 /** A trace step with every field the server sends. */
-export function makeTraceStep(overrides: Partial<TraceStep> = {}): TraceStep {
+export function makeTraceStep(overrides: TraceStepFixture = {}): TraceStep {
+  const { node_id = "n1", ...rest } = overrides
   return {
-    node_id: "n1",
+    node_id: fixtureKey(node_id),
     node_name: "Step",
     node_type: "polars",
     schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] },
@@ -857,14 +868,55 @@ export function makeTraceStep(overrides: Partial<TraceStep> = {}): TraceStep {
     row_lineage_type: null,
     snapshot_generation_id: null,
     identical_row_count: null,
-    ...overrides,
+    ...rest,
   }
 }
 
-/** A trace result with every field the server sends. */
-export function makeTraceResult(overrides: Partial<TraceResult> = {}): TraceResult {
+/** A trace omission's fields, its key given as the text a fixture names it by. */
+export type TraceOmissionFixture = Omit<Partial<TraceOmission>, "node_id"> & { node_id?: FixtureKey }
+
+/** A trace omission with every field the server sends, its key given as text. */
+export function makeTraceOmission(overrides: TraceOmissionFixture = {}): TraceOmission {
+  const { node_id = "n1", ...rest } = overrides
   return {
-    target_node_id: "n1",
+    node_id: fixtureKey(node_id),
+    node_name: "Step",
+    node_type: "polars",
+    topological_rank: 0,
+    reason: "not correlated",
+    diagnostic_index: 0,
+    ...rest,
+  }
+}
+
+/** Every key a trace names, by text. */
+function traceKeys(trace: Omit<TraceResult, "node_addresses">): string[] {
+  const keys: RuntimeNodeKey[] = [trace.target_node_id]
+  for (const step of trace.steps) {
+    keys.push(step.node_id)
+    for (const derivation of step.derivations) {
+      for (const read of derivation.reads ?? []) keys.push(...read.sources.map((source) => source.node_id))
+    }
+  }
+  keys.push(...trace.omissions.map((omission) => omission.node_id))
+  for (const diagnostic of trace.correlation_diagnostics) {
+    if (diagnostic.node_id) keys.push(diagnostic.node_id)
+    if (diagnostic.child_node_id) keys.push(diagnostic.child_node_id)
+    keys.push(...diagnostic.seed_node_ids)
+  }
+  return keys.map((key) => key as unknown as string)
+}
+
+/** A trace result's fields, its target's key given as the text a fixture names it by. */
+export type TraceResultFixture = Omit<Partial<TraceResult>, "target_node_id"> & { target_node_id?: FixtureKey }
+
+/**
+ * A trace result with every field the server sends. Every key it names is addressed as a
+ * node of the pipeline under its own text, unless `node_addresses` says otherwise.
+ */
+export function makeTraceResult(overrides: TraceResultFixture = {}): TraceResult {
+  const { target_node_id = "n1", node_addresses, ...rest } = overrides
+  const trace = {
     row_index: 0,
     column: null,
     output_value: null,
@@ -879,29 +931,36 @@ export function makeTraceResult(overrides: Partial<TraceResult> = {}): TraceResu
     correlation_diagnostics: [],
     generated_at: "2026-01-01T00:00:00+00:00",
     pipeline_source: null,
-    execution_origin: "fresh_execution",
-    ...overrides,
+    execution_origin: "fresh_execution" as const,
+    ...rest,
+    target_node_id: fixtureKey(target_node_id),
   }
+  return { ...trace, node_addresses: { ...rootAddresses(...traceKeys(trace)), ...node_addresses } }
 }
 
-/** A trace correlation diagnostic with every field the server sends. */
+/** A trace correlation diagnostic with every field the server sends, its keys given as text. */
 export function makeTraceDiagnostic(
-  overrides: Partial<TraceCorrelationDiagnostic> = {},
+  overrides: Omit<Partial<TraceCorrelationDiagnostic>, "node_id" | "child_node_id" | "seed_node_ids"> & {
+    node_id?: FixtureKey | null
+    child_node_id?: FixtureKey | null
+    seed_node_ids?: FixtureKey[]
+  } = {},
 ): TraceCorrelationDiagnostic {
+  const { node_id = null, child_node_id = null, seed_node_ids = [], ...rest } = overrides
   return {
     code: "ambiguous_source_frame",
     severity: "warning",
     reason: "ambiguous_source_frame",
     message: "",
-    node_id: null,
-    child_node_id: null,
+    node_id: node_id === null ? null : fixtureKey(node_id),
+    child_node_id: child_node_id === null ? null : fixtureKey(child_node_id),
     match_strategy: null,
     match_columns: [],
     ignored_columns: [],
     matched_row_count: null,
     matched_row_indices: [],
-    seed_node_ids: [],
-    ...overrides,
+    seed_node_ids: seed_node_ids.map(fixtureKey),
+    ...rest,
   }
 }
 

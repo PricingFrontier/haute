@@ -21,7 +21,12 @@ import haute._execution_schemas as execution_schemas
 import haute._node_address_schemas as address_schemas
 import haute.schemas as schemas
 from haute._node_address_schemas import RUNTIME_NODE_KEY_MARKER
+from haute._node_addresses import named_keys
+from haute._types import PipelineGraph
 from scripts.generate_api_contracts import RESPONSE_CONTRACT_GROUPS
+from tests._preview_targets import node_target, occurrence_output_target
+from tests._project import project_app
+from tests.test_submodel_instances import _reuse_graph
 
 MIGRATED = "migrated"
 PENDING = "pending"
@@ -39,13 +44,13 @@ NODE_KEY_POSITIONS: dict[tuple[str, str], str] = {
     ("NodeMemoryInfo", "node_id"): MIGRATED,
     ("PreviewInputsResponse", "input_node_ids"): MIGRATED,
     # Trace.
-    ("TraceResultResponse", "target_node_id"): PENDING,
-    ("TraceStepResponse", "node_id"): PENDING,
-    ("TraceColumnSourceResponse", "node_id"): PENDING,
-    ("TraceOmissionResponse", "node_id"): PENDING,
-    ("TraceCorrelationDiagnosticResponse", "node_id"): PENDING,
-    ("TraceCorrelationDiagnosticResponse", "child_node_id"): PENDING,
-    ("TraceCorrelationDiagnosticResponse", "seed_node_ids"): PENDING,
+    ("TraceResultResponse", "target_node_id"): MIGRATED,
+    ("TraceStepResponse", "node_id"): MIGRATED,
+    ("TraceColumnSourceResponse", "node_id"): MIGRATED,
+    ("TraceOmissionResponse", "node_id"): MIGRATED,
+    ("TraceCorrelationDiagnosticResponse", "node_id"): MIGRATED,
+    ("TraceCorrelationDiagnosticResponse", "child_node_id"): MIGRATED,
+    ("TraceCorrelationDiagnosticResponse", "seed_node_ids"): MIGRATED,
     # Node data, and the answers that carry a data point.
     ("NodeDataPointRef", "producer_node_id"): PENDING,
     ("NodeDataPointResponse", "consumer_node_id"): PENDING,
@@ -161,20 +166,125 @@ def _answer_roots() -> Iterator[type[BaseModel]]:
                 yield model
 
 
-def _names_a_node_key(schema: Mapping[str, Any]) -> bool:
-    defs = schema.get("$defs", {})
-    roots = [schema, *defs.values()]
-    return any(
-        _marked(field_schema, defs)
-        for root in roots
-        for field_schema in root.get("properties", {}).values()
-    )
+_ROOT = "<answer>"
+
+
+def _parts(schema: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """The answer's own schema and each model it nests, by name."""
+    return {_ROOT: schema, **schema.get("$defs", {})}
+
+
+def _nested(fragment: Any) -> Iterator[str]:
+    """The models a schema fragment references."""
+    if isinstance(fragment, Mapping):
+        ref = fragment.get("$ref")
+        if isinstance(ref, str):
+            yield ref.rsplit("/", 1)[-1]
+        for name, value in fragment.items():
+            if name != "$defs":
+                yield from _nested(value)
+    elif isinstance(fragment, list):
+        for value in fragment:
+            yield from _nested(value)
+
+
+def _reachable(start: str, parts: Mapping[str, Mapping[str, Any]]) -> set[str]:
+    seen = {start}
+    pending = [start]
+    while pending:
+        for name in _nested(parts[pending.pop()]):
+            if name not in seen:
+                seen.add(name)
+                pending.append(name)
+    return seen
 
 
 def test_an_answer_that_names_a_node_key_addresses_it() -> None:
+    # The addresses sit on the model whose nodes they label: the answer itself, or the part
+    # of it the browser keeps (a trace's ``trace``).
     for model in _answer_roots():
         schema = model.model_json_schema()
-        if _names_a_node_key(schema):
-            assert "node_addresses" in model.model_fields, (
-                f"{model.__name__} names nodes by key and must carry node_addresses"
-            )
+        defs = schema.get("$defs", {})
+        parts = _parts(schema)
+        naming = {
+            name
+            for name, part in parts.items()
+            if any(_marked(field, defs) for field in part.get("properties", {}).values())
+        }
+        if not naming:
+            continue
+        carriers = [
+            name for name, part in parts.items() if "node_addresses" in part.get("properties", {})
+        ]
+        labelled = set().union(*(_reachable(carrier, parts) for carrier in carriers))
+        assert naming <= labelled, (
+            f"{model.__name__} names nodes by key in {sorted(naming - labelled)}, which no "
+            "node_addresses covers"
+        )
+
+
+# Real answers: a pipeline with an owner ``rating`` and its copies ``rating_ie`` and
+# ``rating_fr``, each fed by its own source and read by ``consumer``. A copy's children run
+# under flat names of their own (``rating_ie__scale``); an answer labels them as authored.
+
+
+@pytest.fixture
+def client() -> Any:
+    from fastapi.testclient import TestClient
+
+    return TestClient(project_app())
+
+
+def _authored_label(graph: PipelineGraph, occurrence: str | None, node_id: str) -> str:
+    if occurrence is None:
+        return graph.node_map[node_id].data.label
+    assert graph.submodels is not None
+    definition_id = graph.node_map[occurrence].data.config["definition_id"]
+    return graph.submodels[definition_id].graph.node_map[node_id].data.label
+
+
+def _addresses_every_key(answer_type: type[BaseModel], graph: PipelineGraph, answer: Any) -> None:
+    named = named_keys(answer_type, answer)
+    assert named, f"{answer_type.__name__} named no node"
+    assert set(answer["node_addresses"]) == named
+    for address in answer["node_addresses"].values():
+        assert address["label"] == _authored_label(graph, address["occurrence"], address["node_id"])
+
+
+@pytest.mark.parametrize(
+    ("target", "row"),
+    [
+        pytest.param(node_target("consumer"), 2, id="a pipeline node reading copies"),
+        pytest.param(node_target("finish", occurrence="rating_fr"), 0, id="a copy's child"),
+        pytest.param(
+            occurrence_output_target("rating_ie", "premium"), 0, id="an occurrence's output"
+        ),
+    ],
+)
+def test_a_trace_through_submodels_addresses_every_node_it_names(
+    client: Any, target: dict[str, Any], row: int
+) -> None:
+    graph = _reuse_graph()
+    raw = graph.model_dump(mode="json", by_alias=True)
+    preview = client.post("/api/pipeline/preview", json={"graph": raw, "target": target})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["status"] == "ok", preview.text
+    _addresses_every_key(schemas.PreviewNodeResponse, graph, preview.json())
+
+    traced = client.post(
+        "/api/pipeline/trace",
+        json={
+            "graph": raw,
+            "target": target,
+            "column": "x",
+            "row_index": row,
+            "row_values": preview.json()["preview"][row],
+            "seed_plan": preview.json()["seed_plan"],
+        },
+    )
+    assert traced.status_code == 200, traced.text
+    trace = traced.json()["trace"]
+    _addresses_every_key(schemas.TraceResultResponse, graph, trace)
+    # The trace reached the copy's children, which the flat graph names otherwise.
+    occurrences = {address["occurrence"] for address in trace["node_addresses"].values()}
+    assert occurrences & {"rating_ie", "rating_fr"}

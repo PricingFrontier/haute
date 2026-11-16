@@ -69,6 +69,18 @@
     "correlation_diagnostics": [],
     "generated_at": "2026-07-23T12:00:00+00:00",
     "pipeline_source": "pricing/example.py",
-    "execution_origin": "fresh_execution"
+    "execution_origin": "fresh_execution",
+    "node_addresses": {
+      "score": {
+        "occurrence": null,
+        "node_id": "score",
+        "label": "Score"
+      },
+      "source": {
+        "occurrence": null,
+        "node_id": "source",
+        "label": "Source"
+      }
+    }
   }
 }

@@ -24934,7 +24934,8 @@
         },
         "node_id": {
           "title": "Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         }
       },
       "required": [
@@ -24951,7 +24952,8 @@
         "child_node_id": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "x-haute-node-key": true
             },
             {
               "type": "null"
@@ -25016,7 +25018,8 @@
         "node_id": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "x-haute-node-key": true
             },
             {
               "type": "null"
@@ -25031,7 +25034,8 @@
         },
         "seed_node_ids": {
           "items": {
-            "type": "string"
+            "type": "string",
+            "x-haute-node-key": true
           },
           "title": "Seed Node Ids",
           "type": "array"
@@ -25067,7 +25071,8 @@
         },
         "node_id": {
           "title": "Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         },
         "node_name": {
           "title": "Node Name",
@@ -25117,6 +25122,7 @@
       "type": "object"
     },
     "TraceResultResponse": {
+      "description": "A traced row. It names nodes by runtime key, each addressed in ``node_addresses``\n(specs/server-api/low-level.md, \"Node addresses\").",
       "properties": {
         "column": {
           "anyOf": [
@@ -25153,6 +25159,13 @@
         "generated_at": {
           "title": "Generated At",
           "type": "string"
+        },
+        "node_addresses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NodeAddressEntry"
+          },
+          "title": "Node Addresses",
+          "type": "object"
         },
         "nodes_in_trace": {
           "default": 0,
@@ -25211,7 +25224,8 @@
         },
         "target_node_id": {
           "title": "Target Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         },
         "total_nodes_in_pipeline": {
           "default": 0,
@@ -25253,7 +25267,8 @@
         "correlation_diagnostics",
         "generated_at",
         "pipeline_source",
-        "execution_origin"
+        "execution_origin",
+        "node_addresses"
       ],
       "title": "TraceResultResponse",
       "type": "object"
@@ -25372,7 +25387,8 @@
         },
         "node_id": {
           "title": "Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         },
         "node_name": {
           "title": "Node Name",

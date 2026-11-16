@@ -115,4 +115,14 @@ describe("TraceViewFit", () => {
     rerender(<TraceViewFit traceResult={null} resolveNodeId={(id) => visible(id)} />)
     expect(flow.fitView).toHaveBeenCalledTimes(calls)
   })
+
+  it("leaves a node the canvas does not show out of the fit, and does not centre it", () => {
+    const shown = (key: string) => (key === "elsewhere" ? null : key)
+    render(<TraceViewFit traceResult={trace([step("elsewhere"), step("target")])} resolveNodeId={shown} />)
+    expect(flow.fitView).toHaveBeenLastCalledWith({ nodes: [{ id: "target" }], padding: 0.2, duration: 300 })
+    const calls = flow.fitView.mock.calls.length
+
+    act(() => useUIStore.getState().requestTraceCentre("elsewhere"))
+    expect(flow.fitView).toHaveBeenCalledTimes(calls)
+  })
 })

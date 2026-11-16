@@ -610,9 +610,9 @@ describe("client runtime contracts", () => {
       // The trace's answer does not matter here, only what was asked.
       mockFetch.mockClear()
       mockFetch.mockReturnValue(jsonResponse({ status: "ok", trace: { row_index: 0 } }))
-      await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] }).catch(() => undefined)
+      await traceCell({ graph: dummyGraph, row_index: 0, target: nodeTarget("n1"), seed_plan: [] }).catch(() => undefined)
       expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
-        target_node_id: "n1",
+        target: nodeTarget("n1"),
         workbench_sample: sample,
       })
     })
@@ -756,7 +756,7 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok", trace: { row_index: 0 } }))
 
     await expect(
-      traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] }),
+      traceCell({ graph: dummyGraph, row_index: 0, target: nodeTarget("n1"), seed_plan: [] }),
     ).rejects.toThrow("TraceResponse: invalid contract")
   })
 

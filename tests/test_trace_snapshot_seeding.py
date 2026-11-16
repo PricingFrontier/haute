@@ -13,6 +13,7 @@ import pytest
 from haute._node_snapshots import NodeSnapshotStore
 from haute._seed_plans import ListedSeed
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._workbench_helpers import form_table, workbench_project
 from tests._worker_http import raise_worker_http
@@ -106,13 +107,14 @@ def _trace(
     *,
     row: dict[str, Any] | None = None,
     expect: int = 200,
+    port_label: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
     response = api.post(
         "/api/pipeline/trace",
         json={
             "graph": graph.model_dump(mode="json"),
-            "target_node_id": target,
+            "target": node_target(target, port_label=port_label),
             "row_index": 0,
             "row_limit": 200,
             "row_values": row,

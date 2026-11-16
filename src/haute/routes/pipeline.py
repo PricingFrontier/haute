@@ -251,6 +251,7 @@ from haute.schemas import (
     SavePipelineResponse,
     TraceRequest,
     TraceResponse,
+    TraceResultResponse,
     TraceSeedPlanEntry,
     WriteOutputRequest,
     WriteOutputResponse,
@@ -1628,6 +1629,7 @@ def _trace_node_failures(graph: PipelineGraph) -> Iterator[None]:
 def _trace_payload(
     graph: PipelineGraph,
     body: TraceRequest,
+    target: ResolvedTarget,
     context: ExecutionContext,
     fingerprint_memo: GraphFingerprintMemo,
 ) -> dict[str, Any]:
@@ -1637,13 +1639,13 @@ def _trace_payload(
     validated there too: ``JSONResponse`` bypasses response-model validation, so this is
     where the typed omission, waterfall and provenance contract meets the HTTP boundary.
     The payload is the validated model's serialization, every declared field present, as
-    the browser's generated validator requires.
+    the browser's generated validator requires, with every node it names addressed.
     """
     with _trace_node_failures(graph):
         result = execute_trace(
             graph,
             row_index=body.row_index,
-            target_node_id=body.target_node_id,
+            target_node_id=target.key,
             column=body.column,
             row_limit=body.row_limit,
             source=body.source,
@@ -1651,20 +1653,21 @@ def _trace_payload(
             fingerprint_memo=fingerprint_memo,
             execution_context=context,
             seed_plan=_listed_seeds(body),
-            port_label=body.port_label,
+            port_label=target.port_label,
         )
-    response = TraceResponse.model_validate({"status": "ok", "trace": trace_result_to_dict(result)})
-    return response.trace.model_dump(mode="json")
+    trace = labelled(TraceResultResponse, graph, **trace_result_to_dict(result))
+    return TraceResponse(status="ok", trace=trace).trace.model_dump(mode="json")
 
 
 def _execute_trace_worker(
     graph: PipelineGraph,
     body: TraceRequest,
+    target: ResolvedTarget,
     budget: IsolatedExecutionBudget,
 ) -> dict[str, Any]:
     context = create_isolated_execution_context(budget)
     try:
-        return _trace_payload(graph, body, context, GraphFingerprintMemo())
+        return _trace_payload(graph, body, target, context, GraphFingerprintMemo())
     finally:
         context.release_admission(preserve_primary_error=True)
 
@@ -1672,11 +1675,13 @@ def _execute_trace_worker(
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> JSONResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
+    _ensure_printable_target(body.target)
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
-    _ensure_printable_lookup_id(body.target_node_id, "target_node_id")
+    # The address resolves through the expansion's record, or is refused by name.
+    target = resolve_target(graph, body.target)
     _validate_runtime_input_paths(graph)
 
     run = _InteractiveRun("pipeline_trace")
@@ -1688,7 +1693,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     fingerprint_memo = GraphFingerprintMemo()
 
     def _trace_in_thread(context: ExecutionContext) -> dict[str, Any]:
-        return _trace_payload(graph, body, context, fingerprint_memo)
+        return _trace_payload(graph, body, target, context, fingerprint_memo)
 
     with _interactive_failures(run, timed_out=f"Trace execution timed out ({limit:.0f}s limit)"):
         try:
@@ -1698,13 +1703,13 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                 lambda: _trace_supersession_key(
                     graph,
                     body.source,
-                    body.target_node_id,
+                    target.key,
                     body.row_index,
                     body.column,
                     body.row_limit,
                     body.row_values,
                     body.seed_plan,
-                    port_label=body.port_label,
+                    port_label=target.port_label,
                     memo=fingerprint_memo,
                 )
             )
@@ -1713,7 +1718,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                 lambda: _run_interactive(
                     run,
                     worker=_execute_trace_worker,
-                    worker_args=lambda budget: (graph, body, budget),
+                    worker_args=lambda budget: (graph, body, target, budget),
                     in_thread=_trace_in_thread,
                     affinity_key=_interactive_affinity_key(
                         graph, body.source, memo=fingerprint_memo

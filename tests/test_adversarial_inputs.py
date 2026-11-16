@@ -136,6 +136,7 @@ class TestEmptyStrings:
         """Empty graph should be caught before attempting trace execution."""
         body = {
             "graph": {"nodes": [], "edges": []},
+            "target": node_target("x"),
             "seed_plan": [],
         }
         resp = client.post("/api/pipeline/trace", json=body)
@@ -530,7 +531,7 @@ class TestIntegerOverflow:
         Real failure: row_index used as DataFrame index; if data has < 2^32
         rows, Polars should return an error, not segfault.
         """
-        req = TraceRequest(graph=Graph(), row_index=2**32, seed_plan=[])
+        req = TraceRequest(graph=Graph(), target=node_target("x"), row_index=2**32, seed_plan=[])
         assert req.row_index == 2**32
 
     def test_scenario_expander_steps_overflow(self):
@@ -576,20 +577,25 @@ class TestNegativeValues:
         """Negative row_limit in trace should not cause unexpected behavior."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
+            "seed_plan": [],
             "row_limit": -100,
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "row_limit"]]
 
     def test_negative_row_index_trace(self, client):
         """Negative row_index could be interpreted as counting from end."""
         body = {
             "graph": _minimal_graph_dict(),
+            "target": node_target("src"),
+            "seed_plan": [],
             "row_index": -1,
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "row_index"]]
 
     def test_negative_point_index_frontier(self, client):
         """Negative point_index should be rejected, not used as Python negative index."""
