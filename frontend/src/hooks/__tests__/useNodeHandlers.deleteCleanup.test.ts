@@ -10,6 +10,7 @@ import useNodeHandlers from "../useNodeHandlers"
 import useGraphStore, { resetGraphStoreForTests } from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useUIStore from "../../stores/useUIStore"
+import useOutputWriteStore, { resetOutputWriteStoreForTests } from "../../stores/useOutputWriteStore"
 import { makeNode, makeSolveResult } from "../../test-utils/factories"
 
 vi.mock("../../utils/layout", () => ({
@@ -138,6 +139,22 @@ describe("useNodeHandlers - cache cleanup on delete", () => {
 
     expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
     expect(useNodeResultsStore.getState().getPreview("n1")).toBeNull()
+  })
+
+  it("forgets a deleted Data Output's write, even one still writing", () => {
+    resetOutputWriteStoreForTests()
+    const params = makeParams()
+    showGraph([makeNode("n1"), makeNode("n2")])
+    useOutputWriteStore.getState().begin("n1", "write-a")
+    useOutputWriteStore.getState().begin("n2", "write-b")
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode("n1")
+    })
+
+    expect(useOutputWriteStore.getState().writes.n1).toBeUndefined()
+    expect(useOutputWriteStore.getState().writes.n2?.phase).toBe("writing")
   })
 
   it("multiple rapid deletes each clear their own cache (no missed nodes)", () => {

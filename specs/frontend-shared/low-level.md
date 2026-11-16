@@ -71,7 +71,8 @@
 | `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group rendered via `ToggleButtonGroup` (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and chunk rows; a Caching section with the caching switch and the cache size; a Memory section with the preview memory and the memory kept free; a Time limits section with the pipeline, modelling and optimisation limits (numeric fields built on `CommittedTextField`); the settings file's path; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. The whole store's size (`CacheStoreSize`) sits beside the Cached data heading. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
 | `frontend/src/utils/inputSnapshotSource.ts`, `frontend/src/utils/importedTitle.ts` | The one derivation of whether a node reads a snapshot and the input-cache source naming it, and of the input whose source the preview frame's Refresh re-reads (`refreshRereadInput`); and an Import's "last imported" wording, its time by `relativeTime`. |
 | `frontend/src/hooks/previewProgressPoller.ts` | A preview request's id and the poller of its step progress; see [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). |
-| `frontend/src/stores/useInputImportStore.ts` | Imports in flight by the node that started them, and `startInputImport`, which runs one: its node's work and Stop, every outcome raising the node-data epoch, and a re-preview only for a completed, unstopped import whose node still reads the same source; a completed import moves the data epoch (`useDataEpochStore`). |
+| `frontend/src/stores/useInputImportStore.ts` | Imports in flight by the node that started them, and `startInputImport`, which runs one: its node's work and Stop, every outcome raising the node-data epoch, and a re-preview only for a completed, unstopped import whose node still reads the same source; a completed import moves the data epoch (`useDataEpochStore`). `retireInputImport` retires a deleted node's import. |
+| `frontend/src/stores/forgetDeletedNodes.ts` | `forgetDeletedNodes(keys)`, the one clean-up after a node is deleted, by the keyboard or from its menu: its results and caches (`clearNode`), a Data Output's last write (`useOutputWriteStore.forget`) and a running import (`retireInputImport`), for every key `resultKeysOf` took before the deletion; see "Result identity (normative)" below. |
 | `frontend/src/components/InputImportButton.tsx` | The preview frame's Import action for a snapshot-backed Data Input; see [frontend-preview-explore](../frontend-preview-explore/low-level.md). |
 | `frontend/src/stores/useNodeWorkStore.ts` | Work a consumer of a node started for it (a shared data-point build, an Import), keyed by the registering consumer: `useNodeWorkRunning(nodeId)` drives the frame's Stop, and `registerNodeStop`/`stopNodeWork(nodeId)` stop it. Only work this tab started is registered; a build joined from elsewhere is not. |
 | `frontend/src/components/CacheStoreSize.tsx` | The snapshot store's whole size beside Pipeline settings' Cached data heading, read from `GET /api/cache/usage` with each inventory read. |
@@ -902,8 +903,15 @@ Which result a stored answer is, and whether it is current, are separate questio
    current.
 3. **Lifetime.** A background job (training, a solve) keeps running when the view
    changes, and its result stays under the key it was started with, to be shown on
-   returning to that occurrence. Deleting a definition's child clears its results in
-   every occurrence; deleting an occurrence clears its children's.
+   returning to that occurrence. Deleting a node, by the keyboard or from its menu, goes
+   through one clean-up (`stores/forgetDeletedNodes.ts`) once the node has left the graph:
+   it forgets what its keys hold (`resultKeysOf`: a definition's child in every occurrence,
+   an occurrence with its children), that is its results and caches, a Data Output's last
+   write (a write already sent still finishes, since stopping it part-way could leave a
+   half-written file) and a running import, which leaves its node at once and is stopped in
+   the background as when its document is replaced. A remembered training job stays, so
+   Undo of the deletion brings the trained model back. Deleting the open node forgets it
+   with its panel, so opening it again after Undo asks for its preview.
 4. **Not keyed by node.** Data slots the server names (`slot_key`), pane and draft state,
    and file paths built from a node's name stay as they are.
 5. **Annotations.** A child's execution annotations (a preview's columns, its notes) live
@@ -933,6 +941,13 @@ Which result a stored answer is, and whether it is current, are separate questio
   (Refresh and Stop act on their own occurrence), `frontend/src/hooks/__tests__/useDataInputColumns.test.ts`
   (the owner's columns stay out of the copy) and `frontend/src/hooks/__tests__/useNodeDataProfile.test.tsx`
   (the copy's profile is asked for after the owner's was stopped), and
+  `frontend/src/hooks/__tests__/useNodeHandlers.deleteCleanup.test.ts` and
+  `frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts` (a deletion forgets the node's
+  write, still writing, and keyboard Delete the open node),
+  `frontend/src/stores/__tests__/useOutputWriteStore.test.ts` (a forgotten write's late
+  answer completes nothing), `frontend/src/stores/__tests__/useInputImportStore.test.ts`
+  (a deleted node's import leaves it at once, is stopped, raises the node-data epoch, and is
+  reported as the deleted node's when its build never stops),
   `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (opening the copy's child after the
   owner's asks for its preview) and `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts`
   (leaving a view forgets the open node).

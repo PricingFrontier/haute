@@ -1596,6 +1596,7 @@ function FlowEditor() {
     clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     setLastSelectedId,
+    lastSelectedKeyRef,
     clearTrace,
     closePanel,
     isInsideSubmodel: viewStack.length > 1,

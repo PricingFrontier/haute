@@ -27,6 +27,11 @@ type OutputWriteStore = {
     state: Omit<OutputWriteState, "requestId" | "requestIdentity">,
   ) => void
   clear: (nodeKey: string, requestId: number) => void
+  /**
+   * Forget a deleted node's write, even one still writing: a write already sent
+   * finishes on the server, and its answer then finds nothing to complete.
+   */
+  forget: (nodeKey: string) => void
   resetForTests: () => void
 }
 
@@ -75,7 +80,14 @@ const useOutputWriteStore = create<OutputWriteStore>()((set) => ({
       delete writes[nodeKey]
       return { writes }
     }),
-  resetForTests: () => set({ writes: {}, nextRequestId: 0 }),
+  forget: (nodeKey) =>
+    set((current) => {
+      if (!(nodeKey in current.writes)) return current
+      const writes = { ...current.writes }
+      delete writes[nodeKey]
+      return { writes }
+    }),
+  resetForTests:() => set({ writes: {}, nextRequestId: 0 }),
 }))
 
 export const resetOutputWriteStoreForTests = () =>

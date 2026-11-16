@@ -19,7 +19,7 @@ vi.mock("../../api/client", () => ({
 import { buildInputCache, cancelInputCacheJob, getInputCacheJob } from "../../api/client"
 import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
-import useInputImportStore, { startInputImport } from "../useInputImportStore"
+import useInputImportStore, { retireInputImport, startInputImport } from "../useInputImportStore"
 import useNodeDataStore from "../useNodeDataStore"
 import useNodeWorkStore, { stopNodeWork } from "../useNodeWorkStore"
 import useToastStore from "../useToastStore"
@@ -186,5 +186,46 @@ describe("startInputImport", () => {
     // The retirement's own cancellation, then five retries in the background.
     expect(cancelInputCacheJob).toHaveBeenCalledTimes(6)
     expect(useInputImportStore.getState().runs.csv).toBeUndefined()
+  })
+
+  it("a deleted node's import leaves it at once and is stopped in the background", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running"))
+    const onImported = vi.fn()
+    startInputImport("csv", input("csv"), onImported)
+    startInputImport("other", input("other"), vi.fn())
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+    const epoch = useNodeDataStore.getState().epoch
+
+    retireInputImport("csv")
+
+    expect(useInputImportStore.getState().runs.csv).toBeUndefined()
+    expect(useNodeWorkStore.getState().running["import:csv"]).toBeUndefined()
+    expect(useInputImportStore.getState().runs.other).toBeDefined()
+    await waitFor(() => expect(cancelInputCacheJob).toHaveBeenCalled())
+    // A build can publish before it stops, so the node data is read anew.
+    await waitFor(() => expect(useNodeDataStore.getState().epoch).toBeGreaterThan(epoch))
+    expect(onImported).not.toHaveBeenCalled()
+    // Stop has nothing left to stop for the deleted node, and a new run can start under its key.
+    stopNodeWork("csv")
+    startInputImport("csv", input("csv"), vi.fn())
+    expect(useInputImportStore.getState().runs.csv).toBeDefined()
+    stopNodeWork("csv")
+    stopNodeWork("other")
+    await waitFor(() => expect(useInputImportStore.getState().runs).toEqual({}))
+  })
+
+  it("reports a deleted node's import whose build never stops as the deleted node's", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running"))
+    vi.mocked(cancelInputCacheJob).mockRejectedValue(new Error("unreachable"))
+    startInputImport("csv", input("csv"), vi.fn())
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    retireInputImport("csv")
+    await vi.waitFor(() => expect(cancelInputCacheJob).toHaveBeenCalled())
+    await vi.advanceTimersByTimeAsync(5 * 2_000)
+
+    await vi.waitFor(() => expect(toasted("An import of a deleted node could not be stopped")).toBe(true))
+    expect(toasted("Import failed")).toBe(false)
   })
 })

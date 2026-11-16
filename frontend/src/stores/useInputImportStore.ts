@@ -66,6 +66,18 @@ function setRun(nodeKey: string, run: InputImportRun | null): void {
  * stop or a failure reaches it. *onImported* runs, with *nodeKey*, only after a
  * completed, unstopped import whose node still reads the same source.
  */
+// How each running import leaves its node when the node is deleted, by its result key.
+const retirements = new Map<string, () => void>()
+
+/**
+ * Retire the import running for a deleted node (`resultKey`, taken before the
+ * deletion): it leaves its node at once, as when its document is replaced, and
+ * its build is stopped in the background. A node with no import is left alone.
+ */
+export function retireInputImport(nodeKey: string): void {
+  retirements.get(nodeKey)?.()
+}
+
 // A retired import's builds that refused to stop are cancelled again this many
 // times, this far apart, before the failure is left to the user.
 const RETIRED_CANCEL_ATTEMPTS = 5
@@ -86,7 +98,10 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
   // cancels them again.
   let pending: string[] | null = null
   let ended = false
-  let retired = false
+  let settled = false
+  // Why the run left its node before its work ended: its document was replaced,
+  // or its node was deleted.
+  let retired: "document" | "deleted" | null = null
   const addToast = useToastStore.getState().addToast
 
   // Everything that shows this run on its node, released exactly once.
@@ -97,15 +112,22 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
     useNodeWorkStore.getState().setRunning(workKey, null)
     unregisterStop()
     unsubscribeDocument()
+    if (retirements.get(nodeKey) === retireDeleted) retirements.delete(nodeKey)
     return true
   }
+  // The end of the work, once. Under the same document a build may have
+  // published before it stopped, so the node data is read anew even for a
+  // retired run; only a completed run whose node still reads the source is
+  // previewed again.
   const settle = (completed: boolean) => {
-    if (!release()) return
+    if (settled) return
+    settled = true
+    release()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     useNodeDataStore.getState().bumpEpoch()
     // A source imported anew is data a price made before did not read.
     if (completed) useDataEpochStore.getState().moved()
-    if (completed && !controller.signal.aborted && currentSourceKey(input.id, view) === sourceKey) {
+    if (completed && retired === null && !controller.signal.aborted && currentSourceKey(input.id, view) === sourceKey) {
       onImported(nodeKey)
     }
   }
@@ -121,11 +143,27 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
   // does is reported.
   const cancelRetired = async () => {
     for (let attempt = 1; attempt <= RETIRED_CANCEL_ATTEMPTS; attempt += 1) {
-      if (await cancelPending()) return
+      if (await cancelPending()) {
+        settle(false)
+        return
+      }
       await new Promise((resolve) => setTimeout(resolve, RETIRED_CANCEL_INTERVAL_MS))
     }
-    addToast("error", "An import from the previous pipeline could not be stopped and may still be running.")
+    addToast(
+      "error",
+      retired === "deleted"
+        ? "An import of a deleted node could not be stopped and may still be running."
+        : "An import from the previous pipeline could not be stopped and may still be running.",
+    )
   }
+  // The run leaves its node at once, and its build is stopped in the background.
+  const retire = (reason: "document" | "deleted") => {
+    if (!release()) return
+    retired = reason
+    if (pending !== null) void cancelRetired()
+    else controller.abort()
+  }
+  const retireDeleted = () => retire("deleted")
   const unregisterStop = registerNodeStop(nodeKey, () => {
     if (pending === null) {
       controller.abort()
@@ -140,11 +178,10 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
   // run leaves its node at once, so it is never shown, stopped, or continued as
   // the new document's, while its build is still stopped in the background.
   const unsubscribeDocument = useDocumentStatusStore.subscribe(() => {
-    if (isDocumentExecutionFenceCurrent(fence) || !release()) return
-    retired = true
-    if (pending !== null) void cancelRetired()
-    else controller.abort()
+    if (!isDocumentExecutionFenceCurrent(fence)) retire("document")
   })
+  // A deleted node's run leaves it the same way (`retireInputImport`).
+  retirements.set(nodeKey, retireDeleted)
 
   setRun(nodeKey, { rows: null })
   useNodeWorkStore.getState().setRunning(workKey, nodeKey)
@@ -172,7 +209,8 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
         addToast("error", `Stopping the import failed: ${apiErrorMessage(err)} Press Stop to try again.`)
         return
       }
-      if (failed?.name !== "AbortError") addToast("error", `Import failed: ${apiErrorMessage(err)}`)
+      // A retired run's failure belongs to a node that is gone.
+      if (failed?.name !== "AbortError" && retired === null) addToast("error", `Import failed: ${apiErrorMessage(err)}`)
       settle(false)
       return
     }

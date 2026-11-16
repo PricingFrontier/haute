@@ -9,6 +9,7 @@ import { appEdge } from "../../utils/flowElements"
 import ModalShell from "../../components/ModalShell"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
+import useOutputWriteStore, { resetOutputWriteStoreForTests } from "../../stores/useOutputWriteStore"
 import { makeNode } from "../../test-utils/factories"
 import type { NodeTypeValue } from "../../utils/nodeTypes"
 
@@ -56,6 +57,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     clipboard: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     setSelectedNode: vi.fn(),
+    lastSelectedKeyRef: { current: null as string | null },
     setPreviewData: vi.fn(),
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
@@ -633,6 +635,23 @@ describe("useKeyboardShortcuts", () => {
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
     expect(params.setPreviewData).toHaveBeenCalledWith(null)
+  })
+
+  it("Delete forgets the open node, so opening it again after Undo asks for its preview, and what its key holds", () => {
+    resetOutputWriteStoreForTests()
+    showCanvas({ nodes: [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: { label: "B" }, selected: false } as Node,
+    ] })
+    params.lastSelectedKeyRef.current = "n1"
+    useOutputWriteStore.getState().begin("n1", "write-a")
+    useOutputWriteStore.getState().begin("n2", "write-b")
+
+    fireKey("Delete")
+
+    expect(params.lastSelectedKeyRef.current).toBeNull()
+    expect(useOutputWriteStore.getState().writes.n1).toBeUndefined()
+    expect(useOutputWriteStore.getState().writes.n2?.phase).toBe("writing")
   })
 
   it("Delete with no selection does nothing", () => {

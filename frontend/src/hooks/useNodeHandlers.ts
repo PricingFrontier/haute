@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
-import useNodeResultsStore from "../stores/useNodeResultsStore"
+import { forgetDeletedNodes } from "../stores/forgetDeletedNodes"
 import useUIStore from "../stores/useUIStore"
 import {
   isProtectedSubmodelNodeData,
@@ -137,7 +137,6 @@ export default function useNodeHandlers({
   }, [activeSubmodelIdentity])
   const [isAutoLayouting, setIsAutoLayouting] = useState(false)
   const addToast = useToastStore((s) => s.addToast)
-  const clearNode = useNodeResultsStore((s) => s.clearNode)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
 
@@ -158,7 +157,7 @@ export default function useNodeHandlers({
       // The node has left the graph by now, and React renders both store
       // updates of this task together, so no render shows the node without
       // its cached result — the same order the keyboard delete uses.
-      for (const key of removedKeys) clearNode(key)
+      forgetDeletedNodes(removedKeys)
       // The open panel goes with the node, or with a child of a removed occurrence.
       if (lastSelectedKeyRef.current !== null && removedKeys.includes(lastSelectedKeyRef.current)) {
         lastSelectedKeyRef.current = null
@@ -196,7 +195,7 @@ export default function useNodeHandlers({
       )
     }
     if (!cleanedUp) cleanupAfterRemoval()
-  }, [setNodesAndEdges, lastSelectedKeyRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
+  }, [setNodesAndEdges, lastSelectedKeyRef, setSelectedNode, setLastSelectedId, setPreviewData, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
 
   const handleDuplicateNode = useCallback(async (id: string): Promise<void> => {
     const { nodes: n } = canvasGraph()

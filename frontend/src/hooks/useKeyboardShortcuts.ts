@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react"
 import type { Node, Edge, EdgeChange, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
-import useNodeResultsStore from "../stores/useNodeResultsStore"
+import { forgetDeletedNodes } from "../stores/forgetDeletedNodes"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
 import { withEdgeIdentity } from "../utils/edgeIds"
 import { NODE_TYPES, isSingletonType, singletonName, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
@@ -135,6 +135,8 @@ interface KeyboardShortcutsParams {
   nodeIdCounter: React.MutableRefObject<number>
   setSelectedNode: (node: Node | null) => void
   setLastSelectedId?: (id: string | null) => void
+  /** The result key of the node whose panel is open (`resultKey`). */
+  lastSelectedKeyRef: React.MutableRefObject<string | null>
   setPreviewData: (data: null) => void
   clearTrace: () => void
   closePanel: () => void
@@ -186,7 +188,7 @@ export default function useKeyboardShortcuts({
   enabled,
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   clipboard, nodeIdCounter,
-  setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
+  setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewData, clearTrace, closePanel,
   isInsideSubmodel, readOnly, existingSingletonTypes,
   resolveGraphIdentities,
   commitSharedNodeDeletion,
@@ -396,11 +398,11 @@ export default function useKeyboardShortcuts({
           const cleanupAfterRemoval = () => {
             setSelectedNode(null)
             setLastSelectedId?.(null)
+            // The panel closes with its node, so opening the node again (after
+            // Undo) asks for its preview.
+            lastSelectedKeyRef.current = null
             setPreviewData(null)
-            // Clean up store state for deleted nodes
-            for (const key of removedKeys) {
-              useNodeResultsStore.getState().clearNode(key)
-            }
+            forgetDeletedNodes(removedKeys)
           }
           let cleanedUp = false
           const sharedDeletion = commitSharedNodeDeletion?.(
@@ -446,7 +448,7 @@ export default function useKeyboardShortcuts({
     enabled,
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     clipboard, nodeIdCounter,
-    setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
+    setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
     existingSingletonTypes,
     resolveGraphIdentities, commitSharedNodeDeletion, onBoundaryEdgesChange,
