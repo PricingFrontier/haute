@@ -30,10 +30,8 @@ the 31 October 2026 audit, and the review reproduced both on 13 November
 2026 through the editor's load and save routes, `CGEN-09` in a browser too.
 Each is a save that rewrites code nobody edited.
 
-`CGEN-11` comes from a second reading on 16 November 2026. This
-area's earlier, delivered roadmap was set beside this review's packages,
-and the shared code the packages pass through was read. It names a cause
-several packages here share, and is to be delivered before them.
+A cause several packages here share has its own file and is taken first:
+[code rewritten on save](root-cause-code-round-trip.md).
 
 ## Priorities
 
@@ -49,7 +47,6 @@ several packages here share, and is to be delivered before them.
 | CGEN-08 | Planned | P3 | A line indented with a tab, or a space too far, is reported as a syntax error at its line, not as an internal error with an incident id. |
 | CGEN-09 | Planned | P1 | A pipeline opened and saved in the editor keeps the numbers of its hand-written Transforms as written: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
 | CGEN-10 | Planned | P2 | A Transform that rebinds its input's name keeps its code on save; a step list rebuilt from code and not edited is never replaced by the placeholder that raises. |
-| CGEN-11 | Planned | P1 | A save keeps, byte for byte, the code of every node whose steps nobody edited, whatever the steps lost in the browser. |
 
 ## Planned improvements
 
@@ -401,38 +398,3 @@ code whose steps nobody edited.
 `src/haute/_polars_steps.py::_Renderer`;
 `src/haute/_codegen_builders.py::_stepped_body_code`;
 `src/haute/_config_builder.py::_with_lifted_steps`.
-
-### CGEN-11 — A save writes a node's code only when its steps were changed
-**Why:** Read on 16 November 2026. When a file is loaded the server rebuilds
-steps from each stepped node's code and accepts them only when they render
-that code's text exactly; that proof holds. On a save the authority turns
-round. A config that carries a step list has its code rendered from the
-list, and the code text it also carries is not read. So whatever the list
-loses between the load and the save rewrites hand-written code, with no
-edit by anyone and no warning. `CGEN-09`, rated P1, is one such loss: a
-number that a browser held. `CGEN-10` names the same two functions. The
-steps editor does the same when a panel opens: it renders the list and
-adopts the answer as the node's code when the text differs. Each loss found
-so far has its own package and its own remedy; the next thing a step cannot
-carry through a browser will be found the same way, in a saved file.
-
-**Plan:** Make the code the authority and the steps a view of it. On a save,
-rebuild the steps from the node's stored code, pass them through the same
-JSON round trip the browser applies, and compare them with the list the
-request brought. Where they are equal, keep the stored code as it is, byte
-for byte; render only a node whose list differs. In the editor, adopt a
-rendering as the node's code only after a step has been edited.
-
-**Acceptance:** A test loads every example pipeline and a set of
-hand-written statements, passes the document through a number and text
-round trip as JavaScript performs it, saves, and requires each file byte
-for byte. A second test removes or changes one field of an unedited step in
-transit and requires the node's code unchanged, or the save refused naming
-the node. The journey of `CGEN-09` passes without its own remedy.
-
-**Dependencies:** None. Deliver before `CGEN-09` and `CGEN-10`: `CGEN-09`'s
-own plan is still needed for a step the analyst does edit.
-
-**Evidence:** `src/haute/_config_builder.py`;
-`src/haute/_codegen_builders.py`; `src/haute/_polars_steps_lift.py`;
-`frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts`.

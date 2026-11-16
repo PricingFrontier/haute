@@ -14,15 +14,10 @@ the same cases, and was reproduced with a real Parquet file. `FES-03`
 comes from the plan's browser sweep of failed calls on 11 November and the
 main session's runs of that day in the editor and the underwriter app.
 
-`FES-04` and `FES-05` come from a second reading on 16 November 2026. This
-area's earlier, delivered roadmap was set beside this review's packages,
-and the shared code the packages pass through was read. It names a cause
-several packages here share, and is to be delivered before them.
-
-`FES-06` comes from a second reading on 16 November 2026. This area's
-earlier, delivered roadmap was set beside this review's packages, and the
-shared code the packages pass through was read. It names a cause several
-packages share, and is to be delivered before them.
+A cause several packages here share has its own file and is taken first:
+[late answers](root-cause-late-answers.md),
+[panel values and Undo](root-cause-panel-drafts.md),
+[typed numbers](root-cause-typed-numbers.md).
 
 ## Priorities
 
@@ -31,9 +26,6 @@ packages share, and is to be delivered before them.
 | FES-01 | Planned | P3 | A write that names the revision it replaces is never sent twice by the client. |
 | FES-02 | Planned | P3 | A Float16 column is numeric to the editor's pickers, bands and steps, as it is to the server. |
 | FES-03 | Planned | P3 | A call that got no answer, or an answer that is not Haute's, says that the server could not be reached, not the browser's or the JSON parser's own words, and is neither offered to the assistant as a node's error nor reported as a new version of Haute. |
-| FES-04 | Planned | P2 | Every answer from the server is applied through one helper that drops it when what asked for it has changed. |
-| FES-05 | Planned | P2 | Every value being edited in a panel lets go of its copy when an Undo moves the value under it. |
-| FES-06 | Planned | P2 | The same keystrokes give the same number in every number field, in any browser language, and on the server. |
 
 ## Planned improvements
 
@@ -175,106 +167,3 @@ the part's file gone it says "Haute has been updated" as today.
 `frontend/src/components/AskAssistantButton.tsx`;
 `frontend/src/utils/chunkLoadError.ts::isChunkLoadError`;
 `frontend/src/components/ErrorBoundary.tsx`.
-
-### FES-04 — An answer is applied only to what asked for it
-**Why:** Read on 16 November 2026. The editor has a fence for answers that
-arrive late: a caller captures the document's state before a request and
-checks it after. It was an earlier roadmap's work, and where it is used no
-finding of this review falls. It is used by choice. Of 105 source files
-that wait for an answer, 12 use the fence, 8 use the optimiser's
-latest-request hook, and 22 keep a counter or a cancelled flag of their
-own. The files behind this review's late-answer findings use none of them:
-`App.tsx`, the utility panel, the repair dialog, the catalog selector, the
-MLflow export section and the test-quotes store (`FEG-10`, `FEP-04`,
-`FEN-01`, `MLR-10`, `WB-61`). The fence was also built for execution
-answers; an answer that writes to the document or to a panel, such as a
-repair, a catch up, a delete or imported values (`VCS-10`, `FEN-10`), has
-no shared equivalent. A new panel is correct only if its author remembers.
-
-**Plan:** One request helper that every call goes through when its answer
-will be written to state. It records what the answer belongs to: the
-document, the node, the panel and the edit it was asked under. A late
-answer is dropped, or handed back marked stale for the caller to settle.
-Replace the 22 hand-kept guards with it. Add a test that lists the files
-which write state after waiting without the helper, and only lets the list
-shrink, to none.
-
-**Acceptance:** One test drives every surface that calls the server: it
-holds the answer, changes what it belongs to (another document, the node
-deleted, an Undo, text typed), lets the answer go, and requires the page to
-show the current state. The list of files outside the helper is empty. The
-journeys of `FEG-10`, `VCS-10`, `FEP-04`, `FEN-01`, `FEN-10`, `WB-61` and
-`MLR-10` pass.
-
-**Dependencies:** None. Deliver before the packages its acceptance names.
-
-**Evidence:** `frontend/src/stores/useDocumentStatusStore.ts`;
-`frontend/src/panels/optimiser/useLatestRequest.ts`; `frontend/src/App.tsx`;
-`frontend/src/panels/UtilityPanel.tsx`.
-
-### FES-05 — A panel's unsaved value follows the document through Undo
-**Why:** Read on 16 November 2026. Panels and node components keep their
-own state in 399 `useState` calls across 98 files, and no shared hook ties
-a value being edited to the store's history. An earlier roadmap put each
-editor's draft in step with the document one editor at a time. Undo
-restores the store and a panel goes on showing, and sending, its own copy:
-the search space box (`FEM-03`), the optimiser's estimate (`FEM-04`), the
-Output editor's preview (`FEN-08`), a Banding factor's remembered rules
-(`FEN-09`) and "Save node" (`FEG-08`). Each was found by pressing Undo in
-one panel; the panels nobody pressed it in are built the same way.
-
-**Plan:** One hook for a value being edited. It is keyed by the node and by
-the store's place in its history, lets go of its copy when an Undo, a Redo
-or a change from outside moves the value under it, and commits as one undo
-step. A request a panel derives, such as an estimate or a preview, is built
-from the store's value, never from the copy. Move the editors to the hook,
-and add a test that lists the panels holding a copy without it and only
-lets the list shrink.
-
-**Acceptance:** One test drives every editor field that holds a copy: it
-types, undoes a change upstream, and requires the field to show the store's
-value and the next request to carry it. The journeys of `FEM-03`, `FEM-04`,
-`FEN-08`, `FEN-09` and `FEG-08` pass.
-
-**Dependencies:** None. Deliver before the packages its acceptance names.
-
-**Evidence:** `frontend/src/panels/ModellingConfig.tsx`;
-`frontend/src/panels/OptimiserConfig.tsx`;
-`frontend/src/panels/editors/OutputEditor.tsx`;
-`frontend/src/components/form/CommittedTextField.tsx`.
-
-### FES-06 — One rule reads a number that was typed
-**Why:** Read on 16 November 2026. The Workbench has one rule for a typed
-number, kept the same on the sheet and the server on purpose
-(`parseTypedNumber` and its server twin), and `WB-48` records what that
-rule gets wrong. Everywhere else each field reads its own text. The
-editor's panels, nodes and components call the language's own number
-parsing 212 times in 62 files, so `1,5` in a Rating Step's Default is 15
-in an English browser and 1.5 in a German one (`RTG-03`). On the server a
-Constant's value goes through Python's `float`, which takes `0123`, `1E5`
-and `nan` (`EXE-02`), and a params file refuses `1,000` where a cell of
-the same type accepts it (`WB-68`). The same keystrokes give different
-numbers by field, by browser language and by which side reads them.
-
-**Plan:** State one rule: which thousands separators, decimal marks,
-signs, spaces and exponent forms are a number, with text that could be two
-numbers refused and never guessed. Keep it as one file of cases, text to
-number or refusal, that the browser's reader and the server's reader are
-both tested against. Give every number field the one shared field, and
-read a Constant's value and a params file by the same rule. Add a test
-that lists the input handlers which parse a number themselves, and only
-lets the list shrink.
-
-**Acceptance:** The file of cases holds at least `1,5`, `1,000`,
-`1 000,50`, `0123`, `1E5`, `1_000`, `nan` and a number of 19 digits, and
-both readers pass it. A browser test types each case into every number
-field of the editor and the Workbench under English and under German and
-requires the same saved value. The acceptance of `RTG-03`, `WB-48`, `WB-68`
-and `EXE-02` is met.
-
-**Dependencies:** None. Deliver before the packages its acceptance names.
-
-**Evidence:** `frontend/src/utils/sheetValues.ts`;
-`src/haute/_workbench_tables.py`; `src/haute/_node_apply.py`;
-`src/haute/_workbench_params.py`;
-`frontend/src/components/form/CommittedTextField.tsx`.

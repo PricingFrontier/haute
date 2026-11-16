@@ -7,7 +7,8 @@ specification](../deploy/high-level.md) describes it: which files a deploy
 ships for the paths a pipeline names, how the served `/quote` route answers
 a quote it cannot price, what `haute deploy --dry-run` checks, and what a
 test quote can expect. The packages below come from the 9 November
-2026 codebase review. `DPL-01` was reproduced against `HEAD` on that day;
+2026 codebase review; the rule for relative paths has its own file,
+[path anchoring](root-cause-path-anchoring.md), and is taken first.
 `DPL-02` is read from the source and was not run against a built image;
 `DPL-03` was reproduced by running the command, and `DPL-04` by calling the
 comparison a deploy's validation uses. `DPL-05` comes from the review
@@ -27,7 +28,6 @@ and the main session ran each again on 16 November 2026.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| DPL-01 | Planned | P1 | A relative path means the same file in the editor, in a run and in the deployed bundle. |
 | DPL-02 | Planned | P3 | An output value that is not a finite number is refused naming the output column and the quote. |
 | DPL-03 | Planned | P3 | A dry run refuses a deploy target, a model name and a target setting that no deploy can use, and a missing pipeline file is reported without a traceback. |
 | DPL-04 | Planned | P3 | A test quote can expect a date or a date-time output, written as the response writes it. |
@@ -41,49 +41,6 @@ and the main session ran each again on 16 November 2026.
 | DPL-12 | Planned | P2 | A deployed container with one CPU answers a request of several quotes in seconds, not with a timeout after five minutes. |
 
 ## Planned improvements
-
-### DPL-01 — One rule anchors a relative path for the editor and the bundle
-**Why:** Reproduced. A relative path in a node's settings can exist under
-both the project root and the pipeline's folder. The editor, a run and a
-snapshot build resolve it with the project root first: the resolver's
-docstring says the root's file wins "so the registry, the engine and an
-explicit snapshot build always name the same file". The bundler resolves the
-same setting with the pipeline folder first: its docstring says a file under
-the pipeline folder always wins. With `data/lookup.pkl` under both the
-project root and a pipeline folder `rating/`, the engine read
-`data/lookup.pkl` and the bundle shipped `rating/data/lookup.pkl`: two
-different files, with nothing said. The bundler takes this route for a Load
-File's path, an Optimiser Apply's artifact and a Data Input read straight from
-Parquet; a model file and its feature contract already use the engine's rule
-inside the bundler. The layout is one the product leads to: the bundler's
-refusal of data outside the pipeline folder tells the analyst to put the data
-in the pipeline folder, and copying a folder there, instead of moving it,
-satisfies the deploy while the editor keeps reading the root copy. From then
-on the prices the analyst previews and the prices the service returns come
-from different files whenever one copy is refreshed.
-
-**Plan:** Decide the one rule (the engine's, since preview is what the
-analyst checked) and give the bundler, the served scorer's runtime path
-resolution and the schema reader that rule through one function. Where a
-relative path exists in both places and the two files differ, refuse the
-deploy naming both files; identical copies may pass.
-
-**Acceptance:** With differing copies of one relative path under the project
-root and the pipeline folder, `haute deploy` refuses and names both files.
-With a single copy in either place, the bundle ships the file preview read,
-asserted by content. A test resolves each path-bearing node setting through
-the engine and through the bundler and requires the same file. A test lists the
-functions outside `src/haute/_path_resolution.py` that anchor a relative
-path, and only lets the list shrink.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_path_resolution.py::resolve_node_input_path` passes
-`prefer="project"`; `src/haute/_path_resolution.py::resolve_graph_source_path`
-passes `prefer="pipeline"`; `src/haute/deploy/_bundler.py::_resolve_path`
-defaults to the pipeline folder; `src/haute/deploy/_scorer.py::_resolve_runtime_graph_paths`;
-`src/haute/deploy/_schema.py::_resolve_pipeline_path`;
-`src/haute/deploy/_bundler.py::refuse_data_outside_pipeline_folder`.
 
 ### DPL-02 — A non-finite output value is refused by name
 **Why:** Read from the source. The served route encodes its answer with

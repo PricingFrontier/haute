@@ -16,10 +16,8 @@ which gave 79 awkward files to the Data Input, the Quote Input and Load
 File through the preview and `haute run`. Each was reproduced on that day,
 as were the additions that sweep made to `IOL-01` and `IOL-02`.
 
-`IOL-07` comes from a second reading on 16 November 2026. This area's
-earlier, delivered roadmap was set beside this review's packages, and the
-shared code the packages pass through was read. It names a cause several
-packages share, and is to be delivered before them.
+A cause several packages here share has its own file and is taken first:
+[column kinds](root-cause-column-kinds.md).
 
 ## Priorities
 
@@ -31,7 +29,6 @@ packages share, and is to be delivered before them.
 | IOL-04 | Planned | P2 | A CSV file saved as UTF-16 is refused naming its encoding, instead of being read as garbled columns. |
 | IOL-05 | Planned | P2 | Load File refuses a JSON file that is not UTF-8, instead of replacing the bytes it cannot read. |
 | IOL-06 | Planned | P3 | Two XML children that share a name only once their namespaces are stripped are refused, as two such attributes are. |
-| IOL-07 | Planned | P2 | Every reader of a column asks one module what kind its type is, and a column of any Polars type is handled as its kind or refused by name. |
 
 ## Planned improvements
 
@@ -255,37 +252,3 @@ and the child case to the same refusal.
 **Evidence:** `src/haute/_json_shred/_records.py::_xml_element_value` groups
 children by their stripped names; `src/haute/_json_shred/_records.py::_xml_local_name`;
 `specs/json-shredding/high-level.md`.
-
-### IOL-07 — One answer to what kind of column a type is
-**Why:** Read on 16 November 2026. An earlier roadmap gave Haute one dtype
-vocabulary, `src/haute/_polars_dtypes.py`, and Polars has its own answer to
-whether a type is a float, an integer or a number, which `src/haute` calls
-48 times in 22 files. Beside both, the question is answered again by hand.
-Ten lines in seven files name Float32 and Float64 together as "the floats",
-and none of them names Float16. The pivot service, the frame profile, the
-Banding statistics, the optimiser's quotes and segments and the impact
-report each hold their own list or function. The browser has two more
-functions and six such lines in three files. Every list that left Float16
-out was found as its own defect in its own area: `RTG-07`, `XPL-02`,
-`OPM-05` and `FES-02`. The next type Polars adds will be found the same
-way.
-
-**Plan:** One module answers what kind a type is, float, integer, number,
-date or time, text, from Polars' own classification, and the browser reads
-the same answer from the generated contract. Remove the hand-kept lists and
-functions. Add a test that fails when a line outside the module names two
-or more float or integer types as a list.
-
-**Acceptance:** One test takes every data type the installed Polars
-defines, read from Polars so that an upgrade adds its new types, and sends
-a column of each through every reader: the pivot, the profile, the Banding
-statistics, a Rating lookup, the optimiser's analysis and the editor's
-column lists. Each handles the column as its kind or refuses it by name.
-The test for hand-kept lists passes. The acceptance of `RTG-07`, `XPL-02`,
-`OPM-05` and `FES-02` is met.
-
-**Dependencies:** None. Deliver before the packages its acceptance names.
-
-**Evidence:** `src/haute/_polars_dtypes.py`;
-`src/haute/routes/_pivot_service.py`; `src/haute/_frame_profile.py`;
-`src/haute/routes/_optimiser_quotes.py`; `frontend/src/utils/polarsDtypes.ts`.

@@ -52,10 +52,8 @@ on PostgreSQL 16 and SQL Server 2022 under repeated requests, lost
 connections and hand-made schemas. A worker built each run and the main
 session ran each again on 16 November 2026.
 
-`WB-75` comes from a second reading on 16 November 2026. This area's
-earlier, delivered roadmap was set beside this review's packages, and the
-shared code the packages pass through was read. It names a cause several
-packages share, and is to be delivered before them.
+A cause several packages here share has its own file and is taken first:
+[the quote store check](root-cause-store-check.md).
 
 ## Priorities
 
@@ -99,7 +97,6 @@ packages share, and is to be delivered before them.
 | WB-72 | Planned | P3 | The store check reports a foreign key that refers to other columns or another schema. |
 | WB-73 | Planned | P2 | The store check reports a missing unique constraint on the operation key, so one alternative sent twice cannot make two options. |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
-| WB-75 | Planned | P2 | Every column, key and constraint Haute's own SQL creates is one the store check reports when it is missing or altered. |
 
 ## Planned improvements
 
@@ -1352,32 +1349,3 @@ with no restart. A variable set outside `.env` still wins.
 
 **Evidence:** `src/haute/server.py`; `src/haute/_connections.py`;
 `specs/workbench/low-level.md`.
-
-### WB-75 — The store check is proven against every line of Haute's own SQL
-**Why:** Read on 16 November 2026. The check that a quote store matches
-what Haute expects compares the database's catalogue with the expected
-tables in code written by hand: columns, primary keys, and each foreign
-key's table and constrained columns. Whatever that code does not read, a
-store can lack and still pass, and each such gap has been found one at a
-time: a missing unique constraint (`WB-73`), a foreign key's referred
-columns and schema (`WB-72`), a NOT NULL the migration SQL does not leave
-as it says (`WB-64`), and a column's precision (`WB-65`). An earlier
-roadmap delivered the store on PostgreSQL and SQL Server and its changes
-as SQL; nothing ties what that SQL creates to what the check reads.
-
-**Plan:** A test takes Haute's own SQL for each database and, for every
-column, type, nullability, default, key and constraint it creates, makes a
-store with that one thing removed or altered. It requires the check to
-report each store as different, naming the thing. What the SQL creates and
-the check cannot see fails the test, so the check is extended, or the line
-is shown not to matter and listed with its reason.
-
-**Acceptance:** The test runs on SQLite, PostgreSQL and SQL Server and
-passes with no altered store accepted, apart from a short list of lines
-each with its stated reason. A line added to the SQL without a matching
-check fails it. The acceptance of `WB-72` and `WB-73` is met.
-
-**Dependencies:** None. Deliver before `WB-72` and `WB-73`.
-
-**Evidence:** `src/haute/_quote_store/_catalogue.py`;
-`src/haute/_quote_store/_book.py`.

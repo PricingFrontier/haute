@@ -20,10 +20,8 @@ a worker built the run and the main session ran it again on 13 November.
 the same reader: for every cache, what is in its key against what changes
 its answer. It was run the same way on the same day.
 
-`CCH-06` comes from a second reading on 16 November 2026. This
-area's earlier, delivered roadmap was set beside this review's packages,
-and the shared code the packages pass through was read. It names a cause
-several packages here share, and is to be delivered before them.
+A cause several packages here share has its own file and is taken first:
+[results that go stale unseen](root-cause-freshness.md).
 
 ## Priorities
 
@@ -34,7 +32,6 @@ several packages here share, and is to be delivered before them.
 | CCH-03 | Planned | P3 | A preview that stores many node outputs checks the store's budget once, not with a walk of the whole store after each one. |
 | CCH-04 | Planned | P2 | A preview follows the order of a node's inputs: reconnecting a Load File's two inputs the other way round no longer shows the first input's rows from the store. |
 | CCH-05 | Planned | P2 | A preview follows an edit to a utility module that a node's own code imports, as it does one the preamble imports. |
-| CCH-06 | Planned | P2 | Every stored result records what its run read, and every reader of it reports it old when any of that changes. |
 
 ## Planned improvements
 
@@ -233,38 +230,3 @@ name. The preview and `haute run` agree either way.
 **Evidence:** `src/haute/_cache.py::preamble_execution_fingerprint`;
 `src/haute/_node_snapshots.py`; `src/haute/_project_imports.py`;
 `specs/caching/high-level.md`.
-
-### CCH-06 — A stored result is checked against what its run read
-**Why:** Read on 16 November 2026. A node snapshot's signature is built
-from the inputs the graph declares, through one checked contract, and that
-part holds. Two kinds of input stay outside it. The first is what a node's
-code reads without the graph knowing: a utility module imported inside the
-code is `CCH-05`. The second is what Haute's own code does, which is
-carried by version constants a developer must remember to raise: `CCH-01`.
-`src/haute` holds more than forty such constants. Every reader outside the
-engine then keeps its own list of what makes its answer old: the editor's
-previews after a utility file is saved (`FEP-03`), Refresh (`FEP-01`,
-`FEP-02`), the assistant's brief (`AST-05`), and the Workbench's form
-revision and Accept (`WB-67`, `WB-69`). Each was found as its own defect,
-and each list is missing something another list has.
-
-**Plan:** Record with every stored result what its run read: the project's
-modules it imported and the project's files it opened, each with a hash of
-its content, and check the record when the result is used again. Derive the
-engine's version from the content of the modules that compute a node's
-output, or fail a test when those modules change and the constant does not.
-Give the editor, the assistant and the Workbench one revision of the
-project's inputs, taken from the same record, in place of their own lists.
-
-**Acceptance:** One table-driven test changes each kind of input in turn: a
-node's code, a utility module imported at the top and one imported inside a
-node, a params file, a data file, the order of a node's inputs, and an
-engine module. For each it requires every reader to report its answer old:
-the snapshot, the preview, the Explore panes, the assistant's brief and the
-form's revision. A new reader or a new kind of input is one more row.
-
-**Dependencies:** None. Deliver before `CCH-01`, `CCH-04`, `CCH-05`,
-`FEP-03`, `AST-05`, `WB-67` and `WB-69`, whose acceptance it should meet.
-
-**Evidence:** `src/haute/_node_snapshots.py`; `src/haute/_cache.py`;
-`src/haute/_project_imports.py`.

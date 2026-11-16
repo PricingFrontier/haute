@@ -24,10 +24,8 @@ run, that day, of a submodel's whole life through the routes.
 `SRV-01` changes an accepted decision, [the optimiser's error-detail
 policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
 
-`SRV-09` comes from a second reading on 16 November 2026. This
-area's earlier, delivered roadmap was set beside this review's packages,
-and the shared code the packages pass through was read. It names a cause
-several packages here share, and is to be delivered before them.
+A cause several packages here share has its own file and is taken first:
+[failures answered without words](root-cause-error-boundaries.md).
 
 ## Priorities
 
@@ -41,7 +39,6 @@ several packages here share, and is to be delivered before them.
 | SRV-06 | Planned | P2 | A pipeline file that is missing is reported in one line naming the file and the remedy, when the editor starts and while it runs. |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
 | SRV-08 | Planned | P2 | A save deletes a dissolved submodel's file only when no pipeline beside the saved one still uses it, as the submodel specification says. |
-| SRV-09 | Planned | P2 | A failure no list names is answered in words with an incident number by the editor's server, the underwriter app, a job and the command line. |
 
 ## Planned improvements
 
@@ -539,40 +536,3 @@ the pipelines in a folder of the project, and in the project folder.
 `src/haute/discovery.py::discover_pipelines`;
 `src/haute/routes/utility.py`; `specs/submodels/high-level.md`;
 `docs/building-models/nodes/submodel.md`.
-
-### SRV-09 — Every boundary answers a failure it does not know in words
-**Why:** Read on 16 November 2026. The editor's server translates errors
-once, at its edge, for a list of named error types; that was an earlier
-roadmap's work and it holds for those types. Four gaps keep producing the
-bare 500s, tracebacks and "check the server logs" this review found.
-Nothing answers an exception that is not on the list, so the reply is the
-framework's plain "Internal Server Error". The underwriter app is a second
-application and registers only the handler for a malformed request
-(`WB-54`, `WB-55`, `WB-71`). Routes still build their own HTTP errors, more
-than 200 times, and `src/haute` catches every exception in 293 places in
-92 files, so each call site decides again what the user is told. Background
-jobs, workers and the command line are further edges with their own lists:
-the command line expects three types of failure (`CLI-01`, `CLI-08`), and
-"check the server logs" is written out in a dozen places (`MDL-10`,
-`SRV-01`).
-
-**Plan:** One module that turns an exception into a status, a code, a
-message and what to do next, used by all four edges: the editor's server,
-the underwriter app, a job's or worker's outcome, and the command line.
-Classify there, once, the failures every edge meets: the operating system
-refusing a file, memory running out, a database connection lost. Give each
-edge a last handler that answers in words with an incident number and logs
-the traceback. Add a test that counts HTTP errors built outside the edge
-and catch-alls that do not classify, and only lets the counts fall.
-
-**Acceptance:** A test raises an exception no list names inside a route of
-each application, a job and a command; each answers in words with an
-incident number, and none answers "Internal Server Error" or a traceback.
-The counting test passes. The acceptance of `CLI-01`, `CLI-08`, `SRV-04`,
-`SRV-06`, `WB-54`, `WB-71` and `MDL-10` is met through the one module.
-
-**Dependencies:** The decision `SRV-01` records.
-
-**Evidence:** `src/haute/routes/_error_handlers.py`;
-`src/haute/_workbench_app.py`; `src/haute/cli/_helpers.py`;
-`src/haute/routes/_helpers.py`.
