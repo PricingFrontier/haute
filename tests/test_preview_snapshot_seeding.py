@@ -1026,12 +1026,19 @@ def builds(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     return built
 
 
-def _post_preview(api: Any, graph: PipelineGraph, node_id: str, **fields: Any) -> dict[str, Any]:
+def _post_preview(
+    api: Any,
+    graph: PipelineGraph,
+    node_id: str,
+    *,
+    port_label: str | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
     response = api.post(
         "/api/pipeline/preview",
         json={
             "graph": graph.model_dump(mode="json"),
-            "target": node_target(node_id),
+            "target": node_target(node_id, port_label=port_label),
             "row_limit": 200,
             **fields,
         },

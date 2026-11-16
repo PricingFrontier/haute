@@ -2010,6 +2010,10 @@ PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
 
 
 class PreviewNodeRequest(EditorSampleRequest):
+    # A field the request does not define (a node id or port beside the target) is refused,
+    # never silently dropped.
+    model_config = ConfigDict(extra="forbid")
+
     graph: Graph
     # The frame previewed, by address (specs/server-api/low-level.md, "Node addresses"). A
     # node target's ``port_label`` picks one frame of a multi-frame node and is part of
@@ -2150,6 +2154,8 @@ class PreviewNodeResponse(NodeResult):
 
 class PreviewInputsRequest(EditorSampleRequest):
     """Which inputs a preview would read, so the browser prepares only those."""
+
+    model_config = ConfigDict(extra="forbid")
 
     graph: Graph
     target: FrameTargetPayload
