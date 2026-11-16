@@ -14,6 +14,8 @@ import { LazyEditorBoundary } from "../../panels/LazyNodeEditors"
 import { NodeConfigEditor } from "../../panels/NodeConfigEditor"
 import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import { clearTrainedJobHandle, readTrainedJobHandle, writeTrainedJobHandle } from "../../utils/trainedJobHandles"
 import { makeNode } from "../../test-utils/factories"
 import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
 import { documentRequestScope } from "../../utils/requestGateway"
@@ -125,4 +127,22 @@ describe("ReadOnlyNodeConfig requests", () => {
       expect(useToastStore.getState().toasts).toEqual([])
     })
   }
+
+  it("leaves the open pipeline's remembered training to it: a saved version's Modelling editor asks nothing and keeps the handle", async () => {
+    const { type, config } = CASES[0]
+    const handle = { jobId: "job-live", configHash: "hash", source: "live", lineage: "lineage" }
+    useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
+    writeTrainedJobHandle("rating/main.py", "n1", handle)
+    try {
+      loadDocument(type, config)
+      render(<ReadOnlyNodeConfig nodeType={type} config={config} nodeId="n1" />)
+      await settle()
+
+      expect(sent).toEqual([])
+      expect(readTrainedJobHandle("rating/main.py", "n1")).toEqual(handle)
+    } finally {
+      clearTrainedJobHandle("rating/main.py", "n1")
+      useDocumentStatusStore.getState().reset()
+    }
+  })
 })

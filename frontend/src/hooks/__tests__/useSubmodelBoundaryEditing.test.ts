@@ -585,6 +585,46 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(store().undoStack).toHaveLength(2)
   })
 
+  it("lands a drag still under way when identities resolve, as its own step after the edit", async () => {
+    const fixture = makeFixture()
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => { finishResolution = resolve })
+    const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+    const startedAt = storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position
+
+    act(() => {
+      result.current.commitBoundaryConnection({ source: "child_a", sourceHandle: null, target: output.id, targetHandle: null })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    const moveTo = (x: number, dragging: boolean) => store().setNodesRaw((nodes) =>
+      nodes.map((node) => (node.id === "child_b" ? { ...node, position: { x, y: 640 }, dragging } : node)))
+    act(() => {
+      store().pushSnapshot()
+      moveTo(500, true)
+    })
+
+    const candidate = resolveGraphIdentities.mock.calls[0]![0]
+    const resolvedParentNodes = candidate.nodes.map((node) => node.id === PLACEHOLDER_ID
+      ? { ...node, data: { ...node.data, _sourceHandleInputNames: { out__child_a_input: "Public_child_a_input" } } }
+      : node)
+    await act(async () => {
+      finishResolution({ nodes: resolvedParentNodes, edges: [...candidate.edges] as PipelineEdge[] })
+      await identityResolution
+    })
+    await vi.waitFor(() => expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input"]))
+    // Released where the last frame left it, after the edit landed.
+    act(() => moveTo(500, false))
+
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 500, y: 640 })
+    expect(store().undoStack).toHaveLength(2)
+    act(() => store().undo())
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual(startedAt)
+    expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input"])
+  })
+
   it.each([
     ["an Undo and a Redo back to the same document", () => {
       store().undo()

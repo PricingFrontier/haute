@@ -22,13 +22,15 @@ import {
  * recorded from the submitted request; otherwise it is restored as stale.
  * A remembered result the server no longer holds is recorded in the results
  * store (`expiredTrainJobs`), so the Export pane can say so instead of simply
- * showing nothing.
+ * showing nothing. A saved version's editor (the comparison view, which runs
+ * nothing) passes `enabled: false`: the remembered job is the open pipeline's.
  */
 export function useTrainedJobRestore(
   resultKey: string,
   cachedResult: CachedTrainResult | undefined,
   hasTrainJob: boolean,
   graph: () => TrainingLineageInput,
+  enabled: boolean,
 ): void {
   // The status read is async; compare against the graph as it is when it returns.
   const graphRef = useRef(graph)
@@ -40,7 +42,7 @@ export function useTrainedJobRestore(
   const markTrainResultExpired = useNodeResultsStore((state) => state.markTrainResultExpired)
   const hasCachedResult = Boolean(cachedResult)
   useEffect(() => {
-    if (!sourceFile || !resultKey || hasCachedResult || hasTrainJob) return
+    if (!enabled || !sourceFile || !resultKey || hasCachedResult || hasTrainJob) return
     const handle = readTrainedJobHandle(sourceFile, resultKey)
     if (!handle) return
     const controller = new AbortController()
@@ -78,5 +80,5 @@ export function useTrainedJobRestore(
       },
     )
     return () => controller.abort()
-  }, [sourceFile, resultKey, hasCachedResult, hasTrainJob, restoreTrainResult, markTrainResultExpired])
+  }, [enabled, sourceFile, resultKey, hasCachedResult, hasTrainJob, restoreTrainResult, markTrainResultExpired])
 }

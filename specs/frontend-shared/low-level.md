@@ -860,7 +860,10 @@ Workbench's sample and the cached-data list.
 2. **Scope.** A request runs a document its caller is given, a `RequestScope`. App's
    `GraphProvider` gives its panels `documentRequestScope`, the graph store's document; the
    comparison view's provider gives none, and a request prepared without a scope is refused
-   (`RequestScopeError`) and never sent. Code that runs outside React for the open document
+   (`RequestScopeError`) and never sent. A saved version's editor also leaves the open
+   document's remembered state alone: its Modelling editor restores no remembered training
+   (`useTrainedJobRestore` disabled), so it neither asks for that job's status nor forgets
+   its handle. Code that runs outside React for the open document
    (stores, job polling, the Workbench's pricing) takes `documentRequestScope` itself.
 3. **Prepared requests.** `prepareNodeRequest(scope, address, ports?)` and
    `preparePipelineRequest(scope)` capture, together and once: the document payload (the whole
@@ -900,7 +903,9 @@ Which result a stored answer is, and whether it is current, are separate questio
    never the pivot's id alone: every node numbers its own pivots from `pivot_1`. A
    consumer's data point (`useNodeDataCache`) answers its identity under the node's key:
    the same child of another occurrence shows the same canvas, so its identity can hash the
-   same.
+   same. A build it has sent, until the server answers, is that key's too (its "submitting"
+   state, a Stop pressed before the job id, its input build's abort), so another
+   occurrence's Stop and Refresh neither reach nor wait for it.
 2. **Whether it is current.** A cached result is checked against the source, the frame,
    the semantic content and the data generation it was made under before it is shown as
    current.
@@ -942,7 +947,8 @@ Which result a stored answer is, and whether it is current, are separate questio
   only in its occurrence), `frontend/src/components/__tests__/InputImportButton.test.tsx` (an
   import runs and stops only in its occurrence), `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`
   (Refresh and Stop act on their own occurrence; a consumer kept mounted while the view moves
-  to the copy asks for the copy's point and never shows the owner's), `frontend/src/hooks/__tests__/useDataInputColumns.test.ts`
+  to the copy asks for the copy's point and never shows the owner's, and the owner's build
+  still waiting for its job id is neither stopped by the copy's Stop nor holds up its Refresh), `frontend/src/hooks/__tests__/useDataInputColumns.test.ts`
   (the owner's columns stay out of the copy) and `frontend/src/hooks/__tests__/useNodeDataProfile.test.tsx`
   (the copy's profile is asked for after the owner's was stopped), and
   `frontend/src/hooks/__tests__/useNodeHandlers.deleteCleanup.test.ts` and
@@ -961,7 +967,8 @@ Which result a stored answer is, and whether it is current, are separate questio
   (leaving a view forgets the open node).
 - `frontend/src/components/__tests__/ReadOnlyNodeConfig.requests.test.tsx` covers the
   comparison view: the Modelling and Optimiser editors of a saved version send no request
-  and report no failure, while the same editors under the open pipeline's scope ask for
+  and report no failure, and a remembered training job of the open pipeline is neither
+  asked about nor forgotten, while the same editors under the open pipeline's scope ask for
   their estimates.
 - `frontend/src/utils/__tests__/nodeAddress.test.ts` covers address keys: a root node's id
   as it is, a child's apart from every root node and from the same child of another

@@ -556,8 +556,9 @@ export default function ModellingConfig({
   )
   // A completed result is remembered per document so a browser reload can put
   // it back from the server; a result the server no longer holds is recorded
-  // in the results store, which the results panel reads too.
-  useTrainedJobRestore(resultKey, cachedResult, Boolean(trainJob), graph)
+  // in the results store, which the results panel reads too. A saved version
+  // runs nothing, so it restores nothing.
+  useTrainedJobRestore(resultKey, cachedResult, Boolean(trainJob), graph, requestScope !== null)
   const trainedResultExpired = useNodeResultsStore(
     (state) => Object.hasOwn(state.expiredTrainJobs, resultKey),
   )

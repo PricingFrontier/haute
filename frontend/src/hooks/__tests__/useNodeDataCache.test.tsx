@@ -223,6 +223,44 @@ describe("useNodeDataCache", () => {
     expect(result.current.dataVersion).toBe("copy-gen")
   })
 
+  it("keeps a build waiting for its job id with its own occurrence when the view moves to the copy", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    const explore = canvas.find((node) => node.id === "explore") ?? null
+    // Each occurrence's child reads its own slot, missing for both.
+    mockGetPoint.mockImplementation(async (request) => point({
+      consumer_node_id: request.node_id, slot_key: `${request.node_id}||live`, state: "missing", generation: null, data_version: null,
+    }))
+    let answerOwner!: (response: Awaited<ReturnType<typeof runNodeData>>) => void
+    mockRun.mockReturnValueOnce(new Promise((resolve) => { answerOwner = resolve }))
+    mockRun.mockResolvedValueOnce({
+      status: "started", job_id: "job-copy", cached: false, message: "Caching started",
+      point: point({ consumer_node_id: "submodel_runtime/pricing_2/explore", slot_key: "submodel_runtime/pricing_2/explore||live", state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: explore, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+    act(() => refreshNodeDataCache(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledOnce())
+
+    act(() => openOccurrence(COPY))
+    await waitFor(() => expect(result.current.point?.consumer_node_id).toBe("submodel_runtime/pricing_2/explore"))
+    // The copy's Stop has nothing of its own to stop, and its Refresh is not held up by the owner's build.
+    await act(async () => stopNodeWork(childKey(COPY, "explore")))
+    act(() => refreshNodeDataCache(childKey(COPY, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(2))
+    expect(mockRun.mock.calls[1][0].node_id).toBe("submodel_runtime/pricing_2/explore")
+
+    await act(async () => answerOwner({
+      status: "started", job_id: "job-owner", cached: false, message: "Caching started",
+      point: point({ consumer_node_id: "submodel_runtime/pricing/explore", slot_key: "submodel_runtime/pricing/explore||live", state: "building", generation: null, data_version: null }),
+    }))
+    expect(mockCancel).not.toHaveBeenCalledWith("job-owner")
+  })
+
   it("holds a refused point as the node's state, not a toast", async () => {
     const message = "Node 'Explore' must have exactly one incoming connection to read its data (found 0)."
     mockGetPoint.mockRejectedValue(Object.assign(new Error(message), { status: 400, detail: message }))

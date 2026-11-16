@@ -1200,6 +1200,8 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       }
       const patch = derivedPatch(state, fields)
       const changed = patch.persistedFingerprint !== persistedFingerprintOf(state)
+      const dragBase = liftBase
+      const dragGesture = pendingGesture
       endGesture()
       if (changed && focus.readOnly) {
         refuse(READ_ONLY_REASON)
@@ -1220,6 +1222,21 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         submodelAnnotations: { ...state.submodelAnnotations, [focus.instanceId]: childAnnotations(edit.viewNodes) },
         ...patch,
       })
+      // A drag still under way (an edit waiting on server names can land
+      // mid-drag) goes on over the edited view: its end is lifted against that
+      // view as the document has it, with the dragged children where the drag
+      // found them, and it records its own step after this one.
+      if (dragBase) {
+        const found = new Map(dragBase.nodes.map((node) => [node.id, node.position]))
+        liftBase = {
+          nodes: edit.viewNodes.map((node) => {
+            const position = found.get(node.id)
+            return position ? { ...node, position } : node
+          }),
+          edges: edit.viewEdges,
+        }
+        if (dragGesture) pendingGesture = captureDocument(get())
+      }
     },
 
     setRootNodesRaw: (updater) => {
