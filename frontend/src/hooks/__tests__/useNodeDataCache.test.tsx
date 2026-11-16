@@ -200,6 +200,29 @@ describe("useNodeDataCache", () => {
     await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-owner"))
   })
 
+  it("asks for the copy's point when the view moves to the copy under it, never showing the owner's", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    const explore = canvas.find((node) => node.id === "explore") ?? null
+    mockGetPoint.mockResolvedValueOnce(point({ consumer_node_id: "submodel_runtime/pricing/explore", data_version: "owner-gen" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: explore, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.dataVersion).toBe("owner-gen"))
+
+    // The copy's canvas shows the same child, so its identity hashes the same: only its key differs.
+    let answerCopy!: (answer: NodeDataPointResponse) => void
+    mockGetPoint.mockReturnValueOnce(new Promise<NodeDataPointResponse>((resolve) => { answerCopy = resolve }))
+    act(() => openOccurrence(COPY))
+
+    expect(result.current.point).toBeNull()
+    await waitFor(() => expect(mockGetPoint).toHaveBeenCalledTimes(2))
+    expect(mockGetPoint.mock.calls[1][0].node_id).toBe("submodel_runtime/pricing_2/explore")
+    await act(async () => answerCopy(point({ consumer_node_id: "submodel_runtime/pricing_2/explore", data_version: "copy-gen" })))
+    expect(result.current.dataVersion).toBe("copy-gen")
+  })
+
   it("holds a refused point as the node's state, not a toast", async () => {
     const message = "Node 'Explore' must have exactly one incoming connection to read its data (found 0)."
     mockGetPoint.mockRejectedValue(Object.assign(new Error(message), { status: 400, detail: message }))

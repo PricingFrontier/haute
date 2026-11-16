@@ -133,6 +133,11 @@ export function deriveAvailability(
  */
 const nodeDataRefreshHandlers = new Map<string, Set<() => void>>()
 
+/** What a consumer asks about: an identity's hash under its node's result key. */
+function askedOf(nodeKey: string, configHash: string): string {
+  return JSON.stringify([nodeKey, configHash])
+}
+
 function registerNodeDataRefresh(nodeKey: string, handler: () => void): () => void {
   const handlers = nodeDataRefreshHandlers.get(nodeKey) ?? new Set<() => void>()
   handlers.add(handler)
@@ -202,10 +207,14 @@ export default function useNodeDataCache({
     () => (identity ? hashConfig({ graph: identity, source: activeSource }) : null),
     [activeSource, identity],
   )
-  // An answer is kept with the identity *and* the document it answered for, so
-  // a consumer shows it only while both still hold.
+  // What the consumer asks about: its identity under its node's result key. The
+  // same child of another occurrence shows the same canvas, so its identity can
+  // hash the same; the key tells their answers apart.
+  const askedFor = configHash && nodeKey ? askedOf(nodeKey, configHash) : null
+  // An answer is kept with what it answered *and* the document it answered for,
+  // so a consumer shows it only while both still hold.
   const [answered, setAnswered] = useState<{
-    configHash: string
+    askedFor: string
     fence: DocumentExecutionFence
     point: NodeDataPointResponse
   } | null>(null)
@@ -215,7 +224,7 @@ export default function useNodeDataCache({
   // `during` says which failed: a read is asked again on Refresh, whatever point
   // is kept from before; a build is retried by building.
   const [problem, setProblem] = useState<
-    ({ configHash: string; during: "read" | "build" } & NodeDataProblem) | null
+    ({ askedFor: string; during: "read" | "build" } & NodeDataProblem) | null
   >(null)
   // Raised by the node's Refresh to ask for the point again after a failure.
   const [readAttempt, setReadAttempt] = useState(0)
@@ -228,15 +237,15 @@ export default function useNodeDataCache({
   const ownDelegatedAbort = useRef<AbortController | null>(null)
   const workKey = useId()
   const setWorkRunning = useNodeWorkStore((s) => s.setRunning)
-  // The identity the consumer is currently asking about. Every asynchronous
-  // answer is checked against it, so an answer for an identity the consumer has
+  // What the consumer is currently asking about. Every asynchronous answer is
+  // checked against it, so an answer for an identity or a node the consumer has
   // moved past cannot replace the current one.
-  const currentIdentity = useRef(configHash)
+  const currentIdentity = useRef(askedFor)
   useEffect(() => {
-    currentIdentity.current = configHash
-  }, [configHash])
+    currentIdentity.current = askedFor
+  }, [askedFor])
   const point =
-    answered && answered.configHash === configHash && isDocumentExecutionFenceCurrent(answered.fence)
+    answered && answered.askedFor === askedFor && isDocumentExecutionFenceCurrent(answered.fence)
       ? answered.point
       : null
   const slot = useNodeDataStore((s) => (point ? s.slots[point.slot_key] : undefined))
@@ -284,14 +293,16 @@ export default function useNodeDataCache({
     [activeSource, requestTarget],
   )
 
+  // `consumerKey` is the key the request was prepared under.
   const publish = useCallback(
     (fresh: NodeDataPointResponse, identity: string, fence: DocumentExecutionFence, consumerKey: string) => {
-      // Never write another document's or another identity's answer.
+      // Never write another document's, another identity's or another node's answer.
       if (!isDocumentExecutionFenceCurrent(fence)) return
-      if (currentIdentity.current !== identity) return
+      const asked = askedOf(consumerKey, identity)
+      if (currentIdentity.current !== asked) return
       observePoint(fresh, activeSource, identity, consumerKey)
-      setAnswered({ configHash: identity, fence, point: fresh })
-      setProblem((previous) => (previous?.configHash === identity ? null : previous))
+      setAnswered({ askedFor: asked, fence, point: fresh })
+      setProblem((previous) => (previous?.askedFor === asked ? null : previous))
     },
     [activeSource, observePoint],
   )
@@ -307,7 +318,7 @@ export default function useNodeDataCache({
   )
 
   useEffect(() => {
-    if (!enabled || !nodeId || !configHash) return
+    if (!enabled || !nodeId || !configHash || !askedFor) return
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     const controller = new AbortController()
@@ -329,21 +340,22 @@ export default function useNodeDataCache({
         // A 400 is the backend refusing to name a point for this graph.
         const refused = (err as { status?: unknown } | null)?.status === 400
         setProblem({
-          configHash,
+          askedFor,
           during: "read",
           kind: refused ? "refused" : "failed",
           reason: apiErrorMessage(err),
         })
       })
     return () => controller.abort()
-    // Re-asks on the consumer's identity, on the node-data epoch, which the
-    // store raises whenever any consumer observes a published, widened,
-    // evicted, or cleared generation, and when the node's Refresh asks again
-    // after a failure. The graph objects themselves are excluded deliberately:
-    // a render that keeps the same identity hash would otherwise re-fire the
-    // request on unrelated edits such as a node drag.
+    // Re-asks on what the consumer asks about (its identity under its node's
+    // key), on the node-data epoch, which the store raises whenever any
+    // consumer observes a published, widened, evicted, or cleared generation,
+    // and when the node's Refresh asks again after a failure. The graph objects
+    // themselves are excluded deliberately: a render that keeps the same
+    // identity hash would otherwise re-fire the request on unrelated edits such
+    // as a node drag.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configHash, enabled, epoch, nodeId, readAttempt])
+  }, [askedFor, enabled, epoch, nodeId, readAttempt])
 
   const clearDelegatedData = useCallback(
     async (target: NodeDataPointResponse) => {
@@ -496,7 +508,7 @@ export default function useNodeDataCache({
         }
         // Nothing has started on the server for the rest, so an answer for an
         // identity the consumer has left starts nothing and says nothing.
-        if (currentIdentity.current !== configHash) return
+        if (currentIdentity.current !== askedOf(target.resultKey, configHash)) return
         if (response.status === "delegated") {
           if (stopRequested.current) return
           // A snapshot-backed Data Input or API-input table is built by its own
@@ -519,7 +531,7 @@ export default function useNodeDataCache({
         // Cancelling is otherwise the outcome the user asked for, not a
         // failure. The abort arrives as a DOMException, not an Error instance.
         if (name === "AbortError") return
-        setProblem({ configHash, during: "build", kind: "failed", reason: detail })
+        setProblem({ askedFor: askedOf(target.resultKey, configHash), during: "build", kind: "failed", reason: detail })
         addToast("error", `Data caching failed: ${detail}`)
       } finally {
         setSubmitting(false)
@@ -557,7 +569,7 @@ export default function useNodeDataCache({
   // registered, so a handler registered on an early render still decides
   // against what the consumer holds now. It settles one commit after the
   // render it describes, which a user's click is never inside.
-  const currentProblem = problem && problem.configHash === configHash ? problem : null
+  const currentProblem = problem && problem.askedFor === askedFor ? problem : null
   const latest = useRef({ availability, busy, canBuild, enabled, run, refresh, currentProblem })
   useEffect(() => {
     latest.current = { availability, busy, canBuild, enabled, run, refresh, currentProblem }

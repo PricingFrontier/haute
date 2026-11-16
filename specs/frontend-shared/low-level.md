@@ -897,7 +897,10 @@ Which result a stored answer is, and whether it is current, are separate questio
    the same node again shows its preview. A panel stays open while another node of the same
    view is opened, so what it records of the work it starts (an Explore pivot's starting
    flag, the notice of a Cancel that failed) is kept under the node's key and the pivot's id,
-   never the pivot's id alone: every node numbers its own pivots from `pivot_1`.
+   never the pivot's id alone: every node numbers its own pivots from `pivot_1`. A
+   consumer's data point (`useNodeDataCache`) answers its identity under the node's key:
+   the same child of another occurrence shows the same canvas, so its identity can hash the
+   same.
 2. **Whether it is current.** A cached result is checked against the source, the frame,
    the semantic content and the data generation it was made under before it is shown as
    current.
@@ -938,7 +941,8 @@ Which result a stored answer is, and whether it is current, are separate questio
   `frontend/src/panels/editors/__tests__/DataOutputEditor.test.tsx` (a write shows and blocks
   only in its occurrence), `frontend/src/components/__tests__/InputImportButton.test.tsx` (an
   import runs and stops only in its occurrence), `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`
-  (Refresh and Stop act on their own occurrence), `frontend/src/hooks/__tests__/useDataInputColumns.test.ts`
+  (Refresh and Stop act on their own occurrence; a consumer kept mounted while the view moves
+  to the copy asks for the copy's point and never shows the owner's), `frontend/src/hooks/__tests__/useDataInputColumns.test.ts`
   (the owner's columns stay out of the copy) and `frontend/src/hooks/__tests__/useNodeDataProfile.test.tsx`
   (the copy's profile is asked for after the owner's was stopped), and
   `frontend/src/hooks/__tests__/useNodeHandlers.deleteCleanup.test.ts` and
