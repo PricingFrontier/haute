@@ -110,6 +110,15 @@ describe("the request gateway", () => {
     expect(canvasTarget(input.id)).toEqual(target)
   })
 
+  it("reads the Input card's runtime feed from the document as it was prepared, whenever it is read", () => {
+    open()
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget(card("input").id, "policy"))
+    useGraphStore.setState({ focus: { ...useGraphStore.getState().focus!, rootEdges: [] } })
+
+    expect(request.nodeId).toBe("workbench_input")
+    expect(request.portLabel).toBe("policy_frame")
+  })
+
   it("reads the Output card's port at the child that produces it", () => {
     // On the main pipeline, the collapsed occurrence's output handle is the same port.
     expect(canvasTarget(OCCURRENCE, "out__premium")).toEqual({ kind: "occurrenceOutput", occurrence: OCCURRENCE, port: "premium" })

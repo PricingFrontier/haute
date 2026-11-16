@@ -126,8 +126,22 @@ function rootGraph() {
   return focus ? { nodes: focus.rootNodes, edges: focus.rootEdges } : { nodes, edges }
 }
 
+/** What the legacy runtime resolver reads of the document, captured when a request is prepared. */
+interface DocumentAtPreparation {
+  readonly nodes: readonly Node[]
+  readonly edges: readonly { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null }[]
+  readonly submodels: Record<string, unknown>
+}
+
+function documentNow(): DocumentAtPreparation {
+  return { ...rootGraph(), submodels: useGraphStore.getState().submodels }
+}
+
 /** The runtime id and port the server runs `target` under. */
-function runtimeTarget(target: FrameTarget): { nodeId: string; portLabel?: string } {
+function runtimeTarget(
+  target: FrameTarget,
+  document: DocumentAtPreparation = documentNow(),
+): { nodeId: string; portLabel?: string } {
   if (target.kind === "node") {
     const { occurrence, node } = target.address
     return {
@@ -137,15 +151,15 @@ function runtimeTarget(target: FrameTarget): { nodeId: string; portLabel?: strin
   }
   if (target.kind === "occurrenceInput") {
     // What feeds the input: the parent edge into the occurrence at that port.
-    const feed = rootGraph().edges.find((edge) =>
+    const feed = document.edges.find((edge) =>
       edge.target === target.occurrence && edge.targetHandle === `in__${target.port}`)
     if (!feed) throw new Error(`Input ${target.port} of ${target.occurrence} has nothing connected to it.`)
     return { nodeId: feed.source, portLabel: feed.sourceHandle ?? undefined }
   }
-  const occurrence = rootGraph().nodes.find((node) => node.id === target.occurrence)
+  const occurrence = document.nodes.find((node) => node.id === target.occurrence)
   const config = occurrence ? nodeData(occurrence).config as { definition_id?: unknown } : undefined
   const definitionId = typeof config?.definition_id === "string" ? config.definition_id : ""
-  const definition = useGraphStore.getState().submodels[definitionId]
+  const definition = document.submodels[definitionId]
   const port = isSubmodelDefinition(definition, definitionId)
     ? definition.outputPorts.find((candidate) => candidate.name === target.port)
     : undefined
@@ -304,10 +318,12 @@ function preparedNodeRequest<Extra extends object>(
   extra: Extra,
 ): PreparedNodeRequest & Extra {
   const pipeline = preparePipelineRequest(scope)
-  // The runtime id the requests not yet sent by address use, made only when one reads it:
-  // a request by address never does, and an input port nothing feeds has none.
+  // The runtime id the requests not yet sent by address use, made only when one reads it
+  // (a request by address never does, and an input port nothing feeds has none), from the
+  // document as it was prepared.
+  const document = documentNow()
   let runtime: { nodeId: string; portLabel?: string } | null = null
-  const runtimeOf = () => (runtime ??= runtimeTarget(target))
+  const runtimeOf = () => (runtime ??= runtimeTarget(target, document))
   return {
     ...pipeline,
     ...extra,
