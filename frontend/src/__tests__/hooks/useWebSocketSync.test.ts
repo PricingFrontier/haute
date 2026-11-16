@@ -573,6 +573,38 @@ describe("useWebSocketSync", () => {
       )
     })
 
+    it("shortens a long unresolved edge's detail in the warning, and counts the edges it leaves out", async () => {
+      const params = makeHookParams("rating/main.py")
+      const targetNode: Node = {
+        ...readyNode,
+        id: "target",
+        data: { label: "Target", nodeType: "polars", config: {} },
+      }
+      const longId = `edge_${"x".repeat(150)}`
+      const unresolved = (id: string) => ({ id, source: "disk", target: "target", sourceHandle: "missing-output" })
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode, targetNode],
+        edges: [unresolved(longId), unresolved("e2"), unresolved("e3"), unresolved("e4")],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
+        }))
+      })
+
+      const warning = vi.mocked(useToastStore.getState().addToast).mock.calls
+        .find(([kind, text]) => kind === "warning" && String(text).includes("unresolved synced edges"))?.[1]
+      expect(warning).toBeDefined()
+      const firstDetail = String(warning).split(" to prevent data loss. ")[1].split(", ")[0]
+      expect(firstDetail).toHaveLength(120)
+      expect(firstDetail.endsWith("...")).toBe(true)
+      expect(String(warning)).toContain("; 1 more omitted")
+    })
+
     it("accepts synced submodel output handles from the canonical definition registry", async () => {
       const params = makeHookParams("rating/main.py")
       const sourceNode: Node = {
