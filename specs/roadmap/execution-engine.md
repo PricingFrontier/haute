@@ -24,6 +24,11 @@ model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
 
+`EXE-10` comes from a second reading on 16 November 2026. This area's
+earlier, delivered roadmap was set beside this review's packages, and the
+shared code the packages pass through was read. It names a cause several
+packages share, and is to be delivered before them.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -37,6 +42,7 @@ worker built each run and the main session ran each again on 14 November
 | EXE-07 | Planned | P2 | A preview worker that died while idle is replaced whatever the size of the next request; previews and the server's shutdown no longer hang until a restart. |
 | EXE-08 | Planned | P3 | A column replaced under its own name is estimated at its new width, so work that cannot fit is refused before it runs. |
 | EXE-09 | Planned | P3 | A Source Switch input with a non-ASCII name is chosen by `pipeline.run()` as it is by the preview and `haute run`. |
+| EXE-10 | Planned | P2 | One test runs each pipeline as a preview, a trace, `haute run`, plain Python, the dry run and the service, and requires one answer. |
 
 ## Planned improvements
 
@@ -358,3 +364,36 @@ path, as the other two paths do.
 
 **Evidence:** `src/haute/_standalone_nodes.py`;
 `specs/pipeline-config/low-level.md`.
+
+### EXE-10 — Every way of running a pipeline gives the same answer
+**Why:** Read on 16 November 2026. A pipeline is run six ways: the editor's
+preview, a trace, `haute run`, the file imported and run as Python, the
+deploy's dry run, and the deployed service. An earlier roadmap gave the
+first three one graph walker. The file run as Python is a second
+implementation by design: its decorators do each node's work "through the
+same shared helpers". Column selection and renames are applied at four
+places in the walker's two modules and at none in that path (`EXE-06`), and
+it names a Source Switch's inputs differently (`EXE-09`). The dry run builds
+its frame from a test quote with no types where the service types the
+request (`DPL-08`, `DPL-09`). A run refuses for memory what the preview
+admits (`EXE-05`, `IOL-03`). Each difference was found by running one
+pipeline two ways by hand. No test runs one pipeline every way.
+
+**Plan:** Give "what a configured node does", its shaping included, one
+function that the walker and the decorators both call. Make the dry run
+read a test quote through the service's own request reader. Then hold the
+ways together with one test, described below, so a difference is found when
+it is written.
+
+**Acceptance:** A test runs every shipped example, and generated pipelines
+that cover each node type and each setting of the Columns tab, all six
+ways. It requires the same frame from each, in values, types and column
+order, or the same refusal in the same words. A node type or a way of
+running without a row in the test fails it. The acceptance of `EXE-05`,
+`EXE-06`, `EXE-09`, `IOL-03`, `DPL-08` and `DPL-09` is met.
+
+**Dependencies:** None. Deliver before the packages its acceptance names.
+
+**Evidence:** `src/haute/_standalone_nodes.py`; `src/haute/_execute_lazy.py`;
+`src/haute/_graph_walker.py`; `src/haute/deploy/_validators.py`;
+`src/haute/deploy/_container.py`.

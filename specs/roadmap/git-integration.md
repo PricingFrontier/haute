@@ -24,6 +24,11 @@ from a second model family (Codex) over the code changed since the 31
 October audit. A worker drove each journey in a browser and the main
 session ran each again on 15 November 2026.
 
+`VCS-11` comes from a second reading on 16 November 2026. This area's
+earlier, delivered roadmap was set beside this review's packages, and the
+shared code the packages pass through was read. It names a cause several
+packages share, and is to be delivered before them.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -38,6 +43,7 @@ session ran each again on 15 November 2026.
 | VCS-08 | Planned | P2 | A switch, a catch-up, an archive and a new branch that meet a file edited by hand name it and offer to record it or put it back, instead of "Operation failed" or advice that does not apply. |
 | VCS-09 | Planned | P2 | An open tab learns when the project changes branch, and a save made from a tab that shows another branch is refused naming both, instead of landing on the other branch, moving the checkout back or leaving its files uncommitted with "see server log". |
 | VCS-10 | Planned | P2 | An edit made while Catch up is running is still there when it answers, or could not be made. |
+| VCS-11 | Planned | P2 | A git operation of several steps that stops at any point is found at the next start, with nothing left unrecorded. |
 
 ## Planned improvements
 
@@ -549,3 +555,33 @@ unsaved after the answer, or it could not be edited meanwhile.
 
 **Evidence:** `frontend/src/components/RemotePushControl.tsx`;
 `specs/frontend-git-ui/high-level.md`.
+
+### VCS-11 — A git operation of several steps records its intent first
+**Why:** Read on 16 November 2026. An operation that moves a branch and
+then writes files can stop between the two. Haute marks the clone
+interrupted at two places in the code, and both run only after a failure
+has been caught. So a stop that nothing catches leaves no mark: a server
+process that dies after the ledger moved (`VCS-04`), and git itself moving
+the branch and exiting 0 with a file still held open (`VCS-01`). The clone
+is then in between, the save ledger at one commit and the working branch
+at another, and nothing says so. Earlier roadmaps dealt with checkouts
+that stop part-way and gave the operations one helper to put things back;
+both act after the fact.
+
+**Plan:** Before its first step, each operation of several steps, catch up,
+restore, switching branch and a save's pair of commits, writes what it is
+about to do: the operation, where the ledger and the branch are, where they
+will be, and the files. It removes the record after its last step. At
+start, and before any git action, a record that is still there is the
+interruption: readiness names it, and Retry finishes it or puts it back.
+
+**Acceptance:** A test stops the process after each step of each such
+operation in turn. At the next start readiness names the operation and its
+files, Retry completes it or returns the clone to where it was, and at no
+point do the ledger and the working branch differ with nothing recorded.
+The acceptance of `VCS-01` and `VCS-04` is met.
+
+**Dependencies:** None. Deliver before `VCS-01` and `VCS-04`.
+
+**Evidence:** `src/haute/_git_state.py`; `src/haute/_git_transactions.py`;
+`src/haute/_git_core.py`; `src/haute/_git_remote.py`.

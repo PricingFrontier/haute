@@ -19,6 +19,11 @@ area's earlier, delivered roadmap was set beside this review's packages,
 and the shared code the packages pass through was read. It names a cause
 several packages here share, and is to be delivered before them.
 
+`FES-06` comes from a second reading on 16 November 2026. This area's
+earlier, delivered roadmap was set beside this review's packages, and the
+shared code the packages pass through was read. It names a cause several
+packages share, and is to be delivered before them.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -28,6 +33,7 @@ several packages here share, and is to be delivered before them.
 | FES-03 | Planned | P3 | A call that got no answer, or an answer that is not Haute's, says that the server could not be reached, not the browser's or the JSON parser's own words, and is neither offered to the assistant as a node's error nor reported as a new version of Haute. |
 | FES-04 | Planned | P2 | Every answer from the server is applied through one helper that drops it when what asked for it has changed. |
 | FES-05 | Planned | P2 | Every value being edited in a panel lets go of its copy when an Undo moves the value under it. |
+| FES-06 | Planned | P2 | The same keystrokes give the same number in every number field, in any browser language, and on the server. |
 
 ## Planned improvements
 
@@ -235,4 +241,40 @@ value and the next request to carry it. The journeys of `FEM-03`, `FEM-04`,
 **Evidence:** `frontend/src/panels/ModellingConfig.tsx`;
 `frontend/src/panels/OptimiserConfig.tsx`;
 `frontend/src/panels/editors/OutputEditor.tsx`;
+`frontend/src/components/form/CommittedTextField.tsx`.
+
+### FES-06 — One rule reads a number that was typed
+**Why:** Read on 16 November 2026. The Workbench has one rule for a typed
+number, kept the same on the sheet and the server on purpose
+(`parseTypedNumber` and its server twin), and `WB-48` records what that
+rule gets wrong. Everywhere else each field reads its own text. The
+editor's panels, nodes and components call the language's own number
+parsing 212 times in 62 files, so `1,5` in a Rating Step's Default is 15
+in an English browser and 1.5 in a German one (`RTG-03`). On the server a
+Constant's value goes through Python's `float`, which takes `0123`, `1E5`
+and `nan` (`EXE-02`), and a params file refuses `1,000` where a cell of
+the same type accepts it (`WB-68`). The same keystrokes give different
+numbers by field, by browser language and by which side reads them.
+
+**Plan:** State one rule: which thousands separators, decimal marks,
+signs, spaces and exponent forms are a number, with text that could be two
+numbers refused and never guessed. Keep it as one file of cases, text to
+number or refusal, that the browser's reader and the server's reader are
+both tested against. Give every number field the one shared field, and
+read a Constant's value and a params file by the same rule. Add a test
+that lists the input handlers which parse a number themselves, and only
+lets the list shrink.
+
+**Acceptance:** The file of cases holds at least `1,5`, `1,000`,
+`1 000,50`, `0123`, `1E5`, `1_000`, `nan` and a number of 19 digits, and
+both readers pass it. A browser test types each case into every number
+field of the editor and the Workbench under English and under German and
+requires the same saved value. The acceptance of `RTG-03`, `WB-48`, `WB-68`
+and `EXE-02` is met.
+
+**Dependencies:** None. Deliver before the packages its acceptance names.
+
+**Evidence:** `frontend/src/utils/sheetValues.ts`;
+`src/haute/_workbench_tables.py`; `src/haute/_node_apply.py`;
+`src/haute/_workbench_params.py`;
 `frontend/src/components/form/CommittedTextField.tsx`.

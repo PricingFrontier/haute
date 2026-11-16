@@ -72,7 +72,9 @@ deploy naming both files; identical copies may pass.
 root and the pipeline folder, `haute deploy` refuses and names both files.
 With a single copy in either place, the bundle ships the file preview read,
 asserted by content. A test resolves each path-bearing node setting through
-the engine and through the bundler and requires the same file.
+the engine and through the bundler and requires the same file. A test lists the
+functions outside `src/haute/_path_resolution.py` that anchor a relative
+path, and only lets the list shrink.
 
 **Dependencies:** None.
 
