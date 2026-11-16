@@ -8,10 +8,10 @@ counts as covered. Remove a phase when it has run and its findings are
 written up. Delete the file, its section in the [index](README.md) and its
 entry in `_ROADMAP_SUPPORTING_REPORTS` when no phase remains.
 
-Phases 1 to 3 ran from 10 to 12 November 2026 and are removed from this
+All five phases ran from 10 to 16 November 2026 and are removed from this
 file. Their findings are packages in the component roadmaps; what they did
-not finish is under [Left from phases 1 to 3](#left-from-phases-1-to-3).
-Phases 4 and 5 wait on the [decisions](#decisions) at the end.
+not finish is under [Left from phases 1 to 3](#left-from-phases-1-to-3)
+and [Left from phases 4 and 5](#left-from-phases-4-and-5).
 
 ## Where the review stands on 12 November 2026
 
@@ -31,8 +31,9 @@ fourth time. They covered it by what the product does: every node type,
 reader, route and command was given wrong inputs made by machine, writing
 operations were failed and killed at each step, results were compared with
 answers computed another way, and the editor and the underwriter app were
-driven in a real browser. None of it ran on Linux, in a container, against
-a database server or against Databricks, which is phase 4.
+driven in a real browser. Phases 4 and 5 then ran on Linux and against
+database servers, and had a second model family read the changed code.
+Nothing ran against Databricks.
 
 ## Method
 
@@ -180,38 +181,62 @@ item lacks.
 | A page reloaded during a training run shows a refused memory estimate, nothing of the run, and never its result | A decision: no route lets a page find a node's running job |
 | `haute run` prints a traceback after its one-line error when a node's own code raises, as the CLI specification prescribes | A decision |
 
-## Phase 4: environments not yet run
+## Left from phases 4 and 5
 
-- **Linux under WSL.** The code that only runs there (memory caps read from
-  the control group, file locking, freshness, signals), and a project
-  written on Windows run on Linux: path separators, line endings, case.
-- **Database servers.** The quote store's amendment conflicts, failed
-  migrations and dropped connections on SQL Server and PostgreSQL, through
-  the fixtures CI uses (`HAUTE_TEST_SQLSERVER_URL`,
-  `HAUTE_TEST_POSTGRESQL_URL`). A provider with no server available is
-  recorded as not run; SQLite alone is not coverage of the other two.
-- **Containers**, which need Docker. The underwriter app's image, which none
-  of Haute's own workflows builds; a container with a memory limit set; and
-  the deploy image on more than the one example the weekly workflow runs.
-- **Hosted and Databricks** cannot be exercised without a workspace. They
-  stay a stated limit unless one is provided.
+Phases 4 and 5 ran from 12 to 16 November 2026. Phase 4 ran the quote
+store on SQL Server 2022 and PostgreSQL 16 in Docker, a project made on
+Windows on Linux under WSL, and the Linux-only code: memory limits read
+from the control group, file locks, freshness and signals. Phase 5 gave a
+second model family (Codex) the diff since the 31 October audit, one area
+a run; a worker built a run for each candidate it named, and the main
+session ran each again. It also read the likeliest findings of the
+compilers and linters and the scripts CI depends on. Their findings are
+packages in the component roadmaps.
 
-## Phase 5: reading where it still pays
+### Planned cases that were not reached
 
-- **The diff since the last audit** (`edde9e169..HEAD`) in the areas not yet
-  read: the assistant, the optimiser, expressions and lineage, the execution
-  engine, and the frontend's workbench, editors, utilities and types.
-- **Questions asked of the whole codebase.** For every cache, what is in its
-  key against what changes its answer. Every rule written twice. Every
-  dispatch over node type, job status or error code that could miss a
-  member.
-- **Compilers and linters as finders.** TypeScript with unchecked-index
-  checking, and the type-aware ESLint rules for exhaustive switches, values
-  in template strings and conditions that cannot vary; pyright and mypy's
-  unreachable-code warning over the backend; a linter over the workflows.
-  Their output is read for defects; clearing warnings is not part of the
-  review.
-- **The scripts CI depends on.** The historical benchmark scripts wait.
+- **Containers.** The sweep was stopped part-way. The underwriter app's
+  image and the deploy image for ten examples were built; what a worker
+  saw of the deploy image is in the table below, and nothing else of
+  either was recorded.
+- **Database servers under failure.** The sweep of amendment conflicts,
+  failed migrations and dropped connections was stopped part-way; what it
+  reported is in the table below.
+- **Linux.** Two snapshot builds at once and a build against a clear; the
+  git lock across two servers; a kernel older than 6.13, where a file's
+  change time is coarser.
+- **Hosted and Databricks.** Not run: no workspace.
+- **Linters.** About 1,770 of 1,950 findings were not read; the 180
+  likeliest held no defect.
+
+### Reported by a worker and not run again
+
+A worker reproduced each of these on 16 November 2026. The main session
+did not run them again, so none is a package yet. Each needs one more run.
+
+| Lead | What the worker saw |
+|---|---|
+| A deployed container answers an array of two quotes with 507 below 8 GiB of memory | 507 `in_flight_memory_budget_exceeded` at 2, 4 and 6 GiB with nothing logged; one quote always answers |
+| A deployed container with one CPU hangs on an array of two quotes | No answer for 300 seconds, then 504, and the next batch 507; with two Polars threads it answers in 2.5 seconds |
+| A creation sent twice under one operation key is refused as taken | 409 `reference_taken` for the second in 3% to 27% of rounds on PostgreSQL and SQL Server; never on SQLite |
+| A store connection lost in the middle of a write | A bare 500 for a create, a save and an amendment; only a loss at the commit is answered 503 in words |
+| A quote store whose foreign key refers to other columns passes the check | The store opens; the first creation is a 500 |
+| A quote store without the unique constraint on the operation key passes the check | One alternative sent twice at once under one key makes two options, 30 rounds of 30 |
+| A password corrected in `.env` while the editor runs | Refresh of the database schema keeps failing with the old value until the editor restarts |
+
+### Seen and judged below the bar
+
+- A held lock file that is deleted or replaced on Linux lets a second
+  process take the lock at once. It needs the cache folder removed under a
+  running server.
+- Two servers started with different `TMPDIR` values both hold one
+  project's lock. The specification puts the lock in the user's temporary
+  directory.
+- A trained result is not marked out of date after its data file is
+  replaced. The specification defines that mark on the configuration.
+- The release's smoke test passes a package that holds no pages; the
+  monthly sandbox survey and the mutation lane stay as their owner left
+  them.
 
 ## Order, budget and stopping
 
@@ -221,9 +246,12 @@ from its list of cases and its pilot, as this plan said it would, and every
 candidate was run a second time by the main session before it was written
 up.
 
-Of what is left, the items under [Left from phases 1 to
-3](#left-from-phases-1-to-3) need nothing new and can be taken first, in
-any order. Phases 4 and 5 follow, each once its decision is made.
+Phases 4 and 5 took four days, most of it workers' time. The reader from
+a second model family was the most productive finder: 82 candidates in 22
+runs, and nearly every one that was run reproduced.
+
+What is left needs nothing new and can be taken in any order. The seven
+leads a worker reported come first: each is one run from a package.
 
 A phase has run when every planned case has evidence or a recorded deferral.
 The work can stop after any phase with a statement of coverage.
@@ -239,9 +267,4 @@ and the providers and environments that were not run.
 
 | Decision | Recommendation |
 |---|---|
-| A second model family (Codex) over the diff since the last audit and over each sweep's candidates | Yes, for the diff. It costs quota. |
-| A local server, a browser, a local MLflow server, and small training and optimiser runs on the development machine, one at a time | Agreed on 10 November 2026. What is left from phases 1 to 3 needs nothing else. |
-| A clone and a Linux environment inside WSL, which downloads public packages and never touches the Windows `.venv` | Yes. |
-| Docker Desktop, for the container items in phase 4 and for a SQL Server | Decide when phase 4 comes up. PostgreSQL can be installed inside WSL without it. |
-| Two public tools run without installing them: schemathesis and pyright | Yes. |
 | A Databricks workspace, for the hosted app and the Databricks inputs | Provide one, or accept the limit. |

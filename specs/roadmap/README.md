@@ -122,9 +122,9 @@ order for finding defects in the part of the backend and frontend that the
 failures, one answer computed more than one way, the editor in a real
 browser, and environments not yet run. It is a supporting report and owns
 no work; a reproduced finding becomes a package in its component's roadmap
-above, and a phase leaves the plan when it has run. Phases 1 to 3 ran from
-10 to 12 November 2026 and have left it: it now holds what they did not
-reach, and phases 4 and 5.
+above, and a phase leaves the plan when it has run. All five phases ran
+from 10 to 16 November 2026 and have left it: it now holds what they did
+not reach, and seven leads a worker reported that need one more run.
 
 ## Working protocol
 
