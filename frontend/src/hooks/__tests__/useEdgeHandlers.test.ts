@@ -441,16 +441,18 @@ describe("useEdgeHandlers", () => {
 
   it("onConnectEnd prevents self-loop", () => {
     const params = makeParams()
+    showCanvas({ nodes: [identifiedNode("a")] })
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
       result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "a", to: "a" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("onConnectEnd prevents duplicate edges", () => {
     const params = makeParams()
-    showCanvas({ edges: [
+    showCanvas({ nodes: [identifiedNode("a"), identifiedNode("b")], edges: [
       { id: "e1", source: "a", target: "b", sourceHandle: null, targetHandle: null } as Edge,
     ] })
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -458,6 +460,7 @@ describe("useEdgeHandlers", () => {
       result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "a", to: "b" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("onConnectEnd preserves targetHandle for submodel nodes", () => {
@@ -512,7 +515,7 @@ describe("useEdgeHandlers", () => {
       id: "exp1",
       data: { label: "Expander", nodeType: NODE_TYPES.SCENARIO_EXPANDER },
     } as unknown as Node
-    showCanvas({ nodes: [expanderNode], edges: [
+    showCanvas({ nodes: [identifiedNode("a"), identifiedNode("b"), expanderNode], edges: [
       { id: "e1", source: "a", target: "exp1" } as Edge,
     ] })
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -520,6 +523,7 @@ describe("useEdgeHandlers", () => {
       result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "b", to: "exp1" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("onConnectEnd blocks a second explore input", () => {
@@ -528,7 +532,7 @@ describe("useEdgeHandlers", () => {
       id: "explore1",
       data: { label: "Explore", nodeType: NODE_TYPES.EXPLORE },
     } as unknown as Node
-    showCanvas({ nodes: [exploreNode], edges: [
+    showCanvas({ nodes: [identifiedNode("a"), identifiedNode("b"), exploreNode], edges: [
       { id: "e1", source: "a", target: "explore1" } as Edge,
     ] })
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -536,6 +540,7 @@ describe("useEdgeHandlers", () => {
       result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "b", to: "explore1" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("onConnectEnd allows connection when target has not reached maxInputs", () => {
@@ -982,6 +987,7 @@ describe("useEdgeHandlers", () => {
   it("onConnectEnd rejects edgeJoin connections without a role target handle", () => {
     const params = makeParams()
     showCanvas({ nodes: [
+      identifiedNode("quotes"),
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
     ] })
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -993,11 +999,14 @@ describe("useEdgeHandlers", () => {
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual(["Edge join connections must target the base or join handle"])
   })
 
   it("onConnectEnd rejects duplicate edgeJoin role connections", () => {
     const params = makeParams()
     showCanvas({ nodes: [
+      identifiedNode("a"),
+      identifiedNode("c"),
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
     ], edges: [
       { id: "e-a-join", source: "a", target: "join1", targetHandle: "base" } as Edge,
@@ -1013,11 +1022,15 @@ describe("useEdgeHandlers", () => {
 
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual(["Edge join already has a base input"])
   })
 
   it("onConnectEnd rejects a third edgeJoin input", () => {
     const params = makeParams()
     showCanvas({ nodes: [
+      identifiedNode("a"),
+      identifiedNode("b"),
+      identifiedNode("c"),
       { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
     ], edges: [
       { id: "e-a-join", source: "a", target: "join1", targetHandle: "base" } as Edge,
@@ -1034,6 +1047,7 @@ describe("useEdgeHandlers", () => {
 
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual(["Edge join already has a join input"])
   })
 
   it("onConnectEnd inserts an edgeJoin node when a connection is dropped on an edge", async () => {
@@ -1329,9 +1343,8 @@ describe("useEdgeHandlers", () => {
     })
   })
 
-  it("onConnectEnd ignores invalid node-to-node endings unless both handles are source outputs", () => {
-    const params = makeParams()
-    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+  it("onConnectEnd ignores invalid node-to-node endings unless both handles are source outputs", async () => {
+    const params = makeEdgeJoinInsertionParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
 
     act(() => {
@@ -1346,15 +1359,17 @@ describe("useEdgeHandlers", () => {
         } as never,
       )
     })
+    await flushIdentityCommit()
 
     expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
-  it("onConnectEnd ignores target-to-target endings", () => {
-    const params = makeParams()
-    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+  it("onConnectEnd ignores target-to-target endings", async () => {
+    const params = makeEdgeJoinInsertionParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
 
     act(() => {
@@ -1369,6 +1384,7 @@ describe("useEdgeHandlers", () => {
         }),
       )
     })
+    await flushIdentityCommit()
 
     expect(params.pushSnapshot).not.toHaveBeenCalled()
     expect(params.setEdges).not.toHaveBeenCalled()
