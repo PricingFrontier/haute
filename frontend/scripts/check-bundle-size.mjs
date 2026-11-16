@@ -273,7 +273,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // and the shared list's reordering, renaming in the row and Add button, bring the total
 // to 1,798.4 KiB (initial 294.5 KiB); 1,801 KiB restores about 2.6 KiB headroom. The
 // other limits are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1801
+// Submodel editing phase L (16 November 2026): the graph store's one document with an open
+// submodel's lift and projection, the request gateway and results kept by occurrence
+// bring the total to 1,803.7 KiB (initial 298.4 KiB); 1,806 KiB restores about 2.3 KiB
+// headroom. The other limits are unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1806
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
