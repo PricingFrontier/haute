@@ -479,7 +479,7 @@ export function makeTrainStatus(
 
 export function makeInputSummary(overrides: Partial<OptimiserInputSummary> = {}): OptimiserInputSummary {
   return {
-    node_id: "optimiser_1",
+    node: { occurrence: null, node_id: "optimiser_1", label: "optimiser_1" },
     data_source: "batch",
     source_file: "main.py",
     graph_fingerprint: "3f9a1c",

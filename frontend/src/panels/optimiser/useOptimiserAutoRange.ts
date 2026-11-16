@@ -1,3 +1,4 @@
+import type { NodeAddressPayload } from "../../generated/api-contracts.generated"
 import { useCallback, useEffect, useReducer, useRef } from "react"
 
 import {
@@ -192,8 +193,8 @@ type ActiveRun = {
 
 export type UseOptimiserAutoRangeOptions = {
   nodeId: string
-  /** The graph and this node's id in it that a request about the node sends. */
-  requestTarget: () => { graph: PreparedGraph; nodeId: string }
+  /** The graph and this node's address that a request about the node sends. */
+  requestTarget: () => { graph: PreparedGraph; node: NodeAddressPayload }
   /** Writes the filled ranges, merged over the constraints' other ranges. */
   writeRanges: (ranges: Record<string, FrontierRange>) => OnUpdateConfigResult
 }
@@ -271,7 +272,7 @@ export function useOptimiserAutoRange({
       const target = requestTarget()
       const start = await startOptimiserFrontierAutoRange({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         signal: active.controller.signal,
       })
       if (start.status === "started" && start.job_id) active.jobId = start.job_id

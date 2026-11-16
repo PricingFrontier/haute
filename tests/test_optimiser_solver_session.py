@@ -185,7 +185,10 @@ def _session_of(job_id: str) -> SolverSession:
 
 
 def _start(client: Any, graph: dict[str, Any]) -> str:
-    response = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+    response = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert response.status_code == 200, response.text
     return str(response.json()["job_id"])
 
@@ -463,7 +466,10 @@ class TestSessionLifecycle:
         while True:
             again = client.post(
                 "/api/optimiser/solve",
-                json={"graph": _online_graph(_scored_parquet(project)), "node_id": "opt"},
+                json={
+                    "graph": _online_graph(_scored_parquet(project)),
+                    "target": {"occurrence": None, "node_id": "opt"},
+                },
             )
             if again.status_code == 200 or time.monotonic() > deadline:
                 break
@@ -788,6 +794,9 @@ class TestSolveOwnership:
         graph = _online_graph(_scored_parquet(project))
         first = _poll(client, _start(client, graph))
         assert first["status"] == "error", first
-        retry = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        retry = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert retry.status_code == 200, retry.text
         assert _poll(client, retry.json()["job_id"])["status"] == "completed"

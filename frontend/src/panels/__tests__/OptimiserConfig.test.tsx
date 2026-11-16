@@ -1633,7 +1633,7 @@ describe("OptimiserConfig", () => {
             ],
             edges: [expect.objectContaining({ source: "input_1", target: "opt_1" })],
           }),
-          node_id: "opt_1",
+          target: { occurrence: null, node_id: "opt_1" },
         }),
       )
     })
@@ -1677,7 +1677,7 @@ describe("OptimiserConfig", () => {
             }),
           },
         }),
-        node_id: "submodel_runtime/pricing/opt_1",
+        target: { occurrence: "pricing", node_id: "opt_1" },
       })
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledWith(sent))
       fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
@@ -2691,7 +2691,7 @@ describe("OptimiserConfig", () => {
             nodes: [expect.objectContaining({ id: "input_1" }), expect.objectContaining({ id: "opt_1" })],
             edges: [expect.objectContaining({ source: "input_1", target: "opt_1" })],
           }),
-          node_id: "opt_1",
+          target: { occurrence: null, node_id: "opt_1" },
           signal: expect.any(AbortSignal),
         })
         expect(mockGetOptimiserFrontierAutoRangeStatus).toHaveBeenCalledWith(

@@ -34,6 +34,7 @@ from tests.conftest import (
     make_file_output_config,
     make_graph,
 )
+from tests.optimiser_fixtures import optimiser_request
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -1341,7 +1342,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context() -> None:
             "edges": [],
         }
     )
-    body = OptimiserSolveRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserSolveRequest, graph)
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})

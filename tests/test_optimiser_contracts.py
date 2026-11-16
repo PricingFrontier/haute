@@ -595,7 +595,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
             "/api/optimiser/solve",
             json={
                 "graph": _make_expander_optimiser_graph(str(source_path)),
-                "node_id": "opt",
+                "target": {"occurrence": None, "node_id": "opt"},
             },
         )
         assert grid_captured.wait(timeout=10.0)
@@ -720,7 +720,7 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
     ):
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         setup_launch.assert_called_once()
@@ -1026,7 +1026,7 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
     with patch.object(optimiser_routes._solve_service, "_launch_background"):
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         status = _poll_solve_status(client, resp.json()["job_id"])
@@ -1200,7 +1200,7 @@ def test_real_solve_apply_totals_match_selected_rows(
 
     solve_resp = client.post(
         "/api/optimiser/solve",
-        json={"graph": graph, "node_id": "opt"},
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
     )
     assert solve_resp.status_code == 200
     job_id = solve_resp.json()["job_id"]
@@ -1237,7 +1237,7 @@ def test_real_solve_apply_totals_match_selected_rows(
 
 
 _PROVENANCE = {
-    "node_id": "opt",
+    "node": {"occurrence": None, "node_id": "opt", "label": "optimiser"},
     "data_source": "batch",
     "source_file": "main.py",
     "graph_fingerprint": "fp-1",
@@ -1741,7 +1741,7 @@ class TestInputSummary:
         assert payload["input_summary"] == {
             "n_quotes": 10,
             "n_steps": 3,
-            "node_id": "opt",
+            "node": {"occurrence": None, "node_id": "opt", "label": "optimiser"},
             "data_source": "scenario_b",
             "source_file": "main.py",
             "graph_fingerprint": "graph-fingerprint",
@@ -1854,7 +1854,7 @@ class _FakeSolveResult:
 # A running solve job; its config names the constraint the fake result reports.
 # Recorded on every solve job when it is created.
 _FINALIZE_PROVENANCE = {
-    "node_id": "opt",
+    "node": {"occurrence": None, "node_id": "opt", "label": "optimiser"},
     "data_source": "batch",
     "source_file": None,
     "graph_fingerprint": "fp",

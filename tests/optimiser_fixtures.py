@@ -24,12 +24,34 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from unittest.mock import MagicMock
 
 import polars as pl
 
 from tests._project import use_project
+
+if TYPE_CHECKING:
+    from haute._node_address_schemas import NodeTargetRequest
+
+RequestT = TypeVar("RequestT", bound="NodeTargetRequest")
+
+
+# ---------------------------------------------------------------------------
+# Requests
+# ---------------------------------------------------------------------------
+
+
+def optimiser_request(
+    request_type: type[RequestT], graph: Any, node_id: str = "opt", **fields: Any
+) -> RequestT:
+    """An optimiser request for the pipeline node *node_id*, its target resolved over the
+    request's own graph as the route resolves it over the flattened one."""
+    from haute._node_addresses import resolved_request
+
+    body = request_type(graph=graph, target={"occurrence": None, "node_id": node_id}, **fields)
+    return resolved_request(body, body.graph)  # type: ignore[attr-defined]
+
 
 # ---------------------------------------------------------------------------
 # Frontier point + data shapes
@@ -211,9 +233,10 @@ def make_frontier_data(
 # ---------------------------------------------------------------------------
 
 
-# The ``input_provenance`` a solve job records when it is created.
-SOLVE_PROVENANCE: dict[str, str | None] = {
-    "node_id": "opt",
+# The ``input_provenance`` a solve job records when it is created: the optimiser node
+# (``_make_optimiser_graph``'s ``opt``) by address and label.
+SOLVE_PROVENANCE: dict[str, Any] = {
+    "node": {"occurrence": None, "node_id": "opt", "label": "optimiser"},
     "data_source": "batch",
     "source_file": "main.py",
     "graph_fingerprint": "graph-fingerprint",
@@ -235,7 +258,7 @@ SOLVE_SCENARIO_GRID: list[dict[str, Any]] = make_scenario_grid()
 def make_input_summary(**overrides: Any) -> dict[str, Any]:
     """A solve result's ``input_summary``: the job's provenance and solver settings."""
     summary: dict[str, Any] = {
-        "node_id": "opt",
+        "node": {"occurrence": None, "node_id": "opt", "label": "optimiser"},
         "data_source": "batch",
         "source_file": "main.py",
         "graph_fingerprint": "graph-fingerprint",

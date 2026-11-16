@@ -218,7 +218,7 @@ export default function OptimiserConfig({
       const target = requestTarget()
       return estimateOptimiserSolve({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         source: activeSource,
         signal,
       })

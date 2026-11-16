@@ -1739,7 +1739,8 @@ export function saveTrainedModel(
 
 export interface SolveOptimiserArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }
@@ -1752,7 +1753,8 @@ export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolve
 
 export interface EstimateOptimiserSolveArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
   timeout?: number | null
@@ -1827,7 +1829,8 @@ export function logOptimiserToMlflow(
 
 export interface StartOptimiserFrontierAutoRangeArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }

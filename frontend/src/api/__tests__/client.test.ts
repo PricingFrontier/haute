@@ -967,11 +967,12 @@ describe("endpoint contracts", () => {
   })
 
   it("solveOptimiser posts to /api/optimiser/solve", async () => {
-    await solveOptimiser({ graph: preparedDummyGraph, node_id: "opt1" })
+    await solveOptimiser({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" } })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/optimiser/solve")
     const body = JSON.parse(opts.body)
-    expect(body.node_id).toBe("opt1")
+    expect(body.target).toEqual({ occurrence: null, node_id: "opt1" })
+    expect(body).not.toHaveProperty("node_id")
   })
 
   it("listFiles GETs /api/files with dir and optional extensions", async () => {
@@ -1706,7 +1707,7 @@ describe("request() edge cases", () => {
         previewInputs({ graph: preparedDummyGraph, target: nodeTarget("node1"), signal }),
         traceCell({ graph: preparedDummyGraph, row_index: 0, target: nodeTarget("node1"), seed_plan: [], signal }),
         writeOutput({ graph: preparedDummyGraph, nodeId: "out", signal }),
-        estimateOptimiserSolve({ graph: preparedDummyGraph, node_id: "opt", signal }),
+        estimateOptimiserSolve({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt" }, signal }),
       ]
       const settled = calls.map(() => false)
       calls.forEach((call, index) => {
@@ -1920,7 +1921,7 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("solveOptimiser body omits streaming_chunk_size", async () => {
-    await solveOptimiser({ graph: preparedDummyGraph, node_id: "opt1" })
+    await solveOptimiser({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" } })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
@@ -1928,7 +1929,7 @@ describe("no request carries streaming_chunk_size", () => {
   it("estimateOptimiserSolve body omits streaming_chunk_size", async () => {
     const { estimateOptimiserSolve } = await import("../client")
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_estimate_response")))
-    await estimateOptimiserSolve({ graph: preparedDummyGraph, node_id: "opt1" })
+    await estimateOptimiserSolve({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" } })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
@@ -1936,7 +1937,7 @@ describe("no request carries streaming_chunk_size", () => {
   it("startOptimiserFrontierAutoRange body omits streaming_chunk_size", async () => {
     const { startOptimiserFrontierAutoRange } = await import("../client")
     mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
-    await startOptimiserFrontierAutoRange({ graph: preparedDummyGraph, node_id: "opt1" })
+    await startOptimiserFrontierAutoRange({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" } })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

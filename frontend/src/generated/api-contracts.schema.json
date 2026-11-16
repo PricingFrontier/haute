@@ -17939,9 +17939,8 @@
           "title": "Graph Fingerprint",
           "type": "string"
         },
-        "node_id": {
-          "title": "Node Id",
-          "type": "string"
+        "node": {
+          "$ref": "#/$defs/NodeAddressEntry"
         },
         "solver_settings": {
           "$ref": "#/$defs/OptimiserSolverSettings"
@@ -17959,7 +17958,7 @@
         }
       },
       "required": [
-        "node_id",
+        "node",
         "data_source",
         "source_file",
         "graph_fingerprint",

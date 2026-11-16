@@ -2605,7 +2605,7 @@ export interface OptimiserCombinedFactorBounds {
 export interface OptimiserInputSummary {
   data_source: string;
   graph_fingerprint: string;
-  node_id: string;
+  node: NodeAddressEntry;
   solver_settings: OptimiserSolverSettings;
   source_file: string | null;
 }

@@ -718,7 +718,10 @@ def test_the_optimiser_estimate_counts_in_the_spawn_worker(
         ):
             response = client.post(
                 "/api/optimiser/estimate",
-                json={"graph": _online_graph(str(path)), "node_id": "opt"},
+                json={
+                    "graph": _online_graph(str(path)),
+                    "target": {"occurrence": None, "node_id": "opt"},
+                },
             )
     finally:
         shutdown_interactive_worker_pool()

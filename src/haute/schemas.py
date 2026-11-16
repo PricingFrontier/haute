@@ -4629,9 +4629,8 @@ class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
 # ---------------------------------------------------------------------------
 
 
-class OptimiserSolveRequest(BaseModel):
+class OptimiserSolveRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -4640,7 +4639,7 @@ class OptimiserSolveResponse(BaseModel):
     error: str | None = None
 
 
-class OptimiserEstimateRequest(BaseModel):
+class OptimiserEstimateRequest(NodeTargetRequest):
     """Body for the optimiser-cost estimate.
 
     Used by the frontend to preview the solver input volume before kicking
@@ -4652,7 +4651,6 @@ class OptimiserEstimateRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -4679,9 +4677,8 @@ class OptimiserEstimateResponse(BaseModel):
     session's native cap enforces; 0 when the machine has none to give."""
 
 
-class OptimiserFrontierAutoRangeRequest(BaseModel):
+class OptimiserFrontierAutoRangeRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -4893,7 +4890,8 @@ class OptimiserInputSummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node_id: str
+    node: NodeAddressEntry
+    """The optimiser node the solve ran, by address and authored label."""
     data_source: str
     """The batch scenario the pipeline executed against."""
     source_file: str | None

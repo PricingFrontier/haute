@@ -333,7 +333,7 @@ def test_optimiser_estimate_setup_allows_opaque_data_source_projection(
 
     resp = client.post(
         "/api/optimiser/estimate",
-        json={"graph": graph, "node_id": node_id},
+        json={"graph": graph, "target": {"occurrence": None, "node_id": node_id}},
     )
 
     assert resp.status_code == 200, resp.text
@@ -357,7 +357,7 @@ def test_optimiser_estimate_accepts_upstream_group_by(
 
     resp = client.post(
         "/api/optimiser/estimate",
-        json={"graph": graph, "node_id": "online_optimiser"},
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "online_optimiser"}},
     )
 
     assert resp.status_code == 200, resp.text

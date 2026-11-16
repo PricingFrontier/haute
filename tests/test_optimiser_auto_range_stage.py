@@ -26,6 +26,7 @@ from haute.routes._optimiser_session import ESTIMATE_HOLDERS
 from haute.schemas import OptimiserFrontierAutoRangeRequest
 from tests._project import use_project
 from tests.conftest import make_edge, make_graph
+from tests.optimiser_fixtures import optimiser_request
 
 _QUOTES = 40
 _SCENARIOS = 3
@@ -88,7 +89,7 @@ def _body(path: Path, **config: Any) -> OptimiserFrontierAutoRangeRequest:
             "edges": [make_edge("source", "opt").model_dump()],
         }
     )
-    return OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    return optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
 
 
 def _run(
@@ -270,7 +271,7 @@ def test_one_auto_range_job_compiles_its_preamble_under_one_pinned_fingerprint(
     graph = _body(scored).graph.model_copy(
         update={"preamble": "PREAMBLE_CONST = 42\n", "source_file": str(tmp_path / "pipeline.py")}
     )
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
     fingerprints: list[str | None] = []
     real_compile = haute.executor._compile_preamble
 
@@ -305,7 +306,7 @@ def test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand(
             "edges": [*single.edges, make_edge("side_source", "opt")],
         }
     )
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
 
     _node, prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 

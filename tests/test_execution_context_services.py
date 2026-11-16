@@ -32,7 +32,7 @@ from tests.conftest import (
     make_output_config,
     make_ram_estimate,
 )
-from tests.optimiser_fixtures import setup_grid_stub
+from tests.optimiser_fixtures import optimiser_request, setup_grid_stub
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -95,7 +95,7 @@ def test_optimiser_auto_range_start_admits_nothing_in_the_request_thread(monkeyp
             "edges": [],
         }
     )
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
     service = OptimiserSolveService(JobStore())
     with (
         patch.object(
@@ -577,7 +577,7 @@ def test_optimiser_start_creates_admitted_setup_context(
         lambda: 128 * 1024 * 1024,
     )
     graph = _minimal_optimiser_setup_graph()
-    body = OptimiserSolveRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserSolveRequest, graph)
     scored_lf = pl.LazyFrame(
         {
             "quote_id": ["q1"],
@@ -630,7 +630,7 @@ def test_optimiser_cancel_during_setup_prevents_worker_launch(
 
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     graph = _minimal_optimiser_setup_graph()
-    body = OptimiserSolveRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserSolveRequest, graph)
     scored_lf = pl.LazyFrame(
         {
             "quote_id": ["q1"],
@@ -684,7 +684,7 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
 
     with patch.object(service, "_execute_pipeline") as execute_pipeline:
         with patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread):
-            response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+            response = service.start(optimiser_request(OptimiserSolveRequest, graph))
 
     assert response.status == "started"
     execute_pipeline.assert_not_called()
@@ -724,7 +724,7 @@ def test_optimiser_start_maps_runtime_memory_failure_to_http_507(
         patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread),
         patch.object(service, "_execute_pipeline", side_effect=memory_error),
     ):
-        response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+        response = service.start(optimiser_request(OptimiserSolveRequest, graph))
 
     assert response.status == "started"
     job = next(iter(service._store.list_jobs().values()))
@@ -762,7 +762,7 @@ def test_optimiser_start_records_setup_stage_metrics_when_memory_limited(
         patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread),
         patch.object(service, "_execute_pipeline", return_value={"source": scored_lf}),
     ):
-        response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+        response = service.start(optimiser_request(OptimiserSolveRequest, graph))
 
     assert response.status == "started"
     job = next(iter(store.list_jobs().values()))
@@ -807,7 +807,7 @@ def test_optimiser_start_preserves_typed_memory_http_exception_metrics(
             side_effect=InsufficientMemoryError(memory_payload),
         ),
     ):
-        response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+        response = service.start(optimiser_request(OptimiserSolveRequest, graph))
 
     assert response.status == "started"
     job = next(iter(store.list_jobs().values()))
@@ -899,7 +899,7 @@ def test_auto_range_cancel_reaches_the_background_jobs_execution_token() -> None
             "edges": [],
         }
     )
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
     service = OptimiserSolveService(JobStore())
     captured: dict[str, Any] = {}
 
@@ -944,7 +944,7 @@ def test_auto_range_duplicate_start_reuses_running_job_without_relaunching() -> 
             "edges": [],
         }
     )
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
     store = JobStore()
     service = OptimiserSolveService(store)
     captured_tokens = []
@@ -994,7 +994,7 @@ def test_auto_range_background_memory_limit_status_exposes_typed_error(
             "edges": [],
         }
     )
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
     node = graph.nodes[0]
     store = JobStore()
     service = OptimiserSolveService(store)
@@ -1057,7 +1057,7 @@ def test_auto_range_background_preserves_typed_memory_http_exception_status() ->
             "edges": [],
         }
     )
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})

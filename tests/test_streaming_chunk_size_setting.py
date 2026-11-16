@@ -228,7 +228,8 @@ def test_an_estimate_completes_while_a_solve_is_running(
 
     def estimate() -> None:
         outcome["response"] = client.post(
-            "/api/optimiser/estimate", json={"graph": graph, "node_id": "opt"}
+            "/api/optimiser/estimate",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
     with patch("haute.routes._optimiser_service._solve_online", side_effect=blocking_solve):

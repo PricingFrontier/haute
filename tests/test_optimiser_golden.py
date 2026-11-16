@@ -104,7 +104,7 @@ def test_build_artifact_payload_matches_online_golden_snapshot(
             ],
         },
         "input_provenance": {
-            "node_id": "my_opt",
+            "node": {"occurrence": None, "node_id": "my_opt", "label": "My Opt"},
             "data_source": "batch",
             "source_file": "main.py",
             "graph_fingerprint": "f00d",
@@ -150,7 +150,7 @@ def test_build_artifact_payload_matches_ratebook_golden_snapshot(
             "max_cd_iterations": 6,
         },
         "input_provenance": {
-            "node_id": "ratebook_opt",
+            "node": {"occurrence": None, "node_id": "ratebook_opt", "label": "Ratebook Opt"},
             "data_source": "batch",
             "source_file": None,
             "graph_fingerprint": "beef",

@@ -1024,8 +1024,10 @@ class TestRequiredFieldValidation:
         assert "target" in missing
 
     def test_optimiser_solve_requires_fields(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as caught:
             OptimiserSolveRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert {"graph", "target"} <= missing
 
     def test_optimiser_apply_requires_job_id(self):
         with pytest.raises(ValidationError):

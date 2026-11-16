@@ -170,14 +170,15 @@ def test_optimiser_execution_routes_reject_external_graph_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     graph = PipelineGraph(source_file=str(tmp_path.parent / "external" / "pipeline.py"))
+    optimiser = {"occurrence": None, "node_id": "optimiser"}
 
     if route_name == "solve":
         monkeypatch.setattr(optimiser_routes._solve_service, "start", lambda _body: object())
         route = optimiser_routes.solve
-        body = OptimiserSolveRequest(graph=graph, node_id="optimiser")
+        body = OptimiserSolveRequest(graph=graph, target=optimiser)
     elif route_name == "estimate":
         route = optimiser_routes.estimate_solve
-        body = OptimiserEstimateRequest(graph=graph, node_id="optimiser")
+        body = OptimiserEstimateRequest(graph=graph, target=optimiser)
     else:
         monkeypatch.setattr(
             optimiser_routes._solve_service,
@@ -185,7 +186,7 @@ def test_optimiser_execution_routes_reject_external_graph_source(
             lambda _body: object(),
         )
         route = optimiser_routes.start_frontier_auto_range
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="optimiser")
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, target=optimiser)
 
     with pytest.raises(HTTPException) as exc_info:
         route(body)

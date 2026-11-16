@@ -481,12 +481,11 @@ def test_one_node_instance_cross_path_proof(
             endpoint = (
                 "/api/modelling/train" if kind == NodeType.MODELLING else "/api/optimiser/solve"
             )
-            # Training names the copy's node by address; the optimiser by its runtime key.
-            body = (
-                {"graph": raw, "target": {"occurrence": "rate_calc_2", "node_id": "rate_calc_node"}}
-                if kind == NodeType.MODELLING
-                else {"graph": raw, "node_id": target}
-            )
+            # Training and the optimiser both name the copy's node by address.
+            body = {
+                "graph": raw,
+                "target": {"occurrence": "rate_calc_2", "node_id": "rate_calc_node"},
+            }
             started = client.post(endpoint, json=body)
             assert started.status_code == 200, started.text
             job_id = started.json()["job_id"]
@@ -505,6 +504,17 @@ def test_one_node_instance_cross_path_proof(
                 assert result["development_rows"] > 0
                 assert Path(result["model_path"]).is_file()
             else:
+                # The solve records the copy's node by address and authored label, never the
+                # key it runs under.
+                assert graph.submodels is not None
+                definition = graph.submodels[
+                    graph.node_map["rate_calc_2"].data.config["definition_id"]
+                ]
+                assert result["input_summary"]["node"] == {
+                    "occurrence": "rate_calc_2",
+                    "node_id": "rate_calc_node",
+                    "label": definition.graph.node_map["rate_calc_node"].data.label,
+                }
                 from price_contour import OnlineOptimiser
 
                 reference = OnlineOptimiser(

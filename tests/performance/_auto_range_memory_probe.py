@@ -181,6 +181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from catboost import CatBoostRegressor
 
     from haute._mlflow_io import ScoringModel
+    from haute._node_addresses import resolved_request
     from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
@@ -194,8 +195,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     scoring_model = ScoringModel(model=model, feature_names=list(FEATURES), flavor="catboost")
     body = OptimiserFrontierAutoRangeRequest(
         graph=build_graph(fixture / "base.parquet", steps=args.steps),
-        node_id="opt",
+        target={"occurrence": None, "node_id": "opt"},
     )
+    # The route resolves the target before the service reads its runtime key.
+    body = resolved_request(body, body.graph)
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job(
