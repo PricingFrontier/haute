@@ -19,7 +19,7 @@ import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { isSubmodelDefinition, nodeData, type SubmodelPortData } from "../types/node"
 import { documentGraphPayload } from "./buildGraph"
-import { childAddress, nodeFrame, rootAddress, type FrameTarget, type NodeAddress } from "./nodeAddress"
+import { addressKey, childAddress, nodeFrame, rootAddress, type FrameTarget, type NodeAddress } from "./nodeAddress"
 import { encodeRuntimeIdPart, qualifiedRuntimeNodeId } from "./submodelRuntimeTarget"
 import { NODE_TYPES } from "./nodeTypes"
 
@@ -169,6 +169,29 @@ export function answerNodeNamer(): (id: string) => SimpleNode | null {
 }
 
 /**
+ * The canvas id of each node an answer names by runtime id, in the view now (taken when
+ * a request is sent): a child of the open occurrence by its own id, one of the pipeline's
+ * own at the root; null for a node the canvas does not show.
+ */
+export function canvasIdNamer(): (runtimeId: string) => string | null {
+  const view = viewNow()
+  return (id) => {
+    const address = addressInView(view, id)
+    return address.occurrence === view.occurrence ? address.node : null
+  }
+}
+
+/**
+ * The key a canvas node's results are kept under (`addressKey`): its id on the main
+ * pipeline, its address's key inside an open submodel, so two occurrences of one
+ * definition keep their own. Taken when a request is prepared or a node selected,
+ * never from an id an answer names.
+ */
+export function resultKey(nodeId: string): string {
+  return addressKey(canvasNodeAddress(nodeId))
+}
+
+/**
  * The node on the canvas by its address: one of the pipeline's own at the root, a
  * child (or a boundary card) of the open occurrence inside one.
  */
@@ -205,6 +228,20 @@ export function canvasTarget(nodeId: string, handle?: string | null): FrameTarge
       : { kind: "occurrenceInput", occurrence: focus.instanceId, port }
   }
   return nodeFrame(childAddress(focus.instanceId, nodeId), handle ?? null)
+}
+
+/** A request about a canvas node, with the key its results are kept under. */
+export interface PreparedCanvasRequest extends PreparedNodeRequest {
+  readonly resultKey: string
+}
+
+/** A request about a canvas node at `handle` (`canvasTarget`), and its results' key. */
+export function prepareCanvasRequest(
+  scope: RequestScope | null | undefined,
+  nodeId: string,
+  handle?: string | null,
+): PreparedCanvasRequest {
+  return { ...prepareNodeRequest(scope, canvasTarget(nodeId, handle)), resultKey: resultKey(nodeId) }
 }
 
 /** A request about `target`: the whole pipeline, and the id and port the server runs it under. */

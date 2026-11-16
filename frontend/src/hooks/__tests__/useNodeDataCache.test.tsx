@@ -38,6 +38,7 @@ import {
   runNodeData,
 } from "../../api/client"
 import { makeNodeDataStatus } from "../../test-utils/factories"
+import { resultKey } from "../../utils/requestGateway"
 
 const mockGetPoint = vi.mocked(getNodeDataPoint)
 const mockRun = vi.mocked(runNodeData)
@@ -146,6 +147,23 @@ describe("useNodeDataCache", () => {
     expect(result.current.retention).toBe("pinned")
     expect(result.current.dataVersion).toBe("gen-1")
     expect(result.current.canBuild).toBe(true)
+  })
+
+  it("keeps an open submodel's consumer's point under its occurrence's key, as its readers look it up", async () => {
+    useGraphStore.setState({
+      nodes: nodes as never,
+      edges: edges as never,
+      focus: { instanceId: "pricing", definitionId: "definition_pricing", readOnly: false, rootNodes: [], rootEdges: [] },
+    })
+    mockGetPoint.mockResolvedValue(point({ consumer_node_id: "submodel_runtime/pricing/explore" }))
+
+    renderCache("explore")
+
+    await waitFor(() => expect(Object.keys(useNodeDataStore.getState().consumerSlots)).toContain(resultKey("explore")))
+    expect(mockGetPoint.mock.calls.at(-1)?.[0].node_id).toBe("submodel_runtime/pricing/explore")
+    // Neither the id the answer names nor the bare local id: another occurrence's child shares it.
+    expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("explore")
+    expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("submodel_runtime/pricing/explore")
   })
 
   it("holds a refused point as the node's state, not a toast", async () => {
@@ -290,7 +308,7 @@ describe("useNodeDataCache", () => {
 
     mockGetPoint.mockResolvedValue(point())
     act(() => {
-      useNodeDataStore.getState().observePoint(point(), "live", "identity-1")
+      useNodeDataStore.getState().observePoint(point(), "live", "identity-1", (point()).consumer_node_id)
     })
 
     await waitFor(() => expect(result.current.availability).toBe("current"))

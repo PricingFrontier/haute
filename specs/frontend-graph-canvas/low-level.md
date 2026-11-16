@@ -886,7 +886,11 @@ reconciliation rather than dropping them or committing a second mutation.
     feeding that port of this occurrence (`boundaryInputFrames`, the
     parent's frame for the edge's source handle, else its flat columns).
     Ports a preview did not reach keep their columns while the source is
-    unchanged (`drilledPreviewColumns.test.ts`). The maps' root ids are
+    unchanged (`drilledPreviewColumns.test.ts`). The route's per-node maps name
+    nodes by the ids the request ran them under, so a drilled preview's frames
+    are read under the child's runtime id, and the node statuses it answers are
+    also kept under each child's canvas id, read by the view the request was
+    sent from (`canvasIdNamer`). The maps' root ids are
     recorded on the pipeline's own nodes behind the open submodel
     (`recordRootPreviewColumns`), so they return with it; drilling into an
     occurrence again starts the Input card from the feeding root nodes'

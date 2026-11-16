@@ -13,6 +13,7 @@ import {
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { syncConnectionId } from "../api/syncConnection"
 import {
+  canvasIdNamer,
   canvasNodeAddress,
   documentRequestScope,
   preparePipelineRequest,
@@ -210,6 +211,8 @@ function resultToPreview(
   label: string,
   r: PreviewNodeResponse,
   selectedFrame?: string,
+  /** The id the request ran the node under; the route-level maps name it so. */
+  runtimeId: string = nodeId,
 ): PreviewData {
   return makePreviewData(nodeId, label, {
     status: r.status,
@@ -237,7 +240,7 @@ function resultToPreview(
     frame_columns:
       r.frame_columns && Object.keys(r.frame_columns).length > 0
         ? r.frame_columns
-        : ("node_frame_columns" in r ? r.node_frame_columns?.[nodeId] : undefined),
+        : ("node_frame_columns" in r ? r.node_frame_columns?.[runtimeId] : undefined),
     selected_frame: selectedFrame,
   })
 }
@@ -470,10 +473,22 @@ export function applyPreviewResultColumnsToNodes(
   return withColumns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, _notes: result.notes } } : n))
 }
 
-function canvasNodeStatuses(result: PreviewNodeResponse, requestedNodeId: string): Record<string, NodeStatus> {
+function canvasNodeStatuses(
+  result: PreviewNodeResponse,
+  requestedNodeId: string,
+  canvasIdOf: (runtimeId: string) => string | null,
+): Record<string, NodeStatus> {
+  // The answer names nodes by the ids the request ran them under; each node on the
+  // canvas also takes its status under its own id (a child of the open submodel).
   const statuses: Record<string, NodeStatus> = { ...(result.node_statuses ?? {}) }
-  const promoteWarning = (nodeId: string) => {
-    if (statuses[nodeId] === "ok") statuses[nodeId] = "warning"
+  for (const [runtimeId, status] of Object.entries(result.node_statuses ?? {})) {
+    const canvasId = canvasIdOf(runtimeId)
+    if (canvasId !== null && canvasId !== runtimeId) statuses[canvasId] = status
+  }
+  const promoteWarning = (runtimeId: string) => {
+    for (const nodeId of new Set([runtimeId, canvasIdOf(runtimeId) ?? runtimeId])) {
+      if (statuses[nodeId] === "ok") statuses[nodeId] = "warning"
+    }
   }
 
   for (const [nodeId, warnings] of Object.entries(result.node_schema_warnings ?? {})) {
@@ -854,6 +869,8 @@ export default function usePipelineAPI({
     const label = output?.outputName ?? nodeLabel(node)
     const cacheKey = output?.cacheKey ?? node.id
     const targetNodeId = output?.nodeId ?? runtimeNodeId(canvasNodeAddress(node.id))
+    // The answer's ids are read by the view the request is sent from.
+    const canvasIdOf = canvasIdNamer()
     const { getPreview, setPreview: storePreview } = useNodeResultsStore.getState()
     const structuralVersion = useGraphStore.getState().structuralVersion
 
@@ -1026,7 +1043,7 @@ export default function usePipelineAPI({
         // graph was retained. Results admitted under an older revision/status
         // must never paint the panel or enter its cache.
         if (!documentStillCurrent()) return
-        const preview = occurrencePreviewData(resultToPreview(node.id, label, result, portLabel), output)
+        const preview = occurrencePreviewData(resultToPreview(node.id, label, result, portLabel, targetNodeId), output)
         if (!requestStillCurrent()) {
           // The graph changed while this response was in flight (e.g. an
           // editor mirrored artifact metadata into node config, bumping
@@ -1052,7 +1069,7 @@ export default function usePipelineAPI({
         storePreview(cacheKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
         storedPreview = preview
         if (result.node_statuses) {
-          setNodeStatuses(canvasNodeStatuses(result, node.id))
+          setNodeStatuses(canvasNodeStatuses(result, node.id, canvasIdOf))
         }
         if (result.columns) {
           setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, output ? targetNodeId : node.id, result, snapshotSource, structuralVersion, output ? null : activeSubmodelIdentity))
@@ -1417,6 +1434,7 @@ export default function usePipelineAPI({
       return
     }
     chosenFrames.current.set(nodeId, portLabel)
+    const runtimeId = runtimeNodeId(canvasNodeAddress(node.id))
     const requestId = ++previewRequestSeq.current
     previewTarget.current = node
     stopRetry.current = null
@@ -1456,7 +1474,7 @@ export default function usePipelineAPI({
           graph,
           [
             {
-              nodeId: runtimeNodeId(canvasNodeAddress(node.id)),
+              nodeId: runtimeId,
               source: snapshotSource,
               portLabel,
             },
@@ -1484,7 +1502,7 @@ export default function usePipelineAPI({
         return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
           previewNode({
             graph,
-            nodeId: runtimeNodeId(canvasNodeAddress(node.id)),
+            nodeId: runtimeId,
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             portLabel,
@@ -1500,7 +1518,7 @@ export default function usePipelineAPI({
           if (captured) bumpEpoch()
           return
         }
-        const preview = resultToPreview(node.id, label, result, portLabel)
+        const preview = resultToPreview(node.id, label, result, portLabel, runtimeId)
         // Its own captures leave it current unless something else moved the
         // epoch while it was in flight.
         const currentAt = captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch

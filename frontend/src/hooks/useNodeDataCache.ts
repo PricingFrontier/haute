@@ -23,7 +23,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { canvasTarget, prepareNodeRequest, type PreparedNodeRequest } from "../utils/requestGateway"
+import { prepareCanvasRequest, type PreparedCanvasRequest } from "../utils/requestGateway"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -151,7 +151,7 @@ export function refreshNodeDataCache(nodeId: string): void {
   for (const handler of nodeDataRefreshHandlers.get(nodeId) ?? []) handler()
 }
 
-function producerNode(target: PreparedNodeRequest | null, point: NodeDataPointResponse | null): SimpleNode | null {
+function producerNode(target: PreparedCanvasRequest | null, point: NodeDataPointResponse | null): SimpleNode | null {
   if (!point || !target) return null
   return target.nodeNamed(point.point.producer_node_id)
 }
@@ -256,19 +256,19 @@ export default function useNodeDataCache({
   // from the store; listing them renews the callback, so an edit made after mount
   // reaches the next request.
   const requestTarget = useCallback(
-    (): PreparedNodeRequest | null => {
+    (): PreparedCanvasRequest | null => {
       void allNodes
       void edges
       void submodels
       void globalConstants
       void preamble
-      return nodeId ? prepareNodeRequest(requestScope, canvasTarget(nodeId)) : null
+      return nodeId ? prepareCanvasRequest(requestScope, nodeId) : null
     },
     [requestScope, allNodes, edges, nodeId, preamble, submodels, globalConstants],
   )
 
   const fetchPoint = useCallback(
-    (signal?: AbortSignal): Promise<NodeDataPointResponse | null> => {
+    (signal?: AbortSignal): Promise<{ point: NodeDataPointResponse; consumerKey: string } | null> => {
       const target = requestTarget()
       if (!target) return Promise.resolve(null)
       return getNodeDataPoint({
@@ -276,17 +276,17 @@ export default function useNodeDataCache({
         node_id: target.nodeId,
         source: activeSource,
         signal,
-      })
+      }).then((point) => ({ point, consumerKey: target.resultKey }))
     },
     [activeSource, requestTarget],
   )
 
   const publish = useCallback(
-    (fresh: NodeDataPointResponse, identity: string, fence: DocumentExecutionFence) => {
+    (fresh: NodeDataPointResponse, identity: string, fence: DocumentExecutionFence, consumerKey: string) => {
       // Never write another document's or another identity's answer.
       if (!isDocumentExecutionFenceCurrent(fence)) return
       if (currentIdentity.current !== identity) return
-      observePoint(fresh, activeSource, identity)
+      observePoint(fresh, activeSource, identity, consumerKey)
       setAnswered({ configHash: identity, fence, point: fresh })
       setProblem((previous) => (previous?.configHash === identity ? null : previous))
     },
@@ -297,8 +297,8 @@ export default function useNodeDataCache({
     async (fence: DocumentExecutionFence, signal?: AbortSignal): Promise<NodeDataPointResponse | null> => {
       if (!configHash) return null
       const fresh = await fetchPoint(signal)
-      if (fresh) publish(fresh, configHash, fence)
-      return fresh
+      if (fresh) publish(fresh.point, configHash, fence, fresh.consumerKey)
+      return fresh?.point ?? null
     },
     [configHash, fetchPoint, publish],
   )
@@ -313,7 +313,7 @@ export default function useNodeDataCache({
       .then(() => (controller.signal.aborted ? null : fetchPoint(controller.signal)))
       .then((fresh) => {
         if (!fresh || controller.signal.aborted) return
-        publish(fresh, configHash, fence)
+        publish(fresh.point, configHash, fence, fresh.consumerKey)
       })
       .catch((err: unknown) => {
         if (
@@ -470,7 +470,7 @@ export default function useNodeDataCache({
         if (!isDocumentExecutionFenceCurrent(fence)) return
         // Published only while the consumer still asks about the identity this
         // run was sent for.
-        publish(response.point, configHash, fence)
+        publish(response.point, configHash, fence, target.resultKey)
         if (response.status === "started" || response.status === "joined") {
           if (!response.job_id) throw new Error("Node data build did not return a job id")
           // Registered even for an identity the consumer has left: the build
@@ -624,7 +624,7 @@ export default function useNodeDataCache({
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence)) return
-      publish(response.point, configHash, fence)
+      publish(response.point, configHash, fence, target.resultKey)
       if (response.status === "delegated") {
         // The node-data clear removed the point's analyses; its data belongs to
         // the input-snapshot or JSON cache, cleared through its own route.

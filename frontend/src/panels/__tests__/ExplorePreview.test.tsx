@@ -803,7 +803,7 @@ describe("ExplorePreview", () => {
       })
       useNodeDataStore
         .getState()
-        .observePoint(point("current", "gen-2"), "pricing", "explore-identity")
+        .observePoint(point("current", "gen-2"), "pricing", "explore-identity", (point("current", "gen-2")).consumer_node_id)
     })
 
     // The pane falls back to its "nothing cached yet for this data" state
@@ -1089,7 +1089,7 @@ describe("ExplorePreview", () => {
     })
     await act(async () => {
       // A re-cache publishes gen-2 while the profile of gen-1 is still running.
-      useNodeDataStore.getState().observePoint(rebuilt, "pricing", "explore-identity")
+      useNodeDataStore.getState().observePoint(rebuilt, "pricing", "explore-identity", (rebuilt).consumer_node_id)
     })
     act(() => {
       // Then the gen-1 job is cancelled: its failure describes gen-1, not the

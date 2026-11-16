@@ -378,7 +378,7 @@ describe("delegated data-point builds", () => {
     const replacement = vi.fn()
     await act(async () => {
       useNodeDataStore.getState().reset()
-      useNodeDataStore.getState().observePoint(delegatedPoint("banding", "missing"), "live", "identity-1")
+      useNodeDataStore.getState().observePoint(delegatedPoint("banding", "missing"), "live", "identity-1", (delegatedPoint("banding", "missing")).consumer_node_id)
       useNodeDataStore.getState().startDelegatedBuild("source||live", {
         token: "op-replacement",
         message: "Preparing this input",

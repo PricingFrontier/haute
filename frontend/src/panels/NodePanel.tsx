@@ -38,7 +38,7 @@ import PanelShell from "./PanelShell"
 import { SidePanelClose } from "../haute-ui"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph, useRequestScope } from "./useGraph"
-import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
+import { canvasTarget, prepareNodeRequest, resultKey } from "../utils/requestGateway"
 import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
@@ -1244,8 +1244,10 @@ function NodePanelContent({
   // point has already established them; never a request of its own. Gated on
   // the identity above, so the previous point's columns are never offered
   // after a source switch or a rewiring.
+  // Kept under the node's result key: inside a submodel, this occurrence's.
+  const consumerKey = resultKey(node.id)
   const exploreProfile = useNodeDataStore((s) =>
-    profileForConsumer(s, node.id, exploreConfigHash),
+    profileForConsumer(s, consumerKey, exploreConfigHash),
   )
 
   const loadPivotFilterMembers = useCallback(

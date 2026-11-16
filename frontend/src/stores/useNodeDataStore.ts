@@ -148,7 +148,11 @@ export interface NodeDataStore {
    * *identity* is the asking consumer's data identity, which its own reads of
    * `consumerSlots` are then gated on.
    */
-  observePoint: (point: NodeDataPointResponse, source: string, identity: string) => void
+  /**
+   * Record a point a consumer read, under `consumerKey`: the consumer's result key
+   * (`resultKey`) taken when its request was prepared, not the id the answer names.
+   */
+  observePoint: (point: NodeDataPointResponse, source: string, identity: string, consumerKey: string) => void
   /** Record a profile a request or a completed job produced. */
   observeProfile: (
     slotKey: string,
@@ -294,7 +298,7 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
   announcedCaptures: [],
   epoch: 0,
 
-  observePoint: (point, source, identity) =>
+  observePoint: (point, source, identity, consumerKey) =>
     set((state) => {
       const slotKey = point.slot_key
       const previous = state.slots[slotKey]
@@ -320,7 +324,7 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
         jobs: withJob(state.jobs, slotKey, job),
         consumerSlots: {
           ...state.consumerSlots,
-          [point.consumer_node_id]: { slotKey, identity },
+          [consumerKey]: { slotKey, identity },
         },
         epoch:
           generationChanged(previous, generation) || versionChanged ? state.epoch + 1 : state.epoch,

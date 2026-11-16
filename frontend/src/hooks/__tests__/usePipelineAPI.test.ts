@@ -101,6 +101,7 @@ import {
   getTrainStatus,
 } from "../../api/client"
 import { documentGraphPayload } from "../../utils/buildGraph"
+import { makePreviewData } from "../../utils/makePreviewData"
 import { makeEdge, makeInputCacheSnapshot, makeNode, makeTrainResult, makeTrainStatus } from "../../test-utils/factories"
 
 // A preview that waits on a cache build crosses several effects and mocked
@@ -2174,6 +2175,34 @@ describe("usePipelineAPI", () => {
       "submodel_runtime/pricing/nb_batch",
     )
     expect(result.current.previewData?.nodeId).toBe("nb_batch")
+  })
+
+  it("reads a drilled preview's statuses and frames under the ids the request ran them, for the children on the canvas", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
+    const frames = { quotes: [{ name: "quote_id", dtype: "str" }], policies: [{ name: "policy_id", dtype: "str" }] }
+    mockPreview.mockResolvedValue(makePreviewResponse({
+      node_id: "submodel_runtime/pricing/nb_batch",
+      status: "ok",
+      columns: [{ name: "quote_id", dtype: "str" }],
+      node_statuses: { "submodel_runtime/pricing/nb_batch": "ok", "submodel_runtime/pricing/upstream": "error", workbench: "ok" },
+      node_frame_columns: { "submodel_runtime/pricing/nb_batch": frames },
+    }))
+    const child = makeNode("nb_batch", NODE_TYPES.DATA_INPUT)
+    const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    openPricing([makeNode("workbench", NODE_TYPES.DATA_INPUT), makeNode("pricing", NODE_TYPES.SUBMODEL)])
+    useGraphStore.setState({ nodes: [child, makeNode("upstream")], edges: [] })
+
+    act(() => {
+      result.current.fetchPreview(child, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    // The children on the canvas take their statuses under their own ids.
+    expect(result.current.nodeStatuses).toMatchObject({ nb_batch: "ok", upstream: "error" })
+    // The route's frame map names the node by the id it ran under.
+    expect(vi.mocked(makePreviewData).mock.calls.at(-1)?.[2]).toMatchObject({ frame_columns: frames })
   })
 
   it("records a drilled preview's columns on the child it names and on the pipeline's own nodes behind it", async () => {
