@@ -97,8 +97,8 @@ export default function useExplorePivotActions({
   preamble,
 }: UseExplorePivotActionsInput) {
   const requestScope = useRequestScope()
-  // A node always has one; the hook is null only without a node.
-  const nodeKey = useResultKey(node.id) ?? node.id
+  // The node's result key: inside a submodel, its occurrence's.
+  const nodeKey = useResultKey(node.id)
   const activeSource = useSettingsStore((state) => state.activeSource)
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
   const startJob = useNodeResultsStore((state) => state.startExplorePivotJob)

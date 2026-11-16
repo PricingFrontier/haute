@@ -64,12 +64,14 @@ export function useRequestScope(): RequestScope | null {
  * changes; null without a node. Read in render, and taken before any await. A view of a
  * saved version (no request scope) is not the open document's, so its nodes keep their ids.
  */
+export function useResultKey(nodeId: string): string
+export function useResultKey(nodeId: string | null | undefined): string | null
 export function useResultKey(nodeId: string | null | undefined): string | null {
   const occurrence = useGraphStore((state) => state.focus?.instanceId ?? null)
   const scope = useRequestScope()
   return useMemo(() => {
     void occurrence
-    if (!nodeId) return null
+    if (nodeId === null || nodeId === undefined) return null
     return scope === null ? nodeId : resultKey(nodeId)
   }, [nodeId, occurrence, scope])
 }

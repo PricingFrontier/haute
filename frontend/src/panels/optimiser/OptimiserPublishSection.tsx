@@ -87,7 +87,7 @@ export default function OptimiserPublishSection({
   const { allNodes } = useGraph()
   // The node's solve, its selection and its publishing are kept under its result key;
   // its id still names it on the canvas, in labels and in the default file path.
-  const resultKey = useResultKey(nodeId) ?? nodeId
+  const resultKey = useResultKey(nodeId)
   const cached = useNodeResultsStore((s) => s.solveResults[resultKey])
   const selectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
   const recordPointSummary = useNodeResultsStore((s) => s.recordFrontierPointSummary)

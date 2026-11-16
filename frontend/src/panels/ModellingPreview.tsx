@@ -138,7 +138,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
   }
 
   // A running retrain of this node, kept under its result key (its occurrence's own inside a submodel).
-  const resultKey = useResultKey(nodeId) ?? nodeId
+  const resultKey = useResultKey(nodeId)
   const trainProgress: TrainProgress | null = useNodeResultsStore(
     (s) => s.trainJobs[resultKey]?.progress ?? null,
   )

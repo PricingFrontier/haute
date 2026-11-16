@@ -184,7 +184,7 @@ export default function QuotesTab({ nodeId, jobId, mode, pointIndex }: QuotesTab
   const identity: OptimiserApplyIdentity = { jobId, target, query }
   const key = optimiserApplyKey(identity)
   // The pages are kept with the node's solve, under its result key.
-  const resultKey = useResultKey(nodeId) ?? nodeId
+  const resultKey = useResultKey(nodeId)
   const cached = useNodeResultsStore((s) => s.optimiserApplyCache.find((entry) => entry.key === key))
   const recordApply = useNodeResultsStore((s) => s.recordOptimiserApply)
   const touchApply = useNodeResultsStore((s) => s.touchOptimiserApply)

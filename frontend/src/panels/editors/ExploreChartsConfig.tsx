@@ -104,7 +104,7 @@ function ConfigureSourceScheduler({
   // the version it currently reads under its current identity.
   const activeSource = useSettingsStore((s) => s.activeSource)
   // Kept under the node's result key: inside a submodel, this occurrence's.
-  const consumerKey = useResultKey(node.id) ?? node.id
+  const consumerKey = useResultKey(node.id)
   const profileEntry = useNodeDataStore((s) => profileForConsumer(s, consumerKey, currentConfigHash))
   const slot = useNodeDataStore((s) => slotForConsumer(s, consumerKey, currentConfigHash))
   const report = exploreDataView(
@@ -650,7 +650,7 @@ export default function ExploreChartsConfig({
   const pivotResults = useNodeResultsStore((s) => s.pivotResults)
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
   // Kept under the node's result key: inside a submodel, this occurrence's.
-  const nodeKey = useResultKey(nodeId) ?? nodeId
+  const nodeKey = useResultKey(nodeId)
   const retainedProfile = useNodeDataStore((s) => profileForConsumer(s, nodeKey, currentConfigHash))
   // Parsing deep-clones every card and this editor re-renders on pivot
   // polling ticks, so parse once per config identity, as the Charts pane does.

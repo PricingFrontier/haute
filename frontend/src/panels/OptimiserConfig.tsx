@@ -75,7 +75,7 @@ export default function OptimiserConfig({
   const requestScope = useRequestScope()
   const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount), under the node's result key ──
-  const resultKey = useResultKey(nodeId) ?? nodeId
+  const resultKey = useResultKey(nodeId)
   const solveJob = useNodeResultsStore((s) => s.solveJobs[resultKey])
   const cachedResult = useNodeResultsStore((s) => s.solveResults[resultKey])
   const activeSource = useSettingsStore((s) => s.activeSource)

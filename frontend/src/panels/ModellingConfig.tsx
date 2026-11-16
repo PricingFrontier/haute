@@ -386,7 +386,7 @@ export default function ModellingConfig({
   const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
   // The node's training is kept under its result key (an occurrence's own inside a
   // submodel); its id still names it on the canvas, and its panes and drafts.
-  const resultKey = useResultKey(nodeId) ?? nodeId
+  const resultKey = useResultKey(nodeId)
   const trainJob = useNodeResultsStore((state) => state.trainJobs[resultKey])
   const cachedResult = useNodeResultsStore((state) => state.trainResults[resultKey])
   const startTrainJob = useNodeResultsStore((state) => state.startTrainJob)

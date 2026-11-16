@@ -223,7 +223,7 @@ export default function DataOutputEditor({
   const activeSource = useSettingsStore((state) => state.activeSource)
   // A write is kept under the node's result key: inside a submodel, its
   // occurrence's, so the owner's write neither shows on nor blocks a copy.
-  const writeKey = useResultKey(nodeId) ?? nodeId
+  const writeKey = useResultKey(nodeId)
   const writeState = useOutputWriteStore((state) => state.writes[writeKey])
   const beginWrite = useOutputWriteStore((state) => state.begin)
   const completeWrite = useOutputWriteStore((state) => state.complete)

@@ -206,7 +206,7 @@ export default function OptimiserPreview({
   const requestScope = useRequestScope()
   // The node's solve and its frontier selection are kept under its result key; its id
   // still names it on the canvas.
-  const resultKey = useResultKey(nodeId) ?? nodeId
+  const resultKey = useResultKey(nodeId)
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(resultKey))
   const displayData = liveData ?? data
   const { result, solvedResult, jobId } = displayData

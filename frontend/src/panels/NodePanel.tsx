@@ -1204,7 +1204,7 @@ function NodePanelContent({
   }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   // Training and solves are kept under the node's result key (its occurrence's own inside a submodel).
-  const jobKey = useResultKey(node.id) ?? node.id
+  const jobKey = useResultKey(node.id)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[jobKey]))
   const rememberedOptimiserPane = useUIStore((s) => s.optimiserPanes[node.id])
   const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)

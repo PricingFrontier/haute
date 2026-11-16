@@ -35,7 +35,7 @@ export default function InputImportButton({ node, onImported }: InputImportButto
   }, [node])
   const sourceKey = source ? JSON.stringify(source) : null
   // Kept under the node's result key: inside a submodel, its occurrence's.
-  const nodeKey = useResultKey(node.id) ?? node.id
+  const nodeKey = useResultKey(node.id)
   const run = useInputImportStore((s) => s.runs[nodeKey])
   // Every import's outcome raises the epoch, so the last-imported time is
   // read again after each one.
