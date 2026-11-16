@@ -1503,10 +1503,11 @@ class _PlannedCaptures:
             from haute.errors import SnapshotCorruptError
 
             artifact.close()
-            node = self.graph.node_map.get(node_id)
+            from haute._node_addresses import node_display_name
+
             raise SnapshotCorruptError(
                 node_id=node_id,
-                node_label=(node.data.label if node is not None else None),
+                node_label=node_display_name(self.graph, node_id),
             ) from exc
         except BaseException:
             artifact.close()

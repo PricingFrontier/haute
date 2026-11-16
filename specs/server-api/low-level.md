@@ -428,8 +428,15 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    that resolve to one endpoint each keep their entry. Building it never fails or invents an
    endpoint; only a request whose target is an unbound port is refused. An Input card reads its
    ports' columns from it, a bound port whose columns are missing shown as missing data.
-7. **Errors** name a node by its label, and inside a submodel by its label and its occurrence's
-   ("Banding 1 in pricing"), and carry a structured `node: {key, occurrence, node_id, label}`.
+7. **Errors and labels** name a node by its label, and a submodel child by its label and its
+   occurrence's ("Banding 1 in pricing"), never by its key or a copy's flat name, through one
+   function, `haute._node_addresses.node_display_name`: a walk's upstream failure ("Upstream
+   node(s) failed: <name>: ..."), a refusal of the wrong node type ("'<name>' is not a modelling
+   node"), a Data Output's or an OUTPUT node's, a trace's node failure, an unreadable snapshot,
+   and the labels a preview gives its timings, memory and seed plan. A public contract error
+   about a node keeps its key in `node_id` and, where the route holds the graph (a trace's node
+   failure), carries the node as `node: {key, occurrence, node_id, label}`
+   (`node_reference`); `tests/test_node_display_names.py` covers a copy's child in each.
 
 **Moving onto addresses.** The operation families move one at a time, each request with its
 answers and its browser readers (SUBE-05). The preview, its inputs, the trace, the

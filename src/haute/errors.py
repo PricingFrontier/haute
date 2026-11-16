@@ -558,10 +558,14 @@ class TraceNodeFailedError(ExecutionError):
     """
 
     error_code = "trace_node_failed"
-    public_fields = ("node_id",)
+    public_fields = ("node_id", "node")
 
-    def __init__(self, message: str, *, node_id: str) -> None:
+    def __init__(
+        self, message: str, *, node_id: str, node: dict[str, str | None] | None = None
+    ) -> None:
         self.node_id = node_id
+        #: The node by key, address and label (`haute._node_addresses.node_reference`).
+        self.node = node
         super().__init__(message, node_id=node_id)
 
 

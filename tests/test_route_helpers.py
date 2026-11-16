@@ -116,8 +116,10 @@ class TestRaiseNodeNotFound:
 class TestRaiseNodeTypeError:
     def test_raises_400(self):
         with pytest.raises(RequestRefusedError) as exc_info:
-            raise_node_type_error("n1", "dataInput", "polars")
+            raise_node_type_error("n1", "Claims", "dataInput", "polars")
         assert exc_info.value.status_code == 400
+        # The node is named by its label, never its key.
+        assert exc_info.value.detail == "'Claims' is not a dataInput node (got polars)"
         assert "dataInput" in exc_info.value.detail
         assert "polars" in exc_info.value.detail
 

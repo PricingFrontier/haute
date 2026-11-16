@@ -470,10 +470,11 @@ class _Resolver:
         try:
             return self.store.latest_generation(self.identity(node_id))
         except SourceCacheCorruptError as exc:
-            node = self.node_map.get(node_id)
+            from haute._node_addresses import node_display_name
+
             raise SnapshotCorruptError(
                 node_id=node_id,
-                node_label=(node.data.label if node is not None else None),
+                node_label=node_display_name(self.points.graph, node_id),
             ) from exc
 
     def is_node_output(self, node_id: str) -> bool:

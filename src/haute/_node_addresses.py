@@ -149,6 +149,31 @@ def address_entry(flat: PipelineGraph, key: str) -> NodeAddressEntry:
     return NodeAddressEntry(occurrence=None, node_id=key, label=node.data.label)
 
 
+def node_display_name(flat: PipelineGraph, key: str) -> str:
+    """How a message names the node *flat* runs under *key*: its authored label, and a child's
+    occurrence's ("Banding 1 in pricing"), never its key. A key *flat* does not hold is named
+    as it is, so a message about a broken answer still reads."""
+    try:
+        entry = address_entry(flat, key)
+    except ValueError:
+        return key
+    if entry.occurrence is None:
+        return entry.label
+    occurrence = expansion_of(flat).occurrences.get(entry.occurrence)
+    return f"{entry.label} in {occurrence.label if occurrence is not None else entry.occurrence}"
+
+
+def node_reference(flat: PipelineGraph, key: str) -> dict[str, str | None]:
+    """A node an error names, as its payload carries it: its key, address and label."""
+    entry = address_entry(flat, key)
+    return {
+        "key": key,
+        "occurrence": entry.occurrence,
+        "node_id": entry.node_id,
+        "label": entry.label,
+    }
+
+
 def node_addresses(flat: PipelineGraph, keys: Iterable[str]) -> dict[str, NodeAddressEntry]:
     """The address entry of each of *keys*, sorted by key so an answer is stable."""
     return {key: address_entry(flat, key) for key in sorted(set(keys))}

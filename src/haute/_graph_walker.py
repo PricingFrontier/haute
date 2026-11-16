@@ -75,6 +75,7 @@ from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
+from haute._node_addresses import node_display_name
 from haute._node_specs import node_spec, node_type_table
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_selectors import preamble_selector_aliases
@@ -1990,8 +1991,12 @@ class _Walk:
     def _record_upstream_failure(self, node_id: str, failed: Sequence[str]) -> None:
         self.failed.add(node_id)
         self.collected[node_id] = None
+        # The failed nodes by their labels, a submodel child's with its occurrence's.
+        named = {parent: node_display_name(self.request.graph, parent) for parent in failed}
         self.errors[node_id] = "Upstream node(s) failed: " + "; ".join(
-            f"{parent}: {self.errors[parent]}" if parent in self.errors else f"{parent}: failed"
+            f"{named[parent]}: {self.errors[parent]}"
+            if parent in self.errors
+            else f"{named[parent]}: failed"
             for parent in failed
         )
         for parent in failed:

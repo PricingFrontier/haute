@@ -557,7 +557,7 @@ class TestPipelineIntegration:
         detail = resp.json()["detail"]
         assert detail["error_code"] == "trace_node_failed"
         assert detail["node_id"] == "t"
-        assert detail["message"].startswith("Node 't' failed: invalid syntax")
+        assert detail["message"].startswith("'t' failed: invalid syntax")
 
     def test_large_pipeline_trace_returns_steps_in_topo_order(self, client, tmp_path):
         """Pipeline with 5+ nodes returns steps in topological order."""
@@ -627,7 +627,7 @@ class TestErrorHandling:
         assert resp.status_code == 422
         detail = resp.json()["detail"]
         assert detail["node_id"] == "t"
-        assert detail["message"].startswith("Node 't' failed:")
+        assert detail["message"].startswith("'t' failed:")
         assert "nonexistent_col" in detail["message"]
 
     @pytest.mark.parametrize(

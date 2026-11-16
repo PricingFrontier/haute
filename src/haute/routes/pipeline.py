@@ -62,9 +62,10 @@ from haute._node_address_schemas import (
 )
 from haute._node_addresses import (
     ResolvedTarget,
-    address_entry,
     expansion_of,
     labelled,
+    node_display_name,
+    node_reference,
     occurrence_ports,
     resolve_target,
     resolved_request,
@@ -703,7 +704,7 @@ def _prepare_data_output_request(
     if output_node.data.nodeType != NodeType.DATA_OUTPUT:
         raise HTTPException(
             status_code=400,
-            detail=f"'{address_entry(graph, body.node_id).label}' is not a Data Output",
+            detail=f"'{node_display_name(graph, body.node_id)}' is not a Data Output",
         )
     try:
         config = validate_node_config(
@@ -1424,7 +1425,7 @@ def _preview_response_from_results(
     timings = [
         NodeTimingInfo(
             node_id=node_id,
-            label=node_map[node_id].data.label,
+            label=node_display_name(graph, node_id),
             timing_ms=result.timing_ms,
         )
         for node_id, result in results.items()
@@ -1433,7 +1434,7 @@ def _preview_response_from_results(
     memory = [
         NodeMemoryInfo(
             node_id=node_id,
-            label=node_map[node_id].data.label,
+            label=node_display_name(graph, node_id),
             memory_bytes=result.memory_bytes,
         )
         for node_id, result in results.items()
@@ -1505,11 +1506,10 @@ def _preview_response_from_results(
 def _preview_seed_plan_entries(
     graph: PipelineGraph, generations: tuple[ReadGeneration, ...]
 ) -> list[PreviewSeedPlanEntry]:
-    node_map = graph.node_map
     return [
         PreviewSeedPlanEntry(
             node_id=generation.node_id,
-            node_label=node_map[generation.node_id].data.label,
+            node_label=node_display_name(graph, generation.node_id),
             identity_digest=generation.identity.digest,
             generation_id=generation.generation_id,
             columns=(
@@ -1626,9 +1626,12 @@ def _trace_node_failures(graph: PipelineGraph) -> Iterator[None]:
         node_id = _own_node_failure(exc)
         if node_id is None:
             raise
-        node = graph.node_map.get(node_id)
-        label = node.data.label if node is not None else node_id
-        raise TraceNodeFailedError(f"Node {label!r} failed: {exc}", node_id=node_id) from exc
+        reference = node_reference(graph, node_id) if node_id in graph.node_map else None
+        raise TraceNodeFailedError(
+            f"'{node_display_name(graph, node_id)}' failed: {exc}",
+            node_id=node_id,
+            node=reference,
+        ) from exc
 
 
 def _trace_payload(

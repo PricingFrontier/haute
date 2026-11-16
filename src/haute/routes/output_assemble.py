@@ -25,7 +25,7 @@ from haute._execution_admission import (
 from haute._execution_context import ExecutionContext
 from haute._flatten import flatten_executable_graph
 from haute._logging import get_logger
-from haute._node_addresses import address_entry, resolved_request
+from haute._node_addresses import node_display_name, resolved_request
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
 from haute._pipeline_settings import project_pipeline_settings
 from haute.errors import ConfigError, ContractMismatchError
@@ -126,7 +126,7 @@ async def output_assemble_dry_run(
     if node.data.nodeType != NodeType.OUTPUT:
         raise HTTPException(
             status_code=400,
-            detail=f"'{address_entry(graph, body.node_id).label}' is not an OUTPUT node",
+            detail=f"'{node_display_name(graph, body.node_id)}' is not an OUTPUT node",
         )
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
