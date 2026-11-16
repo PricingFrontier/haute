@@ -1594,9 +1594,9 @@
           "title": "Newest Created At"
         },
         "node_id": {
-          "pattern": "\\S",
           "title": "Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         },
         "reads_directly": {
           "default": false,
@@ -1606,7 +1606,8 @@
         "reads_from": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "x-haute-node-key": true
             },
             {
               "type": "null"
@@ -1645,8 +1646,8 @@
         },
         "shares_snapshot_with": {
           "items": {
-            "pattern": "\\S",
-            "type": "string"
+            "type": "string",
+            "x-haute-node-key": true
           },
           "title": "Shares Snapshot With",
           "type": "array"
@@ -1711,8 +1712,15 @@
     },
     "CacheNodesResponse": {
       "additionalProperties": false,
-      "description": "Every node of the graph, and everything else the store holds.",
+      "description": "Every node of the graph, and everything else the store holds. Its rows name the\ngraph's nodes by runtime key, each addressed in ``node_addresses``; what the graph no\nlonger holds is described by what it recorded (``other``).",
       "properties": {
+        "node_addresses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NodeAddressEntry"
+          },
+          "title": "Node Addresses",
+          "type": "object"
+        },
         "nodes": {
           "items": {
             "$ref": "#/$defs/CacheNodeEntry"
@@ -1760,14 +1768,15 @@
         "other",
         "unattributed_generations",
         "unattributed_bytes",
-        "unmarked_identities"
+        "unmarked_identities",
+        "node_addresses"
       ],
       "title": "CacheNodesResponse",
       "type": "object"
     },
     "CacheOwnerEntry": {
       "additionalProperties": false,
-      "description": "Cached data not attributed to any node of the graph as it stands.\n\nA node that was deleted or renamed, a node's data for another source, or\nan input snapshot whose Data Input no longer reads it. Each still occupies\nthe budget, so each is named.",
+      "description": "Cached data not attributed to any node of the graph as it stands.\n\nA node that was deleted or renamed, a node's data for another source or\nanother pipeline, or an input snapshot whose Data Input no longer reads it.\nEach still occupies the budget, so each is named: a node's data by the\nowner it recorded (``owner``) and its pipeline, an input snapshot by its\npath or table.",
       "properties": {
         "bucket": {
           "enum": [
@@ -1819,7 +1828,17 @@
           "default": null,
           "title": "Newest Created At"
         },
-        "node_id": {
+        "owner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CacheSnapshotOwner"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pipeline": {
           "anyOf": [
             {
               "type": "string"
@@ -1828,8 +1847,7 @@
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Node Id"
+          "title": "Pipeline"
         },
         "row_count": {
           "anyOf": [
@@ -1864,7 +1882,8 @@
       "required": [
         "bucket",
         "label",
-        "node_id",
+        "pipeline",
+        "owner",
         "source",
         "generations",
         "row_count",
@@ -1874,6 +1893,50 @@
         "identity_digests"
       ],
       "title": "CacheOwnerEntry",
+      "type": "object"
+    },
+    "CacheSnapshotOwner": {
+      "additionalProperties": false,
+      "description": "The node a cached snapshot was written for, as it recorded it then: its address, its\nauthored label and its occurrence's label. Never resolved against today's graph.",
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "occurrence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Occurrence"
+        },
+        "occurrence_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Occurrence Label"
+        }
+      },
+      "required": [
+        "occurrence",
+        "occurrence_label",
+        "node_id",
+        "label"
+      ],
+      "title": "CacheSnapshotOwner",
       "type": "object"
     },
     "CacheUsageResponse": {

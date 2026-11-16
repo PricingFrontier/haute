@@ -21,6 +21,7 @@ from haute._input_providers import source_cache_identity
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
+    NodeSnapshotOwner,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -87,6 +88,11 @@ def _graph(project: Path, *, source_config: dict[str, Any] | None = None) -> dic
     return graph.model_dump()
 
 
+def _owner(node_id: str) -> NodeSnapshotOwner:
+    """A pipeline node with no occurrence, labelled by its id as `_graph`'s nodes are."""
+    return NodeSnapshotOwner(occurrence=None, occurrence_label=None, node_id=node_id, label=node_id)
+
+
 def _publish(store: NodeSnapshotStore, project: Path, node_id: str, source: str, rows: int) -> None:
     """Put a node-output generation on disk for *node_id* under *source*."""
     slot = NodeSnapshotSlot(
@@ -105,6 +111,7 @@ def _publish(store: NodeSnapshotStore, project: Path, node_id: str, source: str,
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.NODE_SNAPSHOT,
+        owner=_owner(node_id),
     ) as publication:
         assert publication.outcome == "published"
 
@@ -117,6 +124,15 @@ def _entry(payload: dict[str, Any], node_id: str) -> dict[str, Any]:
     matches = [node for node in payload["nodes"] if node["node_id"] == node_id]
     assert matches, f"{node_id} missing from {[n['node_id'] for n in payload['nodes']]}"
     return matches[0]
+
+
+def _others_of(payload: dict[str, Any], node_id: str) -> list[dict[str, Any]]:
+    """The `other` entries whose recorded owner is the pipeline node *node_id*."""
+    return [
+        entry
+        for entry in payload["other"]
+        if entry["owner"] is not None and entry["owner"]["node_id"] == node_id
+    ]
 
 
 def _csv_config(path: Path, **arguments: Any) -> dict[str, Any]:
@@ -187,6 +203,10 @@ def test_reports_every_node_of_the_graph(client: TestClient, project: Path) -> N
     payload = response.json()
 
     assert [node["node_id"] for node in payload["nodes"]] == ["source", "join"]
+    assert payload["node_addresses"] == {
+        "join": {"occurrence": None, "node_id": "join", "label": "join"},
+        "source": {"occurrence": None, "node_id": "source", "label": "source"},
+    }
     assert payload["source"] == "live"
 
 
@@ -229,6 +249,7 @@ def test_re_caching_replaces_a_nodes_dataset_rather_than_adding_to_it(
             dependencies={},
             explicit=False,
             profile=ExecutionProfile.NODE_SNAPSHOT,
+            owner=_owner("join"),
         ) as publication:
             assert publication.outcome == "published"
 
@@ -246,8 +267,12 @@ def test_a_node_no_longer_in_the_graph_is_reported_as_other(
     payload = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
 
     assert "deleted_node" not in [node["node_id"] for node in payload["nodes"]]
-    other = [entry for entry in payload["other"] if entry["node_id"] == "deleted_node"]
+    assert "deleted_node" not in payload["node_addresses"]
+    other = _others_of(payload, "deleted_node")
     assert len(other) == 1
+    assert other[0]["owner"] == _owner("deleted_node").to_json()
+    assert other[0]["label"] == "deleted_node"
+    assert other[0]["pipeline"] == "main.py"
     assert other[0]["bucket"] == "node_output"
     assert other[0]["source"] == "live"
     assert other[0]["size_bytes"] > 0
@@ -263,8 +288,10 @@ def test_a_nodes_data_for_another_source_is_reported_as_other(
     payload = client.post("/api/cache/nodes", json=_body(_graph(project), source="live")).json()
 
     assert _entry(payload, "join")["generations"] == 0
-    other = [entry for entry in payload["other"] if entry["node_id"] == "join"]
+    other = _others_of(payload, "join")
     assert len(other) == 1
+    assert other[0]["owner"] == _owner("join").to_json()
+    assert other[0]["pipeline"] == "main.py"
     assert other[0]["source"] == "backtest"
 
 
@@ -587,6 +614,7 @@ def test_another_pipelines_node_of_the_same_name_is_not_this_ones(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.NODE_SNAPSHOT,
+        owner=_owner("join"),
     ) as publication:
         assert publication.outcome == "published"
 
@@ -594,6 +622,9 @@ def test_another_pipelines_node_of_the_same_name_is_not_this_ones(
 
     assert _entry(payload, "join")["size_bytes"] == 0
     assert [entry["label"] for entry in payload["other"]] == ["join"]
+    # Named as `alt.py`'s `join`, never as this pipeline's.
+    assert payload["other"][0]["pipeline"] == "alt.py"
+    assert payload["other"][0]["owner"] == _owner("join").to_json()
     assert payload["other"][0]["size_bytes"] > 0
 
 
@@ -785,13 +816,13 @@ def test_clearing_an_orphaned_row_reclaims_it(client: TestClient, project: Path)
     _publish(store, project, "deleted_node", "live", rows=6)
 
     before = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
-    orphan = next(entry for entry in before["other"] if entry["node_id"] == "deleted_node")
+    [orphan] = _others_of(before, "deleted_node")
     assert orphan["size_bytes"] > 0
 
     client.post("/api/cache/clear", json={"digests": orphan["identity_digests"]})
 
     after = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
-    assert [entry for entry in after["other"] if entry["node_id"] == "deleted_node"] == []
+    assert _others_of(after, "deleted_node") == []
 
 
 def test_an_api_inputs_tables_are_reported_and_cleared_on_its_own_row(
@@ -881,3 +912,5 @@ def test_a_table_left_over_from_an_edited_schema_is_listed_by_file_and_table(
 
     [owner] = [entry for entry in payload["other"] if entry["bucket"] == "input"]
     assert owner["label"] == f"{data.resolve()} $[:]"
+    # An input snapshot belongs to no node and no pipeline: its file and table name it.
+    assert (owner["owner"], owner["pipeline"]) == (None, None)

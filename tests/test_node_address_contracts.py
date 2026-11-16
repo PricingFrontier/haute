@@ -55,10 +55,9 @@ NODE_KEY_POSITIONS: dict[tuple[str, str], str] = {
     ("NodeDataPointRef", "producer_node_id"): MIGRATED,
     ("NodeDataPointResponse", "consumer_node_id"): MIGRATED,
     # The cached-data list.
-    ("CacheNodeEntry", "node_id"): PENDING,
-    ("CacheNodeEntry", "reads_from"): PENDING,
-    ("CacheNodeEntry", "shares_snapshot_with"): PENDING,
-    ("CacheOwnerEntry", "node_id"): PENDING,
+    ("CacheNodeEntry", "node_id"): MIGRATED,
+    ("CacheNodeEntry", "reads_from"): MIGRATED,
+    ("CacheNodeEntry", "shares_snapshot_with"): MIGRATED,
     # Modelling.
     ("TrainEstimateUnavailable", "blocking_node_id"): MIGRATED,
     ("TrainEstimateResponse", "unbounded_join_node_ids"): MIGRATED,

@@ -13,7 +13,7 @@ import pytest
 import haute._seed_plans as seed_plans
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionProfile
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._registry import NODE_REGISTRY
 from haute._seed_plans import (
     CaptureKind,
@@ -156,6 +156,7 @@ def _publish(
         explicit=refresh,
         profile=ExecutionProfile.TRAINING_PREP,
         refresh=refresh,
+        owner=NodeSnapshotOwner.of(graph, node_id),
     ) as publication:
         assert publication.outcome == "published"
         assert publication.generation is not None
@@ -1078,6 +1079,7 @@ def test_plan_owns_what_the_run_registers(project: Path, store: NodeSnapshotStor
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, "B"),
     )
     assert publication.generation is not None
     generation = publication.generation.generation_id

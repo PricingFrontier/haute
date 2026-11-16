@@ -51,6 +51,7 @@ from haute._node_addresses import node_addresses
 from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotMultiFrameUnsupportedError,
+    NodeSnapshotOwner,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -348,6 +349,7 @@ def _build_node_snapshot(
                 ),
                 full_term=execution_context.provenance.full_term_facts(request.node_id),
                 refresh=request.refresh,
+                owner=NodeSnapshotOwner.of(request.graph, request.node_id),
             )
         except BaseException:
             artifact.close()

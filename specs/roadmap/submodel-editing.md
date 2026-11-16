@@ -145,8 +145,8 @@ replacing "the editor never sends an occurrence as a preview target".
    time.
 
 **Progress:** The server's resolution, the labelled answers, frame provenance, the preview
-family, the trace, the node-data family, modelling, the optimiser and Data Output are in place;
-the cached-data list, and errors with execution diagnostics follow, then the browser's
+family, the trace, the node-data family, modelling, the optimiser, Data Output and the
+cached-data list are in place; errors with execution diagnostics follow, then the browser's
 runtime-id code is deleted.
 
 **Acceptance:** Inside a submodel, node status colours, schema warnings and timings show on the
@@ -170,7 +170,6 @@ contract test covers every node-naming answer field.
 **Evidence:** `frontend/src/utils/submodelRuntimeTarget.ts::encodeRuntimeIdPart`;
 `frontend/src/utils/submodelRuntimeTarget.ts::submodelOutputPreview`;
 `frontend/src/hooks/usePipelineAPI.ts::canvasNodeStatuses`;
-`frontend/src/components/PipelineSettingsModal.tsx::displayNodeName`;
 `frontend/src/panels/editors/OutputEditor.tsx`;
 `src/haute/_flatten.py::flatten_executable_graph`;
 `src/haute/_submodel_instances.py::expand_submodel_instances`;

@@ -28,6 +28,7 @@ from haute._node_config_models import NODE_CONFIG_MODELS, branch_values
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
+    NodeSnapshotOwner,
     NodeSnapshotPublication,
     NodeSnapshotSlot,
     NodeSnapshotStore,
@@ -93,6 +94,14 @@ def _slot(tmp_path: Path, node_id: str = "join") -> NodeSnapshotSlot:
     )
 
 
+def _owner(identity: SourceCacheIdentity) -> NodeSnapshotOwner:
+    """The pipeline node *identity*'s slot names, labelled by its id."""
+    slot, _ = NodeSnapshotSlot.from_identity(identity)
+    return NodeSnapshotOwner(
+        occurrence=None, occurrence_label=None, node_id=slot.node_id, label=slot.node_id
+    )
+
+
 def _columns(*names: str) -> NodeSnapshotColumns:
     return NodeSnapshotColumns.of(names) if names else NodeSnapshotColumns.all()
 
@@ -117,6 +126,7 @@ def _publish(
         explicit=explicit,
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=refresh,
+        owner=_owner(identity),
     )
 
 
@@ -939,6 +949,7 @@ def test_an_automatic_capture_surfaces_a_corrupt_generation(tmp_path: Path) -> N
             dependencies={},
             explicit=False,
             profile=ExecutionProfile.TRAINING_PREP,
+            owner=_owner(identity),
         )
     artifact.close()
 
@@ -998,6 +1009,7 @@ def test_only_an_explicit_build_may_refresh(tmp_path: Path) -> None:
             explicit=False,
             profile=ExecutionProfile.TRAINING_PREP,
             refresh=True,
+            owner=_owner(identity),
         )
     artifact.close()
 
@@ -1111,6 +1123,7 @@ def test_publication_reads_no_part_in_full_after_writing_it(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.NODE_SNAPSHOT,
+        owner=_owner(identity),
     ) as pub:
         assert pub.outcome == "published"
         assert pub.generation is not None

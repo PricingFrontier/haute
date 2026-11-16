@@ -2827,19 +2827,19 @@ class CacheNodeEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node_id: NonBlankStr
+    node_id: RuntimeNodeKey
     kind: NodeDataPointKind | None = None
     state: NodeDataPointState | None = None
     reads_directly: bool = False
     # The node this one reads from, when that is another node. Its cache is
     # reported on *its* row, so this node's size stays empty rather than
     # repeating a figure that would then sum to more than the store holds.
-    reads_from: str | None = None
+    reads_from: RuntimeNodeKey | None = None
     # Other nodes resolving to the same input snapshot — two Data Inputs with
     # one configuration, or one submodel instantiated twice. Every sharer names
     # the others, and exactly one of them carries the bytes: the one with a
     # size. One identity, one set of bytes, whichever row you read first.
-    shares_snapshot_with: list[NonBlankStr] = Field(default_factory=list)
+    shares_snapshot_with: list[RuntimeNodeKey] = Field(default_factory=list)
     row_count: int | None = None
     generations: int = Field(default=0, ge=0)
     size_bytes: int = Field(default=0, ge=0)
@@ -2856,19 +2856,37 @@ class CacheNodeEntry(BaseModel):
     unavailable_reason: str | None = None
 
 
+class CacheSnapshotOwner(BaseModel):
+    """The node a cached snapshot was written for, as it recorded it then: its address, its
+    authored label and its occurrence's label. Never resolved against today's graph."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence: str | None
+    occurrence_label: str | None
+    node_id: str
+    label: str
+
+
 class CacheOwnerEntry(BaseModel):
     """Cached data not attributed to any node of the graph as it stands.
 
-    A node that was deleted or renamed, a node's data for another source, or
-    an input snapshot whose Data Input no longer reads it. Each still occupies
-    the budget, so each is named.
+    A node that was deleted or renamed, a node's data for another source or
+    another pipeline, or an input snapshot whose Data Input no longer reads it.
+    Each still occupies the budget, so each is named: a node's data by the
+    owner it recorded (``owner``) and its pipeline, an input snapshot by its
+    path or table.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     bucket: Literal["node_output", "input"]
+    #: The owner's recorded label; the source's path or table for an input snapshot,
+    #: and the slot's key for node data published before owners were recorded.
     label: NonBlankStr
-    node_id: str | None = None
+    #: The pipeline file the node belonged to, relative to the project when it is in it.
+    pipeline: str | None
+    owner: CacheSnapshotOwner | None
     source: str | None = None
     generations: int = Field(ge=0)
     row_count: int | None = None
@@ -2917,7 +2935,9 @@ class CacheUsageResponse(BaseModel):
 
 
 class CacheNodesResponse(BaseModel):
-    """Every node of the graph, and everything else the store holds."""
+    """Every node of the graph, and everything else the store holds. Its rows name the
+    graph's nodes by runtime key, each addressed in ``node_addresses``; what the graph no
+    longer holds is described by what it recorded (``other``)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2931,6 +2951,7 @@ class CacheNodesResponse(BaseModel):
     # each to BOTH budgets, so this is what explains a usage report that
     # exceeds the sum of the entries above.
     unmarked_identities: int = Field(ge=0)
+    node_addresses: dict[str, NodeAddressEntry]
 
 
 ExplorePivotMemberKind = Literal[

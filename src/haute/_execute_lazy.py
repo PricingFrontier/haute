@@ -1392,6 +1392,7 @@ class _PlannedCaptures:
         from haute._node_snapshots import (
             NodeSnapshotColumns,
             NodeSnapshotMultiFrameUnsupportedError,
+            NodeSnapshotOwner,
         )
 
         plan = self.plan
@@ -1491,6 +1492,7 @@ class _PlannedCaptures:
                     if self.execution_context is not None
                     else None
                 ),
+                owner=NodeSnapshotOwner.of(self.graph, node_id),
             )
         except SourceCacheCorruptError as exc:
             # The publication rule reports corruption rather than repairing it,

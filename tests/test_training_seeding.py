@@ -29,7 +29,7 @@ from haute._execution_context import (
 )
 from haute._execution_schemas import ExecutionMetricsPayload
 from haute._node_addresses import resolved_request
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._project_context import context_thread
 from haute._source_cache import SourceCacheIdentity
@@ -354,6 +354,7 @@ def _publish(
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=refresh,
+        owner=NodeSnapshotOwner.of(PipelineGraph.model_validate(graph), node_id),
     ) as publication:
         assert publication.generation is not None
         return publication.generation.generation_id

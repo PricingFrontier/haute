@@ -309,7 +309,7 @@ def _refresh(
     store: NodeSnapshotStore, graph: PipelineGraph, node_id: str, frame: pl.DataFrame
 ) -> str:
     from haute._execution_context import ExecutionProfile
-    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner
 
     identity = _identity(store, graph, node_id)
     artifact = store.stage_node_output(identity)
@@ -322,6 +322,7 @@ def _refresh(
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=True,
+        owner=NodeSnapshotOwner.of(graph, node_id),
     ) as publication:
         assert publication.generation is not None
         return publication.generation.generation_id

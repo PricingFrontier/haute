@@ -25,6 +25,7 @@ from haute._execution_context import ExecutionProfile
 from haute._json_shred import _writer
 from haute._node_snapshots import (
     NodeSnapshotColumns,
+    NodeSnapshotOwner,
     NodeSnapshotPublication,
     NodeSnapshotStore,
 )
@@ -155,6 +156,7 @@ def _capture(
         dependencies={},
         explicit=columns.is_all,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(resolver.graph, node_id),
     )
 
 
@@ -637,6 +639,7 @@ def test_a_child_keeps_reading_a_parent_leased_generation_through_refresh_and_cl
                 explicit=True,
                 profile=ExecutionProfile.NODE_SNAPSHOT,
                 refresh=True,
+                owner=NodeSnapshotOwner.of(resolver.graph, "join"),
             ) as publication:
                 assert publication.outcome == "published"
             store.clear_slot(resolver.node_output_slot("join"))

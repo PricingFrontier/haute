@@ -423,7 +423,8 @@ answers and its browser readers (SUBE-05). The preview, its inputs, the trace, t
 node-data family (a consumer's data point, run, profile and clear, an Explore pivot and its
 members, relationships, banding statistics and rating levels), modelling (training, its
 memory and dispersion estimates, the export script), the optimiser (a solve, its estimate and
-auto range) and Data Output (a destination, a write, an assembly dry run) are on addresses;
+auto range), Data Output (a destination, a write, an assembly dry run) and the cached-data
+list (its rows addressed, its other owners described by what they recorded) are on addresses;
 every other request above still sends the runtime key the browser's adapter builds (`node_id`), its
 answers name nodes by plain string, and `tests/test_node_address_contracts.py` lists their fields
 as pending until their family moves.
@@ -975,7 +976,14 @@ with different arguments is a different identity with the same path.
 
 The route tracks the identities its rows carry and lists every other owner in `other`, so the
 two halves are exhaustive by construction — a node no longer in the graph, the same node's
-data under another source, an input snapshot nothing reads. `unattributed_*` is what no
+data under another source or another pipeline, an input snapshot nothing reads. The rows name
+the graph's nodes by runtime key (`node_id`, `reads_from`, `shares_snapshot_with`), each
+addressed in the answer's `node_addresses`. An `other` entry names no key: a node's data is
+described by what its newest generation recorded (`owner`: the address, authored label and
+occurrence label it had when it was written, `NodeSnapshotOwner`), its `pipeline` (the file,
+relative to the project when it is inside it) and its `label`; owners stay keyed by pipeline,
+node key and source, so two pipelines with the same node ids list distinct owners. Data
+published before owners were recorded is labelled by its slot's key, with no `owner`. `unattributed_*` is what no
 metadata could name. Every row and owner also carries `newest_created_at` and `build_seconds`
 from its newest generation's metadata, so the report says when a thing was cached and how long
 that took; a generation published before durations were recorded reports `null`, which the

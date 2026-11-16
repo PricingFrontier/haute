@@ -22,7 +22,7 @@ from haute._execution_context import ExecutionAdmission, ExecutionContext, Execu
 from haute._execution_schemas import ExecutionMetricsPayload
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._hashing import content_hash
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
@@ -541,6 +541,7 @@ def test_narrow_upstream_snapshot_widened_in_same_run(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, "X"),
     ).close()
 
     run = _run(graph, store, required={"T": ["c"]})
@@ -637,6 +638,7 @@ def test_paused_run_diamond_with_a_snapshot(
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
             refresh=True,
+            owner=NodeSnapshotOwner.of(graph, "A"),
         ).close()
         _run(graph, store, target="B")
         latest = store.latest_generation(b_identity)
@@ -864,6 +866,7 @@ def test_a_materialisation_below_a_seed_is_estimated_from_the_seed(
         dependencies={},
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
+        owner=NodeSnapshotOwner.of(graph, "A"),
     ).close()
 
     # With A cached, the sort is estimated from A's generation, not A's code.
@@ -1573,6 +1576,7 @@ def test_multipart_seed_estimate_counts_every_part(project: Path, store: NodeSna
         dependencies={},
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
+        owner=NodeSnapshotOwner.of(graph, "A"),
     ).close()
 
     with _planned(graph, store, required={"T": ["a"]}) as (plan, _context, execute):
@@ -1633,6 +1637,7 @@ def test_training_ram_estimates_use_only_usable_snapshots(
             dependencies={},
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
+            owner=NodeSnapshotOwner.of(graph, "A"),
         ).close()
         if cache_state == "stale":
             graph.node_map["A"].data.config["code"] = "df = widen(src).head(3)"

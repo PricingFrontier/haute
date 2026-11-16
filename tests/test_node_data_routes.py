@@ -19,6 +19,7 @@ from haute._data_points import DataPoint, DataPointResolver
 from haute._hashing import content_hash
 from haute._node_snapshots import (
     NodeSnapshotColumns,
+    NodeSnapshotOwner,
     NodeSnapshotStore,
 )
 from haute._polars_utils import (
@@ -546,6 +547,7 @@ def test_a_partial_point_becomes_current_and_pinned_after_a_run(
         dependencies={},
         explicit=False,
         profile="training_prep",
+        owner=NodeSnapshotOwner.of(resolver.graph, "join"),
     ):
         pass
 
@@ -1421,6 +1423,7 @@ def test_a_build_whose_seed_is_replaced_before_it_publishes_is_not_reported_cach
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
             refresh=True,
+            owner=NodeSnapshotOwner.of(resolver.graph, "A"),
         ).close()
 
     monkeypatch.setattr(node_snapshots, "_fault_point", refresh_a_before_b_publishes)

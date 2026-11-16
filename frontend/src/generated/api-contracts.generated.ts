@@ -504,9 +504,14 @@ export interface AssistantCancelledEvent {
   type: 'cancelled';
 }
 /**
- * Every node of the graph, and everything else the store holds.
+ * Every node of the graph, and everything else the store holds. Its rows name the
+ * graph's nodes by runtime key, each addressed in ``node_addresses``; what the graph no
+ * longer holds is described by what it recorded (``other``).
  */
 export interface CacheNodesResponse {
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   nodes: CacheNodeEntry[];
   other: CacheOwnerEntry[];
   schema_version: 1;
@@ -514,6 +519,14 @@ export interface CacheNodesResponse {
   unattributed_bytes: number;
   unattributed_generations: number;
   unmarked_identities: number;
+}
+/**
+ * The address of a key an answer names, with the node's authored label.
+ */
+export interface NodeAddressEntry {
+  label: string;
+  node_id: string;
+  occurrence: string | null;
 }
 /**
  * One node of the graph: what it reads now, and what it holds on disk.
@@ -529,12 +542,12 @@ export interface CacheNodeEntry {
   identity_digests: string[];
   kind: 'data_input' | 'api_input_table' | 'node_output' | null;
   newest_created_at: number | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   reads_directly: boolean;
-  reads_from: string | null;
+  reads_from: RuntimeNodeKey | null;
   retention: 'pinned' | 'automatic' | null;
   row_count: number | null;
-  shares_snapshot_with: string[];
+  shares_snapshot_with: RuntimeNodeKey[];
   size_bytes: number;
   state: 'current' | 'stale' | 'partial' | 'missing' | 'building' | 'corrupt' | null;
   unavailable_reason: string | null;
@@ -542,9 +555,11 @@ export interface CacheNodeEntry {
 /**
  * Cached data not attributed to any node of the graph as it stands.
  *
- * A node that was deleted or renamed, a node's data for another source, or
- * an input snapshot whose Data Input no longer reads it. Each still occupies
- * the budget, so each is named.
+ * A node that was deleted or renamed, a node's data for another source or
+ * another pipeline, or an input snapshot whose Data Input no longer reads it.
+ * Each still occupies the budget, so each is named: a node's data by the
+ * owner it recorded (``owner``) and its pipeline, an input snapshot by its
+ * path or table.
  */
 export interface CacheOwnerEntry {
   bucket: 'node_output' | 'input';
@@ -553,10 +568,21 @@ export interface CacheOwnerEntry {
   identity_digests: string[];
   label: string;
   newest_created_at: number | null;
-  node_id: string | null;
+  owner: CacheSnapshotOwner | null;
+  pipeline: string | null;
   row_count: number | null;
   size_bytes: number;
   source: string | null;
+}
+/**
+ * The node a cached snapshot was written for, as it recorded it then: its address, its
+ * authored label and its occurrence's label. Never resolved against today's graph.
+ */
+export interface CacheSnapshotOwner {
+  label: string;
+  node_id: string;
+  occurrence: string | null;
+  occurrence_label: string | null;
 }
 /**
  * What the clear actually removed, which is never assumed from the request.
@@ -1406,14 +1432,6 @@ export interface NodeDataJob {
   job_id: string;
   message: string;
   progress: number;
-}
-/**
- * The address of a key an answer names, with the node's authored label.
- */
-export interface NodeAddressEntry {
-  label: string;
-  node_id: string;
-  occurrence: string | null;
 }
 export interface NodeDataPointRef {
   port_label: string | null;

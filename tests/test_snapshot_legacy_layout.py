@@ -13,6 +13,7 @@ from haute._execution_context import ExecutionProfile
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
+    NodeSnapshotOwner,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -119,6 +120,9 @@ def test_a_single_file_node_snapshot_is_absent_and_replaced(tmp_path: Path) -> N
             dependencies={},
             explicit=False,
             profile=ExecutionProfile.NODE_SNAPSHOT,
+            owner=NodeSnapshotOwner(
+                occurrence=None, occurrence_label=None, node_id="join", label="join"
+            ),
         ) as publication:
             assert publication.outcome == "published"
             assert publication.generation is not None
