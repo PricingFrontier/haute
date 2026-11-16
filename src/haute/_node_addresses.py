@@ -118,9 +118,12 @@ def resolve_target(
 def resolve_node(flat: PipelineGraph, occurrence_id: str | None, node_id: str) -> str:
     """The runtime key of the node at ``{occurrence_id, node_id}`` in *flat*."""
     if occurrence_id is None:
-        if node_id in flat.node_map:
+        expansion = expansion_of(flat)
+        # A child's runtime key is in the flat graph too, but names no node of the
+        # pipeline: a child is addressed by its occurrence and local id.
+        if node_id in flat.node_map and node_id not in expansion.origins:
             return node_id
-        collapsed = expansion_of(flat).occurrences.get(node_id)
+        collapsed = expansion.occurrences.get(node_id)
         if collapsed is not None:
             raise NotFoundError(
                 f"'{collapsed.label}' is a submodel: name one of its nodes or ports"
@@ -167,10 +170,13 @@ def node_addresses(flat: PipelineGraph, keys: Iterable[str]) -> dict[str, NodeAd
 
 
 def occurrence_ports(flat: PipelineGraph) -> list[OccurrencePortProvenance]:
-    """Frame provenance: every declared port of every occurrence *flat* expanded, with the
-    endpoint it resolves to (``None`` for an input nothing feeds). Never refuses."""
+    """Frame provenance: every declared port of every occurrence *flat* expanded, by instance
+    id and then in declared order, with the endpoint it resolves to (``None`` for an input
+    nothing feeds). Never refuses."""
     provenance: list[OccurrencePortProvenance] = []
-    for occurrence in expansion_of(flat).occurrences.values():
+    # By instance id, so an answer lists them alike however the expansion ran.
+    occurrences = sorted(expansion_of(flat).occurrences.values(), key=lambda o: o.instance_id)
+    for occurrence in occurrences:
         sides: tuple[tuple[Literal["input", "output"], Mapping[str, SubmodelEndpoint | None]], ...]
         sides = (("input", occurrence.input_ports), ("output", occurrence.output_ports))
         for direction, ports in sides:

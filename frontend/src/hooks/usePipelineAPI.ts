@@ -20,7 +20,7 @@ import {
   resultKey,
   type FrameTargetPayload,
 } from "../utils/requestGateway"
-import { nodeFrame } from "../utils/nodeAddress"
+import { addressKey, nodeFrame } from "../utils/nodeAddress"
 import { answerTargetKey, keyText, keysOnCanvas, placeAddress } from "../utils/answerAddresses"
 import type { PreparedGraph, PreviewInputsResponse } from "../api/types"
 import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
@@ -304,17 +304,19 @@ interface PreviewInputTarget {
 }
 
 /**
- * The input nodes a preview-inputs answer names, by address: one of the pipeline's own,
- * or a child in its occurrence's definition, as the prepared document holds them.
+ * The input nodes a preview-inputs answer names, by address key (a pipeline node and a
+ * child of the same id are two inputs): one of the pipeline's own, or a child in its
+ * occurrence's definition, as the prepared document holds them.
  */
-function inputNodesOf(graph: PreparedGraph, answer: PreviewInputsResponse): Node[] {
-  const nodes: Node[] = []
+function inputNodesOf(graph: PreparedGraph, answer: PreviewInputsResponse): Array<[string, Node]> {
+  const nodes: Array<[string, Node]> = []
   for (const key of answer.input_node_ids) {
     const address = answer.node_addresses[keyText(key)]
     if (!address) continue
+    const at = addressKey({ occurrence: address.occurrence, node: address.node_id })
     if (address.occurrence === null) {
       const node = graph.nodes.find((candidate) => candidate.id === address.node_id)
-      if (node) nodes.push(node as unknown as Node)
+      if (node) nodes.push([at, node as unknown as Node])
       continue
     }
     const occurrence = graph.nodes.find((candidate) => candidate.id === address.occurrence)
@@ -323,7 +325,7 @@ function inputNodesOf(graph: PreparedGraph, answer: PreviewInputsResponse): Node
       ? (graph.submodels as Record<string, { graph?: { nodes?: unknown[] } } | undefined> | undefined)?.[config.definition_id]
       : undefined
     const child = (definition?.graph?.nodes as Node[] | undefined)?.find((candidate) => candidate.id === address.node_id)
-    if (child) nodes.push(child)
+    if (child) nodes.push([at, child])
   }
   return nodes
 }
@@ -723,7 +725,7 @@ export default function usePipelineAPI({
       )
       const wanted = new Map<string, Node>()
       for (const answer of answers) {
-        for (const input of inputNodesOf(graph, answer)) wanted.set(input.id, input)
+        for (const [at, input] of inputNodesOf(graph, answer)) wanted.set(at, input)
       }
       return ensureSnapshotsForNodes([...wanted.values()], signal)
     },

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -979,7 +979,31 @@ def expand_submodel_instances(
     previous = graph._submodel_expansion
     expanded._submodel_expansion = SubmodelExpansion.of(
         {
-            **(previous.occurrences if previous is not None else {}),
+            # An occurrence an earlier expansion recorded, fed by one this expansion
+            # runs, is fed by that occurrence's producing endpoint now.
+            **(
+                {
+                    instance_id: replace(
+                        occurrence,
+                        input_ports={
+                            port: endpoint
+                            if endpoint is None or endpoint.node_id not in selected_ids
+                            else expanded_source(
+                                GraphEdge(
+                                    id="binding",
+                                    source=endpoint.node_id,
+                                    sourceHandle=endpoint.handle_id,
+                                    target=instance_id,
+                                )
+                            )
+                            for port, endpoint in occurrence.input_ports.items()
+                        },
+                    )
+                    for instance_id, occurrence in previous.occurrences.items()
+                }
+                if previous is not None
+                else {}
+            ),
             **{
                 instance.node.id: _expanded_occurrence(
                     instance, id_maps[instance.node.id], bindings[instance.node.id]

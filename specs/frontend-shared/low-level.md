@@ -876,8 +876,10 @@ Workbench's sample and the cached-data list.
    result), when it sends the active source it keyed with, read in the same render. A prepared
    node request also names the nodes an answer names by id back (`nodeNamed`), in the view it
    was prepared in, so an answer that arrives after the view changed is still read by it.
-   `canvasTarget` never refuses a card: an Input card whose port is not named, or whose port
-   nothing feeds yet, and an Output card without a named output, are read as the card itself.
+   `canvasTarget` never refuses a card: an Input card whose port is not named, and an Output
+   card without a named output, are read as the card itself; a named input port nothing feeds
+   is still that port, which the server refuses by name. A prepared request makes the runtime
+   id the requests not yet sent by address use only when one reads it.
 4. **Only prepared graphs are sent.** Every client function that runs the graph takes a
    `PreparedGraph`, a type only the gateway makes, so type-checking refuses a graph a caller
    built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.

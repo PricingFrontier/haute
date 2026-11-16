@@ -386,7 +386,8 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    handle, an output port its producing child's. Supersession keys and worker arguments use the
    runtime key and port. Refusals are 404s that name the target by label: an occurrence the
    document does not hold; a child its definition does not hold; an occurrence named as a node
-   target, which runs only through its ports; a port its definition does not declare; and an
+   target, which runs only through its ports; a pipeline address naming a child's runtime key,
+   which addresses no node of the pipeline; a port its definition does not declare; and an
    input port nothing feeds.
 4. **Answers.** Every answer field that names a node is a `RuntimeNodeKey`, an opaque string the
    generated TypeScript brands, and an answer that names one carries
@@ -401,8 +402,10 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    changed, or after a reload, labels them without the graph.
 6. **Frame provenance.** A preview answer carries `occurrence_ports: [{occurrence, direction:
    "input"|"output", port, endpoint: {key, handle} | null}]` for every declared port of every
-   occurrence in the executed graph: the runtime endpoint the port resolves to (an input's feeding
-   endpoint, an output's producing child and handle), or `null` for an input nothing feeds. Ports
+   occurrence in the executed graph, by instance id: the runtime endpoint the port resolves to (an
+   input's feeding endpoint, an output's producing child and handle), or `null` for an input
+   nothing feeds. An expansion run in stages records what one pass does: an input fed by an
+   occurrence a later stage expands resolves to that occurrence's producing endpoint. Ports
    that resolve to one endpoint each keep their entry. Building it never fails or invents an
    endpoint; only a request whose target is an unbound port is refused. An Input card reads its
    ports' columns from it, a bound port whose columns are missing shown as missing data.

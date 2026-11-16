@@ -241,10 +241,9 @@ export function canvasTarget(nodeId: string, handle?: string | null): FrameTarge
       ? (isSubmodelDefinition(definition, focus.definitionId) ? definition.outputPorts.map((port) => port.name) : [])
       : (card.ports ?? []).map((port) => port.id)
     const port = handle ? names.find((name) => name === handle) : names.length === 1 ? names[0] : undefined
-    const bound = port !== undefined && (output || rootGraph().edges.some((edge) =>
-      edge.target === focus.instanceId && edge.targetHandle === `in__${port}`))
-    // A card whose port is not named, or an input nothing feeds yet, is read as the card itself.
-    if (port === undefined || !bound) return nodeFrame(childAddress(focus.instanceId, nodeId), handle ?? null)
+    // A card whose port is not named is read as the card itself. A named input nothing feeds
+    // is still that input, which the server refuses by name.
+    if (port === undefined) return nodeFrame(childAddress(focus.instanceId, nodeId), handle ?? null)
     return output
       ? { kind: "occurrenceOutput", occurrence: focus.instanceId, port }
       : { kind: "occurrenceInput", occurrence: focus.instanceId, port }
@@ -288,20 +287,34 @@ export function prepareCanvasRequest(
   nodeId: string,
   handle?: string | null,
 ): PreparedCanvasRequest {
-  return { ...prepareNodeRequest(scope, canvasTarget(nodeId, handle)), resultKey: resultKey(nodeId) }
+  return preparedNodeRequest(scope, canvasTarget(nodeId, handle), { resultKey: resultKey(nodeId) })
 }
 
-/** A request about `target`: the whole pipeline, and the id and port the server runs it under. */
+/** A request about `target`: the whole pipeline, and the target as the request sends it. */
 export function prepareNodeRequest(
   scope: RequestScope | null | undefined,
   target: FrameTarget,
 ): PreparedNodeRequest {
+  return preparedNodeRequest(scope, target, {})
+}
+
+function preparedNodeRequest<Extra extends object>(
+  scope: RequestScope | null | undefined,
+  target: FrameTarget,
+  extra: Extra,
+): PreparedNodeRequest & Extra {
   const pipeline = preparePipelineRequest(scope)
+  // The runtime id the requests not yet sent by address use, made only when one reads it:
+  // a request by address never does, and an input port nothing feeds has none.
+  let runtime: { nodeId: string; portLabel?: string } | null = null
+  const runtimeOf = () => (runtime ??= runtimeTarget(target))
   return {
     ...pipeline,
+    ...extra,
     target,
     wireTarget: frameTargetPayload(target),
-    ...runtimeTarget(target),
+    get nodeId() { return runtimeOf().nodeId },
+    get portLabel() { return runtimeOf().portLabel },
     nodeNamed: namerFor(viewNow()),
   }
 }

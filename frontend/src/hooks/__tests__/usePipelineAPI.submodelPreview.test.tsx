@@ -429,4 +429,45 @@ describe("an answer's nodes placed by their addresses", () => {
     expect(previewInputs).toHaveBeenLastCalledWith(expect.objectContaining({ target: nodeTarget("prepare", { occurrence: "pricing" }) }))
     expect(vi.mocked(ensureInputSnapshots).mock.calls.at(-1)?.[0].map((node) => (node as unknown as { id: string }).id)).toEqual(["quotes"])
   })
+
+  it("prepares a pipeline input and a submodel's input of the same id, each from its own config", async () => {
+    vi.mocked(loadPipeline).mockResolvedValue(makeLoadedPipeline({ nodes: [] }))
+    // One set of refs: new ones would load the pipeline again.
+    const params: Parameters<typeof usePipelineAPI>[0] = {
+      selectedNode: null,
+      activeSubmodelIdentity: OWNER,
+      setNodesRaw: (update) => useGraphStore.getState().setNodesRaw(update), setEdgesRaw: vi.fn(), setPreamble: vi.fn(),
+      pipelineNameRef: { current: "test" }, descriptionRef: { current: "" },
+      sourceFileRef: { current: "main.py" }, sourceRevisionRef: { current: "revision-test" },
+      preservedBlocksRef: { current: [] }, nodeIdCounter: { current: 0 },
+    }
+    const hook = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(hook.result.current.loading).toBe(false))
+    act(() => {
+      loadTwoOccurrences([
+        makeNode("source", "dataInput", { data: { label: "source", nodeType: "dataInput", config: { path: "claims.csv" } } }),
+        makeNode("prepare"),
+      ])
+      // The pipeline's own `source`, beside the occurrences.
+      useGraphStore.getState().setNodesRaw((nodes) => [
+        ...nodes,
+        makeNode("source", "dataInput", { data: { label: "source", nodeType: "dataInput", config: { path: "policies.csv" } } }),
+      ])
+      openOccurrence(OWNER)
+    })
+    vi.mocked(previewInputs).mockResolvedValueOnce({
+      input_node_ids: ["source" as never, "submodel_runtime/pricing/source" as never],
+      node_addresses: {
+        source: { occurrence: null, node_id: "source", label: "source" },
+        "submodel_runtime/pricing/source": { occurrence: "pricing", node_id: "source", label: "source" },
+      },
+    })
+
+    act(() => hook.result.current.fetchPreview(onCanvas("prepare"), { debounceMs: 0 }))
+    await waitFor(() => expect(hook.result.current.previewBusy).toBe(false))
+
+    const prepared = vi.mocked(ensureInputSnapshots).mock.calls.at(-1)?.[0]
+      .map((node) => (node as unknown as { data: { config: { path: string } } }).data.config.path)
+    expect(prepared?.sort()).toEqual(["claims.csv", "policies.csv"])
+  })
 })

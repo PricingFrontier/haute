@@ -196,6 +196,11 @@ class TestResolution:
         ("target", "message"),
         [
             (NodeAddressPayload(occurrence=None, node_id="nowhere"), "Node 'nowhere' not found"),
+            # A child's runtime key names no node of the pipeline.
+            (
+                NodeAddressPayload(occurrence=None, node_id=COPY_FINISH),
+                f"Node '{COPY_FINISH}' not found",
+            ),
             (
                 NodeAddressPayload(occurrence=None, node_id="pricing"),
                 "'pricing' is a submodel: name one of its nodes or ports",
@@ -261,6 +266,20 @@ class TestFrameProvenance:
             entry("pricing_2", "output", "premium", (COPY_FINISH, "scored")),
             entry("pricing_2", "output", "premium_alias", (COPY_FINISH, "scored")),
         ]
+
+    def test_an_expansion_in_stages_records_what_one_pass_does(self) -> None:
+        # The copy first (an owner waits for its copies), then the owner feeding it: the
+        # copy's input then runs from the owner's producing child, not the owner itself.
+        staged = flatten_graph(
+            flatten_graph(_pipeline(), target_instance_id="pricing_2"),
+            target_instance_id="pricing",
+        )
+        single = flatten_graph(_pipeline())
+
+        assert occurrence_ports(staged) == occurrence_ports(single)
+        assert resolve_target(staged, _input_card("pricing_2", "policy")) == ResolvedTarget(
+            key=OWNER_FINISH, port_label="scored"
+        )
 
 
 class TestLabelling:

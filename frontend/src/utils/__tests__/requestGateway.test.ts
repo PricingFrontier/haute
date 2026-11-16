@@ -130,16 +130,25 @@ describe("the request gateway", () => {
     expect(sent).toBe(built)
   })
 
-  it("reads a card as itself when its port is not named or nothing feeds it yet", () => {
+  it("reads a card as itself when its port is not named", () => {
+    open()
+    const input = card("input")
+
+    expect(canvasTarget(input.id, "not_a_port")).toEqual(nodeFrame(childAddress(OCCURRENCE, input.id), "not_a_port"))
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "not_a_port")).wireTarget)
+      .toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: input.id, port_label: "not_a_port", port_labels: null })
+  })
+
+  it("sends an Input card's port nothing feeds as that port, for the server to refuse by name", () => {
     useGraphStore.getState().setEdges([])
     open()
     const input = card("input")
 
-    expect(canvasTarget(input.id, "policy")).toEqual(nodeFrame(childAddress(OCCURRENCE, input.id), "policy"))
-    expect(prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy")).wireTarget)
-      .toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: input.id, port_label: "policy", port_labels: null })
-    expect(prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy")).nodeId)
-      .toBe(`submodel_runtime/br%20rating/${encodeURIComponent(input.id)}`)
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy"))
+
+    expect(request.wireTarget).toEqual({ kind: "occurrence_input", occurrence: OCCURRENCE, port: "policy" })
+    // Only a request still sent by runtime id asks for one, and the port has none.
+    expect(() => request.nodeId).toThrow("Input policy of br rating has nothing connected to it.")
   })
 
   it("names an answer's nodes by the view the request was prepared in, after the view changed", () => {
