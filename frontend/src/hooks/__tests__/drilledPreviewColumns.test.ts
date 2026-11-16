@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest"
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
-import { makeEdge, makeIdentifiedNode, makeNode, makePreviewResponse } from "../../test-utils/factories"
+import {
+  makeEdge,
+  makeIdentifiedNode,
+  makeNode,
+  makePreviewResponse,
+  occurrencePort,
+  rootAddresses,
+} from "../../test-utils/factories"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 import { applyPreviewResultColumnsToNodes } from "../usePipelineAPI"
 
@@ -11,7 +18,8 @@ import { applyPreviewResultColumnsToNodes } from "../usePipelineAPI"
 const POLICY = [{ name: "policy_id", dtype: "String" }, { name: "age", dtype: "Int64" }]
 const ITEMS = [{ name: "item_id", dtype: "String" }, { name: "value", dtype: "Float64" }]
 const PREPARED = [...ITEMS, { name: "value_k", dtype: "Float64" }]
-const DRILLED = { instanceId: "pricing", definitionId: "definition_pricing" }
+/** The occurrence open on the canvas. */
+const OPEN = "pricing"
 
 const definition = (nodes: Node[]): SubmodelDefinition => ({
   definitionId: "definition_pricing",
@@ -55,10 +63,29 @@ const inputCard = (nodes: Node[]) => nodes.find((node) => (
 ))!
 const byId = (nodes: Node[], id: string) => nodes.find((node) => node.id === id)!
 
+// The keys an answer names, each with its address: the pipeline's own nodes, and
+// the children of the open occurrence under keys the browser never reads.
+const ADDRESSES = {
+  ...rootAddresses("workbench", "items_source", "other_source"),
+  // A root node sharing a child's local id is not that child.
+  ...rootAddresses("prepare"),
+  "submodel_runtime/pricing/bands": { occurrence: "pricing", node_id: "bands", label: "bands" },
+  "submodel_runtime/pricing/prepare": { occurrence: "pricing", node_id: "prepare", label: "prepare" },
+  "submodel_runtime/pricing/item_bands": { occurrence: "pricing", node_id: "item_bands", label: "item_bands" },
+}
+
+// The frame provenance of every declared port: each input's feeding endpoint, by key.
+const PORTS = [
+  occurrencePort("pricing", "input", "policy", { key: "workbench", handle: "policy_frame" }),
+  occurrencePort("pricing", "input", "items", { key: "items_source" }),
+  occurrencePort("pricing", "output", "rated", { key: "submodel_runtime/pricing/item_bands" }),
+  occurrencePort("pricing_copy", "input", "policy", { key: "other_source" }),
+  occurrencePort("pricing_copy", "input", "items", null),
+]
+
 describe("a drilled submodel view's preview columns", () => {
-  it("records each child's columns from its runtime id and each Input card port's from the parent feeding it", () => {
+  it("records each child's columns from its address and each Input card port's from the endpoint feeding it", () => {
     const result = makePreviewResponse({
-      node_id: "submodel_runtime/pricing/item_bands",
       columns: [...PREPARED, { name: "value_band", dtype: "String" }],
       node_columns: {
         workbench: [{ name: "flat", dtype: "String" }],
@@ -66,13 +93,14 @@ describe("a drilled submodel view's preview columns", () => {
         other_source: [{ name: "copy_only", dtype: "String" }],
         "submodel_runtime/pricing/prepare": PREPARED,
         "submodel_runtime/pricing/item_bands": [...PREPARED, { name: "value_band", dtype: "String" }],
-        // A root node sharing a child's local id is not that child.
         prepare: [{ name: "root_prepare", dtype: "String" }],
       },
       node_frame_columns: { workbench: { policy_frame: POLICY } },
+      node_addresses: ADDRESSES,
+      occurrence_ports: PORTS,
     })
 
-    const nodes = applyPreviewResultColumnsToNodes(drilledView(), "item_bands", result, "live", 3, DRILLED)
+    const nodes = applyPreviewResultColumnsToNodes(drilledView(), "item_bands", result, "live", 3, OPEN, "submodel_runtime/pricing/item_bands")
 
     expect(byId(nodes, "prepare").data).toMatchObject({ _columns: PREPARED, _columnsSource: "live", _columnsStructuralVersion: 3 })
     expect(byId(nodes, "item_bands").data._columns).toEqual([...PREPARED, { name: "value_band", dtype: "String" }])
@@ -89,22 +117,32 @@ describe("a drilled submodel view's preview columns", () => {
     const both = makePreviewResponse({
       node_columns: { items_source: ITEMS },
       node_frame_columns: { workbench: { policy_frame: POLICY } },
+      node_addresses: ADDRESSES,
+      occurrence_ports: PORTS,
     })
-    const itemsOnly = makePreviewResponse({ node_columns: { items_source: PREPARED } })
-    const previewed = applyPreviewResultColumnsToNodes(drilledView(), "bands", both, "live", 1, DRILLED)
+    const itemsOnly = makePreviewResponse({
+      node_columns: { items_source: PREPARED },
+      node_addresses: ADDRESSES,
+      occurrence_ports: PORTS,
+    })
+    const previewed = applyPreviewResultColumnsToNodes(drilledView(), "bands", both, "live", 1, OPEN, "submodel_runtime/pricing/bands")
 
-    const sameSource = applyPreviewResultColumnsToNodes(previewed, "prepare", itemsOnly, "live", 1, DRILLED)
+    const sameSource = applyPreviewResultColumnsToNodes(previewed, "prepare", itemsOnly, "live", 1, OPEN, "submodel_runtime/pricing/prepare")
     expect(inputCard(sameSource).data._frameColumns).toEqual({ policy: POLICY, items: PREPARED })
 
-    const otherSource = applyPreviewResultColumnsToNodes(previewed, "prepare", itemsOnly, "batch", 1, DRILLED)
+    const otherSource = applyPreviewResultColumnsToNodes(previewed, "prepare", itemsOnly, "batch", 1, OPEN, "submodel_runtime/pricing/prepare")
     expect(inputCard(otherSource).data._frameColumns).toEqual({ items: PREPARED })
   })
 
   it("leaves the Input card alone when the preview reached none of its ports", () => {
     const nodes = drilledView()
-    const result = makePreviewResponse({ node_columns: { "submodel_runtime/pricing/prepare": PREPARED } })
+    const result = makePreviewResponse({
+      node_columns: { "submodel_runtime/pricing/prepare": PREPARED },
+      node_addresses: ADDRESSES,
+      occurrence_ports: PORTS,
+    })
 
-    const applied = applyPreviewResultColumnsToNodes(nodes, "prepare", result, "live", 1, DRILLED)
+    const applied = applyPreviewResultColumnsToNodes(nodes, "prepare", result, "live", 1, OPEN, "submodel_runtime/pricing/prepare")
 
     expect(inputCard(applied)).toBe(inputCard(nodes))
   })

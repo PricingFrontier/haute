@@ -3,7 +3,7 @@
  * caches every table again before previewing it, whether or not the file
  * changed. Every other preview keeps the freshness rules.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewInputsResponse, makePreviewResponse, targetNodeId } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node } from "@xyflow/react"
@@ -101,7 +101,6 @@ function job(status: InputCacheJobStatusResponse["status"], message = ""): Input
 }
 
 const okPreview = makePreviewResponse({
-  node_id: "quotes",
   status: "ok" as const,
   row_count: 2,
   column_count: 1,
@@ -157,7 +156,7 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
       mock.mockReset()
     }
     // The preview reads the Quote Input, whose tables are ready and fresh.
-    mockPreviewInputs.mockImplementation(async ({ nodeId }) => ({ input_node_ids: [nodeId] }))
+    mockPreviewInputs.mockImplementation(async ({ target }) => makePreviewInputsResponse(targetNodeId(target)))
     mockStatus.mockResolvedValue(makeInputCacheSnapshot({ schema_version: 1, identity_digest: "group", state: "ready", freshness: "fresh", generation: null }))
     mockBuild.mockResolvedValue({
       schema_version: 1,

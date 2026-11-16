@@ -20,6 +20,7 @@ from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._utils import shipped_graph
 from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project, work_elsewhere
 from tests._workbench_helpers import tables_form, workbench_project
 from tests.test_workbench_output import FORM_SAMPLE, FORM_TABLES, _priced, _write
@@ -59,8 +60,7 @@ def _preview_policy(client: TestClient, **body: Any) -> Any:
         "/api/pipeline/preview",
         json={
             "graph": _editor_graph().model_dump(mode="json"),
-            "node_id": "workbench_input",
-            "port_label": "policy_input",
+            "target": node_target("workbench_input", port_label="policy_input"),
             **body,
         },
     )
@@ -135,8 +135,7 @@ def test_a_preview_takes_a_form_or_a_sample_not_both(project: Path) -> None:
         "/api/pipeline/preview",
         json={
             "graph": _editor_graph().model_dump(mode="json"),
-            "node_id": "workbench_input",
-            "port_label": "policy_input",
+            "target": node_target("workbench_input", port_label="policy_input"),
             "workbench_form": tables_form(FORM_TABLES, FORM_SAMPLE).model_dump(
                 mode="json", by_alias=True
             ),
@@ -240,7 +239,7 @@ def test_a_workbench_node_in_a_project_whose_workbench_is_off_is_refused(
     # A preview reports it at the node, as it reports any configuration it cannot run.
     answer = TestClient(app).post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json"), "node_id": graph.nodes[0].id},
+        json={"graph": graph.model_dump(mode="json"), "target": node_target(graph.nodes[0].id)},
     )
     assert answer.status_code == 200, answer.text
     assert (answer.json()["status"], answer.json()["error"]) == ("error", refused)

@@ -7,6 +7,8 @@ import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
+from haute._node_addresses import ResolvedTarget
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._source_files import REPO_ROOT
 from tests._worker_http import raise_worker_http
@@ -61,7 +63,7 @@ def test_preview_and_trace_execute_through_spawn_worker(
                 "/api/pipeline/preview",
                 json={
                     "graph": _file_input_graph(),
-                    "node_id": "source",
+                    "target": node_target("source"),
                     "row_limit": 2,
                     "requested_preview_columns": ["IDpol"],
                 },
@@ -117,7 +119,7 @@ def test_rejected_node_config_is_a_422_through_the_spawn_worker(
         with TestClient(app, raise_server_exceptions=False) as client:
             preview = client.post(
                 "/api/pipeline/preview",
-                json={"graph": graph, "node_id": "expander", "row_limit": 2},
+                json={"graph": graph, "target": node_target("expander"), "row_limit": 2},
             )
     finally:
         shutdown_interactive_worker_pool()
@@ -460,14 +462,16 @@ def test_preview_and_trace_worker_targets_execute_directly() -> None:
     preview_body = PreviewNodeRequest.model_validate(
         {
             "graph": _file_input_graph(),
-            "node_id": "source",
+            "target": node_target("source"),
             "row_limit": 2,
             "requested_preview_columns": ["IDpol"],
         }
     )
     graph = flatten_graph(preview_body.graph)
 
-    preview = _execute_preview_worker(graph, preview_body, _isolated_budget())
+    preview = _execute_preview_worker(
+        graph, preview_body, ResolvedTarget(key="source"), _isolated_budget()
+    )
     trace = _execute_trace_worker(
         graph,
         TraceRequest(
@@ -501,7 +505,7 @@ def test_preview_worker_returns_public_graph_contract_error_and_releases_context
             released.append(preserve_primary_error)
 
     body = PreviewNodeRequest.model_validate(
-        {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
+        {"graph": _file_input_graph(), "target": node_target("source"), "row_limit": 2}
     )
     monkeypatch.setattr(
         pipeline_mod,
@@ -517,6 +521,7 @@ def test_preview_worker_returns_public_graph_contract_error_and_releases_context
     response = pipeline_mod._execute_preview_worker(
         flatten_graph(body.graph),
         body,
+        ResolvedTarget(key="source"),
         _isolated_budget(),
     )
 
@@ -542,7 +547,7 @@ def test_preview_worker_reraises_a_public_config_rejection_and_releases_context(
             released.append(preserve_primary_error)
 
     body = PreviewNodeRequest.model_validate(
-        {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
+        {"graph": _file_input_graph(), "target": node_target("source"), "row_limit": 2}
     )
     rejection = NodeConfigError("step_count is required", setting="step_count")
     monkeypatch.setattr(
@@ -560,6 +565,7 @@ def test_preview_worker_reraises_a_public_config_rejection_and_releases_context(
         pipeline_mod._execute_preview_worker(
             flatten_graph(body.graph),
             body,
+            ResolvedTarget(key="source"),
             _isolated_budget(),
         )
 
@@ -644,7 +650,7 @@ def test_interactive_route_worker_failures_have_stable_http_status(
     error = error_factory(failures_mod)
     if route_name == "preview":
         body = PreviewNodeRequest.model_validate(
-            {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
+            {"graph": _file_input_graph(), "target": node_target("source"), "row_limit": 2}
         )
         monkeypatch.setattr(pipeline_mod, "_preview_supersession", _RaisingCoordinator(error))
         invocation = pipeline_mod._preview_canonical_graph(body, cast(Request, _ConnectedClient()))

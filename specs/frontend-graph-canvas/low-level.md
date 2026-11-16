@@ -55,7 +55,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges, every node and edge named: `submodelPortIdentity` gives each card the identity the server's resolver gives a `submodelPort` node (held to `tests/fixtures/ui_contracts/submodel_port_identities.json`), and `buildSubmodelViewGraph` names every edge from its source. Input rows retain the definition-wide binding slice so history restoration can restore parent connections atomically while active-occurrence external-node presentation remains local. `captureParentOutputState` and `restoreParentOutputState` retain output identities and affected parent consumer configs with output-boundary history. |
 | `frontend/src/utils/submodelDocument.ts` | An open submodel as a view of the one document. `liftSubmodelCanvas` says what a canvas write inside the open occurrence does to its definition: nothing (a selection, a preview's columns), the definition as the write leaves it (children in their authored form, internal edges without the rendering the projection gives them (`definitionEdgeForm`), and input targets and output sources re-read from the boundary edges, so a handle changed where a boundary edge meets a child moves the port), or a refusal, whole, of a write that adds or removes a card, a card's port or a boundary edge, leaves a port without its child, or changes a read-only copy's definition. `projectSubmodelFocus` draws an occurrence from the document with the annotations its view last held and the cards where they were, and throws when the occurrence or definition is gone; `childAnnotations` and `isSubmodelCard` serve both. |
 | `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
-| `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. `submodelOutputPreview` resolves an occurrence's selected public output to its authoritative display name, qualified child target, frame and cache key, using `canonicalSubmodelBoundary` and `resolveSubmodelBoundaryNodes`. |
+| `frontend/src/utils/submodelRuntimeTarget.ts` | `encodeRuntimeIdPart`, `qualifiedRuntimeNodeId`, `resolveDrilledOccurrenceIdentity`, and `runtimeNodeIdForVisibleNode` validate drilled occurrence identity and derive backend runtime targets. `submodelOutputPreview` resolves an occurrence's selected public output to its authoritative display name, its output-port frame target (and, for the trace still sent by id, the qualified child and frame) and its cache key (`frameKey`), using `canonicalSubmodelBoundary` and `resolveSubmodelBoundaryNodes`. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Pure definition-aware boundary transform. It validates canonical identity, maps the collapsed generic input gesture to an existing or newly allocated named public port, edits structured endpoints and opaque public-port ids, preserves boundary positions and authoritative projected identities, reattaches rebuilt edge identities, restores the definition-wide parent-input slice from history projections, preflights incidental interface changes against every bound occurrence, and gives the explicit Input-inspector removal path one coherent cascade across the public port, internal routes, identity map, and all occurrence bindings. |
 | `frontend/src/utils/submodelBoundaryEditing.ts` | Canonical boundary-edit orchestration that validates occurrence identity and delegates structured definition transforms to `canonicalSubmodelBoundaryEditing.ts`. |
 | `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts canonical pure boundary transforms to the main-canvas generic submodel input, drilled React Flow connection/deletion events, and explicit Input-inspector port removal; accumulates identity-dependent gestures in one pending candidate, validates exact parent-handle identity coverage, reads the open submodel from the graph store's document and `focus`, and commits each boundary action through `commitSubmodelBoundaryEdit` as one undo step, with error toasts; at the root, the collapsed generic input commits through the history-aware atomic graph setter. Undo and Redo restore the whole document from the store's history, so nothing reconciles on render. |
@@ -878,19 +878,20 @@ reconciliation rather than dropping them or committing a second mutation.
     preview route asks the executor for them with
     `include_schema_metadata=True`, which resolves them without
     materialising those ancestors — and `applyPreviewSchemaMapsToNodes`
-    writes them onto node data. Drilled into a submodel occurrence, the maps
-    hold each child under its qualified runtime id, so the child's columns
-    are read from that key (`previewSchemaKey`, never the bare local id,
-    which may name a root node); the Input card, which runs nothing, gets
-    `_frameColumns` keyed by port, each the columns of the parent edge
-    feeding that port of this occurrence (`boundaryInputFrames`, the
-    parent's frame for the edge's source handle, else its flat columns).
-    Ports a preview did not reach keep their columns while the source is
-    unchanged (`drilledPreviewColumns.test.ts`). The route's per-node maps name
-    nodes by the ids the request ran them under, so a drilled preview's frames
-    are read under the child's runtime id, and the node statuses it answers are
-    also kept under each child's canvas id, read by the view the request was
-    sent from (`canvasIdNamer`). The maps' root ids are
+    writes them onto node data. The maps name nodes by runtime key, each placed
+    on the canvas by the address the answer gives it (`keysOnCanvas`,
+    `placeAddress`; never by reading a key): inside a submodel occurrence a
+    child's columns are those of the key addressed to it, and on the main
+    pipeline a collapsed occurrence's own entries (its output ports' columns)
+    describe its card, never its children's. The Input card, which runs
+    nothing, gets `_frameColumns` keyed by port, each the columns of the
+    endpoint the answer's frame provenance names for that port of this
+    occurrence (`boundaryInputFrames`: its frame for the endpoint's handle,
+    else its flat columns). Ports a preview did not reach keep their columns
+    while the source is unchanged (`drilledPreviewColumns.test.ts`). The node
+    statuses an answer gives are placed the same way, in the view the request
+    was sent from, and a collapsed occurrence's card shows the worst of its
+    children's (`canvasNodeStatuses`). The maps' pipeline nodes are
     recorded on the pipeline's own nodes behind the open submodel
     (`recordRootPreviewColumns`), so they return with it; drilling into an
     occurrence again starts the Input card from the feeding root nodes'

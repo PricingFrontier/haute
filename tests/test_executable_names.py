@@ -26,6 +26,7 @@ from haute.errors import ExecutionError, ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 from tests._git_helpers import init_repo
+from tests._preview_targets import node_target
 
 # ---------------------------------------------------------------------------
 # Graph builders
@@ -329,7 +330,8 @@ def test_a_preview_shows_a_collision_on_its_node(client: Any) -> None:
     graph = _labels("Rates", "rates")
 
     response = client.post(
-        "/api/pipeline/preview", json={"graph": graph.model_dump(mode="json"), "node_id": "n0"}
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json"), "target": node_target("n0")},
     )
 
     assert response.status_code == 200, response.text

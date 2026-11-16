@@ -27,6 +27,7 @@ import pytest
 from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots
 
@@ -554,7 +555,7 @@ def test_preview_route_response_carries_node_frame_columns(isolated_root) -> Non
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(), "node_id": "api"},
+        json={"graph": graph.model_dump(), "target": node_target("api")},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -1060,7 +1061,7 @@ def test_multi_port_ancestor_node_frame_columns_via_route(isolated_root) -> None
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(), "node_id": "d_policies"},
+        json={"graph": graph.model_dump(), "target": node_target("d_policies")},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -1296,8 +1297,7 @@ def test_port_label_select_through_preview_route(isolated_root) -> None:
     def _post(port: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "graph": graph.model_dump(),
-            "node_id": "api",
-            "port_label": port,
+            "target": node_target("api", port_label=port),
         }
         resp = client.post("/api/pipeline/preview", json=payload)
         assert resp.status_code == 200, resp.text

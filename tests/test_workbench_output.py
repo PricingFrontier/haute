@@ -54,6 +54,7 @@ from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.trace import execute_trace
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._workbench_helpers import (
     form_table,
@@ -529,11 +530,12 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     summary = form_table("summary", outputs=[("state", "str"), ("premium", "float")])
     workbench_project(project, [*FORM_TABLES, summary], FORM_SAMPLE)
     client = TestClient(app)
-    body = {"graph": saved.model_dump(), "node_id": "workbench_output", "row_limit": 100}
+    body = {"graph": saved.model_dump(), "row_limit": 100}
+    tables = ["pricing_output", "summary_output"]
 
     answer = client.post(
         "/api/pipeline/preview",
-        json={**body, "port_labels": ["pricing_output", "summary_output"]},
+        json={**body, "target": node_target("workbench_output", port_labels=tables)},
     )
 
     assert answer.status_code == 200, answer.text
@@ -547,7 +549,12 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     # One frame, or several: never both.
     both = client.post(
         "/api/pipeline/preview",
-        json={**body, "port_label": "pricing_output", "port_labels": ["pricing_output"]},
+        json={
+            **body,
+            "target": node_target(
+                "workbench_output", port_label="pricing_output", port_labels=["pricing_output"]
+            ),
+        },
     )
     assert both.status_code == 422
 

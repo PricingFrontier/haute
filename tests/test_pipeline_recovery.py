@@ -25,6 +25,7 @@ from haute.schemas import (
     RecoverySubmodelDefinition,
     RecoveryUnresolvedConnection,
 )
+from tests._preview_targets import node_target
 from tests._project import use_project
 from tests.conftest import write_data_input_config, write_node_config
 
@@ -2563,7 +2564,7 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
 
     async def execute(body: object, _http_request: object) -> PreviewNodeResponse:
         captured["body"] = body
-        return PreviewNodeResponse(node_id="clean", status="ok")
+        return PreviewNodeResponse(status="ok", node_addresses={}, occurrence_ports=[])
 
     monkeypatch.setattr("haute.routes.pipeline._preview_canonical_graph", execute)
 
@@ -2580,7 +2581,7 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
     assert response.status_code == 200, response.text
     planned = captured["body"]
     assert [node.id for node in planned.graph.nodes] == ["source", "clean"]  # type: ignore[attr-defined]
-    assert planned.node_id == "clean"  # type: ignore[attr-defined]
+    assert planned.target.model_dump() == node_target("clean")  # type: ignore[attr-defined]
 
 
 def test_recovery_preview_closure_shares_canonical_cache_identity(
@@ -2626,7 +2627,7 @@ def test_recovery_preview_closure_shares_canonical_cache_identity(
 
     async def execute(body: object, _http_request: object) -> PreviewNodeResponse:
         captured["body"] = body
-        return PreviewNodeResponse(node_id="clean", status="ok")
+        return PreviewNodeResponse(status="ok", node_addresses={}, occurrence_ports=[])
 
     monkeypatch.setattr("haute.routes.pipeline._preview_canonical_graph", execute)
 

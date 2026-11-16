@@ -7,12 +7,19 @@
  * A request runs the document of a `RequestScope` and names what it reads by address. It is
  * prepared once: the whole pipeline (also while a submodel is open), the document's identity,
  * its semantic generation, the target and the data source, captured together. Only the
- * gateway makes the `PreparedGraph` the client's run functions take. Until the server
- * resolves addresses, the gateway's adapter alone turns an address into the runtime id a
- * request sends and reads the ids an answer names back.
+ * gateway makes the `PreparedGraph` the client's run functions take. A request sends its
+ * target by address (`frameTargetPayload`); the requests not yet moved onto addresses
+ * (SUBE-05) still send the runtime id the gateway's adapter makes, and read the ids an
+ * answer names back through `nodeNamed`.
  */
 import type { Node } from "@xyflow/react"
 import type { PreparedGraph } from "../api/types"
+import type {
+  NodeAddressPayload,
+  NodeFrameTargetPayload,
+  OccurrenceInputTargetPayload,
+  OccurrenceOutputTargetPayload,
+} from "../generated/api-contracts.generated"
 import type { SimpleNode } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
@@ -50,9 +57,40 @@ export interface PreparedPipelineRequest {
   readonly semanticGeneration: number
 }
 
+/** A frame target as a request sends it (snake_case, every field present). */
+export type FrameTargetPayload =
+  | NodeFrameTargetPayload
+  | OccurrenceInputTargetPayload
+  | OccurrenceOutputTargetPayload
+
+/** A node address as a request sends it. */
+export function nodeAddressPayload(address: NodeAddress): NodeAddressPayload {
+  return { occurrence: address.occurrence, node_id: address.node }
+}
+
+/**
+ * The one conversion of a frame target to the wire's shape. `ports` names several ports of a
+ * node read in one run (the Workbench's tables), in place of the target's one port.
+ */
+export function frameTargetPayload(target: FrameTarget, ports?: readonly string[] | null): FrameTargetPayload {
+  if (target.kind === "node") {
+    return {
+      kind: "node",
+      ...nodeAddressPayload(target.address),
+      port_label: ports ? null : target.port,
+      port_labels: ports ? [...ports] : null,
+    }
+  }
+  return target.kind === "occurrenceInput"
+    ? { kind: "occurrence_input", occurrence: target.occurrence, port: target.port }
+    : { kind: "occurrence_output", occurrence: target.occurrence, port: target.port }
+}
+
 /** A request about one frame of the pipeline, captured once. */
 export interface PreparedNodeRequest extends PreparedPipelineRequest {
   readonly target: FrameTarget
+  /** The target as the request sends it. */
+  readonly wireTarget: FrameTargetPayload
   /** The node the request runs, by the id the server runs it under. */
   readonly nodeId: string
   /** The port of `nodeId` to read, when not its one output. */
@@ -146,14 +184,6 @@ function addressInView(view: ViewAtPreparation, id: string): NodeAddress {
   return rootAddress(id)
 }
 
-/**
- * The address an answer's node id names: a child of the open occurrence by its
- * runtime id, or one of the pipeline's own nodes by its id.
- */
-export function addressOfRuntimeId(id: string): NodeAddress {
-  return addressInView(viewNow(), id)
-}
-
 /** The node an answer's id names, in the view a request was prepared in. */
 function namerFor(view: ViewAtPreparation): (id: string) => SimpleNode | null {
   return (id) => {
@@ -166,19 +196,6 @@ function namerFor(view: ViewAtPreparation): (id: string) => SimpleNode | null {
 /** The nodes an answer names by id, in the view now, without preparing a request. */
 export function answerNodeNamer(): (id: string) => SimpleNode | null {
   return namerFor(viewNow())
-}
-
-/**
- * The canvas id of each node an answer names by runtime id, in the view now (taken when
- * a request is sent): a child of the open occurrence by its own id, one of the pipeline's
- * own at the root; null for a node the canvas does not show.
- */
-export function canvasIdNamer(): (runtimeId: string) => string | null {
-  const view = viewNow()
-  return (id) => {
-    const address = addressInView(view, id)
-    return address.occurrence === view.occurrence ? address.node : null
-  }
 }
 
 /**
@@ -207,9 +224,14 @@ export function canvasNodeAddress(nodeId: string): NodeAddress {
  */
 export function canvasTarget(nodeId: string, handle?: string | null): FrameTarget {
   const { focus, nodes } = useGraphStore.getState()
-  if (!focus) return nodeFrame(rootAddress(nodeId), handle ?? null)
   const node = nodes.find((candidate) => candidate.id === nodeId)
   const data = node ? nodeData(node) : undefined
+  if (!focus) {
+    // A collapsed occurrence's frame at an output handle is that output port's.
+    return data?.nodeType === NODE_TYPES.SUBMODEL && handle?.startsWith("out__")
+      ? { kind: "occurrenceOutput", occurrence: nodeId, port: handle.slice("out__".length) }
+      : nodeFrame(rootAddress(nodeId), handle ?? null)
+  }
   if (data?.nodeType === NODE_TYPES.SUBMODEL_PORT) {
     const card = data as unknown as Partial<SubmodelPortData>
     const output = card.portDirection === "output"
@@ -275,5 +297,11 @@ export function prepareNodeRequest(
   target: FrameTarget,
 ): PreparedNodeRequest {
   const pipeline = preparePipelineRequest(scope)
-  return { ...pipeline, target, ...runtimeTarget(target), nodeNamed: namerFor(viewNow()) }
+  return {
+    ...pipeline,
+    target,
+    wireTarget: frameTargetPayload(target),
+    ...runtimeTarget(target),
+    nodeNamed: namerFor(viewNow()),
+  }
 }

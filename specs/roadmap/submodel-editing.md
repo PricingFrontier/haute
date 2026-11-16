@@ -164,7 +164,6 @@ contract test covers every node-naming answer field.
 
 **Evidence:** `frontend/src/utils/submodelRuntimeTarget.ts::encodeRuntimeIdPart`;
 `frontend/src/utils/submodelRuntimeTarget.ts::submodelOutputPreview`;
-`frontend/src/hooks/usePipelineAPI.ts::previewSchemaKey`;
 `frontend/src/hooks/usePipelineAPI.ts::canvasNodeStatuses`;
 `frontend/src/components/PipelineSettingsModal.tsx::displayNodeName`;
 `frontend/src/panels/editors/OutputEditor.tsx`;

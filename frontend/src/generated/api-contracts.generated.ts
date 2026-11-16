@@ -4789,8 +4789,10 @@ export interface DissolveSubmodelResponse {
  * Full preview response — extends ``NodeResult`` with graph-wide metadata.
  *
  * Inherits all per-node fields (status, row_count, columns, preview, etc.)
- * and adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for
- * the full graph context.
+ * and adds ``timings``, ``memory``, and ``node_statuses`` for the full graph
+ * context. It names nodes by runtime key, each addressed in ``node_addresses``
+ * (specs/server-api/low-level.md, "Node addresses"); it belongs to its request's
+ * target, so it does not name that again.
  */
 export interface PreviewNodeResponse {
   available_columns: ColumnInfo[];
@@ -4804,6 +4806,9 @@ export interface PreviewNodeResponse {
   };
   memory: NodeMemoryInfo[];
   memory_bytes: number;
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   node_available_columns: {
     [k: string]: ColumnInfo[];
   };
@@ -4815,7 +4820,6 @@ export interface PreviewNodeResponse {
       [k: string]: ColumnInfo[];
     };
   };
-  node_id: string;
   node_schema_warnings: {
     [k: string]: SchemaWarning[];
   };
@@ -4823,6 +4827,7 @@ export interface PreviewNodeResponse {
     [k: string]: 'ok' | 'error';
   };
   notes: string[];
+  occurrence_ports: OccurrencePortProvenance[];
   port_previews: {
     [k: string]: PortPreview;
   };
@@ -4843,13 +4848,39 @@ export interface PreviewNodeResponse {
 export interface NodeMemoryInfo {
   label: string;
   memory_bytes: number;
+  node_id: RuntimeNodeKey;
+}
+/**
+ * The address of a key an answer names, with the node's authored label.
+ */
+export interface NodeAddressEntry {
+  label: string;
   node_id: string;
+  occurrence: string | null;
 }
 export interface SchemaWarning {
   column: string | null;
   detail: string | null;
   input: string | null;
   status: string;
+}
+/**
+ * What one declared port of an occurrence resolves to in the executed graph: the
+ * endpoint feeding an input, or producing an output; ``None`` for an input nothing
+ * feeds.
+ */
+export interface OccurrencePortProvenance {
+  direction: 'input' | 'output';
+  endpoint: RuntimeEndpointPayload | null;
+  occurrence: string;
+  port: string;
+}
+/**
+ * A node and output handle of the executed graph.
+ */
+export interface RuntimeEndpointPayload {
+  handle: string | null;
+  key: RuntimeNodeKey;
 }
 /**
  * One frame's preview of a multi-frame target asked for several (``port_labels``):
@@ -4884,14 +4915,18 @@ export interface PreviewSeedPlanEntry {
 }
 export interface NodeTimingInfo {
   label: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   timing_ms: number;
 }
 /**
- * Snapshot-backed Data Inputs and structured API Inputs, in execution order.
+ * Snapshot-backed Data Inputs and structured API Inputs, in execution order, each
+ * addressed in ``node_addresses``.
  */
 export interface PreviewInputsResponse {
-  input_node_ids: string[];
+  input_node_ids: RuntimeNodeKey[];
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
 }
 /**
  * A running preview's step progress (``GET /api/pipeline/preview/progress/{id}``).
@@ -6445,6 +6480,46 @@ export interface WorkbenchAppQuoteActivityEntry {
  */
 export interface WorkbenchAppPeopleResponse {
   people: string[];
+}
+/**
+ * A node by address: a pipeline node (``occurrence`` null; an occurrence is itself the
+ * pipeline's node of its instance id), or a child of ``occurrence`` by its local id.
+ */
+export interface NodeAddressPayload {
+  node_id: string;
+  occurrence: string | null;
+}
+/**
+ * A node's output frame: the whole of it, one port, or several ports read in one
+ * execution (the Workbench's tables), never one port and several.
+ */
+export interface NodeFrameTargetPayload {
+  kind: 'node';
+  node_id: string;
+  occurrence: string | null;
+  port_label: string | null;
+  /**
+   * @minItems 1
+   * @maxItems 1000
+   */
+  port_labels: string[] | null;
+}
+/**
+ * The frame feeding a public input port of an occurrence (its Input card's).
+ */
+export interface OccurrenceInputTargetPayload {
+  kind: 'occurrence_input';
+  occurrence: string;
+  port: string;
+}
+/**
+ * The frame a public output port of an occurrence produces (its Output card's, or an
+ * edge out of the collapsed occurrence).
+ */
+export interface OccurrenceOutputTargetPayload {
+  kind: 'occurrence_output';
+  occurrence: string;
+  port: string;
 }
 /**
  * One bounded, side-effect-free editor identity resolution request.

@@ -36,6 +36,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._source_files import source_files
 
@@ -139,7 +140,7 @@ _ERROR_CASES = [
     pytest.param(
         "post",
         "/api/pipeline/preview",
-        {"graph": {"nodes": [], "edges": []}, "node_id": "x"},
+        {"graph": {"nodes": [], "edges": []}, "target": node_target("x")},
         400,
         id="preview-empty-graph",
     ),

@@ -29,6 +29,7 @@ from haute.schemas import (
     UtilityWriteRequest,
     WriteOutputRequest,
 )
+from tests._preview_targets import node_target
 from tests._project import project_app
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -98,10 +99,11 @@ class TestEmptyStrings:
         """Empty node_id would cause KeyError in results dict lookup."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "",
+            "target": node_target(""),
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        assert resp.status_code == 404
+        # A target names a node by a non-empty id.
+        assert resp.status_code == 422
 
     def test_empty_node_id_in_sink(self, client):
         """Empty sink node_id could skip the sink write entirely."""
@@ -125,7 +127,7 @@ class TestEmptyStrings:
         """Empty graph (no nodes) should return 400, not crash during topo-sort."""
         body = {
             "graph": {"nodes": [], "edges": []},
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 400
@@ -185,7 +187,7 @@ class TestEmptyStrings:
                 ],
                 "edges": [],
             },
-            "node_id": "src",
+            "target": node_target("src"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 200
@@ -206,7 +208,7 @@ class TestNullValues:
         """null node_id would crash dict lookup with TypeError."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": None,
+            "target": {**node_target("src"), "node_id": None},
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422  # Pydantic validation error
@@ -224,7 +226,7 @@ class TestNullValues:
         """null graph would cause AttributeError on .nodes access."""
         body = {
             "graph": None,
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -322,7 +324,7 @@ class TestLargePayloads:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": 2**31 - 1,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -479,7 +481,7 @@ class TestDeeplyNestedJSON:
                 ],
                 "edges": [],
             },
-            "node_id": "d",
+            "target": node_target("d"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 200
@@ -503,7 +505,7 @@ class TestIntegerOverflow:
         with pytest.raises(pydantic.ValidationError):
             PreviewNodeRequest(
                 graph=Graph(),
-                node_id="x",
+                target=node_target("x"),
                 row_limit=2**63,
             )
 
@@ -515,7 +517,7 @@ class TestIntegerOverflow:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": 2**63,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -563,7 +565,7 @@ class TestNegativeValues:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": -1,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -602,7 +604,7 @@ class TestNegativeValues:
         """row_limit=0 should return empty preview, not error."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": 0,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -628,7 +630,7 @@ class TestTypeConfusion:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": "100",
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -642,7 +644,7 @@ class TestTypeConfusion:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": True,
+            "target": {**node_target("src"), "node_id": True},
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -655,7 +657,7 @@ class TestTypeConfusion:
         """
         body = {
             "graph": [1, 2, 3],
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -678,7 +680,7 @@ class TestTypeConfusion:
         """Raw string for graph field should fail Pydantic validation."""
         body = {
             "graph": "not a graph",
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -700,11 +702,11 @@ class TestTypeConfusion:
         Pydantic v2 rejects non-integer floats for int fields.
         """
         with pytest.raises(ValidationError):
-            PreviewNodeRequest(graph=Graph(), node_id="x", row_limit=100.5)
+            PreviewNodeRequest(graph=Graph(), target=node_target("x"), row_limit=100.5)
 
     def test_whole_float_for_int_row_limit(self):
         """Float 100.0 (whole number) should be coerced to int by Pydantic v2."""
-        req = PreviewNodeRequest(graph=Graph(), node_id="x", row_limit=100.0)
+        req = PreviewNodeRequest(graph=Graph(), target=node_target("x"), row_limit=100.0)
         assert isinstance(req.row_limit, int)
         assert req.row_limit == 100
 
@@ -850,7 +852,7 @@ class TestBinaryDataInStrings:
         # Send valid JSON with unicode escape for high byte
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src\u0080",
+            "target": node_target("src\u0080"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 400
@@ -929,7 +931,7 @@ class TestPathTraversalInPayloads:
                 ],
                 "edges": [],
             },
-            "node_id": "src",
+            "target": node_target("src"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 403

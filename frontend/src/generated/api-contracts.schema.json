@@ -15155,6 +15155,69 @@
       "title": "ModellingNodeData",
       "type": "object"
     },
+    "NodeAddressEntry": {
+      "additionalProperties": false,
+      "description": "The address of a key an answer names, with the node's authored label.",
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "occurrence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Occurrence"
+        }
+      },
+      "required": [
+        "occurrence",
+        "node_id",
+        "label"
+      ],
+      "title": "NodeAddressEntry",
+      "type": "object"
+    },
+    "NodeAddressPayload": {
+      "additionalProperties": false,
+      "description": "A node by address: a pipeline node (``occurrence`` null; an occurrence is itself the\npipeline's node of its instance id), or a child of ``occurrence`` by its local id.",
+      "properties": {
+        "node_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "occurrence": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Occurrence"
+        }
+      },
+      "required": [
+        "occurrence",
+        "node_id"
+      ],
+      "title": "NodeAddressPayload",
+      "type": "object"
+    },
     "NodeData": {
       "oneOf": [
         {
@@ -15858,6 +15921,76 @@
       "title": "NodeEditorState",
       "type": "object"
     },
+    "NodeFrameTargetPayload": {
+      "additionalProperties": false,
+      "description": "A node's output frame: the whole of it, one port, or several ports read in one\nexecution (the Workbench's tables), never one port and several.",
+      "properties": {
+        "kind": {
+          "const": "node",
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "occurrence": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Occurrence"
+        },
+        "port_label": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Port Label"
+        },
+        "port_labels": {
+          "anyOf": [
+            {
+              "items": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 1000,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Port Labels"
+        }
+      },
+      "required": [
+        "kind",
+        "occurrence",
+        "node_id",
+        "port_label",
+        "port_labels"
+      ],
+      "title": "NodeFrameTargetPayload",
+      "type": "object"
+    },
     "NodeMemoryInfo": {
       "properties": {
         "label": {
@@ -15870,7 +16003,8 @@
         },
         "node_id": {
           "title": "Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         }
       },
       "required": [
@@ -15889,7 +16023,8 @@
         },
         "node_id": {
           "title": "Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         },
         "timing_ms": {
           "title": "Timing Ms",
@@ -15931,6 +16066,106 @@
       ],
       "title": "NodeType",
       "type": "string"
+    },
+    "OccurrenceInputTargetPayload": {
+      "additionalProperties": false,
+      "description": "The frame feeding a public input port of an occurrence (its Input card's).",
+      "properties": {
+        "kind": {
+          "const": "occurrence_input",
+          "title": "Kind",
+          "type": "string"
+        },
+        "occurrence": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Occurrence",
+          "type": "string"
+        },
+        "port": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Port",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "occurrence",
+        "port"
+      ],
+      "title": "OccurrenceInputTargetPayload",
+      "type": "object"
+    },
+    "OccurrenceOutputTargetPayload": {
+      "additionalProperties": false,
+      "description": "The frame a public output port of an occurrence produces (its Output card's, or an\nedge out of the collapsed occurrence).",
+      "properties": {
+        "kind": {
+          "const": "occurrence_output",
+          "title": "Kind",
+          "type": "string"
+        },
+        "occurrence": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Occurrence",
+          "type": "string"
+        },
+        "port": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Port",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "occurrence",
+        "port"
+      ],
+      "title": "OccurrenceOutputTargetPayload",
+      "type": "object"
+    },
+    "OccurrencePortProvenance": {
+      "additionalProperties": false,
+      "description": "What one declared port of an occurrence resolves to in the executed graph: the\nendpoint feeding an input, or producing an output; ``None`` for an input nothing\nfeeds.",
+      "properties": {
+        "direction": {
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeEndpointPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurrence": {
+          "title": "Occurrence",
+          "type": "string"
+        },
+        "port": {
+          "title": "Port",
+          "type": "string"
+        }
+      },
+      "required": [
+        "occurrence",
+        "direction",
+        "port",
+        "endpoint"
+      ],
+      "title": "OccurrencePortProvenance",
+      "type": "object"
     },
     "OptimiserAdjustmentBar": {
       "additionalProperties": false,
@@ -20827,24 +21062,33 @@
       "type": "object"
     },
     "PreviewInputsResponse": {
-      "description": "Snapshot-backed Data Inputs and structured API Inputs, in execution order.",
+      "description": "Snapshot-backed Data Inputs and structured API Inputs, in execution order, each\naddressed in ``node_addresses``.",
       "properties": {
         "input_node_ids": {
           "items": {
-            "type": "string"
+            "type": "string",
+            "x-haute-node-key": true
           },
           "title": "Input Node Ids",
           "type": "array"
+        },
+        "node_addresses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NodeAddressEntry"
+          },
+          "title": "Node Addresses",
+          "type": "object"
         }
       },
       "required": [
-        "input_node_ids"
+        "input_node_ids",
+        "node_addresses"
       ],
       "title": "PreviewInputsResponse",
       "type": "object"
     },
     "PreviewNodeResponse": {
-      "description": "Full preview response — extends ``NodeResult`` with graph-wide metadata.\n\nInherits all per-node fields (status, row_count, columns, preview, etc.)\nand adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for\nthe full graph context.",
+      "description": "Full preview response — extends ``NodeResult`` with graph-wide metadata.\n\nInherits all per-node fields (status, row_count, columns, preview, etc.)\nand adds ``timings``, ``memory``, and ``node_statuses`` for the full graph\ncontext. It names nodes by runtime key, each addressed in ``node_addresses``\n(specs/server-api/low-level.md, \"Node addresses\"); it belongs to its request's\ntarget, so it does not name that again.",
       "properties": {
         "available_columns": {
           "items": {
@@ -20922,12 +21166,22 @@
           "title": "Memory Bytes",
           "type": "integer"
         },
+        "node_addresses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NodeAddressEntry"
+          },
+          "title": "Node Addresses",
+          "type": "object"
+        },
         "node_available_columns": {
           "additionalProperties": {
             "items": {
               "$ref": "#/$defs/ColumnInfo"
             },
             "type": "array"
+          },
+          "propertyNames": {
+            "x-haute-node-key": true
           },
           "title": "Node Available Columns",
           "type": "object"
@@ -20938,6 +21192,9 @@
               "$ref": "#/$defs/ColumnInfo"
             },
             "type": "array"
+          },
+          "propertyNames": {
+            "x-haute-node-key": true
           },
           "title": "Node Columns",
           "type": "object"
@@ -20952,12 +21209,11 @@
             },
             "type": "object"
           },
+          "propertyNames": {
+            "x-haute-node-key": true
+          },
           "title": "Node Frame Columns",
           "type": "object"
-        },
-        "node_id": {
-          "title": "Node Id",
-          "type": "string"
         },
         "node_schema_warnings": {
           "additionalProperties": {
@@ -20965,6 +21221,9 @@
               "$ref": "#/$defs/SchemaWarning"
             },
             "type": "array"
+          },
+          "propertyNames": {
+            "x-haute-node-key": true
           },
           "title": "Node Schema Warnings",
           "type": "object"
@@ -20977,6 +21236,9 @@
             ],
             "type": "string"
           },
+          "propertyNames": {
+            "x-haute-node-key": true
+          },
           "title": "Node Statuses",
           "type": "object"
         },
@@ -20985,6 +21247,13 @@
             "type": "string"
           },
           "title": "Notes",
+          "type": "array"
+        },
+        "occurrence_ports": {
+          "items": {
+            "$ref": "#/$defs/OccurrencePortProvenance"
+          },
+          "title": "Occurrence Ports",
           "type": "array"
         },
         "port_previews": {
@@ -21090,7 +21359,6 @@
         "memory_bytes",
         "schema_warnings",
         "notes",
-        "node_id",
         "timings",
         "memory",
         "node_statuses",
@@ -21098,6 +21366,8 @@
         "node_available_columns",
         "node_frame_columns",
         "node_schema_warnings",
+        "node_addresses",
+        "occurrence_ports",
         "execution_metrics",
         "seed_plan"
       ],
@@ -22562,6 +22832,34 @@
         "where"
       ],
       "title": "RowsCondition",
+      "type": "object"
+    },
+    "RuntimeEndpointPayload": {
+      "additionalProperties": false,
+      "description": "A node and output handle of the executed graph.",
+      "properties": {
+        "handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Handle"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string",
+          "x-haute-node-key": true
+        }
+      },
+      "required": [
+        "key",
+        "handle"
+      ],
+      "title": "RuntimeEndpointPayload",
       "type": "object"
     },
     "SaveCapture": {
@@ -29820,6 +30118,9 @@
     "ModellingGpuStatusResponse": {
       "$ref": "#/$defs/ModellingGpuStatusResponse"
     },
+    "NodeAddressPayload": {
+      "$ref": "#/$defs/NodeAddressPayload"
+    },
     "NodeDataClearResponse": {
       "$ref": "#/$defs/NodeDataClearResponse"
     },
@@ -29834,6 +30135,15 @@
     },
     "NodeDataStatusResponse": {
       "$ref": "#/$defs/NodeDataStatusResponse"
+    },
+    "NodeFrameTargetPayload": {
+      "$ref": "#/$defs/NodeFrameTargetPayload"
+    },
+    "OccurrenceInputTargetPayload": {
+      "$ref": "#/$defs/OccurrenceInputTargetPayload"
+    },
+    "OccurrenceOutputTargetPayload": {
+      "$ref": "#/$defs/OccurrenceOutputTargetPayload"
     },
     "OptimiserApplyRequest": {
       "$ref": "#/$defs/OptimiserApplyRequest"
@@ -30082,6 +30392,10 @@
   "required": [
     "execution_strategy_diagnostic",
     "explore_charts",
+    "NodeAddressPayload",
+    "NodeFrameTargetPayload",
+    "OccurrenceInputTargetPayload",
+    "OccurrenceOutputTargetPayload",
     "EditorIdentityRequestNode",
     "TraceSeedPlanEntry",
     "InputCacheSourceRequest",
@@ -30242,6 +30556,12 @@
   "title": "HauteApiContractBundle",
   "type": "object",
   "x-haute-request-groups": {
+    "address-requests": [
+      "NodeAddressPayload",
+      "NodeFrameTargetPayload",
+      "OccurrenceInputTargetPayload",
+      "OccurrenceOutputTargetPayload"
+    ],
     "editor-requests": [
       "EditorIdentityRequestNode",
       "TraceSeedPlanEntry"

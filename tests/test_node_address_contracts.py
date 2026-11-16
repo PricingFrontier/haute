@@ -30,15 +30,14 @@ NODE_KEY_POSITIONS: dict[tuple[str, str], str] = {
     # Frame provenance's endpoints.
     ("RuntimeEndpointPayload", "key"): MIGRATED,
     # Preview.
-    ("PreviewNodeResponse", "node_id"): PENDING,
-    ("PreviewNodeResponse", "node_statuses{}"): PENDING,
-    ("PreviewNodeResponse", "node_columns{}"): PENDING,
-    ("PreviewNodeResponse", "node_available_columns{}"): PENDING,
-    ("PreviewNodeResponse", "node_frame_columns{}"): PENDING,
-    ("PreviewNodeResponse", "node_schema_warnings{}"): PENDING,
-    ("NodeTimingInfo", "node_id"): PENDING,
-    ("NodeMemoryInfo", "node_id"): PENDING,
-    ("PreviewInputsResponse", "input_node_ids"): PENDING,
+    ("PreviewNodeResponse", "node_statuses{}"): MIGRATED,
+    ("PreviewNodeResponse", "node_columns{}"): MIGRATED,
+    ("PreviewNodeResponse", "node_available_columns{}"): MIGRATED,
+    ("PreviewNodeResponse", "node_frame_columns{}"): MIGRATED,
+    ("PreviewNodeResponse", "node_schema_warnings{}"): MIGRATED,
+    ("NodeTimingInfo", "node_id"): MIGRATED,
+    ("NodeMemoryInfo", "node_id"): MIGRATED,
+    ("PreviewInputsResponse", "input_node_ids"): MIGRATED,
     # Trace.
     ("TraceResultResponse", "target_node_id"): PENDING,
     ("TraceStepResponse", "node_id"): PENDING,

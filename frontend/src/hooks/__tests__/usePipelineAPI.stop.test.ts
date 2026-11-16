@@ -2,7 +2,7 @@
  * The preview frame's Stop: it stops the running preview — and the input
  * preparation the preview waits on — and shows the node's last stored result.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewInputsResponse, makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node } from "@xyflow/react"
@@ -16,7 +16,7 @@ import useUIStore from "../../stores/useUIStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -92,7 +92,6 @@ function hangUntilAborted({ signal }: { signal?: AbortSignal }) {
 }
 
 const okPreview = makePreviewResponse({
-  node_id: "A",
   status: "ok" as const,
   row_count: 3,
   column_count: 1,
@@ -118,7 +117,7 @@ describe("usePipelineAPI - Stop", () => {
     useToastStore.setState({ toasts: [] })
     for (const mock of [mockLoad, mockPreview, mockBuild, mockStatus, mockJob, mockCancelJob]) mock.mockReset()
     mockPreviewInputs.mockReset()
-    mockPreviewInputs.mockResolvedValue({ input_node_ids: [] })
+    mockPreviewInputs.mockResolvedValue({ input_node_ids: [], node_addresses: {} })
   })
 
   afterEach(() => {
@@ -166,7 +165,7 @@ describe("usePipelineAPI - Stop", () => {
   it("keeps running when the snapshot build refuses to stop, and Stop cancels it again", async () => {
     const node = makeNode("A")
     const { result } = await renderPipelineAPI([node])
-    mockPreviewInputs.mockResolvedValue({ input_node_ids: ["source"] })
+    mockPreviewInputs.mockResolvedValue(makePreviewInputsResponse("source"))
     mockStatus.mockResolvedValue({ schema_version: 1, identity_digest: "d", state: "missing", freshness: "unknown", generation: null } as never)
     mockBuild.mockResolvedValue({ schema_version: 1, job_id: "build-1", identity_digest: "d", status: "running", joined: false, build_class: "bounded" } as never)
     mockJob.mockImplementation(async () => ({ status: "running", progress: { phase: "reading", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 } }) as never)
@@ -200,7 +199,7 @@ describe("usePipelineAPI - Stop", () => {
   it("stops waiting for a snapshot build joined from elsewhere without cancelling it", async () => {
     const node = makeNode("A")
     const { result } = await renderPipelineAPI([node])
-    mockPreviewInputs.mockResolvedValue({ input_node_ids: ["source"] })
+    mockPreviewInputs.mockResolvedValue(makePreviewInputsResponse("source"))
     mockStatus.mockResolvedValue({ schema_version: 1, identity_digest: "d", state: "missing", freshness: "unknown", generation: null } as never)
     mockBuild.mockResolvedValue({ schema_version: 1, job_id: "theirs", identity_digest: "d", status: "running", joined: true, build_class: "bounded" } as never)
     mockJob.mockImplementation(async () => ({ status: "running", progress: { phase: "reading", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 } }) as never)
@@ -256,7 +255,7 @@ describe("usePipelineAPI - Stop", () => {
   it("keeps a frame preview running when its snapshot build refuses to stop, and retries on Stop", async () => {
     const node = makeNode("A")
     const { result } = await renderPipelineAPI([node])
-    mockPreviewInputs.mockResolvedValue({ input_node_ids: ["source"] })
+    mockPreviewInputs.mockResolvedValue(makePreviewInputsResponse("source"))
     mockStatus.mockResolvedValue({ schema_version: 1, identity_digest: "d", state: "missing", freshness: "unknown", generation: null } as never)
     mockBuild.mockResolvedValue({ schema_version: 1, job_id: "build-1", identity_digest: "d", status: "running", joined: false, forced: false, build_class: "bounded" } as never)
     mockJob.mockImplementation(async () => ({ status: "running", progress: { phase: "reading", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 } }) as never)

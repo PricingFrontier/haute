@@ -31,7 +31,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -170,7 +170,7 @@ describe("usePipelineAPI - settings captured at fetch start (#33, #34)", () => {
     mockPreview.mockImplementation(async ({ rowLimit }) => {
       seenRowLimits.push(rowLimit)
       await new Promise((r) => setTimeout(r, 50))
-      return makePreviewResponse({ node_id: "n1", status: "ok", row_count: 1, column_count: 0, columns: [], preview: [] })
+      return makePreviewResponse({ status: "ok", row_count: 1, column_count: 0, columns: [], preview: [] })
     })
 
     const params = makeParams()

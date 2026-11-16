@@ -20,6 +20,7 @@ from haute._node_snapshots import NodeSnapshotStore
 from haute._pipeline_settings import update_pipeline_settings
 from haute._seed_plans import ListedSeed, open_listed_seed_plan, resolve_seed_plan
 from haute._types import NodeType
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.test_data_output_seeding import _graph as _output_graph
 from tests.test_data_output_seeding import _inline_worker, _result, _write
@@ -214,7 +215,7 @@ def test_a_preview_runs_without_a_plan_and_writes_nothing(
         _preview_cache.clear()
         response = client.post(
             "/api/pipeline/preview",
-            json={"graph": graph, "node_id": "banding", "row_limit": 200},
+            json={"graph": graph, "target": node_target("banding"), "row_limit": 200},
         )
         assert response.status_code == 200, response.text
         body = response.json()

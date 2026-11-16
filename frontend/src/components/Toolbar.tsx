@@ -8,6 +8,7 @@ import ProjectControls from "./ProjectControls"
 import SourcePipelineControls from "./SourcePipelineControls"
 import useUIStore from "../stores/useUIStore"
 import { formatBytes } from "../utils/formatBytes"
+import { keyText } from "../utils/answerAddresses"
 import MlflowSettingsModal from "./MlflowSettingsModal"
 
 function formatTiming(ms: number): string {
@@ -69,12 +70,12 @@ function Toolbar({
   const closeMlflowSettings = useCallback(() => setMlflowSettingsOpen(false), [setMlflowSettingsOpen])
 
   const timingItems: BreakdownItem[] = useMemo(
-    () => (timings ?? []).map((t) => ({ node_id: t.node_id, label: t.label, value: t.timing_ms })),
+    () => (timings ?? []).map((t) => ({ node_id: keyText(t.node_id), label: t.label, value: t.timing_ms })),
     [timings],
   )
 
   const memoryItems: BreakdownItem[] = useMemo(
-    () => (memory ?? []).map((m) => ({ node_id: m.node_id, label: m.label, value: m.memory_bytes })),
+    () => (memory ?? []).map((m) => ({ node_id: keyText(m.node_id), label: m.label, value: m.memory_bytes })),
     [memory],
   )
 

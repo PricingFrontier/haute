@@ -23,7 +23,7 @@ import { pendingSavesSettled } from "../../stores/pendingSaves"
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
   loadPipelineDocument: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -485,7 +485,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("honours a custom preview debounce before starting the API request", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -520,7 +519,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("waits 200 ms by default before starting the API request", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -603,7 +601,6 @@ describe("usePipelineAPI - preview and save requests", () => {
       })
       useGraphStore.setState({ structuralVersion: 4 })
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [{ name: "b", dtype: "i64" }],
         preview: [{ b: 2 }],
@@ -632,7 +629,6 @@ describe("usePipelineAPI - preview and save requests", () => {
       // modifies a node's config.
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [{ name: "b", dtype: "i64" }],
         preview: [{ b: 2 }],
@@ -690,7 +686,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("refetches when cached preview source differs from active source", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -742,7 +737,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("refetches when cached preview row limit differs from current row limit", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -820,7 +814,6 @@ describe("usePipelineAPI - preview and save requests", () => {
 
       await act(async () => {
         resolvePreview(makePreviewResponse({
-          node_id: "n1",
           status: "ok",
           columns: [{ name: "stale", dtype: "i64" }],
           preview: [{ stale: 1 }],
@@ -846,7 +839,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("cancelPreview clears a pending debounced preview before the API request starts", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],

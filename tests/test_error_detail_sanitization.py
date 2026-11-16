@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._graph_walker import CollectPolicy, walk_graph
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.job_store_support import seed_job
 from tests.training_artifacts_support import publish_trained_job
@@ -476,7 +477,7 @@ class TestSafeDetailOnError:
         ):
             resp = client.post(
                 "/api/pipeline/preview",
-                json={"graph": pipeline_graph.model_dump(), "node_id": node_id},
+                json={"graph": pipeline_graph.model_dump(), "target": node_target(node_id)},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -787,7 +788,7 @@ class TestLogOnError:
         ):
             resp = client.post(
                 "/api/pipeline/preview",
-                json={"graph": pipeline_graph.model_dump(), "node_id": node_id},
+                json={"graph": pipeline_graph.model_dump(), "target": node_target(node_id)},
             )
         assert resp.status_code == 500
         mock_logger.error.assert_called()
@@ -1217,7 +1218,7 @@ class TestSensitiveInfoLeakage:
         ):
             resp = client.post(
                 "/api/pipeline/preview",
-                json={"graph": pipeline_graph.model_dump(), "node_id": node_id},
+                json={"graph": pipeline_graph.model_dump(), "target": node_target(node_id)},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -1380,7 +1381,7 @@ class TestUserCodeErrorSanitization:
         with patch("haute.routes.pipeline.execute_graph", return_value=mock_results):
             resp = client.post(
                 "/api/pipeline/preview",
-                json={"graph": graph, "node_id": "txn"},
+                json={"graph": graph, "target": node_target("txn")},
             )
 
         assert resp.status_code == 200
@@ -1461,7 +1462,7 @@ class TestPreambleErrorSanitization:
         with patch("haute.routes.pipeline.execute_graph", return_value=mock_results):
             resp = client.post(
                 "/api/pipeline/preview",
-                json={"graph": graph, "node_id": "txn"},
+                json={"graph": graph, "target": node_target("txn")},
             )
 
         assert resp.status_code == 200

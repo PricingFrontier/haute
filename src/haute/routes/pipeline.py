@@ -55,6 +55,18 @@ from haute._interactive_workers import resolve_interactive_execution_mode, run_i
 from haute._io import read_user_text
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
+from haute._node_address_schemas import (
+    FrameTargetPayload,
+    NodeAddressPayload,
+    NodeFrameTargetPayload,
+)
+from haute._node_addresses import (
+    ResolvedTarget,
+    expansion_of,
+    labelled,
+    occurrence_ports,
+    resolve_target,
+)
 from haute._node_snapshots import NodeSnapshotStore
 from haute._node_specs import known_node_spec
 from haute._output_assembler import OutputMappingSchemaError
@@ -111,7 +123,6 @@ from haute._step_progress import (
     StepProgressReporter,
     current_job_progress_reporter,
 )
-from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
 from haute._support_code_names import name_violations, utility_reader
 from haute._topo import ancestors
 from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, SubmodelDefinition
@@ -602,6 +613,15 @@ def _ensure_printable_lookup_id(value: str | None, field_name: str) -> None:
             status_code=400,
             detail=f"{field_name} contains control characters",
         )
+
+
+def _ensure_printable_target(target: NodeAddressPayload | FrameTargetPayload) -> None:
+    """Refuse a target naming a node, occurrence or port with control characters."""
+    for field_name in ("occurrence", "node_id", "port", "port_label"):
+        value = getattr(target, field_name, None)
+        _ensure_printable_lookup_id(value, f"target.{field_name}")
+    for label in getattr(target, "port_labels", None) or ():
+        _ensure_printable_lookup_id(label, "target.port_labels")
 
 
 def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
@@ -1341,7 +1361,7 @@ async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
 
 
 def _occurrence_output_columns(
-    authored: PipelineGraph,
+    flat: PipelineGraph,
     results: Mapping[str, Any],
 ) -> dict[str, dict[str, list[ColumnInfo]]]:
     """Columns of every submodel occurrence's output ports, keyed like its edges.
@@ -1349,39 +1369,43 @@ def _occurrence_output_columns(
     The executor's frame results are keyed by cloned internal nodes; its
     occurrence entries carry only schema warnings, not output columns. An
     edge from an occurrence leaves the ``out__<port>`` handle; this maps
-    that handle to the columns of the port's internal source (its frame
-    when the source is multi-frame), so the editor can offer them downstream.
+    that handle to the columns of the port's producing endpoint in the
+    expansion's record (its frame when the source is multi-frame), so the
+    editor can offer them downstream.
     """
     columns_by_occurrence: dict[str, dict[str, list[ColumnInfo]]] = {}
-    # The preview has already flattened this graph, so every occurrence
-    # resolves; a failure here is a defect and must surface.
-    for instance_id, instance in resolve_submodel_instances(authored).items():
+    for occurrence in expansion_of(flat).occurrences.values():
         ports: dict[str, list[ColumnInfo]] = {}
-        for port in instance.definition.output_ports:
-            result = results.get(qualified_runtime_node_id(instance_id, port.source.node_id))
-            if result is None:
+        for port, endpoint in occurrence.output_ports.items():
+            result = None if endpoint is None else results.get(endpoint.node_id)
+            if endpoint is None or result is None:
                 continue
             frames = result.frame_columns or {}
-            source_handle = port.source.handle_id
-            columns = frames.get(source_handle) if source_handle else None
+            columns = frames.get(endpoint.handle_id) if endpoint.handle_id else None
             if columns is None:
                 columns = result.columns
             if columns:
-                ports[f"out__{port.name}"] = list(columns)
+                ports[f"out__{port}"] = list(columns)
         if ports:
-            columns_by_occurrence[instance_id] = ports
+            columns_by_occurrence[occurrence.instance_id] = ports
     return columns_by_occurrence
+
+
+def _preview_error(error: str) -> PreviewNodeResponse:
+    """A preview answer that only carries the error the run met, naming no node."""
+    return PreviewNodeResponse(status="error", error=error, node_addresses={}, occurrence_ports=[])
 
 
 def _preview_response_from_results(
     graph: PipelineGraph,
     body: PreviewNodeRequest,
+    target: ResolvedTarget,
     results: dict[str, Any],
     execution_context: ExecutionContext,
 ) -> PreviewNodeResponse:
-    node_result = results.get(body.node_id)
+    node_result = results.get(target.key)
     if not node_result:
-        raise _PreviewTargetNotReturnedError(f"Node '{body.node_id}' not found in results")
+        raise _PreviewTargetNotReturnedError(f"Node '{target.key}' not found in results")
 
     node_map = graph.node_map
     pruned = prune_source_switch_edges(
@@ -1390,7 +1414,7 @@ def _preview_response_from_results(
         body.source,
         submodels=graph.submodels,
     )
-    relevant = ancestors(body.node_id, pruned, set(node_map.keys()))
+    relevant = ancestors(target.key, pruned, set(node_map.keys()))
     timings = [
         NodeTimingInfo(
             node_id=node_id,
@@ -1427,15 +1451,16 @@ def _preview_response_from_results(
         for node_id, result in results.items()
         if node_id in node_map and node_id in relevant and result.frame_columns
     }
-    for occurrence_id, ports in _occurrence_output_columns(body.graph, results).items():
+    for occurrence_id, ports in _occurrence_output_columns(graph, results).items():
         node_frame_columns[occurrence_id] = {**node_frame_columns.get(occurrence_id, {}), **ports}
     node_schema_warnings = {
         node_id: result.schema_warnings
         for node_id, result in results.items()
         if node_id in relevant or node_id in graph._submodel_shared_bindings
     }
-    return PreviewNodeResponse(
-        node_id=body.node_id,
+    return labelled(
+        PreviewNodeResponse,
+        graph,
         status=node_result.status,
         row_count=node_result.row_count,
         column_count=node_result.column_count,
@@ -1467,6 +1492,7 @@ def _preview_response_from_results(
             execution_context.metrics_payload(status="completed")
         ),
         seed_plan=_preview_seed_plan_entries(graph, execution_context.preview_seed_plan),
+        occurrence_ports=occurrence_ports(graph),
     )
 
 
@@ -1505,6 +1531,7 @@ def _discard_preview_staging(staging_token: str) -> None:
 def _preview_response(
     graph: PipelineGraph,
     body: PreviewNodeRequest,
+    target: ResolvedTarget,
     context: ExecutionContext,
     staging_token: str | None = None,
 ) -> PreviewNodeResponse:
@@ -1517,28 +1544,29 @@ def _preview_response(
     try:
         results = execute_graph(
             graph,
-            target_node_id=body.node_id,
+            target_node_id=target.key,
             row_limit=body.row_limit,
             source=body.source,
             target_preview_only=True,
             requested_preview_columns=body.requested_preview_columns,
             include_schema_metadata=True,
-            port_label=body.port_label,
-            port_labels=body.port_labels,
+            port_label=target.port_label,
+            port_labels=None if target.port_labels is None else list(target.port_labels),
             execution_context=context,
             shared_snapshots=True,
             staging_token=staging_token,
         )
-        return _preview_response_from_results(graph, body, results, context)
+        return _preview_response_from_results(graph, body, target, results, context)
     except PUBLIC_CONTRACT_ERROR_TYPES:
         raise
     except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as exc:
-        return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(exc))
+        return _preview_error(str(exc))
 
 
 def _execute_preview_worker(
     graph: PipelineGraph,
     body: PreviewNodeRequest,
+    target: ResolvedTarget,
     budget: IsolatedExecutionBudget,
     staging_token: str | None = None,
 ) -> PreviewNodeResponse:
@@ -1546,7 +1574,7 @@ def _execute_preview_worker(
     # The parent reads this job's step progress from the worker's progress cell.
     context.step_progress = current_job_progress_reporter()
     try:
-        return _preview_response(graph, body, context, staging_token)
+        return _preview_response(graph, body, target, context, staging_token)
     finally:
         context.release_admission(preserve_primary_error=True)
 
@@ -1739,7 +1767,7 @@ async def _preview_canonical_graph(
 
     def _preview_in_thread(context: ExecutionContext) -> PreviewNodeResponse:
         context.step_progress = step_progress
-        return _preview_response(graph, body, context)
+        return _preview_response(graph, body, target, context)
 
     try:
         with _interactive_failures(
@@ -1749,18 +1777,15 @@ async def _preview_canonical_graph(
                 # A graph the flattener refuses (a name collision, an undeclared
                 # handle) is shown on the node, as a graph-shape issue the run meets
                 # is; every other route that takes a graph answers it 400.
+                _ensure_printable_target(body.target)
                 graph = flatten_executable_graph(
                     body.graph, form=body.workbench_form, sample=body.workbench_sample
                 )
                 _ensure_source_file(graph)
                 if not graph.nodes:
                     raise HTTPException(status_code=400, detail="Empty graph")
-                _ensure_printable_lookup_id(body.node_id, "node_id")
-                if body.node_id not in graph.node_map:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Node '{body.node_id}' not found in results",
-                    )
+                # The address resolves through the expansion's record, or is refused by name.
+                target = resolve_target(graph, body.target)
                 _validate_runtime_input_paths(graph)
 
                 fingerprint_memo = GraphFingerprintMemo()
@@ -1773,17 +1798,23 @@ async def _preview_canonical_graph(
                         _preview_supersession_key(
                             graph,
                             body.source,
-                            body.node_id,
+                            target.key,
                             body.row_limit,
                             body.requested_preview_columns,
-                            body.port_label,
-                            body.port_labels,
+                            target.port_label,
+                            None if target.port_labels is None else list(target.port_labels),
                             memo=fingerprint_memo,
                         ),
                         lambda: _run_interactive(
                             run,
                             worker=_execute_preview_worker,
-                            worker_args=lambda budget: (graph, body, budget, staging_token),
+                            worker_args=lambda budget: (
+                                graph,
+                                body,
+                                target,
+                                budget,
+                                staging_token,
+                            ),
                             in_thread=_preview_in_thread,
                             affinity_key=_interactive_affinity_key(
                                 graph, body.source, memo=fingerprint_memo
@@ -1809,7 +1840,7 @@ async def _preview_canonical_graph(
                 # The run shows these on the node; one met before it starts, while the
                 # graph is flattened or fingerprinted, is shown the same way.
                 logger.warning("preview_refused_before_run", error=str(e))
-                return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(e))
+                return _preview_error(str(e))
             except PreviewProjectionError as e:
                 logger.warning("preview_bad_request", error=str(e))
                 raise HTTPException(status_code=400, detail=str(e)) from None
@@ -1858,28 +1889,27 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     authored — a shape, config, or contract error — has nothing to prepare,
     and the preview itself reports that error at the node, as it always has.
     """
+    _ensure_printable_target(body.target)
     try:
         graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     except (ParseError, ConfigError, WorkbenchError, WorkbenchTablesError) as e:
         # A form the workbench nodes cannot read is the preview's to report, as a shape is.
         logger.info("preview_inputs_graph_invalid", error=str(e))
-        return PreviewInputsResponse(input_node_ids=[])
+        return PreviewInputsResponse(input_node_ids=[], node_addresses={})
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
-    _ensure_printable_lookup_id(body.node_id, "node_id")
-    if body.node_id not in graph.node_map:
-        raise HTTPException(status_code=404, detail=f"Node '{body.node_id}' not found")
+    target = resolve_target(graph, body.target)
     _validate_runtime_input_paths(graph)
 
     def _resolve() -> tuple[str, ...]:
         return preview_input_node_ids(
             graph,
-            body.node_id,
+            target.key,
             source=body.source,
             required_columns_by_node=_preview_required_columns_by_node(
                 graph,
-                body.node_id,
+                target.key,
                 body.requested_preview_columns,
             )
             or None,
@@ -1895,7 +1925,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
         raise HTTPException(status_code=400, detail=str(e)) from None
     except (ParseError, ConfigError, ContractMismatchError, SchemaMismatchError) as e:
         logger.info("preview_inputs_graph_invalid", error=str(e))
-        return PreviewInputsResponse(input_node_ids=[])
+        return PreviewInputsResponse(input_node_ids=[], node_addresses={})
     except (BlockingWorkTimeoutError, TimeoutError):
         raise HTTPException(
             status_code=504,
@@ -1903,7 +1933,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
         ) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         raise contract_error_http_exception(e) from None
-    return PreviewInputsResponse(input_node_ids=list(node_ids))
+    return labelled(PreviewInputsResponse, graph, input_node_ids=list(node_ids))
 
 
 class _RecoveryPreviewRequestError(ValueError):
@@ -2127,11 +2157,16 @@ def _plan_recovery_preview(
     )
     return PreviewNodeRequest(
         graph=graph,
-        node_id=target.recovery_id,
+        target=NodeFrameTargetPayload(
+            kind="node",
+            occurrence=None,
+            node_id=target.recovery_id,
+            port_label=body.port_label,
+            port_labels=None,
+        ),
         row_limit=body.row_limit,
         source=body.source,
         requested_preview_columns=body.requested_preview_columns,
-        port_label=body.port_label,
         request_id=body.request_id,
     )
 

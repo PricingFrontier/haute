@@ -10,6 +10,7 @@ import pytest
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.executor import PreviewProjectionError, execute_graph
 from haute.schemas import ColumnInfo, NodeResult
+from tests._preview_targets import node_target
 from tests.conftest import make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -133,7 +134,7 @@ def test_preview_route_preserves_truncation_metadata_and_json_safety(
                 ],
                 "edges": [],
             },
-            "node_id": "target",
+            "target": node_target("target"),
             "row_limit": 100,
         },
     )
@@ -440,7 +441,7 @@ def test_preview_route_forwards_requested_columns_and_reports_projection(
                 ],
                 "edges": [],
             },
-            "node_id": "target",
+            "target": node_target("target"),
             "row_limit": 100,
             "requested_preview_columns": ["premium"],
         },
@@ -481,7 +482,7 @@ def test_preview_route_returns_400_for_missing_requested_columns(
                 ],
                 "edges": [],
             },
-            "node_id": "target",
+            "target": node_target("target"),
             "row_limit": 100,
             "requested_preview_columns": ["missing"],
         },
@@ -518,7 +519,7 @@ def test_preview_route_keeps_non_projection_value_errors_internal(
                 ],
                 "edges": [],
             },
-            "node_id": "target",
+            "target": node_target("target"),
             "row_limit": 100,
         },
     )
