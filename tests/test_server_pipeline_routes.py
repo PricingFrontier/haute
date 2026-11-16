@@ -823,7 +823,7 @@ class TestExecuteSinkEndpoint:
 
         response = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
 
         assert response.status_code == 200
@@ -837,7 +837,7 @@ class TestExecuteSinkEndpoint:
         graph["nodes"][0]["data"]["config"]["path"] = "report.csv"
         mismatch = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
         assert mismatch.status_code == 200
         assert mismatch.json() == {
@@ -868,7 +868,7 @@ class TestExecuteSinkEndpoint:
 
         response = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
 
         assert response.status_code == 200
@@ -907,7 +907,7 @@ class TestExecuteSinkEndpoint:
 
         response = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
 
         assert response.status_code == 200
@@ -947,7 +947,7 @@ class TestExecuteSinkEndpoint:
             "/api/pipeline/write-output",
             json={
                 "graph": graph,
-                "node_id": "sink",
+                "target": {"occurrence": None, "node_id": "sink"},
             },
         )
         assert resp.status_code == 200
@@ -958,7 +958,7 @@ class TestExecuteSinkEndpoint:
 
         collision = client.post(
             "/api/pipeline/write-output",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
         assert collision.status_code == 409
         assert collision.json()["detail"] == (
@@ -967,14 +967,22 @@ class TestExecuteSinkEndpoint:
 
         overwrite = client.post(
             "/api/pipeline/write-output",
-            json={"graph": graph, "node_id": "sink", "overwrite": True},
+            json={
+                "graph": graph,
+                "target": {"occurrence": None, "node_id": "sink"},
+                "overwrite": True,
+            },
         )
         assert overwrite.status_code == 200
         assert overwrite.json()["row_count"] == 3
 
         non_boolean = client.post(
             "/api/pipeline/write-output",
-            json={"graph": graph, "node_id": "sink", "overwrite": "true"},
+            json={
+                "graph": graph,
+                "target": {"occurrence": None, "node_id": "sink"},
+                "overwrite": "true",
+            },
         )
         assert non_boolean.status_code == 422
 
@@ -1014,7 +1022,10 @@ class TestExecuteSinkEndpoint:
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
 
-        resp = client.post("/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"})
+        resp = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
+        )
 
         assert resp.status_code == 400
         assert "/secure/" not in resp.json()["detail"]
@@ -1228,7 +1239,10 @@ class TestPipelineTimeouts:
             else:
                 body = {"graph": graph.model_dump(), "target": node_target(graph.nodes[0].id)}
         else:
-            body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
+            body = {
+                "graph": self._sink_graph(pipeline_dir),
+                "target": {"occurrence": None, "node_id": "sink"},
+            }
 
         if endpoint == "write-output":
             from haute._worker_failures import WorkerTimeoutError
@@ -1326,7 +1340,10 @@ class TestPipelineExceptions:
             else:
                 body = {"graph": graph.model_dump(), "target": node_target(graph.nodes[0].id)}
         else:
-            body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
+            body = {
+                "graph": self._sink_graph(pipeline_dir),
+                "target": {"occurrence": None, "node_id": "sink"},
+            }
 
         with patch(patch_target, side_effect=RuntimeError(error_msg)):
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)
@@ -1368,7 +1385,10 @@ class TestPipelineExceptions:
         with patch("haute.routes.pipeline._output_write_transaction", side_effect=error):
             response = client.post(
                 "/api/pipeline/write-output",
-                json={"graph": self._sink_graph(pipeline_dir), "node_id": "sink"},
+                json={
+                    "graph": self._sink_graph(pipeline_dir),
+                    "target": {"occurrence": None, "node_id": "sink"},
+                },
             )
 
         assert response.status_code == 500
@@ -1518,7 +1538,7 @@ class TestSinkEmptyGraph:
             "/api/pipeline/write-output",
             json={
                 "graph": {"nodes": [], "edges": []},
-                "node_id": "x",
+                "target": {"occurrence": None, "node_id": "x"},
             },
         )
         assert resp.status_code == 400

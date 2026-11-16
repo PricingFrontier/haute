@@ -1287,7 +1287,7 @@ describe("OutputEditor - assembled-output preview", () => {
     expect(mockOutputAssembleDryRun).toHaveBeenCalledTimes(2)
   })
 
-  it("sends the CURRENT (unsaved) mapping + node id to the dry-run route", async () => {
+  it("sends the CURRENT (unsaved) mapping + the node's address to the dry-run route", async () => {
     mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [], row_count: 0 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
       allNodes: SINGLE_PORT_NODES,
@@ -1296,7 +1296,7 @@ describe("OutputEditor - assembled-output preview", () => {
     fireEvent.click(screen.getByTestId("output-preview-toggle"))
     await waitFor(() => expect(mockOutputAssembleDryRun).toHaveBeenCalled())
     const arg = mockOutputAssembleDryRun.mock.calls[0][0]
-    expect(arg.nodeId).toBe("output_1")
+    expect(arg.target).toEqual({ occurrence: null, node_id: "output_1" })
     expect(arg.outputMapping).toEqual(SINGLE_PORT_CONFIG.output_mapping)
   })
 

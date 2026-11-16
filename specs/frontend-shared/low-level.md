@@ -889,8 +889,9 @@ Workbench's sample and the cached-data list.
    in-memory `NodeAddress` and `FrameTarget` to the wire's snake_case shape in one function) and
    never a runtime id. The preview, its inputs, the trace, the node-data family (a data
    point, its build, profile and clear, pivots, relationships, banding statistics and rating
-   levels), modelling (training and its estimates) and the optimiser (a solve, its estimate and
-   auto range) do so now; until SUBE-05 moves the other
+   levels), modelling (training and its estimates), the optimiser (a solve, its estimate and
+   auto range) and Data Output (a destination, a write, an assembly dry run) do so now; until
+   SUBE-05 moves the other
    families, their requests send the runtime id the gateway's adapter builds, and their
    answers' node ids are read as plain strings (the cached-data list strips a child's prefix to
    label it until it moves). An answer names nodes by opaque key, each with its address in the

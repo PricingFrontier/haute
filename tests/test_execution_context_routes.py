@@ -82,7 +82,9 @@ async def test_write_output_route_rejects_unconfigured_data_output(
     ):
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
-                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+                WriteOutputRequest(
+                    graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+                )
             )
 
     assert exc_info.value.status_code == 400
@@ -914,7 +916,9 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
         }
     )
 
-    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    request = WriteOutputRequest(
+        graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+    )
     response = _app_client().post(
         "/api/pipeline/write-output", json=request.model_dump(mode="json")
     )
@@ -965,7 +969,9 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
 
     monkeypatch.setattr(pipeline_route, "_output_write_transaction", raise_memory_budget)
 
-    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    request = WriteOutputRequest(
+        graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+    )
     response = _app_client().post(
         "/api/pipeline/write-output", json=request.model_dump(mode="json")
     )
@@ -1021,7 +1027,9 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     ):
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
-                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+                WriteOutputRequest(
+                    graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+                )
             )
 
     assert exc_info.value.status_code == 422
@@ -1108,7 +1116,9 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            WriteOutputRequest(
+                graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+            )
         )
 
     assert exc_info.value.status_code == 504
@@ -1185,7 +1195,9 @@ async def test_sink_route_releases_admission_before_isolated_timeout_returns(
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            WriteOutputRequest(
+                graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+            )
         )
 
     assert exc_info.value.status_code == 504
@@ -1263,7 +1275,9 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            WriteOutputRequest(
+                graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+            )
         )
 
     assert exc_info.value.status_code == 409
@@ -1312,7 +1326,9 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(
     with patch.object(pipeline_route, "_output_write_transaction") as transaction:
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
-                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+                WriteOutputRequest(
+                    graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+                )
             )
 
     assert exc_info.value.status_code == 504

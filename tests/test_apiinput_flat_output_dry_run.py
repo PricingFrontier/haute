@@ -169,7 +169,11 @@ def test_flat_apiinput_to_output_dry_run_route(nested_project: Path) -> None:
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/api/output-assemble/dry-run",
-        json={"graph": graph, "node_id": "out", "output_mapping": _OUTPUT_MAPPING},
+        json={
+            "graph": graph,
+            "target": {"occurrence": None, "node_id": "out"},
+            "output_mapping": _OUTPUT_MAPPING,
+        },
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()

@@ -515,7 +515,8 @@ class TestSafeDetailOnError:
             side_effect=RuntimeError("PermissionError: /secure/dir/output.parquet"),
         ):
             resp = client.post(
-                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+                "/api/pipeline/write-output",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -817,7 +818,8 @@ class TestLogOnError:
             patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
-                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+                "/api/pipeline/write-output",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
             )
         assert resp.status_code == 500
         mock_logger.error.assert_called()
@@ -1255,7 +1257,8 @@ class TestSensitiveInfoLeakage:
             ),
         ):
             resp = client.post(
-                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+                "/api/pipeline/write-output",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]

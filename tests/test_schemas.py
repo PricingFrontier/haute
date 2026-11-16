@@ -82,7 +82,7 @@ class TestValidation:
         with pytest.raises(ValidationError):
             GraphEdge()
 
-    def test_sink_request_requires_node_id(self):
+    def test_sink_request_requires_target(self):
         with pytest.raises(ValidationError):
             WriteOutputRequest(graph=Graph())
 

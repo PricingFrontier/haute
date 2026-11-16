@@ -1080,7 +1080,8 @@ export function savePipeline(
 
 export interface OutputAssembleDryRunArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The OUTPUT node, by address. */
+  target: NodeAddressPayload
   /** The in-progress (volatile, unsaved) outputMapping to preview. The route
    * swaps this into the OUTPUT node's config, overriding whatever is on disk —
    * so the preview reflects the editor's CURRENT mapping, not the saved file. */
@@ -1107,7 +1108,7 @@ export function outputAssembleDryRun(
 ): Promise<OutputAssembleDryRunResponse> {
   const {
     graph,
-    nodeId,
+    target,
     outputMapping,
     rowLimit,
     source,
@@ -1118,7 +1119,7 @@ export function outputAssembleDryRun(
     "/api/output-assemble/dry-run",
     {
       graph,
-      node_id: nodeId,
+      target,
       output_mapping: outputMapping,
       ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
       source: source ?? "live",
@@ -1156,7 +1157,8 @@ export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
 
 export interface WriteOutputArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The Data Output node, by address. */
+  target: NodeAddressPayload
   source?: string
   overwrite?: boolean
   signal?: AbortSignal
@@ -1165,7 +1167,8 @@ export interface WriteOutputArgs {
 
 export interface ResolveOutputDestinationArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The Data Output node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }
@@ -1173,12 +1176,12 @@ export interface ResolveOutputDestinationArgs {
 export function resolveOutputDestination(
   args: ResolveOutputDestinationArgs,
 ): Promise<OutputDestinationResponse> {
-  const { graph, nodeId, signal, timeout = 30_000 } = args
+  const { graph, target, signal, timeout = 30_000 } = args
   return post<unknown>(
     "/api/pipeline/output-destination",
     {
       graph,
-      node_id: nodeId,
+      target,
     },
     { signal, timeout },
   ).then(async (data) => expectGeneratedContract(
@@ -1191,7 +1194,7 @@ export function resolveOutputDestination(
 export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {
   const {
     graph,
-    nodeId,
+    target,
     source,
     overwrite,
     signal,
@@ -1201,7 +1204,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     "/api/pipeline/write-output",
     {
       graph,
-      node_id: nodeId,
+      target,
       source: source ?? "live",
       overwrite: overwrite ?? false,
     },

@@ -312,9 +312,9 @@ _N0 = {"occurrence": None, "node_id": "n0"}
         pytest.param(
             "/api/pipeline/trace", {"seed_plan": [], "target": node_target("n0")}, id="trace"
         ),
-        pytest.param("/api/pipeline/write-output", {"node_id": "n0"}, id="write-output"),
-        pytest.param("/api/pipeline/output-destination", {"node_id": "n0"}, id="destination"),
-        pytest.param("/api/output-assemble/dry-run", {"node_id": "n0"}, id="output-dry-run"),
+        pytest.param("/api/pipeline/write-output", {"target": _N0}, id="write-output"),
+        pytest.param("/api/pipeline/output-destination", {"target": _N0}, id="destination"),
+        pytest.param("/api/output-assemble/dry-run", {"target": _N0}, id="output-dry-run"),
         pytest.param("/api/node-data/point", {"target": _N0}, id="node-data"),
         pytest.param("/api/banding/stats", {"target": _N0, "factor": {}}, id="banding"),
         pytest.param("/api/rating/levels", {"target": _N0, "columns": ["x"]}, id="rating"),

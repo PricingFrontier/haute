@@ -921,22 +921,23 @@ describe("endpoint contracts", () => {
         suffix_mismatch: false,
       }),
     )
-    await resolveOutputDestination({ graph: preparedDummyGraph, nodeId: "sink1" })
+    await resolveOutputDestination({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "sink1" } })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/output-destination")
     expect(JSON.parse(opts.body)).toEqual({
       graph: dummyGraph,
-      node_id: "sink1",
+      target: { occurrence: null, node_id: "sink1" },
     })
   })
 
   it("writeOutput posts to /api/pipeline/write-output", async () => {
     mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
-    await writeOutput({ graph: preparedDummyGraph, nodeId: "sink1" })
+    await writeOutput({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "sink1" } })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/write-output")
     const body = JSON.parse(opts.body)
-    expect(body.node_id).toBe("sink1")
+    expect(body.target).toEqual({ occurrence: null, node_id: "sink1" })
+    expect(body).not.toHaveProperty("node_id")
     expect(body.source).toBe("live")
     expect(body.overwrite).toBe(false)
   })
@@ -1706,7 +1707,7 @@ describe("request() edge cases", () => {
         previewNode({ graph: preparedDummyGraph, target: nodeTarget("node1"), rowLimit: 50, signal }),
         previewInputs({ graph: preparedDummyGraph, target: nodeTarget("node1"), signal }),
         traceCell({ graph: preparedDummyGraph, row_index: 0, target: nodeTarget("node1"), seed_plan: [], signal }),
-        writeOutput({ graph: preparedDummyGraph, nodeId: "out", signal }),
+        writeOutput({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "out" }, signal }),
         estimateOptimiserSolve({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt" }, signal }),
       ]
       const settled = calls.map(() => false)
@@ -1909,7 +1910,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("writeOutput body omits streaming_chunk_size", async () => {
     mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
-    await writeOutput({ graph: preparedDummyGraph, nodeId: "sink1", source: "live" })
+    await writeOutput({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "sink1" }, source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

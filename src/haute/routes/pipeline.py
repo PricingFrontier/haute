@@ -62,10 +62,12 @@ from haute._node_address_schemas import (
 )
 from haute._node_addresses import (
     ResolvedTarget,
+    address_entry,
     expansion_of,
     labelled,
     occurrence_ports,
     resolve_target,
+    resolved_request,
 )
 from haute._node_snapshots import NodeSnapshotStore
 from haute._node_specs import known_node_spec
@@ -681,24 +683,27 @@ def _validate_data_output_path(
         raise runtime_path_http_exception(exc) from None
 
 
+DataOutputRequestT = TypeVar("DataOutputRequestT", OutputDestinationRequest, WriteOutputRequest)
+
+
 def _prepare_data_output_request(
-    graph_payload: Any,
-    node_id: str,
-) -> tuple[PipelineGraph, Any, dict[str, Any], Path]:
-    """Validate the graph/output target shared by destination preview and write."""
-    graph = flatten_executable_graph(graph_payload)
+    body: DataOutputRequestT,
+) -> tuple[DataOutputRequestT, Any, dict[str, Any], Path]:
+    """Validate the graph/output target shared by destination preview and write: *body*
+    over its flattened document, its target resolved (or refused by name), the Data
+    Output node, its config and the project root."""
+    _ensure_printable_target(body.target)
+    graph = flatten_executable_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
-    _ensure_printable_lookup_id(node_id, "node_id")
     _validate_runtime_input_paths(graph)
-    output_node = graph.node_map.get(node_id)
-    if output_node is None:
-        raise HTTPException(status_code=404, detail=f"Data Output node '{node_id}' not found")
+    body = resolved_request(body, graph)
+    output_node = graph.node_map[body.node_id]
     if output_node.data.nodeType != NodeType.DATA_OUTPUT:
         raise HTTPException(
             status_code=400,
-            detail=f"Node '{node_id}' is not a Data Output",
+            detail=f"'{address_entry(graph, body.node_id).label}' is not a Data Output",
         )
     try:
         config = validate_node_config(
@@ -715,7 +720,7 @@ def _prepare_data_output_request(
         ) from None
     project_root = current_project().root
     _validate_data_output_path(graph, output_node, project_root=project_root)
-    return graph, output_node, config, project_root
+    return body, output_node, config, project_root
 
 
 def _supersession_key(
@@ -2251,10 +2256,8 @@ async def patch_pipeline_settings(body: PipelineSettingsValues) -> PipelineSetti
 )
 async def output_destination(body: OutputDestinationRequest) -> OutputDestinationResponse:
     """Resolve the exact display destination without executing or writing."""
-    graph, _output_node, config, project_root = _prepare_data_output_request(
-        body.graph,
-        body.node_id,
-    )
+    body, _output_node, config, project_root = _prepare_data_output_request(body)
+    graph = body.graph
     _resolved, display_path = resolve_data_output_path(
         graph,
         config,
@@ -2482,10 +2485,8 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
 
     Only called on explicit user action (Write button), not during normal run/preview.
     """
-    graph, _output_node, config, project_root = _prepare_data_output_request(
-        body.graph,
-        body.node_id,
-    )
+    body, _output_node, config, project_root = _prepare_data_output_request(body)
+    graph = body.graph
 
     resolved_output, display_path = resolve_data_output_path(
         graph,

@@ -141,7 +141,12 @@ def _write(monkeypatch: pytest.MonkeyPatch, graph: dict[str, Any], **extra: Any)
     calls = _counting_builds(monkeypatch)
     response = TestClient(app, raise_server_exceptions=False).post(
         "/api/pipeline/write-output",
-        json={"graph": graph, "node_id": "out", "overwrite": True, **extra},
+        json={
+            "graph": graph,
+            "target": {"occurrence": None, "node_id": "out"},
+            "overwrite": True,
+            **extra,
+        },
     )
     return _Write(response.status_code, response.json(), Counter(calls))
 

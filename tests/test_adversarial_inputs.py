@@ -109,16 +109,17 @@ class TestEmptyStrings:
         """Empty sink node_id could skip the sink write entirely."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "",
+            "target": {"occurrence": None, "node_id": ""},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
-        assert resp.status_code == 404
+        # A target names a node by a non-empty id.
+        assert resp.status_code == 422
 
     def test_non_sink_node_id_in_sink(self, client):
         """Sink execution must reject ids that point at non-sink nodes."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": {"occurrence": None, "node_id": "src"},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 400
@@ -218,7 +219,7 @@ class TestNullValues:
         """null node_id in sink request would skip sink detection."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": None,
+            "target": {"occurrence": None, "node_id": None},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 422
@@ -995,7 +996,7 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             PreviewNodeRequest()
 
-    def test_sink_requires_graph_and_node_id(self):
+    def test_sink_requires_graph_and_target(self):
         with pytest.raises(ValidationError):
             WriteOutputRequest()
 

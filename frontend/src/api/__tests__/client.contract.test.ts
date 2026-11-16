@@ -182,7 +182,7 @@ describe("client runtime contracts", () => {
   it("writeOutput rejects malformed output payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ message: "done" }))
 
-    await expect(writeOutput({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(
+    await expect(writeOutput({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } })).rejects.toThrow(
       "WriteOutputResponse: invalid contract at /status: required",
     )
   })
@@ -192,7 +192,7 @@ describe("client runtime contracts", () => {
       jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet", execution_metrics: null }),
     )
 
-    const result = await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
+    const result = await writeOutput({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } })
     expect(result.status).toBe("ok")
     expect(result.row_count).toBe(3)
     expect(result.path).toBe("out.parquet")
@@ -208,7 +208,7 @@ describe("client runtime contracts", () => {
     )
 
     await expect(
-      resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
+      resolveOutputDestination({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } }),
     ).rejects.toThrow("OutputDestinationResponse: invalid contract at /suffix_mismatch: type")
   })
 
@@ -222,7 +222,7 @@ describe("client runtime contracts", () => {
     )
 
     await expect(
-      resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
+      resolveOutputDestination({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } }),
     ).resolves.toEqual({
       path: "outputs/report.csv",
       format: "csv",
@@ -713,7 +713,7 @@ describe("client runtime contracts", () => {
 
     const result = await outputAssembleDryRun({
       graph: dummyGraph,
-      nodeId: "out1",
+      target: { occurrence: null, node_id: "out1" },
       outputMapping: [{ field: "premium" }],
       rowLimit: 25,
       source: "cache",
@@ -722,7 +722,7 @@ describe("client runtime contracts", () => {
 
     const sent = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
     expect(sent).toMatchObject({
-      node_id: "out1",
+      target: { occurrence: null, node_id: "out1" },
       output_mapping: [{ field: "premium" }],
       row_limit: 25,
       source: "cache",
@@ -740,13 +740,13 @@ describe("client runtime contracts", () => {
 
     await outputAssembleDryRun({
       graph: dummyGraph,
-      nodeId: "out1",
+      target: { occurrence: null, node_id: "out1" },
       outputMapping: [{ field: "premium" }],
     })
 
     const body = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
     expect(body).toMatchObject({
-      node_id: "out1",
+      target: { occurrence: null, node_id: "out1" },
       source: "live",
     })
     expect(body).not.toHaveProperty("row_limit")
@@ -1463,7 +1463,7 @@ describe("shared client trust-boundary endpoints", () => {
     /** The exact failure, when a generated validator checks the response. */
     malformedError?: string
   }> = [
-    { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
+    { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, target: { occurrence: null, node_id: "out" }, outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
     { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }], malformedError: "MlflowExperimentList: invalid contract at /0/name: required" },
     { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: {}, params: {}, artifacts: [1] }], malformedError: "MlflowRunList: invalid contract at /0/artifacts/0: type" },

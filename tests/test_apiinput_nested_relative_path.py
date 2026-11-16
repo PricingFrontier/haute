@@ -171,7 +171,7 @@ def test_output_dry_run_route_with_pipeline_relative_path(nested_project) -> Non
         "/api/output-assemble/dry-run",
         json={
             "graph": graph_dict,
-            "node_id": "out",
+            "target": {"occurrence": None, "node_id": "out"},
             "output_mapping": _output_mapping(),
         },
     )

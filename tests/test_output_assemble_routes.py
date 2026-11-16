@@ -96,7 +96,7 @@ def test_dry_run_assembles_nested_document(project) -> None:
         "/api/output-assemble/dry-run",
         json={
             "graph": _graph_json(config),
-            "node_id": "out",
+            "target": {"occurrence": None, "node_id": "out"},
             "output_mapping": _output_mapping(),
         },
     )
@@ -118,7 +118,11 @@ def test_dry_run_resolves_paths_against_the_configured_pipeline(project) -> None
 
     resp = client.post(
         "/api/output-assemble/dry-run",
-        json={"graph": _graph_json(config), "node_id": "out", "output_mapping": _output_mapping()},
+        json={
+            "graph": _graph_json(config),
+            "target": {"occurrence": None, "node_id": "out"},
+            "output_mapping": _output_mapping(),
+        },
     )
 
     assert resp.status_code == 200, resp.text
@@ -139,7 +143,11 @@ def test_dry_run_rejects_invalid_mapping_with_422(project) -> None:
     ]
     resp = client.post(
         "/api/output-assemble/dry-run",
-        json={"graph": _graph_json(config), "node_id": "out", "output_mapping": bad},
+        json={
+            "graph": _graph_json(config),
+            "target": {"occurrence": None, "node_id": "out"},
+            "output_mapping": bad,
+        },
     )
     assert resp.status_code == 422, resp.text
 
@@ -163,7 +171,11 @@ def test_dry_run_rejects_non_array_root_with_422(project) -> None:
     ]
     resp = client.post(
         "/api/output-assemble/dry-run",
-        json={"graph": _graph_json(config), "node_id": "out", "output_mapping": bad},
+        json={
+            "graph": _graph_json(config),
+            "target": {"occurrence": None, "node_id": "out"},
+            "output_mapping": bad,
+        },
     )
     assert resp.status_code == 422, resp.text
     assert "must start with '$[:]'" in resp.text
@@ -176,11 +188,39 @@ def test_dry_run_unknown_node_returns_404(project) -> None:
         "/api/output-assemble/dry-run",
         json={
             "graph": _graph_json(config),
-            "node_id": "nope",
+            "target": {"occurrence": None, "node_id": "nope"},
             "output_mapping": _output_mapping(),
         },
     )
     assert resp.status_code == 404, resp.text
+
+
+def test_dry_run_unknown_node_is_refused_by_name(project) -> None:
+    client, data_path = project
+    resp = client.post(
+        "/api/output-assemble/dry-run",
+        json={
+            "graph": _graph_json(_api_input_config(data_path)),
+            "target": {"occurrence": None, "node_id": "nope"},
+            "output_mapping": _output_mapping(),
+        },
+    )
+    assert resp.json()["detail"] == "Node 'nope' not found"
+
+
+def test_dry_run_refuses_a_target_with_control_characters(project) -> None:
+    # As the Data Output's destination and write do, before anything is flattened.
+    client, data_path = project
+    resp = client.post(
+        "/api/output-assemble/dry-run",
+        json={
+            "graph": _graph_json(_api_input_config(data_path)),
+            "target": {"occurrence": None, "node_id": "out\x00"},
+            "output_mapping": _output_mapping(),
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "target.node_id contains control characters"
 
 
 def test_dry_run_non_output_node_returns_400(project) -> None:
@@ -190,7 +230,8 @@ def test_dry_run_non_output_node_returns_400(project) -> None:
         "/api/output-assemble/dry-run",
         json={
             "graph": _graph_json(config),
-            "node_id": "api",  # the apiInput, not an OUTPUT node
+            # the apiInput, not an OUTPUT node
+            "target": {"occurrence": None, "node_id": "api"},
             "output_mapping": _output_mapping(),
         },
     )
@@ -215,7 +256,7 @@ def test_dry_run_admission_refusal_returns_structured_507(project) -> None:
             "/api/output-assemble/dry-run",
             json={
                 "graph": _graph_json(_api_input_config(data_path)),
-                "node_id": "out",
+                "target": {"occurrence": None, "node_id": "out"},
                 "output_mapping": [],
             },
         )
@@ -247,7 +288,7 @@ def test_dry_run_releases_admission_after_success(project) -> None:
             "/api/output-assemble/dry-run",
             json={
                 "graph": _graph_json(_api_input_config(data_path)),
-                "node_id": "out",
+                "target": {"occurrence": None, "node_id": "out"},
                 "output_mapping": [],
             },
         )
@@ -304,7 +345,7 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
                 "/api/output-assemble/dry-run",
                 json={
                     "graph": _graph_json(_api_input_config(data_path)),
-                    "node_id": "out",
+                    "target": {"occurrence": None, "node_id": "out"},
                     "output_mapping": [],
                 },
             )
@@ -364,7 +405,7 @@ def test_dry_run_process_dispatch_uses_admitted_budget_and_required_policy(proje
             "/api/output-assemble/dry-run",
             json={
                 "graph": _graph_json(_api_input_config(data_path)),
-                "node_id": "out",
+                "target": {"occurrence": None, "node_id": "out"},
                 "output_mapping": [],
             },
         )
@@ -517,7 +558,7 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
             "/api/output-assemble/dry-run",
             json={
                 "graph": _graph_json(_api_input_config(data_path)),
-                "node_id": "out",
+                "target": {"occurrence": None, "node_id": "out"},
                 "output_mapping": [],
             },
         )
@@ -571,7 +612,7 @@ def test_dry_run_process_worker_contract_failures_are_422_as_in_a_thread(
             "/api/output-assemble/dry-run",
             json={
                 "graph": _graph_json(_api_input_config(data_path)),
-                "node_id": "out",
+                "target": {"occurrence": None, "node_id": "out"},
                 "output_mapping": [],
             },
         )
@@ -617,7 +658,7 @@ def test_dry_run_process_timeout_releases_parent_admission_immediately(project) 
             "/api/output-assemble/dry-run",
             json={
                 "graph": _graph_json(_api_input_config(data_path)),
-                "node_id": "out",
+                "target": {"occurrence": None, "node_id": "out"},
                 "output_mapping": [],
             },
         )
@@ -663,7 +704,7 @@ def test_dry_run_process_failure_does_not_fall_back_to_thread(project) -> None:
             "/api/output-assemble/dry-run",
             json={
                 "graph": _graph_json(_api_input_config(data_path)),
-                "node_id": "out",
+                "target": {"occurrence": None, "node_id": "out"},
                 "output_mapping": [],
             },
         )

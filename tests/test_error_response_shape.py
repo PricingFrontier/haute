@@ -148,7 +148,7 @@ _ERROR_CASES = [
     pytest.param(
         "post",
         "/api/pipeline/write-output",
-        {"graph": {"nodes": [], "edges": []}, "node_id": "x"},
+        {"graph": {"nodes": [], "edges": []}, "target": {"occurrence": None, "node_id": "x"}},
         400,
         id="sink-empty-graph",
     ),

@@ -382,7 +382,7 @@ export default function OutputEditor({
     const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
     outputAssembleDryRun({
       graph: target.graph,
-      nodeId: target.nodeId,
+      target: target.node,
       // The live working copy's mapping — the editor's CURRENT (unsaved) state.
       outputMapping: persistedMapping,
       rowLimit: PREVIEW_ROW_LIMIT,

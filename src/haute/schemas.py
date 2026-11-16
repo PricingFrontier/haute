@@ -2426,9 +2426,8 @@ class PipelineSettingsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class OutputDestinationRequest(BaseModel):
+class OutputDestinationRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
 
 
 class OutputDestinationResponse(BaseModel):
@@ -2437,9 +2436,8 @@ class OutputDestinationResponse(BaseModel):
     suffix_mismatch: bool
 
 
-class WriteOutputRequest(BaseModel):
+class WriteOutputRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
     overwrite: StrictBool = False
 
@@ -2453,9 +2451,8 @@ class WriteOutputResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class OutputAssembleDryRunRequest(EditorSampleRequest):
+class OutputAssembleDryRunRequest(EditorSampleRequest, NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     #: The in-progress (volatile, unsaved) output_mapping to preview.
     output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
     #: Cap upstream source rows so the preview stays cheap.
