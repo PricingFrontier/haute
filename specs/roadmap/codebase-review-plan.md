@@ -196,33 +196,19 @@ packages in the component roadmaps.
 ### Planned cases that were not reached
 
 - **Containers.** The sweep was stopped part-way. The underwriter app's
-  image and the deploy image for ten examples were built; what a worker
-  saw of the deploy image is in the table below, and nothing else of
-  either was recorded.
+  image and the deploy image for ten examples were built; only the deploy
+  image's answers under memory and CPU limits were run (`DPL-11`,
+  `DPL-12`).
 - **Database servers under failure.** The sweep of amendment conflicts,
-  failed migrations and dropped connections was stopped part-way; what it
-  reported is in the table below.
+  failed migrations and dropped connections was stopped part-way; its
+  findings are `WB-70` to `WB-74`, and what else it planned was not
+  recorded.
 - **Linux.** Two snapshot builds at once and a build against a clear; the
   git lock across two servers; a kernel older than 6.13, where a file's
   change time is coarser.
 - **Hosted and Databricks.** Not run: no workspace.
 - **Linters.** About 1,770 of 1,950 findings were not read; the 180
   likeliest held no defect.
-
-### Reported by a worker and not run again
-
-A worker reproduced each of these on 16 November 2026. The main session
-did not run them again, so none is a package yet. Each needs one more run.
-
-| Lead | What the worker saw |
-|---|---|
-| A deployed container answers an array of two quotes with 507 below 8 GiB of memory | 507 `in_flight_memory_budget_exceeded` at 2, 4 and 6 GiB with nothing logged; one quote always answers |
-| A deployed container with one CPU hangs on an array of two quotes | No answer for 300 seconds, then 504, and the next batch 507; with two Polars threads it answers in 2.5 seconds |
-| A creation sent twice under one operation key is refused as taken | 409 `reference_taken` for the second in 3% to 27% of rounds on PostgreSQL and SQL Server; never on SQLite |
-| A store connection lost in the middle of a write | A bare 500 for a create, a save and an amendment; only a loss at the commit is answered 503 in words |
-| A quote store whose foreign key refers to other columns passes the check | The store opens; the first creation is a 500 |
-| A quote store without the unique constraint on the operation key passes the check | One alternative sent twice at once under one key makes two options, 30 rounds of 30 |
-| A password corrected in `.env` while the editor runs | Refresh of the database schema keeps failing with the old value until the editor restarts |
 
 ### Seen and judged below the bar
 
@@ -250,8 +236,7 @@ Phases 4 and 5 took four days, most of it workers' time. The reader from
 a second model family was the most productive finder: 82 candidates in 22
 runs, and nearly every one that was run reproduced.
 
-What is left needs nothing new and can be taken in any order. The seven
-leads a worker reported come first: each is one run from a package.
+What is left needs nothing new and can be taken in any order.
 
 A phase has run when every planned case has evidence or a recorded deferral.
 The work can stop after any phase with a statement of coverage.

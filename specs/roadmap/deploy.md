@@ -19,6 +19,10 @@ model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
 
+`DPL-11` and `DPL-12` come from the review plan's phase 4, the deploy
+image run in Docker under memory and CPU limits. A worker built each run
+and the main session ran each again on 16 November 2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -33,6 +37,8 @@ worker built each run and the main session ran each again on 14 November
 | DPL-08 | Planned | P3 | The dry run refuses a test quote with a fraction for an integer input, as the service does. |
 | DPL-09 | Planned | P2 | The dry run passes a test quote that leaves out an exposure the service prices for a full term. |
 | DPL-10 | Planned | P2 | A container for a Model Scoring node that names a run carries MLflow and the model's engine, or the node is refused in words. |
+| DPL-11 | Planned | P2 | A deployed container with less than 8 GiB of memory answers a request of several quotes, or refuses it in words that name the limit and the setting. |
+| DPL-12 | Planned | P2 | A deployed container with one CPU answers a request of several quotes in seconds, not with a timeout after five minutes. |
 
 ## Planned improvements
 
@@ -321,3 +327,53 @@ list for a node of each source type.
 
 **Evidence:** `src/haute/deploy/_container.py`;
 `specs/deploy/low-level.md`.
+
+### DPL-11 — A container with less than 8 GiB answers a request of several quotes
+**Why:** Reproduced on 16 November 2026 with the deploy image of the
+`minimal_live_quote` example in Docker. One quote answers 200 at every
+size. An array of two quotes answers 507
+`in_flight_memory_budget_exceeded` in a container started with 2 GiB and
+with 6 GiB of memory, and 200 with both rows at 8 GiB. The answer carries
+numbers and no words, and the container logs only "507". A request of
+several quotes reserves a fixed 4 GiB whatever its size, and the
+reservation must fit in the container's memory less a reserve. The
+variable that lowers it, `HAUTE_DEPLOY_BATCH_MEMORY_LIMIT_MB`, is set by
+nothing the image ships and named by nothing the answer says. A worker's
+sweep saw the same in five examples' images.
+
+**Plan:** Size the reservation for several quotes from the container's
+memory limit, or from the request, instead of a fixed 4 GiB. Where a
+request is still refused, say in words what limit refused it and the
+setting that changes it.
+
+**Acceptance:** The array of two quotes answers 200 in the 2 GiB
+container. A request that is refused for memory names the limit and the
+setting.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_execution_admission.py`;
+`specs/deploy/high-level.md`.
+
+### DPL-12 — A container with one CPU answers a request of several quotes
+**Why:** Reproduced on 16 November 2026 with the same image and 8 GiB of
+memory. With two CPUs an array of two quotes answers in 2.5 seconds. With
+`--cpus 1`, the size of the smallest hosted containers, it gets no answer
+for 317 seconds and then 504 `deploy_batch_timeout`; one quote still
+answers at once. Setting `POLARS_MAX_THREADS=1` on two CPUs does the
+same, and `--cpus 1` with `POLARS_MAX_THREADS=2` answers in 3 seconds: the
+hang follows a Polars pool of one thread, which Polars sizes from the
+container's CPU quota. A worker saw the batch's process asleep with its
+result file open, and the next request refused with 507.
+
+**Plan:** Find why the batch worker's result write waits on a pool of one
+thread, and remove the wait. Until then give the worker at least two
+Polars threads.
+
+**Acceptance:** The array of two quotes answers 200 within seconds under
+`--cpus 1` and under `--cpus 0.5`.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_worker_isolation.py`;
+`specs/deploy/high-level.md`.

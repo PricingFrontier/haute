@@ -47,6 +47,11 @@ model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
 
+`WB-70` to `WB-74` come from the review plan's phase 4, the quote store
+on PostgreSQL 16 and SQL Server 2022 under repeated requests, lost
+connections and hand-made schemas. A worker built each run and the main
+session ran each again on 16 November 2026.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -84,6 +89,11 @@ worker built each run and the main session ran each again on 14 November
 | WB-67 | Planned | P2 | A changed params file changes the form's revision, so a test quote typed against the old values is refused as stale. |
 | WB-68 | Planned | P3 | A number in a params file is read as the same text typed in a cell, thousands separators included. |
 | WB-69 | Planned | P2 | Accept is refused when a data file the helper code reads changed after the run. |
+| WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
+| WB-71 | Planned | P2 | A store connection lost in the middle of a write answers 503 in words, not a bare 500. |
+| WB-72 | Planned | P3 | The store check reports a foreign key that refers to other columns or another schema. |
+| WB-73 | Planned | P2 | The store check reports a missing unique constraint on the operation key, so one alternative sent twice cannot make two options. |
+| WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
 
 ## Planned improvements
 
@@ -1217,3 +1227,122 @@ change gets.
 
 **Evidence:** `src/haute/_workbench_test_quotes.py`;
 `specs/workbench/high-level.md`.
+
+### WB-70 — A creation repeated under its key is answered with the quote it made
+**Why:** Reproduced on 16 November 2026 with two instances of the
+underwriter app on one quote store. Both were sent the same creation, with
+the same operation key and reference, a few milliseconds apart, as a page
+or a proxy does when the first answer is slow. In 100 rounds the second
+was answered 409 "K-000004/1 already holds the reference K-000004: open
+it, or create an alternative of it" 37 times on SQL Server with read
+committed snapshot off and 5 times on PostgreSQL; never on SQLite, and
+not in this run on SQL Server with it on, where a worker saw 5% to 9%.
+One quote is stored each time. The specification says a request repeated
+under its key answers what the first did. The replay check runs before
+the insert; when the first copy commits in between, the insert finds the
+reference taken, and that refusal is not the one whose handler checks the
+key again. The underwriter is told their own new quote is someone else's.
+
+**Plan:** Check the operation key again before answering that a
+reference is taken, and answer with the quote the key made.
+
+**Acceptance:** 100 rounds of the pair above answer 200 twice with the
+one quote on PostgreSQL and on SQL Server with either setting.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_book.py`;
+`specs/workbench/high-level.md`.
+
+### WB-71 — A store connection lost in the middle of a write is answered in words
+**Why:** Reproduced on 16 November 2026 on PostgreSQL 16 and SQL Server
+2022. The app's own session was ended from a second connection part-way
+through a save, as a failover, a server restart or a dropped idle link
+does. The save answers 500 with the plain text "Internal Server Error".
+Nothing is half-written and the retry lands once. The app answers 503
+with a message only when the store could not be reached before any
+statement ran; a connection lost after the first statement is raised as
+it is. A worker's sweep saw the same for a create and an amendment, at
+every statement before the commit.
+
+**Plan:** Answer a connection lost during a write as the unreachable
+store is answered: 503, naming the store and saying the request can be
+sent again.
+
+**Acceptance:** The save above answers 503 in words on both servers, and
+the retry still lands once.
+
+**Dependencies:** `WB-54`, which gives the same remedy for a write the
+store refuses.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py`;
+`src/haute/_quote_store/_store.py`.
+
+### WB-72 — The store check reads what a foreign key refers to
+**Why:** Reproduced on 16 November 2026 on SQLite, PostgreSQL 16 and SQL
+Server 2022. Two stores were made whose input table's foreign key does
+not refer to the quote as the store keys it: one refers to two other
+columns of `quote_details`, the other to a copy of `quote_details` moved
+aside into another schema, as happens when the table is moved and made
+again. The comparison reports no difference and the app opens the store.
+The first creation answers 500 "Internal Server Error" with the
+database's foreign key violation inside; nothing is stored. The check
+reads the table a foreign key refers to and the columns it constrains,
+never the columns or the schema it refers to.
+
+**Plan:** Compare the referred columns and schema of each foreign key
+too, and name the constraint in the difference.
+
+**Acceptance:** Both stores above are reported as different, naming the
+foreign key, and the app refuses them when it opens.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_catalogue.py`;
+`specs/workbench/high-level.md`.
+
+### WB-73 — The store check requires the unique operation key
+**Why:** Reproduced on 16 November 2026. A store was made from Haute's
+own SQL with one line left out: the unique constraint on the activity
+table's operation key. The comparison reports no difference and the app
+opens the store. Two instances were then sent the same alternative
+creation under one key at once, 30 rounds. On PostgreSQL and on SQL
+Server, with read committed snapshot on and off, every round made two
+options: 61 options for 31 keys. With the constraint present every
+backend made 31. Creation relies on that constraint to settle the race,
+and the check reads columns, primary keys and foreign keys, never unique
+constraints.
+
+**Plan:** Read unique constraints in the store check and report a
+missing one as a difference.
+
+**Acceptance:** The store above is reported as different, naming the
+constraint, and the app refuses it when it opens.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_catalogue.py`;
+`src/haute/_quote_store/_book.py`.
+
+### WB-74 — A password corrected in `.env` is used without restarting the editor
+**Why:** Reproduced on 16 November 2026 with the editor's real server
+and a PostgreSQL quote store whose password comes only from the project's
+`.env`. With a mistyped value, Refresh of the database schema answers 409
+"could not be reached, or it refused the sign-in". After `.env` was
+corrected, Refresh in the same editor answers the same 409; an editor
+started after the fix answers 200. The specification says the variables
+are read afresh from `.env` under the process's own environment. They
+are, but the editor copied `.env` into its own environment when it
+started, so the old value wins every time.
+
+**Plan:** Keep the values the editor itself loaded from `.env` apart
+from the environment it was started with, so a re-read file replaces
+them.
+
+**Acceptance:** In the journey above Refresh answers 200 after the fix,
+with no restart. A variable set outside `.env` still wins.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/server.py`; `src/haute/_connections.py`;
+`specs/workbench/low-level.md`.
