@@ -865,8 +865,13 @@ Workbench's sample and the cached-data list.
    pipeline with every definition, also while a submodel is open), the document's identity
    (source file and execution generation), its semantic generation, the target, and the data
    source. A frame read may name several ports of one node, read in one run, as the Workbench
-   prices every table of its sample at once. A prepared node request also names the nodes an
-   answer names by id back (`nodeNamed`).
+   prices every table of its sample at once. A request sends the source it was prepared with,
+   unless its caller keys state of its own by the source (a request identity, a cached
+   result), when it sends the active source it keyed with, read in the same render. A prepared
+   node request also names the nodes an answer names by id back (`nodeNamed`), in the view it
+   was prepared in, so an answer that arrives after the view changed is still read by it.
+   `canvasTarget` never refuses a card: an Input card whose port is not named, or whose port
+   nothing feeds yet, and an Output card without a named output, are read as the card itself.
 4. **Only prepared graphs are sent.** Every client function that runs the graph takes a
    `PreparedGraph`, a type only the gateway makes, so type-checking refuses a graph a caller
    built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.

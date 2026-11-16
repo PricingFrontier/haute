@@ -5,6 +5,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { makeIdentifiedNode, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
+import type { GraphPayload, PreparedGraph } from "../../api/types"
 import { childAddress, nodeFrame, rootAddress } from "../nodeAddress"
 import {
   RequestScopeError,
@@ -109,6 +110,32 @@ describe("the request gateway", () => {
 
     expect(request.nodeId).toBe("submodel_runtime/br%20rating/tables")
     expect(request.portLabel).toBe("rated")
+  })
+
+  it("lets no caller send a graph it built itself", () => {
+    const built: GraphPayload = { nodes: [], edges: [] }
+    // @ts-expect-error a graph a caller built is not one the gateway prepared
+    const sent: PreparedGraph = built
+
+    expect(sent).toBe(built)
+  })
+
+  it("reads a card as itself when its port is not named or nothing feeds it yet", () => {
+    useGraphStore.getState().setEdges([])
+    open()
+    const input = card("input")
+
+    expect(canvasTarget(input.id, "policy")).toEqual(nodeFrame(childAddress(OCCURRENCE, input.id), "policy"))
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy")).nodeId)
+      .toBe(`submodel_runtime/br%20rating/${encodeURIComponent(input.id)}`)
+  })
+
+  it("names an answer's nodes by the view the request was prepared in, after the view changed", () => {
+    open()
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget("bands"))
+    useGraphStore.getState().exitSubmodelView()
+
+    expect(request.nodeNamed("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
   })
 
   it("refuses a request where there is no document to run, sending nothing", () => {

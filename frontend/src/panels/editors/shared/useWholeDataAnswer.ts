@@ -213,7 +213,8 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
     subject === null ? null : JSON.stringify({ nodeId, subject, activeSource, available, dataVersion })
 
   useEffect(() => {
-    if (!nodeId || !askedFor || available !== "current") {
+    // A saved version (the comparison view) runs nothing, so nothing is asked.
+    if (!nodeId || !askedFor || available !== "current" || requestScope === null) {
       return
     }
     const fence = captureDocumentExecutionFence()
@@ -223,14 +224,18 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
       question.controller = controller
       inFlight.current = question
       setLoading({ identity: requestIdentity, value: true })
-      const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-      askRef.current({
-        asked: askedFor,
-        graph: target.graph,
-        nodeId: target.nodeId,
-        source: activeSource,
-        signal: controller.signal,
-      })
+      // Prepared in the chain, so a request that cannot be built fails like one refused.
+      Promise.resolve()
+        .then(() => {
+          const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
+          return askRef.current({
+            asked: askedFor,
+            graph: target.graph,
+            nodeId: target.nodeId,
+            source: target.source,
+            signal: controller.signal,
+          })
+        })
         .then((response) => {
           if (
             controller.signal.aborted ||

@@ -685,6 +685,26 @@ describe("DataOutputEditor", () => {
     expect(writeOutput).toHaveBeenCalledTimes(1)
   })
 
+  it("preserves overwrite confirmation across a node moved on the canvas", async () => {
+    const config = { output_type: "file", format: "csv", mode: "sink", path: "out.csv", arguments: {} }
+    const nodes: SimpleNode[] = [
+      { id: "upstream", data: { label: "upstream", description: "", nodeType: "constant", config: { values: [{ name: "value", value: 1 }] } } },
+      { id: "output-node", data: { label: "output", description: "", nodeType: "dataOutput", config } },
+    ]
+    const { rerender, renderElement } = renderEditor(config, vi.fn(), vi.fn(), nodes)
+    const { ApiError } = await import("../../../api/client")
+    vi.mocked(writeOutput).mockRejectedValueOnce(new ApiError("HTTP 409", 409, "out.csv exists"))
+
+    fireEvent.click(await screen.findByRole("button", { name: "Write" }))
+    expect(await screen.findByRole("button", { name: "Replace existing file" })).toBeInTheDocument()
+
+    act(() => useGraphStore.getState().setNodes((current) => current.map((node) => (
+      node.id === "upstream" ? { ...node, position: { x: 480, y: 120 } } : node))))
+    rerender(renderElement(config, [...nodes]))
+
+    expect(screen.getByRole("button", { name: "Replace existing file" })).toBeInTheDocument()
+  })
+
   it("keeps an older-identity pending write visible while config changes", async () => {
     useOutputWriteStore.getState().begin("output-node", "older-request")
 

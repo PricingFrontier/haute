@@ -168,6 +168,15 @@ describe("graphForRequestIdentity", () => {
     expect(nestedNode.data._columns).toEqual(volatileNodeData._columns)
   })
 
+  it("leaves out where a node sits on the canvas", () => {
+    loadDocument([makeNode("n1", "polars", { position: { x: 10, y: 20 } })])
+    const before = graphForRequestIdentity(documentGraphPayload())
+    useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, position: { x: 400, y: 300 } })))
+
+    expect(graphForRequestIdentity(documentGraphPayload())).toEqual(before)
+    expect((before.nodes as Array<Record<string, unknown>>)[0]).not.toHaveProperty("position")
+  })
+
   it("preserves opaque legacy nodes and submodel definitions", () => {
     const opaqueNodes = [
       null,

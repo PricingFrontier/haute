@@ -36,8 +36,10 @@ const VOLATILE_NODE_DATA_KEYS = new Set([
 
 function nodeForRequestIdentity(node: unknown): unknown {
   if (!isPlainObject(node) || !isPlainObject(node.data)) return node
+  // Where a node sits on the canvas runs nothing, so a move leaves the identity as it is.
+  const { position: _position, ...placed } = node
   return {
-    ...node,
+    ...placed,
     data: Object.fromEntries(
       Object.entries(node.data).filter(([key]) => !VOLATILE_NODE_DATA_KEYS.has(key)),
     ),

@@ -500,7 +500,11 @@ export default function ModellingConfig({
   const graph = useCallback(() => requestTarget().graph, [requestTarget])
   // The estimate names a node by its id in the graph sent. One inside another
   // submodel is off this canvas; its id still says which.
-  const nodeNamed = answerNodeNamer()
+  const nodeNamed = useMemo(() => {
+    // Named in the view the panel shows; its graph renews it.
+    void allNodes
+    return answerNodeNamer()
+  }, [allNodes])
   const canvasNodeLabel = useCallback(
     (id: string) => nodeNamed(id)?.data.label || id,
     [nodeNamed],

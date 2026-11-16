@@ -11,6 +11,7 @@
  * resolves addresses, the gateway's adapter alone turns an address into the runtime id a
  * request sends and reads the ids an answer names back.
  */
+import type { Node } from "@xyflow/react"
 import type { PreparedGraph } from "../api/types"
 import type { SimpleNode } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
@@ -122,33 +123,49 @@ export function runtimeNodeId(address: NodeAddress): string {
   return address.occurrence === null ? address.node : qualifiedRuntimeNodeId(address.occurrence, address.node)
 }
 
-/**
- * The address an answer's node id names: a child of the open occurrence by its
- * runtime id, or one of the pipeline's own nodes by its id.
- */
-export function addressOfRuntimeId(id: string): NodeAddress {
-  const focus = useGraphStore.getState().focus
-  if (focus) {
-    const prefix = qualifiedRuntimeNodeId(focus.instanceId, "")
+/** The view a request was prepared in: the open occurrence and its canvas, or the pipeline's own. */
+interface ViewAtPreparation {
+  readonly occurrence: string | null
+  readonly canvas: readonly Node[]
+  readonly rootNodes: readonly Node[]
+}
+
+function viewNow(): ViewAtPreparation {
+  const { focus, nodes } = useGraphStore.getState()
+  return { occurrence: focus?.instanceId ?? null, canvas: nodes, rootNodes: focus ? focus.rootNodes : nodes }
+}
+
+function addressInView(view: ViewAtPreparation, id: string): NodeAddress {
+  if (view.occurrence !== null) {
+    const prefix = qualifiedRuntimeNodeId(view.occurrence, "")
     if (id.startsWith(prefix)) {
-      const child = useGraphStore.getState().nodes.find((node) => encodeRuntimeIdPart(node.id) === id.slice(prefix.length))
-      if (child) return childAddress(focus.instanceId, child.id)
+      const child = view.canvas.find((node) => encodeRuntimeIdPart(node.id) === id.slice(prefix.length))
+      if (child) return childAddress(view.occurrence, child.id)
     }
   }
   return rootAddress(id)
 }
 
-/** The node on the canvas, or of the pipeline's own, an answer's node id names. */
-function nodeNamedByRuntimeId(id: string): SimpleNode | null {
-  const address = addressOfRuntimeId(id)
-  const { focus, nodes } = useGraphStore.getState()
-  const pool = address.occurrence === null ? (focus ? focus.rootNodes : nodes) : nodes
-  return (pool.find((node) => node.id === address.node) as unknown as SimpleNode | undefined) ?? null
+/**
+ * The address an answer's node id names: a child of the open occurrence by its
+ * runtime id, or one of the pipeline's own nodes by its id.
+ */
+export function addressOfRuntimeId(id: string): NodeAddress {
+  return addressInView(viewNow(), id)
 }
 
-/** The nodes an answer names by id, without preparing a request. */
+/** The node an answer's id names, in the view a request was prepared in. */
+function namerFor(view: ViewAtPreparation): (id: string) => SimpleNode | null {
+  return (id) => {
+    const address = addressInView(view, id)
+    const pool = address.occurrence === null ? view.rootNodes : view.canvas
+    return (pool.find((node) => node.id === address.node) as unknown as SimpleNode | undefined) ?? null
+  }
+}
+
+/** The nodes an answer names by id, in the view now, without preparing a request. */
 export function answerNodeNamer(): (id: string) => SimpleNode | null {
-  return nodeNamedByRuntimeId
+  return namerFor(viewNow())
 }
 
 /**
@@ -179,11 +196,10 @@ export function canvasTarget(nodeId: string, handle?: string | null): FrameTarge
       ? (isSubmodelDefinition(definition, focus.definitionId) ? definition.outputPorts.map((port) => port.name) : [])
       : (card.ports ?? []).map((port) => port.id)
     const port = handle ? names.find((name) => name === handle) : names.length === 1 ? names[0] : undefined
-    if (port === undefined) {
-      throw new Error(handle
-        ? `The ${output ? "Output" : "Input"} card has no port ${handle}.`
-        : `Choose one of the ${output ? "Output" : "Input"} card's ports to read.`)
-    }
+    const bound = port !== undefined && (output || rootGraph().edges.some((edge) =>
+      edge.target === focus.instanceId && edge.targetHandle === `in__${port}`))
+    // A card whose port is not named, or an input nothing feeds yet, is read as the card itself.
+    if (port === undefined || !bound) return nodeFrame(childAddress(focus.instanceId, nodeId), handle ?? null)
     return output
       ? { kind: "occurrenceOutput", occurrence: focus.instanceId, port }
       : { kind: "occurrenceInput", occurrence: focus.instanceId, port }
@@ -197,5 +213,5 @@ export function prepareNodeRequest(
   target: FrameTarget,
 ): PreparedNodeRequest {
   const pipeline = preparePipelineRequest(scope)
-  return { ...pipeline, target, ...runtimeTarget(target), nodeNamed: nodeNamedByRuntimeId }
+  return { ...pipeline, target, ...runtimeTarget(target), nodeNamed: namerFor(viewNow()) }
 }
