@@ -8,7 +8,7 @@
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
 `workbench.form.changed`, forwarded as `workbench_form_changed`), and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
-| `src/haute/_node_addresses.py` | Node addresses (see "Node addresses"): `prepare_execution` flattens a request's document and resolves its address target through the expansion's record (`resolve_target`, `resolve_node`, refusing by name), `address_entry`/`node_addresses` label the keys an answer names, `occurrence_ports` builds frame provenance, and `labelled` builds an answer with `node_addresses` for every key at a node-key position of its schema. |
+| `src/haute/_node_addresses.py` | Node addresses (see "Node addresses"): `resolve_target` and `resolve_node` resolve a request's address target in its flattened document through the expansion's record, refusing by name; `address_entry`/`node_addresses` label the keys an answer names, `occurrence_ports` builds frame provenance, and `labelled` builds an answer with `node_addresses` for every key at a node-key position of its schema. |
 | `src/haute/_node_address_schemas.py` | The wire shapes of node addresses: `RuntimeNodeKey` (a string marked `x-haute-node-key`, branded in the generated TypeScript), `NodeAddressPayload`, the `FrameTargetPayload` union (a node, an occurrence's input port, an occurrence's output port), `NodeAddressEntry`, `RuntimeEndpointPayload` and `OccurrencePortProvenance`; apart from `schemas.py` so the execution-metrics payloads can name nodes by key. |
 | `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. `RequestRefusedError` is a service's refusal of a request, with the `status_code` and `detail` its caller hears; its subclasses name the reason (`InvalidRequestError`, `ForbiddenError`, `NotFoundError`, `ConflictError`, `GoneError`, `UnprocessableError`, `ServiceFailedError`, `InsufficientMemoryError`). |
@@ -376,12 +376,12 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    defaults; the trace's target is required too. A recovery preview keeps its recovery id (a node
    of the pipeline, refused inside a submodel), and the free-code columns request keeps its
    `node_id`, a supersession key that runs nothing.
-3. **Resolution.** One function, `haute._node_addresses.prepare_execution`, prepares every such
-   request: it flattens the document (`flatten_executable_graph`) and resolves the target against
-   the expansion's own record, which `expand_submodel_instances` attaches to the flat graph
-   (`SubmodelExpansion`): for each occurrence its children (local id to runtime key), the endpoint
-   feeding each bound input port, and the endpoint producing each declared output port. It returns
-   the flat graph, the runtime key, the port label or labels, and the record. A card target
+3. **Resolution.** Every such request is flattened (`flatten_executable_graph`), and one function,
+   `haute._node_addresses.resolve_target`, resolves its target against the expansion's own
+   record, which `expand_submodel_instances` attaches to the flat graph (`SubmodelExpansion`): for
+   each occurrence its children (local id to runtime key), the endpoint feeding each bound input
+   port, and the endpoint producing each declared output port. It returns the runtime key and the
+   port label or labels. A card target
    translates its handle with its node: an input port reads its feeding endpoint's node and
    handle, an output port its producing child's. Supersession keys and worker arguments use the
    runtime key and port. Refusals are 404s that name the target by label: an occurrence the

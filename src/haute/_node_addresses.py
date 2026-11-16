@@ -1,9 +1,10 @@
 """Resolve the address a request names its target by, and label the keys an answer names
 (specs/server-api/low-level.md, "Node addresses").
 
-A request names a node or frame by address; :func:`prepare_execution` flattens the
-document and resolves the address against the expansion's record
-(:class:`haute._types.SubmodelExpansion`), never by building a runtime key. An answer
+A request names a node or frame by address; once a route has flattened the document
+(:func:`haute._flatten.flatten_executable_graph`), :func:`resolve_target` resolves the
+address against the expansion's record (:class:`haute._types.SubmodelExpansion`), never by
+building a runtime key. An answer
 names nodes by runtime key, and :func:`labelled` gives it the address of every key it
 names, found from the same record, never by reading a key.
 """
@@ -13,12 +14,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import cache
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
-from haute._flatten import flatten_executable_graph
 from haute._node_address_schemas import (
     RUNTIME_NODE_KEY_MARKER,
     FrameTargetPayload,
@@ -37,9 +37,6 @@ from haute._types import (
 )
 from haute.errors import NotFoundError
 
-if TYPE_CHECKING:
-    from haute._workbench_form import Cell, FormSpec
-
 _NO_EXPANSION = SubmodelExpansion.of({})
 
 AnswerT = TypeVar("AnswerT", bound=BaseModel)
@@ -54,31 +51,10 @@ class ResolvedTarget:
     port_labels: tuple[str, ...] | None = None
 
 
-@dataclass(frozen=True)
-class PreparedExecution:
-    """A request's document flattened, with its target resolved in it."""
-
-    graph: PipelineGraph
-    target: ResolvedTarget
-
-
 def expansion_of(flat: PipelineGraph) -> SubmodelExpansion:
     """The record of the expansion that produced *flat*; empty for a graph without
     occurrences."""
     return flat._submodel_expansion or _NO_EXPANSION
-
-
-def prepare_execution(
-    graph: PipelineGraph,
-    target: NodeAddressPayload | FrameTargetPayload,
-    *,
-    form: FormSpec | None = None,
-    sample: Mapping[str, list[dict[str, Cell]]] | None = None,
-) -> PreparedExecution:
-    """Flatten *graph* as every route that runs a browser graph does
-    (:func:`haute._flatten.flatten_executable_graph`) and resolve *target* in it."""
-    flat = flatten_executable_graph(graph, form=form, sample=sample)
-    return PreparedExecution(graph=flat, target=resolve_target(flat, target))
 
 
 def resolve_target(
