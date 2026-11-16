@@ -1,10 +1,11 @@
+import { useRequestScope } from "../panels/useGraph"
 import { useCallback, useState, useEffect, useRef, useMemo } from "react"
 import { previewNode } from "../api/client"
 import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { nodeRequestTarget } from "../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
 import { columnFingerprint } from "../utils/columnFingerprint"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 
@@ -34,6 +35,7 @@ export function useDataInputColumns(
   preamble?: string,
   options: UseDataInputColumnsOptions = {},
 ): DataInputColumn[] {
+  const requestScope = useRequestScope()
   const setColumnsCache = useNodeResultsStore((s) => s.setColumns)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
@@ -145,7 +147,7 @@ export function useDataInputColumns(
     const requestStructuralVersion = structuralVersion
     Promise.resolve()
       .then(() => {
-        const target = nodeRequestTarget(allNodesRef.current, edgesRef.current, submodels, dataInput)
+        const target = prepareNodeRequest(requestScope, canvasTarget(dataInput))
         return previewNode({
           graph: target.graph,
           nodeId: target.nodeId,
@@ -176,6 +178,7 @@ export function useDataInputColumns(
     // the *inputs* change (dataInput, graph structure, source), not when the
     // *output* (cached columns) changes.
   }, [
+    requestScope,
     dataInput,
     structuralVersion,
     graphFingerprint,

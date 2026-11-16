@@ -22,8 +22,8 @@ import { CommittedTextField, SavedValueOption } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
-import { nodeRequestTarget } from "../utils/nodeRequestTarget"
-import { useGraph } from "./useGraph"
+import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
+import { useGraph, useRequestScope } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
@@ -72,6 +72,7 @@ export default function OptimiserConfig({
   onPaneIssuesChange,
   onUpdateNodeConfig,
 }: OptimiserConfigProps) {
+  const requestScope = useRequestScope()
   const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
   const solveJob = useNodeResultsStore((s) => s.solveJobs[nodeId])
@@ -158,11 +159,14 @@ export default function OptimiserConfig({
   const preamble = useGraphStore((s) => s.preamble)
   const requestTarget = useCallback(
     () => {
+      void allNodes
+      void edges
+      void submodels
       void globalConstants
       void preamble
-      return nodeRequestTarget(allNodes, edges, submodels, nodeId)
+      return prepareNodeRequest(requestScope, canvasTarget(nodeId))
     },
-    [allNodes, edges, submodels, nodeId, globalConstants, preamble],
+    [requestScope, allNodes, edges, submodels, nodeId, globalConstants, preamble],
   )
   // The estimate reads the graph upstream of this node, so edits to the node
   // itself (which move the global structural version) must not re-request it.
@@ -231,7 +235,8 @@ export default function OptimiserConfig({
     { source: activeSource, structuralVersion },
     {
       toastLabel: "Solve estimate failed",
-      enabled: !deferColumnFetch,
+      // A saved version (the comparison view) runs nothing, so it is not estimated.
+      enabled: !deferColumnFetch && requestScope !== null,
       estimateInputs,
       estimateStructureKey,
     },
@@ -269,11 +274,11 @@ export default function OptimiserConfig({
   const handleSolve = useCallback(async () => {
     setSubmitting(true)
     try {
-      await startOptimiserSolve({ nodeId, config, allNodes, edges, submodels })
+      await startOptimiserSolve({ nodeId, config, allNodes, requestScope })
     } finally {
       setSubmitting(false)
     }
-  }, [allNodes, config, edges, nodeId, submodels])
+  }, [requestScope, allNodes, config, nodeId])
 
   const handleStop = useCallback(async () => {
     setStopping(true)

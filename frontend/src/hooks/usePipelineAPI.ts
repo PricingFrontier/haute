@@ -12,7 +12,14 @@ import {
 } from "../api/client"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { syncConnectionId } from "../api/syncConnection"
-import { documentGraphPayload } from "../utils/buildGraph"
+import {
+  canvasNodeAddress,
+  documentRequestScope,
+  preparePipelineRequest,
+  runtimeNodeId,
+} from "../utils/requestGateway"
+import { childAddress, rootAddress } from "../utils/nodeAddress"
+import type { PreparedGraph } from "../api/types"
 import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
@@ -41,8 +48,6 @@ import { type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { requestInputSourceHandles } from "../utils/apiInputPorts"
 import { workbenchNodePorts, type WorkbenchTables } from "../utils/workbenchTables"
 import {
-  qualifiedRuntimeNodeId,
-  runtimeNodeIdForVisibleNode,
   submodelOutputPreview,
   submodelOutputHandle,
   type SubmodelOutputPreview,
@@ -347,7 +352,7 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
  * its own, or in a drilled submodel view its runtime id in this occurrence.
  */
 function previewSchemaKey(nodeId: string, drilled: DrilledOccurrenceIdentity | null): string {
-  return drilled ? qualifiedRuntimeNodeId(drilled.instanceId, nodeId) : nodeId
+  return runtimeNodeId(drilled ? childAddress(drilled.instanceId, nodeId) : rootAddress(nodeId))
 }
 
 /**
@@ -639,7 +644,7 @@ export default function usePipelineAPI({
   // shared snapshot, or outside every target's lineage, is never built.
   const ensureSnapshotsForPreviews = useCallback(
     async (
-      graph: ReturnType<typeof documentGraphPayload>,
+      graph: PreparedGraph,
       targets: PreviewInputTarget[],
       signal: AbortSignal,
     ) => {
@@ -848,7 +853,7 @@ export default function usePipelineAPI({
 
     const label = output?.outputName ?? nodeLabel(node)
     const cacheKey = output?.cacheKey ?? node.id
-    const targetNodeId = output?.nodeId ?? runtimeNodeIdForVisibleNode(canvasGraph().nodes, node.id, activeSubmodelIdentity)
+    const targetNodeId = output?.nodeId ?? runtimeNodeId(canvasNodeAddress(node.id))
     const { getPreview, setPreview: storePreview } = useNodeResultsStore.getState()
     const structuralVersion = useGraphStore.getState().structuralVersion
 
@@ -906,7 +911,7 @@ export default function usePipelineAPI({
       setPreviewData(occurrencePreviewData(makePreviewData(node.id, label, { status: "loading" }), output))
     }
 
-    const graph = documentGraphPayload()
+    const graph = preparePipelineRequest(documentRequestScope).graph
     const controller = new AbortController()
     previewAbort.current = controller
 
@@ -1275,7 +1280,7 @@ export default function usePipelineAPI({
       setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))
     }
 
-    const graph = documentGraphPayload()
+    const graph = preparePipelineRequest(documentRequestScope).graph
 
     // Capture settings once so every upstream preview in this refresh
     // uses the same snapshot (Issues #33/#34).
@@ -1323,11 +1328,7 @@ export default function usePipelineAPI({
           activeCount += 1
           previewNode({
             graph,
-            nodeId: runtimeNodeIdForVisibleNode(
-              canvasGraph().nodes,
-              upstream.id,
-              activeSubmodelIdentity,
-            ),
+            nodeId: runtimeNodeId(canvasNodeAddress(upstream.id)),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion, portLabelFor(upstream)),
@@ -1361,11 +1362,7 @@ export default function usePipelineAPI({
     ensureSnapshotsForPreviews(
       graph,
       [node, ...staleUpstream].map((previewed) => ({
-        nodeId: runtimeNodeIdForVisibleNode(
-          canvasGraph().nodes,
-          previewed.id,
-          activeSubmodelIdentity,
-        ),
+        nodeId: runtimeNodeId(canvasNodeAddress(previewed.id)),
         source: snapshotSource,
         requestedPreviewColumns: previewColumnNamesForNode(previewed, snapshotSource, structuralVersion, portLabelFor(previewed)),
         portLabel: portLabelFor(previewed),
@@ -1445,7 +1442,7 @@ export default function usePipelineAPI({
       previewRequestSeq.current === requestId &&
       useGraphStore.getState().structuralVersion === structuralVersion &&
       documentStillCurrent()
-    const graph = documentGraphPayload()
+    const graph = preparePipelineRequest(documentRequestScope).graph
     const recoveryPreview = snapshotDocumentStatus === "degraded"
     if (recoveryPreview && activeSubmodelIdentity !== null) {
       controller.abort()
@@ -1459,11 +1456,7 @@ export default function usePipelineAPI({
           graph,
           [
             {
-              nodeId: runtimeNodeIdForVisibleNode(
-                canvasGraph().nodes,
-                node.id,
-                activeSubmodelIdentity,
-              ),
+              nodeId: runtimeNodeId(canvasNodeAddress(node.id)),
               source: snapshotSource,
               portLabel,
             },
@@ -1491,11 +1484,7 @@ export default function usePipelineAPI({
         return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
           previewNode({
             graph,
-            nodeId: runtimeNodeIdForVisibleNode(
-              canvasGraph().nodes,
-              node.id,
-              activeSubmodelIdentity,
-            ),
+            nodeId: runtimeNodeId(canvasNodeAddress(node.id)),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             portLabel,

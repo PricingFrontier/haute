@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react"
 import { Loader2, RefreshCw, X } from "lucide-react"
-import type { GraphPayload } from "../../api/types"
+import type { PreparedGraph } from "../../api/types"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 import { CommittedTextField } from "../../components/form"
 import { safeParseInt } from "../../utils/configField"
@@ -35,7 +35,7 @@ type OptimiserConstraintSettingsProps = {
   accentColor: string
   labelClassName: string
   /** The graph and this node's id in it that a request about the node sends. */
-  requestTarget: () => { graph: GraphPayload; nodeId: string }
+  requestTarget: () => { graph: PreparedGraph; nodeId: string }
   nodeId: string
   onUpdate: OnUpdateConfig
   onRemoveConstraint: (name: string) => void

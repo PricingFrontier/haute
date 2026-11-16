@@ -8,7 +8,7 @@ import {
 import type {
   ExecutionMetrics,
   FrontierAutoRangeStatusResponse,
-  GraphPayload,
+  PreparedGraph,
 } from "../../api/types"
 import useDocumentStatusStore, {
   captureDocumentExecutionFence,
@@ -193,7 +193,7 @@ type ActiveRun = {
 export type UseOptimiserAutoRangeOptions = {
   nodeId: string
   /** The graph and this node's id in it that a request about the node sends. */
-  requestTarget: () => { graph: GraphPayload; nodeId: string }
+  requestTarget: () => { graph: PreparedGraph; nodeId: string }
   /** Writes the filled ranges, merged over the constraints' other ranges. */
   writeRanges: (ranges: Record<string, FrontierRange>) => OnUpdateConfigResult
 }

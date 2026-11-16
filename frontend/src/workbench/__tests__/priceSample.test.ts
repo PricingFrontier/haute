@@ -4,7 +4,7 @@
  * the request takes, and the Workbench Output's tables previewed all at once, from one run,
  * each by its port (`<table>_output`) and answered under its table's name.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, preparedGraph } from "../../test-utils/factories"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/client", async (importOriginal) => ({
@@ -14,7 +14,7 @@ vi.mock("../../api/client", async (importOriginal) => ({
 
 import type { Node } from "@xyflow/react"
 import { ApiError, previewNode } from "../../api/client"
-import type { FormSpec, GraphPayload, PreviewNodeResponse, WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
+import type { FormSpec, PreparedGraph, PreviewNodeResponse, WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
 import type { SubmodelDefinition } from "../../types/node"
 import { priceSample } from "../priceSample"
 
@@ -58,8 +58,8 @@ function definition(definitionId: string, nodes: Node[]): SubmodelDefinition {
 }
 
 /** The document as the editor holds it: its workbench nodes hold nothing of the form. */
-function graph(): GraphPayload {
-  return {
+function graph(): PreparedGraph {
+  return preparedGraph({
     nodes: [
       node("quote", "workbenchInput"),
       node("priced", "polars", { code: "df" }),
@@ -67,7 +67,7 @@ function graph(): GraphPayload {
     ],
     edges: [],
     submodels: { rating: definition("rating", [node("inner", "polars")]) },
-  }
+  })
 }
 
 /** A preview's answer: each table asked for with its rows, as many as it has and not cut short unless said. */

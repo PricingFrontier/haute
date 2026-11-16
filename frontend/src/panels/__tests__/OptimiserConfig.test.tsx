@@ -8,14 +8,14 @@ import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore, { type OptimiserPane } from "../../stores/useUIStore"
 import useGraphStore from "../../stores/useGraphStore"
-import { buildGraph } from "../../utils/buildGraph"
-import { setDrilledRequestScope } from "../../utils/nodeRequestTarget"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import { solveConfigHash } from "../optimiser/solveActions"
 import type { SimpleNode, SimpleEdge } from "../editors/_shared"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
-import { makeSolveResult } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeSolveResult } from "../../test-utils/factories"
+import type { Node } from "@xyflow/react"
+import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
 
 // ── Mock API client ──
 const mockSolveOptimiser = vi.fn()
@@ -38,11 +38,6 @@ vi.mock("../../api/client", () => ({
   saveOptimiser: (...args: unknown[]) => mockSaveOptimiser(...args),
   logOptimiserToMlflow: (...args: unknown[]) => mockLogOptimiserToMlflow(...args),
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPoint(...args),
-}))
-
-// ── Mock buildGraph ──
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 // ── Mock banding utilities ──
@@ -71,6 +66,7 @@ vi.mock("../../hooks/useDataInputColumns", () => ({
   ]),
 }))
 import { useDataInputColumns } from "../../hooks/useDataInputColumns"
+import { documentRequestScope } from "../../utils/requestGateway"
 const mockUseDataInputColumns = vi.mocked(useDataInputColumns)
 
 vi.mock("../../hooks/useConstraintHandlers", () => ({
@@ -200,7 +196,7 @@ type MakePropsOverrides = Partial<Parameters<typeof OptimiserConfig>[0]> & {
 
 /**
  * Returns the component props plus the graph data, so tests can wrap
- * `<OptimiserConfig {...props} />` in `<GraphProvider {...graph}>` at render
+ * `<OptimiserConfig {...props} />` in `<GraphProvider requestScope={documentRequestScope} {...graph}>` at render
  * time.  Graph keys (allNodes/edges/submodels/preamble) live on the returned
  * object under `graph` — they're not spread onto the component.
  */
@@ -264,7 +260,7 @@ function showPane(pane: OptimiserPane) {
  */
 function renderConfig(made: ReturnType<typeof makeProps>) {
   return render(
-    <GraphProvider
+    <GraphProvider requestScope={documentRequestScope}
       allNodes={made.graph.allNodes}
       edges={made.graph.edges}
       submodels={made.graph.submodels}
@@ -273,6 +269,26 @@ function renderConfig(made: ReturnType<typeof makeProps>) {
       <PaneBoundConfig {...made.componentProps} />
     </GraphProvider>,
   )
+}
+
+/**
+ * Put the pipeline `made` describes in the graph store, which every request reads
+ * its document from: its graph's nodes and edges, and the optimiser with its config.
+ */
+function loadDocument(made: ReturnType<typeof makeProps>) {
+  const storeNode = (node: SimpleNode): Node => (
+    { id: node.id, type: node.data.nodeType, position: { x: 0, y: 0 }, data: node.data }
+  )
+  const optimiser: SimpleNode = {
+    id: made.componentProps.nodeId,
+    data: { label: "Optimiser", description: "", nodeType: "optimiser", config: made.componentProps.config },
+  }
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: [...made.graph.allNodes, optimiser].map(storeNode),
+    edges: made.graph.edges as PipelineEdge[],
+    preamble: made.graph.preamble ?? "",
+    submodels: made.graph.submodels ?? {},
+  })
 }
 
 function renderStatefulConfig(
@@ -298,7 +314,7 @@ function renderStatefulConfig(
     }
 
     return (
-      <GraphProvider
+      <GraphProvider requestScope={documentRequestScope}
         allNodes={made.graph.allNodes}
         edges={made.graph.edges}
         submodels={made.graph.submodels}
@@ -321,6 +337,7 @@ const INITIAL_STRUCTURAL_VERSION = useGraphStore.getState().structuralVersion
 
 beforeEach(() => {
   defaultPane = "data"
+  useGraphStore.getState().resetForTests()
   useGraphStore.setState({ structuralVersion: INITIAL_STRUCTURAL_VERSION })
   useUIStore.setState({ optimiserPanes: {} })
   useOptimiserPublishStore.setState({ byNode: {} })
@@ -1172,7 +1189,7 @@ describe("OptimiserConfig", () => {
       const view = renderConfig(made)
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1))
       const rerenderWith = (config: Record<string, unknown>) => view.rerender(
-        <GraphProvider allNodes={made.graph.allNodes} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={made.graph.allNodes} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={config} />
         </GraphProvider>,
       )
@@ -1328,7 +1345,7 @@ describe("OptimiserConfig", () => {
       })
       const graphNodes = (config: Record<string, unknown>) => [...made.graph.allNodes, optimiserNode(config)]
       const view = render(
-        <GraphProvider allNodes={graphNodes(made.componentProps.config)} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={graphNodes(made.componentProps.config)} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} />
         </GraphProvider>,
       )
@@ -1340,7 +1357,7 @@ describe("OptimiserConfig", () => {
         useGraphStore.setState({ structuralVersion: useGraphStore.getState().structuralVersion + 1 })
       })
       view.rerender(
-        <GraphProvider allNodes={graphNodes(edited)} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={graphNodes(edited)} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={edited} />
         </GraphProvider>,
       )
@@ -1352,7 +1369,7 @@ describe("OptimiserConfig", () => {
         index === 0 ? { ...node, data: { ...node.data, description: "changed" } } : node
       ))
       view.rerender(
-        <GraphProvider allNodes={[...upstreamChanged, optimiserNode(edited)]} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[...upstreamChanged, optimiserNode(edited)]} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={edited} />
         </GraphProvider>,
       )
@@ -1558,8 +1575,6 @@ describe("OptimiserConfig", () => {
 
     it("solve sends a global constant edited after the panel mounted", async () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
-      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
-      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       renderConfig(makeProps({
         config: { mode: "online", objective: "premium", constraints: {} },
       }))
@@ -1573,16 +1588,10 @@ describe("OptimiserConfig", () => {
       expect(mockSolveOptimiser.mock.calls[0][0].graph.global_constants).toEqual([
         { name: "rate", type: "float", value: 1.5 },
       ])
-      act(() => useGraphStore.getState().setGlobalConstantsRaw([]))
-      vi.mocked(buildGraph).mockImplementation(
-        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
-      )
     })
 
     it("the estimate and solve requests carry the preamble", async () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
-      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
-      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       act(() => useGraphStore.getState().setPreambleRaw("def helper(x):\n    return x\n"))
       renderConfig(makeProps({
         config: { mode: "online", objective: "premium", constraints: {} },
@@ -1592,10 +1601,6 @@ describe("OptimiserConfig", () => {
       await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
       expect(mockEstimateOptimiserSolve.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
       expect(mockSolveOptimiser.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
-      act(() => useGraphStore.getState().setPreambleRaw(""))
-      vi.mocked(buildGraph).mockImplementation(
-        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
-      )
     })
 
     it("solve button calls solveOptimiser with graph payload", async () => {
@@ -1607,40 +1612,79 @@ describe("OptimiserConfig", () => {
           constraints: { loss_ratio: { max: 1.05 } },
         },
       })
+      loadDocument(props)
       renderConfig(props)
       fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
       await waitFor(() => {
         expect(mockSolveOptimiser).toHaveBeenCalledTimes(1)
       })
-      // Verify it was called with a graph payload containing node_id
+      // The pipeline the editor holds, with the optimiser's own config, and the node's id.
       expect(mockSolveOptimiser).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "opt_1" }),
+        expect.objectContaining({
+          graph: expect.objectContaining({
+            nodes: [
+              expect.objectContaining({ id: "input_1" }),
+              expect.objectContaining({
+                id: "opt_1",
+                data: expect.objectContaining({ config: props.componentProps.config }),
+              }),
+            ],
+            edges: [expect.objectContaining({ source: "input_1", target: "opt_1" })],
+          }),
+          node_id: "opt_1",
+        }),
       )
     })
 
     it("inside an open submodel the estimate, solve and auto range send the whole pipeline", async () => {
-      const whole = { nodes: [{ id: "pricing", data: { label: "pricing", nodeType: "submodel" } }], edges: [] }
-      setDrilledRequestScope(() => ({
-        graph: whole as unknown as ReturnType<typeof buildGraph>,
-        occurrence: { instanceId: "pricing", definitionId: "pricing" },
-      }))
+      // The pipeline: a source feeding the occurrence "pricing", whose definition holds this optimiser.
+      const definition: SubmodelDefinition = {
+        definitionId: "pricing",
+        file: "modules/pricing.py",
+        graph: {
+          nodes: [makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Optimiser", nodeType: "optimiser", config: {} } })],
+          edges: [],
+        },
+        inputPorts: [{ name: "policy", targets: [{ nodeId: "opt_1", handleId: null }] }],
+        outputPorts: [],
+      }
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [
+          makeIdentifiedNode("source", "dataInput"),
+          makeIdentifiedNode("pricing", "submodel", {
+            data: { label: "pricing", nodeType: "submodel", config: { definition_id: "pricing", alias: "pricing" } },
+          }),
+        ],
+        edges: [{ id: "feed", source: "source", target: "pricing", targetHandle: "in__policy" }],
+        preamble: "",
+        submodels: { pricing: definition },
+      })
+      act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "pricing" }))
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
       mockStartOptimiserFrontierAutoRange.mockReturnValue(new Promise(() => {}))
-      try {
-        const config = { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 35 } } }
-        renderConfig(makeProps({ config }))
-        const sent = expect.objectContaining({ graph: whole, node_id: "submodel_runtime/pricing/opt_1" })
-        await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledWith(sent))
-        fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
-        await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(sent))
-        cleanup()
-        // Auto range fills the frontier's missing ranges.
-        renderConfig(makeProps({ activePane: "constraints", config: { ...config, frontier_ranges: { loss_ratio: {} } } }))
-        fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
-        await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith(sent))
-      } finally {
-        setDrilledRequestScope(null)
-      }
+      const config = { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 35 } } }
+      renderConfig(makeProps({ config }))
+      const sent = expect.objectContaining({
+        graph: expect.objectContaining({
+          // The pipeline's own nodes and edges, not the view's, with the definition.
+          nodes: [expect.objectContaining({ id: "source" }), expect.objectContaining({ id: "pricing" })],
+          edges: [expect.objectContaining({ id: "feed", target: "pricing" })],
+          submodels: {
+            pricing: expect.objectContaining({
+              graph: expect.objectContaining({ nodes: [expect.objectContaining({ id: "opt_1" })] }),
+            }),
+          },
+        }),
+        node_id: "submodel_runtime/pricing/opt_1",
+      })
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledWith(sent))
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(sent))
+      cleanup()
+      // Auto range fills the frontier's missing ranges.
+      renderConfig(makeProps({ activePane: "constraints", config: { ...config, frontier_ranges: { loss_ratio: {} } } }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+      await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith(sent))
     })
 
     it("preserves structured execution metrics when solve admission fails", async () => {
@@ -2604,13 +2648,18 @@ describe("OptimiserConfig", () => {
           frontier_ranges: { loss_ratio: {} },
         },
       })
+      loadDocument(props)
       renderConfig(props)
 
       fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       await waitFor(() => {
         expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith({
-          graph: { nodes: [], edges: [], preamble: "" },
+          // The pipeline the editor holds.
+          graph: expect.objectContaining({
+            nodes: [expect.objectContaining({ id: "input_1" }), expect.objectContaining({ id: "opt_1" })],
+            edges: [expect.objectContaining({ source: "input_1", target: "opt_1" })],
+          }),
           node_id: "opt_1",
           signal: expect.any(AbortSignal),
         })
@@ -2633,8 +2682,6 @@ describe("OptimiserConfig", () => {
         elapsed_seconds: 1,
         result: { status: "ok", ranges: { loss_ratio: { min: 11, max: 39 } }, method: "scenario_envelope" },
       })
-      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
-      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       act(() => useGraphStore.getState().setPreambleRaw("import numpy as np"))
       renderConfig(makeProps({
         config: {
@@ -2647,10 +2694,6 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
       await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledTimes(1))
       expect(mockStartOptimiserFrontierAutoRange.mock.calls[0][0].graph.preamble).toBe("import numpy as np")
-      act(() => useGraphStore.getState().setPreambleRaw(""))
-      vi.mocked(buildGraph).mockImplementation(
-        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
-      )
     })
 
     it("fills only the clicked constraint and keeps the other swept range", async () => {
@@ -3432,7 +3475,7 @@ describe("OptimiserConfig", () => {
 
       // Back to Local folder with no experiment: the next log follows the config.
       view.rerender(
-        <GraphProvider allNodes={made.graph.allNodes} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={made.graph.allNodes} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={config} />
         </GraphProvider>,
       )

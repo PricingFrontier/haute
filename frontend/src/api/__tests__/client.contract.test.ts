@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import { preparedGraph } from "../../test-utils/factories"
 import { ApiResponseValidationError } from "../responseValidation"
 import type { FormSpec, OptimiserApplyQuery, WorkbenchCatalogueTable, WorkbenchStoreCompareResponse, WorkbenchStoreRename } from "../types"
 import { fetchStoreCatalogue, fetchStoreCompare } from "../workbench"
@@ -90,10 +91,10 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-const dummyGraph = {
+const dummyGraph = preparedGraph({
   nodes: [{ id: "n1", type: "custom", position: { x: 0, y: 0 }, data: {} }],
   edges: [],
-}
+})
 
 /** A Quotes page's default query: every field is sent. */
 const APPLY_QUERY: OptimiserApplyQuery = {

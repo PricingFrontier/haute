@@ -22,6 +22,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -894,7 +895,7 @@ describe("SummaryTab (GLM extensions)", () => {
 describe("ModellingConfig (GLM routing)", () => {
   it("algorithm picker shows GLM option", () => {
     render(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig
           nodeId="n1"
           config={{}}
@@ -910,7 +911,7 @@ describe("ModellingConfig (GLM routing)", () => {
   it("clicking GLM sets algorithm", () => {
     const onUpdate = vi.fn()
     render(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig
           nodeId="n1"
           config={{}}
@@ -940,7 +941,7 @@ describe("ModellingConfig (GLM routing)", () => {
       interactions: [{ factors: ["age", "region"], specs: { age: null }, include_main: true }],
     }
     const { rerender } = render(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig nodeId="n1" config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane="features" />
       </GraphProvider>,
     )
@@ -951,7 +952,7 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(onUpdate).toHaveBeenCalledWith("interactions", [])
     for (const pane of ["target", "train"] as const) {
       rerender(
-        <GraphProvider allNodes={[]} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
           <ModellingConfig nodeId="n1" config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane={pane} />
         </GraphProvider>,
       )
@@ -967,7 +968,7 @@ describe("ModellingConfig (GLM routing)", () => {
       family: "poisson",
     }
     const { rerender } = render(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig
           nodeId="n1"
           config={config}
@@ -982,7 +983,7 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(screen.getByText("Family")).toBeTruthy()
     expect(screen.queryByText("Regularization")).toBeNull()
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig nodeId="n1" config={config} onUpdate={vi.fn()} upstreamColumns={defaultColumns} activePane="params" />
       </GraphProvider>,
     )
@@ -991,7 +992,7 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(screen.queryByText("Fit all with defaults")).toBeNull()
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig
           nodeId="n1"
           config={config}
@@ -1020,7 +1021,7 @@ describe("ModellingConfig (GLM routing)", () => {
       terms: { age: { type: "linear" } },
     }
     const { rerender } = render(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig
           nodeId="n1"
           config={config}
@@ -1034,7 +1035,7 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(screen.queryByRole("button", { name: /Train Model/ })).toBeNull()
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig
           nodeId="n1"
           config={config}

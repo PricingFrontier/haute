@@ -83,7 +83,7 @@ export function makeEdge(
 }
 
 // ---------------------------------------------------------------------------
-// makeSimpleNode — Lightweight SimpleNode (used by buildGraph, NodePanel)
+// makeSimpleNode — Lightweight SimpleNode (used by NodePanel and editor tests)
 // ---------------------------------------------------------------------------
 
 /**
@@ -909,4 +909,18 @@ export function makeCanonicalGraph(
     warning: null,
     ...overrides,
   }
+}
+
+// ---------------------------------------------------------------------------
+// preparedGraph — a test's graph as the request gateway's branded payload
+// ---------------------------------------------------------------------------
+
+import type { GraphPayload, PreparedGraph } from "../api/types"
+
+/**
+ * A graph a test sends straight to a client function that runs the pipeline. In the
+ * app only the request gateway (`utils/requestGateway`) makes a `PreparedGraph`.
+ */
+export function preparedGraph(graph: GraphPayload): PreparedGraph {
+  return graph as PreparedGraph
 }

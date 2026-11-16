@@ -17,6 +17,7 @@ import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import type { NodeDataPointResponse, RatingLevelsResponse } from "../../api/types"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 const mockGetRatingLevels = vi.fn()
 const mockGetNodeDataPoint = vi.fn()
@@ -131,13 +132,13 @@ let rerenderEditor: ((nodes: unknown[]) => void) | null = null
 
 function renderEditor(ui: ReactElement, nodes: unknown[] = [sourceNode, ratingNode]) {
   const result = render(
-    <GraphProvider allNodes={nodes as never} edges={edges} submodels={{}} preamble="">
+    <GraphProvider requestScope={documentRequestScope} allNodes={nodes as never} edges={edges} submodels={{}} preamble="">
       {ui}
     </GraphProvider>,
   )
   rerenderEditor = (next: unknown[]) =>
     result.rerender(
-      <GraphProvider allNodes={next as never} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={next as never} edges={edges} submodels={{}} preamble="">
         {ui}
       </GraphProvider>,
     )
@@ -514,7 +515,7 @@ describe("RatingStepEditor levels", () => {
     // A rate saved in that slice puts Orkney among the levels the table knows,
     // which is ahead of South — still only in the data.
     rerender(
-      <GraphProvider allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
         {editor({
           config: table([{ size: "S", age: "Y", region: "Orkney", value: 2.5 }]),
           previewRows,
@@ -639,7 +640,7 @@ describe("RatingStepEditor levels", () => {
     await waitFor(() => expect(signals).toHaveLength(1))
 
     rerender(
-      <GraphProvider allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
         {editor({
           config: {
             tables: [

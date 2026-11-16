@@ -5,7 +5,10 @@ import type { ExploreColumnStat } from "../../../api/types"
 import type { ExploreDataView } from "../exploreDataView"
 import ExploreRelationshipsPane from "../ExploreRelationshipsPane"
 import { WHOLE_DATA_DEBOUNCE_MS } from "../../editors/shared/useWholeDataAnswer"
-import { makeExploreColumnStat } from "../../../test-utils/factories"
+import { makeExploreColumnStat, makeNode } from "../../../test-utils/factories"
+import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
+import useGraphStore from "../../../stores/useGraphStore"
+import useSettingsStore from "../../../stores/useSettingsStore"
 
 const mocks = vi.hoisted(() => ({
   relationships: vi.fn(),
@@ -21,15 +24,20 @@ vi.mock("../../../hooks/useNodeDataCache", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../hooks/useNodeDataCache")>()),
   default: () => ({ availability: mocks.availability, problem: mocks.problem, dataVersion: "v1", run: mocks.run }),
 }))
-vi.mock("../../../stores/useDocumentStatusStore", () => ({
-  captureDocumentExecutionFence: () => ({}),
-  isDocumentExecutionFenceCurrent: () => true,
-}))
-vi.mock("../../../stores/useSettingsStore", () => ({
-  default: (selector: (value: { activeSource: string }) => unknown) => selector({ activeSource: "live" }),
-}))
-
 const node = { id: "explore", data: { label: "explore", description: "", nodeType: "explore", config: {} } }
+
+/** The pipeline the editor holds: the Explore node behind its source. */
+function loadDocument() {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: [
+      makeNode("source", "dataInput", { data: { label: "source", nodeType: "dataInput", config: { path: "claims.parquet" } } }),
+      makeNode("explore", "explore", { data: { ...node.data } }),
+    ],
+    edges: [{ id: "e1", source: "source", target: "explore" }],
+    preamble: "",
+    submodels: {},
+  })
+}
 
 function column(name: string, kind: ExploreColumnStat["kind"]): ExploreColumnStat {
   return makeExploreColumnStat({
@@ -111,6 +119,10 @@ async function settle() {
 describe("ExploreRelationshipsPane", () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    useGraphStore.getState().resetForTests()
+    useDocumentStatusStore.getState().reset()
+    useSettingsStore.setState({ activeSource: "live" })
+    loadDocument()
     mocks.relationships.mockReset()
     mocks.availability = "current"
     mocks.problem = null
@@ -145,6 +157,14 @@ describe("ExploreRelationshipsPane", () => {
     expect(mocks.relationships).toHaveBeenCalledTimes(1)
     expect(mocks.relationships).toHaveBeenCalledWith(
       expect.objectContaining({
+        // The pipeline the editor holds, read from the graph store.
+        graph: expect.objectContaining({
+          nodes: [
+            expect.objectContaining({ id: "source", data: expect.objectContaining({ config: { path: "claims.parquet" } }) }),
+            expect.objectContaining({ id: "explore" }),
+          ],
+          edges: [expect.objectContaining({ id: "e1", source: "source", target: "explore" })],
+        }),
         node_id: "explore",
         source: "live",
         target: "claims",

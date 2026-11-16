@@ -12,10 +12,6 @@ vi.mock("../../api/client", () => ({
   previewNode: vi.fn(),
 }))
 
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
-}))
-
 import { previewNode } from "../../api/client"
 const mockPreview = vi.mocked(previewNode)
 
@@ -32,8 +28,8 @@ function makeWideColumns(count: number) {
 }
 
 const nodes = [
-  { id: "ds1", data: { label: "DS1", description: "", nodeType: "dataInput" } },
-  { id: "t1", data: { label: "T1", description: "", nodeType: "polars" } },
+  { id: "ds1", position: { x: 0, y: 0 }, data: { label: "DS1", description: "", nodeType: "dataInput" } },
+  { id: "t1", position: { x: 0, y: 0 }, data: { label: "T1", description: "", nodeType: "polars" } },
 ]
 
 const edges = [{ id: "e1", source: "ds1", target: "t1" }]
@@ -43,16 +39,9 @@ describe("useDataInputColumns", () => {
     useNodeResultsStore.setState({
       columnCache: {},
     })
-    useGraphStore.setState({
-      nodes: [],
-      edges: [],
-      preamble: "",
-      lastSavedSnapshot: null,
-      undoStack: [],
-      redoStack: [],
-      structuralVersion: 0,
-      structuralFingerprint: "nodes:||edges:||preamble:\"\"",
-    })
+    // The hook's requests run the graph store's document: the graph it is handed.
+    useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels: {} })
+    useGraphStore.setState({ structuralVersion: 0 })
     useSettingsStore.setState({
       activeSource: "live",
       sources: ["live"],
@@ -63,6 +52,7 @@ describe("useDataInputColumns", () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    useGraphStore.getState().resetForTests()
   })
 
   // ── Basic behavior ────────────────────────────────────────────────

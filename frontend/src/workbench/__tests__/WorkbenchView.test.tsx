@@ -16,6 +16,7 @@ import useWorkbenchViewStore, { SCHEMA_FULL_WIDTH } from "../../stores/useWorkbe
 import { BLANK_THEME } from "../../utils/workbenchForm"
 import WorkbenchView from "../WorkbenchView"
 import { sheetForm } from "./fixtures"
+import { preparedGraph } from "../../test-utils/factories"
 
 vi.mock("../SchemaEditor", () => ({
   default: ({ readOnly }: { readOnly?: boolean }) => (
@@ -39,7 +40,7 @@ const realPricing = useWorkbenchPricingStore.getState()
 
 const onSave = vi.fn(async () => true)
 const onSaveShortcut = vi.fn()
-const resolveGraph = vi.fn(() => ({ nodes: [], edges: [] }))
+const resolveGraph = vi.fn(() => preparedGraph({ nodes: [], edges: [] }))
 
 function renderView() {
   return render(

@@ -23,10 +23,6 @@ vi.mock("../../api/client", () => ({
   clearInputCache: vi.fn(),
 }))
 
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
-}))
-
 const ensureInputSnapshots = vi.fn(async (_nodes: unknown[], _options?: unknown) => {})
 const cancelInputSnapshotBuild = vi.fn(async (_jobId: string) => {})
 vi.mock("../ensureInputSnapshots", () => ({
@@ -61,6 +57,16 @@ const edges = [
   { id: "e2", source: "join", target: "explore" },
   { id: "e3", source: "join", target: "banding" },
 ] as never as Parameters<typeof useNodeDataCache>[0]["edges"]
+
+/** Loads `documentNodes` into the graph store: the document every request runs. */
+function loadDocument(documentNodes: typeof nodes, documentEdges: typeof edges = edges) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: documentNodes as never,
+    edges: documentEdges as never,
+    preamble: "",
+    submodels: {},
+  })
+}
 
 function nodeById(id: string) {
   return (nodes as unknown as { id: string }[]).find((node) => node.id === id) as never
@@ -122,9 +128,13 @@ describe("useNodeDataCache", () => {
     mockClearInputCache.mockReset()
     ensureInputSnapshots.mockReset()
     ensureInputSnapshots.mockResolvedValue(undefined)
+    loadDocument(nodes)
   })
 
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
 
   it("reports the point the backend resolved for this consumer", async () => {
     mockGetPoint.mockResolvedValue(point())
@@ -790,6 +800,7 @@ describe("useNodeDataCache", () => {
     mockGetPoint.mockResolvedValue(delegated)
     mockClear.mockResolvedValue({ status: "delegated", point: delegated })
     mockClearInputCache.mockResolvedValue({} as never)
+    loadDocument(quoteNodes)
     const { result } = renderHook(() =>
       useNodeDataCache({ node: nodeById("banding"), allNodes: quoteNodes, edges, preamble: "" }),
     )
@@ -827,6 +838,7 @@ describe("useNodeDataCache", () => {
     })
     mockGetPoint.mockResolvedValue(direct)
     mockClear.mockResolvedValue({ status: "delegated", point: direct })
+    loadDocument(workbenchNodes)
     const { result } = renderHook(() =>
       useNodeDataCache({ node: nodeById("banding"), allNodes: workbenchNodes, edges, preamble: "" }),
     )

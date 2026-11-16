@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ComponentProps, ReactNode } from "react"
 import {
   ReactFlow,
@@ -45,7 +45,7 @@ import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
 import NameViolationsBanner from "./components/NameViolationsBanner"
 import { useNameViolationRevalidation } from "./hooks/useNameViolationRevalidation"
 import { documentGraphPayload } from "./utils/buildGraph"
-import { setDrilledRequestScope } from "./utils/nodeRequestTarget"
+import { documentRequestScope, preparePipelineRequest } from "./utils/requestGateway"
 import { namingContextGraph as buildNamingContextGraph } from "./utils/namingContext"
 import type { PipelineNameViolation } from "./types/pipelineDocument"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
@@ -717,6 +717,7 @@ const NodePropertiesPanel = memo(function NodePropertiesPanel({
         submodels={submodels}
         preamble={preamble}
         openNode={onOpenNode}
+        requestScope={documentRequestScope}
       >
         <NodePanel
           node={panelNode}
@@ -909,20 +910,6 @@ function FlowEditor() {
   const sourceRevisionRef = useRef("")
   const preservedBlocksRef = useRef<string[]>([])
   const nodeIdCounter = useRef(0)
-
-  // A panel's request about a node of an open submodel sends the whole pipeline and
-  // the node's id in this occurrence (utils/nodeRequestTarget), as Preview does.
-  useLayoutEffect(() => {
-    setDrilledRequestScope(() => {
-      const focus = useGraphStore.getState().focus
-      if (!focus) return null
-      return {
-        graph: documentGraphPayload(),
-        occurrence: { instanceId: focus.instanceId, definitionId: focus.definitionId },
-      }
-    })
-    return () => setDrilledRequestScope(null)
-  }, [])
 
   const panelGraph = usePanelGraphContext()
   const selectedNode = selectedNodeState && panelGraph.getNode(selectedNodeState.id)
@@ -1743,7 +1730,7 @@ function FlowEditor() {
   // The workbench prices its sample on the document as it is then: the whole pipeline,
   // even while a submodel is open.
   const resolveWorkbenchGraph = useCallback(
-    () => documentGraphPayload(),
+    () => preparePipelineRequest(documentRequestScope).graph,
     [],
   )
 

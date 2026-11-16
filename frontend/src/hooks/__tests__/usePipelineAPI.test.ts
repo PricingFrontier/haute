@@ -2058,6 +2058,7 @@ describe("usePipelineAPI", () => {
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    openPricing([makeNode("pricing", NODE_TYPES.SUBMODEL)])
     useGraphStore.setState({
       nodes: [upstream, port],
       edges: [makeEdge("upstream", port.id)],
@@ -2121,6 +2122,7 @@ describe("usePipelineAPI", () => {
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    openPricing([makeNode("pricing", NODE_TYPES.SUBMODEL)])
     useGraphStore.setState({
       nodes: [port, target],
       edges: [makeEdge(port.id, "target")],

@@ -13,6 +13,7 @@ import { AlertCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "luci
 import { selectFrontierPoint as selectFrontierPointApi } from "../api/client"
 import { formatNumber, fractionToPercent } from "../utils/formatValue"
 import useGraphStore from "../stores/useGraphStore"
+import { useRequestScope } from "./useGraph"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
@@ -202,6 +203,7 @@ export default function OptimiserPreview({
   onRefresh,
   scenarioData = null,
 }: OptimiserPreviewProps) {
+  const requestScope = useRequestScope()
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
   const displayData = liveData ?? data
   const { result, solvedResult, jobId } = displayData
@@ -335,11 +337,11 @@ export default function OptimiserPreview({
     if (!rerunReadiness.canSolve) return
     setRerunning(true)
     try {
-      await startOptimiserSolve({ nodeId, config: nodeConfig, allNodes, edges, submodels })
+      await startOptimiserSolve({ nodeId, config: nodeConfig, allNodes, requestScope })
     } finally {
       setRerunning(false)
     }
-  }, [allNodes, edges, nodeConfig, nodeId, rerunReadiness.canSolve, submodels])
+  }, [allNodes, nodeConfig, nodeId, requestScope, rerunReadiness.canSolve])
 
   const factorLevelOrder = useMemo(
     () => bandingLevelOrderForOptimiser(nodeId, allNodes, edges),

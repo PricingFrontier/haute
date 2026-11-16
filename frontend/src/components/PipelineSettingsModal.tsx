@@ -1,3 +1,4 @@
+import { useRequestScope } from "../panels/useGraph"
 /**
  * Pipeline settings pane (ModalShell-based), per
  * `specs/frontend-shared/low-level.md` ("Pipeline settings"): the calculation
@@ -17,9 +18,8 @@ import { apiErrorMessage } from "../api/errors"
 import type { CacheNodeEntry, CacheNodesResponse } from "../api/types"
 import { formatByteSize } from "../utils/formatBytes"
 import { formatDuration } from "../utils/formatValue"
-import { pipelineRequestGraph } from "../utils/nodeRequestTarget"
-import usePanelGraphContext, { toSimpleEdge, toSimpleNode } from "../hooks/usePanelGraphContext"
-import useGraphStore from "../stores/useGraphStore"
+import { preparePipelineRequest } from "../utils/requestGateway"
+import usePanelGraphContext from "../hooks/usePanelGraphContext"
 import useSettingsStore, {
   MAX_CHUNK_ROWS,
   MIN_CHUNK_ROWS,
@@ -505,6 +505,7 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 }
 
 export default function PipelineSettingsModal({ onClose }: { onClose: () => void }) {
+  const requestScope = useRequestScope()
   const [nodes, setNodes] = useState<CacheNodesResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -534,15 +535,14 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
 
   const request = useCallback(
     (controller: AbortController) => {
-      // Read the graph from the store at the moment of the request rather than
-      // subscribing to it. Subscribing would make any edit, websocket resync or
-      // load re-issue the request while the pane is open. Inside an open submodel
-      // the request sends the whole pipeline, which holds every cached node.
-      const { nodes: storeNodes, edges, submodels } = useGraphStore.getState()
-      const graph = pipelineRequestGraph(storeNodes.map(toSimpleNode), edges.map(toSimpleEdge), submodels)
+      // Prepared at the moment of the request rather than subscribed to: a
+      // subscription would make any edit, websocket resync or load re-issue the
+      // request while the pane is open. The whole pipeline goes, also from inside
+      // an open submodel, so every cached node is listed.
+      const { graph } = preparePipelineRequest(requestScope)
       return fetchCacheNodes({ graph, source: activeSource }, { signal: controller.signal })
     },
-    [activeSource],
+    [activeSource, requestScope],
   )
 
   const read = useCallback(

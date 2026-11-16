@@ -1,3 +1,4 @@
+import { useRequestScope } from "../panels/useGraph"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 
 import {
@@ -22,7 +23,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest, type PreparedNodeRequest } from "../utils/requestGateway"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -150,7 +151,7 @@ export function refreshNodeDataCache(nodeId: string): void {
   for (const handler of nodeDataRefreshHandlers.get(nodeId) ?? []) handler()
 }
 
-function producerNode(target: NodeRequestTarget | null, point: NodeDataPointResponse | null): SimpleNode | null {
+function producerNode(target: PreparedNodeRequest | null, point: NodeDataPointResponse | null): SimpleNode | null {
   if (!point || !target) return null
   return target.nodeNamed(point.point.producer_node_id)
 }
@@ -173,6 +174,7 @@ export default function useNodeDataCache({
   preamble,
   enabled = true,
 }: UseNodeDataCacheInput): NodeDataCache {
+  const requestScope = useRequestScope()
   const nodeId = node?.id ?? null
   const nodeLabel = node ? String(node.data.label || node.id) : ""
   const activeSource = useSettingsStore((s) => s.activeSource)
@@ -254,12 +256,15 @@ export default function useNodeDataCache({
   // from the store; listing them renews the callback, so an edit made after mount
   // reaches the next request.
   const requestTarget = useCallback(
-    (): NodeRequestTarget | null => {
+    (): PreparedNodeRequest | null => {
+      void allNodes
+      void edges
+      void submodels
       void globalConstants
       void preamble
-      return nodeId ? nodeRequestTarget(allNodes, edges, submodels, nodeId) : null
+      return nodeId ? prepareNodeRequest(requestScope, canvasTarget(nodeId)) : null
     },
-    [allNodes, edges, nodeId, preamble, submodels, globalConstants],
+    [requestScope, allNodes, edges, nodeId, preamble, submodels, globalConstants],
   )
 
   const fetchPoint = useCallback(

@@ -1,3 +1,4 @@
+import { useRequestScope } from "../useGraph"
 import { useCallback, useRef, useState } from "react"
 
 import { cancelExplorePivot, runExplorePivot } from "../../api/client"
@@ -16,7 +17,7 @@ import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import { nodeRequestTarget } from "../../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
 import {
   executionJobStatusFromReason,
   executionMetricsFromError,
@@ -71,6 +72,7 @@ export default function useExplorePivotActions({
   submodels,
   preamble,
 }: UseExplorePivotActionsInput) {
+  const requestScope = useRequestScope()
   const activeSource = useSettingsStore((state) => state.activeSource)
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
   const startJob = useNodeResultsStore((state) => state.startExplorePivotJob)
@@ -224,12 +226,15 @@ export default function useExplorePivotActions({
           === startToken && isDocumentExecutionFenceCurrent(documentFence)
       setNotice(pivot.id, null)
       // The graph reads the preamble from the store; listing it renews this callback.
+      void allNodes
+      void edges
+      void submodels
       void preamble
       const submissionGeneration = beginSubmitting(pivot.id)
 
       try {
         // Inside an open submodel, the whole pipeline and the node's runtime id.
-        const target = nodeRequestTarget(allNodes, edges, submodels, node.id)
+        const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
         const response = await runExplorePivot({
           graph: target.graph,
           node_id: target.nodeId,
@@ -314,6 +319,7 @@ export default function useExplorePivotActions({
       }
     },
     [
+      requestScope,
       activeSource,
       allNodes,
       beginSubmitting,

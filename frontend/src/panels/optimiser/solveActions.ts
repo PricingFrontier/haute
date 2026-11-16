@@ -18,14 +18,14 @@ import {
 import useNodeResultsStore, { type SolveProgress } from "../../stores/useNodeResultsStore"
 import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
-import { nodeRequestTarget } from "../../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest, type RequestScope } from "../../utils/requestGateway"
 import {
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
 import { solveIdentityConfig } from "../../utils/modellingExportConfig"
-import type { SimpleEdge, SimpleNode } from "../editors/_shared"
+import type { SimpleNode } from "../editors/_shared"
 
 type Constraints = Record<string, Record<string, number>>
 
@@ -67,8 +67,8 @@ type StartSolveArgs = {
   /** The node's current config: what the job is keyed by and what it solves. */
   config: Record<string, unknown>
   allNodes: SimpleNode[]
-  edges: SimpleEdge[]
-  submodels?: Record<string, unknown>
+  /** The document the solve runs (`utils/requestGateway`): the panel's. */
+  requestScope: RequestScope | null
 }
 
 /**
@@ -77,7 +77,7 @@ type StartSolveArgs = {
  * Resolves once the job is registered (or its start failure recorded); the
  * background poller owns progress and completion.
  */
-export async function startOptimiserSolve({ nodeId, config, allNodes, edges, submodels }: StartSolveArgs): Promise<void> {
+export async function startOptimiserSolve({ nodeId, config, allNodes, requestScope }: StartSolveArgs): Promise<void> {
   const documentFence = captureDocumentExecutionFence()
   if (!isDocumentExecutionFenceCurrent(documentFence)) return
   const nodeLabel = allNodes.find((candidate) => candidate.id === nodeId)?.data.label || "Optimiser"
@@ -88,7 +88,7 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, edges, sub
   const { startSolveJob, failSolveJob } = useNodeResultsStore.getState()
   const startupFailureId = `startup-failure:${nodeId}`
   try {
-    const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
+    const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
     const result = await solveOptimiser({ graph: target.graph, node_id: target.nodeId })
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     if (result.status === "started" && result.job_id) {

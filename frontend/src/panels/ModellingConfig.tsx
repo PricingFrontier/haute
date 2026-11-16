@@ -28,7 +28,7 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { apiErrorMessage } from "../api/errors"
-import { nodeRequestTarget, requestNodeNamer } from "../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest, answerNodeNamer } from "../utils/requestGateway"
 import {
   effectiveMetrics,
   trainingConfigurationIssues,
@@ -36,7 +36,7 @@ import {
   type TrainingConfigurationIssue,
 } from "../utils/trainingObjective"
 import type { OnUpdateConfig } from "./editors/_shared"
-import { useGraph } from "./useGraph"
+import { useGraph, useRequestScope } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,
   algorithmCapability,
@@ -380,6 +380,7 @@ export default function ModellingConfig({
   activePane = "target",
   onPaneIssuesChange,
 }: Props) {
+  const requestScope = useRequestScope()
   const { allNodes, edges, submodels, preamble, openNode } = useGraph()
   const setModellingPane = useUIStore((state) => state.setModellingPane)
   const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
@@ -487,24 +488,28 @@ export default function ModellingConfig({
   const globalConstants = useGraphStore((state) => state.globalConstants)
   const requestTarget = useCallback(
     () => {
+      void allNodes
+      void edges
+      void submodels
       void globalConstants
       void preamble
-      return nodeRequestTarget(allNodes, edges, submodels, nodeId)
+      return prepareNodeRequest(requestScope, canvasTarget(nodeId))
     },
-    [allNodes, edges, submodels, nodeId, preamble, globalConstants],
+    [requestScope, allNodes, edges, submodels, nodeId, preamble, globalConstants],
   )
   const graph = useCallback(() => requestTarget().graph, [requestTarget])
   // The estimate names a node by its id in the graph sent. One inside another
   // submodel is off this canvas; its id still says which.
-  const nodeNamed = useMemo(() => requestNodeNamer(allNodes), [allNodes])
+  const nodeNamed = answerNodeNamer()
   const canvasNodeLabel = useCallback(
     (id: string) => nodeNamed(id)?.data.label || id,
     [nodeNamed],
   )
+  // Only a node on this canvas opens: matched by id, since the panel's graph holds copies.
   const canvasNodeOpener = useCallback(
     (id: string) => {
       const node = nodeNamed(id)
-      return openNode && node && allNodes.includes(node) ? () => openNode(node.id) : null
+      return openNode && node && allNodes.some((candidate) => candidate.id === node.id) ? () => openNode(node.id) : null
     },
     [allNodes, nodeNamed, openNode],
   )
@@ -539,7 +544,8 @@ export default function ModellingConfig({
     cachedResult,
     estimateEndpoint,
     { source: activeSource, structuralVersion },
-    { toastLabel: "Training estimate failed" },
+    // A saved version (the comparison view) runs nothing, so it is not estimated.
+    { toastLabel: "Training estimate failed", enabled: requestScope !== null },
   )
   // A completed result is remembered per document so a browser reload can put
   // it back from the server; a result the server no longer holds is recorded

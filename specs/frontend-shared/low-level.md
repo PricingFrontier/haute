@@ -4,6 +4,8 @@
 
 | File | Responsibility |
 |---|---|
+| `frontend/src/utils/requestGateway.ts` | The request gateway (see "Request gateway"): `documentRequestScope`, `RequestScopeError`, `preparePipelineRequest` and `prepareNodeRequest` (the whole pipeline, the document's identity and semantic generation, the target and the data source, captured once), `canvasTarget` and `canvasNodeAddress` (a canvas node as a frame target or address: the Input card at a port is the occurrence's input, the Output card at a port its output), and the runtime-id adapter, `runtimeNodeId`, `addressOfRuntimeId` and `answerNodeNamer`. |
+| `frontend/src/utils/nodeAddress.ts` | `NodeAddress`, `FrameTarget`, `rootAddress`, `childAddress`, `nodeFrame`, `sameAddress`, and `addressKey`: a root node's id as it is, a child's key opening with a character no node id holds. |
 | `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; `validateApiResponse` wraps a parser call in that contract. Every background job poller (train, optimiser, Explore, pivot) reports it as a terminal response error. |
 | `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. With an `EditorNamingContext` (the canonical document graph and `allocate`) the request carries the naming context; each node takes the server's `label` (and an occurrence its `alias`), and a response naming any `collision` throws `EditorNameCollisionError` before anything is applied. |
 | `frontend/src/utils/namingContext.ts` | `namingContextGraph`: the editor identity request's naming context, the canonical root graph with its preserved blocks; inside a drilled submodel the live child graph (ports left out) replaces only its definition's nodes and edges, keeping the definition's preamble and preserved blocks. |
@@ -32,7 +34,7 @@
 | `frontend/src/utils/configHash.ts` | `hashConfig`, a node config's identity: its `canonicalJson`. Remembered training handles keep it, so its output must not change. |
 | `frontend/src/utils/trainEstimate.ts` | `nextTrainEstimate`, a training's remaining time from the rate between its last two progress samples (rounds, or fits while tuning). |
 | `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress and whether this tab started it (`startedHere`, as a profile job also records), or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
-| `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. Its requests send the graph and node id `nodeRequestTarget` gives (inside an open submodel, the whole pipeline and the node's runtime id), and it asks for the point once the commit's effects have all run, so an edit inside an open submodel has reached the whole pipeline first. |
+| `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. Its requests are the ones the request gateway prepares for the node (`prepareNodeRequest`: the whole pipeline and the node's runtime id, also inside an open submodel), from the document the store holds, so an edit is in the next request as soon as it is made. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, the preamble, and the Global Constants. |
@@ -838,8 +840,56 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
    answer yet is `checking` rather than `missing`.
 
+## Request gateway (normative)
+
+Every request that runs the graph is built in one module, `frontend/src/utils/requestGateway.ts`,
+and nowhere else: a node's preview and its frames, a trace, an estimate, Train and Solve, a
+Data Output's destination and write, a profile, a whole-data answer, an Explore pivot, the
+Workbench's sample and the cached-data list.
+
+1. **Addresses.** A request names what it reads by address (`frontend/src/utils/nodeAddress.ts`),
+   never by an id it built: a `NodeAddress` is `{ occurrence, node }`, `occurrence` null for the
+   pipeline's own nodes (an occurrence is itself the pipeline's node `{ null, <instance id> }`);
+   a `FrameTarget` is a node's output port, or a declared input or output port of an occurrence.
+   `addressKey` gives an address one string: a root address's key is its node id, and an
+   occurrence's child's key starts with a character no node id holds, so the two never collide.
+   `canvasAddress` names a node on the canvas: a root node at the root, a child of the open
+   occurrence inside one, and the Input card at one of its ports that occurrence's input port.
+2. **Scope.** A request runs a document its caller is given, a `RequestScope`. App's
+   `GraphProvider` gives its panels `documentRequestScope`, the graph store's document; the
+   comparison view's provider gives none, and a request prepared without a scope is refused
+   (`RequestScopeError`) and never sent. Code that runs outside React for the open document
+   (stores, job polling, the Workbench's pricing) takes `documentRequestScope` itself.
+3. **Prepared requests.** `prepareNodeRequest(scope, address, ports?)` and
+   `preparePipelineRequest(scope)` capture, together and once: the document payload (the whole
+   pipeline with every definition, also while a submodel is open), the document's identity
+   (source file and execution generation), its semantic generation, the target, and the data
+   source. A frame read may name several ports of one node, read in one run, as the Workbench
+   prices every table of its sample at once. A prepared node request also names the nodes an
+   answer names by id back (`nodeNamed`).
+4. **Only prepared graphs are sent.** Every client function that runs the graph takes a
+   `PreparedGraph`, a type only the gateway makes, so type-checking refuses a graph a caller
+   built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.
+5. **Runtime ids.** Until the server resolves addresses (SUBE-05) the gateway's adapter alone
+   turns an address into the runtime id a request sends (`qualifiedRuntimeNodeId`), and reads
+   the ids an answer names back into addresses.
+
 ## Testing
 
+- `frontend/src/utils/__tests__/requestGateway.test.ts` covers the request gateway: a
+  request about a node of the pipeline captures the whole document, the node's id, the
+  source, the document's identity and its semantic generation; from inside an open
+  submodel it sends the whole pipeline and a child's runtime id, and names an answer's
+  nodes back; the Input card at a port reads the pipeline's node feeding it and the Output
+  card at a port the child producing it; a request without a scope is refused; and the
+  runtime-id adapter turns addresses into ids and back.
+- `frontend/src/components/__tests__/ReadOnlyNodeConfig.requests.test.tsx` covers the
+  comparison view: the Modelling and Optimiser editors of a saved version send no request
+  and report no failure, while the same editors under the open pipeline's scope ask for
+  their estimates.
+- `frontend/src/utils/__tests__/nodeAddress.test.ts` covers address keys: a root node's id
+  as it is, a child's apart from every root node and from the same child of another
+  occurrence, and a root id opening with the child prefix refused.
 - `frontend/src/panels/__tests__/FilesPanel.test.tsx` covers the Files panel: a place's
   listing with its markers and links, opening a folder and returning by the breadcrumb, an
   upload with its capture reported and the data epoch moved, a replace asked first and naming the revision, no row of

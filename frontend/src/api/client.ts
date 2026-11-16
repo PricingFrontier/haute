@@ -61,6 +61,7 @@ import type {
   GitSetWorkingBranchResponse,
   GitWorkingBranchResponse,
   GraphPayload,
+  PreparedGraph,
   IoCapabilitiesResponse,
   JsonCacheInferResponse,
   ModellingGpuStatusResponse,
@@ -837,7 +838,7 @@ export function saveNodeScoped(
 }
 
 export interface PreviewNodeArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   nodeId: string
   rowLimit: number
   source?: string
@@ -920,7 +921,7 @@ export async function getPreviewProgress(
 }
 
 export interface PreviewInputsArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   nodeId: string
   source?: string
   requestedPreviewColumns?: string[]
@@ -1084,7 +1085,7 @@ export function savePipeline(
 }
 
 export interface OutputAssembleDryRunArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   nodeId: string
   /** The in-progress (volatile, unsaved) outputMapping to preview. The route
    * swaps this into the OUTPUT node's config, overriding whatever is on disk —
@@ -1138,7 +1139,7 @@ export function outputAssembleDryRun(
 }
 
 export interface TraceCellArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   row_index: number
   target_node_id: string
   column?: string | null
@@ -1162,7 +1163,7 @@ export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
 }
 
 export interface WriteOutputArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   nodeId: string
   source?: string
   overwrite?: boolean
@@ -1171,7 +1172,7 @@ export interface WriteOutputArgs {
 }
 
 export interface ResolveOutputDestinationArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   nodeId: string
   signal?: AbortSignal
   timeout?: number
@@ -1361,7 +1362,7 @@ export function fetchCacheUsage(
 }
 
 export function fetchCacheNodes(
-  payload: { graph: unknown; source: string },
+  payload: { graph: PreparedGraph; source: string },
   options?: { signal?: AbortSignal },
 ): Promise<CacheNodesResponse> {
   return post<unknown>("/api/cache/nodes", { ...payload, ...workbenchSampleField() }, options).then(async (data) =>
@@ -1423,7 +1424,7 @@ export function clearInputCache(
 // ---------------------------------------------------------------------------
 
 export interface NodeDataArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   source?: string
   signal?: AbortSignal
@@ -1524,7 +1525,7 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
 }
 
 export interface RatingLevelsArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   source?: string
   columns: string[]
@@ -1565,7 +1566,7 @@ export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse
 // ---------------------------------------------------------------------------
 
 export interface RunExploreArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   source?: string
   refresh?: boolean
@@ -1574,7 +1575,7 @@ export interface RunExploreArgs {
 }
 
 export interface RunExplorePivotArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   pivot: Record<string, unknown>
   source?: string
@@ -1621,7 +1622,7 @@ export function cancelExplorePivot(
 }
 
 export interface FetchExplorePivotMembersArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   field: string
   source?: string
@@ -1683,7 +1684,7 @@ export function cancelTrain(
 }
 
 export interface TrainModelArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   source?: string
   signal?: AbortSignal
@@ -1704,7 +1705,7 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
 }
 
 export function estimateTrainingRam(
-  payload: { graph: GraphPayload; node_id: string; source?: string },
+  payload: { graph: PreparedGraph; node_id: string; source?: string },
   options?: { signal?: AbortSignal },
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })
@@ -1749,7 +1750,7 @@ export function saveTrainedModel(
 // ---------------------------------------------------------------------------
 
 export interface SolveOptimiserArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   signal?: AbortSignal
   timeout?: number
@@ -1762,7 +1763,7 @@ export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolve
 }
 
 export interface EstimateOptimiserSolveArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   source?: string
   signal?: AbortSignal
@@ -1837,7 +1838,7 @@ export function logOptimiserToMlflow(
 }
 
 export interface StartOptimiserFrontierAutoRangeArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   signal?: AbortSignal
   timeout?: number

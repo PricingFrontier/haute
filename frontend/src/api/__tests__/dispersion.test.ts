@@ -12,6 +12,7 @@ import {
 } from "../dispersion"
 import { ApiError } from "../client"
 import { JobFailedError } from "../../hooks/jobPollingController"
+import { preparedGraph } from "../../test-utils/factories"
 
 let mockFetch: ReturnType<typeof vi.fn>
 
@@ -24,10 +25,10 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-const dummyGraph = {
+const dummyGraph = preparedGraph({
   nodes: [{ id: "n1", type: "custom", position: { x: 0, y: 0 }, data: {} }],
   edges: [],
-}
+})
 
 function makeDispersionStatus(overrides: Record<string, unknown> = {}) {
   return {

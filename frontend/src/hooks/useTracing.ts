@@ -11,10 +11,9 @@ import {
   type NodeStatus,
 } from "../types/node"
 import { traceCell } from "../api/client"
-import { documentGraphPayload } from "../utils/buildGraph"
+import { canvasNodeAddress, documentRequestScope, preparePipelineRequest, runtimeNodeId } from "../utils/requestGateway"
+import { childAddress } from "../utils/nodeAddress"
 import {
-  qualifiedRuntimeNodeId,
-  runtimeNodeIdForVisibleNode,
   submodelOutputPreview,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
@@ -370,7 +369,7 @@ export default function useTracing({
       ? submodelOutputPreview(selectedNode, useGraphStore.getState().submodels, previewOutputHandle)
       : undefined
     if (output === null) return
-    const graph = documentGraphPayload()
+    const graph = preparePipelineRequest(documentRequestScope).graph
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
     traceAbort.current?.abort()
@@ -402,11 +401,7 @@ export default function useTracing({
     traceCell({
       graph,
       row_index: rowIndex,
-      target_node_id: output?.nodeId ?? runtimeNodeIdForVisibleNode(
-        nodesRef.current,
-        selectedNode.id,
-        activeSubmodelIdentity,
-      ),
+      target_node_id: output?.nodeId ?? runtimeNodeId(canvasNodeAddress(selectedNode.id)),
       column,
       row_limit: rowLimit,
       source: activeSource,
@@ -480,7 +475,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, activeSubmodelIdentity, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
+  }, [selectedNode, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace
@@ -519,7 +514,7 @@ export default function useTracing({
         )
       }
       for (const child of definition.graph.nodes) {
-        map.set(qualifiedRuntimeNodeId(node.id, child.id), node.id)
+        map.set(runtimeNodeId(childAddress(node.id, child.id)), node.id)
       }
     }
 
@@ -533,10 +528,7 @@ export default function useTracing({
         )
       }
       for (const child of visibleChildNodes) {
-        map.set(
-          runtimeNodeIdForVisibleNode(nodes, child.id, drilledIdentity),
-          child.id,
-        )
+        map.set(runtimeNodeId(childAddress(drilledIdentity.instanceId, child.id)), child.id)
       }
     }
 

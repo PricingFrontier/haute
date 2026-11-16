@@ -9,6 +9,7 @@
 
 import { createContext, useContext } from "react"
 import type { SimpleNode, SimpleEdge } from "./editors/_shared"
+import { documentRequestScope, type RequestScope } from "../utils/requestGateway"
 
 /** Shape exposed by `useGraph()`. */
 export type GraphContextValue = {
@@ -18,6 +19,11 @@ export type GraphContextValue = {
   preamble?: string
   /** Opens a node on the canvas in the panel, as clicking it does; absent where there is no canvas. */
   openNode?: (nodeId: string) => void
+  /**
+   * The document the panel's requests run (`utils/requestGateway`): the open pipeline,
+   * or null where the panel shows a saved version and runs nothing.
+   */
+  requestScope: RequestScope | null
 }
 
 // `undefined` distinguishes "no provider" from "provider with empty graph".
@@ -41,4 +47,13 @@ export function useGraph(): GraphContextValue {
     )
   }
   return ctx
+}
+
+/**
+ * The document a request from here runs: the nearest provider's, which is none in the
+ * comparison view; with no provider at all, only the open pipeline is there to run.
+ */
+export function useRequestScope(): RequestScope | null {
+  const ctx = useContext(GraphContext)
+  return ctx === undefined ? documentRequestScope : ctx.requestScope
 }

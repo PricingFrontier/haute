@@ -4,10 +4,11 @@ import ModellingConfig from "../ModellingConfig"
 import { ApiError } from "../../api/client"
 import { trainingIdentityConfig } from "../../utils/modellingExportConfig"
 import { trainingLineage } from "../../utils/trainedJobHandles"
-import { buildGraph } from "../../utils/buildGraph"
-import { setDrilledRequestScope } from "../../utils/nodeRequestTarget"
+import { documentGraphPayload } from "../../utils/buildGraph"
 import { runDispersionEstimate } from "../../api/dispersion"
-import type { SimpleNode as GraphNodeInput } from "../editors/_shared"
+import type { Node } from "@xyflow/react"
+import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
+import { toSimpleNode } from "../../hooks/usePanelGraphContext"
 import { GraphProvider } from "../GraphContext"
 import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
@@ -21,7 +22,8 @@ import type { TrainResult } from "../../stores/useNodeResultsStore"
 import type { SimpleNode, SimpleEdge } from "../editors/_shared"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
-import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -62,10 +64,6 @@ vi.mock("../../api/client", () => ({
 
 vi.mock("../../api/dispersion", () => ({
   runDispersionEstimate: vi.fn(() => new Promise(() => {})),
-}))
-
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 // Mock child components that are already well-tested
@@ -123,36 +121,30 @@ function defaultProps(overrides: ConfigOverrides = {}) {
   }
 }
 
-/**
- * `buildGraph` is mocked to an empty graph for this file. Lineage tests need the
- * payload to follow the rendered graph, so they install this pass-through.
- */
-function payloadFor(
-  allNodes: GraphNodeInput[],
-  submodels?: Record<string, unknown>,
-): ReturnType<typeof buildGraph> {
-  return {
-    nodes: allNodes.map((node) => ({
-      id: node.id,
-      type: node.data.nodeType,
-      data: node.data,
-      position: { x: 0, y: 0 },
-    })),
-    edges: [],
-    submodels,
-    preamble: undefined,
-  } as unknown as ReturnType<typeof buildGraph>
+/** A panel's node as the graph store holds it. */
+function storeNode(node: SimpleNode): Node {
+  return { id: node.id, type: node.data.nodeType, position: { x: 0, y: 0 }, data: node.data }
 }
 
-function withPassThroughGraph() {
-  vi.mocked(buildGraph).mockImplementation((allNodes, _edges, submodels) => payloadFor(allNodes, submodels))
+/**
+ * Put the pipeline in the graph store, which every request reads its document
+ * from; the panel's provider is handed the same nodes, as App hands it the
+ * canvas, as separate objects.
+ */
+function loadDocument(nodes: SimpleNode[], edges: SimpleEdge[] = []) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: nodes.map(storeNode),
+    edges: edges as PipelineEdge[],
+    preamble: "",
+    submodels: {},
+  })
 }
 
 function renderConfig(overrides: ConfigOverrides = {}) {
   const { allNodes = [], edges = [], submodels, preamble, openNode } = overrides
   const props = defaultProps(overrides)
   const result = render(
-    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble} openNode={openNode}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble} openNode={openNode}>
       <ModellingConfig {...props} />
     </GraphProvider>,
   )
@@ -233,7 +225,6 @@ beforeEach(() => {
   })
   mockGetTrainStatus.mockReset().mockReturnValue(new Promise(() => {}))
   mockFetchModellingGpuStatus.mockReset().mockReturnValue(new Promise(() => {}))
-  vi.mocked(buildGraph).mockImplementation(() => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>)
   useGraphStore.setState(useGraphStore.getInitialState())
   useDocumentStatusStore.setState(useDocumentStatusStore.getInitialState())
   try {
@@ -263,7 +254,7 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   vi.unstubAllGlobals()
-  setDrilledRequestScope(null)
+  useGraphStore.getState().resetForTests()
 })
 
 // ═════════════════════════════════════════════════════════════════
@@ -318,7 +309,7 @@ describe("Training configuration readiness", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
     const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as Record<string, unknown>
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <ModellingConfig {...props} config={{ ...props.config, ...tuned }} />
       </GraphProvider>,
     )
@@ -634,7 +625,7 @@ describe("ModellingConfig", () => {
     it("Tweedie variance power slider only visible when loss_function=Tweedie", () => {
       // Without Tweedie: no slider
       const { unmount } = render(
-        <GraphProvider allNodes={[]} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
           <ModellingConfig {...defaultProps()} />
         </GraphProvider>,
       )
@@ -643,7 +634,7 @@ describe("ModellingConfig", () => {
 
       // With Tweedie: slider visible
       render(
-        <GraphProvider allNodes={[]} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
           <ModellingConfig
             {...defaultProps({
               nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "Tweedie" },
@@ -897,13 +888,24 @@ describe("ModellingConfig", () => {
     beforeEach(() => { defaultPane = "train" })
     it("train button calls trainModel API with graph and node_id", async () => {
       mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_1" })
-      renderConfig()
+      const source = { id: "source", data: { label: "source", description: "", nodeType: "dataInput", config: { path: "claims.parquet" } } }
+      const modelling = { id: "node_1", data: { label: "model", description: "", nodeType: "modelling", config: {} } }
+      const feed = { id: "e1", source: "source", target: "node_1" }
+      loadDocument([source, modelling], [feed])
+      renderConfig({ allNodes: [source, modelling], edges: [feed] })
       fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
       await waitFor(() => expect(mockTrainModel).toHaveBeenCalledTimes(1))
       const callArgs = mockTrainModel.mock.calls[0][0]
       expect(callArgs).toEqual(
         expect.objectContaining({
-          graph: expect.any(Object),
+          // The pipeline the editor holds.
+          graph: expect.objectContaining({
+            nodes: [
+              expect.objectContaining({ id: "source", data: expect.objectContaining({ config: { path: "claims.parquet" } }) }),
+              expect.objectContaining({ id: "node_1" }),
+            ],
+            edges: [expect.objectContaining({ source: "source", target: "node_1" })],
+          }),
           node_id: "node_1",
         }),
       )
@@ -911,8 +913,6 @@ describe("ModellingConfig", () => {
 
     it("sends a global constant edited after the panel mounted", async () => {
       mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_1" })
-      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
-      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       renderConfig()
       act(() => {
         useGraphStore.getState().setGlobalConstantsRaw([
@@ -930,16 +930,21 @@ describe("ModellingConfig", () => {
     it("records the lineage of the graph it submitted, not one edited while the request was pending", async () => {
       let respond: (value: unknown) => void = () => {}
       mockTrainModel.mockReturnValue(new Promise((resolve) => { respond = resolve }))
-      withPassThroughGraph()
       const upstream = { id: "source", data: { label: "source", description: "", nodeType: "polars", code: "df" } }
+      loadDocument([upstream])
       const { rerender, props } = renderConfig({ allNodes: [upstream] })
       fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
       await waitFor(() => expect(mockTrainModel).toHaveBeenCalledTimes(1))
       const submitted = mockTrainModel.mock.calls[0][0].graph
+      expect(submitted.nodes).toEqual([expect.objectContaining({ id: "source", data: expect.objectContaining({ code: "df" }) })])
 
+      // The edit reaches the document, then the panel re-renders over it.
       const edited = [{ ...upstream, data: { ...upstream.data, code: "df.head(10)" } }]
+      act(() => useGraphStore.getState().setNodes((nodes) => nodes.map((node) => (
+        node.id === "source" ? { ...node, data: { ...node.data, code: "df.head(10)" } } : node
+      ))))
       rerender(
-        <GraphProvider allNodes={edited} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={edited} edges={[]}>
           <ModellingConfig {...props} />
         </GraphProvider>,
       )
@@ -950,7 +955,7 @@ describe("ModellingConfig", () => {
       const job = useNodeResultsStore.getState().trainJobs.node_1
       expect(job?.jobId).toBe("job_pending")
       expect(job?.lineage).toBe(trainingLineage(submitted))
-      expect(job?.lineage).not.toBe(trainingLineage(payloadFor(edited)))
+      expect(job?.lineage).not.toBe(trainingLineage(documentGraphPayload()))
     })
 
     it("keeps validation hidden and Train enabled before the first press", () => {
@@ -995,7 +1000,7 @@ describe("ModellingConfig", () => {
         loss_function: "RMSE",
       }
       const renderWithConfig = (config: Record<string, unknown>) => (
-        <GraphProvider allNodes={[]} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
           <ModellingConfig {...defaultProps({ config })} />
         </GraphProvider>
       )
@@ -1303,7 +1308,7 @@ describe("ModellingConfig", () => {
       const { rerender, props } = renderConfig()
       const edited = { ...props.config, target: "claim_count" }
       rerender(
-        <GraphProvider allNodes={[]} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
           <ModellingConfig {...props} config={edited} />
         </GraphProvider>,
       )
@@ -1397,25 +1402,48 @@ describe("ModellingConfig", () => {
     }
 
     function renderGlm(config: Record<string, unknown>) {
-      withPassThroughGraph()
       const node = { id: "node_1", data: { label: "glm", description: "", nodeType: "modelling", config } }
+      loadDocument([node])
       const view = renderConfig({ config, upstreamColumns: columns, allNodes: [node] })
-      const rerenderWith = (next: Record<string, unknown>) => view.rerender(
-        <GraphProvider allNodes={[{ ...node, data: { ...node.data, config: next } }]} edges={[]}>
-          <ModellingConfig {...view.props} config={{ ...next, evaluation: view.props.config.evaluation }} />
-        </GraphProvider>,
-      )
+      const rerenderWith = (next: Record<string, unknown>) => {
+        const edited = { ...node, data: { ...node.data, config: next } }
+        act(() => useGraphStore.getState().setNodes((nodes) => nodes.map((candidate) => (
+          candidate.id === node.id ? storeNode(edited) : candidate
+        ))))
+        view.rerender(
+          <GraphProvider requestScope={documentRequestScope} allNodes={[edited]} edges={[]}>
+            <ModellingConfig {...view.props} config={{ ...next, evaluation: view.props.config.evaluation }} />
+          </GraphProvider>,
+        )
+      }
       return { ...view, node, rerenderWith }
     }
 
     it("asks for the current graph and source, and fills the unchanged draft's field", async () => {
       useSettingsStore.setState({ activeSource: "batch" })
       const held = holdEstimate()
-      const { props, node } = renderGlm(negbinomial())
+      const { props } = renderGlm(negbinomial())
 
       fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
       expect(runDispersionEstimate).toHaveBeenCalledWith(
-        { graph: payloadFor([node]), node_id: "node_1", param: "theta", source: "batch" },
+        {
+          graph: {
+            nodes: [{
+              id: "node_1",
+              type: "modelling",
+              position: { x: 0, y: 0 },
+              data: { label: "glm", description: "", nodeType: "modelling", config: negbinomial() },
+            }],
+            edges: [],
+            submodels: {},
+            preamble: "",
+            global_constants: [],
+            global_constants_error: null,
+          },
+          node_id: "node_1",
+          param: "theta",
+          source: "batch",
+        },
         { signal: expect.any(AbortSignal) },
       )
 
@@ -1701,7 +1729,7 @@ describe("ModellingConfig", () => {
         await waitFor(() => expect(screen.getByText("Waiting for the input snapshot to finish")).toBeTruthy())
 
         rerender(
-          <GraphProvider allNodes={[]} edges={[]}>
+          <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
             <ModellingConfig {...props} config={{ ...props.config, params: { depth: 8 } }} />
           </GraphProvider>,
         )
@@ -1894,6 +1922,7 @@ describe("ModellingConfig", () => {
         evaluation_preview: null,
       })
       const upstream = { id: "explode", data: { label: "Explode items", description: "", nodeType: "polars", code: "df" } }
+      loadDocument([upstream])
       renderConfig({ allNodes: [upstream] })
       expect(await screen.findByText(/The row count at "Explode items" can't be proven/)).toBeTruthy()
       expect(screen.queryByText("Dataset fits in memory")).toBeNull()
@@ -1919,7 +1948,9 @@ describe("ModellingConfig", () => {
       })
       const join = { id: "join", data: { label: "competitor_join", description: "", nodeType: "edgeJoin" } }
       const openNode = vi.fn()
-      renderConfig({ allNodes: [join], openNode })
+      loadDocument([join])
+      // The canvas App hands the panel: the store's nodes, as the panel reads them.
+      renderConfig({ allNodes: useGraphStore.getState().nodes.map(toSimpleNode), openNode })
 
       fireEvent.click(await screen.findByRole("button", { name: 'Open "competitor_join"' }))
       expect(openNode).toHaveBeenCalledWith("join")
@@ -1927,11 +1958,33 @@ describe("ModellingConfig", () => {
     })
 
     it("inside an open submodel asks with the whole pipeline and opens a join it names by runtime id", async () => {
-      const whole = { nodes: [{ id: "pricing", data: { label: "pricing", nodeType: "submodel" } }], edges: [] }
-      setDrilledRequestScope(() => ({
-        graph: whole as unknown as ReturnType<typeof buildGraph>,
-        occurrence: { instanceId: "pricing", definitionId: "pricing" },
-      }))
+      // The pipeline: a source feeding the occurrence "pricing", whose definition
+      // holds the join and this Modelling node.
+      const definition: SubmodelDefinition = {
+        definitionId: "pricing",
+        file: "modules/pricing.py",
+        graph: {
+          nodes: [
+            makeIdentifiedNode("join", "edgeJoin", { data: { label: "competitor_join", nodeType: "edgeJoin", config: {} } }),
+            makeIdentifiedNode("node_1", "modelling", { data: { label: "model", nodeType: "modelling", config: {} } }),
+          ],
+          edges: [{ id: "e_join", source: "join", target: "node_1", data: { _inputName: "join" } }],
+        },
+        inputPorts: [{ name: "policy", targets: [{ nodeId: "join", handleId: null }] }],
+        outputPorts: [],
+      }
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [
+          makeIdentifiedNode("source", "dataInput"),
+          makeIdentifiedNode("pricing", "submodel", {
+            data: { label: "pricing", nodeType: "submodel", config: { definition_id: "pricing", alias: "pricing" } },
+          }),
+        ],
+        edges: [{ id: "feed", source: "source", target: "pricing", targetHandle: "in__policy" }],
+        preamble: "",
+        submodels: { pricing: definition },
+      })
+      act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "pricing" }))
       mockEstimateTrainingRam.mockResolvedValue({
         total_rows: 10_000_000_000,
         safe_row_limit: 149_958_852,
@@ -1948,12 +2001,26 @@ describe("ModellingConfig", () => {
         unavailable: null,
         evaluation_preview: null,
       })
-      const join = { id: "join", data: { label: "competitor_join", description: "", nodeType: "edgeJoin" } }
       const openNode = vi.fn()
-      renderConfig({ allNodes: [join], openNode })
+      // The canvas App hands the panel: the open submodel's view, as the panel reads it.
+      renderConfig({ allNodes: useGraphStore.getState().nodes.map(toSimpleNode), openNode })
 
       await waitFor(() => expect(mockEstimateTrainingRam).toHaveBeenCalledWith(
-        expect.objectContaining({ graph: whole, node_id: "submodel_runtime/pricing/node_1" }),
+        expect.objectContaining({
+          graph: expect.objectContaining({
+            // The pipeline's own nodes and edges, not the view's, with the definition.
+            nodes: [expect.objectContaining({ id: "source" }), expect.objectContaining({ id: "pricing" })],
+            edges: [expect.objectContaining({ id: "feed", target: "pricing" })],
+            submodels: {
+              pricing: expect.objectContaining({
+                graph: expect.objectContaining({
+                  nodes: [expect.objectContaining({ id: "join" }), expect.objectContaining({ id: "node_1" })],
+                }),
+              }),
+            },
+          }),
+          node_id: "submodel_runtime/pricing/node_1",
+        }),
         expect.anything(),
       ))
       fireEvent.click(await screen.findByRole("button", { name: 'Open "competitor_join"' }))
@@ -2309,10 +2376,10 @@ describe("ModellingConfig", () => {
       const json = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(json, { target: { value: "{invalid" } })
       expect(screen.getByRole("alert")).toHaveTextContent("Parameters JSON")
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="params" /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="params" /></GraphProvider>)
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue("{invalid")
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} nodeId="node_2" activePane="params" config={{ ...props.config, params: { depth: 8 } }} /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} nodeId="node_2" activePane="params" config={{ ...props.config, params: { depth: 8 } }} /></GraphProvider>)
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue(JSON.stringify({ depth: 8 }, null, 2))
     })
 
@@ -2325,7 +2392,7 @@ describe("ModellingConfig", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("Parameters JSON")
 
       rerender(
-        <GraphProvider allNodes={[]} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
           <ModellingConfig {...props} activePane="train" />
         </GraphProvider>,
       )
@@ -2367,7 +2434,7 @@ describe("ModellingConfig", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("Search space JSON")
 
       rerender(
-        <GraphProvider allNodes={[]} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
           <ModellingConfig {...props} activePane="train" />
         </GraphProvider>,
       )
@@ -2392,15 +2459,15 @@ describe("ModellingConfig", () => {
       })
       expect(screen.queryByRole("button", { name: "Apply" })).toBeNull()
       expect(screen.queryByRole("button", { name: "Revert" })).toBeNull()
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       expect(screen.getByRole("checkbox", { name: /GPU training/ })).toBeTruthy()
       expect(screen.queryByLabelText("Row limit")).toBeNull()
       expect(screen.queryByLabelText("MLflow experiment path")).toBeNull()
       expect(screen.queryByRole("radiogroup", { name: "MLflow destination" })).toBeNull()
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="split" /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="split" /></GraphProvider>)
       expect(screen.getByLabelText("Row limit")).toBeTruthy()
       expect(screen.queryByRole("checkbox", { name: /GPU training/ })).toBeNull()
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
       expect(screen.queryByLabelText("Row limit")).toBeNull()
       expect(screen.getByLabelText("MLflow experiment path")).toBeTruthy()
       expect(screen.queryByLabelText("MLflow model name")).toBeNull()
@@ -2643,13 +2710,13 @@ describe("ModellingConfig", () => {
 
       const gpu = screen.getByRole("checkbox", { name: /GPU training/ })
       expect(gpu).toHaveClass("accent-purple-500")
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="split" /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="split" /></GraphProvider>)
       const rowLimit = screen.getByLabelText("Row limit")
       expect(rowLimit).toHaveAttribute("placeholder", "All rows")
       expect(rowLimit).toHaveClass("w-full", "font-mono")
       expectThemedField(rowLimit)
 
-      rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
+      rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="export" /></GraphProvider>)
       const experiment = screen.getByLabelText("MLflow experiment path")
       expectThemedField(experiment)
       expect(experiment).toHaveClass("w-full", "rounded-lg", "font-mono")
@@ -2793,7 +2860,7 @@ describe("ModellingConfig", () => {
         const estimateCalls = mockEstimateTrainingRam.mock.calls.length
         const renderWith = (config: Record<string, unknown>) =>
           rerender(
-            <GraphProvider allNodes={[]} edges={[]}>
+            <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
               <ModellingConfig {...props} activePane="train" config={{ ...props.config, ...config }} />
             </GraphProvider>,
           )
@@ -2975,7 +3042,7 @@ describe("ModellingConfig", () => {
           expect(screen.queryByRole("button", { name: "Replace existing file" })).toBeNull()
 
           rerender(
-            <GraphProvider allNodes={[]} edges={[]}>
+            <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
               <ModellingConfig {...props} config={{ ...config, model_export_path: "severity" }} />
             </GraphProvider>,
           )
@@ -3063,16 +3130,18 @@ describe("ModellingConfig", () => {
           const config = defaultProps().config
           useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
           const { writeTrainedJobHandle } = await import("../../utils/trainedJobHandles")
+          const upstream = { id: "source", data: { label: "source", description: "", nodeType: "polars", code: "df" } }
+          loadDocument([upstream])
           writeTrainedJobHandle("rating/main.py", "node_1", {
             jobId: "job_restored",
             configHash: hashConfig(trainingIdentityConfig(config)),
             source: "live",
-            // The (mocked) empty graph this editor renders against.
-            lineage: trainingLineage({ nodes: [], edges: [], preamble: "" }),
+            // Trained on the pipeline the editor still holds.
+            lineage: trainingLineage(documentGraphPayload()),
           })
           mockGetTrainStatus.mockResolvedValue(completedStatus())
 
-          renderConfig({ activePane: "export", config })
+          renderConfig({ activePane: "export", config, allNodes: [upstream] })
 
           await waitFor(() =>
             expect(useNodeResultsStore.getState().trainResults.node_1?.jobId).toBe("job_restored"),
@@ -3087,21 +3156,19 @@ describe("ModellingConfig", () => {
           useDocumentStatusStore.setState({ sourceFile: "rating/main.py" })
           const { writeTrainedJobHandle } = await import("../../utils/trainedJobHandles")
           const upstream = { id: "source", data: { label: "source", description: "", nodeType: "polars", code: "df" } }
+          loadDocument([upstream])
           writeTrainedJobHandle("rating/main.py", "node_1", {
             jobId: "job_restored",
             configHash: hashConfig(trainingIdentityConfig(config)),
             source: "live",
-            lineage: trainingLineage(payloadFor([upstream])),
+            lineage: trainingLineage(documentGraphPayload()),
           })
           mockGetTrainStatus.mockResolvedValue(completedStatus())
-          withPassThroughGraph()
 
           // The upstream transform was edited and saved after training; then the page reloaded.
-          renderConfig({
-            activePane: "export",
-            config,
-            allNodes: [{ ...upstream, data: { ...upstream.data, code: "df.head(10)" } }],
-          })
+          const edited = { ...upstream, data: { ...upstream.data, code: "df.head(10)" } }
+          loadDocument([edited])
+          renderConfig({ activePane: "export", config, allNodes: [edited] })
 
           await waitFor(() =>
             expect(useNodeResultsStore.getState().trainResults.node_1?.jobId).toBe("job_restored"),
@@ -3123,15 +3190,23 @@ describe("ModellingConfig", () => {
               graph: { nodes: [{ id: "clean", data: { label: "clean", nodeType: "polars", code } }], edges: [] },
             },
           })
+          const loadWith = (code: string) => useGraphStore.getState().loadGraphSnapshot({
+            nodes: [],
+            edges: [],
+            preamble: "",
+            submodels: submodels(code),
+          })
+          loadWith("df")
           writeTrainedJobHandle("rating/main.py", "node_1", {
             jobId: "job_restored",
             configHash: hashConfig(trainingIdentityConfig(config)),
             source: "live",
-            lineage: trainingLineage(payloadFor([], submodels("df"))),
+            lineage: trainingLineage(documentGraphPayload()),
           })
           mockGetTrainStatus.mockResolvedValue(completedStatus())
-          withPassThroughGraph()
 
+          // The submodel's transform was edited and saved after training; then the page reloaded.
+          loadWith("df.drop_nulls()")
           renderConfig({ activePane: "export", config, submodels: submodels("df.drop_nulls()") })
 
           await waitFor(() =>

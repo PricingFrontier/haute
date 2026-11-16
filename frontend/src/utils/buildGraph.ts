@@ -1,5 +1,5 @@
-import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 import type { PipelineEdge } from "../types/node"
+import type { GraphPayload } from "../api/types"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
 import { isPlainObject } from "../types/guards"
 import useGraphStore from "../stores/useGraphStore"
@@ -15,29 +15,6 @@ function storeGlobalConstants() {
     global_constants: globalConstantsError === null ? constantsPayload(globalConstants) : [],
     global_constants_error: globalConstantsError,
   }
-}
-
-/**
- * Build the graph payload expected by backend API calls. The preamble, like the
- * global constants, is read from the graph store, so no request can leave it out.
- */
-export function buildGraph(
-  allNodes: SimpleNode[],
-  edges: SimpleEdge[],
-  submodels?: Record<string, unknown>,
-) {
-  return toCanonicalGraphPayload({
-    nodes: allNodes.map((n) => ({
-      id: n.id,
-      type: n.type || n.data.nodeType,
-      data: n.data,
-      position: { x: 0, y: 0 },
-    })),
-    edges: edges as PipelineEdge[],
-    submodels,
-    preamble: useGraphStore.getState().preamble,
-    ...storeGlobalConstants(),
-  })
 }
 
 const VOLATILE_NODE_DATA_KEYS = new Set([
@@ -103,9 +80,9 @@ function graphObjectForRequestIdentity(
  * in-flight result or overwrite grant survives unrelated UI refreshes.
  */
 export function graphForRequestIdentity(
-  graph: ReturnType<typeof buildGraph>,
+  graph: GraphPayload,
 ): Record<string, unknown> {
-  return graphObjectForRequestIdentity(graph)
+  return graphObjectForRequestIdentity(graph as unknown as Record<string, unknown>)
 }
 
 /**

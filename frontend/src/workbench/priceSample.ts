@@ -11,7 +11,7 @@
  */
 import { previewNode } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
-import type { FormSpec, GraphPayload, WorkbenchTablesResponse } from "../api/types"
+import type { FormSpec, PreparedGraph, WorkbenchTablesResponse } from "../api/types"
 import { submodelGraphFromMetadata } from "../utils/apiInputPorts"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { workbenchTablePorts, type PricedSample } from "../utils/workbenchTables"
@@ -20,7 +20,7 @@ import { workbenchTablePorts, type PricedSample } from "../utils/workbenchTables
 const ROW_LIMIT = 10_000
 
 export async function priceSample(
-  graph: GraphPayload,
+  graph: PreparedGraph,
   form: FormSpec,
   workbench: WorkbenchTablesResponse,
   source: string,

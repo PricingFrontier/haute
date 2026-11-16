@@ -210,8 +210,8 @@ belongs to one render.
 
 **Dependencies:** SUBE-02.
 
-**Evidence:** `frontend/src/utils/nodeRequestTarget.ts::nodeRequestTarget`;
-`frontend/src/utils/nodeRequestTarget.ts::setDrilledRequestScope`;
+**Evidence:** `frontend/src/utils/requestGateway.ts::prepareNodeRequest`;
+`frontend/src/utils/requestGateway.ts::documentRequestScope`;
 `frontend/src/components/ReadOnlyNodeConfig.tsx`; `frontend/src/hooks/usePipelineAPI.ts`;
 `frontend/src/hooks/useTracing.ts`; `frontend/src/api/client.ts`.
 

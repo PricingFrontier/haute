@@ -37,8 +37,8 @@ import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPane
 import PanelShell from "./PanelShell"
 import { SidePanelClose } from "../haute-ui"
 import PreviewPanelTabs from "./PreviewPanelTabs"
-import { useGraph } from "./useGraph"
-import { nodeRequestTarget } from "../utils/nodeRequestTarget"
+import { useGraph, useRequestScope } from "./useGraph"
+import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
 import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
@@ -1168,6 +1168,7 @@ function NodePanelContent({
   documentReadOnly = false,
   scopedSave,
 }: ActiveNodePanelProps) {
+  const requestScope = useRequestScope()
   const [scopedSaving, setScopedSaving] = useState(false)
   // The editor freezes while a scoped save is in flight so keystrokes cannot
   // race the adoption of the authoritative response.
@@ -1250,7 +1251,7 @@ function NodePanelContent({
   const loadPivotFilterMembers = useCallback(
     (field: string, search: string, signal: AbortSignal) => {
       if (!node) throw new Error("Explore node is unavailable.")
-      const target = nodeRequestTarget(allNodes, edges, submodels, node.id)
+      const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
       return fetchExplorePivotMembers({
         graph: target.graph,
         node_id: target.nodeId,

@@ -1,128 +1,75 @@
 /**
- * Tests for buildGraph.ts — graph serialization utility.
+ * Tests for buildGraph.ts — the request payload of the graph store's document.
  *
  * Tests cover:
- * 1. buildGraph: basic serialization with correct shape
- * 2. buildGraph: node type fallback (type || data.nodeType)
- * 3. buildGraph: position is always zeroed out
- * 4. buildGraph: optional submodels and preamble
- * 5. documentGraphPayload: the pipeline's own graph, also with a submodel open
- * 6. buildGraph: empty inputs
+ * 1. documentGraphPayload: the pipeline's own graph, also with a submodel open,
+ *    canonical: editor identities and volatile metadata stripped, data kept
+ * 2. graphForRequestIdentity: the fields that identify a request
+ * 3. global constants carried from the store
  */
 import { afterEach, describe, it, expect } from "vitest"
-import { buildGraph, documentGraphPayload, graphForRequestIdentity } from "../buildGraph"
-import { makeIdentifiedNode, makeNode, makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
-import type { SubmodelDefinition } from "../../types/node"
+import { documentGraphPayload, graphForRequestIdentity } from "../buildGraph"
+import { makeIdentifiedNode, makeNode, makeSimpleEdge } from "../../test-utils/factories"
+import type { GraphPayload } from "../../api/types"
+import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
+import type { Node } from "@xyflow/react"
 import useGraphStore from "../../stores/useGraphStore"
 
-describe("buildGraph", () => {
+const loadDocument = (nodes: Node[], edges: PipelineEdge[] = [], submodels: Record<string, unknown> = {}) =>
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels })
+
+describe("the request payload", () => {
   afterEach(() => {
     useGraphStore.getState().resetForTests()
   })
 
-  it("serializes nodes with id, type, data, and zeroed position", () => {
-    // Catches: if position is taken from the input node instead of
-    // being zeroed, the backend would receive UI coordinates that
-    // could interfere with pipeline serialization.
-    const nodes = [makeSimpleNode("n1", "polars", { type: "polars" })]
-    const edges = [makeSimpleEdge("e1", "n1", "n2")]
+  it("keeps each node's id, type and data, as copies", () => {
+    const node = makeNode("n1", "polars", { data: { label: "Rate", nodeType: "polars", config: { sql: "SELECT * FROM t", output_columns: ["a", "b"] }, description: "Important step" } })
+    loadDocument([node], [makeSimpleEdge("e1", "n1", "n2") as unknown as PipelineEdge])
 
-    const result = buildGraph(nodes, edges)
+    const result = documentGraphPayload()
 
-    expect(result.nodes).toHaveLength(1)
-    expect(result.nodes[0].id).toBe("n1")
-    expect(result.nodes[0].type).toBe("polars")
-    expect(result.nodes[0].position).toEqual({ x: 0, y: 0 })
-    expect(result.nodes[0].data).toEqual(nodes[0].data)
-    expect(result.nodes[0].data).not.toBe(nodes[0].data)
-    expect(result.edges).toEqual(edges)
-    expect(result.edges).not.toBe(edges)
+    expect(result.nodes.map((n) => [n.id, n.type])).toEqual([["n1", "polars"]])
+    expect(result.nodes[0].data.config).toEqual({ sql: "SELECT * FROM t", output_columns: ["a", "b"] })
+    expect(result.nodes[0].data.description).toBe("Important step")
+    expect(result.nodes[0].data).not.toBe(useGraphStore.getState().nodes[0].data)
+    expect(result.edges.map((edge) => edge.id)).toEqual(["e1"])
   })
 
-  it("falls back to data.nodeType when node.type is undefined", () => {
-    // Catches: if the fallback `n.type || n.data.nodeType` is changed
-    // to just `n.type`, nodes without an explicit type field would be
-    // serialized with type=undefined, causing the backend to reject them.
-    const nodes = [makeSimpleNode("n1", "dataInput")]
-    // makeSimpleNode doesn't set .type by default, only data.nodeType
-
-    const result = buildGraph(nodes, [])
-
-    expect(result.nodes[0].type).toBe("dataInput")
-  })
-
-  it("uses explicit node.type over data.nodeType", () => {
-    // Catches: if the precedence is reversed, the explicit type set
-    // by the frontend would be overridden by the default nodeType.
-    const nodes = [makeSimpleNode("n1", "polars", { type: "submodel" })]
-
-    const result = buildGraph(nodes, [])
-
-    expect(result.nodes[0].type).toBe("submodel")
-  })
-
-  it("preserves canonical submodels when provided", () => {
-    // Catches: if this optional field is accidentally dropped,
-    // saving a pipeline with submodels would lose that data.
+  it("keeps every submodel definition, as a copy", () => {
     const submodels = { sub1: { graph: { nodes: [], edges: [] } } }
+    loadDocument([], [], submodels)
 
-    const result = buildGraph([], [], submodels)
+    const result = documentGraphPayload()
 
     expect(result.submodels).toEqual(submodels)
-    expect(result.submodels).not.toBe(submodels)
+    expect(result.submodels).not.toBe(useGraphStore.getState().submodels)
   })
 
   it("carries the graph store's preamble, so no request can leave it out", () => {
     useGraphStore.getState().setPreambleRaw("import polars as pl")
 
-    expect(buildGraph([], []).preamble).toBe("import polars as pl")
+    expect(documentGraphPayload().preamble).toBe("import polars as pl")
   })
 
-  it("sets submodels to undefined when not provided", () => {
-    // Catches: if the default were accidentally an empty object,
-    // the backend might interpret it differently than "not provided".
-    const result = buildGraph([], [])
-
-    expect(result.submodels).toBeUndefined()
-  })
-
-  it("handles empty node and edge arrays", () => {
-    // Catches: edge case where buildGraph is called with no nodes
-    // (e.g. new empty pipeline). Should return valid structure.
-    const result = buildGraph([], [])
+  it("is a valid empty graph for an empty pipeline", () => {
+    const result = documentGraphPayload()
 
     expect(result.nodes).toEqual([])
     expect(result.edges).toEqual([])
   })
 
-  it("preserves all data fields on each node", () => {
-    // Catches: if buildGraph cherry-picked data fields instead of
-    // passing the whole object, custom config would be lost on save.
-    const nodes = [makeSimpleNode("n1", "polars", {
-      config: { sql: "SELECT * FROM t", output_columns: ["a", "b"] },
-      description: "Important step",
-    })]
-
-    const result = buildGraph(nodes, [])
-
-    expect(result.nodes[0].data.config).toEqual({
-      sql: "SELECT * FROM t",
-      output_columns: ["a", "b"],
-    })
-    expect(result.nodes[0].data.description).toBe("Important step")
-  })
-
   it("strips editor identities from root and nested graphs", () => {
-    const nodes = [makeSimpleNode("n1", "polars", {
+    const node = makeNode("n1", "polars", { data: {
+      label: "Node n1",
+      nodeType: "polars",
+      description: "",
       config: { _semanticOption: true },
       _functionName: "root_identity",
       _defaultInputName: "root_identity",
-    })]
-    const edges = [{
-      ...makeSimpleEdge("e1", "n1", "n2"),
-      data: { _inputName: "root_identity" },
-    }]
-    const submodels = {
+    } })
+    const edges = [{ ...makeSimpleEdge("e1", "n1", "n2"), data: { _inputName: "root_identity" } }] as unknown as PipelineEdge[]
+    loadDocument([node], edges, {
       pricing: {
         definitionId: "pricing",
         file: "modules/pricing.py",
@@ -138,9 +85,9 @@ describe("buildGraph", () => {
         inputPorts: [],
         outputPorts: [],
       },
-    }
+    })
 
-    const result = buildGraph(nodes, edges, submodels)
+    const result = documentGraphPayload()
 
     expect(result.nodes[0].data).toEqual({
       label: "Node n1",
@@ -152,7 +99,7 @@ describe("buildGraph", () => {
     const definition = result.submodels?.pricing as Record<string, unknown>
     const child = (definition.graph as { nodes: Array<{ data: Record<string, unknown> }> }).nodes[0]
     expect(child.data).not.toHaveProperty("_functionName")
-    expect(nodes[0].data).toHaveProperty("_functionName", "root_identity")
+    expect(useGraphStore.getState().nodes[0].data).toHaveProperty("_functionName", "root_identity")
   })
 })
 
@@ -194,8 +141,7 @@ describe("graphForRequestIdentity", () => {
       },
       position: { x: 12, y: 34 },
     }
-    useGraphStore.getState().setPreambleRaw("import polars as pl")
-    const graph = buildGraph([topNode], [], {
+    loadDocument([topNode as unknown as Node], [], {
       child: {
         label: "Child",
         graph: {
@@ -204,6 +150,8 @@ describe("graphForRequestIdentity", () => {
         },
       },
     })
+    useGraphStore.getState().setPreambleRaw("import polars as pl")
+    const graph = documentGraphPayload()
 
     const identity = graphForRequestIdentity(graph)
     const identityNodes = identity.nodes as Array<{ data: Record<string, unknown> }>
@@ -240,7 +188,7 @@ describe("graphForRequestIdentity", () => {
       edges: [],
       submodels: opaqueSubmodels,
       preamble: "",
-    } as unknown as ReturnType<typeof buildGraph>
+    } as unknown as GraphPayload
 
     const identity = graphForRequestIdentity(graph)
 
@@ -254,7 +202,7 @@ describe("graphForRequestIdentity", () => {
         nodes: null,
         edges: [],
         submodels,
-      } as unknown as ReturnType<typeof buildGraph>
+      } as unknown as GraphPayload
 
       const identity = graphForRequestIdentity(graph)
 
@@ -324,17 +272,16 @@ describe("global constants in built graphs", () => {
     useGraphStore.getState().resetForTests()
   })
 
-  it("both builders carry the store's valid constants without caller arguments", () => {
+  it("carries the store's valid constants without caller arguments", () => {
     useGraphStore.getState().setGlobalConstantsRaw([
       { name: "rate", type: "float", split: true, value: "", bySource: { live: "1.5", nb_batch: "2.5" } },
       { name: "broken", type: "integer", split: false, value: "x", bySource: {} },
     ])
-    for (const graph of [buildGraph([], []), documentGraphPayload()]) {
-      expect(graph.global_constants).toEqual([
-        { name: "rate", type: "float", by_source: { live: 1.5, nb_batch: 2.5 } },
-      ])
-      expect(graph.global_constants_error).toBeNull()
-    }
+    const graph = documentGraphPayload()
+    expect(graph.global_constants).toEqual([
+      { name: "rate", type: "float", by_source: { live: 1.5, nb_batch: 2.5 } },
+    ])
+    expect(graph.global_constants_error).toBeNull()
   })
 
   it("carry a load error and no constants while the file failed to load", () => {
@@ -347,7 +294,7 @@ describe("global constants in built graphs", () => {
       globalConstantsError: "bad JSON",
     })
 
-    const graph = buildGraph([], [])
+    const graph = documentGraphPayload()
 
     expect(graph.global_constants).toEqual([])
     expect(graph.global_constants_error).toBe("bad JSON")

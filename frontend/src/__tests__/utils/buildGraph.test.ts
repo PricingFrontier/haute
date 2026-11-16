@@ -1,66 +1,45 @@
-import { describe, it, expect } from "vitest"
-import { buildGraph } from "../../utils/buildGraph"
-import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
-import { makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
+import { afterEach, describe, it, expect } from "vitest"
+import type { Node } from "@xyflow/react"
+import { documentGraphPayload } from "../../utils/buildGraph"
+import type { PipelineEdge } from "../../types/node"
+import useGraphStore from "../../stores/useGraphStore"
+import { makeNode, makeSimpleEdge } from "../../test-utils/factories"
+
+const loadDocument = (nodes: Node[], edges: PipelineEdge[] = [], submodels: Record<string, unknown> = {}) =>
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels })
 
 // ─── Tests ───────────────────────────────────────────────────────
 
-describe("buildGraph", () => {
-  it("builds correct graph shape from nodes and edges", () => {
-    const nodes: SimpleNode[] = [
-      makeSimpleNode("n1", "dataInput", { type: "custom" }),
-      makeSimpleNode("n2", "polars", { type: "custom" }),
-    ]
-    const edges: SimpleEdge[] = [makeSimpleEdge("e1", "n1", "n2")]
+describe("the request payload of the graph store's document", () => {
+  afterEach(() => {
+    useGraphStore.getState().resetForTests()
+  })
 
-    const result = buildGraph(nodes, edges)
+  it("builds correct graph shape from nodes and edges, keeping each node's own type", () => {
+    const nodes = [
+      makeNode("n1", "dataInput", { type: "custom" }),
+      makeNode("n2", "polars", { type: "custom" }),
+    ]
+    const edges = [makeSimpleEdge("e1", "n1", "n2") as PipelineEdge]
+    loadDocument(nodes, edges)
+
+    const result = documentGraphPayload()
 
     expect(result.nodes).toHaveLength(2)
     expect(result.edges).toStrictEqual(edges)
-    expect(result.edges).not.toBe(edges)
+    expect(result.edges).not.toBe(useGraphStore.getState().edges)
 
-    // Each node should have id, type, data, and a position
-    expect(result.nodes[0]).toEqual({
-      id: "n1",
-      type: "custom",
-      data: nodes[0].data,
-      position: { x: 0, y: 0 },
-    })
-    expect(result.nodes[1]).toEqual({
-      id: "n2",
-      type: "custom",
-      data: nodes[1].data,
-      position: { x: 0, y: 0 },
-    })
+    // Each node keeps its id, its explicit type over data.nodeType, and its data.
+    expect(result.nodes.map((node) => [node.id, node.type])).toEqual([["n1", "custom"], ["n2", "custom"]])
+    expect(result.nodes[0].data).toEqual(nodes[0].data)
+    expect(result.nodes[1].data).toEqual(nodes[1].data)
   })
 
-  it("handles empty nodes array", () => {
-    const result = buildGraph([], [])
+  it("handles an empty document", () => {
+    const result = documentGraphPayload()
 
     expect(result.nodes).toEqual([])
     expect(result.edges).toEqual([])
-    expect(result.submodels).toBeUndefined()
-  })
-
-  it("maps node type from data.nodeType when type is undefined", () => {
-    const nodes: SimpleNode[] = [
-      makeSimpleNode("n1", "banding"),  // no type override -> n.type is undefined
-    ]
-
-    const result = buildGraph(nodes, [])
-
-    // Should fall back to n.data.nodeType
-    expect(result.nodes[0].type).toBe("banding")
-  })
-
-  it("prefers n.type over n.data.nodeType when both are present", () => {
-    const nodes: SimpleNode[] = [
-      makeSimpleNode("n1", "polars", { type: "custom" }),
-    ]
-
-    const result = buildGraph(nodes, [])
-
-    expect(result.nodes[0].type).toBe("custom")
   })
 
   it("clones submodels into the outbound graph", () => {
@@ -68,23 +47,17 @@ describe("buildGraph", () => {
       "sub1": { nodes: [], edges: [] },
       "sub2": { nodes: [], edges: [] },
     }
+    loadDocument([], [], submodels)
 
-    const result = buildGraph([], [], submodels)
+    const result = documentGraphPayload()
 
     expect(result.submodels).toStrictEqual(submodels)
-    expect(result.submodels).not.toBe(submodels)
-  })
-
-  it("handles undefined submodels", () => {
-    const result = buildGraph([], [])
-
-    expect(result.submodels).toBeUndefined()
+    expect(result.submodels).not.toBe(useGraphStore.getState().submodels)
   })
 
   it("preserves all data fields on mapped nodes", () => {
-    const nodes: SimpleNode[] = [
-      {
-        id: "n1",
+    loadDocument([
+      makeNode("n1", "dataInput", {
         type: "custom",
         data: {
           label: "My Source",
@@ -93,29 +66,14 @@ describe("buildGraph", () => {
           config: { path: "/data/input.csv" },
           extraField: "should be preserved",
         },
-      },
-    ]
+      }),
+    ])
 
-    const result = buildGraph(nodes, [])
-    const mapped = result.nodes[0]
+    const mapped = documentGraphPayload().nodes[0]
 
     expect(mapped.data.label).toBe("My Source")
     expect(mapped.data.description).toBe("Loads data")
     expect(mapped.data.config).toEqual({ path: "/data/input.csv" })
     expect(mapped.data.extraField).toBe("should be preserved")
-  })
-
-  it("always sets position to {x: 0, y: 0}", () => {
-    const nodes: SimpleNode[] = [
-      makeSimpleNode("n1", "polars", { type: "custom" }),
-      makeSimpleNode("n2", "output", { type: "custom" }),
-      makeSimpleNode("n3", "banding"),
-    ]
-
-    const result = buildGraph(nodes, [])
-
-    for (const node of result.nodes) {
-      expect(node.position).toEqual({ x: 0, y: 0 })
-    }
   })
 })

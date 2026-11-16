@@ -8,8 +8,8 @@ import {
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel, ValidatedTextField } from "../../components/form"
-import { useGraph } from "../useGraph"
-import { nodeRequestTarget } from "../../utils/nodeRequestTarget"
+import { useGraph, useRequestScope } from "../useGraph"
+import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
@@ -241,6 +241,7 @@ export default function OutputEditor({
   onUpdate: OnUpdateConfig
   nodeId: string
 }) {
+  const requestScope = useRequestScope()
   const { allNodes, edges, submodels, preamble } = useGraph()
   // A Workbench Input's frames are the tables the workbench store fetched (specs/workbench).
   const workbench = useWorkbenchStore((state) => state.tables)
@@ -371,11 +372,14 @@ export default function OutputEditor({
 
   const runOutputPreview = useCallback(() => {
     // The graph reads the preamble from the store; listing it renews this callback.
+    void allNodes
+    void edges
+    void submodels
     void preamble
     const reqId = ++outputReqSeq.current
     const key = previewKey
     setAssembled({ key, status: "loading" })
-    const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
+    const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
     outputAssembleDryRun({
       graph: target.graph,
       nodeId: target.nodeId,
@@ -401,7 +405,7 @@ export default function OutputEditor({
         // detail message (ApiError carries it) rather than a bare status.
         setAssembled({ key, status: "error", error: apiErrorMessage(err, "Output preview failed") })
       })
-  }, [allNodes, edges, submodels, preamble, nodeId, persistedMapping, activeSource, previewKey])
+  }, [requestScope, allNodes, edges, submodels, preamble, nodeId, persistedMapping, activeSource, previewKey])
 
   // Expanding the preview with no document of the current mapping (none yet,
   // or one of an earlier mapping) kicks off a run; while it is open, the
@@ -434,11 +438,14 @@ export default function OutputEditor({
       columns: string[],
     ): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
       // The graph reads the preamble from the store; listing it renews this callback.
+      void allNodes
+      void edges
+      void submodels
       void preamble
       const sourceNode = nodeById[edge.source]
       if (!sourceNode) throw new ApiError("Frame source node not found", 404)
       // A frame from the open submodel's Input card reads the parent node feeding that port.
-      const target = nodeRequestTarget(allNodes, edges, submodels, edge.source, edge.sourceHandle)
+      const target = prepareNodeRequest(requestScope, canvasTarget(edge.source, edge.sourceHandle))
       const res = await previewNode({
         graph: target.graph,
         nodeId: target.nodeId,
@@ -460,7 +467,7 @@ export default function OutputEditor({
           : (res.preview ?? []).length
       return { rows, total }
     },
-    [allNodes, edges, submodels, preamble, nodeById],
+    [requestScope, allNodes, edges, submodels, preamble, nodeById],
   )
 
   // Rows for a given frame, with their absolute index into v2.output_mapping so

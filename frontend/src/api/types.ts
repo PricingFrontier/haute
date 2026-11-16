@@ -295,6 +295,14 @@ export type GraphPayload = {
   global_constants_error?: string | null
 }
 
+declare const preparedGraphBrand: unique symbol
+
+/**
+ * The graph a request that runs the pipeline sends: only the request gateway makes
+ * one (`utils/requestGateway.ts`), so no caller sends a graph it built itself.
+ */
+export type PreparedGraph = GraphPayload & { readonly [preparedGraphBrand]: true }
+
 // ---------------------------------------------------------------------------
 // OUTPUT assemble dry-run (/api/output-assemble/dry-run)
 // ---------------------------------------------------------------------------

@@ -90,6 +90,7 @@ import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import type { TraceResult, TraceStep } from "../../types/trace"
 import useUIStore from "../../stores/useUIStore"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ═════════════════════════════════════════════════════════════════════
 //  Mock the NodePanel editor collection — we only care about the
@@ -357,7 +358,7 @@ function renderNodePanel(
 ) {
   const { edges = [], allNodes = [], ...panelOverrides } = overrides
   return render(
-    <GraphProvider allNodes={allNodes} edges={edges}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges}>
       <NodePanel
         node={makeNode()}
         onClose={vi.fn()}

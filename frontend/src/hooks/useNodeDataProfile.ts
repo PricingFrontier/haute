@@ -1,3 +1,4 @@
+import { useRequestScope } from "../panels/useGraph"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { cancelNodeData, getNodeDataProfile } from "../api/client"
@@ -9,7 +10,7 @@ import {
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { nodeRequestTarget } from "../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { NodeDataCache } from "./useNodeDataCache"
 
@@ -68,6 +69,7 @@ export default function useNodeDataProfile({
   cache,
   enabled = true,
 }: UseNodeDataProfileInput): NodeDataProfileState {
+  const requestScope = useRequestScope()
   const nodeId = node?.id ?? null
   const nodeLabel = node ? String(node.data.label || node.id) : ""
   const activeSource = useSettingsStore((s) => s.activeSource)
@@ -113,10 +115,14 @@ export default function useNodeDataProfile({
       fence = captureDocumentExecutionFence(),
     ) => {
       if (!nodeId || !slotKey) return
-      // The graph reads the preamble from the store; listing it renews this callback.
+      // The graph is read from the store; listing the panel's graph and the preamble
+      // renews this callback.
+      void allNodes
+      void edges
+      void submodels
       void preamble
       // Inside an open submodel, the whole pipeline and the node's runtime id.
-      const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
+      const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
       const response = await getNodeDataProfile({
         graph: target.graph,
         node_id: target.nodeId,
@@ -153,6 +159,7 @@ export default function useNodeDataProfile({
       }
     },
     [
+      requestScope,
       activeSource,
       addToast,
       allNodes,

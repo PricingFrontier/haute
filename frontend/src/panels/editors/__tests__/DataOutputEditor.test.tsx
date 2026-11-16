@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -40,10 +41,14 @@ import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
 import useOutputWriteStore, {
   resetOutputWriteStoreForTests,
 } from "../../../stores/useOutputWriteStore"
+import type { Node } from "@xyflow/react"
 import type { SimpleNode } from "../_shared"
-import { makeWriteOutput } from "../../../test-utils/factories"
-import type { buildGraph } from "../../../utils/buildGraph"
-import { setDrilledRequestScope } from "../../../utils/nodeRequestTarget"
+import { makeIdentifiedNode, makeWriteOutput } from "../../../test-utils/factories"
+import { documentRequestScope } from "../../../utils/requestGateway"
+import useGraphStore from "../../../stores/useGraphStore"
+import { toSimpleNode } from "../../../hooks/usePanelGraphContext"
+import type { SubmodelDefinition } from "../../../types/node"
+import ReadOnlyNodeConfig from "../../../components/ReadOnlyNodeConfig"
 
 const groups: IoCapabilityGroup[] = [
   {
@@ -192,6 +197,21 @@ const groups: IoCapabilityGroup[] = [
   },
 ]
 
+function storeNode(node: SimpleNode): Node {
+  return { id: node.id, type: node.data.nodeType, position: { x: 0, y: 0 }, data: node.data }
+}
+
+/** The pipeline holding the editor's node: `nodes`, and the Data Output with `config` unless one is among them. */
+function documentNodes(config: Record<string, unknown>, nodes: SimpleNode[]): SimpleNode[] {
+  if (nodes.some((node) => node.id === "output-node")) return nodes
+  return [...nodes, { id: "output-node", data: { label: "output", description: "", nodeType: "dataOutput", config } }]
+}
+
+/**
+ * Render the editor over a pipeline the graph store holds, as App does: the store
+ * holds the document a request sends, with the node's committed config, and the
+ * panel's provider the same nodes.
+ */
 function renderEditor(
   config: Record<string, unknown>,
   onUpdate = vi.fn(),
@@ -199,7 +219,7 @@ function renderEditor(
   allNodes: SimpleNode[] = [],
 ) {
   const element = (nextConfig = config, nextNodes = allNodes) => (
-    <GraphProvider allNodes={nextNodes} edges={[]}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={nextNodes} edges={[]}>
       <DataOutputEditor
         config={nextConfig}
         onUpdate={onUpdate}
@@ -209,9 +229,22 @@ function renderEditor(
       />
     </GraphProvider>
   )
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: documentNodes(config, allNodes).map(storeNode),
+    edges: [],
+    preamble: "",
+    submodels: {},
+  })
+  const view = render(element())
+  /** An edit reaching the document, then the panel re-rendering over it. */
+  const update = (nextConfig: Record<string, unknown>, nextNodes: SimpleNode[]) => {
+    act(() => useGraphStore.getState().setNodes(() => documentNodes(nextConfig, nextNodes).map(storeNode)))
+    view.rerender(element(nextConfig, nextNodes))
+  }
   return {
-    ...render(element()),
+    ...view,
     renderElement: element,
+    update,
     onUpdate,
     onReplaceConfig,
   }
@@ -219,6 +252,7 @@ function renderEditor(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  useGraphStore.getState().resetForTests()
   resetOutputWriteStoreForTests()
   resetIoCapabilitiesRequestForTests()
   vi.mocked(fetchIoCapabilities).mockReset().mockResolvedValue({
@@ -241,7 +275,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  setDrilledRequestScope(null)
 })
 
 // The rejected write crosses a mocked request and several effects before the
@@ -331,12 +364,12 @@ describe("DataOutputEditor", () => {
   })
 
   it("gates explicit writes and sends the current graph context", async () => {
-    renderEditor({
-      output_type: "file",
-      format: "csv",
-      path: "out.csv",
-      arguments: {},
-    })
+    const config = { output_type: "file", format: "csv", path: "out.csv", arguments: {} }
+    const upstream: SimpleNode = {
+      id: "upstream",
+      data: { label: "upstream", description: "", nodeType: "dataInput", config: { path: "claims.parquet" } },
+    }
+    renderEditor(config, vi.fn(), vi.fn(), [upstream])
 
     const write = await screen.findByRole("button", { name: "Write" })
     expect(write).toBeEnabled()
@@ -347,7 +380,14 @@ describe("DataOutputEditor", () => {
         expect.objectContaining({
           nodeId: "output-node",
           overwrite: false,
-          graph: expect.objectContaining({ nodes: [], edges: [] }),
+          // The document the store holds, with the node's committed config.
+          graph: expect.objectContaining({
+            nodes: [
+              expect.objectContaining({ id: "upstream", data: expect.objectContaining({ config: { path: "claims.parquet" } }) }),
+              expect.objectContaining({ id: "output-node", data: expect.objectContaining({ config }) }),
+            ],
+            edges: [],
+          }),
         }),
       ),
     )
@@ -357,29 +397,59 @@ describe("DataOutputEditor", () => {
   })
 
   it("inside an open submodel sends the whole pipeline as it stands once the edit reached it", async () => {
-    // App's copy of the whole pipeline takes an edit in an effect that runs
-    // after the editor's own.
-    let wholePath = "first.csv"
-    const whole = () => ({
-      nodes: [{ id: "sinks", data: { nodeType: "submodel" } }],
-      edges: [],
-      submodels: { sinks: { graph: { nodes: [{ id: "output-node", data: { config: { path: wholePath } } }] } } },
-    })
-    setDrilledRequestScope(() => ({
-      graph: whole() as unknown as ReturnType<typeof buildGraph>,
-      occurrence: { instanceId: "sinks", definitionId: "sinks" },
-    }))
+    // The pipeline: a source feeding the occurrence "sinks", whose definition holds this Data Output.
     const config = { output_type: "file", format: "csv", path: "first.csv", arguments: {} }
-    const { rerender, renderElement } = renderEditor(config)
+    const definition: SubmodelDefinition = {
+      definitionId: "sinks",
+      file: "modules/sinks.py",
+      graph: {
+        nodes: [makeIdentifiedNode("output-node", "dataOutput", { data: { label: "output", nodeType: "dataOutput", config } })],
+        edges: [],
+      },
+      inputPorts: [{ name: "scored", targets: [{ nodeId: "output-node", handleId: null }] }],
+      outputPorts: [],
+    }
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [
+        makeIdentifiedNode("source", "dataInput"),
+        makeIdentifiedNode("sinks", "submodel", {
+          data: { label: "sinks", nodeType: "submodel", config: { definition_id: "sinks", alias: "sinks" } },
+        }),
+      ],
+      edges: [{ id: "feed", source: "source", target: "sinks", targetHandle: "in__scored" }],
+      preamble: "",
+      submodels: { sinks: definition },
+    })
+    act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "sinks", definitionId: "sinks" }))
+    // The canvas App hands the panel: the open submodel's view.
+    const element = (next: Record<string, unknown>) => (
+      <GraphProvider requestScope={documentRequestScope} allNodes={useGraphStore.getState().nodes.map(toSimpleNode)} edges={[]}>
+        <DataOutputEditor config={next} onUpdate={vi.fn()} onReplaceConfig={vi.fn()} accentColor="#123456" nodeId="output-node" />
+      </GraphProvider>
+    )
+    const { rerender } = render(element(config))
     await waitFor(() => expect(resolveOutputDestination).toHaveBeenCalledTimes(1))
 
-    rerender(renderElement({ ...config, path: "second.csv" }))
-    wholePath = "second.csv"
+    // The edit reaches the definition, then the panel re-renders over it.
+    const edited = { ...config, path: "second.csv" }
+    act(() => useGraphStore.getState().setNodes((nodes) => nodes.map((node) => (
+      node.id === "output-node" ? { ...node, data: { ...node.data, config: edited } } : node
+    ))))
+    rerender(element(edited))
 
     const sent = expect.objectContaining({
       nodeId: "submodel_runtime/sinks/output-node",
       graph: expect.objectContaining({
-        submodels: { sinks: { graph: { nodes: [{ id: "output-node", data: { config: { path: "second.csv" } } }] } } },
+        // The pipeline's own nodes and edges, not the view's, with the edited definition.
+        nodes: [expect.objectContaining({ id: "source" }), expect.objectContaining({ id: "sinks" })],
+        edges: [expect.objectContaining({ id: "feed", target: "sinks" })],
+        submodels: {
+          sinks: expect.objectContaining({
+            graph: expect.objectContaining({
+              nodes: [expect.objectContaining({ id: "output-node", data: expect.objectContaining({ config: edited }) })],
+            }),
+          }),
+        },
       }),
     })
     await waitFor(() => expect(resolveOutputDestination).toHaveBeenCalledTimes(2))
@@ -523,7 +593,7 @@ describe("DataOutputEditor", () => {
         },
       },
     ]
-    const { rerender, renderElement } = renderEditor(
+    const { update } = renderEditor(
       config,
       vi.fn(),
       vi.fn(),
@@ -539,7 +609,7 @@ describe("DataOutputEditor", () => {
       await screen.findByRole("button", { name: "Replace existing file" }),
     ).toBeInTheDocument()
 
-    rerender(renderElement(config, nodes(2)))
+    update(config, nodes(2))
 
     expect(
       screen.queryByRole("button", { name: "Replace existing file" }),
@@ -586,7 +656,7 @@ describe("DataOutputEditor", () => {
         },
       },
     ]
-    const { rerender, renderElement } = renderEditor(
+    const { update } = renderEditor(
       config,
       vi.fn(),
       vi.fn(),
@@ -602,7 +672,12 @@ describe("DataOutputEditor", () => {
       await screen.findByRole("button", { name: "Replace existing file" }),
     ).toBeInTheDocument()
 
-    rerender(renderElement(config, nodes(2)))
+    update(config, nodes(2))
+    // The document did change: only its preview-only metadata.
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "upstream")?.data).toMatchObject({
+      _status: "running",
+      _columns: [{ name: "preview_2", dtype: "Int64" }],
+    })
 
     expect(
       screen.getByRole("button", { name: "Replace existing file" }),
@@ -807,5 +882,33 @@ describe("DataOutputEditor - Databricks", () => {
     expect(await screen.findByText("Configuration errors")).toBeInTheDocument()
     expect(screen.getByText("Unexpected configuration keys: format.")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Write" })).toBeDisabled()
+  })
+})
+
+describe("DataOutputEditor in the comparison view", () => {
+  it("sends no request from a saved version, which has no document to run", async () => {
+    // A complete config, which the open pipeline's editor resolves and can write
+    // ("shows the resolved destination…" above); the open pipeline is loaded too.
+    const config = { output_type: "file", format: "csv", mode: "sink", path: "out.csv", arguments: {} }
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: documentNodes(config, []).map(storeNode),
+      edges: [],
+      preamble: "",
+      submodels: {},
+    })
+    render(<ReadOnlyNodeConfig nodeType="dataOutput" config={config} nodeId="output-node" />)
+
+    // The editor itself with its formats loaded, not the config dump a type
+    // without a read-only editor gets.
+    expect(await screen.findByLabelText("Format")).toHaveValue("csv")
+    const write = screen.getByRole("button", { name: "Write" })
+    expect(write).toBeDisabled()
+    fireEvent.click(write)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    expect(resolveOutputDestination).not.toHaveBeenCalled()
+    expect(writeOutput).not.toHaveBeenCalled()
   })
 })
