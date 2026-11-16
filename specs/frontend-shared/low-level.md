@@ -952,6 +952,10 @@ Which result a stored answer is, and whether it is current, are separate questio
   answer completes nothing), `frontend/src/stores/__tests__/useInputImportStore.test.ts`
   (a deleted node's import leaves it at once, is stopped, raises the node-data epoch, and is
   reported as the deleted node's when its build never stops),
+  `frontend/src/panels/__tests__/ModellingPreview.test.tsx` (Use best as fixed parameters
+  refused in a read-only copy, and writing nothing once the view changed while it asked),
+  `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` (a solve start that fails in an
+  open submodel recorded under its occurrence's own placeholder job),
   `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (opening the copy's child after the
   owner's asks for its preview) and `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts`
   (leaving a view forgets the open node).

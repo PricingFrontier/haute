@@ -1689,6 +1689,35 @@ describe("OptimiserConfig", () => {
       await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith(sent))
     })
 
+    it("records a start that fails inside an open submodel under its occurrence's own placeholder job", async () => {
+      const definition: SubmodelDefinition = {
+        definitionId: "pricing",
+        file: "modules/pricing.py",
+        graph: {
+          nodes: [makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Optimiser", nodeType: "optimiser", config: {} } })],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+      }
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [makeIdentifiedNode("pricing", "submodel", {
+          data: { label: "pricing", nodeType: "submodel", config: { definition_id: "pricing", alias: "pricing" } },
+        })],
+        edges: [],
+        preamble: "",
+        submodels: { pricing: definition },
+      })
+      act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "pricing" }))
+      mockSolveOptimiser.mockResolvedValue({ status: "error", job_id: null, error: "Objective column is required" })
+      renderConfig(makeProps({ config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } } }))
+
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+
+      const key = addressKey(childAddress("pricing", "opt_1"))
+      await waitFor(() => expect(useNodeResultsStore.getState().solveResults[key]?.jobId).toBe(`startup-failure:${key}`))
+    })
+
     it("preserves structured execution metrics when solve admission fails", async () => {
       const executionMetrics = makeExecutionMetricsFixture({
         profile: "optimiser_setup",

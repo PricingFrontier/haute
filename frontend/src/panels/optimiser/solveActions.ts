@@ -90,7 +90,8 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, requestSco
   const source = useSettingsStore.getState().activeSource
   const structuralVersion = useGraphStore.getState().structuralVersion
   const { startSolveJob, failSolveJob } = useNodeResultsStore.getState()
-  const startupFailureId = `startup-failure:${nodeId}`
+  // Its own key, so a start that fails in two occurrences records two jobs.
+  const startupFailureId = `startup-failure:${key}`
   try {
     const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
     const result = await solveOptimiser({ graph: target.graph, node_id: target.nodeId })
