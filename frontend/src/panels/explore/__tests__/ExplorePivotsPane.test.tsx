@@ -839,3 +839,59 @@ describe("an Explore child in each occurrence of its definition", () => {
     expect(results).not.toHaveProperty(explorePivotResultKey("explore_1", pivot.id))
   })
 })
+
+// The panel stays mounted while another node is opened, and each node numbers its own
+// pivots, so two Explore nodes can both hold `pivot_1`.
+describe("one pane moved to another Explore node", () => {
+  beforeEach(() => {
+    mockRunExplorePivot.mockReset()
+    mockCancelExplorePivot.mockReset()
+    resetNodeResultsDerivedCaches()
+    useGraphStore.setState({ structuralVersion: 0 })
+    useSettingsStore.setState({ activeSource: "pricing" })
+    useNodeResultsStore.setState({ pivotResults: {}, pivotJobs: {}, pivotStartClaims: {} })
+  })
+
+  afterEach(cleanup)
+
+  const nodeWith = (id: string, pivot: ExplorePivotConfig): SimpleNode => ({ ...makeNode([pivot]), id })
+  const paneFor = (node: SimpleNode) => (
+    <ExplorePivotsPane node={node} allNodes={[node]} edges={[]} submodels={{}} preamble="" report={makeReport()} />
+  )
+  const runningJob = (nodeId: string, pivot: ExplorePivotConfig, jobId: string) => {
+    useNodeResultsStore.getState().startExplorePivotJob(
+      explorePivotResultKey(nodeId, pivot.id), jobId, nodeId, pivot.id, "Explore Claims", pivot.name,
+      pivotCalculationIdentity(pivot), "pricing", 0, "explore_dataset:current",
+    )
+  }
+
+  it("starts the next node's pivot of the same id while the first node's is still starting", async () => {
+    const pivot = makePivot("pivot_1")
+    mockRunExplorePivot.mockReturnValue(new Promise<ExplorePivotRunResponse>(() => {}))
+    const view = render(paneFor(nodeWith("explore_a", pivot)))
+    expect(await screen.findByText("Starting calculation")).toBeVisible()
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
+
+    view.rerender(paneFor(nodeWith("explore_b", pivot)))
+
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))
+    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ node_id: "explore_b" }))
+  })
+
+  it("keeps a failed Cancel's notice on the node it was pressed on", async () => {
+    const pivot = makePivot("pivot_1")
+    runningJob("explore_a", pivot, "job-a")
+    runningJob("explore_b", pivot, "job-b")
+    mockCancelExplorePivot.mockRejectedValueOnce(new Error("Cancellation service unavailable"))
+    const view = render(paneFor(nodeWith("explore_a", pivot)))
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cancellation service unavailable")
+
+    view.rerender(paneFor(nodeWith("explore_b", pivot)))
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+
+    view.rerender(paneFor(nodeWith("explore_a", pivot)))
+    expect(screen.getByRole("alert")).toHaveTextContent("Cancellation service unavailable")
+  })
+})

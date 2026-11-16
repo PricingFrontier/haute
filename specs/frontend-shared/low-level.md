@@ -893,7 +893,10 @@ Which result a stored answer is, and whether it is current, are separate questio
    an id an answer names is never turned into a key. The open panel's node is known by its
    key too, so opening a child of the same id in another occurrence opens another node and
    asks for its own preview. Leaving a view forgets the open node with its panel, so opening
-   the same node again shows its preview.
+   the same node again shows its preview. A panel stays open while another node of the same
+   view is opened, so what it records of the work it starts (an Explore pivot's starting
+   flag, the notice of a Cancel that failed) is kept under the node's key and the pivot's id,
+   never the pivot's id alone: every node numbers its own pivots from `pivot_1`.
 2. **Whether it is current.** A cached result is checked against the source, the frame,
    the semantic content and the data generation it was made under before it is shown as
    current.
@@ -921,7 +924,9 @@ Which result a stored answer is, and whether it is current, are separate questio
   shows no flash of the owner's rows and fetches its own, also in manual calculation),
   `frontend/src/__tests__/stores/useNodeResultsStore.test.ts` (clearing a pipeline node
   keeps a drilled child of the same id), `frontend/src/panels/explore/__tests__/ExplorePivotsPane.test.tsx`
-  (the owner's pivot result is absent from the copy),
+  (the owner's pivot result is absent from the copy; a pane moved to another Explore node
+  starts that node's pivot of the same id while the first's is starting, and keeps a failed
+  Cancel's notice on the node it was pressed on),
   `frontend/src/panels/editors/__tests__/DataOutputEditor.test.tsx` (a write shows and blocks
   only in its occurrence), `frontend/src/components/__tests__/InputImportButton.test.tsx` (an
   import runs and stops only in its occurrence), `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`

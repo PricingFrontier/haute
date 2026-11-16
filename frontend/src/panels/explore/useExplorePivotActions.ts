@@ -36,6 +36,24 @@ type ExplorePivotActionNotice = {
   failure?: ExplorePivotFailure | null
 }
 
+/** By a node's result key, then by pivot id. */
+type ByNode<T> = Readonly<Record<string, Readonly<Record<string, T>>>>
+
+const NO_ENTRIES: Readonly<Record<string, never>> = Object.freeze({})
+
+/** *byNode* with the node's entry for *pivotId* set, or removed for null. */
+function withEntry<T>(byNode: ByNode<T>, nodeKey: string, pivotId: string, value: T | null): ByNode<T> {
+  const entries = byNode[nodeKey] ?? {}
+  if (value !== null) return { ...byNode, [nodeKey]: { ...entries, [pivotId]: value } }
+  if (!(pivotId in entries)) return byNode
+  const { [pivotId]: _removed, ...remaining } = entries
+  void _removed
+  if (Object.keys(remaining).length > 0) return { ...byNode, [nodeKey]: remaining }
+  const { [nodeKey]: _node, ...others } = byNode
+  void _node
+  return others
+}
+
 type UseExplorePivotActionsInput = {
   node: SimpleNode
   allNodes: SimpleNode[]
@@ -67,7 +85,9 @@ function terminalStatus(
  *
  * Results, jobs and claims are kept under the Explore node's result key, which
  * it returns for its consumers to read them by: inside a submodel, its
- * occurrence's, so the owner and its copies each calculate their own.
+ * occurrence's, so the owner and its copies each calculate their own. The
+ * starting flags (`submitting`) and notices it returns are that node's, by
+ * pivot id.
  */
 export default function useExplorePivotActions({
   node,
@@ -91,32 +111,25 @@ export default function useExplorePivotActions({
   const failJob = useNodeResultsStore((state) => state.failExplorePivotJob)
   const failStart = useNodeResultsStore((state) => state.failExplorePivotStart)
 
-  const [notices, setNotices] = useState<
-    Record<string, ExplorePivotActionNotice>
-  >({})
-  const [submitting, setSubmitting] = useState<Record<string, boolean>>({})
+  // The panel stays mounted while another node is opened, and every node numbers
+  // its own pivots, so what the hook records of the work it starts is kept by
+  // the node's result key first; it returns the open node's, by pivot id.
+  const [noticesByNode, setNotices] = useState<ByNode<ExplorePivotActionNotice>>({})
+  const [submittingByNode, setSubmitting] = useState<ByNode<boolean>>({})
+  const notices = noticesByNode[nodeKey] ?? NO_ENTRIES
+  const submitting = submittingByNode[nodeKey] ?? NO_ENTRIES
   const nodeLabel = String(node.data.label || node.id)
 
   const setNotice = useCallback(
-    (pivotId: string, notice: ExplorePivotActionNotice | null) => {
-      setNotices((current) => {
-        if (notice) return { ...current, [pivotId]: notice }
-        const { [pivotId]: _removed, ...remaining } = current
-        void _removed
-        return remaining
-      })
+    (requestKey: string, pivotId: string, notice: ExplorePivotActionNotice | null) => {
+      setNotices((current) => withEntry(current, requestKey, pivotId, notice))
     },
     [],
   )
 
   const setCardSubmitting = useCallback(
-    (pivotId: string, value: boolean) => {
-      setSubmitting((current) => {
-        if (value) return { ...current, [pivotId]: true }
-        const { [pivotId]: _removed, ...remaining } = current
-        void _removed
-        return remaining
-      })
+    (requestKey: string, pivotId: string, value: boolean) => {
+      setSubmitting((current) => withEntry(current, requestKey, pivotId, value ? true : null))
     },
     [],
   )
@@ -126,22 +139,24 @@ export default function useExplorePivotActions({
   // obsolete request settling (in either order) never touches the flag, and
   // the latest request settling clears it immediately — so a superseded
   // request can neither strand the flag on nor clear it prematurely.
+  // Counted by the pivot's result key.
   const submissionGenerations = useRef<Record<string, number>>({})
   const beginSubmitting = useCallback(
-    (pivotId: string): number => {
-      const generation = (submissionGenerations.current[pivotId] ?? 0) + 1
-      submissionGenerations.current[pivotId] = generation
-      setCardSubmitting(pivotId, true)
+    (requestKey: string, pivotId: string): number => {
+      const key = explorePivotResultKey(requestKey, pivotId)
+      const generation = (submissionGenerations.current[key] ?? 0) + 1
+      submissionGenerations.current[key] = generation
+      setCardSubmitting(requestKey, pivotId, true)
       return generation
     },
     [setCardSubmitting],
   )
   const endSubmitting = useCallback(
-    (pivotId: string, generation: number) => {
+    (requestKey: string, pivotId: string, generation: number) => {
       // The counter is monotonic and never reset: deleting it here would let
       // a later submission reuse an obsolete in-flight request's generation.
-      if (submissionGenerations.current[pivotId] !== generation) return
-      setCardSubmitting(pivotId, false)
+      if (submissionGenerations.current[explorePivotResultKey(requestKey, pivotId)] !== generation) return
+      setCardSubmitting(requestKey, pivotId, false)
     },
     [setCardSubmitting],
   )
@@ -236,13 +251,13 @@ export default function useExplorePivotActions({
       const claimCurrent = () =>
         useNodeResultsStore.getState().pivotStartClaims[key]?.token
           === startToken && isDocumentExecutionFenceCurrent(documentFence)
-      setNotice(pivot.id, null)
+      setNotice(requestKey, pivot.id, null)
       // The graph reads the preamble from the store; listing it renews this callback.
       void allNodes
       void edges
       void submodels
       void preamble
-      const submissionGeneration = beginSubmitting(pivot.id)
+      const submissionGeneration = beginSubmitting(requestKey, pivot.id)
 
       try {
         // Inside an open submodel, the whole pipeline and the node's runtime id.
@@ -331,7 +346,7 @@ export default function useExplorePivotActions({
         )
       } finally {
         useNodeResultsStore.getState().releaseExplorePivotStart(key, startToken)
-        endSubmitting(pivot.id, submissionGeneration)
+        endSubmitting(requestKey, pivot.id, submissionGeneration)
       }
     },
     [
@@ -355,14 +370,16 @@ export default function useExplorePivotActions({
 
   const cancelPivot = useCallback(
     async (pivot: ExplorePivotConfig, jobId: string) => {
-      const key = explorePivotResultKey(nodeKey, pivot.id)
+      // Taken before the request and used after it.
+      const requestKey = nodeKey
+      const key = explorePivotResultKey(requestKey, pivot.id)
       const documentFence = captureDocumentExecutionFence()
       // The reply belongs to the job it cancelled: polling may have retired that
       // job and another started, or the document changed, while it was pending.
       const replyIsCurrent = () =>
         isDocumentExecutionFenceCurrent(documentFence)
         && useNodeResultsStore.getState().pivotJobs[key]?.jobId === jobId
-      setNotice(pivot.id, null)
+      setNotice(requestKey, pivot.id, null)
       try {
         const response = await cancelExplorePivot(jobId)
         if (!isDocumentExecutionFenceCurrent(documentFence)) return
@@ -374,7 +391,7 @@ export default function useExplorePivotActions({
       } catch (error) {
         // A failed cancellation request does not prove the calculation stopped.
         // Keep the active job so background polling can resolve it.
-        if (replyIsCurrent()) setNotice(pivot.id, { message: apiErrorMessage(error) })
+        if (replyIsCurrent()) setNotice(requestKey, pivot.id, { message: apiErrorMessage(error) })
       }
     },
     [completeJob, failJob, nodeKey, setNotice],
