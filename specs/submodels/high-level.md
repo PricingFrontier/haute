@@ -226,20 +226,23 @@ migrated with that edge identity, including selector fields, live-switch maps,
 config rewrites are one atomic transform, so no consumer retains a stale
 identity.
 
-When the editor is drilled into one occurrence, preview and trace requests use
-the parent hierarchical graph and qualify the clicked child from the explicit
-occurrence identity before crossing the execution API boundary. Local editor
-ids remain the identity used for selection, result caching, and rendering;
-qualified runtime ids do not leak back into the visible definition graph.
-A preview's schema maps come back under those runtime ids and are recorded
-on the children they name, and the Input card carries each port's columns
-from the parent node feeding it, so an editor inside the occurrence lists
-its input's columns as it does on the root canvas. The parents' columns are
+When the editor is drilled into one occurrence, every request that runs the
+graph sends the whole hierarchical pipeline and names its target by address:
+the occurrence and the child's local id, or the occurrence and one of its
+public ports for the Input and Output cards. The server resolves the address
+through the expansion's own record and labels every node its answer names
+with its address ([server API](../server-api/low-level.md), "Node addresses").
+Local editor ids remain the identity used for selection, result caching, and
+rendering; runtime ids never reach the browser as anything but opaque keys.
+A preview's schema maps are recorded on the children their keys' addresses
+name, and the Input card carries each port's columns from the endpoint its
+frame provenance names, so an editor inside the occurrence lists its input's
+columns as it does on the root canvas. The parents' columns are
 kept on the root graph too, so the card starts with them when the occurrence
 is drilled into again.
 The occurrence identity is authoritative navigation state, not inferred from
 rendered boundary-port cards: definitions with no public ports (including a
-group made entirely from disconnected source nodes) must use the same qualified
+group made entirely from disconnected source nodes) use the same addressed
 preview and trace targets.
 
 Code generation emits each definition module once, one `from modules import ...`
@@ -269,7 +272,7 @@ instances.
 
 Acceptance also requires grouping existing config-backed source nodes, saving,
 reloading, drilling into the occurrence, and previewing each child. The request
-must target that occurrence's qualified runtime node, strict source config must
+must name that occurrence's child by address, strict source config must
 remain unpolluted by composition metadata, and generated standalone execution
 must resolve the original pipeline-owned sidecars.
 

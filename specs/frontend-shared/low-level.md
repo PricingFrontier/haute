@@ -880,9 +880,23 @@ Workbench's sample and the cached-data list.
 4. **Only prepared graphs are sent.** Every client function that runs the graph takes a
    `PreparedGraph`, a type only the gateway makes, so type-checking refuses a graph a caller
    built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.
-5. **Runtime ids.** Until the server resolves addresses (SUBE-05) the gateway's adapter alone
-   turns an address into the runtime id a request sends (`qualifiedRuntimeNodeId`), and reads
-   the ids an answer names back into addresses.
+5. **Answers by address.** A request sends its target as an address (the gateway converts the
+   in-memory `NodeAddress` and `FrameTarget` to the wire's snake_case shape in one function) and
+   never a runtime id. An answer names nodes by opaque key, each with its address in the
+   answer's `node_addresses` ([server API](../../specs/server-api/low-level.md), "Node
+   addresses"), and one pure function places an address on the canvas
+   (`placeAddress(address, focus)`):
+
+   | The key's address | Canvas at the root | Canvas inside occurrence O |
+   |---|---|---|
+   | A pipeline node `{null, n}` (an occurrence's card when `n` is one) | node `n` | not on the canvas |
+   | A child `{O, c}` of the open occurrence | O's card | node `c` |
+   | A child `{P, c}` of another occurrence | P's card | not on the canvas |
+
+   A collapsed occurrence's card shows its children's statuses as one, the worst of them. Trace
+   reaches a node outside the open occurrence through the Input card its frame provenance names.
+   Results are still kept by the request's result key (item 1 of "Result identity"), never by
+   a key an answer names.
 
 ## Result identity (normative)
 

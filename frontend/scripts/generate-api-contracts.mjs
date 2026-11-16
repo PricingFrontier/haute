@@ -184,6 +184,15 @@ function compactNullableSchemas(value) {
   return nullable;
 }
 
+// An answer names a node by its runtime key, which the browser reads only through the
+// answer's node_addresses (specs/server-api/low-level.md, "Node addresses"). The
+// declarations brand it, so a key is never taken for a canvas id, and the validators,
+// which check the shape, ignore the marker.
+const RUNTIME_NODE_KEY_KEYWORD = "x-haute-node-key";
+const RUNTIME_NODE_KEY_TYPE = "RuntimeNodeKey";
+const RUNTIME_NODE_KEY_DECLARATION =
+  `export type ${RUNTIME_NODE_KEY_TYPE} = { readonly __runtimeNodeKey: '${RUNTIME_NODE_KEY_TYPE}' }\n\n`;
+
 const VALIDATION_ANNOTATION_KEYS = new Set([
   "$comment",
   "default",
@@ -193,7 +202,24 @@ const VALIDATION_ANNOTATION_KEYS = new Set([
   "readOnly",
   "title",
   "writeOnly",
+  RUNTIME_NODE_KEY_KEYWORD,
 ]);
+
+/**
+ * The schema with every node key declared as the branded `RuntimeNodeKey`. A mapping keyed
+ * by node keys keeps a string index, since object keys are strings in TypeScript.
+ */
+export function brandedNodeKeys(value) {
+  if (Array.isArray(value)) return value.map(brandedNodeKeys);
+  if (!value || typeof value !== "object") return value;
+  const branded = Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, nested]) => key !== RUNTIME_NODE_KEY_KEYWORD
+        && !(key === "propertyNames" && nested?.[RUNTIME_NODE_KEY_KEYWORD] === true))
+      .map(([key, nested]) => [key, brandedNodeKeys(nested)]),
+  );
+  return value[RUNTIME_NODE_KEY_KEYWORD] === true ? { ...branded, tsType: RUNTIME_NODE_KEY_TYPE } : branded;
+}
 
 function stripValidationAnnotations(value, parentKeyword = null) {
   if (Array.isArray(value)) {
@@ -286,7 +312,7 @@ function typeDeclarationSchema(schema, definitionNames) {
     Object.entries(schema.$defs).map(([name, definition]) => [
       name,
       {
-        ...untypedAsUnknown(withoutNestedTitles(referencesWithoutAnnotations(definition))),
+        ...untypedAsUnknown(withoutNestedTitles(referencesWithoutAnnotations(brandedNodeKeys(definition)))),
         ...(definition.title ? { title: definition.title } : {}),
       },
     ]),
@@ -478,7 +504,7 @@ async function generateTypes(schema) {
   if (contractDeclarations.includes(TYPE_ROOT_NAME)) {
     throw new Error(`Generated declarations still reference ${TYPE_ROOT_NAME}`);
   }
-  return withBanner(contractDeclarations);
+  return withBanner(`${RUNTIME_NODE_KEY_DECLARATION}${contractDeclarations}`);
 }
 
 function compactFailFastErrorMetadata(source) {

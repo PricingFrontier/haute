@@ -8,6 +8,8 @@
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
 `workbench.form.changed`, forwarded as `workbench_form_changed`), and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
+| `src/haute/_node_addresses.py` | Node addresses (see "Node addresses"): `prepare_execution` flattens a request's document and resolves its address target through the expansion's record (`resolve_target`, `resolve_node`, refusing by name), `address_entry`/`node_addresses` label the keys an answer names, `occurrence_ports` builds frame provenance, and `labelled` builds an answer with `node_addresses` for every key at a node-key position of its schema. |
+| `src/haute/_node_address_schemas.py` | The wire shapes of node addresses: `RuntimeNodeKey` (a string marked `x-haute-node-key`, branded in the generated TypeScript), `NodeAddressPayload`, the `FrameTargetPayload` union (a node, an occurrence's input port, an occurrence's output port), `NodeAddressEntry`, `RuntimeEndpointPayload` and `OccurrencePortProvenance`; apart from `schemas.py` so the execution-metrics payloads can name nodes by key. |
 | `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. `RequestRefusedError` is a service's refusal of a request, with the `status_code` and `detail` its caller hears; its subclasses name the reason (`InvalidRequestError`, `ForbiddenError`, `NotFoundError`, `ConflictError`, `GoneError`, `UnprocessableError`, `ServiceFailedError`, `InsufficientMemoryError`). |
 | `src/haute/_validation_error.py` | `HauteValidationError` — the ValueError-derived marker for haute-authored validation messages (re-exported by `errors.py`); the modelling worker boundary keys its curated-message promotion on it. |
@@ -345,6 +347,72 @@ editor document itself cannot be loaded or resynced and carries a fixed safe mes
 authored pipeline errors are never parse errors — they arrive as degraded or source-only
 documents. The frame builder rejects an event payload that already contains reserved key
 `type`.
+
+## Node addresses (normative)
+
+A request that runs the graph names what it runs by address, and the server resolves the
+address; an answer names nodes by runtime key and labels every key it names with its address.
+The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>/<child>`,
+`haute._submodel_instances.qualified_runtime_node_id`), which stays the server's execution name.
+
+1. **Addresses.** `NodeAddressPayload {occurrence: str | null, node_id: str}`, both required: a
+   node of the pipeline with `occurrence: null` (an occurrence is itself the pipeline's node
+   `{null, <instance id>}`), or a child of occurrence `occurrence` named by its id in the
+   occurrence's definition. Submodels nest one level, so one occurrence names a child.
+2. **Targets.** An operation on a node takes `target: NodeAddressPayload`: training and its
+   estimates (memory and dispersion), the export script, a solve with its estimate and auto
+   range, a Data Output's destination, write and assembly dry run, a consumer's data point, run,
+   profile and clear, an Explore pivot and its members, relationships, banding statistics and
+   rating levels. A read of a frame takes `target: FrameTargetPayload`, one of:
+   - `{kind: "node", occurrence, node_id, port_label, port_labels}`: a node's output, one of its
+     ports, or several port labels of one node read in one execution (the Workbench's tables;
+     `port_label` and `port_labels` are not both given);
+   - `{kind: "occurrence_input", occurrence, port}`: the frame feeding a public input port of an
+     occurrence (the Input card's);
+   - `{kind: "occurrence_output", occurrence, port}`: the frame a public output port of an
+     occurrence produces (the Output card's, or an edge out of a collapsed occurrence).
+
+   The preview, its inputs and the trace take a frame target. Every field is required and none
+   defaults; the trace's target is required too. A recovery preview keeps its recovery id (a node
+   of the pipeline, refused inside a submodel), and the free-code columns request keeps its
+   `node_id`, a supersession key that runs nothing.
+3. **Resolution.** One function, `haute._node_addresses.prepare_execution`, prepares every such
+   request: it flattens the document (`flatten_executable_graph`) and resolves the target against
+   the expansion's own record, which `expand_submodel_instances` attaches to the flat graph
+   (`SubmodelExpansion`): for each occurrence its children (local id to runtime key), the endpoint
+   feeding each bound input port, and the endpoint producing each declared output port. It returns
+   the flat graph, the runtime key, the port label or labels, and the record. A card target
+   translates its handle with its node: an input port reads its feeding endpoint's node and
+   handle, an output port its producing child's. Supersession keys and worker arguments use the
+   runtime key and port. Refusals are 404s that name the target by label: an occurrence the
+   document does not hold; a child its definition does not hold; an occurrence named as a node
+   target, which runs only through its ports; a port its definition does not declare; and an
+   input port nothing feeds.
+4. **Answers.** Every answer field that names a node is a `RuntimeNodeKey`, an opaque string the
+   generated TypeScript brands, and an answer that names one carries
+   `node_addresses: {<key>: {occurrence, node_id, label}}` with an entry for every key it names,
+   built from the expansion's record and never by parsing a key. `label` is the authored label: a
+   copy's child keeps its definition's label, not its flat name. A collapsed occurrence's entries
+   (its output ports' columns and its schema warnings) are keyed by its instance id, addressed
+   `{null, <instance id>}`. A string that embeds a key (a data point's `slot_key`, a seed plan's
+   entries) is echoed exactly and never read for a node.
+5. **Jobs.** A job whose answers can name nodes (training, a solve, an auto range, a node-data
+   build, a pivot) records those keys' addresses when it starts, so a status read after the view
+   changed, or after a reload, labels them without the graph.
+6. **Frame provenance.** A preview answer carries `occurrence_ports: [{occurrence, direction:
+   "input"|"output", port, endpoint: {key, handle} | null}]` for every declared port of every
+   occurrence in the executed graph: the runtime endpoint the port resolves to (an input's feeding
+   endpoint, an output's producing child and handle), or `null` for an input nothing feeds. Ports
+   that resolve to one endpoint each keep their entry. Building it never fails or invents an
+   endpoint; only a request whose target is an unbound port is refused. An Input card reads its
+   ports' columns from it, a bound port whose columns are missing shown as missing data.
+7. **Errors** name a node by its label, and inside a submodel by its label and its occurrence's
+   ("Banding 1 in pricing"), and carry a structured `node: {key, occurrence, node_id, label}`.
+
+`tests/test_node_addresses.py` covers resolution (a root node, the children of an owner and of a
+copy, both card kinds, several port labels, every refusal) and frame provenance (bound, unbound,
+aliased ports); `tests/test_node_address_contracts.py` checks every node-naming answer field is a
+`RuntimeNodeKey` and that real answers from a submodel fixture address every key they name.
 
 ## Control flow
 
