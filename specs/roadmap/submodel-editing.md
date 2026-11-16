@@ -9,23 +9,20 @@ submodel in [the graph canvas specification](../frontend-graph-canvas/high-level
 graph in [the server API design](../server-api/low-level.md). The packages below replace how
 the editor represents an open submodel and how requests and answers name nodes.
 
-Today three versions of the graph are in play while a submodel is open:
+The graph store owns one authored document: an open submodel is a focus on it, the canvas is
+its projection, every request that runs the graph goes through one gateway, and results are
+kept under the occurrence they belong to. Three things remain:
 
-1. **The canvas graph:** a stand-in made of the definition's nodes plus synthetic Input and
-   Output cards. Every panel reads it.
-2. **The real pipeline:** set aside on entry and rebuilt from the stand-in by a passive effect
-   after each commit (`reconcileCanonicalSubmodelBoundaryState`), so it lags the canvas by one
-   commit, and an edit the rebuild refuses stays on the canvas until the user leaves, then is
-   dropped.
-3. **What the server runs:** the flattened pipeline, where a node inside occurrence `pricing`
-   runs as `submodel_runtime/pricing/<local id>` and a reused copy's nodes are relabelled.
-
-Every request and answer translates between them in the browser: a bridge
-(`nodeRequestTarget`, a module-level scope, a one-tick wait) carries panel requests, and
-Preview and Trace have their own translations. Defects of this kind have been found in
-thirteen panels, in node status colours, in the cached-data list and in previews of a frame
-coming out of a submodel. The packages replace the three versions with one authored document,
-a view of it, and server-owned execution addresses.
+1. **Runtime ids in the browser.** The server runs the flattened pipeline, where a node
+   inside occurrence `pricing` runs as `submodel_runtime/pricing/<local id>`. The gateway
+   encodes those ids and reads answers back through them, and the cached-data list and
+   previews of a frame coming out of a submodel are still wrong on screen (SUBE-05).
+2. **Save and reload.** Saving inside a submodel is refused, and a reload returns to the main
+   pipeline (SUBE-06).
+3. **Boundary actions.** Connecting to a card, removing an input and the other boundary
+   actions still rebuild a definition from the canvas
+   (`reconcileCanonicalSubmodelBoundaryState`), reading parent bindings back from fields on
+   the Input and Output cards (SUBE-07).
 
 ## Target model
 
@@ -85,170 +82,17 @@ specification before code changes.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SUBE-02 | Planned | P1 | The store owns one authored document and a focus; the canvas is its projection; edits are document commands; history is one list of document steps, one step per edit, wherever made. |
-| SUBE-03 | Planned | P2 | Every request that runs the graph goes through one gateway that snapshots the document, target and source together; no panel builds a request graph. |
-| SUBE-04 | Planned | P2 | Results, annotations and caches are keyed by occurrence-aware address, so an owner and its read-only copies never show each other's previews, columns or training results. |
 | SUBE-05 | Planned | P2 | Requests name nodes and frames by address, the server resolves them and labels every node an answer names with its address; the browser's runtime-id code is removed. |
-| SUBE-06 | Planned | P2 | Opening a submodel is immediate, saving works inside a submodel, and a reload keeps the open submodel when it still exists. |
+| SUBE-06 | Planned | P2 | Saving works inside a submodel, and a reload keeps the open submodel when it still exists. |
+| SUBE-07 | Planned | P2 | Boundary actions edit the document directly: the Input and Output cards carry no parent bindings, and no edit rebuilds a definition from the canvas. |
 
 ## Planned improvements
-
-### SUBE-02 — One authored document, a focus, and document commands
-**Why:** The real pipeline is rebuilt from the canvas stand-in by a passive effect after each
-commit. A request sent from a child's effect sees it one edit behind, which is why the bridge
-needs a one-tick wait. An edit the rebuild refuses raises a toast but stays on the canvas, and
-leaving the submodel restores the last rebuilt pipeline, dropping it. Undo inside a submodel
-stores only the canvas, so the canvas carries history fields that let the rebuild recover
-document facts (`ports[].parentEdges`, `_parentEdgeOrder`, `_parentBindingScope`,
-`_parentOutputState`), and the rebuild throws without them. Leaving a submodel collapses the
-visit into one undo step. The rebuild copies the screen's nodes, annotations included, into the
-shared definition. While an output-cardinality edit waits for server names, any re-render
-publishes the uncommitted candidate into the refs requests read.
-
-**Plan:** Specify the model first in the submodels and graph-canvas high- and low-level
-designs (the Target model above), replacing the rules for the submodel view's own history, the
-collapsed visit and the reconciled parent graph.
-1. The store holds the document and `focus`; `nodes`/`edges` are the projection, built from
-   the existing pure projection (`buildSubmodelViewGraph`) without its history carriers, and
-   memoised per node. This package defines the shared contracts later packages consume: the
-   `NodeAddress` and `FrameTarget` types (Target model) in one frontend module, and the
-   execution-annotation interface (write and read annotations by address; the projection merges
-   them into the nodes it draws). SUBE-03 and SUBE-04 use them as defined here; SUBE-05 replaces
-   the frontend types with the generated server contracts of the same shape.
-2. Every writer becomes a command, applied in one store update. As a migration step the
-   store may accept the existing setters while focused, mapping a child node or internal edge
-   change by id into the definition (a total mapping) and routing every card change through
-   an explicit boundary command (bind, unbind, declare, retire, rename a port); the generic
-   rebuild from a view is not kept as an editing path.
-3. A refused command leaves document and canvas unchanged and shows its reason. An unfinished
-   pipeline (unconnected ports, unbound inputs) is a valid document, not a refusal.
-4. One chronological document history, one step per command or gesture, each step recording
-   its focus (see Target model). Delete the submodel view's own undo stacks, the collapsed-visit
-   entry and the per-view saved baselines; the dirty check compares the document with the
-   saved document.
-5. An edit that needs server-assigned names (taking a definition from one public output to
-   several or back) is a prepared transaction: build the candidate's semantic change, resolve its
-   identities, and commit only if the semantic generation is still the one it was prepared at; a
-   superseding semantic edit, Undo, Redo, navigation or a reload advances the generation and
-   discards it with a notice, even when the document returns to identical content. Layout-only
-   changes during resolution do not invalidate it, and committing applies the semantic change on
-   top of the current document, keeping the layout changes made meanwhile. The candidate is never
-   visible to the projection, history or requests.
-6. Delete `parentGraphRef`, the passive reconcile effect, the history carriers and the
-   App-level `graphRef`/`submodelsRef` mirrors; readers use the store. The bridge's scope
-   (`setDrilledRequestScope`) reads the store's document synchronously, and its one-tick wait
-   (`afterCommitEffects`) is deleted with its callers here; SUBE-03 then replaces the bridge.
-
-**Acceptance:**
-- An edit inside a submodel followed by a request sent from an effect in the same commit sends
-  the edited document, with `afterCommitEffects` removed.
-- A refused edit changes neither the document nor the canvas, and leaving the submodel keeps
-  every accepted edit.
-- Undo inside and outside a submodel reverts exactly one edit per step, Redo replays it, and
-  undoing a step made in another view switches to that view; undoing past the creation of the
-  open occurrence shows the root with a notice. An edit made in occurrence A, undone after
-  navigating to B, is redone from anywhere with the view focused on A.
-- An edit addressed to a read-only occurrence is refused in the store with its reason.
-- For an output-cardinality edit waiting on identity resolution: a re-render publishes nothing;
-  moving a node meanwhile keeps the move and the edit still commits; navigating away and back
-  discards it; Undo then Redo back to identical content discards it; a superseded resolution
-  completing late changes nothing.
-- Dragging a node in a submodel of 200 nodes re-renders only that node and computes no
-  fingerprint (render-count test).
-- Annotations written by a preview inside one occurrence do not appear in the definition.
-- Property tests: projecting the document and applying a no-op command returns the same
-  document; applying a command and projecting equals the expected view.
-
-**Dependencies:** None. Deliver with SUBE-03 and SUBE-04 in one phase, so requests and
-results move onto the document once.
-
-**Evidence:** `frontend/src/hooks/useSubmodelBoundaryEditing.ts`;
-`frontend/src/utils/canonicalSubmodelBoundaryEditing.ts::reconcileCanonicalSubmodelBoundaryState`;
-`frontend/src/utils/submodelViewGraph.ts::buildSubmodelViewGraph`;
-`frontend/src/hooks/useSubmodelNavigation.ts`; `frontend/src/stores/useGraphStore.ts`;
-`frontend/src/hooks/useGraphCommitController.ts`;
-`frontend/src/utils/buildGraph.ts::resolveGraphFromRefs`.
-
-### SUBE-03 — One request gateway
-**Why:** Panels built request graphs from the canvas they hold; inside a submodel every such
-request was refused until the bridge (`nodeRequestTarget`) moved thirteen of them, and nothing
-stops a new panel building its own. The bridge's scope is a module variable that editors in the
-version-comparison view can reach although they mount on an empty graph, and when its scope does
-not resolve it sends the stand-in graph instead of failing. Preview and Trace keep their own
-translations.
-
-**Plan:** Specify the gateway in the frontend-shared low-level design. One module owns request
-construction: `prepareNodeRequest(scope, target, inputs)` and `preparePipelineRequest(scope,
-inputs)` return a branded prepared request holding the document payload, document identity and
-semantic generation, the target, the data source and the operation inputs, captured together.
-A frame read may name several ports of one node, read in one execution, as the Workbench prices
-every table of its sample at once ([workbench specification](../workbench/high-level.md)). Raw
-transport functions that take a graph accept only prepared requests; `buildGraph` becomes
-private to the gateway. The scope comes from the store and the view context; the comparison
-view's provider supplies none, and a request without a scope is refused, not sent. Until
-SUBE-05 the gateway translates the target to a runtime id with the existing helpers; that
-adapter is the only place they are called. Move every panel, Preview, Trace, the Workbench
-pricing path and Pipeline settings' cached-data list onto it, and delete `nodeRequestTarget.ts`
-with its scope.
-
-**Acceptance:** Type-checking fails for any call that passes a graph it built itself to a
-request function. Every request inside a submodel carries the whole document and the open
-occurrence's target, from panels, Preview, Trace and the cached-data list alike. An editor in
-the comparison view sends no request. A two-table Workbench preview runs the pipeline once. A
-test per request family asserts the captured snapshot (semantic generation, target, source)
-belongs to one render.
-
-**Dependencies:** SUBE-02.
-
-**Evidence:** `frontend/src/utils/nodeRequestTarget.ts::nodeRequestTarget`;
-`frontend/src/utils/nodeRequestTarget.ts::afterCommitEffects`;
-`frontend/src/components/ReadOnlyNodeConfig.tsx`; `frontend/src/hooks/usePipelineAPI.ts`;
-`frontend/src/hooks/useTracing.ts`; `frontend/src/api/client.ts`.
-
-### SUBE-04 — Results and caches keyed by occurrence-aware address
-**Why:** A shared definition's owner and its read-only copies show the same local node ids.
-The preview cache is keyed by that id and shown before its freshness is checked, so the owner's
-rows can appear in the copy. Trained-job handles are stored by local id, and their lineage is a
-digest of the whole document, which is the same for owner and copy, so the copy can restore the
-owner's training result as current. Column annotations are copied into the shared definition.
-
-**Plan:** Specify result identity in the frontend-shared and graph-canvas low-level designs.
-Separate **which result** (document identity plus the node address or frame target) from
-**whether it is current** (data source, frame, the relevant semantic content, data generation
-and operation inputs). Key the preview cache, node results, training and solve jobs, trained-job
-handles, the node-data store, output-write state, the column cache and the execution annotations
-by address; check validity before showing any cached result. The same applies to state held
-outside stores: hook dependencies and hook-local answer and error state (the whole-data answer's
-identity), Refresh and Stop registrations, and the publication of every response, which stays
-attached to the document and target it was captured with; whether it is still current is a
-separate check. A background job (training, a solve) keeps running when the user navigates away,
-and its result stays attached to the occurrence it was started in. Keep legitimate sharing of
-immutable data (snapshots the server shares between occurrences) below the presentation layer.
-
-**Acceptance:** Training a node in the owner and opening the same node in a read-only copy
-shows no result for the copy; previews of the same child in two occurrences show their own rows
-with no flash of the other's; columns from one occurrence's preview never appear in another or
-in the saved definition; a stale cached preview is never shown as current. With one editor kept
-mounted while the view switches from the owner to a copy with the owner's request still pending,
-the copy is queried afresh, the owner's late answer or error is not shown in the copy, and Refresh
-and Stop act on the copy's request only. Starting training in occurrence A, navigating to B
-before the start is acknowledged, and letting training complete keeps the job tracked, shows none
-of A's result in B, and shows A's result, with its freshness, on returning to A. Tests cover each
-store and each of these hook paths with two occurrences of one definition.
-
-**Dependencies:** SUBE-02, SUBE-03.
-
-**Evidence:** `frontend/src/hooks/usePipelineAPI.ts`;
-`frontend/src/utils/trainedJobHandles.ts::trainingLineage`;
-`frontend/src/panels/modelling/useTrainedJobRestore.ts`;
-`frontend/src/stores/useNodeResultsStore.ts`; `frontend/src/stores/useNodeDataStore.ts`.
 
 ### SUBE-05 — Server-resolved addresses
 **Why:** The browser duplicates the server's execution knowledge: it encodes runtime ids
 (mirroring Python's quoting), maps the Input card to the parent node feeding it, and maps
 runtime ids in answers back to the canvas, in three places. Where it doesn't, answers are
-wrong on screen: node statuses inside a submodel are keyed by runtime id and never colour the
-canvas; the cached-data list shows `pricing/<encoded id>`; a frame coming out of a submodel
+wrong on screen: the cached-data list shows `pricing/<encoded id>`; a frame coming out of a submodel
 occurrence, previewed from the Output editor, asks for the occurrence id, which the flattened
 graph lacks (404); a card fed by another submodel's output is not mapped; execution diagnostics,
 timings, the Explore producer card and `input_node_ids` are untranslated; error prose embeds
@@ -316,7 +160,7 @@ refusal. Error toasts name nodes by label. Server tests cover resolution for roo
 children of an owner and of a copy, both card kinds, several port labels, and refusals; a
 contract test covers every node-naming answer field.
 
-**Dependencies:** SUBE-03.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/utils/submodelRuntimeTarget.ts::encodeRuntimeIdPart`;
 `frontend/src/utils/submodelRuntimeTarget.ts::submodelOutputPreview`;
@@ -330,21 +174,17 @@ contract test covers every node-naming answer field.
 `src/haute/routes/pipeline.py`; `src/haute/routes/cache.py`; `src/haute/_node_snapshots.py`;
 `frontend/src/workbench/priceSample.ts::priceSample`; `frontend/src/hooks/useTracing.ts`.
 
-### SUBE-06 — Immediate navigation, save and reload inside a submodel
-**Why:** Opening a submodel waits for the server to name the Input and Output cards, which are
-dressed as executable nodes. Saving inside a submodel is refused, and a reload returns to the
-main pipeline; both follow only from the canvas not being the document.
+### SUBE-06 — Save and reload inside a submodel
+**Why:** Saving inside a submodel is refused, and a reload returns to the main pipeline; both
+follow only from the canvas not being the document.
 
-**Plan:** Specify in the submodels and graph-canvas designs. Make the Input and Output cards view
-objects that reference the definition's declared ports, with no executable name; the server
-returns any naming metadata it owns with the editor document, so opening a submodel is a
-synchronous focus change. Save serialises the document whatever the focus, and records that
+**Plan:** Specify in the submodels and graph-canvas designs. Save serialises the document whatever
+the focus, and records that
 exact document as saved. A clean external reload replaces the document atomically, keeps the
 focus when the same occurrence and definition still exist, and otherwise shows the root with a
 notice; dirty-document conflict handling and execution fences stay as they are.
 
 **Acceptance:**
-- Opening a submodel shows it with no server round trip.
 - Save inside a submodel saves the whole pipeline and leaves the view clean; an edit accepted
   while a save is in flight stays dirty after the save completes (the save acknowledges the
   exact document it sent).
@@ -354,8 +194,38 @@ notice; dirty-document conflict handling and execution fences stay as they are.
 - Deleting the open occurrence externally, or a reload in which its instance id names a
   different definition, shows the root with a notice.
 
-**Dependencies:** SUBE-02.
+**Dependencies:** None.
 
 **Evidence:** `frontend/src/hooks/useSubmodelNavigation.ts`;
-`frontend/src/utils/editorIdentities.ts`; `frontend/src/hooks/usePipelineAPI.ts`;
-`frontend/src/hooks/useWebSocketSync.ts`.
+`frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/hooks/useWebSocketSync.ts`.
+
+### SUBE-07 — Boundary actions as document commands
+**Why:** Canvas writes inside a submodel change the document directly, but the
+boundary actions (connect to or from a card, remove an input, delete a child a port uses,
+remove a boundary edge) still run the generic rebuild of a definition from the canvas
+(`reconcileCanonicalSubmodelBoundaryState`). The rebuild reads the parent bindings back from
+fields the projection writes onto the cards (`ports[].parentEdges`, `_parentEdgeOrder`,
+`_parentBindingScope`, `_parentOutputState`), so the cards carry document facts and the store
+has to strip what the rebuild copies from the canvas.
+
+**Plan:** Specify the boundary commands in the submodels low-level design: bind and unbind a
+public input, declare and retire a port, rename a port, and route a port to a child. Each
+reads the document (definition, occurrences and their parent edges), applies one transaction
+and returns the new document, or refuses with its reason; the projection draws the cards from
+the document with no binding fields beyond what the cards display. Move each caller of the
+rebuild in `useSubmodelBoundaryEditing` onto a command, then delete the rebuild, the carriers
+and the store's stripping of boundary results.
+
+**Acceptance:**
+- No card's data holds a parent edge, an edge order, a binding scope or an output state.
+- Every boundary action is one undo step, refused whole with its reason when it cannot apply,
+  and leaves no canvas object in a definition.
+- The existing boundary suites (`frontend/src/hooks/__tests__/useSubmodelBoundaryEditing.test.ts`,
+  `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`) pass against the commands,
+  including parent edge order and output identities across Undo and Redo.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts::reconcileCanonicalSubmodelBoundaryState`;
+`frontend/src/utils/submodelViewGraph.ts::captureParentOutputState`;
+`frontend/src/hooks/useSubmodelBoundaryEditing.ts`.

@@ -11,6 +11,7 @@ import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import { GraphProvider } from "../../panels/GraphContext"
 import useUIStore from "../../stores/useUIStore"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 /**
  * Renders RatingStepEditor wrapped in a GraphProvider.  Accepts `allNodes` /
@@ -22,7 +23,7 @@ function render(
   opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
 ) {
   return rtlRender(
-    <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
       {element}
     </GraphProvider>,
   )
@@ -270,7 +271,7 @@ describe("RatingStepEditor", () => {
       expect(onUpdate.mock.lastCall![0]).toBe("tables")
       expect(outputs(onUpdate)).toEqual(["region_factor", "cover_factor", "age_factor"])
       rerender(
-        <GraphProvider allNodes={BANDING_NODES} edges={[]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={BANDING_NODES} edges={[]}>
           <RatingStepEditor
             section="tables"
             config={{ tables: onUpdate.mock.lastCall![1] }}
@@ -495,7 +496,7 @@ describe("RatingStepEditor", () => {
 
     // An undo (or a broadcast) changes the value while the field is on screen.
     view.rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <RatingStepEditor section="tables" config={{ tables: [table("2.5")] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
@@ -519,7 +520,7 @@ describe("RatingStepEditor", () => {
     )
     expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(before)
     view.rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <RatingStepEditor section="combined" config={config(after)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )
@@ -645,7 +646,7 @@ describe("RatingStepEditor", () => {
       const view = render(editor("tables"), { allNodes: [] })
       fireEvent.click(screen.getByRole("button", { name: /^region_factor (healthy|problem)$/ }))
       const rerender = (section: "tables" | "combined") =>
-        view.rerender(<GraphProvider allNodes={[]} edges={[]}>{editor(section)}</GraphProvider>)
+        view.rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>{editor(section)}</GraphProvider>)
       rerender("combined")
       rerender("tables")
       expect(screen.getByRole("button", { name: /^region_factor (healthy|problem)$/ })).toHaveAttribute("aria-pressed", "true")
@@ -1300,7 +1301,7 @@ describe("RatingStepEditor", () => {
     expect(add).toHaveTextContent("Add factor")
 
     view.rerender(
-      <GraphProvider allNodes={BANDING_NODES} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={BANDING_NODES} edges={[]}>
         <RatingStepEditor section="tables" config={table(["age_band", "region", "vehicle_type"])} onUpdate={vi.fn()} inputSources={[]} accentColor="#14b8a6" />
       </GraphProvider>,
     )

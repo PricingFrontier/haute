@@ -28,11 +28,13 @@ import {
   apiInputFrameLabels as apiInputFrameLabelsWithReserved,
   edgeInputName,
 } from "../apiInputPorts"
-import { buildGraph } from "../buildGraph"
+import { documentGraphPayload } from "../buildGraph"
 import { edgeId } from "../edgeIds"
 import { appEdge } from "../flowElements"
 import { NODE_TYPES } from "../nodeTypes"
 import type { SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
+import type { PipelineEdge } from "../../types/node"
+import useGraphStore from "../../stores/useGraphStore"
 
 const {
   apiInputLabelIssueMessage,
@@ -825,18 +827,28 @@ describe("applyApiInputConfigChange", () => {
     const reloaded = labels.map((label, i) =>
       edgeFrom("api_1", label, `e_reloaded_${i}`),
     )
-    // buildGraph preserves canonical handle values while cloning the live
-    // graph at the outbound request boundary.
-    const nodes: SimpleNode[] = [
-      {
-        id: "api_1",
-        type: "apiInput",
-        data: { label: "quotes", description: "", nodeType: "apiInput", config },
-      },
-    ]
-    const requestEdges = buildGraph(nodes, reloaded).edges
-    expect(requestEdges).toStrictEqual(reloaded)
-    expect(requestEdges).not.toBe(reloaded)
+    // The request payload preserves canonical handle values while cloning the
+    // live graph (the graph store's document) at the outbound request boundary.
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [
+        {
+          id: "api_1",
+          type: "apiInput",
+          position: { x: 0, y: 0 },
+          data: { label: "quotes", description: "", nodeType: "apiInput", config },
+        },
+      ],
+      edges: reloaded as PipelineEdge[],
+      preamble: "",
+      submodels: {},
+    })
+    try {
+      const requestEdges = documentGraphPayload().edges
+      expect(requestEdges).toStrictEqual(reloaded)
+      expect(requestEdges).not.toBe(useGraphStore.getState().edges)
+    } finally {
+      useGraphStore.getState().resetForTests()
+    }
 
     // And reconciliation against the same config keeps every reloaded
     // edge byte-identical: save → reload is a fixed point.

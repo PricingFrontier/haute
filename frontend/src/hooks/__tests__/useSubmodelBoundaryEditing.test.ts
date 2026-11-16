@@ -2,17 +2,18 @@ import { act, renderHook } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import useSubmodelBoundaryEditing from "../useSubmodelBoundaryEditing"
+import useGraphStore, { canvasGraph } from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
 import { buildSubmodelViewGraph, captureParentOutputState } from "../../utils/submodelViewGraph"
 import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
-import { cloneGraphSnapshot } from "../../utils/graphSnapshot"
 import { attachEditorEdgeIdentities } from "../../utils/editorIdentities"
 
 const SUBMODEL_NAME = "pricing"
 const PLACEHOLDER_ID = "pricing"
 const DEFINITION_ID = "definition_pricing"
+const OCCURRENCE = { instanceId: PLACEHOLDER_ID, definitionId: DEFINITION_ID }
 
 type FixtureOptions = {
   bindInput?: boolean
@@ -121,35 +122,64 @@ function makeFixture({
       ...edge.data,
       _inputName: edge.source === inputBoundaryId ? "Incoming_policy_data" : `${edge.source}_input`,
     },
-  }))
+  })) as PipelineEdge[]
   const identifiedView = { nodes: viewNodes, edges: viewEdges }
-  const graphRef = { current: { nodes: viewNodes, edges: viewEdges as Edge[] } }
-  const parentGraphRef = { current: { nodes: parentNodes, edges: parentEdges, submodels: submodels as Record<string, unknown> } }
-  const submodelsRef = { current: submodels as Record<string, unknown> }
   const setNodesAndEdgesAndSubmodels = vi.fn()
-  return { childNodes, childEdges, parentNodes, parentEdges, submodels: submodels as Record<string, unknown>, view: identifiedView, graphRef, parentGraphRef, submodelsRef, setNodesAndEdgesAndSubmodels }
+  return { childNodes, childEdges, parentNodes, parentEdges, submodels: submodels as Record<string, unknown>, view: identifiedView, setNodesAndEdgesAndSubmodels }
 }
-function hookParams(fixture: ReturnType<typeof makeFixture>) {
-  return {
-    activeSubmodelName: SUBMODEL_NAME,
-    activeSubmodelInstanceId: PLACEHOLDER_ID,
-    activeSubmodelDefinitionId: DEFINITION_ID,
-    nodes: fixture.view.nodes,
-    edges: fixture.view.edges as PipelineEdge[],
+type Fixture = ReturnType<typeof makeFixture>
+
+const store = () => useGraphStore.getState()
+/** The open submodel's focus, read afresh: every commit, undo and redo replaces it. */
+const focus = () => store().focus!
+const storedDefinition = () => store().submodels[DEFINITION_ID] as SubmodelDefinition
+
+/** The fixture's document as the main pipeline, with no submodel open. */
+function loadParent(fixture: Fixture) {
+  store().loadGraphSnapshot({
+    nodes: fixture.parentNodes,
+    edges: fixture.parentEdges,
+    preamble: "",
     submodels: fixture.submodels,
-    graphRef: fixture.graphRef,
-    parentGraphRef: fixture.parentGraphRef,
-    submodelsRef: fixture.submodelsRef,
+  })
+}
+
+/**
+ * Show the fixture's hand-identified view of the occurrence over the loaded
+ * document. Set directly rather than through `enterSubmodelView`, which would
+ * project a fresh view without the fixture's identities.
+ */
+function focusView(
+  fixture: Fixture,
+  root: { nodes: Node[]; edges: PipelineEdge[] } = { nodes: fixture.parentNodes, edges: fixture.parentEdges },
+) {
+  useGraphStore.setState({
+    nodes: fixture.view.nodes,
+    edges: fixture.view.edges,
+    focus: { ...OCCURRENCE, readOnly: false, rootNodes: root.nodes, rootEdges: root.edges },
+  })
+}
+
+function openInStore(fixture: Fixture) {
+  loadParent(fixture)
+  focusView(fixture)
+}
+
+function hookParams(fixture: Fixture) {
+  return {
     setNodesAndEdgesAndSubmodels: fixture.setNodesAndEdgesAndSubmodels,
     reservedApiInputFrameLabels: new Set<string>(),
-    resolveGraphIdentities: vi.fn(async ({ nodes, edges }) => ({
+    resolveGraphIdentities: vi.fn(async ({ nodes, edges }: GraphIdentityRequest) => ({
       nodes: [...nodes],
-      edges: [...edges],
+      edges: [...edges] as PipelineEdge[],
     })),
   }
 }
 describe("useSubmodelBoundaryEditing", () => {
-  beforeEach(() => useToastStore.setState({ toasts: [] }))
+  beforeEach(() => {
+    store().resetForTests()
+    useToastStore.setState({ toasts: [] })
+  })
 
   it.each([
     { removing: false, logicalName: "child_a" },
@@ -223,7 +253,6 @@ describe("useSubmodelBoundaryEditing", () => {
     fixture.view.nodes = fixture.view.nodes.map((node) => ({
       ...node, data: { ...node.data, ...projected.nodes.find((candidate) => candidate.id === node.id)!.data },
     }))
-    fixture.graphRef.current.nodes = fixture.view.nodes
     const resolveGraphIdentities = vi.fn(async ({ nodes, edges, submodels }: GraphIdentityRequest) => {
       const definition = submodels[DEFINITION_ID] as SubmodelDefinition
       const resolved = nodes.map((node) => node.data.nodeType === "submodel" ? {
@@ -238,8 +267,8 @@ describe("useSubmodelBoundaryEditing", () => {
       return { nodes: resolved, edges: attachEditorEdgeIdentities(edges, resolved) }
     })
     const params = { ...hookParams(fixture), resolveGraphIdentities }
-    const before = cloneGraphSnapshot({ nodes: fixture.view.nodes, edges: fixture.view.edges, submodels: fixture.submodels, preamble: "" })
-    const { result, rerender } = renderHook((props) => useSubmodelBoundaryEditing(props), { initialProps: params })
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(params))
     const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
     await act(async () => {
       if (removing) {
@@ -249,8 +278,13 @@ describe("useSubmodelBoundaryEditing", () => {
         result.current.commitBoundaryConnection({ source: "child_b", sourceHandle: null, target: output.id, targetHandle: null })
       }
     })
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    const consumerConfig = (id: string) => fixture.parentGraphRef.current.nodes.find((node) => node.id === id)!.data.config
+    expect(store().undoStack).toHaveLength(1)
+    const consumerConfig = (id: string) => focus().rootNodes.find((node) => node.id === id)!.data.config
+    const copyToOwnerInput = () => focus().rootEdges.find((edge) => edge.id === "copy-to-owner")?.data?._inputName
+    const copySelectors = () => focus().rootNodes.find((node) => node.id === "pricing_copy")!.data._sourceHandleInputNames
+    const outputCount = () => storedDefinition().outputPorts.length
+    const outputsBefore = removing ? 2 : 1
+    const outputsAfter = removing ? 1 : 2
     expect(consumerConfig("consumer_a")).toEqual({
       code, ...(logicalName !== afterName ? { input_mapping: { [logicalName]: afterName } } : {}),
     })
@@ -260,48 +294,35 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(consumerConfig("copy_consumer")).toEqual({
       code: copyCode, input_mapping: { [copyBefore]: copyAfter },
     })
-    expect(fixture.parentGraphRef.current.edges.every((edge) => (
+    expect(focus().rootEdges.every((edge) => (
       edge.data?._inputName === (edge.source === PLACEHOLDER_ID ? afterName : copyAfter)
     ))).toBe(true)
-    const [committedNodes, committedEdges, committedSubmodels] = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0]
-    const after = cloneGraphSnapshot({ nodes: committedNodes, edges: committedEdges, submodels: committedSubmodels, preamble: "" })
-    const restore = (snapshot: typeof before) => {
-      fixture.graphRef.current = { nodes: snapshot.nodes, edges: snapshot.edges }
-      fixture.submodelsRef.current = snapshot.submodels
-      rerender({ ...params, nodes: snapshot.nodes, edges: snapshot.edges, submodels: snapshot.submodels })
-    }
-    restore(after)
-    expect(fixture.parentGraphRef.current.edges.find((edge) => edge.id === "copy-to-owner")?.data?._inputName).toBe(copyAfter)
-    restore(before)
-    expect(fixture.parentGraphRef.current.edges.find((edge) => edge.id === "copy-to-owner")?.data?._inputName).toBe(copyBefore)
+    expect(copyToOwnerInput()).toBe(copyAfter)
+    expect(outputCount()).toBe(outputsAfter)
+
+    act(() => store().undo())
+    expect(store().focus).toMatchObject(OCCURRENCE)
+    expect(outputCount()).toBe(outputsBefore)
+    expect(copyToOwnerInput()).toBe(copyBefore)
     expect(consumerConfig("copy_consumer")).toEqual({ code: copyCode })
     expect(consumerConfig("response")).toEqual({ output_mapping: [{ source_port: copyBefore, source_column: "x", output_path: "$.x" }] })
-    expect(fixture.parentGraphRef.current.nodes.find((node) => node.id === "pricing_copy")!.data._sourceHandleInputNames).toMatchObject({ out__child_a: copyBefore })
-    restore(after)
-    expect(fixture.parentGraphRef.current.edges.find((edge) => edge.id === "copy-to-owner")?.data?._inputName).toBe(copyAfter)
+    expect(copySelectors()).toMatchObject({ out__child_a: copyBefore })
+
+    act(() => store().redo())
+    expect(store().focus).toMatchObject(OCCURRENCE)
+    expect(outputCount()).toBe(outputsAfter)
+    expect(copyToOwnerInput()).toBe(copyAfter)
     expect(consumerConfig("copy_consumer")).toEqual({ code: copyCode, input_mapping: { [copyBefore]: copyAfter } })
     expect(consumerConfig("response")).toEqual({ output_mapping: [{ source_port: copyAfter, source_column: "x", output_path: "$.x" }] })
-    expect(fixture.parentGraphRef.current.nodes.find((node) => node.id === "pricing_copy")!.data._sourceHandleInputNames).toMatchObject({ out__child_a: copyAfter })
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    expect(copySelectors()).toMatchObject({ out__child_a: copyAfter })
+    expect(store().undoStack).toHaveLength(1)
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
 
   it("atomically commits a parent-created public input and canonical edge", () => {
     const fixture = makeFixture({ includeInputPort: false })
-    fixture.graphRef.current = {
-      nodes: fixture.parentNodes,
-      edges: fixture.parentEdges,
-    }
-    const parentGraphRef = { current: null }
-    const { result } = renderHook(() => useSubmodelBoundaryEditing({
-      ...hookParams(fixture),
-      activeSubmodelName: null,
-      activeSubmodelInstanceId: null,
-      activeSubmodelDefinitionId: null,
-      nodes: fixture.parentNodes,
-      edges: fixture.parentEdges,
-      graphRef: fixture.graphRef,
-      parentGraphRef,
-    }))
+    loadParent(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
     act(() => {
       expect(result.current.commitBoundaryConnection({
         source: "external",
@@ -311,13 +332,14 @@ describe("useSubmodelBoundaryEditing", () => {
       })).toBe(true)
     })
     expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+    const [, committedEdges, committedSubmodels] = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0]
+    expect(committedSubmodels[DEFINITION_ID]).toMatchObject({
       inputPorts: [{
         name: "external_input",
         targets: [],
       }],
     })
-    expect(fixture.graphRef.current.edges).toEqual([expect.objectContaining({
+    expect(committedEdges).toEqual([expect.objectContaining({
       source: "external",
       target: PLACEHOLDER_ID,
       targetHandle: "in__external_input",
@@ -334,6 +356,7 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(inputData.ports).toHaveLength(1)
     expect(fixture.view.edges).toHaveLength(1)
 
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
     act(() => {
       expect(result.current.commitBoundaryConnection({
@@ -344,17 +367,15 @@ describe("useSubmodelBoundaryEditing", () => {
       })).toBe(true)
     })
 
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    expect(fixture.parentGraphRef.current?.edges).toEqual([
+    expect(store().undoStack).toHaveLength(1)
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(focus().rootEdges).toEqual([
       expect.objectContaining({
         id: "incoming",
         targetHandle: "in__incoming",
       }),
     ])
-    const definition = fixture.submodelsRef.current[DEFINITION_ID] as {
-      inputPorts: Array<{ targets: Array<{ nodeId: string }> }>
-    }
-    expect(definition.inputPorts[0].targets.map((target) => target.nodeId)).toEqual([
+    expect(storedDefinition().inputPorts[0].targets.map((target) => target.nodeId)).toEqual([
       "child_a",
       "child_b",
     ])
@@ -362,69 +383,43 @@ describe("useSubmodelBoundaryEditing", () => {
 
   it("explicitly removes a bound public input in one atomic commit", () => {
     const fixture = makeFixture({ bindInput: true })
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
     act(() => {
       expect(result.current.deleteBoundaryInputPort("incoming")).toBe(true)
     })
 
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    expect(fixture.parentGraphRef.current?.edges).toEqual([])
-    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+    expect(store().undoStack).toHaveLength(1)
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(focus().rootEdges).toEqual([])
+    expect(storedDefinition()).toMatchObject({
       inputPorts: [],
     })
-    const input = fixture.graphRef.current.nodes.find(
+    const input = store().nodes.find(
       (node) => (node.data as unknown as SubmodelPortData).portDirection === "input",
     )!
     expect((input.data as unknown as SubmodelPortData).ports).toEqual([])
-    expect(fixture.graphRef.current.edges.some((edge) => edge.source === input.id)).toBe(false)
+    expect(store().edges.some((edge) => edge.source === input.id)).toBe(false)
   })
 
-  it("restores parent input bindings when undo and redo restore drilled snapshots", () => {
+  it("restores parent input bindings on undo and redo of an input's removal, keeping the submodel open", () => {
     const fixture = makeFixture({ bindInput: true })
-    const originalSnapshot = cloneGraphSnapshot({
-      nodes: fixture.view.nodes,
-      edges: fixture.view.edges as PipelineEdge[],
-      preamble: "",
-      submodels: fixture.submodels,
-    })
-    const { result, rerender } = renderHook(
-      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
-      { initialProps: hookParams(fixture) },
-    )
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
     act(() => {
       expect(result.current.deleteBoundaryInputPort("incoming")).toBe(true)
     })
-    const removedSnapshot = cloneGraphSnapshot({
-      nodes: fixture.graphRef.current.nodes,
-      edges: fixture.graphRef.current.edges as PipelineEdge[],
-      preamble: "",
-      submodels: fixture.submodelsRef.current,
-    })
-    expect(fixture.parentGraphRef.current?.edges).toEqual([])
+    expect(focus().rootEdges).toEqual([])
 
-    rerender({
-      ...hookParams(fixture),
-      nodes: removedSnapshot.nodes,
-      edges: removedSnapshot.edges,
-      submodels: removedSnapshot.submodels,
-    })
-    rerender({
-      ...hookParams(fixture),
-      nodes: originalSnapshot.nodes,
-      edges: originalSnapshot.edges,
-      submodels: originalSnapshot.submodels,
-    })
-    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
+    act(() => store().undo())
+    expect(store().focus).toMatchObject(OCCURRENCE)
+    expect(focus().rootEdges).toEqual(fixture.parentEdges)
 
-    rerender({
-      ...hookParams(fixture),
-      nodes: removedSnapshot.nodes,
-      edges: removedSnapshot.edges,
-      submodels: removedSnapshot.submodels,
-    })
-    expect(fixture.parentGraphRef.current?.edges).toEqual([])
+    act(() => store().redo())
+    expect(store().focus).toMatchObject(OCCURRENCE)
+    expect(focus().rootEdges).toEqual([])
   })
 
   it("restores a parent binding to its own position, not the end of the list", () => {
@@ -434,43 +429,19 @@ describe("useSubmodelBoundaryEditing", () => {
     const fixture = makeFixture({ bindInput: true, outputPorts: ["child_b"] })
     const before = fixture.parentEdges.map((edge) => edge.id)
     expect(before[0]).toBe("incoming")
-    const originalSnapshot = cloneGraphSnapshot({
-      nodes: fixture.view.nodes,
-      edges: fixture.view.edges as PipelineEdge[],
-      preamble: "",
-      submodels: fixture.submodels,
-    })
-    const { result, rerender } = renderHook(
-      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
-      { initialProps: hookParams(fixture) },
-    )
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
     act(() => {
       expect(result.current.deleteBoundaryInputPort("incoming")).toBe(true)
     })
-    const removedSnapshot = cloneGraphSnapshot({
-      nodes: fixture.graphRef.current.nodes,
-      edges: fixture.graphRef.current.edges as PipelineEdge[],
-      preamble: "",
-      submodels: fixture.submodelsRef.current,
-    })
-    expect(fixture.parentGraphRef.current?.edges.map((edge) => edge.id))
+    expect(focus().rootEdges.map((edge) => edge.id))
       .toEqual(before.filter((id) => id !== "incoming"))
 
-    rerender({
-      ...hookParams(fixture),
-      nodes: removedSnapshot.nodes,
-      edges: removedSnapshot.edges,
-      submodels: removedSnapshot.submodels,
-    })
-    rerender({
-      ...hookParams(fixture),
-      nodes: originalSnapshot.nodes,
-      edges: originalSnapshot.edges,
-      submodels: originalSnapshot.submodels,
-    })
+    act(() => store().undo())
 
-    expect(fixture.parentGraphRef.current?.edges.map((edge) => edge.id)).toEqual(before)
+    expect(store().focus).toMatchObject(OCCURRENCE)
+    expect(focus().rootEdges.map((edge) => edge.id)).toEqual(before)
   })
 
   it("resolves changed parent occurrence handles before committing a new public output", async () => {
@@ -478,11 +449,12 @@ describe("useSubmodelBoundaryEditing", () => {
     const output = fixture.view.nodes.find(
       (node) => (node.data as unknown as SubmodelPortData).portDirection === "output",
     )!
-    let finishResolution!: (value: { nodes: Node[]; edges: Edge[] }) => void
-    const identityResolution = new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => {
       finishResolution = resolve
     })
     const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing({
       ...hookParams(fixture),
       resolveGraphIdentities,
@@ -496,7 +468,8 @@ describe("useSubmodelBoundaryEditing", () => {
         targetHandle: null,
       })).toBe(true)
     })
-    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(store().undoStack).toHaveLength(0)
+    expect(storedDefinition().outputPorts).toEqual([])
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
     const candidate = resolveGraphIdentities.mock.calls[0]![0]
     const resolvedParentNodes = candidate.nodes.map((node) => node.id === PLACEHOLDER_ID
@@ -509,18 +482,19 @@ describe("useSubmodelBoundaryEditing", () => {
         }
       : node)
     await act(async () => {
-      finishResolution({ nodes: resolvedParentNodes, edges: [...candidate.edges] })
+      finishResolution({ nodes: resolvedParentNodes, edges: [...candidate.edges] as PipelineEdge[] })
       await identityResolution
     })
 
-    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce())
-    const committedParent = fixture.parentGraphRef.current!.nodes.find(
+    await vi.waitFor(() => expect(store().undoStack).toHaveLength(1))
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    const committedParent = focus().rootNodes.find(
       (node) => node.id === PLACEHOLDER_ID,
     )!
     expect(committedParent.data._sourceHandleInputNames).toEqual({
       out__child_a_input: "Public_child_a_input",
     })
-    expect(fixture.submodelsRef.current[DEFINITION_ID]).toMatchObject({
+    expect(storedDefinition()).toMatchObject({
       outputPorts: [{ name: "child_a_input" }],
     })
   })
@@ -530,11 +504,12 @@ describe("useSubmodelBoundaryEditing", () => {
     const output = fixture.view.nodes.find(
       (node) => (node.data as unknown as SubmodelPortData).portDirection === "output",
     )!
-    let finishResolution!: (value: { nodes: Node[]; edges: Edge[] }) => void
-    const identityResolution = new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => {
       finishResolution = resolve
     })
     const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing({
       ...hookParams(fixture),
       resolveGraphIdentities,
@@ -549,23 +524,145 @@ describe("useSubmodelBoundaryEditing", () => {
       })
     })
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
-    // A structural change — a node leaving the view — is what voids a pending
-    // gesture; a re-rendered but structurally identical graph does not.
-    const externallyChanged = {
-      nodes: fixture.graphRef.current.nodes.filter((node) => node.id !== "child_b"),
-      edges: [...fixture.graphRef.current.edges],
-    }
-    fixture.graphRef.current = externallyChanged
+    // A semantic edit made meanwhile — a node leaving the view — voids the
+    // pending gesture; a re-render or a move does not.
+    act(() => store().setNodesRaw((nodes) => nodes.filter((node) => node.id !== "child_b")))
+    const externallyChanged = store().nodes
+    expect(externallyChanged.map((node) => node.id)).not.toContain("child_b")
+    const canvasBefore = canvasGraph()
+    const submodelsBefore = store().submodels
     const candidate = resolveGraphIdentities.mock.calls[0]![0]
     await act(async () => {
-      finishResolution({ nodes: [...candidate.nodes], edges: [...candidate.edges] })
+      finishResolution({ nodes: [...candidate.nodes], edges: [...candidate.edges] as PipelineEdge[] })
       await identityResolution
     })
 
     await vi.waitFor(() => expect(useToastStore.getState().toasts.at(-1)?.text)
       .toContain("workspace changed"))
+    expect(store().undoStack).toHaveLength(0)
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
-    expect(fixture.graphRef.current).toBe(externallyChanged)
+    expect(store().nodes).toBe(externallyChanged)
+    expect(store().submodels).toBe(submodelsBefore)
+    expect(focus().rootNodes).toBe(fixture.parentNodes)
+    expect(focus().rootEdges).toBe(fixture.parentEdges)
+    expect(canvasGraph()).toBe(canvasBefore)
+  })
+
+  it("keeps a node moved while identities resolve, and still commits the edit", async () => {
+    const fixture = makeFixture()
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => { finishResolution = resolve })
+    const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+
+    act(() => {
+      result.current.commitBoundaryConnection({ source: "child_a", sourceHandle: null, target: output.id, targetHandle: null })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    const moveTo = (x: number, dragging: boolean) => store().setNodesRaw((nodes) =>
+      nodes.map((node) => (node.id === "child_b" ? { ...node, position: { x, y: 640 }, dragging } : node)))
+    act(() => {
+      store().pushSnapshot()
+      moveTo(500, true)
+      moveTo(520, false)
+    })
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 520, y: 640 })
+
+    const candidate = resolveGraphIdentities.mock.calls[0]![0]
+    const resolvedParentNodes = candidate.nodes.map((node) => node.id === PLACEHOLDER_ID
+      ? { ...node, data: { ...node.data, _sourceHandleInputNames: { out__child_a_input: "Public_child_a_input" } } }
+      : node)
+    await act(async () => {
+      finishResolution({ nodes: resolvedParentNodes, edges: [...candidate.edges] as PipelineEdge[] })
+      await identityResolution
+    })
+
+    await vi.waitFor(() => expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input"]))
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 520, y: 640 })
+    expect(store().nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 520, y: 640 })
+    expect(store().undoStack).toHaveLength(2)
+  })
+
+  it("lands a drag still under way when identities resolve, as its own step after the edit", async () => {
+    const fixture = makeFixture()
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => { finishResolution = resolve })
+    const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+    const startedAt = storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position
+
+    act(() => {
+      result.current.commitBoundaryConnection({ source: "child_a", sourceHandle: null, target: output.id, targetHandle: null })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    const moveTo = (x: number, dragging: boolean) => store().setNodesRaw((nodes) =>
+      nodes.map((node) => (node.id === "child_b" ? { ...node, position: { x, y: 640 }, dragging } : node)))
+    act(() => {
+      store().pushSnapshot()
+      moveTo(500, true)
+    })
+
+    const candidate = resolveGraphIdentities.mock.calls[0]![0]
+    const resolvedParentNodes = candidate.nodes.map((node) => node.id === PLACEHOLDER_ID
+      ? { ...node, data: { ...node.data, _sourceHandleInputNames: { out__child_a_input: "Public_child_a_input" } } }
+      : node)
+    await act(async () => {
+      finishResolution({ nodes: resolvedParentNodes, edges: [...candidate.edges] as PipelineEdge[] })
+      await identityResolution
+    })
+    await vi.waitFor(() => expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input"]))
+    // Released where the last frame left it, after the edit landed.
+    act(() => moveTo(500, false))
+
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 500, y: 640 })
+    expect(store().undoStack).toHaveLength(2)
+    act(() => store().undo())
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual(startedAt)
+    expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input"])
+  })
+
+  it.each([
+    ["an Undo and a Redo back to the same document", () => {
+      store().undo()
+      store().redo()
+    }],
+    ["leaving the submodel and opening it again", (fixture: Fixture) => {
+      store().exitSubmodelView()
+      focusView(fixture)
+    }],
+  ] as const)("discards an edit waiting on identities after %s", async (_label, meanwhile) => {
+    const fixture = makeFixture()
+    const output = fixture.view.nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "output")!
+    let finishResolution!: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
+    const identityResolution = new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve) => { finishResolution = resolve })
+    const resolveGraphIdentities = vi.fn((_request: GraphIdentityRequest) => identityResolution)
+    openInStore(fixture)
+    // An earlier step for Undo and Redo to cross.
+    act(() => store().setNodes((nodes) => nodes.map((node) => (
+      node.id === "child_b" ? { ...node, data: { ...node.data, config: { code: "df = child_a" } } } : node))))
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
+
+    act(() => {
+      result.current.commitBoundaryConnection({ source: "child_a", sourceHandle: null, target: output.id, targetHandle: null })
+    })
+    await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledOnce())
+    const documentBefore = store().persistedFingerprint
+    act(() => meanwhile(fixture))
+    expect(store().persistedFingerprint).toBe(documentBefore)
+
+    const candidate = resolveGraphIdentities.mock.calls[0]![0]
+    await act(async () => {
+      finishResolution({ nodes: [...candidate.nodes], edges: [...candidate.edges] as PipelineEdge[] })
+      await identityResolution
+    })
+
+    await vi.waitFor(() => expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed"))
+    expect(storedDefinition().outputPorts).toEqual([])
+    expect(store().persistedFingerprint).toBe(documentBefore)
   })
 
   it("resolves stale parent output handles after an unbound output is removed and reused", async () => {
@@ -585,13 +682,11 @@ describe("useSubmodelBoundaryEditing", () => {
           ...node,
           data: { ...node.data, _sourceHandleInputNames: mapping },
         } : node),
-        edges: [...request.edges],
+        edges: [...request.edges] as PipelineEdge[],
       }
     })
-    const { result, rerender } = renderHook(
-      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
-      { initialProps: { ...hookParams(fixture), resolveGraphIdentities } },
-    )
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing({ ...hookParams(fixture), resolveGraphIdentities }))
 
     act(() => {
       result.current.commitBoundaryConnection({
@@ -599,28 +694,14 @@ describe("useSubmodelBoundaryEditing", () => {
       })
     })
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledTimes(1))
-    rerender({
-      ...hookParams(fixture),
-      nodes: fixture.graphRef.current.nodes,
-      edges: fixture.graphRef.current.edges as PipelineEdge[],
-      submodels: fixture.submodelsRef.current,
-      resolveGraphIdentities,
-    })
+    await vi.waitFor(() => expect(store().undoStack).toHaveLength(1))
 
-    const firstExport = fixture.graphRef.current.edges.find((edge) => edge.source === "child_a")!
+    const firstExport = store().edges.find((edge) => edge.source === "child_a")!
     act(() => expect(result.current.deleteBoundaryEdge(firstExport.id)).toBe(true))
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledTimes(2))
-    expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
+    await vi.waitFor(() => expect(store().undoStack).toHaveLength(2))
+    expect(focus().rootNodes.find((node) => node.id === PLACEHOLDER_ID)
       ?.data._sourceHandleInputNames).toEqual({})
-    rerender({
-      ...hookParams(fixture),
-      nodes: fixture.graphRef.current.nodes,
-      edges: fixture.graphRef.current.edges as PipelineEdge[],
-      submodels: fixture.submodelsRef.current,
-      resolveGraphIdentities,
-    })
 
     act(() => {
       result.current.commitBoundaryConnection({
@@ -628,9 +709,10 @@ describe("useSubmodelBoundaryEditing", () => {
       })
     })
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(3))
-    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledTimes(3))
-    expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
+    await vi.waitFor(() => expect(store().undoStack).toHaveLength(3))
+    expect(focus().rootNodes.find((node) => node.id === PLACEHOLDER_ID)
       ?.data._sourceHandleInputNames).toEqual({ out__child_b_input: "identity_child_b_input" })
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
 
   it("layers overlapping output gestures onto the pending boundary candidate", async () => {
@@ -639,12 +721,13 @@ describe("useSubmodelBoundaryEditing", () => {
       (node) => (node.data as unknown as SubmodelPortData).portDirection === "output",
     )!
     const resolutions: Array<{
-      resolve: (value: { nodes: Node[]; edges: Edge[] }) => void
+      resolve: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
       reject: (reason?: unknown) => void
     }> = []
-    const resolveGraphIdentities = vi.fn((_: GraphIdentityRequest) => new Promise<{ nodes: Node[]; edges: Edge[] }>(
+    const resolveGraphIdentities = vi.fn((_: GraphIdentityRequest) => new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>(
       (resolve, reject) => resolutions.push({ resolve, reject }),
     ))
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing({
       ...hookParams(fixture), resolveGraphIdentities,
     }))
@@ -654,6 +737,7 @@ describe("useSubmodelBoundaryEditing", () => {
       result.current.commitBoundaryConnection({ source: "child_b", sourceHandle: null, target: output.id, targetHandle: null })
     })
     await vi.waitFor(() => expect(resolveGraphIdentities).toHaveBeenCalledTimes(2))
+    expect(store().undoStack).toHaveLength(0)
     const latest = resolveGraphIdentities.mock.calls[1]![0]
     expect((latest.submodels[DEFINITION_ID] as { outputPorts: Array<{ name: string }> })
       .outputPorts.map((port) => port.name)).toEqual(["child_a_input", "child_b_input"])
@@ -668,15 +752,17 @@ describe("useSubmodelBoundaryEditing", () => {
         },
       },
     } : node)
-    await act(async () => resolutions[1]!.resolve({ nodes: resolvedLatestNodes, edges: [...latest.edges] }))
-    await vi.waitFor(() => expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce())
+    await act(async () => resolutions[1]!.resolve({ nodes: resolvedLatestNodes, edges: [...latest.edges] as PipelineEdge[] }))
+    await vi.waitFor(() => expect(store().undoStack).toHaveLength(1))
     await act(async () => resolutions[0]!.reject(new Error("superseded request failed")))
 
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    expect(fixture.parentGraphRef.current!.nodes.find((node) => node.id === PLACEHOLDER_ID)
+    expect(store().undoStack).toHaveLength(1)
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(focus().rootNodes.find((node) => node.id === PLACEHOLDER_ID)
       ?.data._sourceHandleInputNames).toEqual({
         out__child_a_input: "identity_child_a", out__child_b_input: "identity_child_b",
       })
+    expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input", "child_b_input"])
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
@@ -685,16 +771,18 @@ describe("useSubmodelBoundaryEditing", () => {
     const exportEdge = fixture.view.edges.find(
       (edge) => edge.source === "child_a" && edge.target.includes("boundary"),
     )
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
     act(() => {
       expect(result.current.deleteBoundaryEdge(exportEdge!.id)).toBe(true)
     })
 
+    expect(store().undoStack).toHaveLength(0)
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
-    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
-    const definition = fixture.submodelsRef.current[DEFINITION_ID] as { outputPorts: unknown[] }
-    expect(definition.outputPorts).toHaveLength(1)
+    expect(focus().rootEdges).toEqual(fixture.parentEdges)
+    expect(store().edges.map((edge) => edge.id)).toContain(exportEdge!.id)
+    expect(storedDefinition().outputPorts).toHaveLength(1)
   })
 
   it("blocks a mixed boundary and internal edge deletion atomically", () => {
@@ -705,6 +793,7 @@ describe("useSubmodelBoundaryEditing", () => {
     const exportEdge = fixture.view.edges.find(
       (edge) => edge.source === "child_a" && edge.id !== "internal",
     )
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
     act(() => {
@@ -714,67 +803,68 @@ describe("useSubmodelBoundaryEditing", () => {
       ])).toBe(true)
     })
 
+    expect(store().undoStack).toHaveLength(0)
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
-    expect(fixture.graphRef.current.edges.map((edge) => edge.id)).toContain("internal")
-    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
+    expect(store().edges.map((edge) => edge.id)).toEqual(expect.arrayContaining(["internal", exportEdge!.id]))
+    expect(storedDefinition().graph.edges.map((edge) => edge.id)).toContain("internal")
+    expect(focus().rootEdges).toEqual(fixture.parentEdges)
   })
 
-  it("blocks an undo-like rerender that would remove a bound public output", () => {
+  it("leaves a bound public output in the document when the canvas re-renders without it", () => {
+    // Undo and Redo restore the whole document, so nothing re-reconciles the
+    // parent from whatever the canvas shows on a re-render.
     const fixture = makeFixture({ outputPorts: ["child_a"] })
-    const { rerender } = renderHook(
-      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
-      { initialProps: hookParams(fixture) },
-    )
+    openInStore(fixture)
+    const { rerender } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
     const restored = makeFixture()
-    rerender({
-      ...hookParams(fixture),
-      nodes: restored.view.nodes,
-      edges: restored.view.edges as PipelineEdge[],
-      submodels: restored.submodels,
-    })
+    useGraphStore.setState({ nodes: restored.view.nodes, edges: restored.view.edges })
+    rerender()
 
-    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
-    const metadata = fixture.submodelsRef.current[DEFINITION_ID] as {
-      outputPorts: Array<{ name: string }>
-    }
-    expect(metadata.outputPorts.map((port) => port.name)).toEqual(["child_a"])
+    expect(store().undoStack).toHaveLength(0)
+    expect(focus().rootEdges).toEqual(fixture.parentEdges)
+    expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a"])
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
 
-  it("leaves parent refs untouched when history restores a non-drilled snapshot", () => {
+  it("leaves the definition and parent untouched when undo returns to the main pipeline", () => {
     const fixture = makeFixture({ outputPorts: ["child_a"] })
-    const { rerender } = renderHook(
-      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
-      { initialProps: hookParams(fixture) },
-    )
+    loadParent(fixture)
+    // A step made in the main pipeline before the submodel was opened.
+    store().setNodes((nodes) => nodes.map((node) => (
+      node.id === "external" ? { ...node, data: { ...node.data, label: "Policies" } } : node
+    )))
+    focusView(fixture, { nodes: store().nodes, edges: store().edges })
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
-    // Undo past the drill-in boundary: the visible graph becomes the parent
-    // canvas again while the drilled view is still active.
-    rerender({
-      ...hookParams(fixture),
-      nodes: fixture.parentNodes,
-      edges: fixture.parentEdges as PipelineEdge[],
-    })
+    act(() => store().undo())
 
-    const metadata = fixture.submodelsRef.current[DEFINITION_ID] as {
-      graph: { nodes: Node[] }
-      outputPorts: Array<{ name: string }>
-    }
-    expect(metadata.graph.nodes.map((node) => node.id)).toEqual(["child_a", "child_b"])
-    expect(metadata.outputPorts.map((port) => port.name)).toEqual(["child_a"])
-    expect((fixture.parentGraphRef.current?.edges ?? []).map((edge) => edge.id)).toEqual([
+    expect(store().focus).toBeNull()
+    expect(store().nodes.find((node) => node.id === "external")?.data.label).toBe("Node external")
+    expect(storedDefinition().graph.nodes.map((node) => node.id)).toEqual(["child_a", "child_b"])
+    expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a"])
+    expect(store().edges.map((edge) => edge.id)).toEqual([
       "consumer-a-child_a",
       "consumer-b-child_a",
     ])
+    // The main pipeline is no drilled view: the boundary actions do not own it.
+    expect(result.current.commitSharedNodeDeletion(new Set(["child_a"]))).toBe("not-applicable")
+    expect(result.current.deleteBoundaryInputPort("incoming")).toBe(false)
+    expect(store().undoStack).toHaveLength(0)
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
 
   it("does not own ordinary edges or any gesture outside a drilled submodel", () => {
     const fixture = makeFixture()
-    const { result } = renderHook(() => useSubmodelBoundaryEditing({
-      ...hookParams(fixture),
-      activeSubmodelName: null,
-    }))
+    loadParent(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
 
+    expect(result.current.commitBoundaryConnection({
+      source: "external",
+      sourceHandle: null,
+      target: "consumer_a",
+      targetHandle: null,
+    })).toBe(false)
     expect(result.current.commitBoundaryConnection({
       source: "child_a",
       sourceHandle: null,
@@ -786,24 +876,53 @@ describe("useSubmodelBoundaryEditing", () => {
       { type: "remove", id: "missing" },
     ])).toBe(false)
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(store().undoStack).toHaveLength(0)
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("leaves an ordinary edge between two children to the canvas while a submodel is open", () => {
+    const fixture = makeFixture()
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+
+    expect(result.current.commitBoundaryConnection({
+      source: "child_a",
+      sourceHandle: null,
+      target: "child_b",
+      targetHandle: null,
+    })).toBe(false)
+    expect(store().undoStack).toHaveLength(0)
+    expect(store().nodes).toBe(fixture.view.nodes)
+    expect(store().edges).toBe(fixture.view.edges)
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("blocks deletion of a bound child without committing", () => {
     const fixture = makeFixture({ outputPorts: ["child_a"] })
+    openInStore(fixture)
+    const submodelsBefore = store().submodels
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
     expect(result.current.commitSharedNodeDeletion(new Set(["child_a"]))).toBe("blocked")
+    expect(store().undoStack).toHaveLength(0)
+    expect(store().submodels).toBe(submodelsBefore)
+    expect(store().nodes.map((node) => node.id)).toContain("child_a")
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
 
   it("commits deletion of an unbound child exactly once", () => {
     const fixture = makeFixture()
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
     expect(result.current.commitSharedNodeDeletion(new Set(["child_a"]))).toBe("committed")
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    expect(store().undoStack).toHaveLength(1)
+    expect(storedDefinition().graph.nodes.map((node) => node.id)).toEqual(["child_b"])
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
 
   it("applies a mixed React Flow deletion batch in the same reconciled commit", () => {
     const fixture = makeFixture()
+    openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
     expect(result.current.commitSharedNodeDeletion(
       new Set(["child_a"]),
@@ -819,8 +938,9 @@ describe("useSubmodelBoundaryEditing", () => {
       ],
     )).toBe("committed")
 
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    const committedNodes = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0][0] as Node[]
+    expect(store().undoStack).toHaveLength(1)
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    const committedNodes = store().nodes
     expect(committedNodes.some((node) => node.id === "child_a")).toBe(false)
     expect(committedNodes.find((node) => node.id === "child_b")?.position).toEqual({
       x: 42,
@@ -839,11 +959,11 @@ describe("useSubmodelBoundaryEditing", () => {
 
     function deferredResolver() {
       const resolutions: Array<{
-        resolve: (value: { nodes: Node[]; edges: Edge[] }) => void
+        resolve: (value: { nodes: Node[]; edges: PipelineEdge[] }) => void
         reject: (reason?: unknown) => void
       }> = []
       const resolveGraphIdentities = vi.fn((_: GraphIdentityRequest) =>
-        new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve, reject) => {
+        new Promise<{ nodes: Node[]; edges: PipelineEdge[] }>((resolve, reject) => {
           resolutions.push({ resolve, reject })
         }))
       return { resolutions, resolveGraphIdentities }
@@ -852,6 +972,7 @@ describe("useSubmodelBoundaryEditing", () => {
     it("reports a pending commit and settles true once identities land", async () => {
       const fixture = makeUnresolvedFixture()
       const { resolutions, resolveGraphIdentities } = deferredResolver()
+      openInStore(fixture)
       const { result } = renderHook(() => useSubmodelBoundaryEditing({
         ...hookParams(fixture), resolveGraphIdentities,
       }))
@@ -863,20 +984,25 @@ describe("useSubmodelBoundaryEditing", () => {
         )).toBe("pending")
       })
       expect(settled).toEqual([])
-      expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+      expect(store().undoStack).toHaveLength(0)
+      expect(store().nodes.map((node) => node.id)).toContain("child_a")
 
       const request = resolveGraphIdentities.mock.calls[0]![0]
       await act(async () => resolutions[0]!.resolve({
-        nodes: [...request.nodes], edges: [...request.edges],
+        nodes: [...request.nodes], edges: [...request.edges] as PipelineEdge[],
       }))
 
       expect(settled).toEqual([true])
-      expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+      expect(store().undoStack).toHaveLength(1)
+      expect(store().nodes.map((node) => node.id)).not.toContain("child_a")
+      expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
     })
 
     it("settles false without committing when the identity request rejects", async () => {
       const fixture = makeUnresolvedFixture()
       const { resolutions, resolveGraphIdentities } = deferredResolver()
+      openInStore(fixture)
+      const submodelsBefore = store().submodels
       const { result } = renderHook(() => useSubmodelBoundaryEditing({
         ...hookParams(fixture), resolveGraphIdentities,
       }))
@@ -890,12 +1016,16 @@ describe("useSubmodelBoundaryEditing", () => {
       await act(async () => resolutions[0]!.reject(new Error("identity service unavailable")))
 
       expect(settled).toEqual([false])
+      expect(store().undoStack).toHaveLength(0)
+      expect(store().submodels).toBe(submodelsBefore)
+      expect(store().nodes.map((node) => node.id)).toContain("child_a")
       expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
       expect(useToastStore.getState().toasts.map((toast) => toast.type)).toEqual(["error"])
     })
 
     it("settles true synchronously when no identity request is needed", () => {
       const fixture = makeFixture()
+      openInStore(fixture)
       const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
       const settled: boolean[] = []
 
@@ -903,12 +1033,14 @@ describe("useSubmodelBoundaryEditing", () => {
         new Set(["child_a"]), new Set(), undefined, (committed) => settled.push(committed),
       )).toBe("committed")
       expect(settled).toEqual([true])
-      expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+      expect(store().undoStack).toHaveLength(1)
+      expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
     })
 
     it("survives selection and position changes made while identities resolve", async () => {
       const fixture = makeUnresolvedFixture()
       const { resolutions, resolveGraphIdentities } = deferredResolver()
+      openInStore(fixture)
       const { result } = renderHook(() => useSubmodelBoundaryEditing({
         ...hookParams(fixture), resolveGraphIdentities,
       }))
@@ -920,28 +1052,29 @@ describe("useSubmodelBoundaryEditing", () => {
         )).toBe("pending")
       })
 
-      fixture.graphRef.current = {
-        nodes: fixture.graphRef.current.nodes.map((node) => node.id === "child_b"
+      useGraphStore.setState({
+        nodes: store().nodes.map((node) => node.id === "child_b"
           ? { ...node, selected: true, position: { x: 111, y: 222 } }
           : node),
-        edges: fixture.graphRef.current.edges,
-      }
+      })
       const request = resolveGraphIdentities.mock.calls[0]![0]
       await act(async () => resolutions[0]!.resolve({
-        nodes: [...request.nodes], edges: [...request.edges],
+        nodes: [...request.nodes], edges: [...request.edges] as PipelineEdge[],
       }))
 
       expect(settled).toEqual([true])
       expect(useToastStore.getState().toasts).toEqual([])
-      const committedNodes = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0][0] as Node[]
-      const moved = committedNodes.find((node) => node.id === "child_b")!
+      expect(store().undoStack).toHaveLength(1)
+      const moved = store().nodes.find((node) => node.id === "child_b")!
       expect(moved.position).toEqual({ x: 111, y: 222 })
       expect(moved.selected).toBe(true)
+      expect(store().nodes.map((node) => node.id)).not.toContain("child_a")
     })
 
-    it("voids the gesture when a node is removed while identities resolve", async () => {
+    it("voids the gesture when the document is edited while identities resolve", async () => {
       const fixture = makeUnresolvedFixture()
       const { resolutions, resolveGraphIdentities } = deferredResolver()
+      openInStore(fixture)
       const { result } = renderHook(() => useSubmodelBoundaryEditing({
         ...hookParams(fixture), resolveGraphIdentities,
       }))
@@ -953,16 +1086,20 @@ describe("useSubmodelBoundaryEditing", () => {
         )).toBe("pending")
       })
 
-      fixture.graphRef.current = {
-        nodes: fixture.graphRef.current.nodes.filter((node) => node.id !== "child_b"),
-        edges: fixture.graphRef.current.edges,
-      }
+      // A semantic edit made meanwhile voids the gesture.
+      act(() => store().setNodes((nodes) => nodes.map((node) => (
+        node.id === "child_b" ? { ...node, data: { ...node.data, config: { code: "df = child_a" } } } : node))))
+      const externallyChanged = store().nodes
+      const submodelsBefore = store().submodels
       const request = resolveGraphIdentities.mock.calls[0]![0]
       await act(async () => resolutions[0]!.resolve({
-        nodes: [...request.nodes], edges: [...request.edges],
+        nodes: [...request.nodes], edges: [...request.edges] as PipelineEdge[],
       }))
 
       expect(settled).toEqual([false])
+      expect(store().undoStack).toHaveLength(1)
+      expect(store().nodes).toBe(externallyChanged)
+      expect(store().submodels).toBe(submodelsBefore)
       expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
       expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([
         "Shared submodel edit blocked: the workspace changed while parent identities were resolving",

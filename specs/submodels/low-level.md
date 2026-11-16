@@ -187,16 +187,14 @@ Removing one listed frame deletes its `SubmodelInputPort`, every synthetic child
 every `in__<name>` parent binding targeting an occurrence of the definition
 in one history transaction. This operation is intentionally distinct from
 ordinary boundary-edge deletion, which retains the shared in-use guard.
-Input boundary history projections retain that definition-wide parent-binding
-slice, and the parent edge order it was projected from, so Undo and Redo
-restore the interface, its parent connections, and their original positions
-together. Parent edge order is persisted state — the dirty fingerprint
+A boundary edit is one history step of the whole document (the pipeline and
+every definition), so Undo and Redo restore the interface, its parent
+connections, and their original positions together. Parent edge order is persisted state — the dirty fingerprint
 compares it and codegen emits `connect` calls in it — so a restored binding
 returns to its own position rather than to the end of the parent edge list.
-Output boundary history projections retain the occurrence output identities,
-outgoing edge names, and affected parent consumer configs. After prospective
-identities and consumer mappings are reconciled, the same commit replaces that
-projection, so Undo and Redo restore output-count names and Quote Response
+An output-interface edit reconciles the occurrence output identities,
+outgoing edge names, and affected parent consumer configs before it commits,
+in the same step, so Undo and Redo restore output-count names and Quote Response
 source mappings together without changing unrelated parent state. When an edge
 connects two occurrences of that definition, restore its binding before its
 output name: the input projection must not overwrite the resolved output identity.

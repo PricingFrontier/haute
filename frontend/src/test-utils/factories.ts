@@ -39,6 +39,28 @@ export function makeNode(
   } as Node
 }
 
+/**
+ * A node carrying the editor identities a loaded document gives it (named by its
+ * id), as a submodel's children always do, so a view projected from it can name
+ * its edges.
+ */
+export function makeIdentifiedNode(
+  id: string,
+  nodeType = "polars",
+  overrides: Partial<Node> = {},
+): Node {
+  const { data: dataOverrides, ...rest } = overrides
+  return makeNode(id, nodeType, {
+    ...rest,
+    data: {
+      _functionName: id,
+      _defaultInputName: id,
+      _sourceHandleInputNames: {},
+      ...dataOverrides,
+    },
+  })
+}
+
 // ---------------------------------------------------------------------------
 // makeEdge — React Flow Edge
 // ---------------------------------------------------------------------------
@@ -61,7 +83,7 @@ export function makeEdge(
 }
 
 // ---------------------------------------------------------------------------
-// makeSimpleNode — Lightweight SimpleNode (used by buildGraph, NodePanel)
+// makeSimpleNode — Lightweight SimpleNode (used by NodePanel and editor tests)
 // ---------------------------------------------------------------------------
 
 /**
@@ -887,4 +909,18 @@ export function makeCanonicalGraph(
     warning: null,
     ...overrides,
   }
+}
+
+// ---------------------------------------------------------------------------
+// preparedGraph — a test's graph as the request gateway's branded payload
+// ---------------------------------------------------------------------------
+
+import type { GraphPayload, PreparedGraph } from "../api/types"
+
+/**
+ * A graph a test sends straight to a client function that runs the pipeline. In the
+ * app only the request gateway (`utils/requestGateway`) makes a `PreparedGraph`.
+ */
+export function preparedGraph(graph: GraphPayload): PreparedGraph {
+  return graph as PreparedGraph
 }

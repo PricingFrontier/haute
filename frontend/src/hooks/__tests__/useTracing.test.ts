@@ -27,7 +27,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 import { traceCell } from "../../api/client"
@@ -81,12 +81,8 @@ function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
     nodes: [makeNode("n1"), makeNode("n2")] as Node[],
     edges: [makeEdge("n1", "n2")] as Edge[],
     selectedNode: makeNode("n2"),
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
     submodels: {},
-    submodelsRef: { current: {} },
-    preambleRef: { current: "" },
     nodeStatuses: {} as Record<string, NodeStatus>,
     hoveredNodeId: null,
     ...overrides,
@@ -148,10 +144,11 @@ describe("useTracing", () => {
         { name: "audit", source: { nodeId: "child", handleId: "checks" } },
       ],
     } }
+    useGraphStore.setState({ submodels })
     mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["submodel_runtime/again/child"]) })
     const { result } = renderHook(() => useTracing(makeParams({
       nodes: [owner, occurrence], edges: [], selectedNode: occurrence, submodels,
-      submodelsRef: { current: submodels }, previewFrame: frame === "prices" ? "again_premium" : "again_audit",
+      previewFrame: frame === "prices" ? "again_premium" : "again_audit",
       previewOutputHandle: frame === "prices" ? "out__premium" : "out__audit",
     })))
     await act(async () => result.current.handleCellClick(0, "price", { price: 42 }))
@@ -173,6 +170,7 @@ describe("useTracing", () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    useGraphStore.setState({ submodels: {}, focus: null, nodes: [], edges: [] })
   })
 
   it("returns null traceResult initially", () => {
@@ -595,15 +593,30 @@ describe("useTracing", () => {
         outputPorts: [],
       },
     }
+    const viewEdges = [
+      makeEdge(inputBoundary.id, child.id),
+      makeEdge(child.id, outputBoundary.id),
+    ]
+    // Occurrence `pricing` is open in the store: the request's runtime id comes from its focus.
+    useGraphStore.setState({
+      submodels,
+      focus: {
+        instanceId: "pricing",
+        definitionId: "definition_pricing",
+        readOnly: false,
+        rootNodes: [makeNode("pricing", NODE_TYPES.SUBMODEL, { data: {
+          label: "pricing", nodeType: NODE_TYPES.SUBMODEL, config: { definition_id: "definition_pricing" },
+        } })],
+        rootEdges: [],
+      },
+      nodes: [inputBoundary, child, outputBoundary],
+      edges: viewEdges,
+    })
     const params = makeParams({
       activeSubmodelIdentity: { instanceId: "pricing", definitionId: "definition_pricing" },
       nodes: [inputBoundary, child, outputBoundary],
       submodels,
-      submodelsRef: { current: submodels },
-      edges: [
-        makeEdge(inputBoundary.id, child.id),
-        makeEdge(child.id, outputBoundary.id),
-      ],
+      edges: viewEdges,
       selectedNode: child,
     })
     mockTraceCell.mockResolvedValue({

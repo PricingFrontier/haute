@@ -21,7 +21,9 @@ import { toSimpleEdge, toSimpleNode } from "../../hooks/usePanelGraphContext"
 import { applyPreviewResultColumnsToNodes } from "../../hooks/usePipelineAPI"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
-import { makeNode as factoryNode, makePreviewResponse } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNode as factoryNode, makePreviewResponse } from "../../test-utils/factories"
+import { documentRequestScope } from "../../utils/requestGateway"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
 
 const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
@@ -245,7 +247,7 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
     ...panelOverrides,
   }
   const result = render(
-    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble}>
       <NodePanel {...props} />
     </GraphProvider>,
   )
@@ -378,6 +380,7 @@ describe("NodePanel", () => {
     })
     useNodeDataStore.getState().reset()
     useDocumentStatusStore.getState().reset()
+    useGraphStore.getState().resetForTests()
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
@@ -867,7 +870,7 @@ describe("NodePanel", () => {
     expect(onRenameNode).toHaveBeenCalledWith("first", "Renamed First")
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={secondNode} />
       </GraphProvider>,
     )
@@ -1122,7 +1125,7 @@ describe("NodePanel", () => {
 
     // A code edit clears the stash until the refreshed preview records it again.
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={scoreNode({ output_column: "prediction", code: "df = df.filter(pl.col(\"pre" }, false)} />
       </GraphProvider>,
     )
@@ -1130,7 +1133,7 @@ describe("NodePanel", () => {
 
     // Any other setting drops them until the node is previewed again.
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={scoreNode({ output_column: "pred_freq", code: "df = df.filter(pl.col(\"pre" }, false)} />
       </GraphProvider>,
     )
@@ -1186,7 +1189,7 @@ describe("NodePanel", () => {
       data: { label: "Second input", description: "", nodeType: "dataInput", config: {} },
     })
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={second} />
       </GraphProvider>,
     )
@@ -1465,6 +1468,66 @@ describe("NodePanel", () => {
     expect(screen.getByText("Running")).toBeVisible()
   })
 
+  it("marks Train and Solve only in the occurrence of a submodel whose child runs the job", () => {
+    // The owner "pricing" and its read-only copy "pricing_copy" show the same children.
+    const occurrence = (id: string, instanceOf?: string) => factoryNode(id, "submodel", {
+      data: { label: id, nodeType: "submodel", config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) } },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [occurrence("pricing"), occurrence("pricing_copy", "pricing")],
+      edges: [],
+      preamble: "",
+      submodels: {
+        pricing: {
+          definitionId: "pricing",
+          file: "modules/pricing.py",
+          graph: {
+            nodes: [
+              makeIdentifiedNode("model_1", "modelling", { data: { label: "ML", nodeType: "modelling", config: {} } }),
+              makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Opt", nodeType: "optimiser", config: {} } }),
+            ],
+            edges: [],
+          },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    })
+    const job = { progress: null, error: null, configHash: "hash", source: "live", structuralVersion: 0 }
+    useNodeResultsStore.setState({
+      trainJobs: { [addressKey(childAddress("pricing", "model_1"))]: { ...job, jobId: "train_1", nodeId: "model_1", nodeLabel: "ML" } },
+      solveJobs: { [addressKey(childAddress("pricing", "opt_1"))]: { ...job, jobId: "solve_1", nodeId: "opt_1", nodeLabel: "Opt", constraints: {} } },
+    })
+    const model = makeNode({
+      id: "model_1",
+      data: { label: "ML", description: "", nodeType: "modelling", config: { algorithm: "catboost", loss_function: "RMSE" } },
+    })
+    const optimiser = makeNode({
+      id: "opt_1",
+      data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode: "online" } },
+    })
+    const show = (instanceId: string) => act(() => {
+      const store = useGraphStore.getState()
+      if (store.focus) store.exitSubmodelView()
+      store.enterSubmodelView({ instanceId, definitionId: "pricing" })
+    })
+
+    show("pricing")
+    const owner = renderPanel({ node: model })
+    expect(screen.getByRole("tab", { name: "Train" })).toHaveAccessibleDescription("Training is running")
+    owner.unmount()
+    const ownerOptimiser = renderPanel({ node: optimiser })
+    expect(screen.getByRole("tab", { name: "Solve" })).toHaveAccessibleDescription("Solve is running")
+    ownerOptimiser.unmount()
+
+    show("pricing_copy")
+    const copy = renderPanel({ node: model })
+    expect(screen.getByRole("tab", { name: "Train" })).not.toHaveAccessibleDescription()
+    copy.unmount()
+    renderPanel({ node: optimiser })
+    expect(screen.getByRole("tab", { name: "Solve" })).not.toHaveAccessibleDescription()
+  })
+
   it("renders OptimiserConfig for optimiser nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "Opt", description: "", nodeType: "optimiser", config: {} } }) })
     expect(screen.getByTestId("OptimiserConfig")).toBeInTheDocument()
@@ -1640,6 +1703,18 @@ describe("NodePanel", () => {
     // Seed a non-default preview pane so the untouched assertions below prove
     // the editor leaves it alone rather than clearing it.
     useUIStore.setState({ explorePreviewPanes: { explore_1: "overview" } })
+    // The pipeline the editor holds, which a request reads from the graph store.
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [sourceNode, exploreNode].map((node) => ({
+        id: node.id,
+        type: node.data.nodeType,
+        position: { x: 0, y: 0 },
+        data: node.data,
+      })),
+      edges: [sourceEdge],
+      preamble: "",
+      submodels: {},
+    })
     const { rerender, props } = renderPanel({
       node: exploreNode,
       allNodes: [sourceNode, exploreNode],
@@ -1730,7 +1805,7 @@ describe("NodePanel", () => {
           },
         ],
         edges: [sourceEdge],
-        submodels: undefined,
+        submodels: {},
         preamble: "",
         global_constants: [],
         global_constants_error: null,
@@ -1763,14 +1838,14 @@ describe("NodePanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={otherNode} />
       </GraphProvider>,
     )
     expect(screen.getByTestId("TransformEditor")).toBeInTheDocument()
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={exploreNode} />
       </GraphProvider>,
     )
@@ -1941,7 +2016,7 @@ describe("NodePanel", () => {
     expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={secondExploreNode} />
       </GraphProvider>,
     )
@@ -1952,7 +2027,7 @@ describe("NodePanel", () => {
     expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
         <NodePanel {...props} node={firstExploreNode} />
       </GraphProvider>,
     )
@@ -2281,7 +2356,7 @@ describe("NodePanel", () => {
       expect(firstSources[0].name).toBe("policies")
 
       rerender(
-        <GraphProvider
+        <GraphProvider requestScope={documentRequestScope}
           allNodes={[apiInput, target]}
           edges={[{ ...firstEdge, sourceHandle: "drivers" }]}
         >
@@ -2329,7 +2404,7 @@ describe("NodePanel", () => {
         },
       })
       rerender(
-        <GraphProvider
+        <GraphProvider requestScope={documentRequestScope}
           allNodes={[renamedApiInput, target]}
           edges={[{ ...edge, sourceHandle: "policies" }]}
         >
@@ -2382,7 +2457,7 @@ describe("NodePanel", () => {
         },
       })
       rerender(
-        <GraphProvider allNodes={[resolvedApi, target]} edges={[edge]}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[resolvedApi, target]} edges={[edge]}>
           <NodePanel {...props} />
         </GraphProvider>,
       )
@@ -2516,7 +2591,7 @@ describe("NodePanel", () => {
         },
       })
       rerender(
-        <GraphProvider
+        <GraphProvider requestScope={documentRequestScope}
           allNodes={[renamedOccurrence, target]}
           edges={edges}
           submodels={{
@@ -2850,7 +2925,7 @@ describe("NodePanel", () => {
 
       const onUpdateNode = vi.fn(() => ({ ok: true as const }))
       const { rerender } = render(
-        <GraphProvider allNodes={allNodes} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges}>
           <NodePanel
             node={editedNode1}
             onClose={vi.fn()}
@@ -2873,7 +2948,7 @@ describe("NodePanel", () => {
       })
 
       rerender(
-        <GraphProvider allNodes={[origNode, upOrig, upInst, editedNode2]} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[origNode, upOrig, upInst, editedNode2]} edges={edges}>
           <NodePanel
             node={editedNode2}
             onClose={vi.fn()}
@@ -2984,7 +3059,7 @@ describe("NodePanel", () => {
       const allNodes = [upstreamNode, transformNode]
 
       const { rerender } = render(
-        <GraphProvider allNodes={allNodes} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges}>
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
@@ -2998,7 +3073,7 @@ describe("NodePanel", () => {
       const firstColumns = transformEditorProps.at(-1)?.upstreamColumns
 
       rerender(
-        <GraphProvider allNodes={allNodes} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges}>
           <NodePanel
             node={{ ...transformNode }}
             onClose={vi.fn()}
@@ -3035,7 +3110,7 @@ describe("NodePanel", () => {
       const edges: SimpleEdge[] = [{ id: "e1", source: "up_1", target: "polars_1" }]
 
       const { rerender } = render(
-        <GraphProvider allNodes={[upstreamNode, transformNode]} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[upstreamNode, transformNode]} edges={edges}>
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
@@ -3049,7 +3124,7 @@ describe("NodePanel", () => {
       const firstColumns = transformEditorProps.at(-1)?.upstreamColumns
 
       rerender(
-        <GraphProvider allNodes={[{ ...upstreamNode }, updatedTransformNode]} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[{ ...upstreamNode }, updatedTransformNode]} edges={edges}>
           <NodePanel
             node={updatedTransformNode}
             onClose={vi.fn()}
@@ -3095,7 +3170,7 @@ describe("NodePanel", () => {
       const edges: SimpleEdge[] = [{ id: "e1", source: "up_1", target: "polars_1" }]
 
       const { rerender } = render(
-        <GraphProvider allNodes={[upstreamNode, transformNode]} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[upstreamNode, transformNode]} edges={edges}>
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
@@ -3109,7 +3184,7 @@ describe("NodePanel", () => {
       const firstColumns = transformEditorProps.at(-1)?.upstreamColumns
 
       rerender(
-        <GraphProvider allNodes={[updatedUpstreamNode, transformNode]} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[updatedUpstreamNode, transformNode]} edges={edges}>
           <NodePanel
             node={transformNode}
             onClose={vi.fn()}
@@ -3180,7 +3255,7 @@ describe("NodePanel", () => {
     it("gives a drilled banding fed by the submodel's Input card that port's columns, still after adding a factor", () => {
       const policy = [{ name: "policy_id", dtype: "String" }, { name: "age", dtype: "Int64" }]
       const children = [
-        factoryNode("bands", "banding", { data: { label: "bands", nodeType: "banding", config: { factors: [] } } }),
+        makeIdentifiedNode("bands", "banding", { data: { label: "bands", nodeType: "banding", config: { factors: [] } } }),
       ]
       const view = buildSubmodelViewGraph({
         submodelName: "pricing",
@@ -3223,7 +3298,7 @@ describe("NodePanel", () => {
       const editedBands = { ...bands, data: edited }
       const editedNodes = allNodes.map((node) => (node.id === "bands" ? editedBands : node))
       rerender(
-        <GraphProvider allNodes={editedNodes} edges={edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={editedNodes} edges={edges}>
           <NodePanel {...props} node={editedBands} />
         </GraphProvider>,
       )

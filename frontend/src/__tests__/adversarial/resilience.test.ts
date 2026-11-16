@@ -31,9 +31,10 @@ import useSettingsStore from "../../stores/useSettingsStore.ts"
 
 // ── Utility imports ──────────────────────────────────────────────
 import { computeNextNodeId, normalizeEdges } from "../../utils/graphHelpers.ts"
-import { buildGraph } from "../../utils/buildGraph.ts"
-import { makeNode, makeEdge, makeSimpleNode, makeSimpleEdge, makeTrainResult, makeSolveResult } from "../../test-utils/factories.ts"
+import { documentGraphPayload } from "../../utils/buildGraph.ts"
+import { makeNode, makeEdge, makeTrainResult, makeSolveResult } from "../../test-utils/factories.ts"
 import { makePreviewData } from "../../utils/makePreviewData.ts"
+import type { PipelineEdge } from "../../types/node.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -72,6 +73,20 @@ function resetStores() {
     redoStack: [],
     structuralVersion: 0,
   })
+}
+
+function loadDocument(nodes: Node[], edges: Edge[] = []) {
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges: edges as PipelineEdge[], preamble: "", submodels: {} })
+}
+
+/** The request payload of a document held in the graph store, as every request sends it. */
+function payloadOf(nodes: Node[], edges: Edge[] = []) {
+  loadDocument(nodes, edges)
+  try {
+    return documentGraphPayload()
+  } finally {
+    useGraphStore.getState().resetForTests()
+  }
 }
 
 function generateLargeGraph(nodeCount: number, edgeCount: number) {
@@ -195,8 +210,8 @@ describe("1. API returns unexpected shapes", () => {
       expect(normalizeEdges([])).toEqual([])
     })
 
-    it("buildGraph handles empty arrays for nodes and edges", () => {
-      const result = buildGraph([], [])
+    it("the request payload handles an empty document", () => {
+      const result = payloadOf([], [])
       expect(result.nodes).toEqual([])
       expect(result.edges).toEqual([])
     })
@@ -255,21 +270,20 @@ describe("3. Very large graph (500 nodes, 1000 edges)", () => {
     expect(elapsed).toBeLessThan(100)
   })
 
-  it("buildGraph with 500 nodes completes in reasonable time", () => {
-    const simpleNodes = Array.from({ length: 500 }, (_, i) =>
-      makeSimpleNode(`node_${i}`, "polars"),
-    )
-    const simpleEdges = Array.from({ length: 1000 }, (_, i) =>
-      makeSimpleEdge(`e_${i}`, `node_${i % 500}`, `node_${(i + 1) % 500}`),
-    )
+  it("the request payload of a 500-node document completes in reasonable time", () => {
+    const { nodes, edges } = generateLargeGraph(500, 1000)
+    loadDocument(nodes, edges)
+    try {
+      const start = performance.now()
+      const result = documentGraphPayload()
+      const elapsed = performance.now() - start
 
-    const start = performance.now()
-    const result = buildGraph(simpleNodes, simpleEdges)
-    const elapsed = performance.now() - start
-
-    expect(result.nodes).toHaveLength(500)
-    expect(result.edges).toHaveLength(1000)
-    expect(elapsed).toBeLessThan(200)
+      expect(result.nodes).toHaveLength(500)
+      expect(result.edges).toHaveLength(1000)
+      expect(elapsed).toBeLessThan(200)
+    } finally {
+      useGraphStore.getState().resetForTests()
+    }
   })
 
   it("nodeResultsStore handles 500 preview writes within the bounded preview cache", () => {
@@ -461,20 +475,20 @@ describe("4. Rapid undo/redo", () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe("5. Node with missing data.config", () => {
-  it("buildGraph handles node with undefined config", () => {
-    const nodeNoConfig = makeSimpleNode("n1", "polars")
+  it("the request payload handles a node with undefined config", () => {
+    const nodeNoConfig = makeNode("n1", "polars")
     // Explicitly remove config
     delete (nodeNoConfig.data as Record<string, unknown>).config
 
-    expect(() => buildGraph([nodeNoConfig], [])).not.toThrow()
-    const result = buildGraph([nodeNoConfig], [])
+    expect(() => payloadOf([nodeNoConfig])).not.toThrow()
+    const result = payloadOf([nodeNoConfig])
     expect(result.nodes[0].data.config).toBeUndefined()
   })
 
-  it("buildGraph handles node with null config", () => {
-    const nodeNullConfig = makeSimpleNode("n1", "polars", { config: null as unknown as Record<string, unknown> })
+  it("the request payload handles a node with null config", () => {
+    const nodeNullConfig = makeNode("n1", "polars", { data: { config: null } as unknown as Node["data"] })
 
-    expect(() => buildGraph([nodeNullConfig], [])).not.toThrow()
+    expect(() => payloadOf([nodeNullConfig])).not.toThrow()
   })
 
   it("nodeResultsStore.setPreview works for a node with missing config", () => {
@@ -525,12 +539,12 @@ describe("6. Empty graph", () => {
     expect(normalizeEdges([])).toEqual([])
   })
 
-  it("buildGraph with no nodes and no edges returns valid structure", () => {
-    const result = buildGraph([], [])
+  it("the request payload of a document with no nodes and no edges is a valid structure", () => {
+    const result = payloadOf([], [])
     expect(result).toEqual({
       nodes: [],
       edges: [],
-      submodels: undefined,
+      submodels: {},
       preamble: "",
       global_constants: [],
       global_constants_error: null,
@@ -610,14 +624,14 @@ describe("7. Duplicate node IDs", () => {
     })
   })
 
-  it("buildGraph preserves duplicate node IDs (no dedup at this layer)", () => {
+  it("the request payload preserves duplicate node IDs (no dedup at this layer)", () => {
     const nodes = [
-      makeSimpleNode("dup", "polars"),
-      makeSimpleNode("dup", "polars"),
+      makeNode("dup", "polars"),
+      makeNode("dup", "polars"),
     ]
 
-    const result = buildGraph(nodes, [])
-    // buildGraph is a pass-through — it doesn't deduplicate
+    const result = payloadOf(nodes)
+    // The payload is a pass-through — it doesn't deduplicate
     expect(result.nodes).toHaveLength(2)
     expect(result.nodes[0].id).toBe("dup")
     expect(result.nodes[1].id).toBe("dup")
@@ -664,11 +678,11 @@ describe("8. Self-referencing edge", () => {
     expect(normalized[0].type).toBe("default")
   })
 
-  it("buildGraph includes self-referencing edges", () => {
-    const nodes = [makeSimpleNode("n1", "polars")]
-    const edges = [makeSimpleEdge("e_self", "n1", "n1")]
+  it("the request payload includes self-referencing edges", () => {
+    const nodes = [makeNode("n1", "polars")]
+    const edges = [makeEdge("n1", "n1", { id: "e_self" })]
 
-    const result = buildGraph(nodes, edges)
+    const result = payloadOf(nodes, edges)
     expect(result.edges).toHaveLength(1)
     expect(result.edges[0].source).toBe("n1")
     expect(result.edges[0].target).toBe("n1")
@@ -698,14 +712,14 @@ describe("9. Orphan edges", () => {
     expect(normalized[1].target).toBe("ghost_node")
   })
 
-  it("buildGraph includes orphan edges (validation is server-side)", () => {
-    const nodes = [makeSimpleNode("n1", "polars")]
+  it("the request payload includes orphan edges (validation is server-side)", () => {
+    const nodes = [makeNode("n1", "polars")]
     const edges = [
-      makeSimpleEdge("e1", "n1", "n2"), // n2 does not exist
-      makeSimpleEdge("e2", "n3", "n1"), // n3 does not exist
+      makeEdge("n1", "n2", { id: "e1" }), // n2 does not exist
+      makeEdge("n3", "n1", { id: "e2" }), // n3 does not exist
     ]
 
-    const result = buildGraph(nodes, edges)
+    const result = payloadOf(nodes, edges)
     expect(result.nodes).toHaveLength(1)
     expect(result.edges).toHaveLength(2)
   })

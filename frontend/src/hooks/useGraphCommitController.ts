@@ -1,4 +1,5 @@
-import { useCallback, useLayoutEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react"
+import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
+import { useCallback, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react"
 import { EditorNameCollisionError } from "../utils/editorIdentities"
 import type { Edge, Node } from "@xyflow/react"
 
@@ -11,7 +12,6 @@ import {
   type PreparedNodeUpdate,
 } from "../utils/nodeUpdatePlan"
 
-type GraphSnapshot = { nodes: Node[]; edges: Edge[] }
 type ToastType = "success" | "error" | "warning" | "info"
 
 /**
@@ -38,8 +38,6 @@ const SUPERSEDED_UPDATE =
   "Node update was not applied because the document, editing capability, or a newer node edit superseded it."
 
 export type UseGraphCommitControllerOptions = {
-  graphRef: MutableRefObject<GraphSnapshot>
-  submodelsRef: MutableRefObject<Record<string, unknown>>
   readDocumentIdentity: () => string
   readOnly: boolean
   reservedApiInputFrameLabels: ReadonlySet<string>
@@ -74,8 +72,8 @@ export type GraphCommitController = {
  * asynchronous candidate still owns the graph/document fence and may commit.
  */
 export default function useGraphCommitController({
-  graphRef,
-  submodelsRef,
+  
+  
   readDocumentIdentity,
   readOnly,
   reservedApiInputFrameLabels,
@@ -148,24 +146,24 @@ export default function useGraphCommitController({
     data,
     refreshSourceIdentity,
     readOnly: contextRef.current.readOnly,
-    graph: graphRef.current,
-    submodels: submodelsRef.current,
+    graph: canvasGraph(),
+    submodels: useGraphStore.getState().submodels,
     reservedApiInputFrameLabels,
-  }), [graphRef, reservedApiInputFrameLabels, submodelsRef])
+  }), [reservedApiInputFrameLabels])
 
   // What an identity resolution depends on: the node's own authored fields and
   // the definition interfaces. Positions, selection and preview metadata
   // (underscore-prefixed data) change constantly and must not invalidate it.
   const editKey = useCallback((nodeId: string): string => {
-    const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId)
+    const node = canvasGraph().nodes.find((candidate) => candidate.id === nodeId)
     const data = (node?.data ?? {}) as Record<string, unknown>
     return JSON.stringify({
       label: data.label ?? null,
       nodeType: data.nodeType ?? null,
       config: data.config ?? null,
-      submodels: structuralFingerprint({ submodels: submodelsRef.current }),
+      submodels: structuralFingerprint({ submodels: useGraphStore.getState().submodels }),
     })
-  }, [graphRef, submodelsRef])
+  }, [])
 
   const beginRequest = useCallback((nodeId: string): GraphCommitRequest => {
     const generation = (requestGenerationsRef.current.get(nodeId) ?? 0) + 1
@@ -198,8 +196,6 @@ export default function useGraphCommitController({
   const commit = useCallback((prepared: PreparedNodeUpdate): void => {
     // Keep request-facing refs coherent immediately; the store subscription
     // effects will observe the same identities after React commits.
-    graphRef.current = { nodes: prepared.nodes, edges: prepared.edges }
-    submodelsRef.current = prepared.submodels
     commitGraph(prepared.nodes, prepared.edges, prepared.submodels)
     setSelectedNode((previous) => (
       previous?.id === prepared.nodeId
@@ -213,7 +209,7 @@ export default function useGraphCommitController({
       "warning",
       `Disconnected ${prepared.removed.length} edge${one ? "" : "s"} from ${label}: the source frame${one ? " no longer exists" : "s no longer exist"} after your edit.`,
     )
-  }, [addToast, commitGraph, graphRef, setSelectedNode, submodelsRef])
+  }, [addToast, commitGraph, setSelectedNode])
 
   /**
    * Resolves a request input's draft and commits it while it is the node's
@@ -241,7 +237,7 @@ export default function useGraphCommitController({
     let request = firstRequest
     try {
       for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
-        const liveNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+        const liveNode = canvasGraph().nodes.find((node) => node.id === nodeId)
         if (!liveNode) {
           retireDraft(nodeId, draft)
           return { ok: false, error: `Cannot update missing node "${nodeId}".` }
@@ -277,13 +273,13 @@ export default function useGraphCommitController({
         error: `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
       }
     }
-  }, [beginRequest, commit, contextInvalidated, graphRef, prepare, requestInvalidated, requestIsStale, resolveNodeIdentities, retireDraft])
+  }, [beginRequest, commit, contextInvalidated, prepare, requestInvalidated, requestIsStale, resolveNodeIdentities, retireDraft])
 
   const onUpdateNode = useCallback((
     nodeId: string,
     data: Record<string, unknown>,
   ): OnUpdateConfigResult => {
-    const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+    const currentNode = canvasGraph().nodes.find((node) => node.id === nodeId)
     if (!currentNode) return { ok: false, error: `Cannot update missing node "${nodeId}".` }
     if (currentNode.data.label !== data.label) {
       return {
@@ -311,14 +307,14 @@ export default function useGraphCommitController({
       if (!result.ok) addToast("error", result.error)
     })
     return { ok: true }
-  }, [addToast, beginRequest, commit, graphRef, prepare, publishDrafts, registerPendingCommit, resolveDraft])
+  }, [addToast, beginRequest, commit, prepare, publishDrafts, registerPendingCommit, resolveDraft])
 
   const onRenameNode = useCallback((
     nodeId: string,
     label: string,
   ): Promise<OnUpdateConfigResult> => {
     if (contextRef.current.readOnly) return Promise.resolve({ ok: false, error: "This pipeline document is read-only." })
-    const initialNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+    const initialNode = canvasGraph().nodes.find((node) => node.id === nodeId)
     if (!initialNode) return Promise.resolve({ ok: false, error: `Cannot rename missing node "${nodeId}".` })
     if (initialNode.data.label === label) return Promise.resolve({ ok: true })
     const isOccurrence = (node: Node): boolean => (
@@ -345,7 +341,7 @@ export default function useGraphCommitController({
     const pending = (async (): Promise<OnUpdateConfigResult> => {
       try {
         for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
-          const currentNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+          const currentNode = canvasGraph().nodes.find((node) => node.id === nodeId)
           if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
           const isSubmodel = isOccurrence(currentNode)
           const request = beginRequest(nodeId)
@@ -411,7 +407,7 @@ export default function useGraphCommitController({
     })()
     registerPendingCommit(pending)
     return pending
-  }, [beginRequest, commit, graphRef, prepare, readNamingContextKey, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])
+  }, [beginRequest, commit, prepare, readNamingContextKey, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])
 
   return { onUpdateNode, onRenameNode, waitForPendingCommits, pendingNodeData }
 }

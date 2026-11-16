@@ -11,10 +11,9 @@ import {
   type NodeStatus,
 } from "../types/node"
 import { traceCell } from "../api/client"
-import { resolveGraphFromRefs } from "../utils/buildGraph"
+import { canvasNodeAddress, documentRequestScope, preparePipelineRequest, runtimeNodeId } from "../utils/requestGateway"
+import { childAddress } from "../utils/nodeAddress"
 import {
-  qualifiedRuntimeNodeId,
-  runtimeNodeIdForVisibleNode,
   submodelOutputPreview,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
@@ -40,11 +39,7 @@ interface TracingParams {
   edges: Edge[]
   submodels: Record<string, unknown>
   selectedNode: Node | null
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
   activeSubmodelIdentity: DrilledOccurrenceIdentity | null
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
-  preambleRef: React.MutableRefObject<string>
   nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
   /** The node a trace card or derivation row points at, ringed while a trace shows. */
@@ -231,8 +226,7 @@ const IDLE_TRACE_STATE: TraceRequestState = { status: "idle" }
 
 export default function useTracing({
   nodes, edges, submodels, selectedNode,
-  graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
-  preambleRef,
+  activeSubmodelIdentity, 
   nodeStatuses,
   hoveredNodeId,
   traceFocusNodeId = null,
@@ -372,10 +366,10 @@ export default function useTracing({
         current.capabilities?.can_execute === true
     }
     const output = nodeData(selectedNode).nodeType === NODE_TYPES.SUBMODEL
-      ? submodelOutputPreview(selectedNode, submodelsRef.current, previewOutputHandle)
+      ? submodelOutputPreview(selectedNode, useGraphStore.getState().submodels, previewOutputHandle)
       : undefined
     if (output === null) return
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const graph = preparePipelineRequest(documentRequestScope).graph
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
     traceAbort.current?.abort()
@@ -407,11 +401,7 @@ export default function useTracing({
     traceCell({
       graph,
       row_index: rowIndex,
-      target_node_id: output?.nodeId ?? runtimeNodeIdForVisibleNode(
-        nodesRef.current,
-        selectedNode.id,
-        activeSubmodelIdentity,
-      ),
+      target_node_id: output?.nodeId ?? runtimeNodeId(canvasNodeAddress(selectedNode.id)),
       column,
       row_limit: rowLimit,
       source: activeSource,
@@ -485,7 +475,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
+  }, [selectedNode, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace
@@ -524,7 +514,7 @@ export default function useTracing({
         )
       }
       for (const child of definition.graph.nodes) {
-        map.set(qualifiedRuntimeNodeId(node.id, child.id), node.id)
+        map.set(runtimeNodeId(childAddress(node.id, child.id)), node.id)
       }
     }
 
@@ -538,10 +528,7 @@ export default function useTracing({
         )
       }
       for (const child of visibleChildNodes) {
-        map.set(
-          runtimeNodeIdForVisibleNode(nodes, child.id, drilledIdentity),
-          child.id,
-        )
+        map.set(runtimeNodeId(childAddress(drilledIdentity.instanceId, child.id)), child.id)
       }
     }
 

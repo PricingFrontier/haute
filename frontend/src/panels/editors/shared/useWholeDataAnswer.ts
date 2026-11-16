@@ -1,7 +1,8 @@
+import { useRequestScope } from "../../useGraph"
 import { useEffect, useRef, useState } from "react"
 
 import { apiErrorMessage } from "../../../api/errors"
-import type { GraphPayload } from "../../../api/types"
+import type { PreparedGraph } from "../../../api/types"
 import useNodeDataCache, { nodeDataProblemText, type NodeDataCache } from "../../../hooks/useNodeDataCache"
 import {
   captureDocumentExecutionFence,
@@ -9,7 +10,7 @@ import {
 } from "../../../stores/useDocumentStatusStore"
 import useNodeDataStore from "../../../stores/useNodeDataStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
-import { nodeRequestTarget } from "../../../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest } from "../../../utils/requestGateway"
 import type { SimpleEdge, SimpleNode } from "../_shared"
 
 /** How long an editor waits after the last edit before asking about it. */
@@ -101,7 +102,7 @@ export interface WholeDataQuestion {
   /** The editor's `askedFor`, for the request to read back. */
   asked: string
   /** The graph to send: inside an open submodel, the whole pipeline. */
-  graph: GraphPayload
+  graph: PreparedGraph
   /** The node's id in `graph`: inside an open submodel, its runtime id. */
   nodeId: string
   source: string
@@ -191,6 +192,7 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
   ask,
   failureMessage,
 }: UseWholeDataAnswerInput<TResponse>): WholeDataAnswer<TResponse> {
+  const requestScope = useRequestScope()
   const activeSource = useSettingsStore((s) => s.activeSource)
   const cache = useNodeDataCache({ node, allNodes, edges, submodels, preamble })
   const [answer, setAnswer] = useState<TaggedAnswer<TResponse | null> | null>(null)
@@ -211,7 +213,8 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
     subject === null ? null : JSON.stringify({ nodeId, subject, activeSource, available, dataVersion })
 
   useEffect(() => {
-    if (!nodeId || !askedFor || available !== "current") {
+    // A saved version (the comparison view) runs nothing, so nothing is asked.
+    if (!nodeId || !askedFor || available !== "current" || requestScope === null) {
       return
     }
     const fence = captureDocumentExecutionFence()
@@ -221,14 +224,18 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
       question.controller = controller
       inFlight.current = question
       setLoading({ identity: requestIdentity, value: true })
-      const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
-      askRef.current({
-        asked: askedFor,
-        graph: target.graph,
-        nodeId: target.nodeId,
-        source: activeSource,
-        signal: controller.signal,
-      })
+      // Prepared in the chain, so a request that cannot be built fails like one refused.
+      Promise.resolve()
+        .then(() => {
+          const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
+          return askRef.current({
+            asked: askedFor,
+            graph: target.graph,
+            nodeId: target.nodeId,
+            source: target.source,
+            signal: controller.signal,
+          })
+        })
         .then((response) => {
           if (
             controller.signal.aborted ||

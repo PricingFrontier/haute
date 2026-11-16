@@ -64,11 +64,12 @@ describe("useNodeDataStore", () => {
 
   it("keys one entry by slot so every consumer of the point shares it", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
     store.observePoint(
       point({ consumer_node_id: "banding", demand: ["premium"], state: "current" }),
       "live",
       IDENTITY,
+      (point({ consumer_node_id: "banding", demand: ["premium"], state: "current" })).consumer_node_id,
     )
 
     const slots = useNodeDataStore.getState().slots
@@ -79,10 +80,10 @@ describe("useNodeDataStore", () => {
 
   it("raises the epoch only when the data the point holds changes", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
     const afterFirst = useNodeDataStore.getState().epoch
 
-    store.observePoint(point({ consumer_node_id: "banding", demand: ["premium"] }), "live", IDENTITY)
+    store.observePoint(point({ consumer_node_id: "banding", demand: ["premium"] }), "live", IDENTITY, (point({ consumer_node_id: "banding", demand: ["premium"] })).consumer_node_id)
     expect(useNodeDataStore.getState().epoch).toBe(afterFirst)
 
     store.observePoint(
@@ -92,6 +93,10 @@ describe("useNodeDataStore", () => {
       }),
       "live",
       IDENTITY,
+      (point({
+        data_version: "gen-2",
+        generation: { ...point().generation!, generation_id: "gen-2" },
+      })).consumer_node_id,
     )
     expect(useNodeDataStore.getState().epoch).toBe(afterFirst + 1)
   })
@@ -102,6 +107,7 @@ describe("useNodeDataStore", () => {
       point({ generation: { ...point().generation!, columns: ["premium"] } }),
       "live",
       IDENTITY,
+      (point({ generation: { ...point().generation!, columns: ["premium"] } })).consumer_node_id,
     )
     const narrow = useNodeDataStore.getState().epoch
 
@@ -109,6 +115,7 @@ describe("useNodeDataStore", () => {
       point({ generation: { ...point().generation!, columns: ["premium", "region"] } }),
       "live",
       IDENTITY,
+      (point({ generation: { ...point().generation!, columns: ["premium", "region"] } })).consumer_node_id,
     )
 
     expect(useNodeDataStore.getState().epoch).toBe(narrow + 1)
@@ -116,7 +123,7 @@ describe("useNodeDataStore", () => {
 
   it("tracks a running build once, for the one poller, until it finishes", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY)
+    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY, (point({ state: "missing", generation: null, data_version: null })).consumer_node_id)
 
     store.startJob("join||live", { jobId: "job-1", message: "Caching data", startedByLabel: "Explore" })
     expect(useNodeDataStore.getState().jobs).toEqual({
@@ -153,6 +160,12 @@ describe("useNodeDataStore", () => {
       }),
       "live",
       IDENTITY,
+      (point({
+        state: "building",
+        generation: null,
+        data_version: null,
+        job: { job_id: "job-elsewhere", progress: 0.2, message: "Caching data" },
+      })).consumer_node_id,
     )
 
     expect(useNodeDataStore.getState().jobs["join||live"]).toEqual({
@@ -174,7 +187,7 @@ describe("useNodeDataStore", () => {
         data_version: null,
         job: { job_id: jobId, progress: 0.4, message: "Caching data" },
       })
-    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY)
+    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY, (point({ state: "missing", generation: null, data_version: null })).consumer_node_id)
 
     store.startJob("join||live", {
       jobId: "job-1",
@@ -187,12 +200,12 @@ describe("useNodeDataStore", () => {
     expect(useNodeDataStore.getState().slots["join||live"].job?.startedHere).toBe(true)
 
     // A consumer's inspection reports the same build running.
-    store.observePoint(building("job-1"), "live", IDENTITY)
+    store.observePoint(building("job-1"), "live", IDENTITY, (building("job-1")).consumer_node_id)
     expect(useNodeDataStore.getState().slots["join||live"].job?.startedHere).toBe(true)
     expect(useNodeDataStore.getState().jobs["join||live"]?.startedHere).toBe(true)
 
     // A different build, joined or reported, is judged on its own.
-    store.observePoint(building("job-2"), "live", IDENTITY)
+    store.observePoint(building("job-2"), "live", IDENTITY, (building("job-2")).consumer_node_id)
     expect(useNodeDataStore.getState().jobs["join||live"]?.startedHere).toBe(false)
     store.startJob("join||live", { jobId: "job-3", message: "Caching data", startedByLabel: "Banding" })
     expect(useNodeDataStore.getState().jobs["join||live"]?.startedHere).toBe(false)
@@ -235,7 +248,7 @@ describe("useNodeDataStore", () => {
 
   it("ends a failed build so its consumers ask what is there now", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY)
+    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY, (point({ state: "missing", generation: null, data_version: null })).consumer_node_id)
     store.startJob("join||live", { jobId: "job-1", message: "Caching", startedByLabel: "Explore" })
     const before = useNodeDataStore.getState().epoch
 
@@ -254,6 +267,7 @@ describe("useNodeDataStore", () => {
       point({ kind: "data_input", state: "missing", generation: null, data_version: null }),
       "live",
       IDENTITY,
+      (point({ kind: "data_input", state: "missing", generation: null, data_version: null })).consumer_node_id,
     )
     const cancel = vi.fn()
 
@@ -286,6 +300,7 @@ describe("useNodeDataStore", () => {
       point({ kind: "data_input", state: "missing", generation: null, data_version: null }),
       "live",
       IDENTITY,
+      (point({ kind: "data_input", state: "missing", generation: null, data_version: null })).consumer_node_id,
     )
     store.startDelegatedBuild("join||live", {
       token: "op-old",
@@ -316,6 +331,7 @@ describe("useNodeDataStore", () => {
       point({ kind: "data_input", state: "missing", generation: null, data_version: null }),
       "live",
       IDENTITY,
+      (point({ kind: "data_input", state: "missing", generation: null, data_version: null })).consumer_node_id,
     )
     const replacement = vi.fn()
     store.startDelegatedBuild("join||live", {
@@ -337,8 +353,8 @@ describe("useNodeDataStore", () => {
 
   it("keeps counting the epoch through a reset, so an unchanged consumer still asks again", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
-    store.observePoint(point({ data_version: "gen-2" }), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
+    store.observePoint(point({ data_version: "gen-2" }), "live", IDENTITY, (point({ data_version: "gen-2" })).consumer_node_id)
     const before = useNodeDataStore.getState().epoch
 
     useNodeDataStore.getState().reset()
@@ -349,7 +365,7 @@ describe("useNodeDataStore", () => {
 
   it("forgets a slot and its job together", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
     store.startJob("join||live", { jobId: "job-1", message: "Caching", startedByLabel: "Explore" })
     const before = useNodeDataStore.getState().epoch
 
@@ -487,7 +503,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
 
   it("ignores progress for a slot that holds no running job", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
     const before = useNodeDataStore.getState().slots["join||live"]
 
     store.updateJobProgress("join||live", makeNodeDataStatus({ status: "running", progress: 0.5, message: "Half way" }))
@@ -503,6 +519,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       point({ state: "missing", generation: null, data_version: null }),
       "live",
       IDENTITY,
+      (point({ state: "missing", generation: null, data_version: null })).consumer_node_id,
     )
     store.startJob("join||live", {
       jobId: "job-1",
@@ -524,6 +541,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       point({ state: "missing", generation: null, data_version: null }),
       "live",
       IDENTITY,
+      (point({ state: "missing", generation: null, data_version: null })).consumer_node_id,
     )
     store.startJob("join||live", {
       jobId: "job-1",
@@ -538,6 +556,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       point({ state: "building", generation: null, data_version: null, job: null }),
       "live",
       IDENTITY,
+      (point({ state: "building", generation: null, data_version: null, job: null })).consumer_node_id,
     )
 
     expect(useNodeDataStore.getState().slots["join||live"].job).toEqual({
@@ -551,7 +570,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
 
   it("tracks a profile job's progress, keeping the running message when none arrives", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
     store.startProfileJob("join||live", {
       jobId: "profile-1",
       message: "Profiling data",
@@ -578,7 +597,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
 
   it("ignores profile progress and completion for a slot running no profile", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
     const beforeEpoch = useNodeDataStore.getState().epoch
 
     store.updateProfileProgress("join||live", makeNodeDataStatus({
@@ -603,7 +622,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
 
   it("says why a profile is absent when its job ends with neither profile nor reason", () => {
     const store = useNodeDataStore.getState()
-    store.observePoint(point(), "live", IDENTITY)
+    store.observePoint(point(), "live", IDENTITY, (point()).consumer_node_id)
     store.startProfileJob("join||live", {
       jobId: "profile-1",
       message: "Profiling data",

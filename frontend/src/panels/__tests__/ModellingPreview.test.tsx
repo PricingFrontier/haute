@@ -14,6 +14,9 @@ import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeNode, makeTrainResult, makeTuningReport } from "../../test-utils/factories"
 import { answerQuestion, asked } from "../../test-utils/question"
+import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
+import { READ_ONLY_REASON } from "../../utils/submodelDocument"
 
 // Mock stores
 vi.mock("../../stores/useNodeResultsStore", () => {
@@ -108,6 +111,61 @@ describe("ModellingPreview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
     expect(asked()).toBeNull()
     expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([documentReadOnlyReason()])
+  })
+
+  describe("inside a submodel", () => {
+    const tuned = { tuning: { trials: 12 }, params: { depth: 6 } }
+    const occurrence = (id: string, instanceOf?: string) => makeNode(id, "submodel", {
+      data: { label: id, nodeType: "submodel", config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) } },
+    })
+    // The pipeline has its own n1 beside the definition's child n1.
+    const load = () => useGraphStore.getState().loadGraphSnapshot({
+      nodes: [occurrence("pricing"), occurrence("pricing_copy", "pricing"), makeNode("n1", "modelling", { data: { config: tuned } })],
+      edges: [],
+      preamble: "",
+      submodels: {
+        pricing: {
+          definitionId: "pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [makeNode("n1", "modelling", { data: { config: tuned } })], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    })
+    const configs = () => {
+      const { focus, nodes, submodels } = useGraphStore.getState()
+      const root = focus ? focus.rootNodes : nodes
+      const definition = submodels.pricing as { graph: { nodes: { id: string; data: unknown }[] } }
+      return {
+        root: (root.find((node) => node.id === "n1")?.data as { config: unknown }).config,
+        child: (definition.graph.nodes[0].data as { config: unknown }).config,
+      }
+    }
+    afterEach(() => useGraphStore.getState().resetForTests())
+
+    it("asks nothing in a read-only copy and says why", () => {
+      load()
+      act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "pricing_copy", definitionId: "pricing" }))
+      render(<ModellingPreview data={makeData({ result: makeTrainResult({ tuning: makeTuningReport() }) })} nodeId="n1" />)
+
+      fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
+
+      expect(asked()).toBeNull()
+      expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([READ_ONLY_REASON])
+    })
+
+    it("leaves every node alone when the view changed while the question was open", async () => {
+      load()
+      act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "pricing" }))
+      render(<ModellingPreview data={makeData({ result: makeTrainResult({ tuning: makeTuningReport() }) })} nodeId="n1" />)
+
+      fireEvent.click(screen.getByRole("button", { name: "Use best as fixed parameters" }))
+      act(() => useGraphStore.getState().exitSubmodelView())
+      await answerQuestion("confirm")
+
+      expect(configs()).toEqual({ root: tuned, child: tuned })
+    })
   })
 
   it("shows a completed result's own elapsed time (FMOU-R01)", () => {
@@ -358,5 +416,47 @@ describe("ModellingPreview", () => {
     const pane = screen.getByRole("tabpanel")
     expect(pane.style.getPropertyValue("--results-accent")).toBe("var(--model-accent)")
     expect(pane.style.getPropertyValue("--results-accent-soft")).toBe("var(--model-accent-soft)")
+  })
+
+  it("shows a training's progress only in the occurrence of a submodel it runs in", () => {
+    // The owner "pricing" and its read-only copy "pricing_copy" show the same child, n1.
+    const occurrence = (id: string, instanceOf?: string) => makeNode(id, "submodel", {
+      data: { label: id, nodeType: "submodel", config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) } },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [occurrence("pricing"), occurrence("pricing_copy", "pricing")],
+      edges: [],
+      preamble: "",
+      submodels: {
+        pricing: {
+          definitionId: "pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [makeNode("n1", "modelling")], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    })
+    const running = { trainJobs: { [addressKey(childAddress("pricing", "n1"))]: { progress: { progress: 0.5 } } } }
+    vi.mocked(useNodeResultsStore).mockImplementation(((selector: (state: typeof running) => unknown) => selector(running)) as never)
+    const show = (instanceId: string) => act(() => {
+      const store = useGraphStore.getState()
+      if (store.focus) store.exitSubmodelView()
+      store.enterSubmodelView({ instanceId, definitionId: "pricing" })
+    })
+    const progressBar = (container: HTMLElement) => container.querySelector("[style*='width: 50%']")
+    try {
+      show("pricing")
+      const owner = render(<ModellingPreview data={makeData()} nodeId="n1" />)
+      expect(progressBar(owner.container)).not.toBeNull()
+      owner.unmount()
+
+      show("pricing_copy")
+      const copy = render(<ModellingPreview data={makeData()} nodeId="n1" />)
+      expect(progressBar(copy.container)).toBeNull()
+    } finally {
+      vi.mocked(useNodeResultsStore).mockImplementation((() => null) as never)
+      useGraphStore.getState().resetForTests()
+    }
   })
 })

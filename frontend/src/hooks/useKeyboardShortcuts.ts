@@ -1,8 +1,9 @@
+import { canvasGraph } from "../stores/useGraphStore"
 import { useEffect, useRef } from "react"
-import type { Node, Edge, NodeChange } from "@xyflow/react"
+import type { Node, Edge, EdgeChange, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
-import useNodeResultsStore from "../stores/useNodeResultsStore"
+import { forgetDeletedNodes } from "../stores/forgetDeletedNodes"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
 import { withEdgeIdentity } from "../utils/edgeIds"
 import { NODE_TYPES, isSingletonType, singletonName, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
@@ -10,6 +11,7 @@ import { requestSubmodelCreation } from "../utils/submodelCreation"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
+import { resultKeysOf } from "../utils/requestGateway"
 
 export interface KeyboardShortcutBinding {
   id:
@@ -129,11 +131,12 @@ interface KeyboardShortcutsParams {
   undo: () => void
   redo: () => void
   fitView: (options?: { padding?: number }) => void
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   clipboard: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   nodeIdCounter: React.MutableRefObject<number>
   setSelectedNode: (node: Node | null) => void
   setLastSelectedId?: (id: string | null) => void
+  /** The result key of the node whose panel is open (`resultKey`). */
+  lastSelectedKeyRef: React.MutableRefObject<string | null>
   setPreviewData: (data: null) => void
   clearTrace: () => void
   closePanel: () => void
@@ -150,6 +153,8 @@ interface KeyboardShortcutsParams {
     nodeChanges?: NodeChange[],
     onSettled?: (committed: boolean) => void,
   ) => SharedNodeDeletionResult
+  /** Removes edges that include a submodel's boundary edges; false when none is one. */
+  onBoundaryEdgesChange?: (changes: EdgeChange[]) => boolean
 }
 
 function assertResolvedPasteMatchesCandidate(
@@ -182,11 +187,12 @@ function assertResolvedPasteMatchesCandidate(
 export default function useKeyboardShortcuts({
   enabled,
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
-  graphRef, clipboard, nodeIdCounter,
-  setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
+  clipboard, nodeIdCounter,
+  setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewData, clearTrace, closePanel,
   isInsideSubmodel, readOnly, existingSingletonTypes,
   resolveGraphIdentities,
   commitSharedNodeDeletion,
+  onBoundaryEdgesChange,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
@@ -228,7 +234,7 @@ export default function useKeyboardShortcuts({
 
       // Ctrl+C → copy selected nodes
       if (BINDING_BY_ID.copy.matches?.(e, mod) && !isTyping) {
-        const { nodes: currentNodes, edges: currentEdges } = graphRef.current
+        const { nodes: currentNodes, edges: currentEdges } = canvasGraph()
         const selected = currentNodes.filter((n) => n.selected)
         if (selected.length === 0) return
         const selectedIds = new Set(selected.map((n) => n.id))
@@ -249,7 +255,7 @@ export default function useKeyboardShortcuts({
         const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current
         if (copiedNodes.length === 0) return
         e.preventDefault()
-        const capturedGraph = graphRef.current
+        const capturedGraph = canvasGraph()
         // Submodel boundaries do not create a second singleton scope. Include
         // the immediate graph too in case it changed before React re-rendered.
         const occupiedSingletonTypes = new Set<string>(existingSingletonTypes)
@@ -291,7 +297,7 @@ export default function useKeyboardShortcuts({
           return [withEdgeIdentity(ed, { source: newSource, target: newTarget })]
         })
         void createAfterIdentity({
-          graphRef,
+          
           serialRef: pasteRequestSerialRef,
           resolve: async () => {
             const resolved = await resolveGraphIdentities(newNodes, newEdges)
@@ -353,7 +359,7 @@ export default function useKeyboardShortcuts({
       if (BINDING_BY_ID.groupSubmodel.matches?.(e, mod) && !isTyping) {
         e.preventDefault()
         requestSubmodelCreation({
-          nodes: graphRef.current.nodes,
+          nodes: canvasGraph().nodes,
           readOnly,
           isInsideSubmodel,
           setSubmodelDialog,
@@ -368,7 +374,7 @@ export default function useKeyboardShortcuts({
           e.preventDefault()
           return
         }
-        const { nodes: currentNodes, edges: currentEdges } = graphRef.current
+        const { nodes: currentNodes, edges: currentEdges } = canvasGraph()
         const selectedNodeIds = new Set(currentNodes.filter((n) => n.selected).map((n) => n.id))
         const selectedEdgeIds = new Set(currentEdges.filter((ed) => ed.selected).map((ed) => ed.id))
         if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
@@ -387,14 +393,16 @@ export default function useKeyboardShortcuts({
           // Selection, preview and cached-result cleanup only runs once the
           // nodes have actually left the graph; a shared-boundary deletion may
           // still be resolving parent identities and can yet fail.
+          // Every key their results are kept under, taken while they are still there.
+          const removedKeys = [...selectedNodeIds].flatMap(resultKeysOf)
           const cleanupAfterRemoval = () => {
             setSelectedNode(null)
             setLastSelectedId?.(null)
+            // The panel closes with its node, so opening the node again (after
+            // Undo) asks for its preview.
+            lastSelectedKeyRef.current = null
             setPreviewData(null)
-            // Clean up store state for deleted nodes
-            for (const nid of selectedNodeIds) {
-              useNodeResultsStore.getState().clearNode(nid)
-            }
+            forgetDeletedNodes(removedKeys)
           }
           let cleanedUp = false
           const sharedDeletion = commitSharedNodeDeletion?.(
@@ -426,7 +434,10 @@ export default function useKeyboardShortcuts({
           if (!cleanedUp) cleanupAfterRemoval()
         } else {
           // Pure-edge delete: only edges selected, no nodes — a single setEdges
-          // is already one snapshot.
+          // is already one snapshot. A submodel's boundary edges are removed by
+          // its boundary action, which removes the rest with them.
+          const removals: EdgeChange[] = [...selectedEdgeIds].map((id) => ({ type: "remove", id }))
+          if (onBoundaryEdgesChange?.(removals)) return
           setEdges(currentEdges.filter((ed) => !selectedEdgeIds.has(ed.id)))
         }
       }
@@ -436,10 +447,10 @@ export default function useKeyboardShortcuts({
   }, [
     enabled,
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
-    graphRef, clipboard, nodeIdCounter,
-    setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
+    clipboard, nodeIdCounter,
+    setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewData, clearTrace, closePanel,
     addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
     existingSingletonTypes,
-    resolveGraphIdentities, commitSharedNodeDeletion,
+    resolveGraphIdentities, commitSharedNodeDeletion, onBoundaryEdgesChange,
   ])
 }

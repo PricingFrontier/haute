@@ -9,6 +9,7 @@ import {
   wholeDataStatusText,
   type WholeDataStatusInput,
 } from "../../panels/editors/shared/useWholeDataAnswer"
+import useGraphStore from "../../stores/useGraphStore"
 
 const mocks = vi.hoisted(() => ({
   stats: vi.fn(),
@@ -26,17 +27,21 @@ vi.mock("../../hooks/useNodeDataCache", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../hooks/useNodeDataCache")>()),
   default: () => ({ availability: mocks.availability, dataVersion: mocks.dataVersion, problem: null }),
 }))
-vi.mock("../../stores/useDocumentStatusStore", () => ({
+vi.mock("../../stores/useDocumentStatusStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../stores/useDocumentStatusStore")>()),
   captureDocumentExecutionFence: () => ({}),
   isDocumentExecutionFenceCurrent: () => true,
 }))
 vi.mock("../../stores/useSettingsStore", () => ({
-  default: (selector: (value: { activeSource: string }) => unknown) =>
-    selector({ activeSource: mocks.activeSource }),
+  default: Object.assign(
+    (selector: (value: { activeSource: string }) => unknown) => selector({ activeSource: mocks.activeSource }),
+    { getState: () => ({ activeSource: mocks.activeSource }) },
+  ),
 }))
 
 const node = {
   id: "consumer",
+  position: { x: 0, y: 0 },
   data: { label: "consumer", description: "", nodeType: "banding", config: {} },
 }
 const otherNode = { ...node, id: "other-consumer" }
@@ -71,10 +76,13 @@ describe("analysis request identity", () => {
     mocks.availability = "current"
     mocks.dataVersion = "generation-1"
     mocks.activeSource = "live"
+    // The questions run the graph store's document.
+    useGraphStore.getState().loadGraphSnapshot({ nodes: [node, otherNode], edges: [], preamble: "", submodels: {} })
   })
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
+    useGraphStore.getState().resetForTests()
   })
 
   it("keeps resolved banding statistics, no longer current, when only the rules change", async () => {

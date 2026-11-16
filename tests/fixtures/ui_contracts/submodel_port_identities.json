@@ -1,0 +1,38 @@
+{
+  "description": "The editor identity of a submodel view's Input and Output cards, as haute._editor_identities.resolve_editor_identity resolves a submodelPort node and frontend/src/utils/submodelViewGraph.ts::submodelPortIdentity builds it without asking: the card's label as its name, no default input name or config reference, and each declared port (a canonical identifier) naming its own frame.",
+  "cases": [
+    {
+      "direction": "input",
+      "label": "INPUT",
+      "ports": ["policy", "rates_2", "_x3b1_"],
+      "identity": {
+        "function_name": "INPUT",
+        "config_reference": null,
+        "default_input_name": null,
+        "source_handle_input_names": { "policy": "policy", "rates_2": "rates_2", "_x3b1_": "_x3b1_" }
+      }
+    },
+    {
+      "direction": "input",
+      "label": "INPUT",
+      "ports": [],
+      "identity": {
+        "function_name": "INPUT",
+        "config_reference": null,
+        "default_input_name": null,
+        "source_handle_input_names": {}
+      }
+    },
+    {
+      "direction": "output",
+      "label": "OUTPUT",
+      "ports": [],
+      "identity": {
+        "function_name": "OUTPUT",
+        "config_reference": null,
+        "default_input_name": null,
+        "source_handle_input_names": {}
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@
  * and drag-drop operations so the main component stays focused on
  * orchestration and rendering.
  */
+import { canvasGraph } from "../stores/useGraphStore"
 import { useCallback, useRef, useState, type MutableRefObject, type DragEvent } from "react"
 import {
   type Connection,
@@ -52,6 +53,7 @@ import type { FetchPreviewOptions } from "./usePipelineAPI"
 import { createAfterIdentity } from "./createAfterIdentity"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SimpleNode } from "../panels/editors/_shared"
+import { resultKey } from "../utils/requestGateway"
 
 const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 const JSON_API_INPUT_SUFFIXES = [".json", ".jsonl", ".ndjson"] as const
@@ -126,10 +128,10 @@ export type ConnectionDropMenuState = {
 
 type UseEdgeHandlersParams = {
   selectedNode: Node | null
-  graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   submodels?: Record<string, unknown>
   nodeIdCounter: MutableRefObject<number>
-  lastSelectedNodeRef: MutableRefObject<Node | null>
+  /** The result key of the node whose panel is open (`resultKey`). */
+  lastSelectedKeyRef: MutableRefObject<string | null>
   setNodes: (updater: (nds: Node[]) => Node[]) => void
   setEdges: (updater: (eds: Edge[]) => Edge[]) => void
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -164,10 +166,10 @@ const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
 
 export default function useEdgeHandlers({
   selectedNode,
-  graphRef,
+  
   submodels,
   nodeIdCounter: nodeIdCounterRef,
-  lastSelectedNodeRef,
+  lastSelectedKeyRef,
   setNodes,
   setEdges,
   setNodesRaw,
@@ -230,8 +232,8 @@ export default function useEdgeHandlers({
       let candidate: string | null = null
       if (targetEdgeId) {
         const validation = validateEdgeJoinInsertionCandidate({
-          nodes: graphRef.current.nodes,
-          edges: graphRef.current.edges,
+          nodes: canvasGraph().nodes,
+          edges: canvasGraph().edges,
           targetEdgeId,
           connection: activeSource,
         })
@@ -240,7 +242,7 @@ export default function useEdgeHandlers({
       edgeJoinCandidateEdgeIdRef.current = candidate
       setEdgeJoinCandidateEdgeId((current) => current === candidate ? current : candidate)
     },
-    [findEdgeIdAtPoint, graphRef],
+    [findEdgeIdAtPoint],
   )
 
   const reportConnectionValidationFailure = useCallback((result: ConnectionValidationResult) => {
@@ -258,7 +260,7 @@ export default function useEdgeHandlers({
       if (params.source === params.target) return
       const normalizedConnection = { ...params, targetHandle }
       if (commitBoundaryConnection?.(normalizedConnection)) return
-      const { edges: currentEdges, nodes: currentNodes } = graphRef.current
+      const { edges: currentEdges, nodes: currentNodes } = canvasGraph()
       const exists = currentEdges.some(
         (e) =>
           e.source === params.source &&
@@ -317,7 +319,7 @@ export default function useEdgeHandlers({
       if (!nextEdge) return
       setEdges((eds) => [...eds, nextEdge])
     },
-    [addToast, commitBoundaryConnection, graphRef, pushSnapshot, setEdges, setEdgesRaw],
+    [addToast, commitBoundaryConnection, pushSnapshot, setEdges, setEdgesRaw],
   )
 
   const onConnect: OnConnect = useCallback(() => {
@@ -362,7 +364,7 @@ export default function useEdgeHandlers({
         }
 
         // The insertion was computed from the graph as it is now.
-        const capturedGraph = graphRef.current
+        const capturedGraph = canvasGraph()
         const rewrittenNodeIds = edgeJoinRewrittenNodeIds(result)
         // The new edges name their sources' outputs (an API input's frame is its
         // handle), so an edit to a source refuses the insertion too.
@@ -370,7 +372,7 @@ export default function useEdgeHandlers({
           .filter((edge) => edge.target === result.newNodeId)
           .map((edge) => edge.source)
         await createAfterIdentity({
-          graphRef,
+          
           serialRef: structuralCreationSerialRef,
           dependsOnNodeIds: [...new Set([...rewrittenNodeIds, ...sourceNodeIds])],
           resolve: async () => finalizeResolvedEdgeJoinInsertion(
@@ -385,7 +387,7 @@ export default function useEdgeHandlers({
             setEdgesRaw(next.edges)
             setSelectedNode(selected)
             setLastSelectedId?.(selected?.id ?? null)
-            lastSelectedNodeRef.current = selected
+            lastSelectedKeyRef.current = selected ? resultKey(selected.id) : null
             clearTrace()
             cancelPreview()
           },
@@ -398,8 +400,8 @@ export default function useEdgeHandlers({
       if (edgeJoinCandidateId && fromHandle?.type === "source") {
         const releasePoint = connectionEndPoint(event)
         void commitEdgeJoinResult(insertEdgeJoinNode({
-          nodes: graphRef.current.nodes,
-          edges: graphRef.current.edges,
+          nodes: canvasGraph().nodes,
+          edges: canvasGraph().edges,
           submodels,
           targetEdgeId: edgeJoinCandidateId,
           connection: {
@@ -418,8 +420,8 @@ export default function useEdgeHandlers({
         targetNodeId
       ) {
         void commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
-          nodes: graphRef.current.nodes,
-          edges: graphRef.current.edges,
+          nodes: canvasGraph().nodes,
+          edges: canvasGraph().edges,
           base: {
             source: targetNodeId,
             sourceHandle: toHandle.id ?? null,
@@ -482,7 +484,7 @@ export default function useEdgeHandlers({
       const targetEdgeId = findEdgeIdAtPoint(releasePoint)
       if (!targetEdgeId) {
         if (!isPaneAtPoint(releasePoint)) return
-        const sourceNode = graphRef.current.nodes.find((node) => node.id === sourceNodeId)
+        const sourceNode = canvasGraph().nodes.find((node) => node.id === sourceNodeId)
         // Submodel boundary edges are committed by the boundary editor, which
         // needs both endpoints on the canvas already.
         if (!sourceNode || nodeData(sourceNode).nodeType === NODE_TYPES.SUBMODEL_PORT) return
@@ -496,8 +498,8 @@ export default function useEdgeHandlers({
         return
       }
       void commitEdgeJoinResult(insertEdgeJoinNode({
-        nodes: graphRef.current.nodes,
-        edges: graphRef.current.edges,
+        nodes: canvasGraph().nodes,
+        edges: canvasGraph().edges,
         submodels,
         targetEdgeId,
         connection: {
@@ -515,9 +517,9 @@ export default function useEdgeHandlers({
       clearTrace,
       commitConnection,
       findEdgeIdAtPoint,
-      graphRef,
+      
       isPaneAtPoint,
-      lastSelectedNodeRef,
+      lastSelectedKeyRef,
       nodeIdCounterRef,
       pushSnapshot,
       reportConnectionValidationFailure,
@@ -539,13 +541,13 @@ export default function useEdgeHandlers({
       !isSingletonType(type)
       || !(
         existingSingletonTypes.has(type as NodeTypeValue)
-        || graphRef.current.nodes.some((node) =>
+        || canvasGraph().nodes.some((node) =>
           singletonTypesOccupiedBy(nodeData(node).nodeType).includes(type as NodeTypeValue))
       )
     ) return false
     addToast("info", singletonLimitMessage(type as NodeTypeValue))
     return true
-  }, [addToast, existingSingletonTypes, graphRef])
+  }, [addToast, existingSingletonTypes])
 
   /**
    * Resolves a new node's server identity, then hands it and the live graph to
@@ -556,7 +558,7 @@ export default function useEdgeHandlers({
     apply: (resolvedNode: Node, graph: { nodes: Node[]; edges: Edge[] }) => void,
   ) => {
     void createAfterIdentity({
-      graphRef,
+      
       serialRef: structuralCreationSerialRef,
       resolve: async () => {
         const resolved = await resolveGraphIdentities([newNode], [])
@@ -570,7 +572,7 @@ export default function useEdgeHandlers({
       action: "Node creation",
       failure: "Create node failed",
     })
-  }, [addToast, graphRef, resolveGraphIdentities])
+  }, [addToast, resolveGraphIdentities])
 
   /** Creates the chosen node where the connection was released, wired to the dragged output. */
   const createNodeFromConnectionDrop = useCallback((type: NodeTypeValue) => {
@@ -579,7 +581,7 @@ export default function useEdgeHandlers({
     setConnectionDropMenu(null)
 
     const id = `${type}_${nodeIdCounterRef.current + 1}`
-    const newNode = appNode({ id, type, position: drop.position, label: freshNodeLabel(type, nodeLabels(graphRef.current.nodes)) })
+    const newNode = appNode({ id, type, position: drop.position, label: freshNodeLabel(type, nodeLabels(canvasGraph().nodes)) })
     const connection = {
       source: drop.source,
       sourceHandle: drop.sourceHandle,
@@ -588,8 +590,8 @@ export default function useEdgeHandlers({
     }
     const validation = validatePipelineConnection(
       connection,
-      [...graphRef.current.nodes, newNode] as unknown as SimpleNode[],
-      graphRef.current.edges,
+      [...canvasGraph().nodes, newNode] as unknown as SimpleNode[],
+      canvasGraph().edges,
       submodels,
     )
     if (!validation.ok) {
@@ -607,7 +609,7 @@ export default function useEdgeHandlers({
       setEdgesRaw([...graph.edges, nextEdge])
       setSelectedNode(created)
       setLastSelectedId?.(id)
-      lastSelectedNodeRef.current = created
+      lastSelectedKeyRef.current = resultKey(created.id)
       clearTrace()
       cancelPreview()
     })
@@ -616,8 +618,8 @@ export default function useEdgeHandlers({
     clearTrace,
     connectionDropMenu,
     createNodeAfterIdentity,
-    graphRef,
-    lastSelectedNodeRef,
+    
+    lastSelectedKeyRef,
     nodeIdCounterRef,
     pushSnapshot,
     reportConnectionValidationFailure,
@@ -636,21 +638,22 @@ export default function useEdgeHandlers({
       // Canvas click or multi-select: deselect but keep panel showing last node
       setSelectedNode(null)
       clearTrace()
-      // Don't clear previewData or lastSelectedNodeRef -- panel stays visible
+      // Don't clear previewData or lastSelectedKeyRef -- panel stays visible
     }
   }, [setSelectedNode, clearTrace, graphRefreshingRef])
 
-  /** Opens a node's panel, refreshing its preview when it is a different node. */
+  /**
+   * Opens a node's panel, refreshing its preview when it is a different node. Nodes are
+   * told apart by result key: a child of the same id in another occurrence is another node.
+   */
   const openNode = useCallback((node: Node) => {
-    const previousNodeId = lastSelectedNodeRef.current
-      ? lastSelectedNodeRef.current.id
-      : selectedNode === node
-        ? selectedNode.id
-        : undefined
-    const shouldRefreshPreview = previousNodeId !== node.id
+    const key = resultKey(node.id)
+    const previousKey = lastSelectedKeyRef.current
+      ?? (selectedNode === node ? key : undefined)
+    const shouldRefreshPreview = previousKey !== key
     setSelectedNode(node)
     setLastSelectedId?.(node.id)
-    lastSelectedNodeRef.current = node
+    lastSelectedKeyRef.current = key
     if (!shouldRefreshPreview) return
 
     clearTrace()
@@ -670,7 +673,7 @@ export default function useEdgeHandlers({
     shouldSkipAutomaticPreview,
     clearTrace,
     setPreviewData,
-    lastSelectedNodeRef,
+    lastSelectedKeyRef,
     setLastSelectedId,
   ])
 
@@ -766,7 +769,7 @@ export default function useEdgeHandlers({
         type: type as NodeTypeValue,
         position,
         config,
-        label: freshNodeLabel(type as NodeTypeValue, nodeLabels(graphRef.current.nodes)),
+        label: freshNodeLabel(type as NodeTypeValue, nodeLabels(canvasGraph().nodes)),
       })
 
       createNodeAfterIdentity(newNode, (resolved) => {

@@ -1,10 +1,11 @@
+import { useRequestScope, useResultKey } from "../panels/useGraph"
 import { useCallback, useState, useEffect, useRef, useMemo } from "react"
 import { previewNode } from "../api/client"
 import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { afterCommitEffects, nodeRequestTarget } from "../utils/nodeRequestTarget"
+import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
 import { columnFingerprint } from "../utils/columnFingerprint"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 
@@ -23,8 +24,9 @@ const EMPTY_COLUMNS: DataInputColumn[] = []
  * Reads the active source from useSettingsStore so source-switch nodes
  * resolve through the same path as the normal preview.
  * Uses AbortController to cancel stale requests on rapid input switching.
- * Cache is keyed by (nodeId, source) so switching sources doesn't serve
- * stale columns from a different data path.
+ * Cache is keyed by (the input's result key, source) so switching sources
+ * doesn't serve stale columns from a different data path, and an input inside
+ * a submodel keeps each occurrence's columns apart.
  */
 export function useDataInputColumns(
   dataInput: string,
@@ -34,6 +36,7 @@ export function useDataInputColumns(
   preamble?: string,
   options: UseDataInputColumnsOptions = {},
 ): DataInputColumn[] {
+  const requestScope = useRequestScope()
   const setColumnsCache = useNodeResultsStore((s) => s.setColumns)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
@@ -44,8 +47,10 @@ export function useDataInputColumns(
     [fallbackColumns],
   )
 
-  // Source-aware cache key: "nodeId:source"
-  const cacheKey = dataInput ? `${dataInput}:${activeSource}` : ""
+  // Source-aware cache key: "<result key>:source", the input's result key
+  // taken here and used after the fetch. An empty id is no input.
+  const inputKey = useResultKey(dataInput || null)
+  const cacheKey = inputKey ? `${inputKey}:${activeSource}` : ""
 
   // Split into two leaf selectors so Zustand's Object.is check works
   // (avoids creating a new object on every store update)
@@ -120,7 +125,7 @@ export function useDataInputColumns(
       }
       return
     }
-    if (!dataInput) {
+    if (!dataInput || !inputKey) {
       if (fallbackColumnsFingerprint !== prevColumnFingerprint.current) {
         prevColumnFingerprint.current = fallbackColumnsFingerprint
         setDataInputColumns(fallbackColumnsRef.current)
@@ -143,11 +148,9 @@ export function useDataInputColumns(
     const controller = new AbortController()
     // Fetch fresh columns (cached value shown meanwhile)
     const requestStructuralVersion = structuralVersion
-    // Asked once this commit's effects have all run, so an edit inside an open
-    // submodel has reached the whole pipeline the request sends.
-    afterCommitEffects()
+    Promise.resolve()
       .then(() => {
-        const target = nodeRequestTarget(allNodesRef.current, edgesRef.current, submodels, dataInput)
+        const target = prepareNodeRequest(requestScope, canvasTarget(dataInput))
         return previewNode({
           graph: target.graph,
           nodeId: target.nodeId,
@@ -164,7 +167,7 @@ export function useDataInputColumns(
           prevColumnFingerprint.current = fingerprint
           setDataInputColumns(result.columns)
         }
-        setColumnsCache(dataInput, result.columns, requestStructuralVersion, activeSource)
+        setColumnsCache(inputKey, result.columns, requestStructuralVersion, activeSource)
       })
       .catch((e) => {
         if (e instanceof DOMException && e.name === "AbortError") return
@@ -178,7 +181,9 @@ export function useDataInputColumns(
     // the *inputs* change (dataInput, graph structure, source), not when the
     // *output* (cached columns) changes.
   }, [
+    requestScope,
     dataInput,
+    inputKey,
     structuralVersion,
     graphFingerprint,
     submodels,

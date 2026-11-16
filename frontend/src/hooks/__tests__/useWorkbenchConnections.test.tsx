@@ -3,7 +3,6 @@
  * workbench store fetched (specs/workbench): which fetches they are held to, when, in which
  * graph, outside the undo history, and what never removes one.
  */
-import { useLayoutEffect } from "react"
 import { act, cleanup, renderHook } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -31,7 +30,6 @@ const filled = edge("e_filled", "priced", null, "wb_out", "pricing_output")
 
 describe("useWorkbenchConnections", () => {
   let fetches: number
-  const graphRef: { current: { nodes: Node[]; edges: Edge[] } } = { current: { nodes: [], edges: [] } }
   const addToast = vi.fn()
   const commitEdges = (edges: Edge[]) => useGraphStore.getState().setEdgesRaw(edges)
   const edgeIds = () => useGraphStore.getState().edges.map((each) => each.id)
@@ -45,16 +43,12 @@ describe("useWorkbenchConnections", () => {
   const adopt = (generation: number) => act(() => useDocumentStatusStore.setState({ executionGeneration: generation }))
   const show = (nodes: Node[], edges: Edge[]) =>
     act(() => useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels: {} }))
-  /** The hook as the editor mounts it, its graph ref following the graph the store shows. */
+  /** The hook as the editor mounts it: it reads the graph the store shows. */
   const render = (editable = true) =>
-    renderHook(({ editable: canEdit }) => {
-      const nodes = useGraphStore((state) => state.nodes)
-      const edges = useGraphStore((state) => state.edges)
-      useLayoutEffect(() => {
-        graphRef.current = { nodes, edges }
-      }, [nodes, edges])
-      return useWorkbenchConnections({ graphRef, commitEdges, editable: canEdit, addToast })
-    }, { initialProps: { editable } })
+    renderHook(
+      ({ editable: canEdit }) => useWorkbenchConnections({ commitEdges, editable: canEdit, addToast }),
+      { initialProps: { editable } },
+    )
 
   beforeEach(() => {
     fetches = 0
@@ -164,7 +158,6 @@ describe("useWorkbenchConnections", () => {
         tables: { tables: [inputSide("account")], sample: {}, responseTables: [outputSide("pricing")], fetch },
       })
       expect(hook.result.current.holdConnections()).toBe(true)
-      expect(graphRef.current.edges.map((each) => each.id)).toEqual(["e_account", "e_filled"])
       expect(edgeIds()).toEqual(["e_account", "e_filled"])
     })
 

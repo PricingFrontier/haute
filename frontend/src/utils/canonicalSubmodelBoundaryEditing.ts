@@ -317,60 +317,8 @@ function assertCompatibleSharedEdit(
   }
 }
 
-interface BoundaryIdentity {
-  functionName: string
-  defaultInputName: null
-  sourceHandleInputNames: Record<string, string>
-  configReference?: string
-}
-
-function boundaryIdentity(
-  previous: Node[],
-  direction: "input" | "output",
-  nextHandleIds: readonly string[],
-): BoundaryIdentity {
-  const node = boundaryNode(previous, direction)
-  if (!node) throw new Error(`Canonical submodel view is missing its ${direction} boundary`)
-  const functionName = node.data._functionName
-  const defaultInputName = node.data._defaultInputName
-  const mappings = node.data._sourceHandleInputNames
-  const configReference = node.data._configReference
-  if (typeof functionName !== "string" || functionName.length === 0) {
-    throw new Error(`Canonical submodel ${direction} boundary has no authoritative function identity`)
-  }
-  if (defaultInputName !== null) {
-    throw new Error(`Canonical submodel ${direction} boundary has malformed default identity`)
-  }
-  if (!isPlainObject(mappings)) {
-    throw new Error(`Canonical submodel ${direction} boundary has no authoritative source-handle identities`)
-  }
-  if (configReference !== undefined && (typeof configReference !== "string" || configReference.length === 0)) {
-    throw new Error(`Canonical submodel ${direction} boundary has malformed config identity`)
-  }
-  const sourceHandleInputNames: Record<string, string> = {}
-  for (const handleId of nextHandleIds) {
-    const value = mappings[handleId]
-    if (typeof value !== "string" || value.length === 0) {
-      throw new Error(
-        `Canonical submodel ${direction} boundary handle ${handleId} has no authoritative identity`,
-      )
-    }
-    sourceHandleInputNames[handleId] = value
-  }
-  return {
-    functionName,
-    defaultInputName,
-    sourceHandleInputNames,
-    ...(configReference === undefined ? {} : { configReference }),
-  }
-}
-
-function preserveBoundaryProjection(
-  previous: Node[],
-  next: Node[],
-  inputIdentity: BoundaryIdentity,
-  outputIdentity: BoundaryIdentity,
-): Node[] {
+/** The cards keep where the user put them; everything else is the projection's. */
+function preserveBoundaryPositions(previous: Node[], next: Node[]): Node[] {
   const previousPositions = new Map(
     previous
       .filter((node) => node.type === "submodelPort")
@@ -378,25 +326,8 @@ function preserveBoundaryProjection(
   )
   return next.map((node) => {
     if (node.type !== "submodelPort") return node
-    const direction = (node.data as Partial<SubmodelPortData>).portDirection
-    const identity = direction === "input" ? inputIdentity : outputIdentity
-    if (direction !== "input" && direction !== "output") {
-      throw new Error(`Canonical submodel boundary ${node.id} has malformed direction`)
-    }
-    const data: Record<string, unknown> = {
-      ...node.data,
-      _functionName: identity.functionName,
-      _defaultInputName: identity.defaultInputName,
-      _sourceHandleInputNames: { ...identity.sourceHandleInputNames },
-    }
-    if (identity.configReference === undefined) delete data._configReference
-    else data._configReference = identity.configReference
     const position = previousPositions.get(node.id)
-    return {
-      ...node,
-      ...(position ? { position } : {}),
-      data,
-    }
+    return position ? { ...node, position } : node
   })
 }
 
@@ -437,12 +368,6 @@ export function reconcileCanonicalSubmodelBoundaryState(
   )
   const outputPorts = deriveOutputPorts(effectiveState)
   assertCompatibleSharedEdit(effectiveState, definition, inputPorts, outputPorts)
-  const inputIdentity = boundaryIdentity(
-    effectiveState.viewNodes,
-    "input",
-    inputPorts.map((port) => port.name),
-  )
-  const outputIdentity = boundaryIdentity(effectiveState.viewNodes, "output", [])
   const nextDefinition: SubmodelDefinition = {
     ...definition,
     graph: {
@@ -466,13 +391,8 @@ export function reconcileCanonicalSubmodelBoundaryState(
     parentNodes: effectiveState.parentNodes,
     parentEdges: effectiveState.parentEdges,
   })
-  const viewNodes = preserveBoundaryProjection(
-    effectiveState.viewNodes,
-    view.nodes,
-    inputIdentity,
-    outputIdentity,
-  )
-  const viewEdges = attachEditorEdgeIdentities(view.edges, viewNodes)
+  const viewNodes = preserveBoundaryPositions(effectiveState.viewNodes, view.nodes)
+  const viewEdges = view.edges
   return {
     submodelName: effectiveState.submodelName,
     instanceId: effectiveState.instanceId,

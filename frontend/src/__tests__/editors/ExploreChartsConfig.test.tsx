@@ -41,6 +41,7 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
 import useUIStore from "../../stores/useUIStore"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 afterEach(cleanup)
 
@@ -206,7 +207,7 @@ function ChartConfigHarness({
     },
   }
   return (
-    <GraphProvider allNodes={[exploreNode]} edges={[]} submodels={{}} preamble="">
+    <GraphProvider requestScope={documentRequestScope} allNodes={[exploreNode]} edges={[]} submodels={{}} preamble="">
       <ExploreChartsConfig
         config={config}
         onUpdate={onUpdate}
@@ -1134,7 +1135,7 @@ describe("ExploreChartsConfig", () => {
     }
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
     const view = (config: Record<string, unknown>) => (
-      <GraphProvider
+      <GraphProvider requestScope={documentRequestScope}
         allNodes={[{ id: "explore_1", type: "explore", data: { label: "Explore Claims", description: "", nodeType: "explore", config } }]}
         edges={[]}
         submodels={{}}

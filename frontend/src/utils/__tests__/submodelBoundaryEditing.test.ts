@@ -51,29 +51,8 @@ function state(bound = false): SubmodelBoundaryEditState {
     parentNodes,
     parentEdges,
   })
-  const viewNodes = view.nodes.map((node) => {
-    if (node.type !== "submodelPort") return node
-    const input = (node.data as SubmodelPortData).portDirection === "input"
-    return {
-      ...node,
-      data: {
-        ...node.data,
-        _functionName: input ? "boundary_input_function" : "boundary_output_function",
-        _defaultInputName: null,
-        _sourceHandleInputNames: input ? { policy: "policy_input" } : {},
-        _configReference: input ? "boundary_input_config" : "boundary_output_config",
-      },
-    }
-  })
-  const viewEdges = view.edges.map((edge) => ({
-    ...edge,
-    data: {
-      ...edge.data,
-      _inputName: edge.source === boundary(viewNodes, "input").id
-        ? "policy_input"
-        : "score_input",
-    },
-  })) as PipelineEdge[]
+  const viewNodes = view.nodes
+  const viewEdges = view.edges as PipelineEdge[]
   return {
     submodelName: "pricing",
     instanceId: "pricing",
@@ -325,7 +304,7 @@ describe("submodelBoundaryEditing", () => {
     })).toThrow(/generic submodel input handle.*submodel/i)
   })
 
-  it("adds a target without changing occurrences or dropping authoritative identities", () => {
+  it("adds a target without changing occurrences, naming the new frame by its port", () => {
     const current = state()
     const input = boundary(current.viewNodes, "input")
     const result = applySubmodelBoundaryConnection(current, {
@@ -349,17 +328,17 @@ describe("submodelBoundaryEditing", () => {
     )
     const nextInput = boundary(result.viewNodes, "input")
     expect(nextInput.data).toMatchObject({
-      _functionName: "boundary_input_function",
+      _functionName: "INPUT",
       _defaultInputName: null,
-      _sourceHandleInputNames: { policy: "policy_input" },
-      _configReference: "boundary_input_config",
+      _sourceHandleInputNames: { policy: "policy" },
     })
+    expect(nextInput.data).not.toHaveProperty("_configReference")
     const added = result.viewEdges.find((edge) => edge.target === "score" && edge.source === nextInput.id)!
-    expect(added.data?._inputName).toBe("policy_input")
+    expect(added.data?._inputName).toBe("policy")
     expect(edgeInputName(
       added,
       nextInput as unknown as Parameters<typeof edgeInputName>[1],
-    )).toBe("policy_input")
+    )).toBe("policy")
     expect(result.viewEdges.every((edge) => typeof edge.data?._inputName === "string")).toBe(true)
   })
 

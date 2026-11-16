@@ -20,6 +20,8 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
+import { resultKey as canvasResultKey } from "../utils/requestGateway"
+import { READ_ONLY_REASON } from "../utils/submodelDocument"
 import { AveTab } from "./modelling/AveTab"
 import { FeaturesTab } from "./modelling/FeaturesTab"
 import { GLMCoefficientsTab } from "./modelling/GLMCoefficientsTab"
@@ -35,6 +37,7 @@ import { SummaryTab } from "./modelling/SummaryTab"
 import { diagnosticsRowCount, diagnosticsSetLabel, headlineMetrics } from "./modelling/diagnosticsSet"
 import { shownFit } from "./modelling/lossHistory"
 import ResultsWorkspace from "./ResultsWorkspace"
+import { useResultKey } from "./useGraph"
 
 export type ModellingPreviewData = {
   result: TrainResult
@@ -47,6 +50,7 @@ export type ModellingPreviewData = {
 
 interface ModellingPreviewProps {
   data: ModellingPreviewData
+  /** The node on the canvas. */
   nodeId: string
   onRefresh?: () => void
 }
@@ -133,8 +137,10 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
     onSearch: setFeatureSearch,
   }
 
+  // A running retrain of this node, kept under its result key (its occurrence's own inside a submodel).
+  const resultKey = useResultKey(nodeId)
   const trainProgress: TrainProgress | null = useNodeResultsStore(
-    (s) => s.trainJobs[nodeId]?.progress ?? null,
+    (s) => s.trainJobs[resultKey]?.progress ?? null,
   )
 
   const availableTabs = TAB_KEYS.filter((t) => {
@@ -189,11 +195,20 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
       useToastStore.getState().addToast("error", documentReadOnlyReason())
       return
     }
+    // A read-only copy of a submodel is refused before the question, as its edits are.
+    if (useGraphStore.getState().focus?.readOnly) {
+      useToastStore.getState().addToast("error", READ_ONLY_REASON)
+      return
+    }
     const documentFence = captureDocumentExecutionFence()
+    // The node asked about: its key names the view it is in.
+    const askedKey = canvasResultKey(nodeId)
     if (!(await confirmed({ title: "Use the winning parameters as fixed parameters and disable tuning?", confirm: "Use them" }))) return
-    // The answer belongs to the document asked about, while it could still be
-    // edited: another document, or one gone read-only, is left alone.
+    // The answer belongs to the document and the node asked about, while they
+    // could still be edited: another document, one gone read-only, or a canvas
+    // that now shows another view (where the id may name another node) is left alone.
     if (!isDocumentExecutionFenceCurrent(documentFence) || !isDocumentEditable(useDocumentStatusStore.getState())) return
+    if (canvasResultKey(nodeId) !== askedKey) return
 
     useGraphStore.getState().setNodes((nodes) =>
       nodes.map((node) => {

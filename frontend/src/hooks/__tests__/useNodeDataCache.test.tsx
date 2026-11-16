@@ -23,10 +23,6 @@ vi.mock("../../api/client", () => ({
   clearInputCache: vi.fn(),
 }))
 
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
-}))
-
 const ensureInputSnapshots = vi.fn(async (_nodes: unknown[], _options?: unknown) => {})
 const cancelInputSnapshotBuild = vi.fn(async (_jobId: string) => {})
 vi.mock("../ensureInputSnapshots", () => ({
@@ -41,7 +37,9 @@ import {
   getNodeDataPoint,
   runNodeData,
 } from "../../api/client"
-import { makeNodeDataStatus } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNodeDataStatus } from "../../test-utils/factories"
+import { resultKey } from "../../utils/requestGateway"
+import { COPY, OWNER, childKey, loadTwoOccurrences, openOccurrence } from "../../testSupport/twoOccurrencesFixture"
 
 const mockGetPoint = vi.mocked(getNodeDataPoint)
 const mockRun = vi.mocked(runNodeData)
@@ -61,6 +59,16 @@ const edges = [
   { id: "e2", source: "join", target: "explore" },
   { id: "e3", source: "join", target: "banding" },
 ] as never as Parameters<typeof useNodeDataCache>[0]["edges"]
+
+/** Loads `documentNodes` into the graph store: the document every request runs. */
+function loadDocument(documentNodes: typeof nodes, documentEdges: typeof edges = edges) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: documentNodes as never,
+    edges: documentEdges as never,
+    preamble: "",
+    submodels: {},
+  })
+}
 
 function nodeById(id: string) {
   return (nodes as unknown as { id: string }[]).find((node) => node.id === id) as never
@@ -122,9 +130,13 @@ describe("useNodeDataCache", () => {
     mockClearInputCache.mockReset()
     ensureInputSnapshots.mockReset()
     ensureInputSnapshots.mockResolvedValue(undefined)
+    loadDocument(nodes)
   })
 
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
 
   it("reports the point the backend resolved for this consumer", async () => {
     mockGetPoint.mockResolvedValue(point())
@@ -136,6 +148,117 @@ describe("useNodeDataCache", () => {
     expect(result.current.retention).toBe("pinned")
     expect(result.current.dataVersion).toBe("gen-1")
     expect(result.current.canBuild).toBe(true)
+  })
+
+  it("keeps an open submodel's consumer's point under its occurrence's key, as its readers look it up", async () => {
+    useGraphStore.setState({
+      nodes: nodes as never,
+      edges: edges as never,
+      focus: { instanceId: "pricing", definitionId: "definition_pricing", readOnly: false, rootNodes: [], rootEdges: [] },
+    })
+    mockGetPoint.mockResolvedValue(point({ consumer_node_id: "submodel_runtime/pricing/explore" }))
+
+    renderCache("explore")
+
+    await waitFor(() => expect(Object.keys(useNodeDataStore.getState().consumerSlots)).toContain(resultKey("explore")))
+    expect(mockGetPoint.mock.calls.at(-1)?.[0].node_id).toBe("submodel_runtime/pricing/explore")
+    // Neither the id the answer names nor the bare local id: another occurrence's child shares it.
+    expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("explore")
+    expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("submodel_runtime/pricing/explore")
+  })
+
+  it("answers the Refresh and Stop of its own occurrence only", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    mockGetPoint.mockResolvedValue(point({ consumer_node_id: "submodel_runtime/pricing/explore", state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-owner",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: canvas.find((node) => node.id === "explore") ?? null, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    // The copy's Refresh asks nothing of the owner's consumer; the owner's builds its data.
+    act(() => refreshNodeDataCache(childKey(COPY, "explore")))
+    expect(mockRun).not.toHaveBeenCalled()
+    act(() => refreshNodeDataCache(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledOnce())
+    expect(mockRun.mock.calls[0][0].node_id).toBe("submodel_runtime/pricing/explore")
+    await waitFor(() => expect(Object.values(useNodeWorkStore.getState().running)).toEqual([childKey(OWNER, "explore")]))
+
+    // Likewise its Stop.
+    await act(async () => stopNodeWork(childKey(COPY, "explore")))
+    expect(mockCancel).not.toHaveBeenCalled()
+    await act(async () => stopNodeWork(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-owner"))
+  })
+
+  it("asks for the copy's point when the view moves to the copy under it, never showing the owner's", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    const explore = canvas.find((node) => node.id === "explore") ?? null
+    mockGetPoint.mockResolvedValueOnce(point({ consumer_node_id: "submodel_runtime/pricing/explore", data_version: "owner-gen" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: explore, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.dataVersion).toBe("owner-gen"))
+
+    // The copy's canvas shows the same child, so its identity hashes the same: only its key differs.
+    let answerCopy!: (answer: NodeDataPointResponse) => void
+    mockGetPoint.mockReturnValueOnce(new Promise<NodeDataPointResponse>((resolve) => { answerCopy = resolve }))
+    act(() => openOccurrence(COPY))
+
+    expect(result.current.point).toBeNull()
+    await waitFor(() => expect(mockGetPoint).toHaveBeenCalledTimes(2))
+    expect(mockGetPoint.mock.calls[1][0].node_id).toBe("submodel_runtime/pricing_2/explore")
+    await act(async () => answerCopy(point({ consumer_node_id: "submodel_runtime/pricing_2/explore", data_version: "copy-gen" })))
+    expect(result.current.dataVersion).toBe("copy-gen")
+  })
+
+  it("keeps a build waiting for its job id with its own occurrence when the view moves to the copy", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    const explore = canvas.find((node) => node.id === "explore") ?? null
+    // Each occurrence's child reads its own slot, missing for both.
+    mockGetPoint.mockImplementation(async (request) => point({
+      consumer_node_id: request.node_id, slot_key: `${request.node_id}||live`, state: "missing", generation: null, data_version: null,
+    }))
+    let answerOwner!: (response: Awaited<ReturnType<typeof runNodeData>>) => void
+    mockRun.mockReturnValueOnce(new Promise((resolve) => { answerOwner = resolve }))
+    mockRun.mockResolvedValueOnce({
+      status: "started", job_id: "job-copy", cached: false, message: "Caching started",
+      point: point({ consumer_node_id: "submodel_runtime/pricing_2/explore", slot_key: "submodel_runtime/pricing_2/explore||live", state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: explore, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+    act(() => refreshNodeDataCache(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledOnce())
+
+    act(() => openOccurrence(COPY))
+    await waitFor(() => expect(result.current.point?.consumer_node_id).toBe("submodel_runtime/pricing_2/explore"))
+    // The copy's Stop has nothing of its own to stop, and its Refresh is not held up by the owner's build.
+    await act(async () => stopNodeWork(childKey(COPY, "explore")))
+    act(() => refreshNodeDataCache(childKey(COPY, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(2))
+    expect(mockRun.mock.calls[1][0].node_id).toBe("submodel_runtime/pricing_2/explore")
+
+    await act(async () => answerOwner({
+      status: "started", job_id: "job-owner", cached: false, message: "Caching started",
+      point: point({ consumer_node_id: "submodel_runtime/pricing/explore", slot_key: "submodel_runtime/pricing/explore||live", state: "building", generation: null, data_version: null }),
+    }))
+    expect(mockCancel).not.toHaveBeenCalledWith("job-owner")
   })
 
   it("holds a refused point as the node's state, not a toast", async () => {
@@ -280,7 +403,7 @@ describe("useNodeDataCache", () => {
 
     mockGetPoint.mockResolvedValue(point())
     act(() => {
-      useNodeDataStore.getState().observePoint(point(), "live", "identity-1")
+      useNodeDataStore.getState().observePoint(point(), "live", "identity-1", (point()).consumer_node_id)
     })
 
     await waitFor(() => expect(result.current.availability).toBe("current"))
@@ -790,6 +913,7 @@ describe("useNodeDataCache", () => {
     mockGetPoint.mockResolvedValue(delegated)
     mockClear.mockResolvedValue({ status: "delegated", point: delegated })
     mockClearInputCache.mockResolvedValue({} as never)
+    loadDocument(quoteNodes)
     const { result } = renderHook(() =>
       useNodeDataCache({ node: nodeById("banding"), allNodes: quoteNodes, edges, preamble: "" }),
     )
@@ -827,6 +951,7 @@ describe("useNodeDataCache", () => {
     })
     mockGetPoint.mockResolvedValue(direct)
     mockClear.mockResolvedValue({ status: "delegated", point: direct })
+    loadDocument(workbenchNodes)
     const { result } = renderHook(() =>
       useNodeDataCache({ node: nodeById("banding"), allNodes: workbenchNodes, edges, preamble: "" }),
     )

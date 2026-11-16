@@ -12,9 +12,9 @@ import type {
 } from "../../api/types"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
-import { buildGraph, graphForRequestIdentity } from "../../utils/buildGraph"
-import { afterCommitEffects, nodeRequestTarget } from "../../utils/nodeRequestTarget"
-import { useGraph } from "../useGraph"
+import { graphForRequestIdentity } from "../../utils/buildGraph"
+import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
+import { useGraph, useRequestScope, useResultKey } from "../useGraph"
 import { EditorLabel } from "../../components/form"
 import { TargetTablePicker, WarehousePicker } from "./_DatabricksSelector"
 import IoFormatEditor from "./_IoFormatEditor"
@@ -217,10 +217,14 @@ export default function DataOutputEditor({
   accentColor: string
   nodeId: string
 }) {
+  const requestScope = useRequestScope()
   const { capabilities, error } = useIoCapabilities()
   const { allNodes, edges, submodels, preamble } = useGraph()
   const activeSource = useSettingsStore((state) => state.activeSource)
-  const writeState = useOutputWriteStore((state) => state.writes[nodeId])
+  // A write is kept under the node's result key: inside a submodel, its
+  // occurrence's, so the owner's write neither shows on nor blocks a copy.
+  const writeKey = useResultKey(nodeId)
+  const writeState = useOutputWriteStore((state) => state.writes[writeKey])
   const beginWrite = useOutputWriteStore((state) => state.begin)
   const completeWrite = useOutputWriteStore((state) => state.complete)
   const clearWrite = useOutputWriteStore((state) => state.clear)
@@ -236,44 +240,33 @@ export default function DataOutputEditor({
   )
   const isDatabricks = group?.name === "databricks"
   const ready =
+    requestScope !== null &&
     group !== undefined &&
     (isDatabricks ? databricksOutputReady(config) : outputConfigReady(group, format, config))
-  const graph = useMemo(() => {
-    // buildGraph reads the preamble from the store; listing it renews this callback.
-    void preamble
-    const built = buildGraph(allNodes, edges, submodels)
-    return {
-      ...built,
-      nodes: built.nodes.map((node) =>
-        node.id === nodeId
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                config,
-              },
-            }
-          : node,
-      ),
-    }
-  }, [allNodes, config, edges, nodeId, preamble, submodels])
-  // What a request sends: the graph above outside a submodel. Inside one it is
-  // the whole pipeline, which App has brought up to date with this node by the
-  // time a request is sent (the destination waits for the commit's effects;
-  // Write is a click); `graph` still names the request's identity.
+  // What a request sends: the whole pipeline, which holds this node's config, and
+  // the node by the id it runs under. A view of a saved version has no document to
+  // run: it sends nothing (`ready` below).
   const requestTarget = useCallback(() => {
-    const target = nodeRequestTarget(allNodes, edges, submodels, nodeId)
-    return target.nodeId === nodeId ? { graph, nodeId } : { graph: target.graph, nodeId: target.nodeId }
-  }, [allNodes, edges, graph, nodeId, submodels])
+    const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
+    return { graph: target.graph, nodeId: target.nodeId }
+  }, [nodeId, requestScope])
   const identity = useMemo(
-    () =>
-      JSON.stringify({
-        graph: graphForRequestIdentity(graph),
-        nodeId,
+    () => {
+      // The graph is read from the store when prepared; listing the panel's graph,
+      // the preamble and the config renews the identity when any of them changes.
+      void allNodes
+      void edges
+      void submodels
+      void preamble
+      return JSON.stringify({
+        graph: requestScope ? graphForRequestIdentity(requestTarget().graph) : null,
+        // The occurrence's node: the same child in another runs other data.
+        node: writeKey,
         config,
         source: activeSource,
-      }),
-    [activeSource, config, graph, nodeId],
+      })
+    },
+    [activeSource, allNodes, config, edges, preamble, requestScope, requestTarget, submodels, writeKey],
   )
   const isWriting = writeState?.phase === "writing"
   const visibleState =
@@ -300,24 +293,24 @@ export default function DataOutputEditor({
       writeState.phase !== "writing" &&
       writeState.requestIdentity !== identity
     ) {
-      clearWrite(nodeId, writeState.requestId)
+      clearWrite(writeKey, writeState.requestId)
     }
-  }, [clearWrite, identity, nodeId, writeState])
+  }, [clearWrite, identity, writeKey, writeState])
 
   useEffect(
     () => () => {
-      const active = useOutputWriteStore.getState().writes[nodeId]
+      const active = useOutputWriteStore.getState().writes[writeKey]
       if (active?.phase !== "writing") {
-        clearWrite(nodeId, active?.requestId ?? -1)
+        clearWrite(writeKey, active?.requestId ?? -1)
       }
     },
-    [clearWrite, nodeId],
+    [clearWrite, writeKey],
   )
 
   useEffect(() => {
     if (!ready) return
     const controller = new AbortController()
-    void afterCommitEffects()
+    void Promise.resolve()
       .then(() => resolveOutputDestination({ ...requestTarget(), signal: controller.signal }))
       .then(
         (response) => {
@@ -338,7 +331,9 @@ export default function DataOutputEditor({
     if (!ready || isWriting) return
     if (overwrite && visibleState?.phase !== "confirm_overwrite") return
     const requestIdentity = identity
-    const requestId = beginWrite(nodeId, requestIdentity)
+    // Taken before the write and used after it.
+    const requestKey = writeKey
+    const requestId = beginWrite(requestKey, requestIdentity)
     if (requestId === null) return
     try {
       const response = await writeOutput({
@@ -346,13 +341,13 @@ export default function DataOutputEditor({
         source: activeSource,
         overwrite,
       })
-      completeWrite(nodeId, requestId, requestIdentity, {
+      completeWrite(requestKey, requestId, requestIdentity, {
         phase: "success",
         result: response,
       })
     } catch (caught) {
       const message = apiErrorMessage(caught, "Output write failed.")
-      completeWrite(nodeId, requestId, requestIdentity, {
+      completeWrite(requestKey, requestId, requestIdentity, {
         phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
         message,
       })

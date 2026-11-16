@@ -14,6 +14,7 @@ import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useNodeDataCache from "../useNodeDataCache"
 
 vi.mock("../../api/client", () => ({
@@ -31,10 +32,6 @@ vi.mock("../../api/client", () => ({
   cancelInputCacheJob: vi.fn(),
   getInputCacheJob: vi.fn(),
   getInputCacheStatus: vi.fn(),
-}))
-
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 import {
@@ -71,6 +68,16 @@ const edges = [
   { id: "e1", source: "source", target: "banding" },
   { id: "e2", source: "source", target: "rating" },
 ] as never as Parameters<typeof useNodeDataCache>[0]["edges"]
+
+/** Loads `documentNodes` into the graph store: the document every request runs. */
+function loadDocument(documentNodes: typeof nodes, documentEdges: typeof edges = edges) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: documentNodes as never,
+    edges: documentEdges as never,
+    preamble: "",
+    submodels: {},
+  })
+}
 
 function nodeById(id: string) {
   return (nodes as unknown as { id: string }[]).find((node) => node.id === id) as never
@@ -121,9 +128,13 @@ describe("delegated data-point builds", () => {
     ]) {
       mock.mockReset()
     }
+    loadDocument(nodes)
   })
 
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
 
   function answerPoint(state: NodeDataPointResponse["state"]) {
     mockGetPoint.mockImplementation(async (args) =>
@@ -367,7 +378,7 @@ describe("delegated data-point builds", () => {
     const replacement = vi.fn()
     await act(async () => {
       useNodeDataStore.getState().reset()
-      useNodeDataStore.getState().observePoint(delegatedPoint("banding", "missing"), "live", "identity-1")
+      useNodeDataStore.getState().observePoint(delegatedPoint("banding", "missing"), "live", "identity-1", (delegatedPoint("banding", "missing")).consumer_node_id)
       useNodeDataStore.getState().startDelegatedBuild("source||live", {
         token: "op-replacement",
         message: "Preparing this input",
@@ -458,6 +469,7 @@ describe("delegated data-point builds", () => {
             })
         }),
     )
+    loadDocument(quoteNodes, quoteEdges)
     const { result } = renderHook(() =>
       useNodeDataCache({
         node: (quoteNodes as unknown as { id: string }[])[1] as never,

@@ -7,6 +7,10 @@ pure derivation before executor/codegen call sites are changed.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 import haute._graph_utils as graph_utils
@@ -19,6 +23,7 @@ from haute._types import (
     PipelineGraph,
     SubmodelDefinition,
     SubmodelEndpoint,
+    SubmodelInputPort,
     SubmodelOutputPort,
 )
 
@@ -204,6 +209,33 @@ def test_editor_identity_resolver_for_boundary_handles() -> None:
 
     assert output.source_handle_input_names == {"out__written_premium": "written_premium"}
     assert public_input.source_handle_input_names == {"policy_input": "policy_input"}
+
+
+_PORT_CARD_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "ui_contracts" / "submodel_port_identities.json"
+)
+_PORT_CARD_CASES = json.loads(_PORT_CARD_FIXTURE.read_text("utf-8"))["cases"]
+
+
+@pytest.mark.parametrize(
+    "case", _PORT_CARD_CASES, ids=lambda case: f"{case['direction']}-{len(case['ports'])}"
+)
+def test_submodel_view_cards_are_named_as_the_editor_builds_them(case: dict[str, Any]) -> None:
+    """The editor names a submodel view's cards itself; this is the server's answer to match."""
+    for name in case["ports"]:
+        SubmodelInputPort(name=name, targets=[])  # every port name is canonical
+    identity = resolve_editor_identity(
+        node_type=NodeType.SUBMODEL_PORT,
+        label=case["label"],
+        source_handles=case["ports"] if case["direction"] == "input" else (),
+    )
+
+    assert {
+        "function_name": identity.function_name,
+        "config_reference": identity.config_reference,
+        "default_input_name": identity.default_input_name,
+        "source_handle_input_names": identity.source_handle_input_names,
+    } == case["identity"]
 
 
 @pytest.mark.parametrize(

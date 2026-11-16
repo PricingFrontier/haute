@@ -21,7 +21,7 @@ import type {
   DispersionEstimateStart,
   DispersionEstimateStatus,
   DispersionParam,
-  GraphPayload,
+  PreparedGraph,
 } from "./types"
 
 // The generated validators own both responses' structure.
@@ -34,7 +34,7 @@ function parseDispersionStatusResponse(value: unknown): DispersionEstimateStatus
 }
 
 export interface EstimateDispersionArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   param: DispersionParam
   source?: string

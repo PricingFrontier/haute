@@ -1,8 +1,9 @@
 import { act, cleanup, renderHook } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import useGraphCommitController from "../useGraphCommitController"
+import useGraphStore, { resetGraphStoreForTests } from "../../stores/useGraphStore"
 import { useNodeRenameSession } from "../../panels/useNodePanelSession"
 import { makeNode } from "../../test-utils/factories"
 
@@ -59,23 +60,33 @@ const deselect = (column: number) => (config: QuoteConfig): QuoteConfig => ({
 
 const selections = (config: QuoteConfig): boolean[] => config.tables[0].columns.map((column) => column.selected)
 
+/** The canvas the controller reads, as the graph store holds it. */
+function loadCanvas(nodes: Node[], edges: Edge[] = []) {
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels: {} })
+}
+
+const canvasNodes = () => useGraphStore.getState().nodes
+
 function controllerOptions(node: Node, resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>) {
+  loadCanvas([node])
   return {
-    graphRef: { current: { nodes: [node], edges: [] as Edge[] } },
-    submodelsRef: { current: {} },
     readDocumentIdentity: () => "document",
     readOnly: false,
     reservedApiInputFrameLabels: new Set<string>(),
     resolveNodeIdentities,
     resolveRenameIdentities: resolveNodeIdentities,
     readNamingContextKey: () => "naming context",
-    commitGraph: vi.fn(),
+    // App commits to the graph store, which the controller then reads back.
+    commitGraph: vi.fn((nodes: Node[], edges: Edge[], submodels: Record<string, unknown>) =>
+      useGraphStore.getState().setNodesAndEdgesAndSubmodels(nodes, edges, submodels)),
     setSelectedNode: vi.fn(),
     addToast: vi.fn(),
   }
 }
 
 describe("useGraphCommitController pending commits", () => {
+  beforeEach(() => resetGraphStoreForTests())
+
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
@@ -135,12 +146,12 @@ describe("useGraphCommitController pending commits", () => {
       const replies = heldIdentityReplies()
       const options = controllerOptions(node, replies.resolver)
       const hook = renderHook(() => useGraphCommitController(options))
-      const committedConfig = () => options.graphRef.current.nodes
+      const committedConfig = () => canvasNodes()
         .find((candidate) => candidate.id === "api")!.data.config as QuoteConfig
       // As the panel does: each edit is built on the published draft, else on the committed node.
       const edit = (change: (config: QuoteConfig) => QuoteConfig): unknown => {
         const base = hook.result.current.pendingNodeData.get("api")
-          ?? options.graphRef.current.nodes.find((candidate) => candidate.id === "api")!.data
+          ?? canvasNodes().find((candidate) => candidate.id === "api")!.data
         let result: unknown
         act(() => {
           result = hook.result.current.onUpdateNode("api", { ...base, config: change(base.config as QuoteConfig) })
@@ -260,7 +271,7 @@ describe("useGraphCommitController pending commits", () => {
     })
 
     it("lets a rename issued after an update supersede it", async () => {
-      const { replies, options, hook, edit, committedConfig, errors } = setUp()
+      const { replies, hook, edit, committedConfig, errors } = setUp()
 
       edit(deselect(0))
       let rename!: Promise<unknown>
@@ -275,7 +286,7 @@ describe("useGraphCommitController pending commits", () => {
         "Node update was not applied because the document, editing capability, or a newer node edit superseded it.",
       ])
       expect(hook.result.current.pendingNodeData.size).toBe(0)
-      expect(options.graphRef.current.nodes[0].data.label).toBe("renamed")
+      expect(canvasNodes()[0].data.label).toBe("renamed")
       expect(selections(committedConfig())).toEqual([true, true, true])
     })
   })
@@ -293,8 +304,10 @@ describe("useGraphCommitController pending commits", () => {
     const options = controllerOptions(node, async (nodes) => [...nodes])
     const frame = (id: string, sourceHandle: string, target: string): Edge =>
       ({ id, source: "quotes", target, sourceHandle, targetHandle: null })
-    options.graphRef.current.nodes = [node, makeNode("priced"), makeNode("driven")]
-    options.graphRef.current.edges = [frame("e_policy", "policy", "priced"), frame("e_drivers", "drivers", "driven")]
+    loadCanvas(
+      [node, makeNode("priced"), makeNode("driven")],
+      [frame("e_policy", "policy", "priced"), frame("e_drivers", "drivers", "driven")],
+    )
     const { result } = renderHook(() => useGraphCommitController(options))
 
     act(() => {

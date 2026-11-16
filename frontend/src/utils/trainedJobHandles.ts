@@ -3,9 +3,10 @@
  *
  * Training results live in memory, so a reload would otherwise forget a model
  * that is still exportable on the server. Each document (pipeline source file)
- * keeps, per modelling node, the job ID, the staleness identity the result was
- * trained under (config hash and source) and a digest of the graph payload the
- * training request submitted. The results store writes a handle when a training job
+ * keeps, per modelling node by the key its results are kept under (`resultKey`:
+ * a submodel's child under its occurrence's own), the job ID, the staleness
+ * identity the result was trained under (config hash and source) and a digest
+ * of the graph payload the training request submitted. The results store writes a handle when a training job
  * completes — whether or not the node's editor is open — and forgets it when
  * training fails; the modelling editor restores the result through the job
  * status endpoint and reports honestly when the server no longer has it.
@@ -19,7 +20,8 @@ import {
 import { isPlainObject } from "../types/guards"
 import { canonicalValue } from "./canonicalJson"
 
-const STORAGE_KEY = "haute.modelling.trainedJobs.v2"
+// v2 kept a submodel's child under its bare id, which reads as a pipeline node's.
+const STORAGE_KEY = "haute.modelling.trainedJobs.v3"
 
 export interface TrainedJobHandle {
   jobId: string
@@ -62,18 +64,18 @@ function writeStore(store: HandleStore): void {
   }
 }
 
-export function readTrainedJobHandle(sourceFile: string, nodeId: string): TrainedJobHandle | null {
-  const handle = readStore()[sourceFile]?.[nodeId]
+export function readTrainedJobHandle(sourceFile: string, resultKey: string): TrainedJobHandle | null {
+  const handle = readStore()[sourceFile]?.[resultKey]
   return isHandle(handle) ? handle : null
 }
 
 export function writeTrainedJobHandle(
   sourceFile: string,
-  nodeId: string,
+  resultKey: string,
   handle: TrainedJobHandle,
 ): void {
   const store = readStore()
-  const existing = store[sourceFile]?.[nodeId]
+  const existing = store[sourceFile]?.[resultKey]
   if (
     isHandle(existing) &&
     existing.jobId === handle.jobId &&
@@ -83,14 +85,14 @@ export function writeTrainedJobHandle(
   ) {
     return
   }
-  writeStore({ ...store, [sourceFile]: { ...(store[sourceFile] ?? {}), [nodeId]: handle } })
+  writeStore({ ...store, [sourceFile]: { ...(store[sourceFile] ?? {}), [resultKey]: handle } })
 }
 
-export function clearTrainedJobHandle(sourceFile: string, nodeId: string): void {
+export function clearTrainedJobHandle(sourceFile: string, resultKey: string): void {
   const store = readStore()
   const document = store[sourceFile]
-  if (!document || !(nodeId in document)) return
-  const { [nodeId]: _removed, ...rest } = document
+  if (!document || !(resultKey in document)) return
+  const { [resultKey]: _removed, ...rest } = document
   void _removed
   writeStore({ ...store, [sourceFile]: rest })
 }

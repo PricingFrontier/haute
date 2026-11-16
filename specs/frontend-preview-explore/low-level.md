@@ -454,7 +454,10 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   the new document that reuses the id never shows, stops or continues it; its
   build is still cancelled, and one that refuses to stop, now or after an
   earlier failed Stop, is cancelled again in the background (five attempts, two
-  seconds apart) and reported if it never stops.
+  seconds apart) and reported if it never stops. Deleting its node retires it the
+  same way (`retireInputImport`), reporting a build that never stops as a deleted
+  node's. A retired import, for either cause, raises no "Import failed" toast: the
+  node it would be about is gone.
   Every outcome (completed, failed, stopped) re-reads the snapshot status and
   raises the node-data epoch, since a build can publish before a stop or a
   failure reaches it; only a completed, unstopped import re-previews the node.

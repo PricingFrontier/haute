@@ -1,13 +1,16 @@
 /**
  * Zustand store for node computation results — previews, optimiser solves, training runs.
  *
- * Results are keyed by node ID and survive panel unmount/remount. This is the
- * core persistence layer that prevents losing expensive computation results
- * when clicking away from a node and back.
- * Occurrence outputs use individual cache keys; their data retains the visible node ID.
+ * Results are kept under the result key of the node they describe (`resultKey`)
+ * and survive panel unmount/remount. This is the core persistence layer that
+ * prevents losing expensive computation results when clicking away from a node
+ * and back. A node of the main pipeline is keyed by its id, a child of an open
+ * submodel by its occurrence's key for it, so two occurrences of one definition
+ * keep their own. An occurrence's outputs each have a cache key of their own;
+ * their data keeps the occurrence's id.
  *
  * Cache invalidation:
- *   - Previews/columns: keyed on (nodeId, source, rowLimit, structuralVersion);
+ *   - Previews/columns: keyed on (result key, source, rowLimit, structuralVersion);
  *     a preview also on the node-data epoch its request was sent under.
  *   - Solve/train results: keyed on (nodeId, configHash). A config change
  *     doesn't delete the old result — it's kept with a staleness flag so
@@ -124,9 +127,9 @@ export type TrainProgress = {
 
 export type ExplorePivotProgress = ExplorePivotStatusResponse
 
-/** A pivot ID is only unique within its owning Explore node. */
-export function explorePivotResultKey(nodeId: string, pivotId: string): string {
-  return `${nodeId}:${pivotId}`
+/** A pivot ID is only unique within its owning Explore node, named by its result key. */
+export function explorePivotResultKey(nodeKey: string, pivotId: string): string {
+  return `${nodeKey}:${pivotId}`
 }
 
 interface CachedPreview {
@@ -244,6 +247,7 @@ interface CachedExplorePivotResult {
   terminalStatus?: ExplorePivotProgress | null
   /** Null when the calculation was refused before the server started a job. */
   jobId: string | null
+  /** The Explore node's result key, which `clearNode` and the pin match. */
   nodeId: string
   pivotId: string
   nodeLabel: string
@@ -256,6 +260,7 @@ interface CachedExplorePivotResult {
 }
 
 export interface ExplorePivotStartClaim {
+  /** The Explore node's result key. */
   nodeId: string
   dataVersion: string | null
   calculationIdentity: string
@@ -270,6 +275,7 @@ let nextExplorePivotClaimToken = 1
 interface ActiveExplorePivotJob {
   jobId: string
   key: string
+  /** The Explore node's result key. */
   nodeId: string
   pivotId: string
   nodeLabel: string
@@ -435,6 +441,17 @@ function trimCacheByRecency<T>(
   return { records: nextRecords, evicted }
 }
 
+/**
+ * Whether the preview stored under `key` is of the node whose results are kept
+ * under `nodeKey`: its own, or one of an occurrence's outputs, whose data names
+ * the occurrence. A child's preview names its local id, which a child of another
+ * occurrence and a node of the pipeline may share, so it is matched by key alone.
+ */
+function isPreviewOf(key: string, entry: CachedPreview, nodeKey: string): boolean {
+  return key === nodeKey || (entry.data.outputHandle !== undefined && entry.data.nodeId === nodeKey)
+}
+
+/** Bounds the pivot results, keeping those of the pinned node (by its result key). */
 function trimExplorePivotCache(
   records: Record<string, CachedExplorePivotResult>,
   pinnedNodeId: string | null,
@@ -508,6 +525,7 @@ function recordExplorePivotFailure(
 interface NodeResultsState {
   // Preview cache
   previews: Record<string, CachedPreview>
+  /** The result key of the node whose panel is open: its results are not evicted. */
   pinnedPreviewNodeId: string | null
 
   // Optimiser
@@ -535,7 +553,7 @@ interface NodeResultsState {
   // newer automatic targets and every manual start replace the generation.
   pivotStartClaims: Record<string, ExplorePivotStartClaim>
 
-  // Column cache — keyed by "nodeId:source", cached across panel mounts.
+  // Column cache — keyed by "<result key>:source", cached across panel mounts.
   // structuralVersion stores the graph version captured at fetch time.
   columnCache: Record<string, { columns: ColumnInfo[]; structuralVersion: number }>
 
@@ -544,6 +562,7 @@ interface NodeResultsState {
   getColumns: (sourceNodeId: string, source?: string) => { columns: ColumnInfo[]; fresh: boolean } | null
 
   // ── Preview actions ──
+  /** Store *data* under *nodeId*: the node's result key, or an occurrence output's cache key. */
   setPreview: (nodeId: string, data: PreviewData, structuralVersion: number, source?: string, rowLimit?: number, nodeDataEpoch?: number) => void
   /**
    * Mark the stored preview holding *data* current at *nodeDataEpoch*: the
@@ -652,6 +671,7 @@ interface NodeResultsState {
   // ── Cleanup ──
   /** Drop active work captured under an obsolete live-document fence. */
   discardActiveJobs: () => void
+  /** Forget what is kept under one result key; a deleted node clears each of `resultKeysOf`. */
   clearNode: (nodeId: string) => void
 }
 
@@ -690,15 +710,17 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   setPreview: (nodeId, data, structuralVersion, source, rowLimit, nodeDataEpoch) =>
     set((s) => {
       touchCachedResult(previewRecency, nodeId)
-      const pinnedKey = s.pinnedPreviewNodeId === data.nodeId ? nodeId
-        : Object.keys(s.previews)
-          .filter((key) => key === s.pinnedPreviewNodeId || s.previews[key].data.nodeId === s.pinnedPreviewNodeId)
-          .sort((a, b) => (previewRecency.get(b) ?? 0) - (previewRecency.get(a) ?? 0))[0]
+      const records = {
+        ...s.previews,
+        [nodeId]: { data, structuralVersion, source, rowLimit, nodeDataEpoch },
+      }
+      // The open node's most recent preview, this one when it is of that node.
+      const pinned = s.pinnedPreviewNodeId
+      const pinnedKey = pinned === null ? undefined : Object.keys(records)
+        .filter((key) => isPreviewOf(key, records[key], pinned))
+        .sort((a, b) => (previewRecency.get(b) ?? 0) - (previewRecency.get(a) ?? 0))[0]
       const bounded = trimCacheByRecency(
-        {
-          ...s.previews,
-          [nodeId]: { data, structuralVersion, source, rowLimit, nodeDataEpoch },
-        },
+        records,
         previewRecency,
         MAX_CACHED_PREVIEWS,
         pinnedKey,
@@ -1337,7 +1359,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     dropCachedResult(trainResultRecency, nodeId)
     set((s) => {
       const previews = Object.fromEntries(Object.entries(s.previews).filter(([key, entry]) => {
-        if (key !== nodeId && entry.data.nodeId !== nodeId) return true
+        if (!isPreviewOf(key, entry, nodeId)) return true
         dropCachedResult(previewRecency, key)
         return false
       }))

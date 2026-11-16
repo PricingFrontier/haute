@@ -1,3 +1,4 @@
+import { useRequestScope, useResultKey } from "../panels/useGraph"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 
 import {
@@ -22,7 +23,7 @@ import {
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { afterCommitEffects, nodeRequestTarget, type NodeRequestTarget } from "../utils/nodeRequestTarget"
+import { prepareCanvasRequest, type PreparedCanvasRequest } from "../utils/requestGateway"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -121,8 +122,9 @@ export function deriveAvailability(
 }
 
 /**
- * The consumers reading each node's data, so the node's Refresh button can ask
- * them to bring it up to date.
+ * The consumers reading each node's data, by the node's result key
+ * (`resultKey`), so the node's Refresh button can ask them to bring it up to
+ * date: inside a submodel, its occurrence's consumers only.
  *
  * This is deliberately not React state: pressing Refresh is a user event, and
  * the build belongs in that event rather than in a render that reacts to it.
@@ -131,26 +133,31 @@ export function deriveAvailability(
  */
 const nodeDataRefreshHandlers = new Map<string, Set<() => void>>()
 
-function registerNodeDataRefresh(nodeId: string, handler: () => void): () => void {
-  const handlers = nodeDataRefreshHandlers.get(nodeId) ?? new Set<() => void>()
+/** What a consumer asks about: an identity's hash under its node's result key. */
+function askedOf(nodeKey: string, configHash: string): string {
+  return JSON.stringify([nodeKey, configHash])
+}
+
+function registerNodeDataRefresh(nodeKey: string, handler: () => void): () => void {
+  const handlers = nodeDataRefreshHandlers.get(nodeKey) ?? new Set<() => void>()
   handlers.add(handler)
-  nodeDataRefreshHandlers.set(nodeId, handlers)
+  nodeDataRefreshHandlers.set(nodeKey, handlers)
   return () => {
     handlers.delete(handler)
-    if (handlers.size === 0) nodeDataRefreshHandlers.delete(nodeId)
+    if (handlers.size === 0) nodeDataRefreshHandlers.delete(nodeKey)
   }
 }
 
 /**
- * Ask whoever reads *nodeId*'s data to cache it if what they hold is missing,
- * stale, partial or unreadable. Nothing happens for a node no open panel reads,
- * or for data that is already current.
+ * Ask whoever reads the data of the node kept under *nodeKey* to cache it if
+ * what they hold is missing, stale, partial or unreadable. Nothing happens for
+ * a node no open panel reads, or for data that is already current.
  */
-export function refreshNodeDataCache(nodeId: string): void {
-  for (const handler of nodeDataRefreshHandlers.get(nodeId) ?? []) handler()
+export function refreshNodeDataCache(nodeKey: string): void {
+  for (const handler of nodeDataRefreshHandlers.get(nodeKey) ?? []) handler()
 }
 
-function producerNode(target: NodeRequestTarget | null, point: NodeDataPointResponse | null): SimpleNode | null {
+function producerNode(target: PreparedCanvasRequest | null, point: NodeDataPointResponse | null): SimpleNode | null {
   if (!point || !target) return null
   return target.nodeNamed(point.point.producer_node_id)
 }
@@ -173,7 +180,10 @@ export default function useNodeDataCache({
   preamble,
   enabled = true,
 }: UseNodeDataCacheInput): NodeDataCache {
+  const requestScope = useRequestScope()
   const nodeId = node?.id ?? null
+  // The node's Refresh, Stop and running work are registered under its result key.
+  const nodeKey = useResultKey(nodeId)
   const nodeLabel = node ? String(node.data.label || node.id) : ""
   const activeSource = useSettingsStore((s) => s.activeSource)
   const addToast = useToastStore((s) => s.addToast)
@@ -197,10 +207,14 @@ export default function useNodeDataCache({
     () => (identity ? hashConfig({ graph: identity, source: activeSource }) : null),
     [activeSource, identity],
   )
-  // An answer is kept with the identity *and* the document it answered for, so
-  // a consumer shows it only while both still hold.
+  // What the consumer asks about: its identity under its node's result key. The
+  // same child of another occurrence shows the same canvas, so its identity can
+  // hash the same; the key tells their answers apart.
+  const askedFor = configHash && nodeKey ? askedOf(nodeKey, configHash) : null
+  // An answer is kept with what it answered *and* the document it answered for,
+  // so a consumer shows it only while both still hold.
   const [answered, setAnswered] = useState<{
-    configHash: string
+    askedFor: string
     fence: DocumentExecutionFence
     point: NodeDataPointResponse
   } | null>(null)
@@ -210,28 +224,33 @@ export default function useNodeDataCache({
   // `during` says which failed: a read is asked again on Refresh, whatever point
   // is kept from before; a build is retried by building.
   const [problem, setProblem] = useState<
-    ({ configHash: string; during: "read" | "build" } & NodeDataProblem) | null
+    ({ askedFor: string; during: "read" | "build" } & NodeDataProblem) | null
   >(null)
   // Raised by the node's Refresh to ask for the point again after a failure.
   const [readAttempt, setReadAttempt] = useState(0)
-  const [submitting, setSubmitting] = useState(false)
-  // Set by a Stop that arrives before the build's job id; the build honours it
-  // as soon as the id arrives, instead of Stop finding nothing to cancel.
-  const stopRequested = useRef(false)
-  // The delegated build this consumer is orchestrating, reachable by Stop
-  // before a render has published it to the shared slot.
-  const ownDelegatedAbort = useRef<AbortController | null>(null)
+  // A build's state until the server answers it is kept under the node key the
+  // build was started for: the consumer can stay mounted while its node moves
+  // to another occurrence, whose Stop and Refresh must not reach that build.
+  // The keys whose build request is on the wire.
+  const [submittingKeys, setSubmittingKeys] = useState<Readonly<Record<string, true>>>({})
+  const submitting = nodeKey !== null && submittingKeys[nodeKey] === true
+  // The keys whose Stop arrived before their build's job id; the build honours
+  // it as soon as the id arrives, instead of Stop finding nothing to cancel.
+  const stopRequested = useRef(new Set<string>())
+  // The delegated build this consumer is orchestrating, by key, reachable by
+  // Stop before a render has published it to the shared slot.
+  const ownDelegatedAbort = useRef(new Map<string, AbortController>())
   const workKey = useId()
   const setWorkRunning = useNodeWorkStore((s) => s.setRunning)
-  // The identity the consumer is currently asking about. Every asynchronous
-  // answer is checked against it, so an answer for an identity the consumer has
+  // What the consumer is currently asking about. Every asynchronous answer is
+  // checked against it, so an answer for an identity or a node the consumer has
   // moved past cannot replace the current one.
-  const currentIdentity = useRef(configHash)
+  const currentIdentity = useRef(askedFor)
   useEffect(() => {
-    currentIdentity.current = configHash
-  }, [configHash])
+    currentIdentity.current = askedFor
+  }, [askedFor])
   const point =
-    answered && answered.configHash === configHash && isDocumentExecutionFenceCurrent(answered.fence)
+    answered && answered.askedFor === askedFor && isDocumentExecutionFenceCurrent(answered.fence)
       ? answered.point
       : null
   const slot = useNodeDataStore((s) => (point ? s.slots[point.slot_key] : undefined))
@@ -245,8 +264,8 @@ export default function useNodeDataCache({
   // client shows as building but is not this node's to stop.
   const ownedRunning = submitting || Boolean(delegatedBuild) || Boolean(job?.startedHere)
   useEffect(() => {
-    setWorkRunning(workKey, ownedRunning && nodeId ? nodeId : null)
-  }, [nodeId, ownedRunning, setWorkRunning, workKey])
+    setWorkRunning(workKey, ownedRunning && nodeKey ? nodeKey : null)
+  }, [nodeKey, ownedRunning, setWorkRunning, workKey])
   useEffect(() => () => setWorkRunning(workKey, null), [setWorkRunning, workKey])
 
   // The graph and node id a request sends: inside an open submodel, the whole
@@ -254,16 +273,19 @@ export default function useNodeDataCache({
   // from the store; listing them renews the callback, so an edit made after mount
   // reaches the next request.
   const requestTarget = useCallback(
-    (): NodeRequestTarget | null => {
+    (): PreparedCanvasRequest | null => {
+      void allNodes
+      void edges
+      void submodels
       void globalConstants
       void preamble
-      return nodeId ? nodeRequestTarget(allNodes, edges, submodels, nodeId) : null
+      return nodeId ? prepareCanvasRequest(requestScope, nodeId) : null
     },
-    [allNodes, edges, nodeId, preamble, submodels, globalConstants],
+    [requestScope, allNodes, edges, nodeId, preamble, submodels, globalConstants],
   )
 
   const fetchPoint = useCallback(
-    (signal?: AbortSignal): Promise<NodeDataPointResponse | null> => {
+    (signal?: AbortSignal): Promise<{ point: NodeDataPointResponse; consumerKey: string } | null> => {
       const target = requestTarget()
       if (!target) return Promise.resolve(null)
       return getNodeDataPoint({
@@ -271,19 +293,21 @@ export default function useNodeDataCache({
         node_id: target.nodeId,
         source: activeSource,
         signal,
-      })
+      }).then((point) => ({ point, consumerKey: target.resultKey }))
     },
     [activeSource, requestTarget],
   )
 
+  // `consumerKey` is the key the request was prepared under.
   const publish = useCallback(
-    (fresh: NodeDataPointResponse, identity: string, fence: DocumentExecutionFence) => {
-      // Never write another document's or another identity's answer.
+    (fresh: NodeDataPointResponse, identity: string, fence: DocumentExecutionFence, consumerKey: string) => {
+      // Never write another document's, another identity's or another node's answer.
       if (!isDocumentExecutionFenceCurrent(fence)) return
-      if (currentIdentity.current !== identity) return
-      observePoint(fresh, activeSource, identity)
-      setAnswered({ configHash: identity, fence, point: fresh })
-      setProblem((previous) => (previous?.configHash === identity ? null : previous))
+      const asked = askedOf(consumerKey, identity)
+      if (currentIdentity.current !== asked) return
+      observePoint(fresh, activeSource, identity, consumerKey)
+      setAnswered({ askedFor: asked, fence, point: fresh })
+      setProblem((previous) => (previous?.askedFor === asked ? null : previous))
     },
     [activeSource, observePoint],
   )
@@ -292,24 +316,23 @@ export default function useNodeDataCache({
     async (fence: DocumentExecutionFence, signal?: AbortSignal): Promise<NodeDataPointResponse | null> => {
       if (!configHash) return null
       const fresh = await fetchPoint(signal)
-      if (fresh) publish(fresh, configHash, fence)
-      return fresh
+      if (fresh) publish(fresh.point, configHash, fence, fresh.consumerKey)
+      return fresh?.point ?? null
     },
     [configHash, fetchPoint, publish],
   )
 
   useEffect(() => {
-    if (!enabled || !nodeId || !configHash) return
+    if (!enabled || !nodeId || !configHash || !askedFor) return
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     const controller = new AbortController()
-    // Asked once this commit's effects have all run, so an edit inside an open
-    // submodel has reached the whole pipeline the request sends.
-    void afterCommitEffects()
+    // Started in the chain so a request that cannot be built is caught with the rest.
+    void Promise.resolve()
       .then(() => (controller.signal.aborted ? null : fetchPoint(controller.signal)))
       .then((fresh) => {
         if (!fresh || controller.signal.aborted) return
-        publish(fresh, configHash, fence)
+        publish(fresh.point, configHash, fence, fresh.consumerKey)
       })
       .catch((err: unknown) => {
         if (
@@ -322,21 +345,22 @@ export default function useNodeDataCache({
         // A 400 is the backend refusing to name a point for this graph.
         const refused = (err as { status?: unknown } | null)?.status === 400
         setProblem({
-          configHash,
+          askedFor,
           during: "read",
           kind: refused ? "refused" : "failed",
           reason: apiErrorMessage(err),
         })
       })
     return () => controller.abort()
-    // Re-asks on the consumer's identity, on the node-data epoch, which the
-    // store raises whenever any consumer observes a published, widened,
-    // evicted, or cleared generation, and when the node's Refresh asks again
-    // after a failure. The graph objects themselves are excluded deliberately:
-    // a render that keeps the same identity hash would otherwise re-fire the
-    // request on unrelated edits such as a node drag.
+    // Re-asks on what the consumer asks about (its identity under its node's
+    // key), on the node-data epoch, which the store raises whenever any
+    // consumer observes a published, widened, evicted, or cleared generation,
+    // and when the node's Refresh asks again after a failure. The graph objects
+    // themselves are excluded deliberately: a render that keeps the same
+    // identity hash would otherwise re-fire the request on unrelated edits such
+    // as a node drag.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configHash, enabled, epoch, nodeId, readAttempt])
+  }, [askedFor, enabled, epoch, nodeId, readAttempt])
 
   const clearDelegatedData = useCallback(
     async (target: NodeDataPointResponse) => {
@@ -357,15 +381,15 @@ export default function useNodeDataCache({
   )
 
   const buildDelegated = useCallback(
-    async (target: NodeDataPointResponse, force: boolean, fence: DocumentExecutionFence) => {
+    async (target: NodeDataPointResponse, force: boolean, fence: DocumentExecutionFence, key: string) => {
       const producer = producerNode(requestTarget(), target)
       if (!producer) throw new Error("The delegated data point has no producer node")
       const { cancelInputSnapshotBuild, ensureInputSnapshots } = await import(
         "./ensureInputSnapshots"
       )
       const controller = new AbortController()
-      ownDelegatedAbort.current = controller
-      if (stopRequested.current) controller.abort()
+      ownDelegatedAbort.current.set(key, controller)
+      if (stopRequested.current.has(key)) controller.abort()
       const token = nextOperationToken()
       let buildJobId: string | null = null
       startDelegatedBuild(target.slot_key, {
@@ -418,7 +442,7 @@ export default function useNodeDataCache({
         finishDelegatedBuild(target.slot_key, token)
         throw err
       } finally {
-        if (ownDelegatedAbort.current === controller) ownDelegatedAbort.current = null
+        if (ownDelegatedAbort.current.get(key) === controller) ownDelegatedAbort.current.delete(key)
       }
       finishDelegatedBuild(target.slot_key, token)
       await readPoint(fence)
@@ -454,8 +478,10 @@ export default function useNodeDataCache({
       if (!target) return
       const fence = captureDocumentExecutionFence()
       if (!isDocumentExecutionFenceCurrent(fence)) return
-      stopRequested.current = false
-      setSubmitting(true)
+      // The key the request is prepared under: the build's, after every await.
+      const key = target.resultKey
+      stopRequested.current.delete(key)
+      setSubmittingKeys((keys) => ({ ...keys, [key]: true }))
       try {
         const response = await runNodeData({
           graph: target.graph,
@@ -466,7 +492,7 @@ export default function useNodeDataCache({
         if (!isDocumentExecutionFenceCurrent(fence)) return
         // Published only while the consumer still asks about the identity this
         // run was sent for.
-        publish(response.point, configHash, fence)
+        publish(response.point, configHash, fence, target.resultKey)
         if (response.status === "started" || response.status === "joined") {
           if (!response.job_id) throw new Error("Node data build did not return a job id")
           // Registered even for an identity the consumer has left: the build
@@ -482,20 +508,20 @@ export default function useNodeDataCache({
             { point: response.point, source: activeSource },
           )
           // Stop was pressed while this request was in flight.
-          if (response.status === "started" && stopRequested.current) {
+          if (response.status === "started" && stopRequested.current.has(key)) {
             await cancelOwnedJob(response.job_id, fence)
           }
           return
         }
         // Nothing has started on the server for the rest, so an answer for an
         // identity the consumer has left starts nothing and says nothing.
-        if (currentIdentity.current !== configHash) return
+        if (currentIdentity.current !== askedOf(target.resultKey, configHash)) return
         if (response.status === "delegated") {
-          if (stopRequested.current) return
+          if (stopRequested.current.has(key)) return
           // A snapshot-backed Data Input or API-input table is built by its own
           // route, under this slot's delegated build so every consumer of the
           // point sees it running and can cancel it.
-          await buildDelegated(response.point, refresh || response.point.state === "stale", fence)
+          await buildDelegated(response.point, refresh || response.point.state === "stale", fence, key)
           return
         }
         if (response.cached) addToast("info", `Data already cached: ${nodeLabel}`)
@@ -512,10 +538,14 @@ export default function useNodeDataCache({
         // Cancelling is otherwise the outcome the user asked for, not a
         // failure. The abort arrives as a DOMException, not an Error instance.
         if (name === "AbortError") return
-        setProblem({ configHash, during: "build", kind: "failed", reason: detail })
+        setProblem({ askedFor: askedOf(target.resultKey, configHash), during: "build", kind: "failed", reason: detail })
         addToast("error", `Data caching failed: ${detail}`)
       } finally {
-        setSubmitting(false)
+        setSubmittingKeys((keys) => {
+          const { [key]: _done, ...rest } = keys
+          void _done
+          return rest
+        })
       }
     },
     [
@@ -550,7 +580,7 @@ export default function useNodeDataCache({
   // registered, so a handler registered on an early render still decides
   // against what the consumer holds now. It settles one commit after the
   // render it describes, which a user's click is never inside.
-  const currentProblem = problem && problem.configHash === configHash ? problem : null
+  const currentProblem = problem && problem.askedFor === askedFor ? problem : null
   const latest = useRef({ availability, busy, canBuild, enabled, run, refresh, currentProblem })
   useEffect(() => {
     latest.current = { availability, busy, canBuild, enabled, run, refresh, currentProblem }
@@ -573,9 +603,9 @@ export default function useNodeDataCache({
   }, [])
 
   useEffect(() => {
-    if (!nodeId) return
-    return registerNodeDataRefresh(nodeId, bringUpToDate)
-  }, [bringUpToDate, nodeId])
+    if (!nodeKey) return
+    return registerNodeDataRefresh(nodeKey, bringUpToDate)
+  }, [bringUpToDate, nodeKey])
 
   const cancel = useCallback(async () => {
     const fence = captureDocumentExecutionFence()
@@ -589,13 +619,14 @@ export default function useNodeDataCache({
       await cancelOwnedJob(job.jobId, fence)
       return
     }
-    if (ownDelegatedAbort.current) {
-      ownDelegatedAbort.current.abort()
+    const own = nodeKey ? ownDelegatedAbort.current.get(nodeKey) : undefined
+    if (own) {
+      own.abort()
       return
     }
     // No job id yet: the build in flight stops itself when it arrives.
-    if (submitting) stopRequested.current = true
-  }, [cancelOwnedJob, delegatedBuild, job, submitting])
+    if (submitting && nodeKey) stopRequested.current.add(nodeKey)
+  }, [cancelOwnedJob, delegatedBuild, job, nodeKey, submitting])
 
   // Read when Stop is pressed, like Refresh's handler above.
   const latestCancel = useRef(cancel)
@@ -603,9 +634,9 @@ export default function useNodeDataCache({
     latestCancel.current = cancel
   })
   useEffect(() => {
-    if (!nodeId) return
-    return registerNodeStop(nodeId, () => void latestCancel.current())
-  }, [nodeId])
+    if (!nodeKey) return
+    return registerNodeStop(nodeKey, () => void latestCancel.current())
+  }, [nodeKey])
 
   const clear = useCallback(async () => {
     if (!nodeId || !configHash) return
@@ -620,7 +651,7 @@ export default function useNodeDataCache({
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence)) return
-      publish(response.point, configHash, fence)
+      publish(response.point, configHash, fence, target.resultKey)
       if (response.status === "delegated") {
         // The node-data clear removed the point's analyses; its data belongs to
         // the input-snapshot or JSON cache, cleared through its own route.

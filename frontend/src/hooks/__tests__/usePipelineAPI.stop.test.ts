@@ -5,7 +5,7 @@
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -44,7 +44,7 @@ const inputNode = {
 } as Node
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [inputNode], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [inputNode], edges: [], preamble: "" })),
 }))
 
 import {
@@ -70,15 +70,11 @@ const mockCancelJob = vi.mocked(cancelInputCacheJob)
 function makeParams() {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -109,7 +105,7 @@ async function renderPipelineAPI(nodes: Node[]) {
   const params = makeParams()
   const hook = renderHook(() => usePipelineAPI(params))
   await waitFor(() => expect(hook.result.current.loading).toBe(false))
-  params.graphRef.current = { nodes, edges: [] }
+  useGraphStore.setState({ nodes, edges: [] })
   return hook
 }
 

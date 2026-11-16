@@ -3,8 +3,6 @@ import { ChevronRight, Lock } from "lucide-react"
 interface ViewLevelBase {
   name: string
   file: string
-  _savedNodes?: import("@xyflow/react").Node[]
-  _savedEdges?: import("@xyflow/react").Edge[]
 }
 
 export type ViewLevel =

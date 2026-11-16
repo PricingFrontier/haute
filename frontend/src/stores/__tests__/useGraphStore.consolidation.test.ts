@@ -9,7 +9,7 @@
  *      / `useEdgesState`) plus `past`/`future` refs and `canUndo`/`canRedo`.
  *   2. `App.tsx` local `useState` — `preamble`.
  *   3. `App.tsx` refs — `lastSavedRef` (JSON snapshot for dirty derivation),
- *      `preambleRef` (live mirror).
+ *      a live preamble mirror.
  *   4. `useUIStore.dirty` — boolean flag, imperatively set from the
  *      compare-last-state effect in `App.tsx`.
  *
@@ -292,17 +292,16 @@ describe("useGraphStore - consolidation", () => {
         persistedFingerprint: "dirty-persisted",
         savedPersistedFingerprint: "dirty-saved",
         dirty: true,
-        submodelView: {
-          entrySnapshot: dirtySnapshot,
-          entryPersistedFingerprint: "dirty-entry",
-          entryViewSnapshot: dirtySnapshot,
-          entryViewPersistedFingerprint: "dirty-entry-view",
-          parentUndoStack: [dirtySnapshot],
-          parentRedoStack: [dirtySnapshot],
-          parentSavedSnapshot: dirtySnapshot,
-          parentSavedPersistedFingerprint: "dirty-parent-saved",
-          savedViewPersistedFingerprint: null,
+        focus: {
+          instanceId: "dirty-instance",
+          definitionId: "dirty-definition",
+          readOnly: false,
+          rootNodes: [makeNode("dirty-root")],
+          rootEdges: [],
         },
+        submodelAnnotations: { "dirty-instance": { child: { _columns: [] } } },
+        navigationSerial: 47,
+        semanticGeneration: 53,
       }
       expect(new Set(Object.keys(dirtied))).toEqual(new Set(Object.keys(pristine)))
 

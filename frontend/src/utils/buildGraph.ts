@@ -1,6 +1,5 @@
-import type { Node, Edge } from "@xyflow/react"
-import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 import type { PipelineEdge } from "../types/node"
+import type { GraphPayload } from "../api/types"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
 import { isPlainObject } from "../types/guards"
 import useGraphStore from "../stores/useGraphStore"
@@ -16,29 +15,6 @@ function storeGlobalConstants() {
     global_constants: globalConstantsError === null ? constantsPayload(globalConstants) : [],
     global_constants_error: globalConstantsError,
   }
-}
-
-/**
- * Build the graph payload expected by backend API calls. The preamble, like the
- * global constants, is read from the graph store, so no request can leave it out.
- */
-export function buildGraph(
-  allNodes: SimpleNode[],
-  edges: SimpleEdge[],
-  submodels?: Record<string, unknown>,
-) {
-  return toCanonicalGraphPayload({
-    nodes: allNodes.map((n) => ({
-      id: n.id,
-      type: n.type || n.data.nodeType,
-      data: n.data,
-      position: { x: 0, y: 0 },
-    })),
-    edges: edges as PipelineEdge[],
-    submodels,
-    preamble: useGraphStore.getState().preamble,
-    ...storeGlobalConstants(),
-  })
 }
 
 const VOLATILE_NODE_DATA_KEYS = new Set([
@@ -60,8 +36,10 @@ const VOLATILE_NODE_DATA_KEYS = new Set([
 
 function nodeForRequestIdentity(node: unknown): unknown {
   if (!isPlainObject(node) || !isPlainObject(node.data)) return node
+  // Where a node sits on the canvas runs nothing, so a move leaves the identity as it is.
+  const { position: _position, ...placed } = node
   return {
-    ...node,
+    ...placed,
     data: Object.fromEntries(
       Object.entries(node.data).filter(([key]) => !VOLATILE_NODE_DATA_KEYS.has(key)),
     ),
@@ -104,24 +82,24 @@ function graphObjectForRequestIdentity(
  * in-flight result or overwrite grant survives unrelated UI refreshes.
  */
 export function graphForRequestIdentity(
-  graph: ReturnType<typeof buildGraph>,
+  graph: GraphPayload,
 ): Record<string, unknown> {
-  return graphObjectForRequestIdentity(graph)
+  return graphObjectForRequestIdentity(graph as unknown as Record<string, unknown>)
 }
 
-/** Resolve graph payload from ref objects (parentGraph takes priority). */
-export function resolveGraphFromRefs(
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>,
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>,
-  preambleRef: React.MutableRefObject<string>,
-) {
-  const graph = parentGraphRef.current
-    ? { nodes: parentGraphRef.current.nodes, edges: parentGraphRef.current.edges, submodels: parentGraphRef.current.submodels, preamble: preambleRef.current }
-    : { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current, preamble: preambleRef.current }
+/**
+ * The document the graph store holds, as a request payload: the pipeline's own
+ * nodes and edges (also while a submodel is open), every definition, the
+ * preamble and the global constants. The store applies every edit before it
+ * returns, so a request built from this right after an edit carries it.
+ */
+export function documentGraphPayload() {
+  const state = useGraphStore.getState()
   return toCanonicalGraphPayload({
-    ...graph,
-    edges: graph.edges as PipelineEdge[],
+    nodes: state.focus ? state.focus.rootNodes : state.nodes,
+    edges: (state.focus ? state.focus.rootEdges : state.edges) as PipelineEdge[],
+    submodels: state.submodels,
+    preamble: state.preamble,
     ...storeGlobalConstants(),
   })
 }

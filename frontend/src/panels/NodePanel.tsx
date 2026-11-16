@@ -37,8 +37,8 @@ import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPane
 import PanelShell from "./PanelShell"
 import { SidePanelClose } from "../haute-ui"
 import PreviewPanelTabs from "./PreviewPanelTabs"
-import { useGraph } from "./useGraph"
-import { nodeRequestTarget } from "../utils/nodeRequestTarget"
+import { useGraph, useRequestScope, useResultKey } from "./useGraph"
+import { canvasTarget, prepareNodeRequest, resultKey } from "../utils/requestGateway"
 import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
@@ -1168,6 +1168,7 @@ function NodePanelContent({
   documentReadOnly = false,
   scopedSave,
 }: ActiveNodePanelProps) {
+  const requestScope = useRequestScope()
   const [scopedSaving, setScopedSaving] = useState(false)
   // The editor freezes while a scoped save is in flight so keystrokes cannot
   // race the adoption of the authoritative response.
@@ -1202,10 +1203,12 @@ function NodePanelContent({
     setModellingPaneIssues({ nodeId, panes })
   }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
-  const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
+  // Training and solves are kept under the node's result key (its occurrence's own inside a submodel).
+  const jobKey = useResultKey(node.id)
+  const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[jobKey]))
   const rememberedOptimiserPane = useUIStore((s) => s.optimiserPanes[node.id])
   const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
-  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[node.id]))
+  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[jobKey]))
   // The lazily loaded optimiser editor owns its Solve issues; the panel only badges tabs.
   const [optimiserPaneIssues, setOptimiserPaneIssues] = useState<{ nodeId: string; panes: readonly OptimiserPane[] }>({ nodeId: "", panes: [] })
   const onOptimiserPaneIssuesChange = useCallback((nodeId: string, panes: readonly OptimiserPane[]) => {
@@ -1243,14 +1246,16 @@ function NodePanelContent({
   // point has already established them; never a request of its own. Gated on
   // the identity above, so the previous point's columns are never offered
   // after a source switch or a rewiring.
+  // Kept under the node's result key: inside a submodel, this occurrence's.
+  const consumerKey = resultKey(node.id)
   const exploreProfile = useNodeDataStore((s) =>
-    profileForConsumer(s, node.id, exploreConfigHash),
+    profileForConsumer(s, consumerKey, exploreConfigHash),
   )
 
   const loadPivotFilterMembers = useCallback(
     (field: string, search: string, signal: AbortSignal) => {
       if (!node) throw new Error("Explore node is unavailable.")
-      const target = nodeRequestTarget(allNodes, edges, submodels, node.id)
+      const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
       return fetchExplorePivotMembers({
         graph: target.graph,
         node_id: target.nodeId,

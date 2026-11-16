@@ -39,6 +39,7 @@ vi.mock("../../api/client", async () => {
 // Imported AFTER the mock so these are the mocked references.
 import { outputAssembleDryRun, previewNode } from "../../api/client"
 import { makeOutputDryRun } from "../../test-utils/factories"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 const mockOutputAssembleDryRun = vi.mocked(outputAssembleDryRun)
 const mockPreviewNode = vi.mocked(previewNode)
@@ -261,7 +262,7 @@ function render(
   opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
 ) {
   return rtlRender(
-    <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
       {element}
     </GraphProvider>,
   )
@@ -282,7 +283,7 @@ function StatefulHarness({
 }) {
   const [config, setConfig] = useState(initialConfig)
   return (
-    <GraphProvider allNodes={allNodes} edges={edges}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges}>
       <OutputEditor
         config={config}
         nodeId="output_1"
@@ -1245,7 +1246,7 @@ describe("OutputEditor - assembled-output preview", () => {
     const doc = [{ premium: 100 }]
     mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: doc, row_count: 1 }))
     const editor = (config: Record<string, unknown>) => (
-      <GraphProvider allNodes={SINGLE_PORT_NODES} edges={SINGLE_PORT_EDGES}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={SINGLE_PORT_NODES} edges={SINGLE_PORT_EDGES}>
         <OutputEditor {...DEFAULT_PROPS} config={config} />
       </GraphProvider>
     )

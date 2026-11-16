@@ -129,7 +129,9 @@ export default function GeneratedCodePanel({
           onMouseLeave={onPointStep ? () => onPointStep(null) : undefined}
         >
           {lines.length === 0 ? (
-            <span className="px-2" style={{ color: "var(--text-muted)" }}>No code yet.</span>
+            // While the first render is pending there is code to come, so the
+            // line stays blank rather than saying there is none.
+            <span className="px-2" style={{ color: "var(--text-muted)" }}>{pending ? " " : "No code yet."}</span>
           ) : (
             lines.map((tokens, index) => {
               const number = index + 1

@@ -347,6 +347,32 @@ export function cloneGraphSnapshot(input: {
   }
 }
 
+/**
+ * A node as the document keeps it: no React Flow presentation fields and no
+ * execution annotations (a preview's columns, statuses), its server-owned
+ * editor identities kept. What a submodel definition holds for each child, and
+ * what history restores.
+ */
+export function authoredNodeForm(node: Node): Node {
+  return stripNodeHistoryFields(node) as unknown as Node
+}
+
+/** An edge as the document keeps it: no presentation fields, its input name kept. */
+export function authoredEdgeForm(edge: PipelineEdge): PipelineEdge {
+  return stripEdgeHistoryFields(edge) as unknown as PipelineEdge
+}
+
+/**
+ * A node's execution annotations: the `_`-prefixed data the editor writes for
+ * the view (columns, statuses, notes), never its editor identities.
+ */
+export function nodeExecutionAnnotations(node: Node): Record<string, unknown> {
+  const data = node.data as Record<string, unknown>
+  return Object.fromEntries(
+    Object.entries(data).filter(([key]) => key.startsWith("_") && !LIVE_HISTORY_NODE_METADATA_FIELDS.has(key)),
+  )
+}
+
 /** Pre-computed empty-workspace sentinel (fast path for fresh sessions). */
 export const EMPTY_SNAPSHOT = serializeSnapshot({
   nodes: [],

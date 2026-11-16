@@ -48,6 +48,7 @@ export default function ExplorePivotsPane({
   const {
     cancelPivot: cancel,
     notices,
+    resultKey: nodeKey,
     submitting,
     updatePivot: update,
   } = useExplorePivotActions({ node, allNodes, edges, submodels, preamble })
@@ -60,7 +61,7 @@ export default function ExplorePivotsPane({
     [parsed],
   )
   useAutoUpdateExplorePivots({
-    nodeId: node.id,
+    nodeKey,
     pivots: enabledPivots,
     report,
     submitting,
@@ -105,7 +106,7 @@ export default function ExplorePivotsPane({
     <div data-testid="explore-pivots-pane" className="flex-1 overflow-auto p-3">
       <div className="flex flex-col gap-3">
         {enabledPivots.map((pivot) => {
-          const key = explorePivotResultKey(node.id, pivot.id)
+          const key = explorePivotResultKey(nodeKey, pivot.id)
           const cached = pivotResults[key]
           const job = pivotJobs[key]
           const isSubmitting = submitting[pivot.id] === true

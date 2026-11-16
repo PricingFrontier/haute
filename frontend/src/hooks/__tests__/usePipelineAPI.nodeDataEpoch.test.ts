@@ -8,7 +8,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import type { MutableRefObject } from "react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -46,20 +45,15 @@ vi.mock("../../api/workbench", () => ({
   fetchWorkbenchTables: vi.fn(),
 }))
 
+// The request payload as `documentGraphPayload` builds it from the graph store,
+// without canonicalising: the pipeline's own graph, also with a submodel open.
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(
-    (
-      graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
-      _parentGraphRef: unknown,
-      submodelsRef: MutableRefObject<Record<string, unknown>>,
-      preambleRef: MutableRefObject<string>,
-    ) => ({
-      nodes: graphRef.current.nodes,
-      edges: graphRef.current.edges,
-      submodels: submodelsRef.current,
-      preamble: preambleRef.current,
-    }),
-  ),
+  documentGraphPayload: vi.fn(() => {
+    const { nodes, edges, focus, submodels, preamble } = useGraphStore.getState()
+    return focus
+      ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble }
+      : { nodes, edges, submodels, preamble }
+  }),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -92,15 +86,11 @@ type PreviewEnvelope = Awaited<ReturnType<typeof previewNode>>
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -188,7 +178,7 @@ async function renderLoaded(nodes: Node[], edges: Edge[] = []) {
   const rendered = renderHook(() => usePipelineAPI(params))
   await waitFor(() => expect(rendered.result.current.loading).toBe(false))
   // The canvas as edited after the initial load, which sets the graph it loaded.
-  params.graphRef.current = { nodes, edges }
+  useGraphStore.setState({ nodes, edges })
   return rendered
 }
 

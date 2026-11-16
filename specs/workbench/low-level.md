@@ -137,7 +137,7 @@ filtering or opening this view. Grey backgrounds and fixed structure remain unch
 
 The schema review UI stays in the lazy workbench, with its response validation in the
 workbench validator module. Its measured production bundle is 1,788.3 KiB gzip, with
-293.9 KiB initially loaded. The aggregate allowance is 1,801 KiB: 1 KiB of it for the chunked GLM's training contracts, 2 KiB for a frontier point's convergence trace (OPT-PC04), 3 KiB for the Coalesce step, the step editor's round-trip fixes, a submodel's output reorder, the schema pane's Where it's used and the live workbench sample (1,793.1 KiB measured, 294.3 KiB initially), and 3 KiB for an Export's workbook of cells, its panel, its problems and its run in Preview (1,795.6 KiB measured, 294.5 KiB initially; 1,795.8 KiB with its label cells, 1,797.7 KiB with its blocks), and 3 KiB for a Rating Step's Tables and Combined tabs and the Rating and Banding list's reordering, renaming in the row and Add button (1,798.4 KiB measured, 294.5 KiB initially); the initial 300 KiB,
+293.9 KiB initially loaded. The aggregate allowance is 1,806 KiB: 1 KiB of it for the chunked GLM's training contracts, 2 KiB for a frontier point's convergence trace (OPT-PC04), 3 KiB for the Coalesce step, the step editor's round-trip fixes, a submodel's output reorder, the schema pane's Where it's used and the live workbench sample (1,793.1 KiB measured, 294.3 KiB initially), and 3 KiB for an Export's workbook of cells, its panel, its problems and its run in Preview (1,795.6 KiB measured, 294.5 KiB initially; 1,795.8 KiB with its label cells, 1,797.7 KiB with its blocks), and 3 KiB for a Rating Step's Tables and Combined tabs and the Rating and Banding list's reordering, renaming in the row and Add button (1,798.4 KiB measured, 294.5 KiB initially), and 5 KiB for submodel editing's one document in the graph store, its request gateway and its results kept by occurrence (1,803.7 KiB measured, 298.4 KiB initially); the initial 300 KiB,
 single-chunk 650 KiB and chart-vendor 205 KiB limits stay unchanged. The 1 KiB allowance increase covers connection-bound comparisons, deferred clipboard validation, and global/retention diagnostics after removing unused comparison metadata and shared-view duplication.
 
 | File | Responsibility |
@@ -308,7 +308,7 @@ The view's host is in files other components own. `frontend/src/App.tsx`
 ([frontend-graph-canvas](../frontend-graph-canvas/low-level.md)) hides and fences the
 pipeline editor while `activeView` is the workbench's, swaps the lazy `WorkbenchToolbar` for
 `Toolbar`, renders the lazy `WorkbenchView` over the pipeline region with
-`resolveWorkbenchGraph` (the whole document from its refs, through `resolveGraphFromRefs`),
+`resolveWorkbenchGraph` (the whole document, through `documentGraphPayload`),
 gives both toolbars the same `requestSave`, `requestCommit`, `wsStatus` and `sourceSelectionTrusted`, and the view `requestSave`
 for Ctrl/Cmd+S, and ends the palette column with `ViewSwitcher` while the workbench is
 enabled;
@@ -1446,7 +1446,7 @@ no longer has; and `InputSource` in
     read live each time (`refused()`): before the form is saved, after the form's save,
     after the tables fetch and after the pending commits, since each is a wait during
     which a submodel can open, the assistant's turn start or the document change. The
-    fence: inside a submodel (`parentGraphRef`), during the assistant's turn
+    fence: inside a submodel (the graph store's `focus`), during the assistant's turn
     (`useUIStore.assistantTurn`, "The assistant is working on the pipeline: wait for its
     turn to finish, then save."), and a document whose `can_mutate` or `can_save` is false
     or whose graph is not synchronised (`documentReadOnlyReason`, the pipeline save's own

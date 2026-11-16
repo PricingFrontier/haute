@@ -8,7 +8,7 @@
 
 import { post } from "./client"
 import { workbenchSampleField } from "./workbenchSample"
-import type { GraphPayload } from "./types"
+import type { PreparedGraph } from "./types"
 import type { ExploreRelationshipsResponse } from "../generated/api-contracts.generated"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 
@@ -19,7 +19,7 @@ export type {
 } from "../generated/api-contracts.generated"
 
 export interface ExploreRelationshipsArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   node_id: string
   source: string
   target: string | null

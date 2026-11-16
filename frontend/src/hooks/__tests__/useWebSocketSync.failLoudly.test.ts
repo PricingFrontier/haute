@@ -130,8 +130,6 @@ const SOURCE_FILE = "rating/main.py"
 
 function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    preambleRef: { current: "" },
-    submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-old" },
     preservedBlocksRef: { current: ["OLD_KEEP = 1"] },
@@ -315,12 +313,11 @@ describe("useWebSocketSync - partial failure rolls back consistently (#37)", () 
     )
   })
 
-  it("atomic snapshot failure rolls back request refs and preserves the store", async () => {
+  it("atomic snapshot failure keeps the store as it was and rolls back the preserved blocks", async () => {
     const params = makeHookParams()
     const previousSubmodels = { old: { nodes: [], edges: [] } }
-    params.preambleRef.current = "old preamble"
-    params.submodelsRef.current = previousSubmodels
     const graphStore = useGraphStore.getState()
+    graphStore.preamble = "old preamble"
     graphStore.submodels = previousSubmodels
     vi.mocked(graphStore.loadGraphSnapshot).mockImplementationOnce(() => {
       throw new Error("snapshot load failed")
@@ -345,12 +342,10 @@ describe("useWebSocketSync - partial failure rolls back consistently (#37)", () 
     expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(1)
     expect(graphStore.preamble).toBe("old preamble")
     expect(graphStore.submodels).toBe(previousSubmodels)
-    expect(params.preambleRef.current).toBe("old preamble")
     // See the note above: the fence ref is set before the try block, so it
     // reflects the new document even though the graph apply rolled back.
     expect(params.sourceRevisionRef.current).toBe("revision-new")
     expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
-    expect(params.submodelsRef.current).toBe(previousSubmodels)
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("WebSocket sync error"),

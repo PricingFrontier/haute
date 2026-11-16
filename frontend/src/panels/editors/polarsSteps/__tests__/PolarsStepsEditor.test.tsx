@@ -614,6 +614,8 @@ const addGross: Step = {
 }
 
 function mountCanvasShortcuts(nodes: Node[]) {
+  // The canvas the shortcuts act on, as the graph store holds it.
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges: [], preamble: "", submodels: {} })
   const params = {
     enabled: true,
     handleSave: vi.fn(),
@@ -623,10 +625,10 @@ function mountCanvasShortcuts(nodes: Node[]) {
     undo: vi.fn(),
     redo: vi.fn(),
     fitView: vi.fn(),
-    graphRef: { current: { nodes, edges: [] as Edge[] } },
     clipboard: { current: { nodes: [{ id: "copied", position: { x: 0, y: 0 }, data: { label: "Copied" } } as Node], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     setSelectedNode: vi.fn(),
+    lastSelectedKeyRef: { current: null as string | null },
     setPreviewData: vi.fn(),
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
@@ -934,5 +936,14 @@ describe("GeneratedCodePanel", () => {
     act(() => vi.advanceTimersByTime(PENDING_FADE_MS))
     expect(pre().style.opacity).toBe("1")
     expect(screen.queryByText("rendering…")).not.toBeInTheDocument()
+  })
+
+  it("says there is no code only when a render has none, never while the first render is pending", () => {
+    const props = { start: "input" as const, code: "", error: null }
+    const { rerender } = render(<GeneratedCodePanel {...props} pending />)
+    expect(screen.queryByText("No code yet.")).not.toBeInTheDocument()
+
+    rerender(<GeneratedCodePanel {...props} pending={false} />)
+    expect(screen.getByText("No code yet.")).toBeInTheDocument()
   })
 })

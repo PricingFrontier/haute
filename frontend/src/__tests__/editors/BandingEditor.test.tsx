@@ -17,6 +17,7 @@ import { fetchParamFile } from "../../api/workbench"
 import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useUIStore from "../../stores/useUIStore"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 /**
  * The editor reads the data its node is banding, so it needs the graph the
@@ -25,7 +26,7 @@ import useUIStore from "../../stores/useUIStore"
  */
 function renderEditor(ui: ReactElement) {
   return render(
-    <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+    <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]} submodels={{}} preamble="">
       {ui}
     </GraphProvider>,
   )
@@ -166,7 +167,7 @@ describe("BandingEditor", () => {
     expect(factors).toHaveLength(2)
     expect(factors[1]).toMatchObject({ column: "", output_column: "" })
     rerender(
-      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]} submodels={{}} preamble="">
         <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
       </GraphProvider>,
     )
@@ -186,7 +187,7 @@ describe("BandingEditor", () => {
     const factors = onUpdate.mock.calls[0][1]
     expect(factors[1]).toEqual({ banding: "breakpoints", column: "", output_column: "", rules: [], default: null })
     rerender(
-      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]} submodels={{}} preamble="">
         <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
       </GraphProvider>,
     )
@@ -517,7 +518,7 @@ describe("BandingEditor", () => {
 
       expect(outputs(onUpdate)).toEqual(["second", "cover_band", "first"])
       rerender(
-        <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]} submodels={{}} preamble="">
           <BandingEditor
             config={{ factors: onUpdate.mock.lastCall![1] }}
             onUpdate={onUpdate}
@@ -1290,7 +1291,7 @@ describe("BandingEditor on a date column", () => {
     expect(factors[0]).toMatchObject({ column, banding: "breakpoints" })
 
     rerender(
-      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]} submodels={{}} preamble="">
         <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />
       </GraphProvider>,
     )

@@ -3,6 +3,7 @@ import {
   makeCanonicalGraph,
   makeCanonicalNode,
   makePreviewResponse as makeCompletePreviewResponse,
+  preparedGraph,
 } from "../../test-utils/factories"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
@@ -128,6 +129,9 @@ const dummyGraph = {
   preserved_blocks: [],
   source_revision: "revision-graph",
 }
+
+/** The same graph, sent to a function that runs the pipeline. */
+const preparedDummyGraph = preparedGraph(dummyGraph)
 
 function makePreviewResponse() {
   return makeCompletePreviewResponse({
@@ -762,7 +766,7 @@ describe("endpoint contracts", () => {
   })
 
   it("previewNode sends the caller's request id so it can poll its progress", async () => {
-    await previewNode({ graph: { nodes: [], edges: [] }, nodeId: "n1", rowLimit: 5, requestId: "req-1" })
+    await previewNode({ graph: preparedGraph({ nodes: [], edges: [] }), nodeId: "n1", rowLimit: 5, requestId: "req-1" })
 
     const [, init] = mockFetch.mock.calls.find(([url]) => url === "/api/pipeline/preview")!
     expect(JSON.parse(init.body as string).request_id).toBe("req-1")
@@ -780,7 +784,7 @@ describe("endpoint contracts", () => {
   })
 
   it("previewNode posts to /api/pipeline/preview with correct body", async () => {
-    await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
+    await previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/preview")
     expect(opts.method).toBe("POST")
@@ -895,7 +899,7 @@ describe("endpoint contracts", () => {
       identity_digest: "a".repeat(64),
       generation_id: "generation-1",
     }]
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: seedPlan })
+    await traceCell({ graph: preparedDummyGraph, row_index: 0, target_node_id: "n1", seed_plan: seedPlan })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/trace")
     expect(opts.method).toBe("POST")
@@ -913,7 +917,7 @@ describe("endpoint contracts", () => {
         suffix_mismatch: false,
       }),
     )
-    await resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" })
+    await resolveOutputDestination({ graph: preparedDummyGraph, nodeId: "sink1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/output-destination")
     expect(JSON.parse(opts.body)).toEqual({
@@ -924,7 +928,7 @@ describe("endpoint contracts", () => {
 
   it("writeOutput posts to /api/pipeline/write-output", async () => {
     mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
-    await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
+    await writeOutput({ graph: preparedDummyGraph, nodeId: "sink1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/write-output")
     const body = JSON.parse(opts.body)
@@ -949,7 +953,7 @@ describe("endpoint contracts", () => {
   })
 
   it("trainModel posts to /api/modelling/train with default source", async () => {
-    await trainModel({ graph: dummyGraph, node_id: "model1" })
+    await trainModel({ graph: preparedDummyGraph, node_id: "model1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/modelling/train")
     const body = JSON.parse(opts.body)
@@ -958,7 +962,7 @@ describe("endpoint contracts", () => {
   })
 
   it("solveOptimiser posts to /api/optimiser/solve", async () => {
-    await solveOptimiser({ graph: dummyGraph, node_id: "opt1" })
+    await solveOptimiser({ graph: preparedDummyGraph, node_id: "opt1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/optimiser/solve")
     const body = JSON.parse(opts.body)
@@ -1024,7 +1028,7 @@ describe("endpoint contracts", () => {
   })
 
   it("estimateTrainingRam posts to /api/modelling/estimate", async () => {
-    await estimateTrainingRam({ graph: dummyGraph, node_id: "m1" })
+    await estimateTrainingRam({ graph: preparedDummyGraph, node_id: "m1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/modelling/estimate")
     expect(opts.method).toBe("POST")
@@ -1660,7 +1664,7 @@ describe("request() edge cases", () => {
         }),
       )
 
-      const promise = previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, timeout: 5 })
+      const promise = previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, timeout: 5 })
       promise.catch(() => {})
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
@@ -1693,11 +1697,11 @@ describe("request() edge cases", () => {
       const controller = new AbortController()
       const signal = controller.signal
       const calls = [
-        previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, signal }),
-        previewInputs({ graph: dummyGraph, nodeId: "node1", signal }),
-        traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "node1", seed_plan: [], signal }),
-        writeOutput({ graph: dummyGraph, nodeId: "out", signal }),
-        estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt", signal }),
+        previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, signal }),
+        previewInputs({ graph: preparedDummyGraph, nodeId: "node1", signal }),
+        traceCell({ graph: preparedDummyGraph, row_index: 0, target_node_id: "node1", seed_plan: [], signal }),
+        writeOutput({ graph: preparedDummyGraph, nodeId: "out", signal }),
+        estimateOptimiserSolve({ graph: preparedDummyGraph, node_id: "opt", signal }),
       ]
       const settled = calls.map(() => false)
       calls.forEach((call, index) => {
@@ -1810,7 +1814,7 @@ describe("request() edge cases", () => {
 
     const controller = new AbortController()
     const promise = previewNode({
-      graph: dummyGraph,
+      graph: preparedDummyGraph,
       nodeId: "node1",
       rowLimit: 50,
       signal: controller.signal,
@@ -1844,7 +1848,7 @@ describe("request() edge cases", () => {
 
       const controller = new AbortController()
       const promise = previewNode({
-        graph: dummyGraph,
+        graph: preparedDummyGraph,
         nodeId: "node1",
         rowLimit: 50,
         signal: controller.signal,
@@ -1886,32 +1890,32 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("previewNode body omits streaming_chunk_size", async () => {
-    await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
+    await previewNode({ graph: preparedDummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
   it("traceCell body omits streaming_chunk_size", async () => {
-    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] })
+    await traceCell({ graph: preparedDummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
   it("writeOutput body omits streaming_chunk_size", async () => {
     mockFetch.mockReturnValue(jsonResponse(makeWriteOutput()))
-    await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live" })
+    await writeOutput({ graph: preparedDummyGraph, nodeId: "sink1", source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
   it("trainModel body omits streaming_chunk_size", async () => {
-    await trainModel({ graph: dummyGraph, node_id: "model1" })
+    await trainModel({ graph: preparedDummyGraph, node_id: "model1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
   it("solveOptimiser body omits streaming_chunk_size", async () => {
-    await solveOptimiser({ graph: dummyGraph, node_id: "opt1" })
+    await solveOptimiser({ graph: preparedDummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
@@ -1919,7 +1923,7 @@ describe("no request carries streaming_chunk_size", () => {
   it("estimateOptimiserSolve body omits streaming_chunk_size", async () => {
     const { estimateOptimiserSolve } = await import("../client")
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_estimate_response")))
-    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
+    await estimateOptimiserSolve({ graph: preparedDummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
@@ -1927,7 +1931,7 @@ describe("no request carries streaming_chunk_size", () => {
   it("startOptimiserFrontierAutoRange body omits streaming_chunk_size", async () => {
     const { startOptimiserFrontierAutoRange } = await import("../client")
     mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
-    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
+    await startOptimiserFrontierAutoRange({ graph: preparedDummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })

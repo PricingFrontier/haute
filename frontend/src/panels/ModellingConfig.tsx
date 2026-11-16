@@ -28,7 +28,7 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { apiErrorMessage } from "../api/errors"
-import { afterCommitEffects, nodeRequestTarget, requestNodeNamer } from "../utils/nodeRequestTarget"
+import { prepareCanvasRequest, answerNodeNamer } from "../utils/requestGateway"
 import {
   effectiveMetrics,
   trainingConfigurationIssues,
@@ -36,7 +36,7 @@ import {
   type TrainingConfigurationIssue,
 } from "../utils/trainingObjective"
 import type { OnUpdateConfig } from "./editors/_shared"
-import { useGraph } from "./useGraph"
+import { useGraph, useRequestScope, useResultKey } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,
   algorithmCapability,
@@ -380,11 +380,15 @@ export default function ModellingConfig({
   activePane = "target",
   onPaneIssuesChange,
 }: Props) {
+  const requestScope = useRequestScope()
   const { allNodes, edges, submodels, preamble, openNode } = useGraph()
   const setModellingPane = useUIStore((state) => state.setModellingPane)
   const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
-  const trainJob = useNodeResultsStore((state) => state.trainJobs[nodeId])
-  const cachedResult = useNodeResultsStore((state) => state.trainResults[nodeId])
+  // The node's training is kept under its result key (an occurrence's own inside a
+  // submodel); its id still names it on the canvas, and its panes and drafts.
+  const resultKey = useResultKey(nodeId)
+  const trainJob = useNodeResultsStore((state) => state.trainJobs[resultKey])
+  const cachedResult = useNodeResultsStore((state) => state.trainResults[resultKey])
   const startTrainJob = useNodeResultsStore((state) => state.startTrainJob)
   const updateTrainProgress = useNodeResultsStore((state) => state.updateTrainProgress)
   const completeTrainJob = useNodeResultsStore((state) => state.completeTrainJob)
@@ -487,24 +491,32 @@ export default function ModellingConfig({
   const globalConstants = useGraphStore((state) => state.globalConstants)
   const requestTarget = useCallback(
     () => {
+      void allNodes
+      void edges
+      void submodels
       void globalConstants
       void preamble
-      return nodeRequestTarget(allNodes, edges, submodels, nodeId)
+      return prepareCanvasRequest(requestScope, nodeId)
     },
-    [allNodes, edges, submodels, nodeId, preamble, globalConstants],
+    [requestScope, allNodes, edges, submodels, nodeId, preamble, globalConstants],
   )
   const graph = useCallback(() => requestTarget().graph, [requestTarget])
   // The estimate names a node by its id in the graph sent. One inside another
   // submodel is off this canvas; its id still says which.
-  const nodeNamed = useMemo(() => requestNodeNamer(allNodes), [allNodes])
+  const nodeNamed = useMemo(() => {
+    // Named in the view the panel shows; its graph renews it.
+    void allNodes
+    return answerNodeNamer()
+  }, [allNodes])
   const canvasNodeLabel = useCallback(
     (id: string) => nodeNamed(id)?.data.label || id,
     [nodeNamed],
   )
+  // Only a node on this canvas opens: matched by id, since the panel's graph holds copies.
   const canvasNodeOpener = useCallback(
     (id: string) => {
       const node = nodeNamed(id)
-      return openNode && node && allNodes.includes(node) ? () => openNode(node.id) : null
+      return openNode && node && allNodes.some((candidate) => candidate.id === node.id) ? () => openNode(node.id) : null
     },
     [allNodes, nodeNamed, openNode],
   )
@@ -518,7 +530,6 @@ export default function ModellingConfig({
       const run = ++latestEstimate.current
       setEstimateWaiting(false)
       try {
-        await afterCommitEffects()
         return await estimateAfterSupersededPreviews(
           () => {
             const target = requestTarget()
@@ -540,14 +551,16 @@ export default function ModellingConfig({
     cachedResult,
     estimateEndpoint,
     { source: activeSource, structuralVersion },
-    { toastLabel: "Training estimate failed" },
+    // A saved version (the comparison view) runs nothing, so it is not estimated.
+    { toastLabel: "Training estimate failed", enabled: requestScope !== null },
   )
   // A completed result is remembered per document so a browser reload can put
   // it back from the server; a result the server no longer holds is recorded
-  // in the results store, which the results panel reads too.
-  useTrainedJobRestore(nodeId, cachedResult, Boolean(trainJob), graph)
+  // in the results store, which the results panel reads too. A saved version
+  // runs nothing, so it restores nothing.
+  useTrainedJobRestore(resultKey, cachedResult, Boolean(trainJob), graph, requestScope !== null)
   const trainedResultExpired = useNodeResultsStore(
-    (state) => Object.hasOwn(state.expiredTrainJobs, nodeId),
+    (state) => Object.hasOwn(state.expiredTrainJobs, resultKey),
   )
   // A family whose early-stopped validation fit is the model (t-boost) has no
   // refit setting at all, so its config never carries refit_on_development.
@@ -569,7 +582,7 @@ export default function ModellingConfig({
   // The estimate hook hashes the training identity in this same render.
   const trainingHash = estimate.configHash
   const dispersionEstimate = useMemo(() => ({
-    scope: JSON.stringify([documentKey, nodeId, activeSource, structuralVersion, trainingHash]),
+    scope: JSON.stringify([documentKey, resultKey, activeSource, structuralVersion, trainingHash]),
     run: (param: DispersionParam, signal: AbortSignal) => {
       const target = requestTarget()
       return runDispersionEstimate({
@@ -579,7 +592,7 @@ export default function ModellingConfig({
         source: activeSource,
       }, { signal })
     },
-  }), [activeSource, documentKey, nodeId, requestTarget, structuralVersion, trainingHash])
+  }), [activeSource, documentKey, resultKey, requestTarget, structuralVersion, trainingHash])
   const onTrain = useCallback(async () => {
     if (hasTrainingConfigurationIssues) return
     const documentFence = captureDocumentExecutionFence()
@@ -587,8 +600,12 @@ export default function ModellingConfig({
     setSubmitting(true)
     // The lineage is taken from the exact payload submitted, before awaiting, so
     // an edit made while the request is pending never relabels this job; the
-    // config hash is this render's training identity for the same reason.
+    // config hash is this render's training identity for the same reason. The
+    // job is kept under the key prepared with the request, so a start answered
+    // after the view changed stays with the occurrence it was started in.
     const target = requestTarget()
+    const key = target.resultKey
+    const nodeLabel = allNodes.find((node) => node.id === nodeId)?.data.label ?? "Model Training"
     const lineage = trainingLineage(target.graph)
     const configHash = trainingHash
     const attempt = { configHash, source: activeSource, structuralVersion }
@@ -600,29 +617,22 @@ export default function ModellingConfig({
       })
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (result.status === "started" && result.job_id) {
-        startTrainJob(
-          nodeId,
-          result.job_id,
-          allNodes.find((node) => node.id === nodeId)?.data.label ?? "Model Training",
-          configHash,
-          activeSource,
-          structuralVersion,
-          lineage,
-        )
+        startTrainJob(key, result.job_id, nodeLabel, configHash, activeSource, structuralVersion, lineage)
       } else {
         // The server only ever answers a started job; anything else refused the start.
-        failTrainStart(nodeId, attempt, result.error || `Training did not start (status ${result.status}).`)
+        failTrainStart(key, attempt, result.error || `Training did not start (status ${result.status}).`)
       }
     } catch (error) {
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const message = apiErrorMessage(error)
-      failTrainStart(nodeId, attempt, message, failureStatus(error, message))
+      failTrainStart(key, attempt, message, failureStatus(error, message))
     } finally {
       setSubmitting(false)
     }
   }, [activeSource, allNodes, failTrainStart, hasTrainingConfigurationIssues, nodeId, requestTarget, startTrainJob, structuralVersion, trainingHash])
   const onCancel = useCallback(async () => {
-    const job = useNodeResultsStore.getState().trainJobs[nodeId]
+    const key = resultKey
+    const job = useNodeResultsStore.getState().trainJobs[key]
     if (!job || cancelling) return
 
     setCancelling(true)
@@ -632,20 +642,20 @@ export default function ModellingConfig({
       // The reply belongs to the job it cancelled; the store ignores it once
       // polling has retired that job, and a changed document drops it here.
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
-      if (status.status === "completed" && status.result) completeTrainJob(nodeId, job.jobId, status.result, status)
-      else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(nodeId, job.jobId, status.message || "Training stopped", status)
-      else updateTrainProgress(nodeId, job.jobId, status)
+      if (status.status === "completed" && status.result) completeTrainJob(key, job.jobId, status.result, status)
+      else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(key, job.jobId, status.message || "Training stopped", status)
+      else updateTrainProgress(key, job.jobId, status)
     } catch (error) {
       if (
         isDocumentExecutionFenceCurrent(documentFence)
-        && useNodeResultsStore.getState().trainJobs[nodeId]?.jobId === job.jobId
+        && useNodeResultsStore.getState().trainJobs[key]?.jobId === job.jobId
       ) {
         addToast("error", `Could not cancel training: ${apiErrorMessage(error)}`)
       }
     } finally {
       setCancelling(false)
     }
-  }, [addToast, cancelling, completeTrainJob, failTrainJob, nodeId, updateTrainProgress])
+  }, [addToast, cancelling, completeTrainJob, failTrainJob, resultKey, updateTrainProgress])
 
   if (!algorithm) return <AlgorithmGateway onUpdate={onUpdate} />
   if (!isKnownAlgorithm(algorithm)) {

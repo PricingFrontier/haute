@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, renderHook, act, screen, cleanup } from "@testing-library/react"
-import { ReactFlowProvider, type Node, type Edge, type NodeProps } from "@xyflow/react"
+import { ReactFlowProvider, type Node, type NodeProps } from "@xyflow/react"
 import SubmodelNode from "../../nodes/SubmodelNode"
 import useNodeHandlers from "../../hooks/useNodeHandlers"
 import { resolveEditorGraphIdentities } from "../../utils/editorIdentities"
@@ -44,7 +44,7 @@ function setDefinition(overrides: Partial<SubmodelDefinition> = {}) {
 beforeEach(() => setDefinition())
 afterEach(() => {
   cleanup()
-  useGraphStore.setState({ submodels: {}, edges: [] })
+  useGraphStore.setState({ submodels: {}, nodes: [], edges: [] })
 })
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -109,14 +109,14 @@ describe("SubmodelNode", () => {
       id: "pricing", type: "submodel", position: { x: 0, y: 0 },
       data: { label: "pricing", nodeType: "submodel", config: { definition_id: DEFINITION_ID, alias: "pricing" } },
     }
-    const graphRef = { current: { nodes: [owner], edges: [] as Edge[] } }
+    useGraphStore.setState({ nodes: [owner], edges: [] })
     let release!: (response: EditorIdentityBatchResponse) => void
     const response = new Promise<EditorIdentityBatchResponse>((resolve) => { release = resolve })
     const setNodes = vi.fn((update: (nodes: Node[]) => Node[]) => {
-      graphRef.current = { ...graphRef.current, nodes: update(graphRef.current.nodes) }
+      useGraphStore.setState((state) => ({ nodes: update(state.nodes) }))
     })
     const { result } = renderHook(() => useNodeHandlers({
-      graphRef, nodeIdCounter: { current: 0 }, lastSelectedNodeRef: { current: null },
+      nodeIdCounter: { current: 0 }, lastSelectedKeyRef: { current: null },
       setNodes, setNodesAndEdges: vi.fn(), setSelectedNode: vi.fn(), setPreviewData: vi.fn(),
       fitView: vi.fn(),
       submodels: useGraphStore.getState().submodels,
@@ -140,7 +140,7 @@ describe("SubmodelNode", () => {
       await creation
     })
     expect(setNodes).toHaveBeenCalledOnce()
-    const created = graphRef.current.nodes[1]
+    const created = useGraphStore.getState().nodes[1]
     // Render the committed node's data, without the fixture's identity defaults.
     const props = { ...makeProps({ label: "unused" }), id: created.id, data: created.data }
     render(<ReactFlowProvider><SubmodelNode {...(props as NodeProps<SubmodelFlowNode>)} /></ReactFlowProvider>)

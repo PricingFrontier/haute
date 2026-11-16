@@ -115,6 +115,7 @@ import { InputSourcesBar } from "../../panels/editors/_shared"
 import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Path helpers — resolve `frontend/src/` regardless of cwd
@@ -492,7 +493,7 @@ function renderRatingStep(
   opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
 ) {
   return render(
-    <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
       <RatingStepEditor section="tables" {...props} />
     </GraphProvider>,
   )

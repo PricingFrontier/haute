@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, within } from "@testing-library/rea
 import EdgeJoinEditor from "../../panels/editors/EdgeJoinEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 afterEach(cleanup)
 
@@ -64,7 +65,7 @@ function renderEditor(
 ) {
   const onSwapInputs = overrides.onSwapInputs ?? vi.fn()
   const result = render(
-    <GraphProvider allNodes={overrides.allNodes ?? [baseNode, joinNode, edgeJoinNode]} edges={overrides.edges ?? edges}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={overrides.allNodes ?? [baseNode, joinNode, edgeJoinNode]} edges={overrides.edges ?? edges}>
       <EdgeJoinEditor
         config={config}
         onUpdate={onUpdate}
@@ -117,13 +118,13 @@ describe("EdgeJoinEditor", () => {
     expect(onUpdate).toHaveBeenCalledTimes(1)
 
     rerender(
-      <GraphProvider allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
         <EdgeJoinEditor config={{ how: "left", on: ["policy_id"], left_on: [], right_on: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
       </GraphProvider>,
     )
     fireEvent.change(screen.getByLabelText("Same-name key 1"), { target: { value: "" } })
     rerender(
-      <GraphProvider allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
         <EdgeJoinEditor config={{ how: "left", on: [], left_on: [], right_on: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
       </GraphProvider>,
     )

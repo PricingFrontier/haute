@@ -10,6 +10,7 @@ import {
   type SubmodelDefinition,
   type SubmodelPortData,
 } from "../types/node"
+import { attachEditorEdgeIdentities } from "./editorIdentities"
 import { normalizeEdges } from "./graphHelpers"
 import { NODE_TYPES } from "./nodeTypes"
 
@@ -267,6 +268,36 @@ function buildCanonicalSubmodelViewGraph(
 
 type BoundaryData = SubmodelPortData & { nodeType: typeof NODE_TYPES.SUBMODEL_PORT }
 
+/** The editor identity of a boundary card, as the server would resolve it. */
+export interface SubmodelPortIdentity {
+  _functionName: "INPUT" | "OUTPUT"
+  _defaultInputName: null
+  _sourceHandleInputNames: Record<string, string>
+}
+
+/**
+ * A boundary card's identity follows from its direction and its declared ports
+ * alone: its name is its label, and a frame leaving the Input card is named by
+ * its port, since a port name is already a canonical identifier
+ * (`executable_input_name` names a port's frame by its sanitised handle, and
+ * the server refuses a port name that is not its own sanitised form). Built
+ * here rather than asked of the server, so a submodel view is a pure
+ * projection. `tests/fixtures/ui_contracts/submodel_port_identities.json`
+ * holds the server's answers this must match.
+ */
+export function submodelPortIdentity(
+  direction: "input" | "output",
+  portNames: readonly string[],
+): SubmodelPortIdentity {
+  return {
+    _functionName: direction === "input" ? "INPUT" : "OUTPUT",
+    _defaultInputName: null,
+    _sourceHandleInputNames: Object.fromEntries(
+      (direction === "input" ? portNames : []).map((name) => [name, name]),
+    ),
+  }
+}
+
 /**
  * The Input card runs nothing, so its ports start with the columns the parent
  * nodes feeding them last recorded: an editor fed by the card lists them
@@ -312,6 +343,7 @@ function boundaryNode(
     position,
     data: {
       label: direction === "input" ? "INPUT" : "OUTPUT",
+      ...submodelPortIdentity(direction, ports.map((port) => port.id)),
       nodeType: NODE_TYPES.SUBMODEL_PORT,
       instanceId,
       definitionId,
@@ -328,6 +360,13 @@ function boundaryNode(
   }
 }
 
+/**
+ * The view of one occurrence of a definition: its children, its Input and
+ * Output cards and the edges between them, every node and edge named as the
+ * editor names them. A pure function of the document, so opening a submodel
+ * asks the server nothing.
+ */
 export function buildSubmodelViewGraph(input: SubmodelViewGraphInput): SubmodelViewGraph {
-  return buildCanonicalSubmodelViewGraph(input)
+  const view = buildCanonicalSubmodelViewGraph(input)
+  return { nodes: view.nodes, edges: attachEditorEdgeIdentities(view.edges, view.nodes) }
 }
