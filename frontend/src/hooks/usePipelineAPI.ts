@@ -956,7 +956,7 @@ export default function usePipelineAPI({
       useGraphStore.getState().structuralVersion === structuralVersion &&
       documentStillCurrent()
 
-    const portLabel = output ? output.portLabel : portLabelFor(node)
+    const portLabel = output ? undefined : portLabelFor(node)
     // What the request reads, by address: the occurrence's output port, or the node's frame.
     const target = output?.target ?? nodeFrame(canvasNodeAddress(node.id), portLabel ?? null)
     const wireTarget = frameTargetPayload(target)

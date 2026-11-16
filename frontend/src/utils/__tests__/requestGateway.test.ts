@@ -16,7 +16,6 @@ import {
   preparePipelineRequest,
   resultKey,
   resultKeysOf,
-  runtimeNodeId,
 } from "../requestGateway"
 
 // Occurrence "br rating" has a space, so its runtime id is encoded.
@@ -59,7 +58,7 @@ describe("the request gateway", () => {
     load()
   })
 
-  it("prepares a request about a node of the pipeline: the whole document, the node's id, the source and generations", () => {
+  it("prepares a request about a node of the pipeline: the whole document, the node's address, the source and generations", () => {
     useDocumentStatusStore.setState({ sourceFile: "rating/main.py", executionGeneration: 7 })
     const generation = useGraphStore.getState().semanticGeneration
 
@@ -68,8 +67,6 @@ describe("the request gateway", () => {
     expect(request.graph.nodes.map((node) => node.id)).toEqual(["workbench_input", OCCURRENCE])
     expect(Object.keys(request.graph.submodels ?? {})).toEqual([DEFINITION_ID])
     expect(request.graph.preamble).toBe("import polars as pl")
-    expect(request.nodeId).toBe("workbench_input")
-    expect(request.portLabel).toBeUndefined()
     expect(request.target).toEqual(nodeFrame(rootAddress("workbench_input")))
     // A preview sends the target by address, every field present.
     expect(request.wireTarget).toEqual({ kind: "node", occurrence: null, node_id: "workbench_input", port_label: null, port_labels: null })
@@ -78,19 +75,18 @@ describe("the request gateway", () => {
     expect(request.semanticGeneration).toBe(generation)
   })
 
-  it("sends the whole pipeline and a child's runtime id from inside an open submodel", () => {
+  it("sends the whole pipeline and a child's address from inside an open submodel", () => {
     open()
 
     const request = prepareNodeRequest(documentRequestScope, canvasTarget("bands"))
 
     expect(request.graph.nodes.map((node) => node.id)).toEqual(["workbench_input", OCCURRENCE])
-    expect(request.nodeId).toBe("submodel_runtime/br%20rating/bands")
     expect(request.target).toEqual(nodeFrame(childAddress(OCCURRENCE, "bands")))
     // A preview sends the child by its occurrence and local id, never a runtime id.
     expect(request.wireTarget).toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: "bands", port_label: null, port_labels: null })
   })
 
-  it("reads the Input card's port at the pipeline's node feeding it, from the document", () => {
+  it("reads the Input card's port as the occurrence's input", () => {
     open()
     const input = card("input")
 
@@ -99,22 +95,11 @@ describe("the request gateway", () => {
 
     expect(target).toEqual({ kind: "occurrenceInput", occurrence: OCCURRENCE, port: "policy" })
     expect(request.wireTarget).toEqual({ kind: "occurrence_input", occurrence: OCCURRENCE, port: "policy" })
-    expect(request.nodeId).toBe("workbench_input")
-    expect(request.portLabel).toBe("policy_frame")
     // A card with one port reads it without a handle.
     expect(canvasTarget(input.id)).toEqual(target)
   })
 
-  it("reads the Input card's runtime feed from the document as it was prepared, whenever it is read", () => {
-    open()
-    const request = prepareNodeRequest(documentRequestScope, canvasTarget(card("input").id, "policy"))
-    useGraphStore.setState({ focus: { ...useGraphStore.getState().focus!, rootEdges: [] } })
-
-    expect(request.nodeId).toBe("workbench_input")
-    expect(request.portLabel).toBe("policy_frame")
-  })
-
-  it("reads the Output card's port at the child that produces it", () => {
+  it("reads the Output card's port as the occurrence's output", () => {
     // On the main pipeline, the collapsed occurrence's output handle is the same port.
     expect(canvasTarget(OCCURRENCE, "out__premium")).toEqual({ kind: "occurrenceOutput", occurrence: OCCURRENCE, port: "premium" })
     open()
@@ -122,8 +107,6 @@ describe("the request gateway", () => {
     const request = prepareNodeRequest(documentRequestScope, canvasTarget(card("output").id, "premium"))
 
     expect(request.wireTarget).toEqual({ kind: "occurrence_output", occurrence: OCCURRENCE, port: "premium" })
-    expect(request.nodeId).toBe("submodel_runtime/br%20rating/tables")
-    expect(request.portLabel).toBe("rated")
   })
 
   it("lets no caller send a graph it built itself", () => {
@@ -151,8 +134,6 @@ describe("the request gateway", () => {
     const request = prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy"))
 
     expect(request.wireTarget).toEqual({ kind: "occurrence_input", occurrence: OCCURRENCE, port: "policy" })
-    // Only a request still sent by runtime id asks for one, and the port has none.
-    expect(() => request.nodeId).toThrow("Input policy of br rating has nothing connected to it.")
   })
 
   it("sends an operation on a node its address, and refuses to read a card's port as a node", () => {
@@ -214,10 +195,5 @@ describe("the request gateway", () => {
 
     expect(request.graph.nodes.map((node) => node.id)).toEqual(["workbench_input", OCCURRENCE])
     expect(request.source).toBe("live")
-  })
-
-  it("turns addresses into runtime ids for the requests still sent by id", () => {
-    expect(runtimeNodeId(rootAddress("workbench_input"))).toBe("workbench_input")
-    expect(runtimeNodeId(childAddress(OCCURRENCE, "bands"))).toBe("submodel_runtime/br%20rating/bands")
   })
 })

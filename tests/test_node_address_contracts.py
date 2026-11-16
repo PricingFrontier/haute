@@ -2,10 +2,8 @@
 one addresses it (specs/server-api/low-level.md, "Node addresses").
 
 The inventory below lists every position at which an answer names a node, by model and
-field (``field{}`` for a mapping keyed by node). A position is ``migrated`` once its field is
-a :data:`~haute._node_address_schemas.RuntimeNodeKey` and the answers carrying it address it,
-or ``pending`` until its operation family moves onto addresses. Nothing may stay pending when
-the package is done.
+field (``field{}`` for a mapping keyed by node). Each is a
+:data:`~haute._node_address_schemas.RuntimeNodeKey`, and the answers carrying it address it.
 """
 
 from __future__ import annotations
@@ -28,57 +26,56 @@ from tests._preview_targets import node_target, occurrence_output_target
 from tests._project import project_app
 from tests.test_submodel_instances import _reuse_graph
 
-MIGRATED = "migrated"
-PENDING = "pending"
-
-NODE_KEY_POSITIONS: dict[tuple[str, str], str] = {
-    # Frame provenance's endpoints.
-    ("RuntimeEndpointPayload", "key"): MIGRATED,
-    # Preview.
-    ("PreviewNodeResponse", "node_statuses{}"): MIGRATED,
-    ("PreviewNodeResponse", "node_columns{}"): MIGRATED,
-    ("PreviewNodeResponse", "node_available_columns{}"): MIGRATED,
-    ("PreviewNodeResponse", "node_frame_columns{}"): MIGRATED,
-    ("PreviewNodeResponse", "node_schema_warnings{}"): MIGRATED,
-    ("NodeTimingInfo", "node_id"): MIGRATED,
-    ("NodeMemoryInfo", "node_id"): MIGRATED,
-    ("PreviewInputsResponse", "input_node_ids"): MIGRATED,
-    # Trace.
-    ("TraceResultResponse", "target_node_id"): MIGRATED,
-    ("TraceStepResponse", "node_id"): MIGRATED,
-    ("TraceColumnSourceResponse", "node_id"): MIGRATED,
-    ("TraceOmissionResponse", "node_id"): MIGRATED,
-    ("TraceCorrelationDiagnosticResponse", "node_id"): MIGRATED,
-    ("TraceCorrelationDiagnosticResponse", "child_node_id"): MIGRATED,
-    ("TraceCorrelationDiagnosticResponse", "seed_node_ids"): MIGRATED,
-    # Node data, and the answers that carry a data point.
-    ("NodeDataPointRef", "producer_node_id"): MIGRATED,
-    ("NodeDataPointResponse", "consumer_node_id"): MIGRATED,
-    # The cached-data list.
-    ("CacheNodeEntry", "node_id"): MIGRATED,
-    ("CacheNodeEntry", "reads_from"): MIGRATED,
-    ("CacheNodeEntry", "shares_snapshot_with"): MIGRATED,
-    # Modelling.
-    ("TrainEstimateUnavailable", "blocking_node_id"): MIGRATED,
-    ("TrainEstimateResponse", "unbounded_join_node_ids"): MIGRATED,
-    # Execution metrics, which ride on many answers.
-    ("ExecutionColumnWidthsPayload", "node_id"): MIGRATED,
-    ("ExecutionMemoryPressureEventPayload", "node_id"): MIGRATED,
-    ("ExecutionMetricsPayload", "node_elapsed_ms{}"): MIGRATED,
-    ("ExecutionStageMetricsPayload", "node_id"): MIGRATED,
-    ("ExecutionStrategyBoundaryPayload", "node_id"): MIGRATED,
-    ("ExecutionStrategyDiagnosticPayload", "blocking_node_id"): MIGRATED,
-    ("ExecutionStrategyProjectionCausePayload", "node_id"): MIGRATED,
-    ("ExecutionStrategyProjectionCausePayload", "parent_node_id"): MIGRATED,
-    ("ExecutionStrategyProvenancePayload", "source_node_id"): MIGRATED,
-    ("ExecutionStrategyReasonPayload", "node_id"): MIGRATED,
-    ("ExecutionStrategyReasonPayload", "parent_node_id"): MIGRATED,
-    ("ExecutionWarningPayload", "node_id"): MIGRATED,
-    ("InputPreparationRecordPayload", "node_id"): MIGRATED,
-    ("SharedSnapshotCapturePayload", "node_id"): MIGRATED,
-    ("SharedSnapshotCaptureSkipPayload", "node_id"): MIGRATED,
-    ("SharedSnapshotSeedPayload", "node_id"): MIGRATED,
-}
+NODE_KEY_POSITIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Frame provenance's endpoints.
+        ("RuntimeEndpointPayload", "key"),
+        # Preview.
+        ("PreviewNodeResponse", "node_statuses{}"),
+        ("PreviewNodeResponse", "node_columns{}"),
+        ("PreviewNodeResponse", "node_available_columns{}"),
+        ("PreviewNodeResponse", "node_frame_columns{}"),
+        ("PreviewNodeResponse", "node_schema_warnings{}"),
+        ("NodeTimingInfo", "node_id"),
+        ("NodeMemoryInfo", "node_id"),
+        ("PreviewInputsResponse", "input_node_ids"),
+        # Trace.
+        ("TraceResultResponse", "target_node_id"),
+        ("TraceStepResponse", "node_id"),
+        ("TraceColumnSourceResponse", "node_id"),
+        ("TraceOmissionResponse", "node_id"),
+        ("TraceCorrelationDiagnosticResponse", "node_id"),
+        ("TraceCorrelationDiagnosticResponse", "child_node_id"),
+        ("TraceCorrelationDiagnosticResponse", "seed_node_ids"),
+        # Node data, and the answers that carry a data point.
+        ("NodeDataPointRef", "producer_node_id"),
+        ("NodeDataPointResponse", "consumer_node_id"),
+        # The cached-data list.
+        ("CacheNodeEntry", "node_id"),
+        ("CacheNodeEntry", "reads_from"),
+        ("CacheNodeEntry", "shares_snapshot_with"),
+        # Modelling.
+        ("TrainEstimateUnavailable", "blocking_node_id"),
+        ("TrainEstimateResponse", "unbounded_join_node_ids"),
+        # Execution metrics, which ride on many answers.
+        ("ExecutionColumnWidthsPayload", "node_id"),
+        ("ExecutionMemoryPressureEventPayload", "node_id"),
+        ("ExecutionMetricsPayload", "node_elapsed_ms{}"),
+        ("ExecutionStageMetricsPayload", "node_id"),
+        ("ExecutionStrategyBoundaryPayload", "node_id"),
+        ("ExecutionStrategyDiagnosticPayload", "blocking_node_id"),
+        ("ExecutionStrategyProjectionCausePayload", "node_id"),
+        ("ExecutionStrategyProjectionCausePayload", "parent_node_id"),
+        ("ExecutionStrategyProvenancePayload", "source_node_id"),
+        ("ExecutionStrategyReasonPayload", "node_id"),
+        ("ExecutionStrategyReasonPayload", "parent_node_id"),
+        ("ExecutionWarningPayload", "node_id"),
+        ("InputPreparationRecordPayload", "node_id"),
+        ("SharedSnapshotCapturePayload", "node_id"),
+        ("SharedSnapshotCaptureSkipPayload", "node_id"),
+        ("SharedSnapshotSeedPayload", "node_id"),
+    }
+)
 
 #: Strings that embed a runtime key and are echoed exactly, never read for a node.
 OPAQUE_KEY_STRINGS: frozenset[tuple[str, str]] = frozenset(
@@ -121,20 +118,15 @@ def _field_schema(
     return schema["properties"][field.removesuffix("{}")], schema.get("$defs", {})
 
 
-@pytest.mark.parametrize(("position", "state"), sorted(NODE_KEY_POSITIONS.items()))
-def test_a_listed_position_is_a_node_key_exactly_when_it_is_migrated(
-    position: tuple[str, str], state: str
-) -> None:
+@pytest.mark.parametrize("position", sorted(NODE_KEY_POSITIONS))
+def test_a_listed_position_is_a_node_key(position: tuple[str, str]) -> None:
     model_name, field = position
     model = _models()[model_name]
     assert field.removesuffix("{}") in model.model_fields, f"{model_name} has no field {field}"
 
     field_schema, defs = _field_schema(model, field)
 
-    assert _marked(field_schema, defs) is (state == MIGRATED), (
-        f"{model_name}.{field} is {state}: mark it as a RuntimeNodeKey exactly when it moves "
-        "onto addresses, and update this inventory in the same commit"
-    )
+    assert _marked(field_schema, defs), f"{model_name}.{field} is not a RuntimeNodeKey"
 
 
 def test_no_field_is_a_node_key_without_being_listed() -> None:

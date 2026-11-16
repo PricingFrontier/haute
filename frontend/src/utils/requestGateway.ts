@@ -9,8 +9,7 @@
  * its semantic generation, the target and the data source, captured together. Only the
  * gateway makes the `PreparedGraph` the client's run functions take. A request sends its
  * target by address (`frameTargetPayload`, and `node` for an operation on a node) and finds
- * the nodes an answer addresses with `nodeAt`; the requests not yet moved onto addresses
- * (SUBE-05) still send the runtime id the gateway's adapter makes.
+ * the nodes an answer addresses with `nodeAt`. The browser builds no runtime id.
  */
 import type { Node } from "@xyflow/react"
 import type { PreparedGraph } from "../api/types"
@@ -27,7 +26,6 @@ import useSettingsStore from "../stores/useSettingsStore"
 import { isSubmodelDefinition, nodeData, type SubmodelPortData } from "../types/node"
 import { documentGraphPayload } from "./buildGraph"
 import { addressKey, childAddress, nodeFrame, rootAddress, type FrameTarget, type NodeAddress } from "./nodeAddress"
-import { qualifiedRuntimeNodeId } from "./submodelRuntimeTarget"
 import { NODE_TYPES } from "./nodeTypes"
 
 /** A request prepared where there is no document to run (the comparison view's editors). */
@@ -98,10 +96,6 @@ export interface PreparedNodeRequest extends PreparedPipelineRequest {
   readonly node: NodeAddressPayload
   /** A node an answer addresses, in the view the request was prepared in. */
   readonly nodeAt: (address: Pick<NodeAddressPayload, "occurrence" | "node_id">) => SimpleNode | null
-  /** The node the request runs, by the id the server runs it under. */
-  readonly nodeId: string
-  /** The port of `nodeId` to read, when not its one output. */
-  readonly portLabel?: string
 }
 
 function requireScope(scope: RequestScope | null | undefined): RequestScope {
@@ -123,61 +117,6 @@ export function preparePipelineRequest(scope: RequestScope | null | undefined): 
     document: { sourceFile: status.sourceFile, executionGeneration: status.executionGeneration },
     semanticGeneration: useGraphStore.getState().semanticGeneration,
   }
-}
-
-/** The pipeline's own nodes and edges, also while a submodel is open. */
-function rootGraph() {
-  const { focus, nodes, edges } = useGraphStore.getState()
-  return focus ? { nodes: focus.rootNodes, edges: focus.rootEdges } : { nodes, edges }
-}
-
-/** What the legacy runtime resolver reads of the document, captured when a request is prepared. */
-interface DocumentAtPreparation {
-  readonly nodes: readonly Node[]
-  readonly edges: readonly { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null }[]
-  readonly submodels: Record<string, unknown>
-}
-
-function documentNow(): DocumentAtPreparation {
-  return { ...rootGraph(), submodels: useGraphStore.getState().submodels }
-}
-
-/** The runtime id and port the server runs `target` under. */
-function runtimeTarget(
-  target: FrameTarget,
-  document: DocumentAtPreparation = documentNow(),
-): { nodeId: string; portLabel?: string } {
-  if (target.kind === "node") {
-    const { occurrence, node } = target.address
-    return {
-      nodeId: occurrence === null ? node : qualifiedRuntimeNodeId(occurrence, node),
-      portLabel: target.port ?? undefined,
-    }
-  }
-  if (target.kind === "occurrenceInput") {
-    // What feeds the input: the parent edge into the occurrence at that port.
-    const feed = document.edges.find((edge) =>
-      edge.target === target.occurrence && edge.targetHandle === `in__${target.port}`)
-    if (!feed) throw new Error(`Input ${target.port} of ${target.occurrence} has nothing connected to it.`)
-    return { nodeId: feed.source, portLabel: feed.sourceHandle ?? undefined }
-  }
-  const occurrence = document.nodes.find((node) => node.id === target.occurrence)
-  const config = occurrence ? nodeData(occurrence).config as { definition_id?: unknown } : undefined
-  const definitionId = typeof config?.definition_id === "string" ? config.definition_id : ""
-  const definition = document.submodels[definitionId]
-  const port = isSubmodelDefinition(definition, definitionId)
-    ? definition.outputPorts.find((candidate) => candidate.name === target.port)
-    : undefined
-  if (!port) throw new Error(`${target.occurrence} has no output ${target.port}.`)
-  return {
-    nodeId: qualifiedRuntimeNodeId(target.occurrence, port.source.nodeId),
-    portLabel: port.source.handleId ?? undefined,
-  }
-}
-
-/** The runtime id the server runs and names `address` under. */
-export function runtimeNodeId(address: NodeAddress): string {
-  return address.occurrence === null ? address.node : qualifiedRuntimeNodeId(address.occurrence, address.node)
 }
 
 /** The view a request was prepared in: the open occurrence and its canvas, or the pipeline's own. */
@@ -323,12 +262,6 @@ function preparedNodeRequest<Extra extends object>(
   extra: Extra,
 ): PreparedNodeRequest & Extra {
   const pipeline = preparePipelineRequest(scope)
-  // The runtime id the requests not yet sent by address use, made only when one reads it
-  // (a request by address never does, and an input port nothing feeds has none), from the
-  // document as it was prepared.
-  const document = documentNow()
-  let runtime: { nodeId: string; portLabel?: string } | null = null
-  const runtimeOf = () => (runtime ??= runtimeTarget(target, document))
   const view = viewNow()
   return {
     ...pipeline,
@@ -340,7 +273,5 @@ function preparedNodeRequest<Extra extends object>(
       return nodeAddressPayload(target.address)
     },
     nodeAt: nodeAtFor(view),
-    get nodeId() { return runtimeOf().nodeId },
-    get portLabel() { return runtimeOf().portLabel },
   }
 }

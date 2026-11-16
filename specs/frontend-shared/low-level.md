@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `frontend/src/utils/answerAddresses.ts` | Reading the nodes an answer names (see "Request gateway" item 5): `keyText` (the one reading of a `RuntimeNodeKey` as text, to look it up in its answer), `placeAddress` (the canvas placement table, boundary cards included for a reader that passes them), `keysOnCanvas` (an answer's keys by the canvas node they describe) and `answerTargetKey` (the key an answer runs a frame target under: by address, or through its frame provenance). |
-| `frontend/src/utils/requestGateway.ts` | The request gateway (see "Request gateway"): `documentRequestScope`, `RequestScopeError`, `preparePipelineRequest` and `prepareNodeRequest` (the whole pipeline, the document's identity and semantic generation, the target and the data source, captured once), `canvasTarget` and `canvasNodeAddress` (a canvas node as a frame target or address: the Input card at a port is the occurrence's input, the Output card at a port its output, and on the main pipeline a collapsed occurrence at an `out__` handle its output port), `frameTargetPayload` and `nodeAddressPayload` (the one conversion of a target to the wire's shape, `wireTarget` on a prepared request, and `node`, the address an operation on a node sends), a prepared request's `nodeAt` (a node an answer addresses, in the view it was prepared in), the runtime-id adapter the requests not yet sent by address use (`runtimeNodeId`), and `resultKey` and `prepareCanvasRequest` (a canvas node's request together with the key its results are kept under). |
+| `frontend/src/utils/requestGateway.ts` | The request gateway (see "Request gateway"): `documentRequestScope`, `RequestScopeError`, `preparePipelineRequest` and `prepareNodeRequest` (the whole pipeline, the document's identity and semantic generation, the target and the data source, captured once), `canvasTarget` and `canvasNodeAddress` (a canvas node as a frame target or address: the Input card at a port is the occurrence's input, the Output card at a port its output, and on the main pipeline a collapsed occurrence at an `out__` handle its output port), `frameTargetPayload` and `nodeAddressPayload` (the one conversion of a target to the wire's shape, `wireTarget` on a prepared request, and `node`, the address an operation on a node sends), a prepared request's `nodeAt` (a node an answer addresses, in the view it was prepared in), and `resultKey` and `prepareCanvasRequest` (a canvas node's request together with the key its results are kept under). |
 | `frontend/src/utils/nodeAddress.ts` | `NodeAddress`, `FrameTarget`, `rootAddress`, `childAddress`, `nodeFrame`, `sameAddress`, and `addressKey`: a root node's id as it is, a child's key opening with a character no node id holds. |
 | `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; `validateApiResponse` wraps a parser call in that contract. Every background job poller (train, optimiser, Explore, pivot) reports it as a terminal response error. |
 | `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. With an `EditorNamingContext` (the canonical document graph and `allocate`) the request carries the naming context; each node takes the server's `label` (and an occurrence its `alias`), and a response naming any `collision` throws `EditorNameCollisionError` before anything is applied. |
@@ -651,10 +651,11 @@ no claim that entries count against budgets. There are no backend cache byte
 or entry-count caps, budget-driven eviction or cache-quota diagnostics. Every
 stored dataset is accounted for beside its node or in the remaining-data group
 and users clear the data they no longer need. Active reads remain protected.
-Displayed node identifiers omit the leading `submodel_runtime/` namespace while
-retaining the submodel and child-node names. This also applies to references in
-row details and cached nodes outside the current pipeline. Cache identities and
-clear requests retain their original values; input file paths are not reformatted.
+Rows name nodes by label, a submodel child's with its occurrence's ("Banding 1 in
+pricing"), never by key: a node of the pipeline from the answer's `node_addresses`, and a
+stored owner the pipeline no longer holds from the owner its data recorded. Cache
+identities and clear requests retain their original values; input file paths are not
+reformatted.
 
 Refreshing is explicit. The server answers the endpoint by walking every
 identity, generation and staging entry, which is what an admission pays, so
@@ -671,9 +672,7 @@ pipeline or source — node, status, size, when it was
 cached, and how long that took — with numeric columns right-aligned and tabular so they
 compare down the column, from `POST /api/cache/nodes`. It builds the graph payload itself from
 `usePanelGraphContext` and the graph store rather than taking it as a prop, since the
-toolbar has no graph of its own to pass. Each row shows the node's label (its id when the
-canvas has none, which is how a node the store holds but the graph has lost still reads),
-its state, its size, and — from the generation's own metadata — when it was cached and the
+toolbar has no graph of its own to pass. Each row shows the node's name (above), its state, its size, and — from the generation's own metadata — when it was cached and the
 seconds it took. An unrecorded duration renders as an em-dash, never as zero: a store
 predating the recording must not claim instant builds. A row that carries bytes also
 carries a visible clear control, which clears exactly the identities that
@@ -880,8 +879,8 @@ Workbench's sample and the cached-data list.
    sends its address (`node`); a port of a submodel card is no node, and reading it throws.
    `canvasTarget` never refuses a card: an Input card whose port is not named, and an Output
    card without a named output, are read as the card itself; a named input port nothing feeds
-   is still that port, which the server refuses by name. A prepared request makes the runtime
-   id the requests not yet sent by address use only when one reads it.
+   is still that port, which the server refuses by name. A prepared request carries no runtime
+   id: the browser never builds one.
 4. **Only prepared graphs are sent.** Every client function that runs the graph takes a
    `PreparedGraph`, a type only the gateway makes, so type-checking refuses a graph a caller
    built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.
@@ -891,8 +890,7 @@ Workbench's sample and the cached-data list.
    point, its build, profile and clear, pivots, relationships, banding statistics and rating
    levels), modelling (training and its estimates), the optimiser (a solve, its estimate and
    auto range), Data Output (a destination, a write, an assembly dry run) and the cached-data
-   list do so now; until SUBE-05 moves the other
-   families, their requests send the runtime id the gateway's adapter builds. An answer names
+   list all do. An answer names
    nodes by opaque key, each with its address in the
    answer's `node_addresses` ([server API](../../specs/server-api/low-level.md), "Node
    addresses"), and one pure function places an address on the canvas
@@ -956,12 +954,12 @@ Which result a stored answer is, and whether it is current, are separate questio
 ## Testing
 
 - `frontend/src/utils/__tests__/requestGateway.test.ts` covers the request gateway: a
-  request about a node of the pipeline captures the whole document, the node's id, the
+  request about a node of the pipeline captures the whole document, the node's address, the
   source, the document's identity and its semantic generation; from inside an open
-  submodel it sends the whole pipeline and a child's runtime id, sends an operation on a node
-  its address, and finds an answer's nodes by address; the Input card at a port reads the pipeline's node feeding it and the Output
-  card at a port the child producing it; a request without a scope is refused; and the
-  runtime-id adapter turns addresses into ids.
+  submodel it sends the whole pipeline and a child's address, sends an operation on a node
+  its address, and finds an answer's nodes by address; the Input card at a port reads the
+  occurrence's input and the Output card at a port its output; and a request without a scope
+  is refused.
 - Result identity is covered with two occurrences of one definition (an owner and a
   read-only copy, from `frontend/src/testSupport/twoOccurrencesFixture.ts`):
   `frontend/src/hooks/__tests__/usePipelineAPI.submodelPreview.test.tsx` (the copy's child

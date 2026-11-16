@@ -438,16 +438,15 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    failure), carries the node as `node: {key, occurrence, node_id, label}`
    (`node_reference`); `tests/test_node_display_names.py` covers a copy's child in each.
 
-**Moving onto addresses.** The operation families move one at a time, each request with its
-answers and its browser readers (SUBE-05). The preview, its inputs, the trace, the
-node-data family (a consumer's data point, run, profile and clear, an Explore pivot and its
-members, relationships, banding statistics and rating levels), modelling (training, its
-memory and dispersion estimates, the export script), the optimiser (a solve, its estimate and
-auto range), Data Output (a destination, a write, an assembly dry run), the cached-data list
-(its rows addressed, its other owners described by what they recorded) and the execution
-metrics are on addresses; every other request above still sends the runtime key the browser's adapter builds (`node_id`), its
-answers name nodes by plain string, and `tests/test_node_address_contracts.py` lists their fields
-as pending until their family moves.
+**Every family is on addresses.** The preview, its inputs, the trace, the node-data family
+(a consumer's data point, run, profile and clear, an Explore pivot and its members,
+relationships, banding statistics and rating levels), modelling (training, its memory and
+dispersion estimates, the export script), the optimiser (a solve, its estimate and auto
+range), Data Output (a destination, a write, an assembly dry run), the cached-data list (its
+rows addressed, its other owners described by what they recorded) and the execution metrics
+send their targets by address and address every key their answers name. The browser builds no
+runtime key. `tests/test_node_address_contracts.py` lists every answer field that names a node,
+each a `RuntimeNodeKey`, and fails on a node key it does not list.
 
 `tests/test_node_addresses.py` covers resolution (a root node, the children of an owner and of a
 copy, both card kinds, several port labels, every refusal) and frame provenance (bound, unbound,
