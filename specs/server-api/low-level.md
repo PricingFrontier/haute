@@ -409,6 +409,12 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
 7. **Errors** name a node by its label, and inside a submodel by its label and its occurrence's
    ("Banding 1 in pricing"), and carry a structured `node: {key, occurrence, node_id, label}`.
 
+**Moving onto addresses.** The operation families move one at a time, each request with its
+answers and its browser readers (SUBE-05). The preview and its inputs are on addresses; every
+other request above still sends the runtime key the browser's adapter builds (`node_id`), its
+answers name nodes by plain string, and `tests/test_node_address_contracts.py` lists their fields
+as pending until their family moves.
+
 `tests/test_node_addresses.py` covers resolution (a root node, the children of an owner and of a
 copy, both card kinds, several port labels, every refusal) and frame provenance (bound, unbound,
 aliased ports); `tests/test_node_address_contracts.py` checks every node-naming answer field is a

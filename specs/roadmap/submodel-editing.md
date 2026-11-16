@@ -144,6 +144,11 @@ replacing "the editor never sends an occurrence as a preview target".
    prefix stripping. Migrate request and answer handling together, one operation family at a
    time.
 
+**Progress:** The server's resolution, the labelled answers, frame provenance and the preview
+family are in place; trace, node data, modelling, the optimiser, Data Output, the cached-data
+list, and errors with execution diagnostics follow, then the browser's runtime-id code is
+deleted.
+
 **Acceptance:** Inside a submodel, node status colours, schema warnings and timings show on the
 right nodes; the cached-data list names submodel nodes by label and submodel; previewing a frame
 out of an occurrence from the Output editor (root view) shows that frame; a request reading an

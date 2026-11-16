@@ -883,7 +883,9 @@ Workbench's sample and the cached-data list.
    built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.
 5. **Answers by address.** A request sends its target as an address (the gateway converts the
    in-memory `NodeAddress` and `FrameTarget` to the wire's snake_case shape in one function) and
-   never a runtime id. An answer names nodes by opaque key, each with its address in the
+   never a runtime id. The preview and its inputs do so now; until SUBE-05 moves the other
+   families, their requests send the runtime id the gateway's adapter builds and read their
+   answers' ids back through `nodeNamed`. An answer names nodes by opaque key, each with its address in the
    answer's `node_addresses` ([server API](../../specs/server-api/low-level.md), "Node
    addresses"), and one pure function places an address on the canvas
    (`placeAddress(address, focus)`):
