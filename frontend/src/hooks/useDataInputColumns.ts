@@ -48,8 +48,8 @@ export function useDataInputColumns(
   )
 
   // Source-aware cache key: "<result key>:source", the input's result key
-  // taken here and used after the fetch.
-  const inputKey = useResultKey(dataInput)
+  // taken here and used after the fetch. An empty id is no input.
+  const inputKey = useResultKey(dataInput || null)
   const cacheKey = inputKey ? `${inputKey}:${activeSource}` : ""
 
   // Split into two leaf selectors so Zustand's Object.is check works
