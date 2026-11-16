@@ -628,6 +628,7 @@ function mountCanvasShortcuts(nodes: Node[]) {
     clipboard: { current: { nodes: [{ id: "copied", position: { x: 0, y: 0 }, data: { label: "Copied" } } as Node], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     setSelectedNode: vi.fn(),
+    lastSelectedKeyRef: { current: null as string | null },
     setPreviewData: vi.fn(),
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
