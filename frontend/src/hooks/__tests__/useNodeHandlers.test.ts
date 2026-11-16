@@ -81,7 +81,7 @@ describe("useNodeHandlers", () => {
       const navigation = useSubmodelNavigation({
         ...params,
         setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(),
-        cancelPreview: vi.fn(), clearTrace: vi.fn(),
+        cancelPreview: vi.fn(), clearTrace: vi.fn(), lastSelectedKeyRef: { current: null },
         sourceRevisionRef, preservedBlocksRef: { current: [] },
         descriptionRef: { current: "" }, sourceFileRef: { current: "pipeline.py" },
         pipelineNameRef: { current: "main" }, reservedApiInputFrameLabels: new Set(),

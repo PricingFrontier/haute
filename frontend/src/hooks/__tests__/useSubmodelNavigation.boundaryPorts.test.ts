@@ -64,6 +64,7 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     setPreviewData: vi.fn(),
     cancelPreview: vi.fn(),
     clearTrace: vi.fn(),
+    lastSelectedKeyRef: { current: null as string | null },
     setPreamble: vi.fn(),
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },

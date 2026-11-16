@@ -78,6 +78,7 @@ function makeParams(
     setPreviewData: vi.fn(),
     cancelPreview: vi.fn(),
     clearTrace: vi.fn(),
+    lastSelectedKeyRef: { current: null as string | null },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
     sourceRevisionRef: { current: "parent-rev-1" },
@@ -1469,6 +1470,8 @@ describe("useSubmodelNavigation", () => {
     seedCanonicalGraph(pipeline)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     useUIStore.getState().setUtilityOpen(true)
+    // Catches: the open node outliving its panel, so opening it again asked for nothing.
+    params.lastSelectedKeyRef.current = "n1"
 
     await act(async () => {
       await result.current.handleDrillIntoSubmodel(occurrenceId)
@@ -1478,12 +1481,15 @@ describe("useSubmodelNavigation", () => {
     expect(params.cancelPreview).toHaveBeenCalledTimes(1)
     expect(params.setPreviewData).toHaveBeenLastCalledWith(null)
     expect(params.clearTrace).toHaveBeenCalledTimes(1)
+    expect(params.lastSelectedKeyRef.current).toBeNull()
 
     useUIStore.getState().setConstantsOpen(true)
+    params.lastSelectedKeyRef.current = "child"
     act(() => result.current.handleBreadcrumbNavigate(0))
     expect(useUIStore.getState().constantsOpen).toBe(false)
     expect(params.cancelPreview).toHaveBeenCalledTimes(2)
     expect(params.clearTrace).toHaveBeenCalledTimes(2)
+    expect(params.lastSelectedKeyRef.current).toBeNull()
   })
 
   it("refuses to open a second submodel view over an open one", async () => {

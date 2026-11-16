@@ -892,7 +892,8 @@ Which result a stored answer is, and whether it is current, are separate questio
    (`prepareCanvasRequest`) or a node is selected, and that one is used after every await;
    an id an answer names is never turned into a key. The open panel's node is known by its
    key too, so opening a child of the same id in another occurrence opens another node and
-   asks for its own preview.
+   asks for its own preview. Leaving a view forgets the open node with its panel, so opening
+   the same node again shows its preview.
 2. **Whether it is current.** A cached result is checked against the source, the frame,
    the semantic content and the data generation it was made under before it is shown as
    current.
@@ -928,7 +929,8 @@ Which result a stored answer is, and whether it is current, are separate questio
   (the owner's columns stay out of the copy) and `frontend/src/hooks/__tests__/useNodeDataProfile.test.tsx`
   (the copy's profile is asked for after the owner's was stopped), and
   `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (opening the copy's child after the
-  owner's asks for its preview).
+  owner's asks for its preview) and `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts`
+  (leaving a view forgets the open node).
 - `frontend/src/components/__tests__/ReadOnlyNodeConfig.requests.test.tsx` covers the
   comparison view: the Modelling and Optimiser editors of a saved version send no request
   and report no failure, while the same editors under the open pipeline's scope ask for

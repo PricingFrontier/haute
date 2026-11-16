@@ -1142,7 +1142,7 @@ function FlowEditor() {
     setNodesRaw, setEdgesRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     cancelPreview, clearTrace,
-    setLastSelectedId,
+    setLastSelectedId, lastSelectedKeyRef,
     descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
     reservedApiInputFrameLabels,

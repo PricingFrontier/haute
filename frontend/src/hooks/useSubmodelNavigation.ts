@@ -21,6 +21,8 @@ interface SubmodelNavParams {
   setEdgesRaw: (edges: Edge[]) => void
   setSelectedNode: (node: Node | null) => void
   setLastSelectedId?: (id: string | null) => void
+  /** The result key of the node whose panel is open; leaving a view forgets it with the panel. */
+  lastSelectedKeyRef: React.MutableRefObject<string | null>
   setPreviewData: (data: null) => void
   /** Abandon the in-flight preview request; its answer describes the view being left. */
   cancelPreview: () => void
@@ -140,7 +142,7 @@ function instanceCount(nodes: Node[], definitionId: string): number {
 export default function useSubmodelNavigation({
   
   setNodesRaw, setEdgesRaw,
-  setSelectedNode, setLastSelectedId, setPreviewData, cancelPreview, clearTrace,
+  setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewData, cancelPreview, clearTrace,
   sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView, reservedApiInputFrameLabels,
   resolveCanonicalIdentities = resolveCanonicalGraphIdentities,
@@ -153,16 +155,18 @@ export default function useSubmodelNavigation({
 
   /**
    * What belongs to the view being left ends with it: the side panels, the
-   * selection, and the preview and trace, including requests still running.
+   * selection and the open node, and the preview and trace, including requests
+   * still running. Opening the same node again then asks for its preview.
    */
   const leaveView = useCallback(() => {
     useUIStore.getState().closeSidePanes()
     setSelectedNode(null)
     setLastSelectedId?.(null)
+    lastSelectedKeyRef.current = null
     cancelPreview()
     setPreviewData(null)
     clearTrace()
-  }, [cancelPreview, clearTrace, setLastSelectedId, setPreviewData, setSelectedNode])
+  }, [cancelPreview, clearTrace, lastSelectedKeyRef, setLastSelectedId, setPreviewData, setSelectedNode])
 
   const beginTransformRequest = useCallback((): TransformRequestContext => {
     const { nodes, edges, submodels, preamble } = useGraphStore.getState()
