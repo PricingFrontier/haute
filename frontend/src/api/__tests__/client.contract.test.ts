@@ -604,7 +604,7 @@ describe("client runtime contracts", () => {
     it("goes with a trace and with the Rating Step's levels", async () => {
       setWorkbenchSample(sample)
       mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
-      await getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] })
+      await getRatingLevels({ graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region"] })
       expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({ workbench_sample: sample })
 
       // The trace's answer does not matter here, only what was asked.
@@ -778,11 +778,11 @@ describe("client runtime contracts", () => {
   it("getNodeDataProfile posts the consumer node and parses the profile", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_profile_response")))
 
-    const result = await getNodeDataProfile({ graph: dummyGraph, node_id: "explore" })
+    const result = await getNodeDataProfile({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/profile")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "explore", source: "live",
+      graph: dummyGraph, target: { occurrence: null, node_id: "explore" }, source: "live",
     })
     expect(result.status).toBe("completed")
     expect(result.result?.row_count).toBe(150)
@@ -791,11 +791,11 @@ describe("client runtime contracts", () => {
   it("getNodeDataPoint posts the consumer node and parses its point", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_point_response")))
 
-    const result = await getNodeDataPoint({ graph: dummyGraph, node_id: "explore" })
+    const result = await getNodeDataPoint({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/point")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "explore", source: "live",
+      graph: dummyGraph, target: { occurrence: null, node_id: "explore" }, source: "live",
     })
     expect(result.slot_key).toBe("join||live")
     expect(result.state).toBe("partial")
@@ -823,23 +823,23 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(stats))
     const factor = { column: "age" }
 
-    const result = await getBandingStats({ graph: dummyGraph, node_id: "banding", factor })
+    const result = await getBandingStats({ graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, factor })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/banding/stats")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "banding", source: "live", factor,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, source: "live", factor,
     })
     expect(result.total_rows).toBe(10)
     expect(result.bins).toEqual([{ lower: 0, upper: 5, count: 9 }])
 
     mockFetch.mockReturnValue(jsonResponse(stats))
     await getBandingStats({
-      graph: dummyGraph, node_id: "banding", source: "batch", factor, histogramBins: 20, valueLimit: 50,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, source: "batch", factor, histogramBins: 20, valueLimit: 50,
     })
 
     expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toEqual({
       graph: dummyGraph,
-      node_id: "banding",
+      target: { occurrence: null, node_id: "banding" },
       source: "batch",
       factor,
       histogram_bins: 20,
@@ -848,7 +848,7 @@ describe("client runtime contracts", () => {
 
     mockFetch.mockReturnValue(jsonResponse({ ...stats, bins: [{ lower: 0, upper: 5, count: "many" }] }))
     await expect(
-      getBandingStats({ graph: dummyGraph, node_id: "banding", factor }),
+      getBandingStats({ graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, factor }),
     ).rejects.toThrow("BandingStatsResponse: invalid contract at /bins/0/count: type")
   })
 
@@ -856,13 +856,13 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
 
     const result = await getRatingLevels({
-      graph: dummyGraph, node_id: "rating", columns: ["region", "cover"],
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region", "cover"],
     })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/rating/levels")
     // No limit asked for is no limit sent: the server owns the default.
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "rating", source: "live", columns: ["region", "cover"],
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, source: "live", columns: ["region", "cover"],
     })
     expect(result.status).toBe("ok")
     expect(result.total_rows).toBe(1000)
@@ -876,11 +876,11 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
 
     await getRatingLevels({
-      graph: dummyGraph, node_id: "rating", columns: ["region"], valueLimit: 25, source: "staging",
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region"], valueLimit: 25, source: "staging",
     })
 
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "rating", source: "staging", columns: ["region"], value_limit: 25,
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, source: "staging", columns: ["region"], value_limit: 25,
     })
   })
 
@@ -896,7 +896,7 @@ describe("client runtime contracts", () => {
     )
 
     await expect(
-      getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] }),
+      getRatingLevels({ graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region"] }),
     ).rejects.toThrow("RatingLevelsResponse: invalid contract at /columns/0/values/0/count: type")
   })
 
@@ -904,12 +904,12 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_run_response")))
 
     const result = await runNodeData({
-      graph: dummyGraph, node_id: "banding", refresh: true,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, refresh: true,
     })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/run")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "banding", source: "live", refresh: true,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, source: "live", refresh: true,
     })
     expect(result.status).toBe("started")
     expect(result.job_id).toBe("node-data-7f2c")
@@ -921,7 +921,7 @@ describe("client runtime contracts", () => {
     const status = await getNodeDataStatus("node-data-7f2c")
     const cancelled = await cancelNodeData("node-data-7f2c")
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_clear_response")))
-    const cleared = await clearNodeData({ graph: dummyGraph, node_id: "explore" })
+    const cleared = await clearNodeData({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } })
 
     expect(status.outcome).toBe("published")
     expect(status.generation_id).toBe("b41f0a2c9d5e4f7a")
@@ -1207,13 +1207,13 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "getNodeDataPoint",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_point_response"), state: "warm" },
-      call: () => getNodeDataPoint({ graph: dummyGraph, node_id: "explore" }),
+      call: () => getNodeDataPoint({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } }),
       error: "NodeDataPointResponse: invalid contract at /state",
     },
     {
       name: "runNodeData",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_run_response"), status: "queued" },
-      call: () => runNodeData({ graph: dummyGraph, node_id: "banding" }),
+      call: () => runNodeData({ graph: dummyGraph, target: { occurrence: null, node_id: "banding" } }),
       error: "NodeDataRunResponse: invalid contract at /status",
     },
     {
@@ -1225,7 +1225,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "clearNodeData",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_clear_response"), status: "gone" },
-      call: () => clearNodeData({ graph: dummyGraph, node_id: "explore" }),
+      call: () => clearNodeData({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } }),
       error: "NodeDataClearResponse: invalid contract at /status",
     },
     {
@@ -1502,7 +1502,7 @@ describe("pivot client contracts", () => {
     await expect(
       runExplorePivot({
         graph: dummyGraph,
-        node_id: "explore",
+        target: { occurrence: null, node_id: "explore" },
         pivot: { rows: ["region"] },
         source: "pricing",
       }),
@@ -1516,7 +1516,7 @@ describe("pivot client contracts", () => {
     await expect(
       fetchExplorePivotMembers({
         graph: dummyGraph,
-        node_id: "explore",
+        target: { occurrence: null, node_id: "explore" },
         field: "region",
         search: "Nor",
       }),
@@ -1530,14 +1530,14 @@ describe("pivot client contracts", () => {
     ])
     expect(JSON.parse(String(mockFetch.mock.calls[0]?.[1]?.body))).toMatchObject({
       graph: dummyGraph,
-      node_id: "explore",
+      target: { occurrence: null, node_id: "explore" },
       pivot: { rows: ["region"] },
       source: "pricing",
     })
     expect(JSON.parse(String(mockFetch.mock.calls[2]?.[1]?.body))).toEqual({})
     expect(JSON.parse(String(mockFetch.mock.calls[3]?.[1]?.body))).toMatchObject({
       graph: dummyGraph,
-      node_id: "explore",
+      target: { occurrence: null, node_id: "explore" },
       field: "region",
       search: "Nor",
       source: "live",
@@ -1549,7 +1549,7 @@ describe("pivot client contracts", () => {
       jsonResponse({ status: "ok", field: "region", members: [], failure: null }),
     )
     await expect(
-      runExplorePivot({ graph: dummyGraph, node_id: "explore", pivot: {} }),
+      runExplorePivot({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" }, pivot: {} }),
     ).rejects.toThrow("ExplorePivotRunResponse: invalid contract at /job_id: required")
   })
 })

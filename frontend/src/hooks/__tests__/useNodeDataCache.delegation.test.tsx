@@ -37,15 +37,20 @@ vi.mock("../../api/client", () => ({
 import {
   buildInputCache,
   cancelInputCacheJob,
+  clearInputCache,
+  clearNodeData,
   getInputCacheJob,
   getInputCacheStatus,
   getNodeDataPoint,
   runNodeData,
 } from "../../api/client"
-import { makeNodeDataPoint } from "../../test-utils/factories"
+import { makeNode, makeNodeDataPoint, type NodeDataPointFixture } from "../../test-utils/factories"
+import type { SubmodelDefinition } from "../../types/node"
 
 const mockGetPoint = vi.mocked(getNodeDataPoint)
 const mockRun = vi.mocked(runNodeData)
+const mockClear = vi.mocked(clearNodeData)
+const mockClearInputCache = vi.mocked(clearInputCache)
 const mockBuildInputCache = vi.mocked(buildInputCache)
 const mockCancelInputCacheJob = vi.mocked(cancelInputCacheJob)
 const mockInputCacheJob = vi.mocked(getInputCacheJob)
@@ -83,7 +88,11 @@ function nodeById(id: string) {
   return (nodes as unknown as { id: string }[]).find((node) => node.id === id) as never
 }
 
-function delegatedPoint(consumer: string, state: NodeDataPointResponse["state"]): NodeDataPointResponse {
+function delegatedPoint(
+  consumer: string,
+  state: NodeDataPointResponse["state"],
+  overrides: NodeDataPointFixture = {},
+): NodeDataPointResponse {
   return makeNodeDataPoint({
     consumer_node_id: consumer,
     point: { producer_node_id: "source", port_label: null },
@@ -97,6 +106,7 @@ function delegatedPoint(consumer: string, state: NodeDataPointResponse["state"])
     reads_directly: false,
     build_endpoint: "/api/input-cache/build",
     clear_endpoint: "/api/input-cache/clear",
+    ...overrides,
   })
 }
 
@@ -121,6 +131,8 @@ describe("delegated data-point builds", () => {
     for (const mock of [
       mockGetPoint,
       mockRun,
+      mockClear,
+      mockClearInputCache,
       mockBuildInputCache,
       mockCancelInputCacheJob,
       mockInputCacheJob,
@@ -138,14 +150,14 @@ describe("delegated data-point builds", () => {
 
   function answerPoint(state: NodeDataPointResponse["state"]) {
     mockGetPoint.mockImplementation(async (args) =>
-      delegatedPoint(String(args.node_id), state),
+      delegatedPoint(args.target.node_id, state),
     )
     mockRun.mockImplementation(async (args) => ({
       status: "delegated" as const,
       job_id: null,
       cached: false,
       message: "Build this Data Input's snapshot",
-      point: delegatedPoint(String(args.node_id), state),
+      point: delegatedPoint(args.target.node_id, state),
     }))
   }
 
@@ -173,14 +185,14 @@ describe("delegated data-point builds", () => {
     // exactly as the backend's build probe does.
     let serverJobStatus = "running"
     mockGetPoint.mockImplementation(async (args) =>
-      delegatedPoint(String(args.node_id), serverJobStatus === "running" ? "building" : "missing"),
+      delegatedPoint(args.target.node_id, serverJobStatus === "running" ? "building" : "missing"),
     )
     mockRun.mockImplementation(async (args) => ({
       status: "delegated" as const,
       job_id: null,
       cached: false,
       message: "Build this Data Input's snapshot",
-      point: delegatedPoint(String(args.node_id), "building"),
+      point: delegatedPoint(args.target.node_id, "building"),
     }))
     mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
     mockBuildInputCache.mockResolvedValue({ job_id: "input-job-2", status: "running", joined: false } as never)
@@ -378,7 +390,7 @@ describe("delegated data-point builds", () => {
     const replacement = vi.fn()
     await act(async () => {
       useNodeDataStore.getState().reset()
-      useNodeDataStore.getState().observePoint(delegatedPoint("banding", "missing"), "live", "identity-1", (delegatedPoint("banding", "missing")).consumer_node_id)
+      useNodeDataStore.getState().observePoint(delegatedPoint("banding", "missing"), "live", "identity-1", "banding")
       useNodeDataStore.getState().startDelegatedBuild("source||live", {
         token: "op-replacement",
         message: "Preparing this input",
@@ -411,9 +423,8 @@ describe("delegated data-point builds", () => {
     const quoteEdges = [{ id: "e1", source: "source", target: "banding" }] as never as Parameters<
       typeof useNodeDataCache
     >[0]["edges"]
-    const table = (state: NodeDataPointResponse["state"]) => ({
-      ...delegatedPoint("banding", state),
-      kind: "api_input_table" as const,
+    const table = (state: NodeDataPointResponse["state"]) => delegatedPoint("banding", state, {
+      kind: "api_input_table",
       point: { producer_node_id: "source", port_label: "orders" },
       slot_key: "source|orders|live",
       build_endpoint: "/api/input-cache/build",
@@ -501,5 +512,84 @@ describe("delegated data-point builds", () => {
 
     // The refreshed table is what the consumer ends up reading.
     await waitFor(() => expect(result.current.availability).toBe("current"))
+  })
+
+  it("builds and clears a producer inside a submodel that is not open with the config its definition holds", async () => {
+    // The pipeline's Banding reads the Data Input `policies` of the closed occurrence
+    // `data_inputs`: that node is on no canvas, only in the occurrence's definition.
+    const policiesConfig = { input_type: "file", format: "csv", mode: "scan", path: "policies.csv" }
+    const definition: SubmodelDefinition = {
+      definitionId: "inputs",
+      file: "modules/inputs.py",
+      graph: {
+        nodes: [makeNode("policies", "dataInput", {
+          data: { label: "policies", nodeType: "dataInput", config: policiesConfig },
+        })],
+        edges: [],
+      },
+      inputPorts: [],
+      outputPorts: [{ name: "policies", source: { nodeId: "policies", handleId: null } }],
+    }
+    const pipelineNodes = [
+      makeNode("data_inputs", "submodel", {
+        data: { label: "data_inputs", nodeType: "submodel", config: { definition_id: "inputs", alias: "data_inputs" } },
+      }),
+      makeNode("banding", "banding", { data: { label: "Banding", nodeType: "banding", config: { factors: [] } } }),
+    ] as never as Parameters<typeof useNodeDataCache>[0]["allNodes"]
+    const pipelineEdges = [
+      { id: "e1", source: "data_inputs", sourceHandle: "out__policies", target: "banding" },
+    ] as never as Parameters<typeof useNodeDataCache>[0]["edges"]
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: pipelineNodes as never,
+      edges: pipelineEdges as never,
+      preamble: "",
+      submodels: { inputs: definition },
+    })
+    // The point names its producer by runtime key and addresses it as the occurrence's child.
+    const producer = "submodel_runtime/data_inputs/policies"
+    const policies = (state: NodeDataPointResponse["state"]) => delegatedPoint("banding", state, {
+      point: { producer_node_id: producer, port_label: null },
+      slot_key: `${producer}||live`,
+      node_addresses: { [producer]: { occurrence: "data_inputs", node_id: "policies", label: "policies" } },
+    })
+    mockGetPoint.mockImplementation(async () => policies("stale"))
+    mockRun.mockImplementation(async () => ({
+      status: "delegated" as const,
+      job_id: null,
+      cached: false,
+      message: "Build this Data Input's snapshot",
+      point: policies("stale"),
+    }))
+    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-7", status: "running", joined: false } as never)
+    mockInputCacheJob.mockResolvedValue({ status: "completed", message: "" } as never)
+    const { result } = renderHook(() =>
+      useNodeDataCache({
+        node: (pipelineNodes as unknown as { id: string }[])[1] as never,
+        allNodes: pipelineNodes,
+        edges: pipelineEdges,
+        preamble: "",
+      }),
+    )
+    await waitFor(() => expect(result.current.availability).toBe("stale"))
+
+    await act(async () => {
+      await result.current.run()
+    })
+
+    // The snapshot built is the definition's Data Input's.
+    expect(mockBuildInputCache).toHaveBeenCalledWith(
+      expect.objectContaining({ refresh: true, config: policiesConfig }),
+    )
+    expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(false)
+
+    // Its clear goes to the same Data Input's snapshot.
+    mockClear.mockResolvedValue({ status: "delegated", point: policies("current") })
+    mockClearInputCache.mockResolvedValue({} as never)
+    await act(async () => {
+      await result.current.clear()
+    })
+
+    expect(mockClearInputCache).toHaveBeenCalledWith({ schema_version: 1, config: policiesConfig })
+    expect(useToastStore.getState().toasts.some((toast) => toast.type === "error")).toBe(false)
   })
 })

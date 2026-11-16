@@ -9,6 +9,7 @@
  */
 
 import { workbenchSampleField } from "./workbenchSample"
+import type { NodeAddressPayload } from "../generated/api-contracts.generated"
 import type { FrameTargetPayload } from "../utils/requestGateway"
 import type { GlobalConstant } from "../utils/globalConstants"
 import { REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
@@ -1416,7 +1417,8 @@ export function clearInputCache(
 
 export interface NodeDataArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
 }
@@ -1517,7 +1519,8 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
 
 export interface RatingLevelsArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The node, by address. */
+  target: NodeAddressPayload
   source?: string
   columns: string[]
   valueLimit?: number
@@ -1556,18 +1559,10 @@ export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse
 // Explore endpoints
 // ---------------------------------------------------------------------------
 
-export interface RunExploreArgs {
-  graph: PreparedGraph
-  node_id: string
-  source?: string
-  refresh?: boolean
-  signal?: AbortSignal
-  timeout?: number
-}
-
 export interface RunExplorePivotArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The Explore node, by address. */
+  target: NodeAddressPayload
   pivot: Record<string, unknown>
   source?: string
   signal?: AbortSignal
@@ -1614,7 +1609,8 @@ export function cancelExplorePivot(
 
 export interface FetchExplorePivotMembersArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The Explore node, by address. */
+  target: NodeAddressPayload
   field: string
   source?: string
   search?: string | null

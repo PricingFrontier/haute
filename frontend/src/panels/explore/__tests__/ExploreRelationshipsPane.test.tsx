@@ -57,7 +57,7 @@ function column(name: string, kind: ExploreColumnStat["kind"]): ExploreColumnSta
 }
 
 const report = {
-  producer_node_id: "source",
+  producer_label: "source",
   source: "live",
   data_version: "v1",
   row_count: 100,
@@ -165,9 +165,9 @@ describe("ExploreRelationshipsPane", () => {
           ],
           edges: [expect.objectContaining({ id: "e1", source: "source", target: "explore" })],
         }),
-        node_id: "explore",
+        target: { occurrence: null, node_id: "explore" },
         source: "live",
-        target: "claims",
+        target_column: "claims",
         weight: null,
         features: ["region", "age"],
         key_columns: [],
@@ -229,7 +229,7 @@ describe("ExploreRelationshipsPane", () => {
     await settle()
 
     expect(mocks.relationships).toHaveBeenLastCalledWith(
-      expect.objectContaining({ target: null, features: [], key_columns: ["region", "age"] }),
+      expect.objectContaining({ target_column: null, features: [], key_columns: ["region", "age"] }),
     )
     expect(screen.getByTestId("explore-key-check")).toHaveTextContent(
       "region + age is not unique: 3 duplicate rows, 1 rows with a missing key value (97 distinct of 100 rows).",

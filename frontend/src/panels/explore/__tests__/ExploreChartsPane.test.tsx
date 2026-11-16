@@ -112,7 +112,7 @@ function node(
 
 function report(dataVersion = "dataframe-current"): ExploreDataView {
   return {
-    producer_node_id: "source_1",
+    producer_label: "source_1",
     source: "pricing",
     data_version: dataVersion,
     row_count: 1,
@@ -137,7 +137,6 @@ function result(
 ): ExplorePivotResult {
   return {
     version: 1,
-    node_id: "explore_1",
     pivot_id: sourcePivot.id,
     source: "pricing",
     data_version: dataVersion,
@@ -348,7 +347,7 @@ describe("ExploreChartsPane", () => {
 
     await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
     expect(mockRunExplorePivot.mock.calls[0][0]).toMatchObject({
-      node_id: "explore_1",
+      target: { occurrence: null, node_id: "explore_1" },
       pivot: first,
     })
     expect(

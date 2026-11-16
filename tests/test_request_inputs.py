@@ -919,7 +919,11 @@ def test_the_node_data_routes_read_a_workbench_table_directly(project: Path, cli
     graph = without_form_tables(_pricing(project, NodeType.WORKBENCH_INPUT))
     graph.nodes.append(_node("explore", NodeType.EXPLORE, {"steps": []}))
     graph.edges.append(_edge("workbench_input", "explore", "items_input"))
-    body = {"graph": graph.model_dump(mode="json"), "node_id": "explore", "source": "live"}
+    body = {
+        "graph": graph.model_dump(mode="json"),
+        "target": {"occurrence": None, "node_id": "explore"},
+        "source": "live",
+    }
 
     point = client.post("/api/node-data/point", json=body)
     run = client.post("/api/node-data/run", json=body)

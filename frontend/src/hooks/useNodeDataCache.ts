@@ -1,4 +1,5 @@
 import { useRequestScope, useResultKey } from "../panels/useGraph"
+import { keyText } from "../utils/answerAddresses"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 
 import {
@@ -159,7 +160,8 @@ export function refreshNodeDataCache(nodeKey: string): void {
 
 function producerNode(target: PreparedCanvasRequest | null, point: NodeDataPointResponse | null): SimpleNode | null {
   if (!point || !target) return null
-  return target.nodeNamed(point.point.producer_node_id)
+  const address = point.node_addresses[keyText(point.point.producer_node_id)]
+  return address ? target.nodeAt(address) : null
 }
 
 /**
@@ -290,7 +292,7 @@ export default function useNodeDataCache({
       if (!target) return Promise.resolve(null)
       return getNodeDataPoint({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         source: activeSource,
         signal,
       }).then((point) => ({ point, consumerKey: target.resultKey }))
@@ -485,7 +487,7 @@ export default function useNodeDataCache({
       try {
         const response = await runNodeData({
           graph: target.graph,
-          node_id: target.nodeId,
+          target: target.node,
           source: activeSource,
           refresh,
         })
@@ -647,7 +649,7 @@ export default function useNodeDataCache({
     try {
       const response = await clearNodeData({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence)) return

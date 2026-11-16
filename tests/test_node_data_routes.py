@@ -383,7 +383,12 @@ def _poll(client: TestClient, job_id: str, timeout: float = 30.0) -> dict[str, A
 
 
 def _body(graph: dict[str, Any], node_id: str, **extra: Any) -> dict[str, Any]:
-    return {"graph": graph, "node_id": node_id, "source": "live", **extra}
+    return {
+        "graph": graph,
+        "target": {"occurrence": None, "node_id": node_id},
+        "source": "live",
+        **extra,
+    }
 
 
 def test_point_reports_a_missing_node_output_for_banding(client: TestClient, project: Path) -> None:

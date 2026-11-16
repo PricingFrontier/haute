@@ -9304,6 +9304,7 @@
       "type": "object"
     },
     "ExplorePivotResult": {
+      "description": "A pivot's matrix. It is keyed by the data point it read, which several Explore nodes\ncan share, so it names no node; the browser keeps it by the request's result key.",
       "properties": {
         "calculation_key": {
           "title": "Calculation Key",
@@ -9349,10 +9350,6 @@
           "default": 0.0,
           "title": "Generated At",
           "type": "number"
-        },
-        "node_id": {
-          "title": "Node Id",
-          "type": "string"
         },
         "pivot_id": {
           "title": "Pivot Id",
@@ -9400,7 +9397,6 @@
       },
       "required": [
         "version",
-        "node_id",
         "pivot_id",
         "source",
         "data_version",
@@ -15411,7 +15407,8 @@
         },
         "producer_node_id": {
           "title": "Producer Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         }
       },
       "required": [
@@ -15422,6 +15419,7 @@
       "type": "object"
     },
     "NodeDataPointResponse": {
+      "description": "A consumer's data point. It names its consumer and producer by runtime key, each\naddressed in ``node_addresses`` (specs/server-api/low-level.md, \"Node addresses\"), so\nevery answer carrying a point addresses them.",
       "properties": {
         "build_endpoint": {
           "anyOf": [
@@ -15449,7 +15447,8 @@
         },
         "consumer_node_id": {
           "title": "Consumer Node Id",
-          "type": "string"
+          "type": "string",
+          "x-haute-node-key": true
         },
         "data_version": {
           "anyOf": [
@@ -15508,6 +15507,13 @@
           ],
           "title": "Kind",
           "type": "string"
+        },
+        "node_addresses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NodeAddressEntry"
+          },
+          "title": "Node Addresses",
+          "type": "object"
         },
         "point": {
           "$ref": "#/$defs/NodeDataPointRef"
@@ -15589,7 +15595,8 @@
         "job",
         "reads_directly",
         "build_endpoint",
-        "clear_endpoint"
+        "clear_endpoint",
+        "node_addresses"
       ],
       "title": "NodeDataPointResponse",
       "type": "object"

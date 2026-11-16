@@ -1,4 +1,5 @@
 import { RefreshCw } from "lucide-react"
+import { keyText } from "../utils/answerAddresses"
 import { Suspense, lazy, useCallback, useMemo, type ReactNode } from "react"
 
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
@@ -88,7 +89,7 @@ export default function ExplorePreview({
       exploreDataView(
         profile,
         cache.point?.data_version,
-        cache.point?.point.producer_node_id,
+        cache.point ? cache.point.node_addresses[keyText(cache.point.point.producer_node_id)]?.label : undefined,
         activeSource,
       ),
     [activeSource, cache.point, profile],

@@ -593,12 +593,28 @@ import type {
   NodeDataStatusResponse,
 } from "../api/types"
 
-export function makeNodeDataPoint(
-  overrides: Partial<NodeDataPointResponse> = {},
-): NodeDataPointResponse {
+/** A point's fields, its consumer and producer given as the text a fixture names them by. */
+export type NodeDataPointFixture = Omit<Partial<NodeDataPointResponse>, "consumer_node_id" | "point"> & {
+  consumer_node_id?: FixtureKey
+  point?: { producer_node_id: FixtureKey; port_label?: string | null }
+}
+
+/**
+ * A data point with every field the server sends. Its consumer and producer are addressed as
+ * nodes of the pipeline under their own text, unless `node_addresses` says otherwise.
+ */
+export function makeNodeDataPoint(overrides: NodeDataPointFixture = {}): NodeDataPointResponse {
+  const {
+    consumer_node_id = "explore",
+    point = { producer_node_id: "source", port_label: null },
+    node_addresses,
+    ...rest
+  } = overrides
+  const consumer = fixtureKey(consumer_node_id)
+  const producer = fixtureKey(point.producer_node_id)
   return {
-    consumer_node_id: "explore",
-    point: { producer_node_id: "source", port_label: null },
+    consumer_node_id: consumer,
+    point: { producer_node_id: producer, port_label: point.port_label ?? null },
     slot_key: "slot",
     kind: "node_output",
     state: "missing",
@@ -612,7 +628,11 @@ export function makeNodeDataPoint(
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
-    ...overrides,
+    ...rest,
+    node_addresses: {
+      ...rootAddresses(consumer as unknown as string, producer as unknown as string),
+      ...node_addresses,
+    },
   }
 }
 

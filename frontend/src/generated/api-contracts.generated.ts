@@ -1297,6 +1297,10 @@ export interface ExplorePivotFailure {
   reason_code: string;
   remediation: string;
 }
+/**
+ * A pivot's matrix. It is keyed by the data point it read, which several Explore nodes
+ * can share, so it names no node; the browser keeps it by the request's result key.
+ */
 export interface ExplorePivotResult {
   calculation_key: string;
   cells: ExplorePivotCell[];
@@ -1305,7 +1309,6 @@ export interface ExplorePivotResult {
   data_version: string;
   execution_metrics: ExecutionMetricsPayload | null;
   generated_at: number;
-  node_id: string;
   pivot_id: string;
   row_fields: string[];
   row_paths: ExplorePivotPath[];
@@ -1361,15 +1364,23 @@ export interface NodeDataProfileResponse {
   result: NodeDataProfile | null;
   status: 'completed' | 'started' | 'joined' | 'cache_required';
 }
+/**
+ * A consumer's data point. It names its consumer and producer by runtime key, each
+ * addressed in ``node_addresses`` (specs/server-api/low-level.md, "Node addresses"), so
+ * every answer carrying a point addresses them.
+ */
 export interface NodeDataPointResponse {
   build_endpoint: string | null;
   clear_endpoint: string | null;
-  consumer_node_id: string;
+  consumer_node_id: RuntimeNodeKey;
   data_version: string | null;
   demand: string[] | 'all';
   generation: NodeDataGeneration | null;
   job: NodeDataJob | null;
   kind: 'data_input' | 'api_input_table' | 'node_output';
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   point: NodeDataPointRef;
   reads_directly: boolean;
   retention: 'pinned' | 'automatic' | null;
@@ -1396,9 +1407,17 @@ export interface NodeDataJob {
   message: string;
   progress: number;
 }
+/**
+ * The address of a key an answer names, with the node's authored label.
+ */
+export interface NodeAddressEntry {
+  label: string;
+  node_id: string;
+  occurrence: string | null;
+}
 export interface NodeDataPointRef {
   port_label: string | null;
-  producer_node_id: string;
+  producer_node_id: RuntimeNodeKey;
 }
 /**
  * Per-column statistics and overview summary of one data version of a point.
@@ -4849,14 +4868,6 @@ export interface NodeMemoryInfo {
   label: string;
   memory_bytes: number;
   node_id: RuntimeNodeKey;
-}
-/**
- * The address of a key an answer names, with the node's authored label.
- */
-export interface NodeAddressEntry {
-  label: string;
-  node_id: string;
-  occurrence: string | null;
 }
 export interface SchemaWarning {
   column: string | null;

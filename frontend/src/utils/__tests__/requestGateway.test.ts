@@ -89,10 +89,6 @@ describe("the request gateway", () => {
     expect(request.target).toEqual(nodeFrame(childAddress(OCCURRENCE, "bands")))
     // A preview sends the child by its occurrence and local id, never a runtime id.
     expect(request.wireTarget).toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: "bands", port_label: null, port_labels: null })
-    // An answer names a node on screen by its runtime id, and one outside the submodel by its own.
-    expect(request.nodeNamed("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
-    expect(request.nodeNamed("workbench_input")?.id).toBe("workbench_input")
-    expect(request.nodeNamed("submodel_runtime/other/tables")).toBeNull()
   })
 
   it("reads the Input card's port at the pipeline's node feeding it, from the document", () => {
@@ -160,12 +156,28 @@ describe("the request gateway", () => {
     expect(() => request.nodeId).toThrow("Input policy of br rating has nothing connected to it.")
   })
 
-  it("names an answer's nodes by the view the request was prepared in, after the view changed", () => {
+  it("sends an operation on a node its address, and refuses to read a card's port as a node", () => {
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget("workbench_input")).node)
+      .toEqual({ occurrence: null, node_id: "workbench_input" })
     open()
-    const request = prepareNodeRequest(documentRequestScope, canvasTarget("bands"))
-    useGraphStore.getState().exitSubmodelView()
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget("bands")).node)
+      .toEqual({ occurrence: OCCURRENCE, node_id: "bands" })
+    const port = prepareNodeRequest(documentRequestScope, canvasTarget(card("output").id, "premium"))
+    expect(() => port.node).toThrow("A submodel output is not a node.")
+  })
 
-    expect(request.nodeNamed("submodel_runtime/br%20rating/tables")?.id).toBe("tables")
+  it("finds an answer's node by address: the pipeline's own, the open occurrence's, and another occurrence's in its definition", () => {
+    const atRoot = prepareNodeRequest(documentRequestScope, canvasTarget("workbench_input"))
+    // At the root no occurrence is open: its children are found in the definition.
+    expect(atRoot.nodeAt({ occurrence: OCCURRENCE, node_id: "tables" })?.data.nodeType).toBe("ratingStep")
+    expect(atRoot.nodeAt({ occurrence: null, node_id: "workbench_input" })?.id).toBe("workbench_input")
+    expect(atRoot.nodeAt({ occurrence: "no such occurrence", node_id: "tables" })).toBeNull()
+
+    open()
+    const inside = prepareNodeRequest(documentRequestScope, canvasTarget("bands"))
+    useGraphStore.getState().exitSubmodelView()
+    expect(inside.nodeAt({ occurrence: OCCURRENCE, node_id: "bands" })?.id).toBe("bands")
+    expect(inside.nodeAt({ occurrence: null, node_id: "workbench_input" })?.id).toBe("workbench_input")
   })
 
   it("keys results by occurrence, and gives every key a deleted node's results live under", () => {

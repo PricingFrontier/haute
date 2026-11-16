@@ -25,6 +25,7 @@ from haute._node_address_schemas import (
     NodeAddressEntry,
     NodeAddressPayload,
     NodeFrameTargetPayload,
+    NodeTargetRequest,
     OccurrenceInputTargetPayload,
     OccurrencePortProvenance,
     RuntimeEndpointPayload,
@@ -39,6 +40,7 @@ from haute.errors import NotFoundError
 
 _NO_EXPANSION = SubmodelExpansion.of({})
 
+NodeRequestT = TypeVar("NodeRequestT", bound=NodeTargetRequest)
 AnswerT = TypeVar("AnswerT", bound=BaseModel)
 
 
@@ -89,6 +91,13 @@ def resolve_target(
                 f"Output '{target.port}' of submodel '{occurrence.label}' names no node"
             )
     return ResolvedTarget(key=endpoint.node_id, port_label=endpoint.handle_id)
+
+
+def resolved_request(body: NodeRequestT, flat: PipelineGraph) -> NodeRequestT:
+    """*body* over the flattened document *flat*, its target resolved to the runtime key the
+    services read as ``node_id``, or refused by name (404)."""
+    key = resolve_node(flat, body.target.occurrence, body.target.node_id)
+    return body.with_node_key(key, graph=flat)
 
 
 def resolve_node(flat: PipelineGraph, occurrence_id: str | None, node_id: str) -> str:

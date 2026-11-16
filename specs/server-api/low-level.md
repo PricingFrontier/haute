@@ -381,7 +381,10 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    record, which `expand_submodel_instances` attaches to the flat graph (`SubmodelExpansion`): for
    each occurrence its children (local id to runtime key), the endpoint feeding each bound input
    port, and the endpoint producing each declared output port. It returns the runtime key and the
-   port label or labels. A card target
+   port label or labels. An operation on a node is a `NodeTargetRequest`
+   (`haute._node_address_schemas`): it refuses a field it does not define, so a `node_id` beside
+   the target is a 422; its route resolves it once with `resolved_request`, and the services
+   read the resolved runtime key as the request's `node_id`, which no request sends. A card target
    translates its handle with its node: an input port reads its feeding endpoint's node and
    handle, an output port its producing child's. Supersession keys and worker arguments use the
    runtime key and port. Refusals are 404s that name the target by label: an occurrence the
@@ -395,7 +398,10 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    built from the expansion's record and never by parsing a key. `label` is the authored label: a
    copy's child keeps its definition's label, not its flat name. A collapsed occurrence's entries
    (its output ports' columns and its schema warnings) are keyed by its instance id, addressed
-   `{null, <instance id>}`. A string that embeds a key (a data point's `slot_key`, a seed plan's
+   `{null, <instance id>}`. A data point (`NodeDataPointResponse`) addresses its consumer and
+   producer itself, so every answer carrying one (a run, a profile, a clear, banding statistics,
+   rating levels, relationships) does; a pivot's result names no node, since it is keyed by the
+   data point several Explore nodes can share. A string that embeds a key (a data point's `slot_key`, a seed plan's
    entries) is echoed exactly and never read for a node.
 5. **Jobs.** A job whose answers can name nodes (training, a solve, an auto range, a node-data
    build, a pivot) records those keys' addresses when it starts, so a status read after the view
@@ -413,8 +419,10 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    ("Banding 1 in pricing"), and carry a structured `node: {key, occurrence, node_id, label}`.
 
 **Moving onto addresses.** The operation families move one at a time, each request with its
-answers and its browser readers (SUBE-05). The preview, its inputs and the trace are on
-addresses; every other request above still sends the runtime key the browser's adapter builds (`node_id`), its
+answers and its browser readers (SUBE-05). The preview, its inputs, the trace and the
+node-data family (a consumer's data point, run, profile and clear, an Explore pivot and its
+members, relationships, banding statistics and rating levels) are on addresses; every other
+request above still sends the runtime key the browser's adapter builds (`node_id`), its
 answers name nodes by plain string, and `tests/test_node_address_contracts.py` lists their fields
 as pending until their family moves.
 

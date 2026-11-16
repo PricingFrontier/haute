@@ -30,7 +30,7 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
 
 function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   return {
-    producer_node_id: "source_1",
+    producer_label: "source_1",
     source: "pricing",
     data_version: "data-v1",
     row_count: 200,

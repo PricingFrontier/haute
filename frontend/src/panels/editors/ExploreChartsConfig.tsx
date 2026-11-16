@@ -110,7 +110,7 @@ function ConfigureSourceScheduler({
   const report = exploreDataView(
     profileEntry?.profile,
     slot?.dataVersion,
-    slot?.producerNodeId,
+    slot?.producerLabel,
     activeSource,
   )
   const { resultKey: nodeKey, submitting, updatePivot } = useExplorePivotActions({

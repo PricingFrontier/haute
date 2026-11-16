@@ -91,11 +91,11 @@ export default function useBandingStats({
     preamble,
     askedFor,
     subject,
-    ask: ({ asked, graph, nodeId, source, signal }) => {
+    ask: ({ asked, graph, target, source, signal }) => {
       const question = JSON.parse(asked) as AskedFactor
       return getBandingStats({
         graph,
-        node_id: nodeId,
+        target,
         source,
         factor: {
           banding: question.banding,

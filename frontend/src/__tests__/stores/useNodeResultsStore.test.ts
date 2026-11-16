@@ -113,7 +113,7 @@ function pointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPo
 }
 
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
-  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+  return { version: 1, pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
 }
 
 function makeSolveProgress(overrides: Partial<SolveProgress> = {}): SolveProgress {
@@ -687,7 +687,7 @@ describe("useNodeResultsStore", () => {
       const other = start("e10", "p1")
       useNodeResultsStore.getState().completeExplorePivotJob(first, "e1-p1", makePivotResult())
       useNodeResultsStore.getState().completeExplorePivotJob(second, "e1-p2", makePivotResult({ pivot_id: "p2" }))
-      useNodeResultsStore.getState().completeExplorePivotJob(other, "e10-p1", makePivotResult({ node_id: "e10" }))
+      useNodeResultsStore.getState().completeExplorePivotJob(other, "e10-p1", makePivotResult())
       const pending = start("e1", "pending")
       const pendingOther = start("e10", "pending")
       useNodeResultsStore.getState().clearNode("e1")
@@ -702,7 +702,7 @@ describe("useNodeResultsStore", () => {
     it("enforces the pivot result LRU cap", () => {
       for (let index = 0; index < MAX_CACHED_EXPLORE_PIVOT_RESULTS + 1; index += 1) {
         const key = start(`e${index}`, "p1")
-        useNodeResultsStore.getState().completeExplorePivotJob(key, `e${index}-p1`, makePivotResult({ node_id: `e${index}` }))
+        useNodeResultsStore.getState().completeExplorePivotJob(key, `e${index}-p1`, makePivotResult())
       }
       expect(Object.keys(useNodeResultsStore.getState().pivotResults)).toHaveLength(MAX_CACHED_EXPLORE_PIVOT_RESULTS)
     })

@@ -61,10 +61,10 @@ export default function useRatingLevels({
     submodels,
     preamble,
     askedFor,
-    ask: ({ asked, graph, nodeId, source, signal }) =>
+    ask: ({ asked, graph, target, source, signal }) =>
       getRatingLevels({
         graph,
-        node_id: nodeId,
+        target,
         source,
         columns: JSON.parse(asked) as string[],
         signal,

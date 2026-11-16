@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { NodeDataArgs } from "../../api/client"
 import type { ExecutionMetrics, NodeDataPointResponse } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
@@ -15,7 +16,12 @@ import ExplorePreview from "../ExplorePreview"
 import type { ExploreDataView } from "../explore/exploreDataView"
 import { PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
 import { PreviewRunContext } from "../previewRunContext"
-import { makeExploreColumnStat, makeNodeDataStatus } from "../../test-utils/factories"
+import {
+  makeExploreColumnStat,
+  makeNodeDataPoint,
+  makeNodeDataStatus,
+  type NodeDataPointFixture,
+} from "../../test-utils/factories"
 
 const mockGetNodeDataPoint = vi.fn()
 const mockRunNodeData = vi.fn()
@@ -64,7 +70,7 @@ function makeNode(id: string, label: string, nodeType: string): SimpleNode {
 
 function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   return {
-    producer_node_id: "source_1",
+    producer_label: "source_1",
     source: "pricing",
     data_version: DATA_VERSION,
     row_count: 1234,
@@ -79,8 +85,12 @@ function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   }
 }
 
-function point(state: NodeDataPointResponse["state"], dataVersion: string | null): NodeDataPointResponse {
-  return {
+function point(
+  state: NodeDataPointResponse["state"],
+  dataVersion: string | null,
+  overrides: NodeDataPointFixture = {},
+): NodeDataPointResponse {
+  return makeNodeDataPoint({
     consumer_node_id: "explore_1",
     point: { producer_node_id: "source_1", port_label: null },
     slot_key: SLOT_KEY,
@@ -108,7 +118,8 @@ function point(state: NodeDataPointResponse["state"], dataVersion: string | null
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
-  }
+    ...overrides,
+  })
 }
 
 /**
@@ -141,7 +152,7 @@ function seedCachedExplore({
     slots: {
       [SLOT_KEY]: {
         slotKey: SLOT_KEY,
-        producerNodeId: "source_1",
+        producerLabel: "source_1",
         portLabel: null,
         source: "pricing",
         kind: "node_output",
@@ -610,7 +621,7 @@ describe("ExplorePreview", () => {
 
     await waitFor(() =>
       expect(mockGetNodeDataPoint).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "explore_1", source: "pricing" }),
+        expect.objectContaining({ target: { occurrence: null, node_id: "explore_1" }, source: "pricing" }),
       ),
     )
     await act(async () => {})
@@ -642,7 +653,7 @@ describe("ExplorePreview", () => {
 
     await waitFor(() =>
       expect(mockRunNodeData).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "explore_1", refresh: false }),
+        expect.objectContaining({ target: { occurrence: null, node_id: "explore_1" }, refresh: false }),
       ),
     )
     expect(
@@ -755,7 +766,7 @@ describe("ExplorePreview", () => {
 
     await waitFor(() =>
       expect(mockGetNodeDataProfile).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "explore_1" }),
+        expect.objectContaining({ target: { occurrence: null, node_id: "explore_1" } }),
       ),
     )
     await waitFor(() =>
@@ -803,7 +814,7 @@ describe("ExplorePreview", () => {
       })
       useNodeDataStore
         .getState()
-        .observePoint(point("current", "gen-2"), "pricing", "explore-identity", (point("current", "gen-2")).consumer_node_id)
+        .observePoint(point("current", "gen-2"), "pricing", "explore-identity", "explore_1")
     })
 
     // The pane falls back to its "nothing cached yet for this data" state
@@ -949,20 +960,24 @@ describe("ExplorePreview", () => {
     rerender(view(other))
 
     await waitFor(() =>
-      expect(mockGetNodeDataProfile).toHaveBeenCalledWith(expect.objectContaining({ node_id: "explore_2" })),
+      expect(mockGetNodeDataProfile).toHaveBeenCalledWith(expect.objectContaining({ target: { occurrence: null, node_id: "explore_2" } })),
     )
   })
 
   it("cancels each stopped node's late profile, however many nodes were stopped", async () => {
     const currentPoint = point("current", DATA_VERSION)
     // Each node reads its own data, so each asks for its own profile.
-    const otherPoint = { ...currentPoint, consumer_node_id: "explore_2", slot_key: "source_2||pricing", point: { producer_node_id: "source_2", port_label: null } }
-    mockGetNodeDataPoint.mockImplementation(async (request: { node_id: string }) =>
-      request.node_id === "explore_2" ? otherPoint : currentPoint,
+    const otherPoint = point("current", DATA_VERSION, {
+      consumer_node_id: "explore_2",
+      slot_key: "source_2||pricing",
+      point: { producer_node_id: "source_2", port_label: null },
+    })
+    mockGetNodeDataPoint.mockImplementation(async (request: NodeDataArgs) =>
+      request.target.node_id === "explore_2" ? otherPoint : currentPoint,
     )
     const answers: Record<string, (value: unknown) => void> = {}
     mockGetNodeDataProfile.mockImplementation(
-      (request: { node_id: string }) => new Promise((resolve) => { answers[request.node_id] = resolve }),
+      (request: NodeDataArgs) => new Promise((resolve) => { answers[request.target.node_id] = resolve }),
     )
     mockCancelNodeData.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cancelled" })
     const other = makeNode("explore_2", "Explore Other", "explore")
@@ -1024,7 +1039,7 @@ describe("ExplorePreview", () => {
 
     expect(onRefresh).toHaveBeenCalledTimes(1)
     expect(mockGetNodeDataProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ node_id: "explore_1" }),
+      expect.objectContaining({ target: { occurrence: null, node_id: "explore_1" } }),
     )
   })
 
@@ -1060,7 +1075,7 @@ describe("ExplorePreview", () => {
     })
 
     expect(mockGetNodeDataProfile).toHaveBeenCalledWith(
-      expect.objectContaining({ node_id: "explore_1" }),
+      expect.objectContaining({ target: { occurrence: null, node_id: "explore_1" } }),
     )
   })
 
@@ -1089,7 +1104,7 @@ describe("ExplorePreview", () => {
     })
     await act(async () => {
       // A re-cache publishes gen-2 while the profile of gen-1 is still running.
-      useNodeDataStore.getState().observePoint(rebuilt, "pricing", "explore-identity", (rebuilt).consumer_node_id)
+      useNodeDataStore.getState().observePoint(rebuilt, "pricing", "explore-identity", "explore_1")
     })
     act(() => {
       // Then the gen-1 job is cancelled: its failure describes gen-1, not the

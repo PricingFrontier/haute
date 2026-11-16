@@ -52,15 +52,14 @@ NODE_KEY_POSITIONS: dict[tuple[str, str], str] = {
     ("TraceCorrelationDiagnosticResponse", "child_node_id"): MIGRATED,
     ("TraceCorrelationDiagnosticResponse", "seed_node_ids"): MIGRATED,
     # Node data, and the answers that carry a data point.
-    ("NodeDataPointRef", "producer_node_id"): PENDING,
-    ("NodeDataPointResponse", "consumer_node_id"): PENDING,
+    ("NodeDataPointRef", "producer_node_id"): MIGRATED,
+    ("NodeDataPointResponse", "consumer_node_id"): MIGRATED,
     # The cached-data list.
     ("CacheNodeEntry", "node_id"): PENDING,
     ("CacheNodeEntry", "reads_from"): PENDING,
     ("CacheNodeEntry", "shares_snapshot_with"): PENDING,
     ("CacheOwnerEntry", "node_id"): PENDING,
-    # Explore, modelling and the optimiser.
-    ("ExplorePivotResult", "node_id"): PENDING,
+    # Modelling and the optimiser.
     ("TrainEstimateUnavailable", "blocking_node_id"): PENDING,
     ("TrainEstimateResponse", "unbounded_join_node_ids"): PENDING,
     ("OptimiserInputSummary", "node_id"): PENDING,
@@ -288,3 +287,28 @@ def test_a_trace_through_submodels_addresses_every_node_it_names(
     # The trace reached the copy's children, which the flat graph names otherwise.
     occurrences = {address["occurrence"] for address in trace["node_addresses"].values()}
     assert occurrences & {"rating_ie", "rating_fr"}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param({"occurrence": None, "node_id": "consumer"}, id="a pipeline node"),
+        pytest.param({"occurrence": "rating_ie", "node_id": "finish"}, id="a copy's child"),
+    ],
+)
+def test_a_data_point_through_submodels_addresses_its_consumer_and_producer(
+    client: Any, target: dict[str, Any]
+) -> None:
+    graph = _reuse_graph()
+    answer = client.post(
+        "/api/node-data/point",
+        json={"graph": graph.model_dump(mode="json", by_alias=True), "target": target},
+    )
+    assert answer.status_code == 200, answer.text
+    point = answer.json()
+    _addresses_every_key(schemas.NodeDataPointResponse, graph, point)
+    consumer = point["node_addresses"][point["consumer_node_id"]]
+    assert (consumer["occurrence"], consumer["node_id"]) == (
+        target["occurrence"],
+        target["node_id"],
+    )

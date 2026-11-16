@@ -65,7 +65,7 @@ describe("useNodeDataProfile in each occurrence of a definition", () => {
       initialProps: render(currentData("owner-slot")),
     })
     await waitFor(() => expect(getNodeDataProfile).toHaveBeenCalledOnce())
-    expect(vi.mocked(getNodeDataProfile).mock.calls[0][0].node_id).toBe("submodel_runtime/pricing/explore")
+    expect(vi.mocked(getNodeDataProfile).mock.calls[0][0].target).toEqual({ occurrence: "pricing", node_id: "explore" })
     await act(async () => result.current.cancel())
 
     // The same panel, now showing the copy's child and the data it reads.
@@ -73,6 +73,6 @@ describe("useNodeDataProfile in each occurrence of a definition", () => {
     rerender(render(currentData("copy-slot")))
 
     await waitFor(() => expect(getNodeDataProfile).toHaveBeenCalledTimes(2))
-    expect(vi.mocked(getNodeDataProfile).mock.calls[1][0].node_id).toBe("submodel_runtime/pricing_2/explore")
+    expect(vi.mocked(getNodeDataProfile).mock.calls[1][0].target).toEqual({ occurrence: "pricing_2", node_id: "explore" })
   })
 })

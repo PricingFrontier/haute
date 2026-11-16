@@ -52,6 +52,7 @@ from haute._node_address_schemas import (
     FrameTargetPayload,
     NodeAddressEntry,
     NodeFrameTargetPayload,
+    NodeTargetRequest,
     OccurrencePortProvenance,
     RuntimeNodeKey,
 )
@@ -2700,11 +2701,10 @@ NodeDataPointState = Literal["current", "stale", "partial", "missing", "building
 NodeDataColumns = list[str] | Literal["all"]
 
 
-class NodeDataRequest(EditorSampleRequest):
-    """Name a consumer node; the service resolves the data point it reads."""
+class NodeDataRequest(EditorSampleRequest, NodeTargetRequest):
+    """Name a consumer node by address; the service resolves the data point it reads."""
 
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -2713,7 +2713,7 @@ class NodeDataRunRequest(NodeDataRequest):
 
 
 class NodeDataPointRef(BaseModel):
-    producer_node_id: str
+    producer_node_id: RuntimeNodeKey
     port_label: str | None = None
 
 
@@ -2737,7 +2737,11 @@ class NodeDataJob(BaseModel):
 
 
 class NodeDataPointResponse(BaseModel):
-    consumer_node_id: str
+    """A consumer's data point. It names its consumer and producer by runtime key, each
+    addressed in ``node_addresses`` (specs/server-api/low-level.md, "Node addresses"), so
+    every answer carrying a point addresses them."""
+
+    consumer_node_id: RuntimeNodeKey
     point: NodeDataPointRef
     slot_key: str
     kind: NodeDataPointKind
@@ -2752,6 +2756,7 @@ class NodeDataPointResponse(BaseModel):
     reads_directly: bool = False
     build_endpoint: str | None = None
     clear_endpoint: str | None = None
+    node_addresses: dict[str, NodeAddressEntry]
 
 
 class NodeDataRunResponse(BaseModel):
@@ -2985,8 +2990,10 @@ class ExplorePivotCell(BaseModel):
 
 
 class ExplorePivotResult(BaseModel):
+    """A pivot's matrix. It is keyed by the data point it read, which several Explore nodes
+    can share, so it names no node; the browser keeps it by the request's result key."""
+
     version: Literal[1] = 1
-    node_id: str
     pivot_id: str
     source: str = "live"
     data_version: str
@@ -3002,9 +3009,8 @@ class ExplorePivotResult(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class ExplorePivotRunRequest(EditorSampleRequest):
+class ExplorePivotRunRequest(EditorSampleRequest, NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     pivot: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
     source: BoundedName = "live"
 
@@ -3033,7 +3039,7 @@ class ExplorePivotStatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class BandingStatsRequest(EditorSampleRequest):
+class BandingStatsRequest(EditorSampleRequest, NodeTargetRequest):
     """Statistics for one banding factor over the whole dataset its node reads.
 
     The factor is the one in the editor rather than the one in the saved graph,
@@ -3042,7 +3048,6 @@ class BandingStatsRequest(EditorSampleRequest):
     """
 
     graph: Graph
-    node_id: BoundedName
     factor: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
     source: BoundedName = "live"
     histogram_bins: int = Field(default=40, ge=1, le=200)
@@ -3091,7 +3096,7 @@ class BandingStatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RatingLevelsRequest(EditorSampleRequest):
+class RatingLevelsRequest(EditorSampleRequest, NodeTargetRequest):
     """The levels of raw rating factor columns over the whole dataset.
 
     The node says which data point to read; the columns are the ones the editor
@@ -3100,7 +3105,6 @@ class RatingLevelsRequest(EditorSampleRequest):
     """
 
     graph: Graph
-    node_id: BoundedName
     # Each column is one pass over the data, so the request is bounded; the
     # editor asks for the factors in use, which is far fewer than this.
     columns: list[BoundedName] = Field(min_length=1, max_length=100)
@@ -3143,9 +3147,10 @@ EXPLORE_KEY_COLUMN_LIMIT = 8
 
 
 class ExploreRelationshipsRequest(NodeDataRequest):
-    """Target relationships and a key check over the data point an Explore node reads."""
+    """Target relationships and a key check over the data point an Explore node reads. The
+    node is ``target``; the column the features are related to is ``target_column``."""
 
-    target: BoundedName | None = None
+    target_column: BoundedName | None = None
     weight: BoundedName | None = None
     features: list[BoundedName] = Field(
         default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT
@@ -3193,9 +3198,8 @@ class ExploreRelationshipsResponse(BaseModel):
     key_check: ExploreKeyCheck | None = None
 
 
-class ExplorePivotMembersRequest(EditorSampleRequest):
+class ExplorePivotMembersRequest(EditorSampleRequest, NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     field: BoundedName
     source: BoundedName = "live"
     search: BoundedName | None = None

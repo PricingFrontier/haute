@@ -1,3 +1,4 @@
+import type { NodeAddressPayload } from "../../../generated/api-contracts.generated"
 import { useRequestScope } from "../../useGraph"
 import { useEffect, useRef, useState } from "react"
 
@@ -103,8 +104,8 @@ export interface WholeDataQuestion {
   asked: string
   /** The graph to send: inside an open submodel, the whole pipeline. */
   graph: PreparedGraph
-  /** The node's id in `graph`: inside an open submodel, its runtime id. */
-  nodeId: string
+  /** The node, by address. */
+  target: NodeAddressPayload
   source: string
   signal: AbortSignal
 }
@@ -231,7 +232,7 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
           return askRef.current({
             asked: askedFor,
             graph: target.graph,
-            nodeId: target.nodeId,
+            target: target.node,
             source: target.source,
             signal: controller.signal,
           })

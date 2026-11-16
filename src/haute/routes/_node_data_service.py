@@ -46,6 +46,8 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
+from haute._node_address_schemas import NodeAddressEntry
+from haute._node_addresses import node_addresses
 from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotMultiFrameUnsupportedError,
@@ -559,6 +561,15 @@ def _adopting_worker_failure_evidence(
         raise
 
 
+def _point_addresses(
+    consumer: ConsumerPoint, resolver: DataPointResolver
+) -> dict[str, NodeAddressEntry]:
+    """The addresses of the consumer and producer a point names, from the graph it runs."""
+    return node_addresses(
+        resolver.graph, (consumer.consumer_node_id, consumer.point.producer_node_id)
+    )
+
+
 class NodeDataService:
     """Report and build the data points consumer nodes read."""
 
@@ -745,6 +756,7 @@ class NodeDataService:
             kind=point_kind(resolver.graph, consumer.point),
             state="corrupt",
             demand=_columns_payload(consumer.demand),
+            node_addresses=_point_addresses(consumer, resolver),
         )
 
     def _api_input_row(
@@ -805,6 +817,7 @@ class NodeDataService:
             state=resolution.state,
             demand=_columns_payload(consumer.demand),
             data_version=resolution.data_version,
+            node_addresses=_point_addresses(consumer, resolver),
         )
         if resolution.kind == "node_output":
             return self._node_output_details(response, resolution)

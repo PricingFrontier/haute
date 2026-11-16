@@ -145,9 +145,9 @@ replacing "the editor never sends an occurrence as a preview target".
    time.
 
 **Progress:** The server's resolution, the labelled answers, frame provenance, the preview
-family and the trace are in place; node data, modelling, the optimiser, Data Output, the
-cached-data list, and errors with execution diagnostics follow, then the browser's runtime-id
-code is deleted.
+family, the trace and the node-data family are in place; modelling, the optimiser, Data
+Output, the cached-data list, and errors with execution diagnostics follow, then the browser's
+runtime-id code is deleted.
 
 **Acceptance:** Inside a submodel, node status colours, schema warnings and timings show on the
 right nodes; the cached-data list names submodel nodes by label and submodel; previewing a frame

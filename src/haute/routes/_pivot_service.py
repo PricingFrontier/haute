@@ -775,12 +775,12 @@ class PivotService:
         cached = self._result_cache.get(spec.result_cache_key)
         if cached is not None:
             # The matrix is keyed by the data point, which several Explore nodes
-            # can share; the response still names the node that asked.
+            # can share, so it names none of them.
             return ExplorePivotRunResponse(
                 status="completed",
                 cached=True,
                 message="Pivot cache hit",
-                result=cached.model_copy(update={"node_id": body.node_id}),
+                result=cached,
             )
 
         initial_job: _PivotRunningJob = {
@@ -1401,7 +1401,6 @@ class PivotService:
                     )
                 )
         return ExplorePivotResult(
-            node_id=spec.point.node_id,
             pivot_id=spec.pivot["id"],
             source=spec.point.source,
             data_version=spec.point.data_version,
