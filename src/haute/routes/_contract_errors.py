@@ -102,6 +102,16 @@ def is_pipeline_error(exc: BaseException) -> bool:
     return isinstance(exc, PIPELINE_ERROR_TYPES) and memory_error_in(exc) is None
 
 
+def memory_error_refusal(exc: BaseException, *, operation: str) -> InsufficientMemoryError:
+    """Out of memory behind *exc* (``memory_error_in``) as a service refuses with it (507): the
+    ``memory_limit`` payload a hard-capped worker's memory outcome carries."""
+    from haute._worker_failures import worker_memory_detail
+
+    return InsufficientMemoryError(
+        worker_memory_detail(exc, operation=operation, memory_limit_bytes=None)
+    )
+
+
 def raise_memory_behind(exc: BaseException) -> None:
     """Raise the ``MemoryError`` behind *exc*, if any, so a worker reports it as memory."""
     from haute._memory_errors import memory_error_in

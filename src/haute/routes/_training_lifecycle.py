@@ -95,6 +95,8 @@ from haute.routes._contract_errors import (
     PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_refusal,
+    is_pipeline_error,
+    memory_error_refusal,
     pipeline_error_message,
 )
 from haute.routes._job_lifecycle import (
@@ -547,6 +549,9 @@ class TrainService:
                 f"Evaluation preview cannot run in bounded mode: {exc}"
             ) from exc
         except PIPELINE_ERROR_TYPES as exc:
+            if not is_pipeline_error(exc):
+                # Out of memory behind it: the memory limit, never the user's to fix.
+                raise memory_error_refusal(exc, operation="training_evaluation_preview") from exc
             # Graph-shape and schema failures raised while the bounded
             # projection executes are the user's to fix, exactly like the
             # data-dependent validation failures above: name the cause. A

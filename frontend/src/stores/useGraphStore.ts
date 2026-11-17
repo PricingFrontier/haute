@@ -1293,10 +1293,23 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         get().setEdgesRaw(updater)
         return
       }
-      const nextFocus: SubmodelFocus = { ...focus, rootEdges: applyUpdater(focus.rootEdges, updater) }
-      const patch = derivedPatch(state, { ...state, focus: nextFocus })
+      // The open view's cards carry the pipeline's bindings into it, so the view is drawn
+      // again from the new edges, keeping its canvas state, as Undo and Redo draw it.
+      const view = submodelViewIn(
+        { nodes: focus.rootNodes, edges: applyUpdater(focus.rootEdges, updater), submodels: state.submodels },
+        focusIdentity(focus)!,
+        state.submodelAnnotations[focus.instanceId],
+        { nodes: state.nodes, edges: state.edges },
+      )
+      if (view === null) {
+        throw new Error(`Submodel occurrence ${focus.instanceId} is not in the document`)
+      }
+      const fields: GraphFields = { ...state, nodes: view.nodes, edges: view.edges, focus: view.focus }
+      const patch = derivedPatch(state, fields)
       set({
-        focus: nextFocus,
+        nodes: view.nodes,
+        edges: view.edges,
+        focus: view.focus,
         ...patch,
         ...(patch.persistedFingerprint !== state.persistedFingerprint
           ? { semanticGeneration: state.semanticGeneration + 1 }

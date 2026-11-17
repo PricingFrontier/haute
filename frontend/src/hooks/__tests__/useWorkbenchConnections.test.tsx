@@ -185,17 +185,19 @@ describe("useWorkbenchConnections", () => {
     const occurrence = makeNode("pricing", "submodel", {
       data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
     })
+    // The removed table also fed the open occurrence, whose Input card carries that binding.
+    const intoPricing = edge("e_into_pricing", "wb_in", "policy_input", "pricing", "in__policy")
     act(() => {
       useGraphStore.getState().loadGraphSnapshot({
         nodes: [input, priced, occurrence],
-        edges: [policy, account],
+        edges: [policy, account, intoPricing],
         preamble: "",
         submodels: {
           definition_pricing: {
             definitionId: "definition_pricing",
             file: "modules/pricing.py",
             graph: { nodes: [makeNode("rate")], edges: [] },
-            inputPorts: [],
+            inputPorts: [{ name: "policy", targets: [{ nodeId: "rate", handleId: null }] }],
             outputPorts: [],
           },
         },
@@ -211,6 +213,11 @@ describe("useWorkbenchConnections", () => {
 
     expect(useGraphStore.getState().focus?.rootEdges.map((each) => each.id)).toEqual(["e_account"])
     expect(addToast).toHaveBeenCalledWith("warning", expect.stringContaining("wb_in"))
+    // The open view is drawn from the pipeline's edges as they now are: no card holds the
+    // removed binding, which a later boundary edit would otherwise bring back.
+    const cards = useGraphStore.getState().nodes.filter((node) => node.data.nodeType === "submodelPort")
+    expect(cards.length).toBeGreaterThan(0)
+    expect(JSON.stringify(cards)).not.toContain("e_into_pricing")
   })
 
   it("never changes a Quote Input's connections", () => {

@@ -1015,6 +1015,23 @@ def test_a_preparation_failing_on_the_pipelines_own_error_names_it(
     assert "server logs" not in run.job["message"]
 
 
+def test_a_preparation_out_of_memory_behind_a_pipeline_error_is_memory_limited(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running out of memory behind the pipeline's own error is the memory limit, never
+    the user's to fix nor an internal failure."""
+    graph = _chain(
+        project,
+        b_code="raise pl.exceptions.ComputeError('allocation failed') from MemoryError()",
+    )
+
+    run = _train(monkeypatch, graph, row_limit=_ROWS)
+
+    assert run.job["status"] == "memory_limited", run.job
+    assert run.job["error_code"] == "memory_limit", run.job
+    assert "allocation failed" not in run.job["message"]
+
+
 def _train_to_completion(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
     response = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
     assert response.status_code == 200, response.text
