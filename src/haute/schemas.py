@@ -1737,6 +1737,14 @@ class PipelineNodeSaveRequest(BaseModel):
     target_source_file: BoundedPath = Field(min_length=1)
     target_recovery_id: BoundedName = Field(min_length=1)
     config: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    steps_edited: bool = Field(
+        default=False,
+        description=(
+            "Whether the node's steps were edited since the document was saved: only then "
+            "is its code rendered from them; otherwise it is written from the code it "
+            "carries (CGEN-11)."
+        ),
+    )
 
 
 class PipelineRepairChange(BaseModel):
@@ -1802,6 +1810,23 @@ class PipelineRepairApplyResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SteppedNodeRef(BaseModel):
+    """A stepped node by the graph that holds it: the pipeline's own (``submodel`` null)
+    or a submodel definition's, by its id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    submodel: str | None = Field(default=None, max_length=512)
+    node_id: str = Field(min_length=1, max_length=512)
+
+
+class SavedStepCode(SteppedNodeRef):
+    """The code a node the save rendered from its steps loads with from the file it wrote:
+    the steps' rendering, as a reload builds it, and empty when they do not render."""
+
+    code: str
+
+
 class SavePipelineRequest(BaseModel):
     name: BoundedName = "main"
     description: BoundedText = ""
@@ -1836,6 +1861,40 @@ class SavePipelineRequest(BaseModel):
             "that committed is answered with that save's response."
         ),
     )
+    edited_steps: list[SteppedNodeRef] = Field(
+        default_factory=list,
+        max_length=MAX_REQUEST_ITEMS,
+        description=(
+            "The stepped nodes whose steps were edited since the document was saved: the "
+            "save renders their code from their steps. Every other stepped node is written "
+            "from the code it carries, and the steps it carries are not read (CGEN-11)."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_only_edited_steps(cls, data: Any) -> Any:
+        # Before the graph's nodes are built: building one renders its steps into its code.
+        if not isinstance(data, Mapping):
+            return data
+        from haute._step_authority import graph_without_unread_steps
+
+        graph = data.get("graph")
+        if isinstance(graph, Graph):
+            graph = graph.model_dump(mode="python", by_alias=True)
+        if not isinstance(graph, Mapping):
+            return data
+        edited: list[tuple[str | None, str]] = []
+        for ref in data.get("edited_steps") or []:
+            if isinstance(ref, SteppedNodeRef):
+                edited.append((ref.submodel, ref.node_id))
+                continue
+            scope = ref.get("submodel") if isinstance(ref, Mapping) else None
+            node_id = ref.get("node_id") if isinstance(ref, Mapping) else None
+            # A malformed name is the field's own validation error.
+            if isinstance(node_id, str) and (scope is None or isinstance(scope, str)):
+                edited.append((scope, node_id))
+        return {**data, "graph": graph_without_unread_steps(graph, edited)}
 
     @model_validator(mode="after")
     def _active_source_is_a_source(self) -> SavePipelineRequest:
@@ -1857,6 +1916,8 @@ class SavePipelineResponse(SaveCapture):
     source_revision: RevisionToken
     # The saved document's fingerprint, as live sync names it, for the saver to keep.
     document_fingerprint: str
+    # The code of each node named in ``edited_steps``, for the saver's saved baseline.
+    step_code: list[SavedStepCode] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

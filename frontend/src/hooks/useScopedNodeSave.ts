@@ -1,4 +1,6 @@
-import { canvasGraph } from "../stores/useGraphStore"
+import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
+import { savedCodeForSteps } from "../utils/editedSteps"
+import { isSteppedConfig } from "../utils/polarsStepInputs"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { saveNodeScoped } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -115,6 +117,14 @@ export function useScopedNodeSave({
     }
     const requestSourceFile = state.sourceFile
     const requestRevision = state.sourceRevision
+    // Steps the node holds as saved are not sent as its program: the code saved for them is
+    // (CGEN-11).
+    const config = (data.config ?? {}) as Record<string, unknown>
+    const graph = useGraphStore.getState()
+    const stepped = isSteppedConfig(String(data.nodeType), config)
+    const savedCode = stepped
+      ? savedCodeForSteps(graph.lastSavedSnapshot, graph.focus?.definitionId ?? null, target.id, config.steps)
+      : null
     inFlightRef.current = true
     setScopedSaveInFlight(true)
     try {
@@ -123,7 +133,8 @@ export function useScopedNodeSave({
         sourceRevision: requestRevision,
         targetSourceFile: data._sourceFile,
         targetRecoveryId: data._recoveryId,
-        config: (data.config ?? {}) as Record<string, unknown>,
+        config: savedCode === null ? config : { ...config, code: savedCode },
+        stepsEdited: stepped && savedCode === null,
       })
       const current = useDocumentStatusStore.getState()
       const fenceError = scopedSaveResponseFenceError({

@@ -712,6 +712,31 @@ def _finalise_action_plan(
     )
 
 
+def _scoped_config_to_write(
+    path: Path,
+    target: RecoveryPipelineNode,
+    config: dict[str, Any],
+    steps_edited: bool,
+) -> dict[str, Any]:
+    """The settings a node-scoped save writes the node from (CGEN-11): unless its steps
+    were edited, the code it carries, its steps not read, or, while the file's
+    ``.haute.json`` holds the node's unfinished steps and the node carries the code they
+    load as, that record."""
+    from haute._sidecar import read_sidecar_state
+    from haute._step_authority import with_recorded_unfinished_steps, without_unread_steps
+
+    if target.node_type not in STEPS_FROM_CODE:
+        return config
+    held = read_sidecar_state(path)
+    recorded = held.data.unfinished_steps.get(target.authored_id) if held.data else None
+    from_record = with_recorded_unfinished_steps(
+        target.node_type, config, recorded, edited=steps_edited
+    )
+    if from_record is not None:
+        return from_record
+    return without_unread_steps(config, edited=steps_edited)
+
+
 def apply_scoped_node_save(
     *, project_root: Path, request: PipelineNodeSaveRequest
 ) -> PipelineEditorDocument:
@@ -741,12 +766,13 @@ def apply_scoped_node_save(
     )
     if not target.scoped_editable or target.node_type is None:
         raise _unsupported("This node cannot be saved in isolation; recover or repair it first.")
+    proposed = _scoped_config_to_write(path, target, request.config, request.steps_edited)
     # Code generation keeps only declared keys and a sidecar write refuses the
     # rest, so an undeclared key is refused first, for every node type, before
     # anything is written. The per-type validators then check the declared keys.
     try:
         reject_unrecognized_config_keys(
-            NodeType(target.node_type), request.config, node_label=target.label
+            NodeType(target.node_type), proposed, node_label=target.label
         )
     except ConfigError as exc:
         raise PipelineRepairError(
@@ -758,7 +784,7 @@ def apply_scoped_node_save(
     try:
         config = validate_node_config(
             target.node_type,
-            deepcopy(request.config),
+            deepcopy(proposed),
             require_complete=False,
             node_label=target.label,
         )

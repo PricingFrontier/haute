@@ -524,12 +524,12 @@ class TestApply:
         original_commit = service._commit
         commit_attempts = 0
 
-        def fail_once(source_file, after, receipt, document_revision):
+        def fail_once(source_file, before, after, receipt, document_revision):
             nonlocal commit_attempts
             commit_attempts += 1
             if commit_attempts == 1:
                 raise RuntimeError("simulated pre-commit failure")
-            return original_commit(source_file, after, receipt, document_revision)
+            return original_commit(source_file, before, after, receipt, document_revision)
 
         monkeypatch.setattr(service, "_commit", fail_once)
         operations = [{"op": "rename_node", "node": "quotes", "new_name": "renamed"}]
@@ -1478,13 +1478,13 @@ class TestSteppedWrites:
         ).plan
         original_commit = service._commit
 
-        def commit_other_steps(source_file, after, receipt, document_revision):
+        def commit_other_steps(source_file, before, after, receipt, document_revision):
             node = next(item for item in after.nodes if item.id == "rated")
             other = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
             after.nodes[after.nodes.index(node)] = node.with_config(
                 {**node.data.config, "steps": other}
             )
-            return original_commit(source_file, after, receipt, document_revision)
+            return original_commit(source_file, before, after, receipt, document_revision)
 
         monkeypatch.setattr(service, "_commit", commit_other_steps)
 

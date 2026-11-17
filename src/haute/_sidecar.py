@@ -87,8 +87,9 @@ class SidecarReadResult:
 def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[GraphNode]:
     """*nodes* with each stepped node saved with an unfinished step list given its steps
     from the sidecar (READ-22, READ-44): one whose body is the placeholder, which loads
-    with no code and no steps. An entry for any other node is ignored; the next save
-    drops it. Every loader of a pipeline file applies it, the editor's document included."""
+    with no code and no steps, marked ``steps_recorded``. An entry for any other node is
+    ignored; the next save drops it. Every loader of a pipeline file applies it, the
+    editor's document included."""
     if not isinstance(unfinished, dict) or not unfinished:
         return nodes
     given: list[GraphNode] = []
@@ -101,7 +102,13 @@ def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[Graph
             and not config.get("code")
             and "steps" not in config
         ):
-            given.append(node.with_config({**config, "steps": steps}))
+            recorded = node.with_config({**config, "steps": steps})
+            editor = recorded.data.editor.recorded()
+            given.append(
+                recorded.model_copy(
+                    update={"data": recorded.data.model_copy(update={"editor": editor})}
+                )
+            )
         else:
             given.append(node)
     return given

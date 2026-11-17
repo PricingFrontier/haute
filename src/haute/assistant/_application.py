@@ -37,6 +37,7 @@ from haute._polars_steps import (
 from haute._polars_steps_lift import canonical_steps
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._sandbox import contained_path
+from haute._step_authority import graph_without_unread_steps, steps_to_render
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import INPUT_NAMING_RULE, new_logic_steps
@@ -874,8 +875,14 @@ def _prove_steps_survive_save(
     )
     if not stepped:
         return
+    # What the save writes: only these nodes' steps, and records of unfinished steps,
+    # become code (CGEN-11).
+    named = {*steps_to_render(graph), *((None, node_id) for node_id in stepped)}
+    written = PipelineGraph.model_validate(
+        graph_without_unread_steps(graph.model_dump(mode="python", by_alias=True), named)
+    )
     source = graph_to_code_multi(
-        graph,
+        written,
         pipeline_name=graph.pipeline_name or "",
         description=graph.pipeline_description or "",
         preamble=graph.preamble or "",
@@ -1314,9 +1321,12 @@ class PipelineApplicationService:
         source_file: str,
         graph: PipelineGraph,
         *,
+        before: PipelineGraph | None,
         base_revision: str | None,
         commit_message: str,
     ) -> Any:
+        # Only the steps this change edited, and records of unfinished steps, become code:
+        # every other stepped node keeps the code it was parsed from (CGEN-11).
         return self._save_service().save_graph_transactionally(
             graph=graph,
             name=graph.pipeline_name or "",
@@ -1324,12 +1334,14 @@ class PipelineApplicationService:
             preamble=graph.preamble,
             source_file=source_file,
             base_revision=base_revision,
+            edited_steps=steps_to_render(graph, before),
             commit_message=commit_message,
         )
 
     def _commit(
         self,
         source_file: str,
+        before: PipelineGraph,
         after: PipelineGraph,
         receipt: PlanReceipt,
         document_revision: str | None,
@@ -1340,6 +1352,7 @@ class PipelineApplicationService:
             return self._save(
                 source_file,
                 after,
+                before=before,
                 base_revision=document_revision,
                 commit_message=change_headline(receipt.summary),
             )
@@ -1418,7 +1431,7 @@ class PipelineApplicationService:
 
             try:
                 response = await asyncio.to_thread(
-                    self._commit, source_file, after, receipt, document_revision
+                    self._commit, source_file, before, after, receipt, document_revision
                 )
             except BaseException:
                 self.plan_store.abort_apply(plan_hash)
@@ -1518,6 +1531,7 @@ class PipelineApplicationService:
         return self._save(
             source_file,
             commit_pipeline_graph(parent_sha, source_file),
+            before=None,
             base_revision=change.revision,
             commit_message=f"Undo: {change_headline(change.summary)}",
         )

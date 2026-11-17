@@ -637,8 +637,11 @@ back to the graph. Column and variable suggestions are computed only for the
 open card. The switch is enabled only while the step list is empty or the
 latest render succeeded for the current revision; on confirmation it writes that rendered
 code (or empty code for an empty list) into `code` and removes `steps`. After each
-successful render the rendered code is also written into `code` so read-only views stay
-current. This generated cache update creates no undo entry, preserves redo, does
+successful render the node's `code` is brought up to date so read-only views stay
+current: the rendered code once the steps differ from the saved baseline's, and the code
+the baseline saved for them while they are its steps, so opening a panel on steps nobody
+edited writes nothing a browser lost into the code ([codegen](../codegen/high-level.md),
+"Which steps a write renders"). This generated cache update creates no undo entry, preserves redo, does
 not dirty the document, and does not invalidate execution previews. Authored step
 changes still invalidate execution previews. One step edit is one undo action. Undo/redo re-renders the
 restored steps, and an obsolete render must not replace their code. As soon as the
