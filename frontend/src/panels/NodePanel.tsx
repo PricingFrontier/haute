@@ -1258,7 +1258,7 @@ function NodePanelContent({
       const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
       return fetchExplorePivotMembers({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         field,
         source: activeSource,
         search: search || undefined,

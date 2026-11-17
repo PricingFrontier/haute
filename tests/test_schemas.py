@@ -82,7 +82,7 @@ class TestValidation:
         with pytest.raises(ValidationError):
             GraphEdge()
 
-    def test_sink_request_requires_node_id(self):
+    def test_sink_request_requires_target(self):
         with pytest.raises(ValidationError):
             WriteOutputRequest(graph=Graph())
 
@@ -95,13 +95,13 @@ class TestValidation:
             PreviewNodeRequest(graph=Graph())
 
     def test_trace_request_accepts_minimal(self):
-        r = TraceRequest(seed_plan=[], graph=Graph())
+        r = TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"))
         assert r.row_index == 0
 
     def test_trace_request_requires_its_previews_seed_plan(self):
         # A trace names the generations its preview read, even when none.
         with pytest.raises(ValidationError, match="seed_plan"):
-            TraceRequest(graph=Graph())
+            TraceRequest(graph=Graph(), target=node_target("n"))
 
 
 class TestCompositeStructure:
@@ -166,22 +166,22 @@ class TestPreviewNodeRequestBoundaries:
 class TestTraceRequestBoundaries:
     def test_row_index_negative_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(seed_plan=[], graph=Graph(), row_index=-1)
+            TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_index=-1)
 
     def test_row_index_zero_succeeds(self):
-        r = TraceRequest(seed_plan=[], graph=Graph(), row_index=0)
+        r = TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_index=0)
         assert r.row_index == 0
 
     def test_row_limit_zero_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(seed_plan=[], graph=Graph(), row_limit=0)
+            TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_limit=0)
 
     def test_row_limit_above_max_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(seed_plan=[], graph=Graph(), row_limit=10001)
+            TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_limit=10001)
 
     def test_row_limit_min_boundary(self):
-        r = TraceRequest(seed_plan=[], graph=Graph(), row_limit=1)
+        r = TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_limit=1)
         assert r.row_limit == 1
 
 

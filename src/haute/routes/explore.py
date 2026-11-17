@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from haute._flatten import flatten_executable_graph
+from haute._node_addresses import resolved_request
 from haute.routes._explore_relationships import ExploreRelationshipsService
 from haute.routes._job_store import get_job_store
 from haute.routes._pivot_service import PivotService
@@ -34,7 +35,7 @@ def run_pivot(body: ExplorePivotRunRequest) -> ExplorePivotRunResponse:
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    return _pivot_service.start(body.model_copy(update={"graph": graph}))
+    return _pivot_service.start(resolved_request(body, graph))
 
 
 @router.get("/pivots/status/{job_id}", response_model=ExplorePivotStatusResponse)
@@ -55,7 +56,7 @@ async def pivot_members(
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    prepared = body.model_copy(update={"graph": graph})
+    prepared = resolved_request(body, graph)
     return await run_until_disconnected(
         request, lambda token: _pivot_service.members(prepared, cancellation_token=token)
     )
@@ -69,7 +70,7 @@ async def explore_relationships(
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    prepared = body.model_copy(update={"graph": graph})
+    prepared = resolved_request(body, graph)
     return await run_until_disconnected(
         request,
         lambda token: _explore_relationships_service.relationships(

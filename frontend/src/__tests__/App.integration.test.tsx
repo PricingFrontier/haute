@@ -1234,7 +1234,7 @@ describe("App integration - load a pipeline with nodes", () => {
     fireEvent.click(exploreNode)
 
     await waitFor(() => expect(vi.mocked(api.getNodeDataPoint)).toHaveBeenCalledWith(expect.objectContaining({
-      node_id: "explore_1",
+      target: { occurrence: null, node_id: "explore_1" },
       source: "live",
     })))
     await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
@@ -2798,7 +2798,7 @@ describe("App integration - read-only submodel instance", () => {
     vi.mocked(api.traceCell).mockImplementationOnce(() => new Promise(() => {}))
     fireEvent.click(screen.getByText("37"))
     await waitFor(() => expect(api.traceCell).toHaveBeenLastCalledWith(expect.objectContaining({
-      target_node_id: "submodel_runtime/again/child", port_label: "checks",
+      target: { kind: "occurrence_output", occurrence: "again", port: "audit" },
       row_values: { value: 37 },
     })))
     expect(api.previewNode).toHaveBeenCalledTimes(previewsBeforeRename)

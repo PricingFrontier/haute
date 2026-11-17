@@ -1,11 +1,17 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 import ExecutionDiagnosticsIndicator from "../ExecutionDiagnosticsIndicator"
-import type { ExecutionStrategyProjectionCause } from "../../api/types"
-import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
+import type { ExecutionMetrics, ExecutionStrategyProjectionCause } from "../../api/types"
+import { makeExecutionMetricsFixture, type WithFixtureKeys } from "../../testSupport/executionMetricsFixture"
 
-function warnedStrategyMetrics(withPressure: boolean) {
+/** A node of the pipeline whose label is not its id, and a submodel child under a key of its own. */
+const SALE_JOIN = { occurrence: null, node_id: "SaleJoin", label: "Sale join" }
+const CHILD_KEY = "submodel_runtime/pricing/fill_na"
+const CHILD = { occurrence: "pricing", node_id: "fill_na", label: "Fill gaps" }
+
+function warnedStrategyMetrics(withPressure: boolean, nodeAddresses: ExecutionMetrics["node_addresses"] = {}) {
   return makeExecutionMetricsFixture({
+    node_addresses: nodeAddresses,
     memory_pressure_events: withPressure
       ? makeExecutionMetricsFixture().memory_pressure_events
       : [],
@@ -58,8 +64,9 @@ function rejectedStrategyMetrics() {
   })
 }
 
-function projectionBoundaryMetrics() {
+function projectionBoundaryMetrics(nodeAddresses: ExecutionMetrics["node_addresses"] = {}) {
   return makeExecutionMetricsFixture({
+    node_addresses: nodeAddresses,
     memory_pressure_events: [],
     execution_strategy: {
       schema_version: 1,
@@ -92,16 +99,20 @@ function projectionBoundaryMetrics() {
   })
 }
 
-function projectionCauseMetrics(cause: ExecutionStrategyProjectionCause) {
+function projectionCauseMetrics(
+  cause: WithFixtureKeys<ExecutionStrategyProjectionCause>,
+  nodeAddresses: ExecutionMetrics["node_addresses"] = {},
+) {
   const strategy = projectionBoundaryMetrics().execution_strategy
   if (!strategy) throw new Error("the projection fixture has a strategy")
   return makeExecutionMetricsFixture({
+    node_addresses: nodeAddresses,
     memory_pressure_events: [],
     execution_strategy: { ...strategy, projection_cause: cause },
   })
 }
 
-const unreadableCodeCause: ExecutionStrategyProjectionCause = {
+const unreadableCodeCause: WithFixtureKeys<ExecutionStrategyProjectionCause> = {
   node_id: "fill_na",
   operator: "polars",
   kind: "input",
@@ -141,6 +152,21 @@ describe("ExecutionDiagnosticsIndicator", () => {
     expect(status).not.toHaveTextContent("stream_node")
   })
 
+  it("names the cause and its input by their labels, a submodel child with its occurrence", () => {
+    const metrics = projectionCauseMetrics(
+      { ...unreadableCodeCause, node_id: CHILD_KEY },
+      { [CHILD_KEY]: CHILD, SaleJoin: SALE_JOIN },
+    )
+    render(<ExecutionDiagnosticsIndicator metrics={metrics} />)
+
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent(
+      "'Fill gaps in pricing' (polars) stopped Haute narrowing the columns it reads from 'Sale join', so 'Sale join' and the nodes above it read every column.",
+    )
+    expect(status).not.toHaveTextContent(CHILD_KEY)
+    expect(status).not.toHaveTextContent("SaleJoin")
+  })
+
   it("names a node whose own rule kept it full-width and counts the others", () => {
     const metrics = projectionCauseMetrics({
       node_id: "policies",
@@ -172,6 +198,26 @@ describe("ExecutionDiagnosticsIndicator", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Haute could not safely push the requested columns through the pipeline at 'stream_node' (filter), so that section stayed full-width.",
     )
+  })
+
+  it("names the first full-width node by its label, not its key", () => {
+    render(<ExecutionDiagnosticsIndicator metrics={projectionBoundaryMetrics({
+      stream_node: { occurrence: null, node_id: "stream_node", label: "Recent policies" },
+    })} />)
+
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent("through the pipeline at 'Recent policies' (filter), so that section stayed full-width.")
+    expect(status).not.toHaveTextContent("stream_node")
+  })
+
+  it("names the node a warned strategy could not estimate by its label and occurrence", () => {
+    render(<ExecutionDiagnosticsIndicator metrics={warnedStrategyMetrics(false, {
+      aggregate: { occurrence: "pricing", node_id: "aggregate", label: "Claims by region" },
+    })} />)
+
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent("Haute could not estimate the memory needed at 'Claims by region in pricing' (group_by)")
+    expect(status).not.toHaveTextContent("'aggregate'")
   })
 
   it("renders nothing for a capture warning without another diagnostic", () => {

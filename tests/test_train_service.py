@@ -28,6 +28,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._node_addresses import resolved_request
 from haute._project_context import context_thread
 from haute._worker_failures import WorkerProtocolError
 from haute._worker_protocol import WorkerArtifactManifest, WorkerProgressEvent, WorkerResultManifest
@@ -75,6 +76,17 @@ def _training_execution_context() -> ExecutionContext:
 # ---------------------------------------------------------------------------
 
 
+def _pipeline_node(node_id: str) -> dict[str, str | None]:
+    """The address of the pipeline node *node_id*."""
+    return {"occurrence": None, "node_id": node_id}
+
+
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    return resolved_request(body, body.graph)
+
+
 def _source_only_request(path: str = "x.parquet"):
     """Build a TrainRequest whose graph is a single dataInput node.
 
@@ -99,7 +111,7 @@ def _source_only_request(path: str = "x.parquet"):
             "edges": [],
         }
     )
-    return TrainRequest(graph=graph, node_id="n")
+    return _resolved(TrainRequest(graph=graph, target=_pipeline_node("n")))
 
 
 def _preparation_request(body, parquet_path, **overrides):
@@ -470,7 +482,9 @@ class TestStartGlmMergeAndKeepColumns:
 
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest(graph=self._glm_graph(haute_scratch), node_id="train")
+        body = _resolved(
+            TrainRequest(graph=self._glm_graph(haute_scratch), target=_pipeline_node("train"))
+        )
 
         captured: dict[str, object] = {}
 
@@ -534,7 +548,7 @@ class TestStartGlmMergeAndKeepColumns:
         store = JobStore()
         service = TrainService(store)
         graph = self._glm_graph(haute_scratch)
-        body = TrainRequest(graph=graph, node_id="train")
+        body = _resolved(TrainRequest(graph=graph, target=_pipeline_node("train")))
         observed: dict[str, object] = {}
 
         def inspect_created_job(*_args, **_kwargs):
@@ -561,7 +575,9 @@ class TestStartGlmMergeAndKeepColumns:
 
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest(graph=self._glm_graph(haute_scratch), node_id="train")
+        body = _resolved(
+            TrainRequest(graph=self._glm_graph(haute_scratch), target=_pipeline_node("train"))
+        )
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
@@ -1027,7 +1043,7 @@ class TestStartExecutionContextLifecycle:
                 "edges": [make_edge("source", "train").model_dump()],
             }
         )
-        return TrainRequest(graph=graph, node_id="train")
+        return _resolved(TrainRequest(graph=graph, target=_pipeline_node("train")))
 
     def test_memory_limit_during_execute_marks_memory_limited(self):
         """A preparation memory limit becomes a structured terminal 507 job."""
@@ -1449,7 +1465,7 @@ def _evaluation_preview_request(**config_overrides: object):
             "edges": [],
         }
     )
-    return TrainEstimateRequest(graph=graph, node_id="train")
+    return _resolved(TrainEstimateRequest(graph=graph, target=_pipeline_node("train")))
 
 
 class TestEvaluationPreviewFailures:
@@ -1579,11 +1595,13 @@ class TestPreparationTerminalPaths:
             }
         )
         estimate_body = _evaluation_preview_request()
+        # The training request for the same node, its target already resolved, as the
+        # service builds it.
         body = TrainRequest(
             graph=estimate_body.graph,
-            node_id=estimate_body.node_id,
+            target=estimate_body.target,
             source=estimate_body.source,
-        )
+        ).with_node_key(estimate_body.node_id)
         token = ExecutionCancellationToken()
         token.cancel()
 
@@ -2554,7 +2572,7 @@ class TestTrainServiceLifecycles:
                 "edges": [make_edge("source", "quoted").model_dump()],
             }
         )
-        body = TrainRequest(graph=graph, node_id="quoted")
+        body = _resolved(TrainRequest(graph=graph, target=_pipeline_node("quoted")))
 
         def fake_execute_and_sink(_body, _preamble_ns, _row_limit, job_id, **kwargs):
             prep_file = tmp_path / f"prep_{job_id}.parquet"

@@ -108,18 +108,88 @@ _BOUNDED_SNAPSHOT_PROFILES = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class NodeSnapshotOwner:
+    """The node a snapshot was written for, as it was then: its address (a child of an
+    occurrence, or a node of the pipeline), its authored label and its occurrence's label.
+
+    Recorded beside the snapshot, outside its identity, so the cached-data list names the
+    node after it, or its occurrence, is gone, and never resolves it against today's graph
+    or reads its key (specs/server-api/low-level.md, "Node addresses").
+    """
+
+    occurrence: str | None
+    occurrence_label: str | None
+    node_id: str
+    label: str
+
+    @classmethod
+    def of(cls, flat: PipelineGraph, key: str) -> NodeSnapshotOwner:
+        """The owner of the node *flat* runs under *key*, by its expansion's record."""
+        from haute._node_addresses import address_entry, expansion_of
+
+        entry = address_entry(flat, key)
+        occurrence = (
+            expansion_of(flat).occurrences.get(entry.occurrence)
+            if entry.occurrence is not None
+            else None
+        )
+        return cls(
+            occurrence=entry.occurrence,
+            occurrence_label=occurrence.label if occurrence is not None else None,
+            node_id=entry.node_id,
+            label=entry.label,
+        )
+
+    def to_json(self) -> dict[str, str | None]:
+        return {
+            "occurrence": self.occurrence,
+            "occurrence_label": self.occurrence_label,
+            "node_id": self.node_id,
+            "label": self.label,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> NodeSnapshotOwner | None:
+        """The owner a generation recorded, or ``None`` for one published before owners
+        were recorded, or one whose record cannot be read."""
+        if not isinstance(raw, Mapping):
+            return None
+        occurrence = raw.get("occurrence")
+        occurrence_label = raw.get("occurrence_label")
+        node_id = raw.get("node_id")
+        label = raw.get("label")
+        if not (
+            (occurrence is None or (isinstance(occurrence, str) and occurrence))
+            and (occurrence_label is None or isinstance(occurrence_label, str))
+            and isinstance(node_id, str)
+            and node_id
+            and isinstance(label, str)
+        ):
+            return None
+        return cls(
+            occurrence=occurrence,
+            occurrence_label=occurrence_label,
+            node_id=node_id,
+            label=label,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CacheOwnerUsage:
     """What one owner holds on disk: a node's output for a source, or an input.
 
     ``label`` is what to call it when the owner is no longer in anybody's
-    graph — the node id for a node output, the source's path or table for an
-    input snapshot.
+    graph: the label a node output's newest generation recorded for its owner
+    (its key, for one published before owners were recorded), the source's path
+    or table for an input snapshot.
     """
 
     bucket: CacheBucket
     node_id: str | None
     source: str | None
     label: str
+    #: The node a node output was written for, as its newest generation recorded it.
+    owner: NodeSnapshotOwner | None
     #: The pipeline whose node this is; several can share one project root.
     pipeline_source_file: str | None
     generations: int
@@ -218,6 +288,8 @@ class _OwnerAccumulator:
     source: str | None
     label: str
     pipeline_source_file: str | None = None
+    owner: NodeSnapshotOwner | None = None
+    owner_created_at: float | None = None
     generations: int = 0
     size_bytes: int = 0
     newest_row_count: int | None = None
@@ -232,9 +304,21 @@ class _OwnerAccumulator:
         row_count: int | None,
         created_at: float | None,
         build_seconds: float | None,
+        owner: NodeSnapshotOwner | None = None,
     ) -> None:
         self.generations += 1
         self.size_bytes += size_bytes
+        # The newest generation that recorded an owner names it.
+        if owner is not None and (
+            self.owner is None
+            or (
+                created_at is not None
+                and (self.owner_created_at is None or created_at > self.owner_created_at)
+            )
+        ):
+            self.owner = owner
+            self.owner_created_at = created_at
+            self.label = owner.label
         if created_at is not None and (
             self.newest_created_at is None or created_at > self.newest_created_at
         ):
@@ -248,6 +332,7 @@ class _OwnerAccumulator:
             node_id=self.node_id,
             source=self.source,
             label=self.label,
+            owner=self.owner,
             pipeline_source_file=self.pipeline_source_file,
             generations=self.generations,
             size_bytes=self.size_bytes,
@@ -270,6 +355,8 @@ class _GenerationFacts:
     row_count: int | None
     created_at: float | None
     build_seconds: float | None
+    #: The node a node-output generation was written for, when it recorded one.
+    owner: NodeSnapshotOwner | None = None
 
 
 def _read_generation_facts(generation_dir: Path) -> _GenerationFacts | None:
@@ -312,6 +399,9 @@ def _read_generation_facts(generation_dir: Path) -> _GenerationFacts | None:
         # reads as unknown rather than as an instant build.
         build_seconds=float(build_seconds)
         if isinstance(build_seconds, (int, float)) and not isinstance(build_seconds, bool)
+        else None,
+        owner=NodeSnapshotOwner.from_json(node_output.get("owner"))
+        if isinstance(node_output := raw.get("node_output"), Mapping)
         else None,
     )
 
@@ -914,6 +1004,7 @@ class NodeSnapshotStore(SourceCacheStore):
                     row_count=facts.row_count,
                     created_at=facts.created_at,
                     build_seconds=facts.build_seconds,
+                    owner=facts.owner,
                 )
                 identity_owner = owner
 
@@ -1643,6 +1734,7 @@ class NodeSnapshotStore(SourceCacheStore):
         profile: ExecutionProfile | str,
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
         full_term: Mapping[str, Any] | None = None,
+        owner: NodeSnapshotOwner,
     ) -> SourceCacheMetadata:
         slot, signature = NodeSnapshotSlot.from_identity(identity)
         parse_full_term(full_term)
@@ -1683,6 +1775,7 @@ class NodeSnapshotStore(SourceCacheStore):
                 "signature": signature,
                 "column_set": columns.to_json(),
                 "dependencies": dict(sorted(checked_dependencies.items())),
+                "owner": owner.to_json(),
                 **(
                     {"unshaped_columns": [[name, dtype] for name, dtype in unshaped_columns]}
                     if unshaped_columns is not None
@@ -1737,6 +1830,7 @@ class NodeSnapshotStore(SourceCacheStore):
         refresh: bool = False,
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
         full_term: Mapping[str, Any] | None = None,
+        owner: NodeSnapshotOwner,
     ) -> NodeSnapshotPublication:
         """Publish *artifact* under the publication rule and lease what was published.
 
@@ -1746,7 +1840,9 @@ class NodeSnapshotStore(SourceCacheStore):
         budget (`enforce_automatic_budget`).
         The writer always continues from its own data: on ``superseded`` the
         returned handle owns the artifact. *full_term* is a Model Score's
-        full-policy-term facts (`parse_full_term`), recorded beside its output.
+        full-policy-term facts (`parse_full_term`), recorded beside its output,
+        and *owner* the node it was written for (`NodeSnapshotOwner.of`), which the
+        cached-data list names it by.
         """
         if refresh and not explicit:
             raise ValueError("only an explicit build can refresh a node-output snapshot")
@@ -1763,6 +1859,7 @@ class NodeSnapshotStore(SourceCacheStore):
             profile=profile,
             unshaped_columns=unshaped_columns,
             full_term=full_term,
+            owner=owner,
         )
         atomic_write_text(artifact.directory / "meta.json", canonical_json(metadata.to_dict()))
         generation_id = metadata.generation_id

@@ -540,6 +540,18 @@ def _glm_transform_gate_graph(data_path: str, code: str, config: dict):
     )
 
 
+# The Modelling node every gate graph here trains, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
+
+
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    from haute._node_addresses import resolved_request
+
+    return resolved_request(body, body.graph)
+
+
 class TestGlmInputSchemaGate:
     """GLM term columns are checked against the exact unprojected input schema
     before a job is created, so a mismatch is a 422 on the request rather than
@@ -570,12 +582,12 @@ class TestGlmInputSchemaGate:
                     "evaluation": _random_evaluation_config(),
                 },
             ),
-            node_id="train",
+            target=_TRAIN_TARGET,
         )
         store, service = self._service()
 
         with pytest.raises(RequestRefusedError) as raised:
-            service.start(body)
+            service.start(_resolved(body))
 
         assert raised.value.status_code == 422
         assert "names a column" in str(raised.value.detail)
@@ -599,13 +611,13 @@ class TestGlmInputSchemaGate:
                     "evaluation": _random_evaluation_config(),
                 },
             ),
-            node_id="train",
+            target=_TRAIN_TARGET,
             param="var_power",
         )
         store, service = self._service()
 
         with pytest.raises(RequestRefusedError) as raised:
-            service.start_dispersion_estimate(body)
+            service.start_dispersion_estimate(_resolved(body))
 
         assert raised.value.status_code == 422
         assert "names a column" in str(raised.value.detail)
@@ -633,11 +645,11 @@ class TestGlmInputSchemaGate:
             make_edge("source", "expander").model_dump(),
             make_edge("expander", "train").model_dump(),
         ]
-        body = TrainRequest(graph=make_graph(graph), node_id="train")
+        body = TrainRequest(graph=make_graph(graph), target=_TRAIN_TARGET)
         store, service = self._service()
 
         with pytest.raises(RequestRefusedError) as raised:
-            service.start(body)
+            service.start(_resolved(body))
 
         assert raised.value.status_code == 422
         assert raised.value.detail == _MISSING_STEP_COUNT_PAYLOAD
@@ -659,12 +671,12 @@ class TestGlmInputSchemaGate:
                     "evaluation": _random_evaluation_config(),
                 },
             ),
-            node_id="train",
+            target=_TRAIN_TARGET,
         )
         store, service = self._service()
 
         with pytest.raises(RequestRefusedError) as raised:
-            service.start(body)
+            service.start(_resolved(body))
 
         assert raised.value.status_code == 422
         detail = str(raised.value.detail)
@@ -697,11 +709,13 @@ class TestGlmInputSchemaGate:
 
         with pytest.raises(RequestRefusedError) as raised:
             service.start(
-                TrainRequest(
-                    graph=_glm_transform_gate_graph(
-                        glm_collision_data, code, {**base, "family": "gaussian"}
-                    ),
-                    node_id="train",
+                _resolved(
+                    TrainRequest(
+                        graph=_glm_transform_gate_graph(
+                            glm_collision_data, code, {**base, "family": "gaussian"}
+                        ),
+                        target=_TRAIN_TARGET,
+                    )
                 )
             )
         assert raised.value.status_code == 422
@@ -710,12 +724,14 @@ class TestGlmInputSchemaGate:
 
         with pytest.raises(RequestRefusedError) as raised:
             service.start_dispersion_estimate(
-                DispersionEstimateRequest(
-                    graph=_glm_transform_gate_graph(
-                        glm_collision_data, code, {**base, "family": "tweedie"}
-                    ),
-                    node_id="train",
-                    param="var_power",
+                _resolved(
+                    DispersionEstimateRequest(
+                        graph=_glm_transform_gate_graph(
+                            glm_collision_data, code, {**base, "family": "tweedie"}
+                        ),
+                        target=_TRAIN_TARGET,
+                        param="var_power",
+                    )
                 )
             )
         assert raised.value.status_code == 422

@@ -59,12 +59,13 @@ afterEach(() => {
 describe("dispersion estimation endpoints", () => {
   it("estimateGlmDispersion posts graph, node, param and default source", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "disp-1" }))
-    const result = await estimateGlmDispersion({ graph: dummyGraph, node_id: "n1", param: "theta" })
+    const result = await estimateGlmDispersion({ graph: dummyGraph, target: { occurrence: null, node_id: "n1" }, param: "theta" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/modelling/dispersion/estimate")
     expect(opts.method).toBe("POST")
     const body = JSON.parse(opts.body)
-    expect(body.node_id).toBe("n1")
+    expect(body.target).toEqual({ occurrence: null, node_id: "n1" })
+    expect(body).not.toHaveProperty("node_id")
     expect(body.param).toBe("theta")
     expect(body.source).toBe("live")
     expect(result.job_id).toBe("disp-1")
@@ -73,7 +74,7 @@ describe("dispersion estimation endpoints", () => {
   it("estimateGlmDispersion rejects a malformed start payload", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "started" }))
     await expect(
-      estimateGlmDispersion({ graph: dummyGraph, node_id: "n1", param: "theta" }),
+      estimateGlmDispersion({ graph: dummyGraph, target: { occurrence: null, node_id: "n1" }, param: "theta" }),
     ).rejects.toThrow("DispersionEstimateResponse: invalid contract")
   })
 
@@ -101,7 +102,7 @@ describe("dispersion estimation endpoints", () => {
       .mockReturnValueOnce(jsonResponse(makeDispersionStatus()))
       .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "completed", value: 2.4487, llf: -693.0, n_fits: 11 })))
     const value = await runDispersionEstimate(
-      { graph: dummyGraph, node_id: "n1", param: "theta" },
+      { graph: dummyGraph, target: { occurrence: null, node_id: "n1" }, param: "theta" },
       { pollIntervalMs: 0 },
     )
     expect(value).toBe(2.4487)
@@ -112,7 +113,7 @@ describe("dispersion estimation endpoints", () => {
     mockFetch
       .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
       .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "contract_error", error: "no converged fit" })))
-    const run = runDispersionEstimate({ graph: dummyGraph, node_id: "n1", param: "theta" }, { pollIntervalMs: 0 })
+    const run = runDispersionEstimate({ graph: dummyGraph, target: { occurrence: null, node_id: "n1" }, param: "theta" }, { pollIntervalMs: 0 })
     // The job failed; no HTTP request did, so it is no ApiError.
     await expect(run).rejects.toBeInstanceOf(JobFailedError)
     await expect(run).rejects.toMatchObject({ status: "contract_error", message: "no converged fit" })
@@ -124,7 +125,7 @@ describe("dispersion estimation endpoints", () => {
       .mockReturnValueOnce(jsonResponse({ status: "started", job_id: "disp-1" }))
       .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "completed", value: null })))
     const error = await runDispersionEstimate(
-      { graph: dummyGraph, node_id: "n1", param: "theta" },
+      { graph: dummyGraph, target: { occurrence: null, node_id: "n1" }, param: "theta" },
       { pollIntervalMs: 0 },
     ).then(
       () => null,
@@ -143,7 +144,7 @@ describe("dispersion estimation endpoints", () => {
     controller.abort()
     await expect(
       runDispersionEstimate(
-        { graph: dummyGraph, node_id: "n1", param: "theta" },
+        { graph: dummyGraph, target: { occurrence: null, node_id: "n1" }, param: "theta" },
         { pollIntervalMs: 0, signal: controller.signal },
       ),
     ).rejects.toThrow()
@@ -163,7 +164,7 @@ describe("dispersion estimation endpoints", () => {
       .mockReturnValueOnce(jsonResponse(makeDispersionStatus({ status: "cancelled" })))
 
     const run = runDispersionEstimate(
-      { graph: dummyGraph, node_id: "n1", param: "theta" },
+      { graph: dummyGraph, target: { occurrence: null, node_id: "n1" }, param: "theta" },
       { pollIntervalMs: 0, signal: controller.signal },
     )
     await vi.waitFor(() => {

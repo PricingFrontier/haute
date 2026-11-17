@@ -2072,7 +2072,7 @@ class TestOptimiserMutationBoundaries:
             use_project(tmp_path)
             resp = client.post(
                 "/api/optimiser/estimate",
-                json={"graph": graph, "node_id": "opt"},
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
             )
         finally:
             use_project(original_root)

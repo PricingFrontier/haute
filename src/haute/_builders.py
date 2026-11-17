@@ -50,6 +50,7 @@ from haute._execution_context import (
     ExecutionProfile,
     FullTermTally,
     current_execution_context,
+    execution_node_name,
 )
 from haute._graph_utils import _sanitize_func_name, edge_input_name
 from haute._io import _select_columns
@@ -759,7 +760,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     if config.get("output_mapping") is None:
         raise OutputMappingSchemaError(
-            f"OUTPUT node {ctx.node.data.label!r} requires `output_mapping`.",
+            f"OUTPUT node {_name(ctx.node)!r} requires `output_mapping`.",
         )
 
     # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
@@ -771,7 +772,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # apiInput feeding several edges has one node name but distinct
     # sourceHandles).
     source_ports = list(ctx.source_ports or [])
-    label = ctx.node.data.label
+    label = _name(ctx.node)
     schema_only = ctx.schema_only
 
     def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -1346,14 +1347,14 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("input_mapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
-    keyword_parameters = validate_keyword_parameters(config, node_label=ctx.node.data.label)
+    keyword_parameters = validate_keyword_parameters(config, node_label=_name(ctx.node))
     # The signature's inputs are the logical names; a parameter shadows the
     # physical alias the code is also given, as it does in the generated function.
     reject_input_named_keyword_parameters(
         keyword_parameters,
         _orig_src if _orig_src is not None else _src_names,
         node_id=ctx.node.id,
-        node_label=ctx.node.data.label,
+        node_label=_name(ctx.node),
     )
 
     steps = config.get("steps")
@@ -1586,6 +1587,12 @@ def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 # ---------------------------------------------------------------------------
 
 
+def _name(node: GraphNode) -> str:
+    """How a builder's message names *node*: through the execution building it, a submodel
+    child by its label and its occurrence's, never by the flat graph's label for a copy."""
+    return execution_node_name(node.id, node.data.label)
+
+
 def check_node_config_for_run(node: GraphNode) -> None:
     """Hold a node's config to its node type's config model before it is built to run.
 
@@ -1600,7 +1607,7 @@ def check_node_config_for_run(node: GraphNode) -> None:
         node.data.config,
         require_complete=False,
         persisted=False,
-        node_label=node.data.label,
+        node_label=_name(node),
         at_run=True,
     )
 

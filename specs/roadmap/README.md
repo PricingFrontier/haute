@@ -25,7 +25,7 @@ records corrections to that audit's claims and proposed remedies.
 |---|---|---|
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
-| [Submodel editing](submodel-editing.md) | Server-resolved node addresses; save and reload inside a submodel; boundary actions as document commands, with no parent bindings on the Input and Output cards | `SUBE-05` |
+| [Submodel editing](submodel-editing.md) | Save and reload inside a submodel; boundary actions as document commands, with no parent bindings on the Input and Output cards | `SUBE-06` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample` | `WB-08` |
 
 ## Delivery plan

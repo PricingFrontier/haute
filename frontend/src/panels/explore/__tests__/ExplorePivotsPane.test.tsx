@@ -101,7 +101,7 @@ function makeReport(
   dataVersion = "explore_dataset:current",
 ): ExploreDataView {
   return {
-    producer_node_id: "source_1",
+    producer_label: "source_1",
     source: "pricing",
     data_version: dataVersion,
     row_count: 1,
@@ -127,7 +127,6 @@ function makeResult(
   const outputs = pivotOutputs(pivot)
   return {
     version: 1,
-    node_id: "explore_1",
     pivot_id: pivot.id,
     source: "pricing",
     data_version: dataVersion,
@@ -823,7 +822,7 @@ describe("an Explore child in each occurrence of its definition", () => {
     })
     const owner = renderPane([pivot])
     expect(await screen.findByText("Current result")).toBeVisible()
-    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ node_id: "submodel_runtime/pricing/explore_1" }))
+    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ target: { occurrence: "pricing", node_id: "explore_1" } }))
     owner.unmount()
 
     act(() => openOccurrence(COPY))
@@ -832,7 +831,7 @@ describe("an Explore child in each occurrence of its definition", () => {
 
     expect(screen.queryByText("Current result")).not.toBeInTheDocument()
     await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))
-    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ node_id: "submodel_runtime/pricing_2/explore_1" }))
+    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ target: { occurrence: "pricing_2", node_id: "explore_1" } }))
     const results = useNodeResultsStore.getState().pivotResults
     expect(results[explorePivotResultKey(childKey(OWNER, "explore_1"), pivot.id)]?.result).toEqual(makeResult(pivot))
     expect(results).not.toHaveProperty(explorePivotResultKey(childKey(COPY, "explore_1"), pivot.id))
@@ -875,7 +874,7 @@ describe("one pane moved to another Explore node", () => {
     view.rerender(paneFor(nodeWith("explore_b", pivot)))
 
     await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))
-    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ node_id: "explore_b" }))
+    expect(mockRunExplorePivot).toHaveBeenLastCalledWith(expect.objectContaining({ target: { occurrence: null, node_id: "explore_b" } }))
   })
 
   it("keeps a failed Cancel's notice on the node it was pressed on", async () => {

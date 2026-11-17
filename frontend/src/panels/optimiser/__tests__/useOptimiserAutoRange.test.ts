@@ -29,7 +29,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function renderAutoRange(onUpdate = vi.fn(() => ({ ok: true as const }))) {
   const hook = renderHook(() => useOptimiserAutoRange({
     nodeId: "optimiser-1",
-    requestTarget: () => ({ graph: preparedGraph({ nodes: [], edges: [] }), nodeId: "optimiser-1" }),
+    requestTarget: () => ({ graph: preparedGraph({ nodes: [], edges: [] }), node: { occurrence: null, node_id: "optimiser-1" } }),
     writeRanges: onUpdate,
   }))
   return { ...hook, onUpdate }

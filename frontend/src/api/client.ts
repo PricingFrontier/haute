@@ -9,6 +9,7 @@
  */
 
 import { workbenchSampleField } from "./workbenchSample"
+import type { NodeAddressPayload } from "../generated/api-contracts.generated"
 import type { FrameTargetPayload } from "../utils/requestGateway"
 import type { GlobalConstant } from "../utils/globalConstants"
 import { REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
@@ -1079,7 +1080,8 @@ export function savePipeline(
 
 export interface OutputAssembleDryRunArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The OUTPUT node, by address. */
+  target: NodeAddressPayload
   /** The in-progress (volatile, unsaved) outputMapping to preview. The route
    * swaps this into the OUTPUT node's config, overriding whatever is on disk —
    * so the preview reflects the editor's CURRENT mapping, not the saved file. */
@@ -1106,7 +1108,7 @@ export function outputAssembleDryRun(
 ): Promise<OutputAssembleDryRunResponse> {
   const {
     graph,
-    nodeId,
+    target,
     outputMapping,
     rowLimit,
     source,
@@ -1117,7 +1119,7 @@ export function outputAssembleDryRun(
     "/api/output-assemble/dry-run",
     {
       graph,
-      node_id: nodeId,
+      target,
       output_mapping: outputMapping,
       ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
       source: source ?? "live",
@@ -1134,14 +1136,12 @@ export function outputAssembleDryRun(
 export interface TraceCellArgs {
   graph: PreparedGraph
   row_index: number
-  target_node_id: string
+  /** The frame the row is from, by address: the target of the preview it was shown in. */
+  target: FrameTargetPayload
   column?: string | null
   row_limit?: number
   source?: string
   row_values?: Record<string, unknown>
-  /** The table of the preview being traced: a Workbench Output's cell is
-   * traced from the node connected to that table. */
-  port_label?: string
   /** The `seed_plan` of the preview being traced: the trace reads exactly
    * those generations, and none when it is empty. */
   seed_plan: TraceSeedPlanEntry[]
@@ -1157,7 +1157,8 @@ export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
 
 export interface WriteOutputArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The Data Output node, by address. */
+  target: NodeAddressPayload
   source?: string
   overwrite?: boolean
   signal?: AbortSignal
@@ -1166,7 +1167,8 @@ export interface WriteOutputArgs {
 
 export interface ResolveOutputDestinationArgs {
   graph: PreparedGraph
-  nodeId: string
+  /** The Data Output node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }
@@ -1174,12 +1176,12 @@ export interface ResolveOutputDestinationArgs {
 export function resolveOutputDestination(
   args: ResolveOutputDestinationArgs,
 ): Promise<OutputDestinationResponse> {
-  const { graph, nodeId, signal, timeout = 30_000 } = args
+  const { graph, target, signal, timeout = 30_000 } = args
   return post<unknown>(
     "/api/pipeline/output-destination",
     {
       graph,
-      node_id: nodeId,
+      target,
     },
     { signal, timeout },
   ).then(async (data) => expectGeneratedContract(
@@ -1192,7 +1194,7 @@ export function resolveOutputDestination(
 export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {
   const {
     graph,
-    nodeId,
+    target,
     source,
     overwrite,
     signal,
@@ -1202,7 +1204,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     "/api/pipeline/write-output",
     {
       graph,
-      node_id: nodeId,
+      target,
       source: source ?? "live",
       overwrite: overwrite ?? false,
     },
@@ -1418,7 +1420,8 @@ export function clearInputCache(
 
 export interface NodeDataArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
 }
@@ -1519,7 +1522,8 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
 
 export interface RatingLevelsArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The node, by address. */
+  target: NodeAddressPayload
   source?: string
   columns: string[]
   valueLimit?: number
@@ -1558,18 +1562,10 @@ export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse
 // Explore endpoints
 // ---------------------------------------------------------------------------
 
-export interface RunExploreArgs {
-  graph: PreparedGraph
-  node_id: string
-  source?: string
-  refresh?: boolean
-  signal?: AbortSignal
-  timeout?: number
-}
-
 export interface RunExplorePivotArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The Explore node, by address. */
+  target: NodeAddressPayload
   pivot: Record<string, unknown>
   source?: string
   signal?: AbortSignal
@@ -1616,7 +1612,8 @@ export function cancelExplorePivot(
 
 export interface FetchExplorePivotMembersArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The Explore node, by address. */
+  target: NodeAddressPayload
   field: string
   source?: string
   search?: string | null
@@ -1678,7 +1675,8 @@ export function cancelTrain(
 
 export interface TrainModelArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The modelling node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
   timeout?: number
@@ -1698,7 +1696,7 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
 }
 
 export function estimateTrainingRam(
-  payload: { graph: PreparedGraph; node_id: string; source?: string },
+  payload: { graph: PreparedGraph; target: NodeAddressPayload; source?: string },
   options?: { signal?: AbortSignal },
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })
@@ -1744,7 +1742,8 @@ export function saveTrainedModel(
 
 export interface SolveOptimiserArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }
@@ -1757,7 +1756,8 @@ export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolve
 
 export interface EstimateOptimiserSolveArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
   timeout?: number | null
@@ -1832,7 +1832,8 @@ export function logOptimiserToMlflow(
 
 export interface StartOptimiserFrontierAutoRangeArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }

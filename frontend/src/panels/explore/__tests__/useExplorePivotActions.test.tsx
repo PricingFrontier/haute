@@ -67,7 +67,6 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
 
 const result: ExplorePivotResult = {
   version: 1,
-  node_id: node.id,
   pivot_id: "claims",
   source: "pricing",
   data_version: "explore:current",

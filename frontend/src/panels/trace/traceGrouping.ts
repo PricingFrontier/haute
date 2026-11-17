@@ -1,4 +1,5 @@
 import type { TraceStep } from "../../types/trace"
+import { keyText } from "../../utils/answerAddresses"
 import { isTraceSourceNodeType } from "../../trace/traceOrigins"
 
 /**
@@ -118,7 +119,7 @@ export function collapsePassthroughs(
     // If all are passthroughs, preserve first and last
     const preserveAsEndpoint = allPassthrough && (isFirst || isLast)
 
-    const isPreserved = preserveStepIds.has(step.node_id)
+    const isPreserved = preserveStepIds.has(keyText(step.node_id))
     const shouldCollapse = options.collapseUnpreserved
       ? !isPreserved
       : !isPreserved && !isSourceLikeTraceStep(step) && isPassthrough(step, column)

@@ -384,7 +384,7 @@ describe("DataOutputEditor", () => {
     await waitFor(() =>
       expect(writeOutput).toHaveBeenCalledWith(
         expect.objectContaining({
-          nodeId: "output-node",
+          target: { occurrence: null, node_id: "output-node" },
           overwrite: false,
           // The document the store holds, with the node's committed config.
           graph: expect.objectContaining({
@@ -444,7 +444,7 @@ describe("DataOutputEditor", () => {
     rerender(element(edited))
 
     const sent = expect.objectContaining({
-      nodeId: "submodel_runtime/sinks/output-node",
+      target: { occurrence: "sinks", node_id: "output-node" },
       graph: expect.objectContaining({
         // The pipeline's own nodes and edges, not the view's, with the edited definition.
         nodes: [expect.objectContaining({ id: "source" }), expect.objectContaining({ id: "sinks" })],
@@ -881,7 +881,7 @@ describe("DataOutputEditor - Databricks", () => {
     fireEvent.click(screen.getByRole("button", { name: "Write" }))
     await waitFor(() =>
       expect(writeOutput).toHaveBeenCalledWith(
-        expect.objectContaining({ nodeId: "output-node", overwrite: false }),
+        expect.objectContaining({ target: { occurrence: null, node_id: "output-node" }, overwrite: false }),
       ),
     )
     expect(await screen.findByRole("status")).toHaveTextContent(
@@ -966,7 +966,7 @@ describe("a Data Output child in each occurrence of its definition", () => {
     await waitFor(() => expect(write).toBeEnabled(), { timeout: SETTLE_TIMEOUT_MS })
     fireEvent.click(write)
     expect(await screen.findByRole("button", { name: "Writing..." }, { timeout: SETTLE_TIMEOUT_MS })).toBeDisabled()
-    expect(writeOutput).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "submodel_runtime/pricing/output-node" }))
+    expect(writeOutput).toHaveBeenLastCalledWith(expect.objectContaining({ target: { occurrence: "pricing", node_id: "output-node" } }))
 
     // The copy in the same panel: the owner's write neither shows nor blocks it.
     act(() => openOccurrence(COPY))

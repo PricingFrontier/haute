@@ -13,6 +13,7 @@ import type {
   PreviewProgressResponse,
   PreviewSeedPlanEntry,
 } from "../api/types"
+import type { FrameTarget } from "../utils/nodeAddress"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import { PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
 
@@ -55,6 +56,8 @@ export interface PreviewData {
   selected_frame?: string
   /** The shared-snapshot generations these rows were computed from. */
   seed_plan?: PreviewSeedPlanEntry[]
+  /** The frame these rows were read from, by address: a trace of one of them names it. */
+  target?: FrameTarget
 }
 
 interface DataPreviewProps {

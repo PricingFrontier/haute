@@ -153,7 +153,7 @@ def test_a_trace_takes_the_sample_the_view_holds(project: Path) -> None:
             "/api/pipeline/trace",
             json={
                 "graph": _editor_graph().model_dump(mode="json"),
-                "target_node_id": "priced",
+                "target": node_target("priced"),
                 "column": "premium",
                 "row_index": 0,
                 "seed_plan": [],

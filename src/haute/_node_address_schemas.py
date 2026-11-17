@@ -8,9 +8,9 @@ Kept apart from :mod:`haute.schemas` so the execution-metrics payloads, which
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 #: The runtime key a flat graph runs a node under: a pipeline node's id, or a child's
 #: ``submodel_runtime/<occurrence>/<child>``. Opaque to the browser, which reads it only
@@ -29,6 +29,31 @@ class NodeAddressPayload(BaseModel):
 
     occurrence: _Name | None
     node_id: _Name
+
+
+class NodeTargetRequest(BaseModel):
+    """A request that runs one node, named by address in ``target``; a field it does not
+    define is refused. The route resolves the address in the flattened document
+    (:func:`haute._node_addresses.resolved_request`), and the services read the runtime key
+    the node runs under as :attr:`node_id`, which no request sends."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: NodeAddressPayload
+    _node_key: str | None = PrivateAttr(default=None)
+
+    @property
+    def node_id(self) -> str:
+        """The runtime key of the node ``target`` names, once the route resolved it."""
+        if self._node_key is None:
+            raise RuntimeError("The request's target has not been resolved")
+        return self._node_key
+
+    def with_node_key(self, key: str, **update: Any) -> Self:
+        """A copy whose target resolved to *key*, with *update* applied."""
+        resolved = self.model_copy(update=update)
+        resolved._node_key = key
+        return resolved
 
 
 class NodeFrameTargetPayload(BaseModel):

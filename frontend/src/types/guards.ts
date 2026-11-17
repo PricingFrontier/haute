@@ -6,6 +6,7 @@
  * later with "cannot read property X of undefined".
  */
 
+import { keyText } from "../utils/answerAddresses"
 import type { Node } from "@xyflow/react"
 
 import { isDateTime, isDay, isTime } from "../utils/isoDate"
@@ -413,7 +414,7 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
       operator: item.operator,
       boundary_kind: item.boundary_kind,
     }),
-    (item) => [item.topological_rank, item.node_id, item.operator, item.boundary_kind],
+    (item) => [item.topological_rank, keyText(item.node_id), item.operator, item.boundary_kind],
   )
   const reasons = parseDiagnosticCollection(
     obj.reasons,
@@ -426,7 +427,7 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
       ...(item.message === undefined ? {} : { message: item.message }),
       ...(item.parent_node_id === undefined ? {} : { parent_node_id: item.parent_node_id }),
     }),
-    (item) => [item.topological_rank ?? Infinity, item.node_id ?? "", item.reason_code, item.operator ?? ""],
+    (item) => [item.topological_rank ?? Infinity, item.node_id ? keyText(item.node_id) : "", item.reason_code, item.operator ?? ""],
   )
   const provenance = parseDiagnosticCollection(
     obj.provenance,
@@ -437,7 +438,7 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
       ...(item.source_node_id === undefined ? {} : { source_node_id: item.source_node_id }),
       ...(item.source_column === undefined ? {} : { source_column: item.source_column }),
     }),
-    (item) => [item.column, item.origin_kind, item.source_node_id ?? "", item.source_column ?? ""],
+    (item) => [item.column, item.origin_kind, item.source_node_id ? keyText(item.source_node_id) : "", item.source_column ?? ""],
   )
   const detailState = obj.detail_state
   const expectedDetailState = [boundaries.state, reasons.state, provenance.state].reduce((worst, state) => DETAIL_STATES.indexOf(state) > DETAIL_STATES.indexOf(worst) ? state : worst)

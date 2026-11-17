@@ -109,16 +109,17 @@ class TestEmptyStrings:
         """Empty sink node_id could skip the sink write entirely."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "",
+            "target": {"occurrence": None, "node_id": ""},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
-        assert resp.status_code == 404
+        # A target names a node by a non-empty id.
+        assert resp.status_code == 422
 
     def test_non_sink_node_id_in_sink(self, client):
         """Sink execution must reject ids that point at non-sink nodes."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": {"occurrence": None, "node_id": "src"},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 400
@@ -136,6 +137,7 @@ class TestEmptyStrings:
         """Empty graph should be caught before attempting trace execution."""
         body = {
             "graph": {"nodes": [], "edges": []},
+            "target": node_target("x"),
             "seed_plan": [],
         }
         resp = client.post("/api/pipeline/trace", json=body)
@@ -217,7 +219,7 @@ class TestNullValues:
         """null node_id in sink request would skip sink detection."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": None,
+            "target": {"occurrence": None, "node_id": None},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 422
@@ -530,7 +532,7 @@ class TestIntegerOverflow:
         Real failure: row_index used as DataFrame index; if data has < 2^32
         rows, Polars should return an error, not segfault.
         """
-        req = TraceRequest(graph=Graph(), row_index=2**32, seed_plan=[])
+        req = TraceRequest(graph=Graph(), target=node_target("x"), row_index=2**32, seed_plan=[])
         assert req.row_index == 2**32
 
     def test_scenario_expander_steps_overflow(self):
@@ -576,20 +578,25 @@ class TestNegativeValues:
         """Negative row_limit in trace should not cause unexpected behavior."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
+            "seed_plan": [],
             "row_limit": -100,
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "row_limit"]]
 
     def test_negative_row_index_trace(self, client):
         """Negative row_index could be interpreted as counting from end."""
         body = {
             "graph": _minimal_graph_dict(),
+            "target": node_target("src"),
+            "seed_plan": [],
             "row_index": -1,
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "row_index"]]
 
     def test_negative_point_index_frontier(self, client):
         """Negative point_index should be rejected, not used as Python negative index."""
@@ -989,7 +996,7 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             PreviewNodeRequest()
 
-    def test_sink_requires_graph_and_node_id(self):
+    def test_sink_requires_graph_and_target(self):
         with pytest.raises(ValidationError):
             WriteOutputRequest()
 
@@ -997,9 +1004,11 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             TraceRequest()
 
-    def test_train_requires_graph_and_node_id(self):
-        with pytest.raises(ValidationError):
+    def test_train_requires_graph_and_target(self):
+        with pytest.raises(ValidationError) as caught:
             TrainRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert {"graph", "target"} <= missing
 
     def test_create_submodel_requires_fields(self):
         with pytest.raises(ValidationError):
@@ -1009,13 +1018,17 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             DissolveSubmodelRequest()
 
-    def test_export_script_requires_node_id(self):
-        with pytest.raises(ValidationError):
+    def test_export_script_requires_target(self):
+        with pytest.raises(ValidationError) as caught:
             ExportScriptRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert "target" in missing
 
     def test_optimiser_solve_requires_fields(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as caught:
             OptimiserSolveRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert {"graph", "target"} <= missing
 
     def test_optimiser_apply_requires_job_id(self):
         with pytest.raises(ValidationError):

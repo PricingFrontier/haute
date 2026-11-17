@@ -34,6 +34,14 @@ from tests.test_training_worker_protocol import (
 )
 
 
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    from haute._node_addresses import resolved_request
+
+    return resolved_request(body, body.graph)
+
+
 def _context() -> ExecutionContext:
     return ExecutionContext(
         operation="training_job",
@@ -758,7 +766,12 @@ def test_start_releases_admission_when_prep_fails_before_launch(
         patch.object(service, "_execute_and_sink", side_effect=RuntimeError("prep boom")),
     ):
         response = service.start(
-            TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
+            _resolved(
+                TrainRequest(
+                    graph=_make_modelling_graph(str(data_path)),
+                    target={"occurrence": None, "node_id": "train"},
+                )
+            )
         )
         join_training_preparation(response.job_id)
 
@@ -812,7 +825,12 @@ def test_start_keeps_admission_held_after_successful_launch(
         patch.object(service._supervisor, "launch_protocol", side_effect=capture_launch),
     ):
         response = service.start(
-            TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"),
+            _resolved(
+                TrainRequest(
+                    graph=_make_modelling_graph(str(data_path)),
+                    target={"occurrence": None, "node_id": "train"},
+                )
+            ),
         )
         join_training_preparation(response.job_id)
 
@@ -859,7 +877,7 @@ def test_catboost_gpu_vram_limit_refuses_before_launch(
     ):
         resp = client.post(
             "/api/modelling/train",
-            json={"graph": graph, "node_id": "train"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "train"}},
         )
         assert resp.status_code == 200
         detail = _poll_until_done(client, resp.json()["job_id"])
@@ -888,7 +906,12 @@ def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
         patch.object(service, "_execute_and_sink") as execute_and_sink,
     ):
         response = service.start(
-            TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
+            _resolved(
+                TrainRequest(
+                    graph=_make_modelling_graph(str(data_path)),
+                    target={"occurrence": None, "node_id": "train"},
+                )
+            )
         )
         join_training_preparation(response.job_id)
 

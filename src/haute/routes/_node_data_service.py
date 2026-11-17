@@ -46,9 +46,12 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
+from haute._node_address_schemas import NodeAddressEntry
+from haute._node_addresses import node_addresses
 from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotMultiFrameUnsupportedError,
+    NodeSnapshotOwner,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -346,6 +349,7 @@ def _build_node_snapshot(
                 ),
                 full_term=execution_context.provenance.full_term_facts(request.node_id),
                 refresh=request.refresh,
+                owner=NodeSnapshotOwner.of(request.graph, request.node_id),
             )
         except BaseException:
             artifact.close()
@@ -559,6 +563,15 @@ def _adopting_worker_failure_evidence(
         raise
 
 
+def _point_addresses(
+    consumer: ConsumerPoint, resolver: DataPointResolver
+) -> dict[str, NodeAddressEntry]:
+    """The addresses of the consumer and producer a point names, from the graph it runs."""
+    return node_addresses(
+        resolver.graph, (consumer.consumer_node_id, consumer.point.producer_node_id)
+    )
+
+
 class NodeDataService:
     """Report and build the data points consumer nodes read."""
 
@@ -745,6 +758,7 @@ class NodeDataService:
             kind=point_kind(resolver.graph, consumer.point),
             state="corrupt",
             demand=_columns_payload(consumer.demand),
+            node_addresses=_point_addresses(consumer, resolver),
         )
 
     def _api_input_row(
@@ -805,6 +819,7 @@ class NodeDataService:
             state=resolution.state,
             demand=_columns_payload(consumer.demand),
             data_version=resolution.data_version,
+            node_addresses=_point_addresses(consumer, resolver),
         )
         if resolution.kind == "node_output":
             return self._node_output_details(response, resolution)
@@ -1347,6 +1362,9 @@ class NodeDataService:
         from haute.execution import prepare_graph
 
         store = NodeSnapshotStore(current_project().root)
+        # Preparation names inputs in the metrics, which a running job publishes, before
+        # the plan this build opens afterwards records the graph's addresses.
+        execution_context.provenance.record_node_addresses(request.graph)
         graph = DataPointResolver(request.graph, source=request.source, store=store).graph
         prepared = prepare_graph(graph, request.node_id, source=request.source)
         prepare_input_snapshots(

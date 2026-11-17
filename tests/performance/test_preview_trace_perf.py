@@ -14,10 +14,11 @@ import pytest
 import structlog
 
 from haute._json_safe import to_json_safe
+from haute._node_addresses import labelled
 from haute._trace_correlation import CorrelationWork, _correlate_rows_posthoc
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
-from haute.schemas import NodeResult, TraceResponse
+from haute.schemas import NodeResult, TraceResponse, TraceResultResponse
 from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
 from tests._preview_targets import node_target
@@ -217,10 +218,11 @@ def _assert_correlation_work_bounds(work: CorrelationWork) -> None:
     assert not hasattr(work, "__dict__"), "work telemetry must remain constant-space"
 
 
-def _serialize_and_validate_trace(result: TraceResult) -> dict[str, Any]:
-    payload = trace_result_to_dict(result)
-    TraceResponse.model_validate({"status": "ok", "trace": payload})
-    return payload
+def _serialize_and_validate_trace(graph: PipelineGraph, result: TraceResult) -> dict[str, Any]:
+    """The trace answer as the route builds it: every node it names addressed, validated
+    against the response model and serialized."""
+    trace = labelled(TraceResultResponse, graph, **trace_result_to_dict(result))
+    return TraceResponse(status="ok", trace=trace).trace.model_dump(mode="json")
 
 
 def _single_node_graph_payload() -> dict[str, Any]:
@@ -358,7 +360,7 @@ def test_trace_cold_execution_records_stage_costs(
         total_seconds = time.perf_counter() - start
 
     start = time.perf_counter()
-    payload = _serialize_and_validate_trace(result)
+    payload = _serialize_and_validate_trace(graph, result)
     serialization_seconds = time.perf_counter() - start
 
     assert result.execution_origin == "fresh_execution"
@@ -454,7 +456,7 @@ def test_cold_trace_then_trace_cache_hit(
         )
         first_seconds = time.perf_counter() - start
     start = time.perf_counter()
-    first_payload = _serialize_and_validate_trace(first)
+    first_payload = _serialize_and_validate_trace(graph, first)
     first_serialization_seconds = time.perf_counter() - start
 
     with structlog.testing.capture_logs() as second_logs:
@@ -469,7 +471,7 @@ def test_cold_trace_then_trace_cache_hit(
         )
         second_seconds = time.perf_counter() - start
     start = time.perf_counter()
-    second_payload = _serialize_and_validate_trace(second)
+    second_payload = _serialize_and_validate_trace(graph, second)
     second_serialization_seconds = time.perf_counter() - start
 
     assert calls["materialize"] == 1
@@ -864,7 +866,7 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
         endpoint = "/api/pipeline/trace"
         payload = {
             "graph": _single_node_graph_payload(),
-            "target_node_id": "target",
+            "target": node_target("target"),
             "row_index": 0,
             "row_limit": 100,
             "source": "live",

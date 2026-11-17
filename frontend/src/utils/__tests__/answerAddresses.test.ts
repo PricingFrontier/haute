@@ -22,6 +22,34 @@ describe("placeAddress", () => {
   })
 })
 
+describe("placeAddress with boundary cards", () => {
+  const boundaries = [
+    { id: "input-card", direction: "input" as const, externalNodeIds: ["source", "pricing_2"] },
+    { id: "output-card", direction: "output" as const, externalNodeIds: ["report", "source"] },
+  ]
+
+  it("places a pipeline node feeding the open occurrence on its Input card, ahead of the Output card", () => {
+    expect(placeAddress({ occurrence: null, node_id: "source" }, "pricing", boundaries)).toEqual({ id: "input-card", viaCard: true })
+  })
+
+  it("places a pipeline node reading from the open occurrence on its Output card", () => {
+    expect(placeAddress({ occurrence: null, node_id: "report" }, "pricing", boundaries)).toEqual({ id: "output-card", viaCard: true })
+  })
+
+  it("places another occurrence's child by the occurrence its card reaches", () => {
+    expect(placeAddress(child("pricing_2", "rate"), "pricing", boundaries)).toEqual({ id: "input-card", viaCard: true })
+  })
+
+  it("places a node no card reaches nowhere, and the open occurrence's own children on themselves", () => {
+    expect(placeAddress({ occurrence: null, node_id: "elsewhere" }, "pricing", boundaries)).toBeNull()
+    expect(placeAddress(child("pricing", "source"), "pricing", boundaries)).toEqual({ id: "source", viaCard: false })
+  })
+
+  it("ignores the cards at the root", () => {
+    expect(placeAddress(child("pricing", "rate"), null, boundaries)).toEqual({ id: "pricing", viaCard: true })
+  })
+})
+
 describe("keysOnCanvas", () => {
   it("gives each canvas node the key that describes it, never a card its children's", () => {
     const addresses = {

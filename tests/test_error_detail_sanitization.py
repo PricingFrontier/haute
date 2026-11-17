@@ -460,7 +460,12 @@ class TestSafeDetailOnError:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={
+                    "seed_plan": [],
+                    "graph": pipeline_graph.model_dump(),
+                    "target": node_target(pipeline_graph.nodes[0].id),
+                    "row_index": 0,
+                },
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -510,7 +515,8 @@ class TestSafeDetailOnError:
             side_effect=RuntimeError("PermissionError: /secure/dir/output.parquet"),
         ):
             resp = client.post(
-                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+                "/api/pipeline/write-output",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -768,7 +774,12 @@ class TestLogOnError:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={
+                    "seed_plan": [],
+                    "graph": pipeline_graph.model_dump(),
+                    "target": node_target(pipeline_graph.nodes[0].id),
+                    "row_index": 0,
+                },
             )
         assert resp.status_code == 500
         mock_logger.error.assert_called()
@@ -807,7 +818,8 @@ class TestLogOnError:
             patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
-                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+                "/api/pipeline/write-output",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
             )
         assert resp.status_code == 500
         mock_logger.error.assert_called()
@@ -1194,7 +1206,12 @@ class TestSensitiveInfoLeakage:
         ):
             resp = client.post(
                 "/api/pipeline/trace",
-                json={"seed_plan": [], "graph": pipeline_graph.model_dump(), "row_index": 0},
+                json={
+                    "seed_plan": [],
+                    "graph": pipeline_graph.model_dump(),
+                    "target": node_target(pipeline_graph.nodes[0].id),
+                    "row_index": 0,
+                },
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
@@ -1240,7 +1257,8 @@ class TestSensitiveInfoLeakage:
             ),
         ):
             resp = client.post(
-                "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
+                "/api/pipeline/write-output",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]

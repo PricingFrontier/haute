@@ -268,7 +268,10 @@ def _solve_frontier(client: TestClient, job_id: str) -> dict:
 
 
 def _solve_completed(client: TestClient, graph: dict) -> str:
-    resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+    resp = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
     status = _poll_until_done(client, job_id)
@@ -906,7 +909,7 @@ class TestSolveResultContract:
         result = _poll_until_done(client, job_id)["result"]
 
         summary = result["input_summary"]
-        assert summary["node_id"] == "opt"
+        assert summary["node"] == {"occurrence": None, "node_id": "opt", "label": "optimiser"}
         assert summary["data_source"] == "batch"
         assert isinstance(summary["graph_fingerprint"], str) and summary["graph_fingerprint"]
         assert summary["solver_settings"] == {
@@ -1339,7 +1342,7 @@ class TestEstimateSingleScanContract:
         ):
             resp = client.post(
                 "/api/optimiser/estimate",
-                json={"graph": graph, "node_id": "opt"},
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
             )
 
         assert resp.status_code == 200, resp.text
@@ -1410,7 +1413,7 @@ class TestEstimateSingleScanContract:
         ):
             resp = client.post(
                 "/api/optimiser/estimate",
-                json={"graph": graph, "node_id": "opt"},
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
             )
 
         assert resp.status_code == 400

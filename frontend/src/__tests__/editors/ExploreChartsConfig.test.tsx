@@ -118,7 +118,6 @@ function chart(
 function result(sourcePivot: ExplorePivotConfig): ExplorePivotResult {
   return {
     version: 1,
-    node_id: "explore_1",
     pivot_id: sourcePivot.id,
     source: "pricing",
     data_version: "dataframe-current",
@@ -257,7 +256,7 @@ function seedSharedProfile(
     slots: {
       [slotKey]: {
         slotKey,
-        producerNodeId,
+        producerLabel: producerNodeId,
         portLabel: null,
         source,
         kind: "node_output",

@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { keyText } from "../utils/answerAddresses"
 
 import type {
   ExecutionMetrics,
@@ -25,7 +26,8 @@ import type {
  */
 export interface NodeDataSlot {
   slotKey: string
-  producerNodeId: string
+  /** The label of the node whose output the slot holds, as the point addresses it. */
+  producerLabel: string
   portLabel: string | null
   source: string
   kind: NodeDataPointKind
@@ -216,9 +218,14 @@ function withoutKey<V>(record: Record<string, V>, key: string): Record<string, V
   return remaining
 }
 
-function pointRefLabel(point: NodeDataPointResponse): { producerNodeId: string; portLabel: string | null } {
+/** The label of the node a point's data comes from, as the point addresses it. */
+function producerLabel(point: NodeDataPointResponse): string {
+  return point.node_addresses[keyText(point.point.producer_node_id)]?.label ?? ""
+}
+
+function pointRefLabel(point: NodeDataPointResponse): { producerLabel: string; portLabel: string | null } {
   return {
-    producerNodeId: point.point.producer_node_id,
+    producerLabel: producerLabel(point),
     portLabel: point.point.port_label ?? null,
   }
 }
@@ -309,8 +316,8 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
             progress: point.job.progress,
             message: point.job.message,
             // A job this client did not start is still shown; the label of the
-            // consumer that started it is unknown, so the point names itself.
-            startedByLabel: previous?.job?.startedByLabel ?? point.point.producer_node_id,
+            // consumer that started it is unknown, so the point names its producer.
+            startedByLabel: previous?.job?.startedByLabel ?? producerLabel(point),
             startedHere: startedHereFor(previous?.job, point.job.job_id),
           }
         : previous?.job?.jobId && point.state === "building"

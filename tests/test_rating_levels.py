@@ -130,7 +130,12 @@ def _graph_with_transform(project: Path, *, code: str = "df = source") -> dict[s
 
 def _build(client: TestClient, graph: dict[str, Any], *, refresh: bool = False) -> dict[str, Any]:
     """Cache the data the Rating Step reads, and return its point."""
-    body = {"graph": graph, "node_id": "rating", "source": "live", "refresh": refresh}
+    body = {
+        "graph": graph,
+        "target": {"occurrence": None, "node_id": "rating"},
+        "source": "live",
+        "refresh": refresh,
+    }
     run = client.post("/api/node-data/run", json=body)
     assert run.status_code == 200, run.text
     payload = run.json()
@@ -145,7 +150,12 @@ def _build(client: TestClient, graph: dict[str, Any], *, refresh: bool = False) 
         else:
             raise TimeoutError(payload["job_id"])
     point = client.post(
-        "/api/node-data/point", json={"graph": graph, "node_id": "rating", "source": "live"}
+        "/api/node-data/point",
+        json={
+            "graph": graph,
+            "target": {"occurrence": None, "node_id": "rating"},
+            "source": "live",
+        },
     ).json()
     assert point["state"] == "current", point
     return point
@@ -156,7 +166,7 @@ def _levels_response(client: TestClient, graph: dict[str, Any], columns: list[st
         "/api/rating/levels",
         json={
             "graph": graph,
-            "node_id": "rating",
+            "target": {"occurrence": None, "node_id": "rating"},
             "source": "live",
             "columns": columns,
             **extra,

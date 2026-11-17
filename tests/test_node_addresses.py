@@ -11,6 +11,7 @@ from haute._node_address_schemas import (
     NodeAddressEntry,
     NodeAddressPayload,
     NodeFrameTargetPayload,
+    NodeTargetRequest,
     OccurrenceInputTargetPayload,
     OccurrenceOutputTargetPayload,
     OccurrencePortProvenance,
@@ -23,6 +24,7 @@ from haute._node_addresses import (
     labelled,
     occurrence_ports,
     resolve_target,
+    resolved_request,
 )
 from haute._submodel_instances import qualified_runtime_node_id
 from haute._types import (
@@ -332,3 +334,45 @@ class TestLabelling:
 
         assert set(answer.node_addresses) == {COPY_FINISH, "upstream", COPY_RATE, "pricing"}
         assert answer.node_addresses[COPY_RATE].label == "Rate"
+
+
+class TestNodeTargetRequests:
+    """A request that runs one node names it by address; the services read the key it
+    resolves to, which no request sends."""
+
+    class Request(NodeTargetRequest):
+        graph: PipelineGraph
+
+    def test_the_route_resolves_the_target_to_the_key_the_services_read(
+        self, flat: PipelineGraph
+    ) -> None:
+        body = self.Request.model_validate(
+            {"graph": _pipeline(), "target": {"occurrence": "pricing_2", "node_id": "rate"}}
+        )
+        with pytest.raises(RuntimeError, match="not been resolved"):
+            _ = body.node_id
+
+        resolved = resolved_request(body, flat)
+
+        assert resolved.node_id == COPY_RATE
+        assert resolved.graph is flat
+        assert body.graph is not flat
+
+    def test_a_node_id_beside_the_target_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="node_id"):
+            self.Request.model_validate(
+                {
+                    "graph": _pipeline(),
+                    "target": {"occurrence": None, "node_id": "upstream"},
+                    "node_id": "upstream",
+                }
+            )
+
+    def test_a_target_the_document_does_not_hold_is_refused_by_name(
+        self, flat: PipelineGraph
+    ) -> None:
+        body = self.Request.model_validate(
+            {"graph": _pipeline(), "target": {"occurrence": "pricing_9", "node_id": "rate"}}
+        )
+        with pytest.raises(NotFoundError, match="Submodel 'pricing_9' not found"):
+            resolved_request(body, flat)

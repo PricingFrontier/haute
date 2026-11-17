@@ -64,8 +64,11 @@ from haute._node_addresses import (
     ResolvedTarget,
     expansion_of,
     labelled,
+    node_display_name,
+    node_reference,
     occurrence_ports,
     resolve_target,
+    resolved_request,
 )
 from haute._node_snapshots import NodeSnapshotStore
 from haute._node_specs import known_node_spec
@@ -251,6 +254,7 @@ from haute.schemas import (
     SavePipelineResponse,
     TraceRequest,
     TraceResponse,
+    TraceResultResponse,
     TraceSeedPlanEntry,
     WriteOutputRequest,
     WriteOutputResponse,
@@ -680,24 +684,27 @@ def _validate_data_output_path(
         raise runtime_path_http_exception(exc) from None
 
 
+DataOutputRequestT = TypeVar("DataOutputRequestT", OutputDestinationRequest, WriteOutputRequest)
+
+
 def _prepare_data_output_request(
-    graph_payload: Any,
-    node_id: str,
-) -> tuple[PipelineGraph, Any, dict[str, Any], Path]:
-    """Validate the graph/output target shared by destination preview and write."""
-    graph = flatten_executable_graph(graph_payload)
+    body: DataOutputRequestT,
+) -> tuple[DataOutputRequestT, Any, dict[str, Any], Path]:
+    """Validate the graph/output target shared by destination preview and write: *body*
+    over its flattened document, its target resolved (or refused by name), the Data
+    Output node, its config and the project root."""
+    _ensure_printable_target(body.target)
+    graph = flatten_executable_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
-    _ensure_printable_lookup_id(node_id, "node_id")
     _validate_runtime_input_paths(graph)
-    output_node = graph.node_map.get(node_id)
-    if output_node is None:
-        raise HTTPException(status_code=404, detail=f"Data Output node '{node_id}' not found")
+    body = resolved_request(body, graph)
+    output_node = graph.node_map[body.node_id]
     if output_node.data.nodeType != NodeType.DATA_OUTPUT:
         raise HTTPException(
             status_code=400,
-            detail=f"Node '{node_id}' is not a Data Output",
+            detail=f"'{node_display_name(graph, body.node_id)}' is not a Data Output",
         )
     try:
         config = validate_node_config(
@@ -705,7 +712,7 @@ def _prepare_data_output_request(
             output_node.data.config,
             require_complete=True,
             persisted=False,
-            node_label=output_node.data.label,
+            node_label=node_display_name(graph, body.node_id),
         )
     except (ConfigError, PolarsIoConfigError, TypeError, ValueError):
         raise HTTPException(
@@ -714,7 +721,7 @@ def _prepare_data_output_request(
         ) from None
     project_root = current_project().root
     _validate_data_output_path(graph, output_node, project_root=project_root)
-    return graph, output_node, config, project_root
+    return body, output_node, config, project_root
 
 
 def _supersession_key(
@@ -1418,7 +1425,7 @@ def _preview_response_from_results(
     timings = [
         NodeTimingInfo(
             node_id=node_id,
-            label=node_map[node_id].data.label,
+            label=node_display_name(graph, node_id),
             timing_ms=result.timing_ms,
         )
         for node_id, result in results.items()
@@ -1427,7 +1434,7 @@ def _preview_response_from_results(
     memory = [
         NodeMemoryInfo(
             node_id=node_id,
-            label=node_map[node_id].data.label,
+            label=node_display_name(graph, node_id),
             memory_bytes=result.memory_bytes,
         )
         for node_id, result in results.items()
@@ -1499,11 +1506,10 @@ def _preview_response_from_results(
 def _preview_seed_plan_entries(
     graph: PipelineGraph, generations: tuple[ReadGeneration, ...]
 ) -> list[PreviewSeedPlanEntry]:
-    node_map = graph.node_map
     return [
         PreviewSeedPlanEntry(
             node_id=generation.node_id,
-            node_label=node_map[generation.node_id].data.label,
+            node_label=node_display_name(graph, generation.node_id),
             identity_digest=generation.identity.digest,
             generation_id=generation.generation_id,
             columns=(
@@ -1620,14 +1626,18 @@ def _trace_node_failures(graph: PipelineGraph) -> Iterator[None]:
         node_id = _own_node_failure(exc)
         if node_id is None:
             raise
-        node = graph.node_map.get(node_id)
-        label = node.data.label if node is not None else node_id
-        raise TraceNodeFailedError(f"Node {label!r} failed: {exc}", node_id=node_id) from exc
+        reference = node_reference(graph, node_id) if node_id in graph.node_map else None
+        raise TraceNodeFailedError(
+            f"'{node_display_name(graph, node_id)}' failed: {exc}",
+            node_id=node_id,
+            node=reference,
+        ) from exc
 
 
 def _trace_payload(
     graph: PipelineGraph,
     body: TraceRequest,
+    target: ResolvedTarget,
     context: ExecutionContext,
     fingerprint_memo: GraphFingerprintMemo,
 ) -> dict[str, Any]:
@@ -1637,13 +1647,13 @@ def _trace_payload(
     validated there too: ``JSONResponse`` bypasses response-model validation, so this is
     where the typed omission, waterfall and provenance contract meets the HTTP boundary.
     The payload is the validated model's serialization, every declared field present, as
-    the browser's generated validator requires.
+    the browser's generated validator requires, with every node it names addressed.
     """
     with _trace_node_failures(graph):
         result = execute_trace(
             graph,
             row_index=body.row_index,
-            target_node_id=body.target_node_id,
+            target_node_id=target.key,
             column=body.column,
             row_limit=body.row_limit,
             source=body.source,
@@ -1651,20 +1661,21 @@ def _trace_payload(
             fingerprint_memo=fingerprint_memo,
             execution_context=context,
             seed_plan=_listed_seeds(body),
-            port_label=body.port_label,
+            port_label=target.port_label,
         )
-    response = TraceResponse.model_validate({"status": "ok", "trace": trace_result_to_dict(result)})
-    return response.trace.model_dump(mode="json")
+    trace = labelled(TraceResultResponse, graph, **trace_result_to_dict(result))
+    return TraceResponse(status="ok", trace=trace).trace.model_dump(mode="json")
 
 
 def _execute_trace_worker(
     graph: PipelineGraph,
     body: TraceRequest,
+    target: ResolvedTarget,
     budget: IsolatedExecutionBudget,
 ) -> dict[str, Any]:
     context = create_isolated_execution_context(budget)
     try:
-        return _trace_payload(graph, body, context, GraphFingerprintMemo())
+        return _trace_payload(graph, body, target, context, GraphFingerprintMemo())
     finally:
         context.release_admission(preserve_primary_error=True)
 
@@ -1672,11 +1683,13 @@ def _execute_trace_worker(
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> JSONResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
+    _ensure_printable_target(body.target)
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
-    _ensure_printable_lookup_id(body.target_node_id, "target_node_id")
+    # The address resolves through the expansion's record, or is refused by name.
+    target = resolve_target(graph, body.target)
     _validate_runtime_input_paths(graph)
 
     run = _InteractiveRun("pipeline_trace")
@@ -1688,7 +1701,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     fingerprint_memo = GraphFingerprintMemo()
 
     def _trace_in_thread(context: ExecutionContext) -> dict[str, Any]:
-        return _trace_payload(graph, body, context, fingerprint_memo)
+        return _trace_payload(graph, body, target, context, fingerprint_memo)
 
     with _interactive_failures(run, timed_out=f"Trace execution timed out ({limit:.0f}s limit)"):
         try:
@@ -1698,13 +1711,13 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                 lambda: _trace_supersession_key(
                     graph,
                     body.source,
-                    body.target_node_id,
+                    target.key,
                     body.row_index,
                     body.column,
                     body.row_limit,
                     body.row_values,
                     body.seed_plan,
-                    port_label=body.port_label,
+                    port_label=target.port_label,
                     memo=fingerprint_memo,
                 )
             )
@@ -1713,7 +1726,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                 lambda: _run_interactive(
                     run,
                     worker=_execute_trace_worker,
-                    worker_args=lambda budget: (graph, body, budget),
+                    worker_args=lambda budget: (graph, body, target, budget),
                     in_thread=_trace_in_thread,
                     affinity_key=_interactive_affinity_key(
                         graph, body.source, memo=fingerprint_memo
@@ -2246,10 +2259,8 @@ async def patch_pipeline_settings(body: PipelineSettingsValues) -> PipelineSetti
 )
 async def output_destination(body: OutputDestinationRequest) -> OutputDestinationResponse:
     """Resolve the exact display destination without executing or writing."""
-    graph, _output_node, config, project_root = _prepare_data_output_request(
-        body.graph,
-        body.node_id,
-    )
+    body, _output_node, config, project_root = _prepare_data_output_request(body)
+    graph = body.graph
     _resolved, display_path = resolve_data_output_path(
         graph,
         config,
@@ -2477,10 +2488,8 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
 
     Only called on explicit user action (Write button), not during normal run/preview.
     """
-    graph, _output_node, config, project_root = _prepare_data_output_request(
-        body.graph,
-        body.node_id,
-    )
+    body, _output_node, config, project_root = _prepare_data_output_request(body)
+    graph = body.graph
 
     resolved_output, display_path = resolve_data_output_path(
         graph,

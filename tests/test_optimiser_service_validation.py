@@ -36,7 +36,7 @@ from tests.conftest import (
     make_graph,
     make_ready_file_input_config,
 )
-from tests.optimiser_fixtures import setup_launch_context
+from tests.optimiser_fixtures import optimiser_request, setup_launch_context
 
 _TERMINAL_STATUSES = {"completed", "error", "contract_error", "cancelled", "memory_limited"}
 
@@ -184,7 +184,10 @@ def test_solve_rejects_non_finite_input_before_any_solver_work(
         patch.object(optimiser_routes._solve_service, "_build_grid") as build_grid_spy,
         patch.object(optimiser_routes._solve_service, "_launch_background") as launch_spy,
     ):
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert resp.status_code == 200
         status = _poll_solve_terminal(client, resp.json()["job_id"])
 
@@ -383,11 +386,8 @@ def test_execute_pipeline_adapts_public_contract_errors() -> None:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})
-    body = OptimiserSolveRequest.model_validate(
-        {
-            "graph": _source_to_optimiser_graph("missing.parquet", _solver_config()),
-            "node_id": "opt",
-        }
+    body = optimiser_request(
+        OptimiserSolveRequest, _source_to_optimiser_graph("missing.parquet", _solver_config())
     )
 
     with (
@@ -434,11 +434,9 @@ def test_build_grid_adapts_public_contract_errors() -> None:
 def test_frontier_auto_range_adapts_public_contract_errors(tmp_path) -> None:
     source_path = tmp_path / "source.parquet"
     _two_quote_frame().write_parquet(source_path)
-    body = OptimiserFrontierAutoRangeRequest.model_validate(
-        {
-            "graph": _source_to_optimiser_graph(str(source_path), _solver_config()),
-            "node_id": "opt",
-        }
+    body = optimiser_request(
+        OptimiserFrontierAutoRangeRequest,
+        _source_to_optimiser_graph(str(source_path), _solver_config()),
     )
     store = JobStore()
     service = OptimiserSolveService(store)
@@ -511,7 +509,10 @@ def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_st
     ).write_parquet(source_path)
     graph = _source_to_optimiser_graph(str(source_path), _solver_config())
 
-    resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+    resp = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
     status = _poll_solve_terminal(client, job_id, timeout=30.0)
@@ -593,7 +594,10 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
         _solver_config(constraints={"volume": {"min": 1.5}}),
     )
 
-    resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+    resp = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert resp.status_code == 200
     status = _poll_solve_terminal(client, resp.json()["job_id"], timeout=30.0)
 

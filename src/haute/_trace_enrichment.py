@@ -1047,6 +1047,8 @@ def input_source_entry(
     column: str,
     node_map: Mapping[str, GraphNode],
     preamble_ns: dict[str, Any] | None,
+    *,
+    name_of: Callable[[str], str],
 ) -> dict[str, Any]:
     """How the node *node_id* computed the *column* value a formula read.
 
@@ -1057,10 +1059,11 @@ def input_source_entry(
     model's prediction beside its transform steps, a loaded column) gives the
     value it produced. A step read from a snapshot no recompute reproduced
     gives only the value it held there: its provenance ends at the snapshot.
+    *name_of* names the node when there is no step to carry its name.
     """
     node = node_map.get(node_id)
     if step is None:
-        return {"node_id": node_id, "node_name": node.data.label if node is not None else node_id}
+        return {"node_id": node_id, "node_name": name_of(node_id)}
     entry: dict[str, Any] = {"node_id": node_id, "node_name": step.node_name}
     combined = {**step.input_values, **step.output_values}
     if step.snapshot_generation_id is not None and not step.snapshot_reproduced:

@@ -1,3 +1,4 @@
+import type { NodeAddressPayload } from "../../generated/api-contracts.generated"
 import { useCallback, useEffect, useRef } from "react"
 import { Loader2, RefreshCw, X } from "lucide-react"
 import type { PreparedGraph } from "../../api/types"
@@ -35,7 +36,7 @@ type OptimiserConstraintSettingsProps = {
   accentColor: string
   labelClassName: string
   /** The graph and this node's id in it that a request about the node sends. */
-  requestTarget: () => { graph: PreparedGraph; nodeId: string }
+  requestTarget: () => { graph: PreparedGraph; node: NodeAddressPayload }
   nodeId: string
   onUpdate: OnUpdateConfig
   onRemoveConstraint: (name: string) => void

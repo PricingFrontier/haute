@@ -33,6 +33,7 @@ from haute._mlflow_utils import (
     ensure_experiment,
     registry_uri_for_tracking,
 )
+from haute._node_addresses import resolved_request
 from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import current_project
 from haute._project_layout import default_model_folder
@@ -144,11 +145,9 @@ OPTIMISER_SEGMENT_INDEX_ROUTE: Final[Literal["/api/optimiser/segments/index"]] =
 def _prepare_optimiser_execution_request(
     body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest:
-    """Confine and flatten graph-bearing optimiser requests before execution."""
-    graph = _prepare_runtime_graph(body.graph)
-    if graph is body.graph:
-        return body
-    return body.model_copy(update={"graph": graph})
+    """Confine and flatten graph-bearing optimiser requests before execution, their target
+    resolved or refused by name."""
+    return resolved_request(body, _prepare_runtime_graph(body.graph))
 
 
 def _estimate_timeout() -> float:

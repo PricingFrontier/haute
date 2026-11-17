@@ -23,7 +23,7 @@ import type { BandingStatsResponse, NodeDataPointResponse } from "../../api/type
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
 import { toSimpleNode } from "../../hooks/usePanelGraphContext"
-import { makeIdentifiedNode } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNodeDataPoint } from "../../test-utils/factories"
 import { documentRequestScope } from "../../utils/requestGateway"
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
@@ -99,7 +99,7 @@ function point(
   state: NodeDataPointResponse["state"],
   dataVersion: string | null,
 ): NodeDataPointResponse {
-  return {
+  return makeNodeDataPoint({
     consumer_node_id: "banding_1",
     point: { producer_node_id: "source_1", port_label: null },
     slot_key: SLOT_KEY,
@@ -117,7 +117,7 @@ function point(
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
-  }
+  })
 }
 
 function stats(overrides: Partial<BandingStatsResponse> = {}): BandingStatsResponse {
@@ -245,7 +245,7 @@ describe("BandingEditor statistics", () => {
         nodes: [{ id: "source_1" }, { id: "banding_1" }],
         edges: [{ id: "e1", source: "source_1", target: "banding_1" }],
       },
-      node_id: "banding_1",
+      target: { occurrence: null, node_id: "banding_1" },
       source: "live",
       factor: { column: "premium", banding: "breakpoints" },
     })
@@ -426,7 +426,7 @@ describe("BandingEditor statistics", () => {
     await act(async () => {
       refreshNodeDataCache("banding_1")
     })
-    expect(runNodeData).toHaveBeenCalledWith(expect.objectContaining({ node_id: "banding_1", refresh: false }))
+    expect(runNodeData).toHaveBeenCalledWith(expect.objectContaining({ target: { occurrence: null, node_id: "banding_1" }, refresh: false }))
     await act(async () => {
       vi.advanceTimersByTime(300)
     })
@@ -801,9 +801,9 @@ describe("BandingEditor statistics", () => {
       submodels: { br_rating: { graph: { nodes: [{ id: "banding_1" }] } } },
     }
     expect(mockGetNodeDataPoint.mock.calls[0][0].graph).toMatchObject(whole)
-    expect(mockGetNodeDataPoint.mock.calls[0][0].node_id).toBe("submodel_runtime/br_rating/banding_1")
+    expect(mockGetNodeDataPoint.mock.calls[0][0].target).toEqual({ occurrence: "br_rating", node_id: "banding_1" })
     expect(mockGetBandingStats.mock.calls[0][0].graph).toMatchObject(whole)
-    expect(mockGetBandingStats.mock.calls[0][0].node_id).toBe("submodel_runtime/br_rating/banding_1")
+    expect(mockGetBandingStats.mock.calls[0][0].target).toEqual({ occurrence: "br_rating", node_id: "banding_1" })
     expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
   })
 })

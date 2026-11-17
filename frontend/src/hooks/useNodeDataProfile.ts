@@ -127,11 +127,11 @@ export default function useNodeDataProfile({
       // Taken before the request: a Stop for this node, pressed while it is in
       // flight, is read by it after the answer.
       const askedKey = nodeKey
-      // Inside an open submodel, the whole pipeline and the node's runtime id.
+      // Inside an open submodel, the whole pipeline and the node's address.
       const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
       const response = await getNodeDataProfile({
         graph: target.graph,
-        node_id: target.nodeId,
+        target: target.node,
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence) || askedEpoch !== useNodeDataStore.getState().epoch) return

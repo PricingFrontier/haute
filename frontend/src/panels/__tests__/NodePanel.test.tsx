@@ -321,7 +321,7 @@ function seedSharedProfile(
     slots: {
       [slotKey]: {
         slotKey,
-        producerNodeId,
+        producerLabel: producerNodeId,
         portLabel: null,
         source,
         kind: "node_output",
@@ -1816,7 +1816,7 @@ describe("NodePanel", () => {
         global_constants: [],
         global_constants_error: null,
       },
-      node_id: "explore_1",
+      target: { occurrence: null, node_id: "explore_1" },
       field: "premium",
       source: "live",
       search: "north",
@@ -1966,7 +1966,7 @@ describe("NodePanel", () => {
       })
       expect(fetchExplorePivotMembers).toHaveBeenCalledTimes(1)
       expect(fetchExplorePivotMembers).toHaveBeenLastCalledWith(
-        expect.objectContaining({ source: "batch", node_id: "explore_1" }),
+        expect.objectContaining({ source: "batch", target: { occurrence: null, node_id: "explore_1" } }),
       )
       fetchExplorePivotMembers.mockClear()
 

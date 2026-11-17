@@ -1,7 +1,53 @@
 import type { ExecutionMetrics } from "../api/types"
+import type { RuntimeNodeKey } from "../generated/api-contracts.generated"
+import { rootAddresses } from "../test-utils/factories"
+import { keyText } from "../utils/answerAddresses"
 
-export function makeExecutionMetricsFixture(overrides: Partial<ExecutionMetrics> = {}): ExecutionMetrics {
-  return {
+/**
+ * `T` with every runtime key it holds given as a fixture names it: plain text, or a key
+ * already made (a key is its text at runtime, see `runtimeKey`).
+ */
+export type WithFixtureKeys<T> = T extends RuntimeNodeKey
+  ? string | RuntimeNodeKey
+  : T extends readonly unknown[]
+    ? WithFixtureKeys<T[number]>[]
+    : T extends object
+      ? { [K in keyof T]: WithFixtureKeys<T[K]> }
+      : T
+
+/** Execution metrics' fields, the nodes they name given as the text a fixture names them by. */
+export type ExecutionMetricsFixture = Partial<WithFixtureKeys<ExecutionMetrics>>
+
+/** Every key the metrics name, by text. */
+function namedKeys(metrics: Omit<ExecutionMetrics, "node_addresses">): string[] {
+  const keys: (RuntimeNodeKey | null | undefined)[] = [
+    ...metrics.stages.map((stage) => stage.node_id),
+    ...metrics.column_widths.items.map((item) => item.node_id),
+    ...metrics.memory_pressure_events.map((event) => event.node_id),
+    ...metrics.input_preparation.map((record) => record.node_id),
+    ...metrics.shared_snapshot_seeds.map((seed) => seed.node_id),
+    ...metrics.shared_snapshot_captures.map((capture) => capture.node_id),
+    ...metrics.shared_snapshot_capture_skips.map((skip) => skip.node_id),
+    ...metrics.warnings.map((warning) => warning.node_id),
+  ]
+  const strategy = metrics.execution_strategy
+  if (strategy) {
+    keys.push(strategy.blocking_node_id, strategy.projection_cause?.node_id, strategy.projection_cause?.parent_node_id)
+    for (const boundary of strategy.boundaries.items) keys.push(boundary.node_id)
+    for (const reason of strategy.reasons.items) keys.push(reason.node_id, reason.parent_node_id)
+    for (const provenance of strategy.provenance.items) keys.push(provenance.source_node_id)
+  }
+  const named = keys.filter((key): key is RuntimeNodeKey => key !== null && key !== undefined).map(keyText)
+  return [...new Set([...Object.keys(metrics.node_elapsed_ms), ...named])]
+}
+
+/**
+ * Execution metrics with every field the server sends. Every key they name is addressed as a
+ * node of the pipeline under its own text, unless `node_addresses` says otherwise.
+ */
+export function makeExecutionMetricsFixture(overrides: ExecutionMetricsFixture = {}): ExecutionMetrics {
+  const { node_addresses, ...rest } = overrides
+  const fixture: Omit<WithFixtureKeys<ExecutionMetrics>, "node_addresses"> = {
     schema_version: 1,
     operation: "pipeline_preview",
     profile: "preview_eager",
@@ -131,6 +177,9 @@ export function makeExecutionMetricsFixture(overrides: Partial<ExecutionMetrics>
         warning_code: null,
       },
     ],
-    ...overrides,
+    ...rest,
   }
+  // A key is its text at runtime, so the fixture's text keys are the keys.
+  const metrics = fixture as unknown as Omit<ExecutionMetrics, "node_addresses">
+  return { ...metrics, node_addresses: { ...rootAddresses(...namedKeys(metrics)), ...node_addresses } }
 }

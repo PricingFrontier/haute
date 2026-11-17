@@ -9,6 +9,7 @@
  * via its exported `request`/`post`.
  */
 
+import type { NodeAddressPayload } from "../generated/api-contracts.generated"
 import {
   validateDispersionEstimateResponse,
   validateDispersionEstimateStatusResponse,
@@ -35,7 +36,8 @@ function parseDispersionStatusResponse(value: unknown): DispersionEstimateStatus
 
 export interface EstimateDispersionArgs {
   graph: PreparedGraph
-  node_id: string
+  /** The modelling node, by address. */
+  target: NodeAddressPayload
   param: DispersionParam
   source?: string
   signal?: AbortSignal

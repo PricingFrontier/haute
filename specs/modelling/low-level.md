@@ -337,8 +337,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   (the open interval the compound Poisson-gamma family is defined on, matching the
   config panel's slider range).
 - **`DispersionEstimateRequest`/`DispersionEstimateResponse`/`DispersionEstimateStatusResponse`**
-  (`schemas.py`) — request carries `graph`, `node_id`, `source`, and `param:
-  Literal["theta", "var_power"]`; the start response carries only `status`/`job_id`
+  (`schemas.py`) — request carries `graph`, `target` (the node's address, a
+  `NodeTargetRequest` as `TrainRequest`, `TrainEstimateRequest` and `ExportScriptRequest`
+  are), `source`, and `param: Literal["theta", "var_power"]`; the start response carries only `status`/`job_id`
   (job-based, like `/train`); the status response mirrors `TrainStatusResponse`'s
   progress/message/elapsed shape, including `worker_remote_traceback`, plus the resolved
   `param`/`value`/`llf`/`n_fits` once complete.
@@ -2030,7 +2031,8 @@ The implementation seams are:
   row-cardinality proof reports. `schema_unresolvable` keeps the row total and names no
   node. Neither has memory figures, a RAM row limit, a warning or probed columns.
   `estimate_training` returns it as `TrainEstimateResponse.unavailable`
-  (`{reason, blocking_node_id}`, null when available) with `estimated_mb`, `training_mb`
+  (`{reason, blocking_node_id}`, null when available; the answer addresses every node it
+  names, the blocking node and the joins below, in `node_addresses`) with `estimated_mb`, `training_mb`
   and `bytes_per_row` null, and skips the GPU VRAM check. `safe_row_limit` still reports
   the user's row limit. An available GPU estimate sizes VRAM at
   `_training_rows(total_rows, safe_row_limit)` (`_training_preparation.py`, the count
@@ -2133,11 +2135,13 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   Train estimate's place in the server's words; any other estimate failure is labelled a
   memory-estimate failure, without asserting training success. An unavailable estimate is not a failure: Train
   shows "Memory estimate unavailable" with its reason in place of the missing figures
-  (naming the blocking node by its canvas label for `row_count_unprovable`), the source
+  (naming the blocking node by the label the estimate's `node_addresses` gives it for
+  `row_count_unprovable`), the source
   rows when known, and the available RAM. It never shows a fits-in-memory or downsample
   verdict, or a memory figure. When the estimate names joins without a key contract, Train
   shows "Row count not proven" in the neutral style instead of a verdict: "Up to N rows:
-  <join label> has no key contract", an Open button per named join on the canvas that opens
+  <join label> has no key contract", an Open button per named join the canvas shows as
+  itself (placed by its address; one inside another submodel has none) that opens
   its settings (where declaring many-to-one bounds it), the upper bound, the RAM that bound
   would need, the training row limit when one applies, and the available RAM. "Will
   downsample" and "Dataset fits in memory" appear only for a proven row count. Split has no loading message beneath its settings;

@@ -724,9 +724,7 @@ class TestExecutorAssertsContractsAtBoundaries:
             execute_graph(graph)
         # The preview shows this text as it is: it names the missing column
         # and nothing about the input's other columns.
-        assert str(excinfo.value) == (
-            "'band' needs the column 'age', which is not in its input. (node_id=band)"
-        )
+        assert str(excinfo.value) == ("'band' needs the column 'age', which is not in its input.")
 
     def test_declared_output_missing_raises_contract_mismatch(self, tmp_path: Path):
         """Polars node claims to produce a column but doesn't.
@@ -765,8 +763,7 @@ class TestExecutorAssertsContractsAtBoundaries:
         with pytest.raises(cls) as excinfo:
             execute_graph(graph)
         assert str(excinfo.value) == (
-            "'t' did not create the column 'new_col', which its contract says it outputs. "
-            "(node_id=t)"
+            "'t' did not create the column 'new_col', which its contract says it outputs."
         )
 
     def test_user_declared_input_missing_from_parent_raises_at_execution(self, tmp_path: Path):
@@ -916,20 +913,20 @@ class TestExecutorAssertsContractsAtBoundaries:
                 {"age"},
                 {"agee", "height"},
                 "'Age band' needs the column 'age', which is not in its input. "
-                "Its input has a similar column: 'agee'. (node_id=band_1)",
+                "Its input has a similar column: 'agee'.",
                 id="similar-column",
             ),
             pytest.param(
                 {"age"},
                 set(),
-                "'Age band' needs the column 'age', but its input has no columns. (node_id=band_1)",
+                "'Age band' needs the column 'age', but its input has no columns.",
                 id="empty-input",
             ),
             pytest.param(
                 {"c1", "c2", "c3", "c4", "c5", "c6", "c7"},
                 {"height"},
                 "'Age band' needs the columns 'c1', 'c2', 'c3', 'c4', 'c5' and 2 more, "
-                "which are not in its input. (node_id=band_1)",
+                "which are not in its input.",
                 id="many-missing",
             ),
         ],
@@ -968,7 +965,7 @@ class TestExecutorAssertsContractsAtBoundaries:
             )
         assert str(excinfo.value) == (
             "'Transform' did not create the columns 'a_band' and 'b_band', "
-            "which its contract says it outputs. (node_id=t_1)"
+            "which its contract says it outputs."
         )
 
 

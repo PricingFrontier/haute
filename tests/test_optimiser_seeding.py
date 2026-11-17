@@ -31,6 +31,7 @@ from haute.schemas import (
     OptimiserSolveRequest,
 )
 from tests._project import project_app, use_project
+from tests.optimiser_fixtures import optimiser_request
 from tests.test_training_seeding import _MODELLING, _train
 
 _QUOTES = 12
@@ -206,7 +207,7 @@ def _setup(
     pipeline = PipelineGraph.model_validate(graph)
     config = pipeline.node_map["opt"].data.config
     mode = str(config["mode"])
-    body = OptimiserSolveRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserSolveRequest, graph)
     required = (
         _optimiser_solve_required_columns_by_node(pipeline, "opt", config)
         if required_columns_by_node is None
@@ -466,7 +467,10 @@ def _client() -> Any:
 
 
 def _completed(client: Any, route: str, start: str, graph: dict[str, Any]) -> dict[str, Any]:
-    started = client.post(f"/api/optimiser/{start}", json={"graph": graph, "node_id": "opt"})
+    started = client.post(
+        f"/api/optimiser/{start}",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert started.status_code == 200, started.text
     job_id = started.json()["job_id"]
     _poll(client, route, job_id)
@@ -689,7 +693,7 @@ def test_estimate_seeds_setup_capture(project: Path, monkeypatch: pytest.MonkeyP
     assert setup.captures == [("D", "published")]
     calls = _counting_builds(monkeypatch)
 
-    metrics = _optimiser_input_metrics(OptimiserEstimateRequest(graph=graph, node_id="opt"))
+    metrics = _optimiser_input_metrics(optimiser_request(OptimiserEstimateRequest, graph))
 
     assert sum(calls.values()) == 0
     assert metrics["quote_count"] == _QUOTES
@@ -718,14 +722,21 @@ def test_optimiser_leaves_no_checkpoint_directory(
     client = TestClient(app, raise_server_exceptions=False)
     graph = _online_chain(project)
 
-    estimate = client.post("/api/optimiser/estimate", json={"graph": graph, "node_id": "opt"})
+    estimate = client.post(
+        "/api/optimiser/estimate",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert estimate.status_code == 200, estimate.text
     auto_range = client.post(
-        "/api/optimiser/frontier/auto-range/start", json={"graph": graph, "node_id": "opt"}
+        "/api/optimiser/frontier/auto-range/start",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
     )
     assert auto_range.status_code == 200, auto_range.text
     assert _poll(client, "frontier/auto-range", auto_range.json()["job_id"]) == "completed"
-    solve = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+    solve = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert solve.status_code == 200, solve.text
     assert _poll(client, "solve", solve.json()["job_id"]) == "completed"
 

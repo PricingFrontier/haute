@@ -65,13 +65,13 @@ def _post_payload(endpoint: str, graph: dict, lookup_id: str) -> dict:
             "graph": graph,
             "seed_plan": [],
             "row_index": 0,
-            "target_node_id": lookup_id,
+            "target": node_target(lookup_id),
         }
     if endpoint == "/api/pipeline/preview":
         return {"graph": graph, "target": node_target(lookup_id)}
     return {
         "graph": graph,
-        "node_id": lookup_id,
+        "target": {"occurrence": None, "node_id": lookup_id},
     }
 
 
@@ -79,8 +79,8 @@ def _post_payload(endpoint: str, graph: dict, lookup_id: str) -> dict:
     ("endpoint", "lookup_id", "expected_detail"),
     [
         ("/api/pipeline/preview", "bad\nnode", "target.node_id contains control characters"),
-        ("/api/pipeline/trace", "bad\nnode", "target_node_id contains control characters"),
-        ("/api/pipeline/write-output", "bad\nnode", "node_id contains control characters"),
+        ("/api/pipeline/trace", "bad\nnode", "target.node_id contains control characters"),
+        ("/api/pipeline/write-output", "bad\nnode", "target.node_id contains control characters"),
     ],
 )
 def test_preview_trace_sink_reject_control_char_lookup_ids_consistently(

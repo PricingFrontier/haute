@@ -42,12 +42,13 @@ from haute._execute_lazy import (
     lineage_preparation_order,
 )
 from haute._execution_admission import create_admitted_execution_context
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_context import ExecutionContext, ExecutionProfile, naming_nodes_from
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._input_providers import recording_schema_tiers
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._node_addresses import node_display_name
 from haute._node_specs import REQUEST_INPUT_KINDS, node_spec, node_type_table
 from haute._output_assembler import render_output_document
 from haute._path_resolution import (
@@ -965,7 +966,8 @@ def _submodel_schema_warnings(
             declared = _declared_api_input_frame_schema_items(node)
             if handle is None or handle not in declared:
                 raise ValueError(
-                    f"Input source {node_id!r} has no frame {handle!r}; select a declared frame."
+                    f"Input source {node_display_name(graph, node_id)!r} has no frame "
+                    f"{handle!r}; select a declared frame."
                 )
             if node_id in columns:
                 return {name for name, _ in declared[handle]}
@@ -976,7 +978,9 @@ def _submodel_schema_warnings(
         detail = failures.get(node_id)
         if detail is None:
             detail = f"No schema for frame {handle!r}; check the source's output binding."
-        raise ValueError(f"Cannot resolve schema of {node_id!r}: {detail}")
+        raise ValueError(
+            f"Cannot resolve schema of {node_display_name(graph, node_id)!r}: {detail}"
+        )
 
     warnings: dict[str, list[SchemaWarning]] = {}
     reached = {runtime_instance_id(node_id) for node_id in result_order}
@@ -1167,6 +1171,9 @@ def _execute_graph_core(
     seed_plan_request: SeedPlanRequest | None,  # pragma: no mutate
 ) -> dict[str, NodeResult]:
     """One preview execution, under its leased seed plan when it has one."""
+    # The metrics address the nodes they name from the graph executed, also when a cached
+    # answer is served without walking it, or the run fails before the walk.
+    execution_context.provenance.record_node_addresses(graph)
     # Include enforce_contracts in the cache key so a toggle flips
     # between distinct cache slots instead of serving a stale entry
     # computed under a different enforcement mode.  Without this, the
@@ -1324,7 +1331,9 @@ def _execute_graph_core(
             )
 
     def _execute(stage: str) -> tuple[Any, ...]:
-        _plan_current_request()
+        # Planning runs before the stage: what it raises names nodes from the graph.
+        with naming_nodes_from(graph):
+            _plan_current_request()
         with execution_context.stage(stage):
             return _eager_execute(
                 graph,
@@ -1550,7 +1559,8 @@ def _execute_graph_core(
                 results[nid] = NodeResult(
                     status="error",
                     error=(
-                        f"{node_map[nid].data.label} has no table '{unknown}' to preview; "
+                        f"{node_display_name(graph, nid)} has no table '{unknown}' to "
+                        "preview; "
                         f"its tables are {tables}."
                     ),
                     timing_ms=timings.get(nid, 0),
@@ -2074,7 +2084,7 @@ def _data_output_config(graph: PipelineGraph, output_node_id: str) -> dict[str, 
     if output_node is None:
         raise ValueError(f"Data Output node '{output_node_id}' not found")
     if output_node.data.nodeType != NodeType.DATA_OUTPUT:
-        raise ValueError(f"Node '{output_node_id}' is not a Data Output")
+        raise ValueError(f"'{node_display_name(graph, output_node_id)}' is not a Data Output")
 
     from haute._config_validation import validate_node_config
 
@@ -2083,7 +2093,7 @@ def _data_output_config(graph: PipelineGraph, output_node_id: str) -> dict[str, 
         output_node.data.config,
         require_complete=True,
         persisted=False,
-        node_label=output_node.data.label,
+        node_label=node_display_name(graph, output_node_id),
     )
 
 
@@ -2314,7 +2324,7 @@ def prepare_data_output(
                 # A data-dependent failure (a cast, say) surfaces only when the
                 # write collects the plan, after every node has been built, so
                 # no node was running: the write names the node it was writing.
-                label = graph.node_map[output_node_id].data.label
+                label = node_display_name(graph, output_node_id)
                 failure = ExecutionError(
                     f"Writing Data Output {label!r} failed while computing its rows: {exc}",
                     node_id=output_node_id,

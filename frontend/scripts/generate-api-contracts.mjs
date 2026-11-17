@@ -144,7 +144,7 @@ function parseOptions(argv) {
   return { check, outputDirectory };
 }
 
-function compactNullableSchemas(value) {
+export function compactNullableSchemas(value) {
   if (Array.isArray(value)) {
     return value.map(compactNullableSchemas);
   }
@@ -170,12 +170,15 @@ function compactNullableSchemas(value) {
     return compacted;
   }
   const typed = alternatives[1 - nullIndex];
+  // A branded node key keeps its union: its declared type would replace the merged
+  // `[type, "null"]` and drop the null.
   if (
     !typed
     || typeof typed !== "object"
     || Array.isArray(typed)
     || typeof typed.type !== "string"
     || Object.hasOwn(typed, "const")
+    || Object.hasOwn(typed, "tsType")
   ) return compacted;
 
   const { anyOf: _anyOf, ...outer } = compacted;

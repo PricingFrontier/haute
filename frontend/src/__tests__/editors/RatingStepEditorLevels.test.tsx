@@ -18,6 +18,7 @@ import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import type { NodeDataPointResponse, RatingLevelsResponse } from "../../api/types"
 import { documentRequestScope } from "../../utils/requestGateway"
+import { makeNodeDataPoint } from "../../test-utils/factories"
 
 const mockGetRatingLevels = vi.fn()
 const mockGetNodeDataPoint = vi.fn()
@@ -71,7 +72,7 @@ function point(
   state: NodeDataPointResponse["state"],
   dataVersion: string | null,
 ): NodeDataPointResponse {
-  return {
+  return makeNodeDataPoint({
     consumer_node_id: "rating_1",
     point: { producer_node_id: "source_1", port_label: null },
     slot_key: SLOT_KEY,
@@ -89,7 +90,7 @@ function point(
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
-  }
+  })
 }
 
 function levels(overrides: Partial<RatingLevelsResponse> = {}): RatingLevelsResponse {
@@ -190,7 +191,7 @@ describe("RatingStepEditor levels", () => {
 
     await waitFor(() => expect(mockGetRatingLevels).toHaveBeenCalled())
     expect(mockGetRatingLevels.mock.calls[0][0]).toMatchObject({
-      node_id: "rating_1",
+      target: { occurrence: null, node_id: "rating_1" },
       source: "live",
       columns: ["region"],
     })

@@ -199,7 +199,7 @@ def test_estimate_metadata_failure_is_an_error(client, tmp_path: Path):
     ):
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph.model_dump(), "node_id": "opt"},
+            json={"graph": graph.model_dump(), "target": {"occurrence": None, "node_id": "opt"}},
         )
 
     assert resp.status_code == 500
@@ -216,7 +216,7 @@ def test_estimate_of_an_unknown_source_size_keeps_the_input_metrics(client, tmp_
     ):
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph.model_dump(), "node_id": "opt"},
+            json={"graph": graph.model_dump(), "target": {"occurrence": None, "node_id": "opt"}},
         )
 
     assert resp.status_code == 200

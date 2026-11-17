@@ -59,8 +59,9 @@
   `OVERVIEW_CARD_DEFINITIONS` order is authoritative regardless of raw-object key order.
 - `ExploreDataView` in `frontend/src/panels/explore/exploreDataView.ts` is what every Explore
   pane renders: the profile's `row_count`, `column_count`, `columns` and `overview_summary`,
-  the `data_version` they were computed from, and the `source` and `producer_node_id` the panes
-  label them with. `exploreDataView(profile, dataVersion, producerNodeId, source)` takes only
+  the `data_version` they were computed from, and the `source` and `producer_label` (the
+  producer's label, as the point addresses it; "Upstream" on the summary cards) the panes label
+  them with. `exploreDataView(profile, dataVersion, producerLabel, source)` takes only
   primitives and stored objects, so a caller can select them from the shared store without
   creating an object per render, and returns `null` when the profile's `data_version` differs
   from the point's — statistics are never shown beside another version's labels.
@@ -96,7 +97,7 @@
    `profile` analysis of the point's current data version. A Banding or Rating editor on the same
    input therefore shows the same state and joins the same build rather than starting a second
    one.
-2. `exploreDataView(profile, point.data_version, point.point.producer_node_id, activeSource)`
+2. `exploreDataView(profile, point.data_version, <the producer's label in point.node_addresses>, activeSource)`
    builds what the Overview, Pivots and Charts panes render. Because it returns `null` unless the
    profile's data version is the one the point currently holds, a rebuild between two renders
    blanks the panes instead of attributing the previous data's statistics to the new data.
@@ -294,7 +295,10 @@ silent; an `unprojected-streaming-boundary` (including one carried in a mixed
 materialisation plan) or rejection places a warning/error icon
 immediately after the row/column summary, and memory pressure uses the warning
 path (including when it accompanies materialisation). A `warned` conservative run
-places the warning icon titled "Execution ran without a memory estimate", explaining
+places the warning icon titled "Execution ran without a memory estimate" (a diagnostic names
+a node by the label the metrics' `node_addresses` give it, "<label> in <occurrence label>"
+for a child, its occurrence's label from the occurrence's own entry, never by its key),
+explaining
 that the step ran under the run's full reserved memory envelope inside a hard-capped
 worker; memory pressure on such a run appends the pressure message exactly once
 rather than duplicating the strategy remediation, a terminal memory-limit failure

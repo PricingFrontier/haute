@@ -260,11 +260,11 @@ export default function useExplorePivotActions({
       const submissionGeneration = beginSubmitting(requestKey, pivot.id)
 
       try {
-        // Inside an open submodel, the whole pipeline and the node's runtime id.
+        // Inside an open submodel, the whole pipeline and the node's address.
         const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
         const response = await runExplorePivot({
           graph: target.graph,
-          node_id: target.nodeId,
+          target: target.node,
           pivot,
           source: activeSource,
         })

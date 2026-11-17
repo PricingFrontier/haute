@@ -25,6 +25,7 @@ from haute._node_address_schemas import (
     NodeAddressEntry,
     NodeAddressPayload,
     NodeFrameTargetPayload,
+    NodeTargetRequest,
     OccurrenceInputTargetPayload,
     OccurrencePortProvenance,
     RuntimeEndpointPayload,
@@ -39,6 +40,7 @@ from haute.errors import NotFoundError
 
 _NO_EXPANSION = SubmodelExpansion.of({})
 
+NodeRequestT = TypeVar("NodeRequestT", bound=NodeTargetRequest)
 AnswerT = TypeVar("AnswerT", bound=BaseModel)
 
 
@@ -91,6 +93,13 @@ def resolve_target(
     return ResolvedTarget(key=endpoint.node_id, port_label=endpoint.handle_id)
 
 
+def resolved_request(body: NodeRequestT, flat: PipelineGraph) -> NodeRequestT:
+    """*body* over the flattened document *flat*, its target resolved to the runtime key the
+    services read as ``node_id``, or refused by name (404)."""
+    key = resolve_node(flat, body.target.occurrence, body.target.node_id)
+    return body.with_node_key(key, graph=flat)
+
+
 def resolve_node(flat: PipelineGraph, occurrence_id: str | None, node_id: str) -> str:
     """The runtime key of the node at ``{occurrence_id, node_id}`` in *flat*."""
     if occurrence_id is None:
@@ -140,6 +149,39 @@ def address_entry(flat: PipelineGraph, key: str) -> NodeAddressEntry:
     return NodeAddressEntry(occurrence=None, node_id=key, label=node.data.label)
 
 
+def display_name(label: str, occurrence_label: str | None) -> str:
+    """A node's name in a message: its authored *label*, and a submodel child's with its
+    occurrence's ("Banding 1 in pricing")."""
+    return label if occurrence_label is None else f"{label} in {occurrence_label}"
+
+
+def node_display_name(flat: PipelineGraph, key: str) -> str:
+    """How a message names the node *flat* runs under *key* (:func:`display_name`), never by
+    its key. A key *flat* does not hold is named as it is, so a message about a broken answer
+    still reads."""
+    try:
+        entry = address_entry(flat, key)
+    except ValueError:
+        return key
+    if entry.occurrence is None:
+        return display_name(entry.label, None)
+    occurrence = expansion_of(flat).occurrences.get(entry.occurrence)
+    return display_name(
+        entry.label, occurrence.label if occurrence is not None else entry.occurrence
+    )
+
+
+def node_reference(flat: PipelineGraph, key: str) -> dict[str, str | None]:
+    """A node an error names, as its payload carries it: its key, address and label."""
+    entry = address_entry(flat, key)
+    return {
+        "key": key,
+        "occurrence": entry.occurrence,
+        "node_id": entry.node_id,
+        "label": entry.label,
+    }
+
+
 def node_addresses(flat: PipelineGraph, keys: Iterable[str]) -> dict[str, NodeAddressEntry]:
     """The address entry of each of *keys*, sorted by key so an answer is stable."""
     return {key: address_entry(flat, key) for key in sorted(set(keys))}
@@ -178,9 +220,10 @@ def labelled(answer_type: type[AnswerT], flat: PipelineGraph, /, **fields: Any) 
 
 
 def named_keys(answer_type: type[BaseModel], data: Any) -> set[str]:
-    """Every runtime key *data*, a JSON form of an *answer_type*, names."""
+    """Every runtime key *data*, a JSON form of an *answer_type*, names, but for those a
+    nested part addressing its own keys names (the execution metrics, a data point)."""
     schema = _schema(answer_type)
-    return set(_keys_at(data, schema, schema.get("$defs", {})))
+    return set(_keys_at(data, schema, schema.get("$defs", {}), top=True))
 
 
 @cache
@@ -188,9 +231,14 @@ def _schema(answer_type: type[BaseModel]) -> dict[str, Any]:
     return answer_type.model_json_schema(by_alias=True)
 
 
-def _keys_at(value: Any, schema: Mapping[str, Any], defs: Mapping[str, Any]) -> Iterator[str]:
+def _keys_at(
+    value: Any, schema: Mapping[str, Any], defs: Mapping[str, Any], *, top: bool = False
+) -> Iterator[str]:
     while "$ref" in schema:
         schema = defs[str(schema["$ref"]).rsplit("/", 1)[-1]]
+    if not top and "node_addresses" in schema.get("properties", {}):
+        # A part that addresses the keys it names answers for them itself.
+        return
     if schema.get(RUNTIME_NODE_KEY_MARKER) and isinstance(value, str):
         yield value
         return

@@ -79,7 +79,10 @@ class TestFrontierInSolve:
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert resp.status_code == 200
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -104,7 +107,10 @@ class TestFrontierInSolve:
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
 
@@ -137,7 +143,10 @@ class TestFrontierInSolve:
                 "max_iter": 5,
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
 
         assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]
@@ -175,7 +184,10 @@ class TestFrontierInSolve:
                 "max_iter": 5,
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
 
         assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]
@@ -205,7 +217,10 @@ class TestFrontierInSolve:
                 "max_iter": 5,
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
 
         assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]
@@ -229,7 +244,10 @@ class TestFrontierSelect:
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
         assert status["status"] == "completed"
@@ -261,7 +279,10 @@ class TestFrontierSelect:
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
         frontier = status["result"]["frontier"]
@@ -518,7 +539,10 @@ class TestFrontierSelect:
                 "frontier_ranges": {"volume": {"min": 40.0, "max": 60.0}},
             },
         )
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
 

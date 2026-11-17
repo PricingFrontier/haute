@@ -486,7 +486,12 @@ resulting plan.
   node records those columns as `node_output.unshaped_columns` (`[name, dtype]` pairs), and a
   seeded preview reports them from there (`SeedPlan.seed_unshaped_columns`). A generation
   without the record is not seeded: the node is executed, and a preview may still capture it,
-  for the bounded executions that seed from it. A Model Score's capture or explicit build also
+  for the bounded executions that seed from it. Every capture and explicit build also records
+  the node it was written for as `node_output.owner` (`NodeSnapshotOwner`: its address, a
+  child's occurrence and local id or a pipeline node's id, its authored label and its
+  occurrence's label, from the flattened graph's expansion record when it is published), outside
+  the identity, so the cached-data list names the data after the node, or its occurrence, is
+  gone; a generation published before owners were recorded is listed under its slot's key. A Model Score's capture or explicit build also
   records what its scoring filled as `node_output.full_term` (the exposure column, the rows
   scored, those scored without an exposure, and whether the column was missing; read just
   before publication, after the write that scored it, from

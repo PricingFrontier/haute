@@ -70,7 +70,7 @@ function makeTrainProgress(overrides: Partial<TrainStatusResponse> = {}): TrainS
 }
 
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
-  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+  return { version: 1, pivot_id: "p1", source: "pricing", data_version: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
 }
 
 function makePivotProgress(overrides: Partial<ExplorePivotProgress> = {}): ExplorePivotProgress {

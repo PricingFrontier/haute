@@ -1086,8 +1086,7 @@ function FlowEditor() {
     nodesWithStatus, edgesWithTrace, resolveTraceNodeId,
   } = useTracing({
     nodes, edges, selectedNode,
-    submodels,
-    activeSubmodelIdentity, 
+    activeSubmodelIdentity,
     nodeStatuses,
     hoveredNodeId,
     traceFocusNodeId,
@@ -1097,13 +1096,9 @@ function FlowEditor() {
       previewData !== null && previewData.nodeId === selectedNode?.id
         ? previewData.seed_plan
         : undefined,
-    previewFrame:
+    previewTarget:
       previewData !== null && previewData.nodeId === selectedNode?.id
-        ? previewData.selected_frame
-        : undefined,
-    previewOutputHandle:
-      previewData !== null && previewData.nodeId === selectedNode?.id
-        ? previewData.outputHandle
+        ? previewData.target
         : undefined,
   })
   // Fetch the lazy trace panel while the trace request runs.

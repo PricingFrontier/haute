@@ -89,9 +89,9 @@ describe("getExploreRelationships", () => {
     const controller = new AbortController()
     const parsed = await getExploreRelationships({
       graph: preparedGraph({ nodes: [], edges: [] }),
-      node_id: "explore",
+      target: { occurrence: null, node_id: "explore" },
       source: "live",
-      target: "claims",
+      target_column: "claims",
       weight: null,
       features: ["region"],
       key_columns: ["policy_id"],
@@ -103,9 +103,9 @@ describe("getExploreRelationships", () => {
     expect(options.method).toBe("POST")
     expect(JSON.parse(options.body)).toEqual({
       graph: { nodes: [], edges: [] },
-      node_id: "explore",
+      target: { occurrence: null, node_id: "explore" },
       source: "live",
-      target: "claims",
+      target_column: "claims",
       weight: null,
       features: ["region"],
       key_columns: ["policy_id"],

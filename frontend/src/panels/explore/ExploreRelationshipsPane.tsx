@@ -240,14 +240,23 @@ export default function ExploreRelationshipsPane({
     submodels,
     preamble,
     askedFor,
-    ask: ({ asked, graph, nodeId, source, signal }) => {
+    ask: ({ asked, graph, target, source, signal }) => {
       const question = JSON.parse(asked) as {
         target: string | null
         weight: string | null
         features: string[]
         key_columns: string[]
       }
-      return getExploreRelationships({ graph, node_id: nodeId, source, ...question, signal })
+      return getExploreRelationships({
+        graph,
+        target,
+        source,
+        target_column: question.target,
+        weight: question.weight,
+        features: question.features,
+        key_columns: question.key_columns,
+        signal,
+      })
     },
     failureMessage: "the relationships could not be read",
   })

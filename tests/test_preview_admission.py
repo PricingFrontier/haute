@@ -10,7 +10,7 @@ import pytest
 
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionProfile
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._seed_plans import preview_input_node_ids, preview_lineage_admitted
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests._project import use_project
@@ -150,6 +150,7 @@ def _publish_join(project: Path, graph: PipelineGraph) -> str:
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.PREVIEW_EAGER,
+        owner=NodeSnapshotOwner.of(resolver.graph, "J"),
     ) as publication:
         assert publication.generation is not None
         return publication.generation.generation_id

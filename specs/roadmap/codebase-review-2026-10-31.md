@@ -69,7 +69,7 @@ covers opportunistic or low-exposure items.
 
 | Priority | Trigger and observed consequence | Owning package | Evidence |
 |---|---|---|---|
-| P2 | `useQuoteListStore` does not reset or fence `loadingMore` across list switches; `priceSample` searches only top-level `graph.nodes` for `WORKBENCH_OUTPUT`; `specs/workbench/high-level.md` retains a stale `The blank form is a form` bullet. | [WB-41](workbench.md#wb-41--fence-loadingmore-in-usequoteliststore-resolve-submodel-workbench_output-runtime-targets-in-pricesample-and-remove-stale-blank-form-rationale) | Source inspection of `frontend/src/app/useQuoteListStore.ts::useQuoteListStore`, `frontend/src/workbench/priceSample.ts::priceSample` and `specs/workbench/high-level.md`. |
+| P2 | `useQuoteListStore` does not reset or fence `loadingMore` across list switches; `priceSample` searches only top-level `graph.nodes` for `WORKBENCH_OUTPUT`; `specs/workbench/high-level.md` retains a stale `The blank form is a form` bullet. | [WB-41](workbench.md#wb-41--fence-loadingmore-in-usequoteliststore-preview-a-submodel-workbench_output-by-address-in-pricesample-and-remove-stale-blank-form-rationale) | Source inspection of `frontend/src/app/useQuoteListStore.ts::useQuoteListStore`, `frontend/src/workbench/priceSample.ts::priceSample` and `specs/workbench/high-level.md`. |
 
 ## Validation — 2 November 2026
 

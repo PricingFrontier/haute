@@ -73,7 +73,7 @@
  * The suite combines structural scanning with behavioural assertions.
  */
 import { makeTraceResult } from "../../test-utils/factories"
-import { makeTraceStep } from "../../test-utils/factories"
+import { makeTraceStep, type TraceResultFixture, type TraceStepFixture } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { readFileSync, existsSync } from "node:fs"
@@ -478,7 +478,7 @@ describe("NodePanel standalone hover/focus sites", () => {
 //  hover state is its own responsibility.
 // ─────────────────────────────────────────────────────────────────────
 
-function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
+function makeStep(overrides: TraceStepFixture = {}): TraceStep {
   return makeTraceStep({
     node_id: "n1",
     node_name: "Step",
@@ -498,7 +498,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
   })
 }
 
-function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
+function makeTrace(overrides: TraceResultFixture = {}): TraceResult {
   return makeTraceResult({
     target_node_id: "n3",
     row_index: 0,

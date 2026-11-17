@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { makeTraceStep } from "../../test-utils/factories"
+import { makeTraceOmission, makeTraceStep } from "../../test-utils/factories"
 import { makeTraceDiagnostic } from "../../test-utils/factories"
 import { makeTraceResult } from "../../test-utils/factories"
 import type { TraceResult } from "../../types/trace"
+import { keyText } from "../../utils/answerAddresses"
 import {
   buildTraceExportRows,
   copyTraceMarkdown,
@@ -65,14 +66,14 @@ function traceFixture(): TraceResult {
       }),
     ],
     omissions: [
-      {
+      makeTraceOmission({
         node_id: "lookup",
         node_name: "Lookup | branch",
         node_type: "polars",
         topological_rank: 1,
         reason: "duplicate_exact_match",
         diagnostic_index: 0,
-      },
+      }),
     ],
     row_id_column: "quote_id",
     row_id_value: "Q-3",
@@ -141,7 +142,7 @@ describe("trace export projection", () => {
     const rows = buildTraceExportRows(trace)
 
     expect(rows.filter((row) => row.field === "identical_rows")).toEqual([
-      expect.objectContaining({ section: "step", nodeId: trace.steps[0].node_id }),
+      expect.objectContaining({ section: "step", nodeId: "source" }),
     ])
     expect(traceToMarkdown(trace)).toContain("One of 3 identical rows")
     expect(traceToCsv(trace)).toContain("One of 3 identical rows")
@@ -192,14 +193,100 @@ describe("trace export projection", () => {
   })
 
   it("routes unsafe identity characters through the shared filesystem sanitizer", () => {
+    const fixture = traceFixture()
     const trace = {
-      ...traceFixture(),
-      target_node_id: "premium/target",
+      ...fixture,
       column: "technical premium😀",
+      node_addresses: {
+        ...fixture.node_addresses,
+        [keyText(fixture.target_node_id)]: { occurrence: null, node_id: "premium", label: "premium/target" },
+      },
     }
 
     expect(traceExportFilename(trace, "csv")).toBe(
       "trace-premium_target-technical_premium_-2026-07-23T12-34-56+00-00.csv",
     )
+  })
+
+  it("names the traced node by its label, never by the key the trace runs it under", () => {
+    const trace = makeTraceResult({
+      ...traceFixture(),
+      column: null,
+      node_addresses: { "premium|target": { occurrence: null, node_id: "premium", label: "Technical premium" } },
+    })
+    const rows = buildTraceExportRows(trace)
+
+    expect(rows.filter((row) => row.section === "trace" && row.field === "target")).toEqual([{
+      section: "trace",
+      topologicalRank: null,
+      occurrence: "",
+      nodeId: "premium",
+      nodeName: "Technical premium",
+      field: "target",
+      value: "Technical premium",
+    }])
+    expect(rows.some((row) => row.field === "target_node_id")).toBe(false)
+    expect(traceToMarkdown(trace).split("\n")[0]).toBe("# Trace: Technical premium")
+    expect(traceExportFilename(trace, "md")).toBe("trace-Technical_premium-row-3-2026-07-23T12-34-56+00-00.md")
+  })
+
+  it("exports every node row with its submodel, node id and name columns", () => {
+    const trace = traceFixture()
+
+    expect(traceToCsv(trace).split("\r\n")[0]).toBe(
+      '"section","topological_rank","occurrence","node_id","node_name","field","value"',
+    )
+    expect(traceToCsv(trace)).toContain('"step","2","","rating","Rating","node_type","ratingStep"')
+    const markdown = traceToMarkdown(trace).split("\n")
+    expect(markdown).toContain("| Section | Rank | Submodel | Node ID | Node | Field | Value |")
+    expect(markdown).toContain("| --- | ---: | --- | --- | --- | --- | --- |")
+    expect(markdown).toContain("| omission | 1 |  | lookup | Lookup \\| branch | reason | duplicate_exact_match |")
+  })
+
+  it("exports a submodel occurrence's step under its occurrence, its own node id and its label", () => {
+    const childKey = "submodel_runtime/pricing/child"
+    const trace = makeTraceResult({
+      ...traceFixture(),
+      // A step names a child with its occurrence; the export has a column for that.
+      steps: [makeTraceStep({ node_id: childKey, node_name: "Child rate in pricing", node_type: "polars", topological_rank: 1 })],
+      omissions: [],
+      correlation_diagnostics: [],
+      node_addresses: { [childKey]: { occurrence: "pricing", node_id: "child", label: "Child rate" } },
+    })
+    const stepRows = buildTraceExportRows(trace).filter((row) => row.section === "step")
+
+    expect(stepRows.length).toBeGreaterThan(0)
+    for (const row of stepRows) {
+      expect(row).toMatchObject({ occurrence: "pricing", nodeId: "child", nodeName: "Child rate" })
+    }
+    const csv = traceToCsv(trace)
+    expect(csv).toContain('"step","1","pricing","child","Child rate","node_type","polars"')
+    expect(traceToMarkdown(trace)).toContain("| step | 1 | pricing | child | Child rate | node_type | polars |")
+    // The key appears only where the export says which node it names.
+    const naming = buildTraceExportRows(trace).filter((row) => row.value.includes(childKey))
+    expect(naming.map((row) => row.field)).toEqual(["node_addresses"])
+    expect(JSON.parse(naming[0].value)[childKey]).toEqual({ label: "Child rate", node_id: "child", occurrence: "pricing" })
+  })
+
+  it("prints each node row's submodel beside the node", () => {
+    const write = vi.fn()
+    const printWindow = {
+      document: { open: vi.fn(), write, close: vi.fn() },
+      focus: vi.fn(),
+      print: vi.fn(),
+    } as unknown as Window
+    const childKey = "submodel_runtime/pricing/child"
+    const trace = makeTraceResult({
+      ...traceFixture(),
+      steps: [makeTraceStep({ node_id: childKey, node_name: "Child rate in pricing", node_type: "polars", topological_rank: 1 })],
+      omissions: [],
+      correlation_diagnostics: [],
+      node_addresses: { [childKey]: { occurrence: "pricing", node_id: "child", label: "Child rate" } },
+    })
+
+    expect(printTraceReport(trace, () => printWindow)).toBe(true)
+    const html = String(write.mock.calls[0]?.[0])
+    expect(html).toContain("<th>Submodel</th><th>Node</th>")
+    expect(html).toContain("<td>pricing</td><td>Child rate</td>")
   })
 })

@@ -49,6 +49,18 @@ from tests.conftest import make_ram_estimate
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+# The Modelling node every graph here trains, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
+
+
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    from haute._node_addresses import resolved_request
+
+    return resolved_request(body, body.graph)
+
+
 _CURATED_ROUND_TRIP_MESSAGE = (
     "Target column 'sev' contains continuous values, but the training task is "
     "classification. Choose a discrete target column, or set the task to regression."
@@ -713,7 +725,7 @@ class TestPreDispatchServiceGate:
         }
         store = JobStore()
         service = TrainService(store)
-        body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
+        body = _resolved(TrainRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET}))
         launched: list[str] = []
         prepared_paths: list[str] = []
 

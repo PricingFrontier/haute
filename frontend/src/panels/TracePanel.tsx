@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { keyText } from "../utils/answerAddresses"
 import { AlertTriangle, Copy, Download, Info, Printer, Scan } from "lucide-react"
 import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult, TraceStep } from "../types/trace"
 import PanelShell from "./PanelShell"
@@ -163,7 +164,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     [storyEntries, trace.omissions],
   )
   const stepIndexById = useMemo(
-    () => new Map(trace.steps.map((step, index) => [step.node_id, index])),
+    () => new Map(trace.steps.map((step, index) => [keyText(step.node_id), index])),
     [trace.steps],
   )
   // A trace opens on the clicked node's card, the last step, rather than at the
@@ -172,9 +173,10 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   // nothing else: no smooth scrollIntoView, which would also scroll the panel's parents.
   const landingNodeId = useMemo(() => {
     const shownSteps = storyEntries.filter((entry): entry is TraceStep => !("collapsed" in entry))
-    return shownSteps.some((step) => step.node_id === trace.target_node_id)
+    const landing = shownSteps.some((step) => step.node_id === trace.target_node_id)
       ? trace.target_node_id
       : shownSteps.at(-1)?.node_id
+    return landing === undefined ? undefined : keyText(landing)
   }, [storyEntries, trace.target_node_id])
   const storyRef = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
@@ -200,7 +202,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const hoverSettlesAtRef = useRef(0)
   const navigation = useMemo<TraceNavigation>(() => ({
     focusStep: (nodeId) => {
-      const shown = storyEntries.some((entry) => !("collapsed" in entry) && entry.node_id === nodeId)
+      const shown = storyEntries.some((entry) => !("collapsed" in entry) && keyText(entry.node_id) === nodeId)
       if (!shown && stepIndexById.has(nodeId)) setShowHidden(true)
       setFocusRequest((previous) => ({ nodeId, nonce: (previous?.nonce ?? 0) + 1 }))
       hoverSettlesAtRef.current = performance.now() + LINK_SCROLL_SETTLE_MS
@@ -401,7 +403,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                 </div>
                 {correlationDiagnostics.map((diagnostic, index) => (
                   <div
-                    key={`${diagnostic.code}-${diagnostic.node_id ?? "node"}-${diagnostic.child_node_id ?? "child"}-${index}`}
+                    key={`${diagnostic.code}-${diagnostic.node_id === null || diagnostic.node_id === undefined ? "node" : keyText(diagnostic.node_id)}-${diagnostic.child_node_id === null || diagnostic.child_node_id === undefined ? "child" : keyText(diagnostic.child_node_id)}-${index}`}
                     className="break-words"
                     style={{ color: "var(--text-secondary)" }}
                   >
@@ -429,9 +431,9 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
               const labelColor = noteLabel ? "var(--text-muted)" : "var(--warning-strong)"
               return (
                 <div
-                  key={`omission-${entry.node_id}-${entry.topological_rank}`}
+                  key={`omission-${keyText(entry.node_id)}-${entry.topological_rank}`}
                   role={noteLabel ? "note" : "alert"}
-                  data-testid={`trace-omission-${entry.node_id}`}
+                  data-testid={`trace-omission-${keyText(entry.node_id)}`}
                   className="rounded-lg px-3 py-2 text-[11px]"
                   style={
                     noteLabel
@@ -483,16 +485,17 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
             }
 
             const isTargetStep = targetStep?.node_id === entry.node_id
+            const entryKey = keyText(entry.node_id)
             return (
               <StepCard
-                key={`${storyKey}-${entry.node_id}`}
+                key={`${storyKey}-${entryKey}`}
                 step={entry}
-                index={stepIndexById.get(entry.node_id) ?? entryIndex}
+                index={stepIndexById.get(entryKey) ?? entryIndex}
                 tracedColumn={trace.column}
                 isTargetStep={isTargetStep}
-                defaultExpanded={expandedStepIds.has(entry.node_id)}
-                focusNonce={focusRequest?.nodeId === entry.node_id ? focusRequest.nonce : undefined}
-                isLanding={entry.node_id === landingNodeId}
+                defaultExpanded={expandedStepIds.has(entryKey)}
+                focusNonce={focusRequest?.nodeId === entryKey ? focusRequest.nonce : undefined}
+                isLanding={entryKey === landingNodeId}
                 waterfall={isTargetStep ? trace.waterfall : undefined}
               />
             )

@@ -282,6 +282,18 @@
     "node_elapsed_ms": {
       "score": 12.5
     },
+    "node_addresses": {
+      "policies": {
+        "occurrence": null,
+        "node_id": "policies",
+        "label": "Policies"
+      },
+      "score": {
+        "occurrence": null,
+        "node_id": "score",
+        "label": "Score"
+      }
+    },
     "stage_elapsed_ms": {
       "collect": 12.5
     },

@@ -32,7 +32,7 @@ from haute._estimate_calibration import (
     CALIBRATION_BASE_BASIS_POINTS,
     CALIBRATION_MAX_BASIS_POINTS,
 )
-from haute._execution_context import ExecutionProfile
+from haute._execution_context import ExecutionProfile, execution_node_name
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._model_source import model_score_output_column
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
@@ -827,8 +827,10 @@ def build_execution_strategy_result(
     estimate_admission_basis: str | None = None,
     headroom_bytes: int | None = None,
     assumptions: Iterable[str] = (),
+    node_name: Callable[[str], str],
 ) -> ExecutionStrategyResult:
-    """Build the deterministic V1 diagnostic for one projection plan."""
+    """Build the deterministic V1 diagnostic for one projection plan. *node_name* names a
+    node in the remediation, as ``haute._node_addresses.node_display_name`` does."""
     canonical_order = tuple(order)
     ranks = _canonical_topological_ranks(canonical_order, children_of)
     schema_all_except = any(
@@ -872,7 +874,7 @@ def build_execution_strategy_result(
         and strategy is ExecutionStrategy.UNPROJECTED_STREAMING_BOUNDARY
         and projection_cause is not None
     ):
-        remediation = _projection_cause_remediation(projection_cause, node_map)
+        remediation = _projection_cause_remediation(projection_cause, node_map, node_name)
     if remediation is None:
         remediation = {
             ExecutionStrategy.PROJECTED: (
@@ -1115,9 +1117,10 @@ def _projection_cause(
 def _projection_cause_remediation(
     cause: ProjectionCause,
     node_map: Mapping[str, GraphNode],
+    node_name: Callable[[str], str],
 ) -> str:
     """Return the suggested action for a projection cause, canvas steps first."""
-    node = f"'{cause.node_id}'"
+    node = f"'{node_name(cause.node_id)}'"
     if cause.reason_code in _UNREADABLE_CODE_RULES:
         where = f" in a {cause.operation} call" if cause.operation else ""
         return (
@@ -3426,7 +3429,8 @@ def _node_column_contract(node: GraphNode, node_type: NodeType, config: dict[str
         ):
             raise
         raise NodeConfigError(
-            f"Model Score '{node.data.label}' cannot load its model: {exc.message}",
+            f"Model Score '{execution_node_name(node.id, node.data.label)}' cannot load its "
+            f"model: {exc.message}",
             setting="model",
         ) from exc
     if contract.optional_inputs and not _READS_OPTIONAL_INPUTS.get():

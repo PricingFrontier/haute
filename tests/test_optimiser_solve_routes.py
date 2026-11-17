@@ -46,6 +46,7 @@ from tests.optimiser_fixtures import (
     make_frontier_point,
     make_input_summary,
     make_online_apply_frame,
+    optimiser_request,
     setup_grid_stub,
     setup_launch_context,
     typed_frontier_point,
@@ -157,7 +158,10 @@ class TestSolveRoute:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_returns_started(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "started"
@@ -167,7 +171,10 @@ class TestSolveRoute:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_completes(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         data = resp.json()
         status = _poll_until_done(client, data["job_id"])
         assert status["status"] == "completed"
@@ -178,18 +185,27 @@ class TestSolveRoute:
 
     def test_solve_missing_node(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "nonexistent"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "nonexistent"}},
+        )
         assert resp.status_code == 404
 
     def test_solve_wrong_node_type(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "source"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "source"}},
+        )
         assert resp.status_code == 400
 
     def test_solve_no_objective(self, client, scored_data):
         cfg = {"objective": "", "constraints": {"v": {"min": 0.9}}}
         graph = _make_optimiser_graph(scored_data, config=cfg)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert resp.status_code == 400
         assert "objective" in resp.json()["detail"].lower()
 
@@ -197,7 +213,10 @@ class TestSolveRoute:
         """Solving with no constraints is valid — returns 200 and starts a job."""
         cfg = {"objective": "expected_income", "constraints": {}}
         graph = _make_optimiser_graph(scored_data, config=cfg)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "started"
@@ -208,7 +227,10 @@ class TestSolveRoute:
         """The time limit comes from the pipeline settings; a config cannot set one."""
         graph = _make_optimiser_graph(scored_data, config={key: 60})
 
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
 
         assert resp.status_code == 400
         assert f"does not declare: {key!r}" in resp.json()["detail"]
@@ -238,7 +260,9 @@ class TestSolveRoute:
         monkeypatch.setattr(_pipeline_settings, "read_pipeline_settings", refuse)
         graph = _make_optimiser_graph(scored_data)
 
-        resp = client.post(route, json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            route, json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}}
+        )
 
         assert resp.status_code == 409
         assert resp.json()["detail"] == message
@@ -264,7 +288,10 @@ class TestSolveRoute:
             "_execute_pipeline",
             side_effect=AssertionError("concurrency guard should short-circuit before execution"),
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
 
         assert resp.status_code == 409
         assert "already running" in resp.json()["detail"]
@@ -291,7 +318,10 @@ class TestSolveRoute:
             "_execute_pipeline",
             side_effect=AssertionError("concurrency guard should short-circuit before execution"),
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
 
         assert resp.status_code == 409
         assert "already running" in resp.json()["detail"]
@@ -345,7 +375,10 @@ class TestSolveRoute:
                 side_effect=lambda *args, **kwargs: launch_called.set(),
             ) as launch_background,
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             assert launch_called.wait(timeout=10.0)
 
         assert resp.status_code == 200
@@ -362,7 +395,7 @@ class TestSolveRoute:
         from haute.schemas import OptimiserSolveRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph)
         scored_lf = pl.scan_parquet(scored_data)
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -406,7 +439,7 @@ class TestSolveRoute:
         from haute.schemas import OptimiserSolveRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
 
@@ -439,7 +472,7 @@ class TestSolveRoute:
         from haute.schemas import OptimiserSolveRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job(
@@ -485,7 +518,7 @@ class TestSolveRoute:
         from haute.schemas import OptimiserSolveRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job(
@@ -560,7 +593,10 @@ class TestSolveRoute:
             patch.object(_solve_service, "_build_grid") as build_grid,
             patch.object(_solve_service, "_launch_background") as launch_background,
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             assert resp.status_code == 200
             job = _wait_for_store_job_terminal(clean_job_store, resp.json()["job_id"])
 
@@ -601,7 +637,10 @@ class TestSolveRoute:
         before_job_ids = set(clean_job_store.list_jobs())
 
         with patch.object(_solve_service, "_execute_pipeline", return_value=lazy_outputs):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             assert resp.status_code == 200
             job = _wait_for_store_job_terminal(clean_job_store, resp.json()["job_id"])
 
@@ -632,7 +671,7 @@ class TestSolveRoute:
             raise BackgroundJobStoppedError(args[1], "timed_out")
 
         with patch.object(service, "_execute_pipeline", side_effect=stop_with_timeout):
-            response = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+            response = service.start(optimiser_request(OptimiserSolveRequest, graph))
             assert response.job_id is not None
             job = _wait_for_store_job_terminal(store, response.job_id)
 
@@ -792,7 +831,10 @@ class TestSolveRoute:
         ):
             resp = client.post(
                 "/api/optimiser/solve",
-                json={"graph": graph, "node_id": "online_optimiser"},
+                json={
+                    "graph": graph,
+                    "target": {"occurrence": None, "node_id": "online_optimiser"},
+                },
             )
             assert launched.wait(timeout=10.0)
 
@@ -907,7 +949,10 @@ class TestApplyRoute:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_apply_after_solve(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
 
@@ -929,7 +974,10 @@ class TestSaveRoute:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_save_after_solve(self, client, scored_data, tmp_path):
         graph = _make_optimiser_graph(scored_data)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
 
@@ -957,7 +1005,7 @@ class TestSaveRoute:
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
@@ -983,7 +1031,7 @@ class TestSolveWithHistory:
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -1004,7 +1052,7 @@ class TestAdjustmentReport:
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -1036,7 +1084,7 @@ class TestColumnValidation:
         graph = _make_optimiser_graph(path)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         status = _poll_until_done(client, resp.json()["job_id"])
@@ -1050,7 +1098,7 @@ class TestNonConvergenceWarning:
         graph = _make_optimiser_graph(scored_data, config={"max_iter": 1})
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -1066,7 +1114,7 @@ class TestSaveEndpointFields:
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         job_id = resp.json()["job_id"]
         _poll_until_done(client, job_id)
@@ -1216,7 +1264,7 @@ class TestExpanderSolve:
         graph = _make_expander_graph(data_path)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -1236,7 +1284,7 @@ class TestExpanderSolve:
         normal_graph = _make_optimiser_graph(scored_path)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": normal_graph, "node_id": "opt"},
+            json={"graph": normal_graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         normal_status = _poll_until_done(client, resp.json()["job_id"])
         assert normal_status["status"] == "completed"
@@ -1261,7 +1309,10 @@ class TestSolveBackgroundErrors:
             "haute.routes._optimiser_service._solve_online",
             side_effect=ValueError("Invalid constraint column"),
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
             assert status["terminal_reason"] == "error"
@@ -1275,7 +1326,10 @@ class TestSolveBackgroundErrors:
             "haute.routes._optimiser_service._solve_online",
             side_effect=RuntimeError("Solver diverged"),
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
             assert status["message"] == "Unexpected error: Solver diverged"
@@ -1289,7 +1343,10 @@ class TestSolveBackgroundErrors:
             "haute.routes._optimiser_service._solve_online",
             side_effect=_OptimiserSolveInputError("missing factor column"),
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "contract_error"
             assert status["terminal_reason"] == "contract_error"
@@ -1304,7 +1361,10 @@ class TestSolveBackgroundErrors:
             "haute.routes._optimiser_service._solve_online",
             side_effect=_OptimiserSolverExecutionError("solver rejected grid"),
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
             assert status["terminal_reason"] == "error"
@@ -1318,7 +1378,10 @@ class TestSolveBackgroundErrors:
             "haute.routes._optimiser_service._solve_online",
             side_effect=Exception("something broke"),
         ):
-            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            resp = client.post(
+                "/api/optimiser/solve",
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+            )
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
             assert "Unexpected error" in status["message"]
@@ -1444,7 +1507,10 @@ class TestStatusTimeout:
 class TestUnsupportedMode:
     def test_unsupported_mode_returns_400(self, client, scored_data):
         graph = _make_optimiser_graph(scored_data, config={"mode": "quantum"})
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert resp.status_code == 400
         assert "setting 'mode': Input should be 'online' or 'ratebook'" in resp.json()["detail"]
 
@@ -2201,7 +2267,7 @@ class TestIntegrationRealSolver:
         )
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         job_id = resp.json()["job_id"]
@@ -2234,7 +2300,7 @@ class TestIntegrationRealSolver:
         )
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         job_id = resp.json()["job_id"]
@@ -2269,7 +2335,7 @@ class TestIntegrationRealSolver:
         )
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         job_id = resp.json()["job_id"]

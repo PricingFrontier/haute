@@ -28,7 +28,8 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._execution_schemas import ExecutionMetricsPayload
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_addresses import named_keys, resolved_request
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._project_context import context_thread
 from haute._source_cache import SourceCacheIdentity
@@ -43,6 +44,8 @@ from tests.conftest import make_ram_estimate
 
 ALL = NodeSnapshotColumns.all()
 _ROWS = 120
+# The Modelling node every graph here trains, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
 _MODELLING = {
     "target": "y",
     "algorithm": "catboost",
@@ -94,6 +97,12 @@ def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def store(project: Path) -> NodeSnapshotStore:
     return NodeSnapshotStore(project)
+
+
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    return resolved_request(body, body.graph)
 
 
 def _data_input(project: Path, name: str) -> dict[str, Any]:
@@ -249,8 +258,8 @@ def _train(
 
         monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
         set_streaming_chunk_size(streaming_chunk_size)
-    body_payload: dict[str, Any] = {"graph": graph, "node_id": "train", "source": source}
-    body = TrainRequest.model_validate(body_payload)
+    body_payload: dict[str, Any] = {"graph": graph, "target": _TRAIN_TARGET, "source": source}
+    body = _resolved(TrainRequest.model_validate(body_payload))
     config = dict(body.graph.node_map["train"].data.config)
     if row_limit is not None:
         monkeypatch.setattr(
@@ -345,6 +354,7 @@ def _publish(
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=refresh,
+        owner=NodeSnapshotOwner.of(PipelineGraph.model_validate(graph), node_id),
     ) as publication:
         assert publication.generation is not None
         return publication.generation.generation_id
@@ -651,7 +661,8 @@ def test_evaluation_preview_seeds_training_capture(
     calls = _counting_builds(monkeypatch)
 
     preview = TrainService(JobStore()).evaluation_preview(
-        TrainEstimateRequest.model_validate({"graph": graph, "node_id": "train"}), row_limit=None
+        _resolved(TrainEstimateRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET})),
+        row_limit=None,
     )
 
     assert preview is not None
@@ -667,7 +678,8 @@ def test_training_widens_evaluation_preview_capture(
 
     graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('y')")
     TrainService(JobStore()).evaluation_preview(
-        TrainEstimateRequest.model_validate({"graph": graph, "node_id": "train"}), row_limit=None
+        _resolved(TrainEstimateRequest.model_validate({"graph": graph, "target": _TRAIN_TARGET})),
+        row_limit=None,
     )
     narrow = store.latest_generation(_identity(store, graph, "B"))
     assert narrow is not None and narrow.columns == NodeSnapshotColumns.of({"y"})
@@ -937,13 +949,58 @@ def test_job_metrics_keep_parent_preparation_with_child_evidence(
         ("src", "reused", None),
         ("src", "reused", "source_unavailable"),
     ]
+    # They address every node they name, the parent's preparation as well as the child's.
+    for run in (first, second, third):
+        named = named_keys(ExecutionMetricsPayload, run.metrics)
+        assert "src" in named
+        assert set(run.metrics["node_addresses"]) == named
     assert first.captures == {"B": "published"}
     assert set(second.seeds) == {"B"}
     assert third.captures == {"B": "published"}
 
 
+def test_a_job_failing_after_its_parent_prepared_an_input_addresses_its_metrics(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parent prepares the CSV source, then resolving the plan finds the snapshot an
+    earlier run captured unreadable: the job's metrics name the prepared input, with no walk
+    to address it, and still address it."""
+    import haute._input_preparation as input_preparation
+    from haute._chunked_writes import part_paths
+
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setattr(
+        input_preparation,
+        "run_isolated_worker",
+        lambda function, request, budget, **_: function(request, budget),
+    )
+    graph = _csv_chain(project)
+    assert _train(monkeypatch, graph).captures == {"B": "published"}
+    identity = _identity(store, graph, "B")
+    latest = store.latest_generation(identity)
+    assert latest is not None
+    generation = store.inputs_root / identity.digest / "generations" / latest.generation_id
+    for part in part_paths(generation):
+        (generation / part.name).write_bytes(b"corrupt")
+
+    # The memory estimate resolves the plan too: it is stubbed so the parent prepares.
+    run = _train(monkeypatch, graph, row_limit=_ROWS)
+
+    assert run.worker_configs == [], "planning failed in the parent"
+    assert "The cached data for 'B' is unreadable" in run.job["message"], run.job
+    assert [
+        (record["node_id"], record["action"]) for record in run.metrics["input_preparation"]
+    ] == [("src", "reused")]
+    assert set(run.metrics["node_addresses"]) == named_keys(ExecutionMetricsPayload, run.metrics)
+    assert run.metrics["node_addresses"]["src"] == {
+        "occurrence": None,
+        "node_id": "src",
+        "label": "src",
+    }
+
+
 def _train_to_completion(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
-    response = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+    response = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
     assert response.status_code == 200, response.text
     job_id = response.json()["job_id"]
     deadline = time.monotonic() + 180
@@ -1159,7 +1216,9 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
     training_graph = _chain(project)
     training = _train(monkeypatch, training_graph)
     TrainService(JobStore()).evaluation_preview(
-        TrainEstimateRequest.model_validate({"graph": training_graph, "node_id": "train"}),
+        _resolved(
+            TrainEstimateRequest.model_validate({"graph": training_graph, "target": _TRAIN_TARGET})
+        ),
         row_limit=None,
     )
     optimiser_graph = _online_chain(optimiser_project)

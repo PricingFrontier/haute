@@ -277,7 +277,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // submodel's lift and projection, the request gateway and results kept by occurrence
 // bring the total to 1,803.7 KiB (initial 298.4 KiB); 1,806 KiB restores about 2.3 KiB
 // headroom. The other limits are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1806
+// Server-resolved addresses (SUBE-05, 16 November 2026): answers that address the nodes they
+// name, and their generated validators, bring the total to 1,806.5 KiB (initial 299.2 KiB);
+// 1,809 KiB restores about 2.5 KiB headroom. Deleting the browser's runtime-id adapter when
+// the package ends gives some back. The other limits are unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1809
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

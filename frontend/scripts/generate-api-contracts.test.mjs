@@ -8,6 +8,7 @@ import {
   CONSTANTS_FILENAME,
   GENERATED_TYPES_FILENAME,
   brandedNodeKeys,
+  compactNullableSchemas,
   extractContractSchema,
   extractModuleContractSchema,
   run,
@@ -251,6 +252,18 @@ test("a node key is declared as the branded RuntimeNodeKey, and a mapping by nod
       by_key: { type: "object", additionalProperties: { type: "integer" } },
       label: { type: "string" },
     },
+  });
+});
+
+test("an optional node key stays a union with null", () => {
+  const optional = { anyOf: [{ type: "string", "x-haute-node-key": true }, { type: "null" }], default: null };
+
+  assert.deepEqual(compactNullableSchemas(brandedNodeKeys(optional)), {
+    anyOf: [{ type: "string", tsType: "RuntimeNodeKey" }, { type: "null" }],
+    default: null,
+  });
+  assert.deepEqual(compactNullableSchemas({ anyOf: [{ type: "string" }, { type: "null" }] }), {
+    type: ["string", "null"],
   });
 });
 

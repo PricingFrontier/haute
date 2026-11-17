@@ -42,7 +42,11 @@
   "input_summary": {
     "n_quotes": 250,
     "n_steps": 5,
-    "node_id": "my_opt",
+    "node": {
+      "occurrence": null,
+      "node_id": "my_opt",
+      "label": "My Opt"
+    },
     "data_source": "batch",
     "source_file": "main.py",
     "graph_fingerprint": "f00d"

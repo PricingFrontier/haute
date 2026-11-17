@@ -135,7 +135,7 @@ describe.each([
             data_version: "v1",
             generated_at: seconds,
             source: "pricing",
-            producer_node_id: "prep",
+            producer_label: "prep",
           }}
         />
       </>,

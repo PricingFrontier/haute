@@ -1,4 +1,5 @@
 import { useContext, useEffect, useRef, useState } from "react"
+import { keyText } from "../utils/answerAddresses"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { TraceResult, TraceStep } from "../types/trace"
 import {
@@ -192,7 +193,7 @@ export function StepCard({
       data-trace-landing={isLanding || undefined}
       data-relevance={relevant ? "relevant" : "irrelevant"}
       data-trace-focused={flashing || undefined}
-      onMouseEnter={() => navigation.hoverStep(step.node_id)}
+      onMouseEnter={() => navigation.hoverStep(keyText(step.node_id))}
       onMouseLeave={() => navigation.hoverStep(null)}
       style={{
         border: relevant ? `1px solid ${accent}40` : "1px solid var(--border)",

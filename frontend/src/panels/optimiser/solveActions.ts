@@ -94,7 +94,7 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, requestSco
   const startupFailureId = `startup-failure:${key}`
   try {
     const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-    const result = await solveOptimiser({ graph: target.graph, node_id: target.nodeId })
+    const result = await solveOptimiser({ graph: target.graph, target: target.node })
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     if (result.status === "started" && result.job_id) {
       startSolveJob(key, result.job_id, nodeLabel, constraints, configHash, source, structuralVersion)

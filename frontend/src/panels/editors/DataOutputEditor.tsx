@@ -248,7 +248,7 @@ export default function DataOutputEditor({
   // run: it sends nothing (`ready` below).
   const requestTarget = useCallback(() => {
     const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-    return { graph: target.graph, nodeId: target.nodeId }
+    return { graph: target.graph, target: target.node }
   }, [nodeId, requestScope])
   const identity = useMemo(
     () => {

@@ -364,7 +364,12 @@ def _graph(project: Path, *, source_config: dict[str, Any] | None = None) -> dic
 
 
 def _body(graph: dict[str, Any], node_id: str, **extra: Any) -> dict[str, Any]:
-    return {"graph": graph, "node_id": node_id, "source": "live", **extra}
+    return {
+        "graph": graph,
+        "target": {"occurrence": None, "node_id": node_id},
+        "source": "live",
+        **extra,
+    }
 
 
 def _poll(client: TestClient, job_id: str, timeout: float = 60.0) -> dict[str, Any]:

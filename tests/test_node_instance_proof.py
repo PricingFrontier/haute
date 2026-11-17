@@ -15,7 +15,9 @@ from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
 from haute._config_io import collect_node_configs
+from haute._execution_schemas import ExecutionMetricsPayload
 from haute._flatten import flatten_executable_graph
+from haute._node_addresses import named_keys
 from haute._node_specs import SINK_ONLY_NODE_TYPES
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._project import get_project_root
@@ -408,7 +410,7 @@ def test_one_node_instance_cross_path_proof(
                 "/api/pipeline/trace",
                 json={
                     "graph": raw,
-                    "target_node_id": target,
+                    "target": node_target("rate_calc_node", occurrence="rate_calc_2"),
                     "column": column,
                     "row_index": 0,
                     "row_values": expected[0],
@@ -417,6 +419,7 @@ def test_one_node_instance_cross_path_proof(
             )
             assert traced.status_code == 200, traced.text
             assert traced.json()["trace"]["output_value"] == expected[0][column]
+            assert traced.json()["trace"]["target_node_id"] == target
         columns = (["quote_id"] if "quote_id" in expected[0] else []) + [column]
         response_rows = [{c: row[c] for c in columns} for row in expected]
         assert (
@@ -480,7 +483,12 @@ def test_one_node_instance_cross_path_proof(
             endpoint = (
                 "/api/modelling/train" if kind == NodeType.MODELLING else "/api/optimiser/solve"
             )
-            started = client.post(endpoint, json={"graph": raw, "node_id": target})
+            # Training and the optimiser both name the copy's node by address.
+            body = {
+                "graph": raw,
+                "target": {"occurrence": "rate_calc_2", "node_id": "rate_calc_node"},
+            }
+            started = client.post(endpoint, json=body)
             assert started.status_code == 200, started.text
             job_id = started.json()["job_id"]
             deadline = time.monotonic() + 60
@@ -494,10 +502,59 @@ def test_one_node_instance_cross_path_proof(
                 job.get("worker_remote_traceback"),
             )
             result = job["result"]
+            # The job's metrics address every node they name, the copy's children by
+            # their occurrence and authored label.
+            metrics = job["execution_metrics"]
+            named = named_keys(ExecutionMetricsPayload, metrics)
+            assert named
+            if kind == NodeType.OPTIMISER:
+                # A solve's metrics name the copy's node it ran; a training job's name only
+                # the inputs its parent prepared.
+                assert target in named
+            # Each key is addressed to the node flattening ran under it: the owner's and the
+            # copy's children share labels, so a child given the wrong occurrence fails here.
+            definition = graph.submodels[  # type: ignore[index]
+                graph.node_map["rate_calc_2"].data.config["definition_id"]
+            ]
+            children = {
+                qualified_runtime_node_id(occurrence, local): {
+                    "occurrence": occurrence,
+                    "node_id": local,
+                    "label": node.data.label,
+                }
+                for occurrence in ("rate_calc", "rate_calc_2")
+                for local, node in definition.graph.node_map.items()
+            }
+            expected = {
+                key: children.get(
+                    key,
+                    {"occurrence": None, "node_id": key, "label": graph.node_map[key].data.label}
+                    if key in graph.node_map
+                    else None,
+                )
+                for key in metrics["node_addresses"]
+            }
+            assert metrics["node_addresses"] == expected
+            # Every key the metrics name is addressed, and so is the occurrence of each
+            # child they name, which a reader needs for the child's name.
+            assert set(metrics["node_addresses"]) == named | {
+                children[key]["occurrence"] for key in named if key in children
+            }
             if kind == NodeType.MODELLING:
                 assert result["development_rows"] > 0
                 assert Path(result["model_path"]).is_file()
             else:
+                # The solve records the copy's node by address and authored label, never the
+                # key it runs under.
+                assert graph.submodels is not None
+                definition = graph.submodels[
+                    graph.node_map["rate_calc_2"].data.config["definition_id"]
+                ]
+                assert result["input_summary"]["node"] == {
+                    "occurrence": "rate_calc_2",
+                    "node_id": "rate_calc_node",
+                    "label": definition.graph.node_map["rate_calc_node"].data.label,
+                }
                 from price_contour import OnlineOptimiser
 
                 reference = OnlineOptimiser(
@@ -566,8 +623,13 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
             ("rate_calc_2", "rate_calc_2__Risk_model"),
             ("rate_calc_3", "rate_calc_3__Risk_model"),
         ]:
-            target = qualified_runtime_node_id(occurrence, "rate_calc_node")
-            started = client.post("/api/modelling/train", json={"graph": raw, "node_id": target})
+            started = client.post(
+                "/api/modelling/train",
+                json={
+                    "graph": raw,
+                    "target": {"occurrence": occurrence, "node_id": "rate_calc_node"},
+                },
+            )
             assert started.status_code == 200, started.text
             job_id = started.json()["job_id"]
             deadline = time.monotonic() + 60

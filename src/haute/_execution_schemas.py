@@ -8,6 +8,7 @@ from haute._estimate_calibration import (
     CALIBRATION_BASE_BASIS_POINTS,
     CALIBRATION_MAX_BASIS_POINTS,
 )
+from haute._node_address_schemas import NodeAddressEntry, RuntimeNodeKey
 
 DiagnosticCollectionState = Literal["available", "unavailable", "truncated"]
 MAX_JSON_SAFE_INTEGER = 2**53 - 1
@@ -23,7 +24,7 @@ CalibrationFactorBasisPoints = Annotated[
 
 class ExecutionStrategyBoundaryPayload(BaseModel):
     topological_rank: JsonSafeNonNegativeInt
-    node_id: str
+    node_id: RuntimeNodeKey
     operator: str
     boundary_kind: Literal[
         "unprojected-streaming-boundary",
@@ -34,22 +35,22 @@ class ExecutionStrategyBoundaryPayload(BaseModel):
 class ExecutionStrategyReasonPayload(BaseModel):
     reason_code: str
     topological_rank: JsonSafeNonNegativeInt | None = None
-    node_id: str | None = None
+    node_id: RuntimeNodeKey | None = None
     operator: str | None = None
     message: str | None = Field(default=None, max_length=512)
-    parent_node_id: str | None = None
+    parent_node_id: RuntimeNodeKey | None = None
 
 
 class ExecutionStrategyProjectionCausePayload(BaseModel):
     """The furthest-downstream node that kept part of the plan full width."""
 
-    node_id: str
+    node_id: RuntimeNodeKey
     operator: str
     kind: Literal["input", "node"]
     reason_code: str
     message: str = Field(max_length=512)
     total_count: Annotated[StrictInt, Field(ge=1, le=MAX_JSON_SAFE_INTEGER)]
-    parent_node_id: str | None = None
+    parent_node_id: RuntimeNodeKey | None = None
     operation: str | None = None
 
 
@@ -62,7 +63,7 @@ class ExecutionStrategyProvenancePayload(BaseModel):
         "join_key",
         "conservative_boundary",
     ]
-    source_node_id: str | None = None
+    source_node_id: RuntimeNodeKey | None = None
     source_column: str | None = None
 
 
@@ -230,7 +231,7 @@ class ExecutionStrategyDiagnosticPayload(BaseModel):
     boundaries: ExecutionStrategyBoundaryCollectionPayload
     reasons: ExecutionStrategyReasonCollectionPayload
     provenance: ExecutionStrategyProvenanceCollectionPayload
-    blocking_node_id: str | None = None
+    blocking_node_id: RuntimeNodeKey | None = None
     blocking_operator: str | None = None
     remediation: str | None = Field(default=None, max_length=512)
     estimated_peak_bytes: JsonSafeNonNegativeInt | None = None
@@ -284,7 +285,7 @@ class ExecutionStageMetricsPayload(BaseModel):
     operation: str = ""
     profile: str = ""
     elapsed_ms: float = 0.0
-    node_id: str | None = None
+    node_id: RuntimeNodeKey | None = None
     job_id: str | None = None
     rss_start_bytes: int | None = None
     rss_end_bytes: int | None = None
@@ -313,7 +314,7 @@ class ExecutionStreamabilityEvidencePayload(BaseModel):
 
 
 class ExecutionColumnWidthsPayload(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     input_width: int | None = Field(default=None, ge=0)
     output_width: int | None = Field(default=None, ge=0)
     requested_width: int | None = Field(default=None, ge=0)
@@ -361,7 +362,7 @@ class ExecutionMemoryPressureEventPayload(BaseModel):
     operation: str = ""
     profile: str = ""
     job_id: str | None = None
-    node_id: str | None = None
+    node_id: RuntimeNodeKey | None = None
     stage: str | None = None
     label: str | None = None
     threshold_ratio: float = 0.0
@@ -399,7 +400,7 @@ class ExecutionMemoryLimitErrorPayload(BaseModel):
 class InputPreparationRecordPayload(BaseModel):
     """One Data Input's automatic preparation record: digests and counts only."""
 
-    node_id: str
+    node_id: RuntimeNodeKey
     identity_digest: str
     action: Literal["reused", "built", "refreshed"]
     build_class: str
@@ -415,7 +416,7 @@ class InputPreparationRecordPayload(BaseModel):
 class SharedSnapshotSeedPayload(BaseModel):
     """One node output an execution read from a shared snapshot generation."""
 
-    node_id: str
+    node_id: RuntimeNodeKey
     identity_digest: str
     generation_id: str
     columns: Literal["all"] | list[str]
@@ -428,7 +429,7 @@ class SharedSnapshotCapturePayload(BaseModel):
     it continued from its own staged artifact and ``generation_id`` is null.
     """
 
-    node_id: str
+    node_id: RuntimeNodeKey
     identity_digest: str
     kind: Literal["structural", "materialising", "model_score", "consumed"]
     outcome: Literal["published", "superseded"]
@@ -448,7 +449,7 @@ class SharedSnapshotCapturePayload(BaseModel):
 class SharedSnapshotCaptureSkipPayload(BaseModel):
     """One candidate capture point skipped under cost gating."""
 
-    node_id: str
+    node_id: RuntimeNodeKey
     reason: Literal["cheap_segment", "slice_transparent_feeder"]
 
 
@@ -456,11 +457,15 @@ class ExecutionWarningPayload(BaseModel):
     """A non-fatal condition an execution continued past."""
 
     code: str
-    node_id: str | None = None
+    node_id: RuntimeNodeKey | None = None
     reason: str | None = None
 
 
 class ExecutionMetricsPayload(BaseModel):
+    """An execution's metrics. They name nodes by runtime key, each addressed in
+    ``node_addresses`` with each named child's occurrence (specs/server-api/low-level.md,
+    "Node addresses"), so every answer carrying them does."""
+
     schema_version: int = 1
     operation: str = ""
     profile: str = ""
@@ -472,7 +477,8 @@ class ExecutionMetricsPayload(BaseModel):
     truncated_stage_count: int = 0
     stages_truncated: bool = False
     total_elapsed_ms: float = 0.0
-    node_elapsed_ms: dict[str, float] = Field(default_factory=dict)
+    node_elapsed_ms: dict[RuntimeNodeKey, float] = Field(default_factory=dict)
+    node_addresses: dict[str, NodeAddressEntry]
     stage_elapsed_ms: dict[str, float] = Field(default_factory=dict)
     rss_start_bytes: int | None = None
     rss_end_bytes: int | None = None

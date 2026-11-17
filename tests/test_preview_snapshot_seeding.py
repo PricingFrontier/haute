@@ -17,7 +17,7 @@ from polars.testing import assert_frame_equal
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
@@ -367,6 +367,7 @@ def _publish(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, node_id),
     ) as publication:
         assert publication.generation is not None
         return publication.generation.generation_id
@@ -826,6 +827,7 @@ def test_a_capture_writes_the_columns_its_generation_keeps(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, "join"),
     ).close()
     required = {"banding": ["band"]}
     from haute._project_context import graph_pipeline_dir
@@ -880,6 +882,7 @@ def _publish_narrow(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, node_id),
     ).close()
     return identity
 
@@ -1176,6 +1179,7 @@ def test_refreshed_join_misses_preview_cache(
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=True,
+        owner=NodeSnapshotOwner.of(graph, "join"),
     ) as publication:
         assert publication.generation is not None
         refreshed = publication.generation.generation_id
@@ -1480,6 +1484,7 @@ def test_post_capture_plan_naming_an_unread_generation_stores_nothing(
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
             refresh=True,
+            owner=NodeSnapshotOwner.of(graph, "join"),
         ).close()
         return resolve(*args, **kwargs)
 
@@ -1804,6 +1809,7 @@ def test_preview_entry_rejects_identity_changes_and_refreshed_or_cleared_leases(
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
             refresh=True,
+            owner=NodeSnapshotOwner.of(graph, "join"),
         ) as publication:
             assert publication.generation is not None
             latest = publication.generation.generation_id
@@ -2210,6 +2216,7 @@ def test_preview_cache_hit_refresh_race_evicts_stale_generation_and_reexecutes(
                 explicit=True,
                 profile=ExecutionProfile.NODE_SNAPSHOT,
                 refresh=True,
+                owner=NodeSnapshotOwner.of(graph, "join"),
             ) as publication:
                 assert publication.generation is not None
                 assert publication.generation.generation_id != old_generation

@@ -91,7 +91,7 @@ export type NodeType =
  */
 export interface ExecutionStrategyDiagnosticPayload {
   assumptions?: string[];
-  blocking_node_id?: string | null;
+  blocking_node_id?: RuntimeNodeKey | null;
   blocking_operator?: string | null;
   boundaries: ExecutionStrategyBoundaryCollectionPayload;
   boundedness: 'bounded' | 'unbounded' | 'unknown';
@@ -138,7 +138,7 @@ export interface ExecutionStrategyBoundaryCollectionPayload {
 }
 export interface ExecutionStrategyBoundaryPayload {
   boundary_kind: 'unprojected-streaming-boundary' | 'materialisation-boundary';
-  node_id: string;
+  node_id: RuntimeNodeKey;
   operator: string;
   topological_rank: number;
 }
@@ -148,10 +148,10 @@ export interface ExecutionStrategyBoundaryPayload {
 export interface ExecutionStrategyProjectionCausePayload {
   kind: 'input' | 'node';
   message: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   operation?: string | null;
   operator: string;
-  parent_node_id?: string | null;
+  parent_node_id?: RuntimeNodeKey | null;
   reason_code: string;
   total_count: number;
 }
@@ -167,7 +167,7 @@ export interface ExecutionStrategyProvenancePayload {
   column: string;
   origin_kind: 'seed' | 'contract' | 'expression' | 'join_key' | 'conservative_boundary';
   source_column?: string | null;
-  source_node_id?: string | null;
+  source_node_id?: RuntimeNodeKey | null;
 }
 export interface ExecutionStrategyReasonCollectionPayload {
   /**
@@ -179,9 +179,9 @@ export interface ExecutionStrategyReasonCollectionPayload {
 }
 export interface ExecutionStrategyReasonPayload {
   message?: string | null;
-  node_id?: string | null;
+  node_id?: RuntimeNodeKey | null;
   operator?: string | null;
-  parent_node_id?: string | null;
+  parent_node_id?: RuntimeNodeKey | null;
   reason_code: string;
   topological_rank?: number | null;
 }
@@ -504,9 +504,14 @@ export interface AssistantCancelledEvent {
   type: 'cancelled';
 }
 /**
- * Every node of the graph, and everything else the store holds.
+ * Every node of the graph, and everything else the store holds. Its rows name the
+ * graph's nodes by runtime key, each addressed in ``node_addresses``; what the graph no
+ * longer holds is described by what it recorded (``other``).
  */
 export interface CacheNodesResponse {
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   nodes: CacheNodeEntry[];
   other: CacheOwnerEntry[];
   schema_version: 1;
@@ -514,6 +519,14 @@ export interface CacheNodesResponse {
   unattributed_bytes: number;
   unattributed_generations: number;
   unmarked_identities: number;
+}
+/**
+ * The address of a key an answer names, with the node's authored label.
+ */
+export interface NodeAddressEntry {
+  label: string;
+  node_id: string;
+  occurrence: string | null;
 }
 /**
  * One node of the graph: what it reads now, and what it holds on disk.
@@ -529,12 +542,12 @@ export interface CacheNodeEntry {
   identity_digests: string[];
   kind: 'data_input' | 'api_input_table' | 'node_output' | null;
   newest_created_at: number | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   reads_directly: boolean;
-  reads_from: string | null;
+  reads_from: RuntimeNodeKey | null;
   retention: 'pinned' | 'automatic' | null;
   row_count: number | null;
-  shares_snapshot_with: string[];
+  shares_snapshot_with: RuntimeNodeKey[];
   size_bytes: number;
   state: 'current' | 'stale' | 'partial' | 'missing' | 'building' | 'corrupt' | null;
   unavailable_reason: string | null;
@@ -542,9 +555,11 @@ export interface CacheNodeEntry {
 /**
  * Cached data not attributed to any node of the graph as it stands.
  *
- * A node that was deleted or renamed, a node's data for another source, or
- * an input snapshot whose Data Input no longer reads it. Each still occupies
- * the budget, so each is named.
+ * A node that was deleted or renamed, a node's data for another source or
+ * another pipeline, or an input snapshot whose Data Input no longer reads it.
+ * Each still occupies the budget, so each is named: a node's data by the
+ * owner it recorded (``owner``) and its pipeline, an input snapshot by its
+ * path or table.
  */
 export interface CacheOwnerEntry {
   bucket: 'node_output' | 'input';
@@ -553,10 +568,21 @@ export interface CacheOwnerEntry {
   identity_digests: string[];
   label: string;
   newest_created_at: number | null;
-  node_id: string | null;
+  owner: CacheSnapshotOwner | null;
+  pipeline: string | null;
   row_count: number | null;
   size_bytes: number;
   source: string | null;
+}
+/**
+ * The node a cached snapshot was written for, as it recorded it then: its address, its
+ * authored label and its occurrence's label. Never resolved against today's graph.
+ */
+export interface CacheSnapshotOwner {
+  label: string;
+  node_id: string;
+  occurrence: string | null;
+  occurrence_label: string | null;
 }
 /**
  * What the clear actually removed, which is never assumed from the request.
@@ -992,6 +1018,11 @@ export interface PipelineRepairFieldChange {
   path: string;
   reason: string;
 }
+/**
+ * An execution's metrics. They name nodes by runtime key, each addressed in
+ * ``node_addresses`` with each named child's occurrence (specs/server-api/low-level.md,
+ * "Node addresses"), so every answer carrying them does.
+ */
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
   bytes_written: number | null;
@@ -1017,6 +1048,9 @@ export interface ExecutionMetricsPayload {
   memory_pressure_events_truncated: boolean;
   n_checkpoints: number;
   n_collects: number;
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   node_elapsed_ms: {
     [k: string]: number;
   };
@@ -1082,7 +1116,7 @@ export interface ExecutionColumnWidthsCollectionPayload {
 }
 export interface ExecutionColumnWidthsPayload {
   input_width: number | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   output_width: number | null;
   physically_scanned_width: number | null;
   requested_width: number | null;
@@ -1092,7 +1126,7 @@ export interface ExecutionColumnWidthsPayload {
  */
 export interface ExecutionStrategyDiagnosticPayloadOutput {
   assumptions: string[];
-  blocking_node_id: string | null;
+  blocking_node_id: RuntimeNodeKey | null;
   blocking_operator: string | null;
   boundaries: ExecutionStrategyBoundaryCollectionPayload;
   boundedness: 'bounded' | 'unbounded' | 'unknown';
@@ -1135,10 +1169,10 @@ export interface ExecutionStrategyDiagnosticPayloadOutput {
 export interface ExecutionStrategyProjectionCausePayloadOutput {
   kind: 'input' | 'node';
   message: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   operation: string | null;
   operator: string;
-  parent_node_id: string | null;
+  parent_node_id: RuntimeNodeKey | null;
   reason_code: string;
   total_count: number;
 }
@@ -1154,7 +1188,7 @@ export interface ExecutionStrategyProvenancePayloadOutput {
   column: string;
   origin_kind: 'seed' | 'contract' | 'expression' | 'join_key' | 'conservative_boundary';
   source_column: string | null;
-  source_node_id: string | null;
+  source_node_id: RuntimeNodeKey | null;
 }
 export interface ExecutionStrategyReasonCollectionPayloadOutput {
   /**
@@ -1166,9 +1200,9 @@ export interface ExecutionStrategyReasonCollectionPayloadOutput {
 }
 export interface ExecutionStrategyReasonPayloadOutput {
   message: string | null;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   operator: string | null;
-  parent_node_id: string | null;
+  parent_node_id: RuntimeNodeKey | null;
   reason_code: string;
   topological_rank: number | null;
 }
@@ -1183,7 +1217,7 @@ export interface InputPreparationRecordPayload {
   generation_id: string | null;
   identity_digest: string;
   memory_limit_bytes: number | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   row_count: number | null;
   size_bytes: number | null;
   warning_code: string | null;
@@ -1200,7 +1234,7 @@ export interface ExecutionMemoryPressureEventPayload {
   label: string | null;
   memory_baseline_bytes: number | null;
   memory_limit_bytes: number | null;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   operation: string;
   os_reserve_bytes: number | null;
   pressure_ratio: number;
@@ -1217,7 +1251,7 @@ export interface ExecutionMemoryPressureEventPayload {
  * One candidate capture point skipped under cost gating.
  */
 export interface SharedSnapshotCaptureSkipPayload {
-  node_id: string;
+  node_id: RuntimeNodeKey;
   reason: 'cheap_segment' | 'slice_transparent_feeder';
 }
 /**
@@ -1231,7 +1265,7 @@ export interface SharedSnapshotCapturePayload {
   generation_id: string | null;
   identity_digest: string;
   kind: 'structural' | 'materialising' | 'model_score' | 'consumed';
-  node_id: string;
+  node_id: RuntimeNodeKey;
   outcome: 'published' | 'superseded';
   write_blocking_operator: string | null;
   write_chunk_rows: number | null;
@@ -1248,7 +1282,7 @@ export interface SharedSnapshotSeedPayload {
   columns: 'all' | string[];
   generation_id: string;
   identity_digest: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
 }
 export interface ExecutionStageMetricsPayload {
   elapsed_ms: number;
@@ -1256,7 +1290,7 @@ export interface ExecutionStageMetricsPayload {
   n_checkpoints: number;
   n_collects: number;
   name: string;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   operation: string;
   profile: string;
   rss_delta_bytes: number | null;
@@ -1278,7 +1312,7 @@ export interface ExecutionStreamabilityEvidencePayload {
  */
 export interface ExecutionWarningPayload {
   code: string;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   reason: string | null;
 }
 export interface ExplorePivotRunResponse {
@@ -1297,6 +1331,10 @@ export interface ExplorePivotFailure {
   reason_code: string;
   remediation: string;
 }
+/**
+ * A pivot's matrix. It is keyed by the data point it read, which several Explore nodes
+ * can share, so it names no node; the browser keeps it by the request's result key.
+ */
 export interface ExplorePivotResult {
   calculation_key: string;
   cells: ExplorePivotCell[];
@@ -1305,7 +1343,6 @@ export interface ExplorePivotResult {
   data_version: string;
   execution_metrics: ExecutionMetricsPayload | null;
   generated_at: number;
-  node_id: string;
   pivot_id: string;
   row_fields: string[];
   row_paths: ExplorePivotPath[];
@@ -1361,15 +1398,23 @@ export interface NodeDataProfileResponse {
   result: NodeDataProfile | null;
   status: 'completed' | 'started' | 'joined' | 'cache_required';
 }
+/**
+ * A consumer's data point. It names its consumer and producer by runtime key, each
+ * addressed in ``node_addresses`` (specs/server-api/low-level.md, "Node addresses"), so
+ * every answer carrying a point addresses them.
+ */
 export interface NodeDataPointResponse {
   build_endpoint: string | null;
   clear_endpoint: string | null;
-  consumer_node_id: string;
+  consumer_node_id: RuntimeNodeKey;
   data_version: string | null;
   demand: string[] | 'all';
   generation: NodeDataGeneration | null;
   job: NodeDataJob | null;
   kind: 'data_input' | 'api_input_table' | 'node_output';
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   point: NodeDataPointRef;
   reads_directly: boolean;
   retention: 'pinned' | 'automatic' | null;
@@ -1398,7 +1443,7 @@ export interface NodeDataJob {
 }
 export interface NodeDataPointRef {
   port_label: string | null;
-  producer_node_id: string;
+  producer_node_id: RuntimeNodeKey;
 }
 /**
  * Per-column statistics and overview summary of one data version of a point.
@@ -2121,6 +2166,10 @@ export interface GpuFamilyStatus {
   detail: string;
   device: string | null;
 }
+/**
+ * A training estimate. It names nodes by runtime key (the node that blocks the row count,
+ * joins without a key contract), each addressed in ``node_addresses``.
+ */
 export interface TrainEstimateResponse {
   available_mb: number;
   bytes_per_row: number | null;
@@ -2131,11 +2180,14 @@ export interface TrainEstimateResponse {
   gpu_vram_estimated_mb: number | null;
   gpu_vram_rows: number | null;
   gpu_warning: string | null;
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   safe_row_limit: number | null;
   total_rows: number | null;
   training_mb: number | null;
   unavailable: TrainEstimateUnavailable | null;
-  unbounded_join_node_ids: string[];
+  unbounded_join_node_ids: RuntimeNodeKey[];
   warning: string | null;
   was_downsampled: boolean;
 }
@@ -2166,7 +2218,7 @@ export interface EvaluationDateRangePayload {
  * Why a training estimate cannot size its input: one reason from a closed set.
  */
 export interface TrainEstimateUnavailable {
-  blocking_node_id: string | null;
+  blocking_node_id: RuntimeNodeKey | null;
   reason: 'row_count_unprovable' | 'schema_unresolvable';
 }
 export interface DispersionEstimateResponse {
@@ -2579,7 +2631,7 @@ export interface OptimiserCombinedFactorBounds {
 export interface OptimiserInputSummary {
   data_source: string;
   graph_fingerprint: string;
-  node_id: string;
+  node: NodeAddressEntry;
   solver_settings: OptimiserSolverSettings;
   source_file: string | null;
 }
@@ -4850,14 +4902,6 @@ export interface NodeMemoryInfo {
   memory_bytes: number;
   node_id: RuntimeNodeKey;
 }
-/**
- * The address of a key an answer names, with the node's authored label.
- */
-export interface NodeAddressEntry {
-  label: string;
-  node_id: string;
-  occurrence: string | null;
-}
 export interface SchemaWarning {
   column: string | null;
   detail: string | null;
@@ -5023,12 +5067,19 @@ export interface TraceResponse {
   status: string;
   trace: TraceResultResponse;
 }
+/**
+ * A traced row. It names nodes by runtime key, each addressed in ``node_addresses``
+ * (specs/server-api/low-level.md, "Node addresses").
+ */
 export interface TraceResultResponse {
   column: string | null;
   correlation_diagnostics: TraceCorrelationDiagnosticResponse[];
   execution_ms: number;
   execution_origin: 'fresh_execution' | 'trace_cache';
   generated_at: string;
+  node_addresses: {
+    [k: string]: NodeAddressEntry;
+  };
   nodes_in_trace: number;
   omissions: TraceOmissionResponse[];
   output_value: unknown;
@@ -5037,12 +5088,12 @@ export interface TraceResultResponse {
   row_id_value: unknown;
   row_index: number;
   steps: TraceStepResponse[];
-  target_node_id: string;
+  target_node_id: RuntimeNodeKey;
   total_nodes_in_pipeline: number;
   waterfall: TraceWaterfallEntryResponse[] | TraceWaterfallErrorResponse | null;
 }
 export interface TraceCorrelationDiagnosticResponse {
-  child_node_id: string | null;
+  child_node_id: RuntimeNodeKey | null;
   code: string;
   ignored_columns: string[];
   match_columns: string[];
@@ -5050,15 +5101,15 @@ export interface TraceCorrelationDiagnosticResponse {
   matched_row_count: number | null;
   matched_row_indices: number[];
   message: string;
-  node_id: string | null;
+  node_id: RuntimeNodeKey | null;
   reason: string;
-  seed_node_ids: string[];
+  seed_node_ids: RuntimeNodeKey[];
   severity: string;
   [k: string]: unknown;
 }
 export interface TraceOmissionResponse {
   diagnostic_index: number;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   node_name: string;
   node_type: string;
   reason: string;
@@ -5081,7 +5132,7 @@ export interface TraceStepResponse {
   node_detail: {
     [k: string]: unknown;
   } | null;
-  node_id: string;
+  node_id: RuntimeNodeKey;
   node_name: string;
   node_type: string;
   output_values: {
@@ -5110,7 +5161,7 @@ export interface TraceColumnReadResponse {
 export interface TraceColumnSourceResponse {
   before_code: boolean;
   column: string;
-  node_id: string;
+  node_id: RuntimeNodeKey;
 }
 export interface SchemaDiffResponse {
   columns_added: string[];

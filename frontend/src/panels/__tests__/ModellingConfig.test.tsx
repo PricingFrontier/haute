@@ -887,7 +887,7 @@ describe("ModellingConfig", () => {
 
   describe("Training actions", () => {
     beforeEach(() => { defaultPane = "train" })
-    it("train button calls trainModel API with graph and node_id", async () => {
+    it("train button calls trainModel API with graph and the node's address", async () => {
       mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_1" })
       const source = { id: "source", data: { label: "source", description: "", nodeType: "dataInput", config: { path: "claims.parquet" } } }
       const modelling = { id: "node_1", data: { label: "model", description: "", nodeType: "modelling", config: {} } }
@@ -907,7 +907,7 @@ describe("ModellingConfig", () => {
             ],
             edges: [expect.objectContaining({ source: "source", target: "node_1" })],
           }),
-          node_id: "node_1",
+          target: { occurrence: null, node_id: "node_1" },
         }),
       )
     })
@@ -1441,7 +1441,7 @@ describe("ModellingConfig", () => {
             global_constants: [],
             global_constants_error: null,
           },
-          node_id: "node_1",
+          target: { occurrence: null, node_id: "node_1" },
           param: "theta",
           source: "batch",
         },
@@ -1668,7 +1668,7 @@ describe("ModellingConfig", () => {
       expect(callArgs).toEqual(
         expect.objectContaining({
           graph: expect.any(Object),
-          node_id: "node_1",
+          target: { occurrence: null, node_id: "node_1" },
         }),
       )
     })
@@ -1692,6 +1692,7 @@ describe("ModellingConfig", () => {
           bytes_per_row: 700,
           was_downsampled: false,
           unbounded_join_node_ids: [],
+        node_addresses: {},
           warning: null,
           gpu_vram_estimated_mb: null,
           gpu_vram_available_mb: null,
@@ -1761,6 +1762,7 @@ describe("ModellingConfig", () => {
         bytes_per_row: 700,
         was_downsampled: false,
         unbounded_join_node_ids: [],
+        node_addresses: {},
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1784,6 +1786,7 @@ describe("ModellingConfig", () => {
         bytes_per_row: 500,
         was_downsampled: true,
         unbounded_join_node_ids: [],
+        node_addresses: {},
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1806,6 +1809,7 @@ describe("ModellingConfig", () => {
         bytes_per_row: 500,
         was_downsampled: false,
         unbounded_join_node_ids: [],
+        node_addresses: {},
         gpu_vram_estimated_mb: 512,
         gpu_vram_available_mb: 8192,
         warning: null,
@@ -1828,6 +1832,7 @@ describe("ModellingConfig", () => {
         bytes_per_row: 500,
         was_downsampled: false,
         unbounded_join_node_ids: [],
+        node_addresses: {},
         gpu_vram_estimated_mb: 12000,
         gpu_vram_available_mb: 8192,
         warning: null,
@@ -1893,6 +1898,7 @@ describe("ModellingConfig", () => {
         bytes_per_row: 700,
         was_downsampled: false,
         unbounded_join_node_ids: [],
+        node_addresses: {},
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1905,7 +1911,7 @@ describe("ModellingConfig", () => {
       expect(screen.queryByText(/Memory estimate (unavailable|failed)/)).toBeNull()
     })
 
-    it("names the blocking node of an unavailable estimate by its canvas label", async () => {
+    it("names the blocking node of an unavailable estimate by the label the estimate gives it", async () => {
       mockEstimateTrainingRam.mockResolvedValue({
         total_rows: null,
         safe_row_limit: null,
@@ -1915,6 +1921,7 @@ describe("ModellingConfig", () => {
         bytes_per_row: null,
         was_downsampled: false,
         unbounded_join_node_ids: [],
+        node_addresses: { explode: { occurrence: null, node_id: "explode", label: "Explode items" } },
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1939,7 +1946,11 @@ describe("ModellingConfig", () => {
         bytes_per_row: 5_000,
         was_downsampled: false,
         // The second join is inside a submodel, not on this canvas.
-        unbounded_join_node_ids: ["join", "submodel__inner_join"],
+        unbounded_join_node_ids: ["join", "submodel_runtime/inner/inner_join"],
+        node_addresses: {
+          join: { occurrence: null, node_id: "join", label: "competitor_join" },
+          "submodel_runtime/inner/inner_join": { occurrence: "inner", node_id: "inner_join", label: "inner_join" },
+        },
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1958,7 +1969,7 @@ describe("ModellingConfig", () => {
       expect(screen.getAllByRole("button", { name: /^Open "/ })).toHaveLength(1)
     })
 
-    it("inside an open submodel asks with the whole pipeline and opens a join it names by runtime id", async () => {
+    it("inside an open submodel asks with the whole pipeline by address and opens a join the estimate addresses", async () => {
       // The pipeline: a source feeding the occurrence "pricing", whose definition
       // holds the join and this Modelling node.
       const definition: SubmodelDefinition = {
@@ -1995,6 +2006,9 @@ describe("ModellingConfig", () => {
         bytes_per_row: 5_000,
         was_downsampled: false,
         unbounded_join_node_ids: ["submodel_runtime/pricing/join"],
+        node_addresses: {
+          "submodel_runtime/pricing/join": { occurrence: "pricing", node_id: "join", label: "competitor_join" },
+        },
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -2020,7 +2034,7 @@ describe("ModellingConfig", () => {
               }),
             },
           }),
-          node_id: "submodel_runtime/pricing/node_1",
+          target: { occurrence: "pricing", node_id: "node_1" },
         }),
         expect.anything(),
       ))

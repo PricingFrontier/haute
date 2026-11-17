@@ -49,7 +49,6 @@ const pivot: ExplorePivotConfig = {
 function result(rowCount = 2): ExplorePivotResult {
   return {
     version: 1,
-    node_id: "explore",
     pivot_id: "p1",
     source: "pricing",
     data_version: "cache",
