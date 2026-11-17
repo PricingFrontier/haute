@@ -202,8 +202,13 @@ def test_the_cached_data_list_names_nodes_by_address_and_recorded_owner(
     ]
 
 
+@pytest.mark.parametrize(
+    "record",
+    [None, {"occurrence": "pricing_2", "node_id": "", "label": "join"}],
+    ids=["no-owner", "an-unreadable-owner"],
+)
 def test_data_published_before_owners_were_recorded_is_listed_by_its_slot_key(
-    project: Path, api: Any
+    project: Path, api: Any, record: dict[str, Any] | None
 ) -> None:
     preview = api.post(
         "/api/pipeline/preview",
@@ -213,12 +218,15 @@ def test_data_published_before_owners_were_recorded_is_listed_by_its_slot_key(
         },
     )
     assert preview.status_code == 200, preview.text
-    # The generation as it was written before owners were recorded: no node_output.owner.
+    # The generation as it was written before owners were recorded (no node_output.owner),
+    # or with an owner record that cannot be read, which names no node either.
     stripped = 0
     for meta in project.rglob("meta.json"):
         raw = json.loads(meta.read_text(encoding="utf-8"))
         node_output = raw.get("node_output")
         if isinstance(node_output, dict) and node_output.pop("owner", None) is not None:
+            if record is not None:
+                node_output["owner"] = record
             meta.write_text(json.dumps(raw), encoding="utf-8")
             stripped += 1
     assert stripped
