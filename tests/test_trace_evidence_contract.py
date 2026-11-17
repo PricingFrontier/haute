@@ -232,6 +232,7 @@ def test_benign_column_pruning_does_not_create_an_omission() -> None:
         unresolved_rows=unresolved_rows,
         order=order,
         node_map=node_map,
+        name_of=lambda key: node_map[key].data.label,
         lineage=trace_value_lineage(
             column="premium",
             target_node_id="target",
@@ -268,6 +269,7 @@ def test_unresolved_assigning_step_keeps_all_attempted_ancestor_omissions() -> N
         unresolved_rows=unresolved_rows,
         order=order,
         node_map=node_map,
+        name_of=lambda key: node_map[key].data.label,
         lineage=trace_value_lineage(
             column="premium",
             target_node_id="target",

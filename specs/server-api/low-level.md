@@ -429,14 +429,35 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    endpoint; only a request whose target is an unbound port is refused. An Input card reads its
    ports' columns from it, a bound port whose columns are missing shown as missing data.
 7. **Errors and labels** name a node by its label, and a submodel child by its label and its
-   occurrence's ("Banding 1 in pricing"), never by its key or a copy's flat name, through one
-   function, `haute._node_addresses.node_display_name`: a walk's upstream failure ("Upstream
-   node(s) failed: <name>: ..."), a refusal of the wrong node type ("'<name>' is not a modelling
-   node"), a Data Output's or an OUTPUT node's, a trace's node failure, an unreadable snapshot,
-   and the labels a preview gives its timings, memory and seed plan. A public contract error
-   about a node keeps its key in `node_id` and, where the route holds the graph (a trace's node
-   failure), carries the node as `node: {key, occurrence, node_id, label}`
-   (`node_reference`); `tests/test_node_display_names.py` covers a copy's child in each.
+   occurrence's ("Banding 1 in pricing"), never by its key or a copy's flat name. One function
+   formats the name (`haute._node_addresses.display_name`). Code that holds the flat graph names
+   a node through `node_display_name`; code that does not (a builder, the strategy planner over a
+   prepared graph) names it through `haute._execution_context.execution_node_name`, which reads
+   the graph the running walk or its planning names nodes from (`naming_nodes_from`, set by a
+   walk, a trace and a preview's planning) and else the current execution's address table. So
+   named are a walk's upstream failure ("Upstream node(s) failed: <name>: ..."), a refusal of the
+   wrong node type ("'<name>' is not a modelling node"), a Data Output's or an OUTPUT node's, a
+   trace's node failure and its refusals, a node that returns no frame or lacks a promised
+   column, a builder's refusal of a node's settings, a stale column selection, a wide integer,
+   an unconnected input, a node with no input data, a walk's progress label ("Computing
+   <name>"), an unreadable snapshot, a data point's refusals, the memory strategy's
+   and projection's suggested actions, a trace's correlation diagnostics, the labels a preview
+   gives its timings, memory and seed plan, and the `node_name` of a trace's steps, omissions and
+   input sources. A `HauteError` raised inside a walk, its planning or an execution names the
+   nodes its context holds by key (`NODE_KEY_CONTEXT_FIELDS`) by name in its text, `(node=<name>)`,
+   when it is raised, so the text survives a worker's pickle; `context` keeps the keys. A public
+   contract error about a node keeps its key in `node_id` and, where the route holds the graph (a
+   trace's node failure), carries the node as `node: {key, occurrence, node_id, label}`
+   (`node_reference`). Keys stay in what no message shows: machine codes and `assumptions`, the
+   job `node_label` fields the browser does not read, the deployed scorer's refusals, and
+   internal invariant errors. `tests/test_node_display_names.py` checks a copy's child in each
+   message above except the trace's Workbench Output and multi-frame refusals, a seed
+   continuation's diagnostics, the executor's schema-warning and Data Output messages, a
+   capture's unreadable snapshot, a data point's refusals other than a missing port, a trace
+   omission's and an input source's name, a walk's progress label, "No input data" and a
+   training join's downsampling warning; it also checks that no failing preview or trace over a
+   copy (seven kinds of failure), nor a trace that succeeds, shows a key or a flat name outside a
+   key position.
 
 **Every family is on addresses.** The preview, its inputs, the trace, the node-data family
 (a consumer's data point, run, profile and clear, an Explore pivot and its members,

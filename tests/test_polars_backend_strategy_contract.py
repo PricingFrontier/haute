@@ -75,6 +75,7 @@ def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
         reason_code="materialisation_estimate_unavailable",
         estimated_peak_bytes=None,
         headroom_bytes=10,
+        node_name=str,
         estimate_detail=f"join-node:{MANY_TO_MANY_JOIN_DETAIL}",
     )
     assert rejection.remediation.endswith(_MANY_TO_MANY_JOIN_REMEDIATION)
@@ -86,6 +87,7 @@ def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
         reason_code="materialisation_exceeds_headroom",
         estimated_peak_bytes=20,
         headroom_bytes=10,
+        node_name=str,
     )
     assert "validate=" not in bounded.remediation
 

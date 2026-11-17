@@ -32,6 +32,7 @@ from haute._execution_context import (
 from haute._graph_utils import _sanitize_func_name
 from haute._logging import get_logger
 from haute._native_memory_limit import model_thread_address_space_allowance
+from haute._node_addresses import node_display_name
 from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import context_thread, current_project
 from haute._seed_plans import open_seed_plan
@@ -251,10 +252,7 @@ def _downsampling_warning(
         return None
     if not estimate.unbounded_join_node_ids:
         return estimate.warning
-    joins = [
-        f"'{graph.node_map[join].data.label}'" if join in graph.node_map else f"'{join}'"
-        for join in estimate.unbounded_join_node_ids
-    ]
+    joins = [f"'{node_display_name(graph, join)}'" for join in estimate.unbounded_join_node_ids]
     subject = joins[0] if len(joins) == 1 else f"{', '.join(joins[:-1])} and {joins[-1]}"
     verb = "has" if len(joins) == 1 else "have"
     return (

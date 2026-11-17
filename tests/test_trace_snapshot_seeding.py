@@ -1118,14 +1118,8 @@ def test_the_recompute_above_a_seed_leaves_the_trace_plan_in_place(
 
 
 def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evidence() -> None:
-    from types import SimpleNamespace
-
     from haute.trace import _merge_seed_continuations, _SeedContinuation
 
-    node_map = {
-        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id))
-        for node_id in ("S", "A", "B", "C")
-    }
     # The trace resolved ``A`` through an executed branch and failed on ``B``;
     # it left ``C`` unresolved for its own reason.
     cached_rows: dict = {"A": {"id": 1, "v": 3}, "B": None, "C": None}
@@ -1144,7 +1138,7 @@ def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evid
 
     proven, reported = _merge_seed_continuations(
         [continuation],
-        node_map=node_map,
+        node_name=str,
         cached_rows=cached_rows,
         row_positions={},
         frames={},
@@ -1168,14 +1162,8 @@ def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evid
 
 
 def test_a_conflict_stays_final_and_a_later_continuation_supersedes_an_earlier_failure() -> None:
-    from types import SimpleNamespace
-
     from haute.trace import _merge_seed_continuations, _SeedContinuation
 
-    node_map = {
-        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id))
-        for node_id in ("S1", "S2", "A", "B")
-    }
     cached_rows: dict = {"A": {"id": 1}}
     diagnostics: list = []
     unresolved: dict = {}
@@ -1197,7 +1185,7 @@ def test_a_conflict_stays_final_and_a_later_continuation_supersedes_an_earlier_f
 
     proven, _reported = _merge_seed_continuations(
         [first, second],
-        node_map=node_map,
+        node_name=str,
         cached_rows=cached_rows,
         row_positions={},
         frames={},

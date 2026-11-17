@@ -712,7 +712,7 @@ def _prepare_data_output_request(
             output_node.data.config,
             require_complete=True,
             persisted=False,
-            node_label=output_node.data.label,
+            node_label=node_display_name(graph, body.node_id),
         )
     except (ConfigError, PolarsIoConfigError, TypeError, ValueError):
         raise HTTPException(

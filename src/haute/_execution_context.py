@@ -45,6 +45,10 @@ _MATERIALISING_STRATEGIES = frozenset(
 _CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[ExecutionContext | None] = (
     contextvars.ContextVar("haute_current_execution_context", default=None)
 )
+# The flattened graph a walk or its planning runs, for naming its nodes in messages only.
+_NAMING_GRAPH: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "haute_naming_graph", default=None
+)
 logger = get_logger(component="execution_context")
 
 
@@ -1271,6 +1275,26 @@ class ExecutionProvenance:
             for key, entry in entries.items():
                 self._node_addresses.setdefault(key, entry)
 
+    def node_name(self, key: str, default: str | None = None) -> str:
+        """How a message names the node this execution runs under *key*: its label, and a
+        submodel child's with its occurrence's (``haute._node_addresses.display_name``).
+        A key the execution did not walk is named *default*, or as it is. Never raises."""
+        from haute._node_addresses import display_name
+
+        with self._lock:
+            entry = self._node_addresses.get(key)
+            occurrence_id = entry.get("occurrence") if entry is not None else None
+            occurrence = self._node_addresses.get(occurrence_id) if occurrence_id else None
+        label = entry.get("label") if entry is not None else None
+        if not isinstance(label, str):
+            return key if default is None else default
+        if not isinstance(occurrence_id, str):
+            return display_name(label, None)
+        occurrence_label = occurrence.get("label") if occurrence is not None else None
+        return display_name(
+            label, occurrence_label if isinstance(occurrence_label, str) else occurrence_id
+        )
+
     def addresses_for(self, payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         """The address of every key *payload*, a metrics payload, names that this execution
         walked. Never raises: the metrics are reported on failure paths too."""
@@ -1817,6 +1841,52 @@ class _TimedStage:
 
 def current_execution_context() -> ExecutionContext | None:
     return _CURRENT_EXECUTION_CONTEXT.get()
+
+
+@contextlib.contextmanager
+def naming_nodes_from(flat: Any) -> Iterator[None]:
+    """Name nodes from *flat*, the flattened graph a walk or its planning runs, in the
+    messages raised inside the block (:func:`execution_node_name`). A walk is not always a
+    stage of its execution (a trace's is not, nor a preview's planning), so it names its
+    nodes from its own graph. It sets nothing else an execution reads."""
+    token = _NAMING_GRAPH.set(flat)
+    try:
+        yield
+    finally:
+        _NAMING_GRAPH.reset(token)
+
+
+def current_node_namer() -> Callable[[str], str] | None:
+    """How a message raised now names a node by key (:func:`execution_node_name`), or
+    ``None`` when no walk or execution is running to name it."""
+    if _NAMING_GRAPH.get() is None and current_execution_context() is None:
+        return None
+    return execution_node_name
+
+
+def execution_node_name(
+    key: str, default: str | None = None, *, context: ExecutionContext | None = None
+) -> str:
+    """How a message names the node under *key*, for code that has no flat graph to name it
+    from (``haute._node_addresses.node_display_name``): through *context*, else the graph
+    the running walk names its nodes from (:func:`naming_nodes_from`), else the current
+    execution (:meth:`ExecutionProvenance.node_name`). A key none of them holds is named
+    *default*, or as it is. Never raises."""
+    if context is None:
+        flat = _NAMING_GRAPH.get()
+        if flat is not None:
+            from haute._node_addresses import address_entry, node_display_name
+
+            try:
+                address_entry(flat, key)
+            except ValueError:
+                pass
+            else:
+                return node_display_name(flat, key)
+        context = current_execution_context()
+    if context is None:
+        return key if default is None else default
+    return context.provenance.node_name(key, default)
 
 
 def _cleanup_failure_note(error: BaseException) -> str:
