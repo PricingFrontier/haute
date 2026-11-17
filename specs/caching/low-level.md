@@ -68,14 +68,22 @@ missing and unknown names before hashing:
 
 | Consumer | Version | Complete field set |
 |---|---:|---|
-| `graph_structure` | 2 | `nodes`, `edges` |
+| `graph_structure` | 3 | `nodes`, `edges` |
 | `graph_execution` | 9 | `base_fingerprint`, `preamble_fingerprint`, `global_constants`, `source_file`, `extra_keys` |
-| `preview_trace` | 5 | `preamble`, `global_constants`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version`, `polars_version` |
+| `preview_trace` | 6 | `preamble`, `global_constants`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version`, `polars_version`, `haute_code` |
 | `runtime_graph_input` | 4 | `source`, `sources`, `preamble_fingerprint`, `extra` |
-| `deploy_schema` | 3 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy`, `polars_version` |
+| `deploy_schema` | 4 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy`, `polars_version`, `haute_code` |
 | `model_contract` | 2 | `feature_names`, `optional_feature_names`, `categorical_features`, `offset_column` |
 | `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
-| `node_snapshot_signature` | 3 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version`, `polars_version` |
+| `node_snapshot_signature` | 4 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version`, `polars_version`, `haute_code` |
+
+`haute_code` is `src/haute/_cache.py::haute_code_fingerprint`, a digest of every `.py` and
+`.json` file of the installed `haute` package but its `static` browser bundle and its
+`__pycache__`, computed once per process; it stands beside `polars_version` wherever that is
+signed. Every list of `graph_edge` records (`graph_structure`'s `edges`, `preview_trace`'s
+`edges`) is in `src/haute/_cache.py::input_ordered_edges` order: by target node id, and within
+one target in the graph's own edge order, which is the order
+`src/haute/_graph_utils.py::build_parents_of` gives a node its inputs.
 
 The repeated records inside those payloads are separately closed and versioned:
 `graph_node` v1 is `id`, `label`, `nodeType`, `config`; `graph_edge` v1 is
@@ -168,6 +176,20 @@ Polars that computed it.
    entry must be keyed by — and a `seed_plan_fingerprint`, which joins the runtime-input
    fingerprint as `extra["seed_plan"]`, so an entry computed from one seed generation is
    never served for another; without one the key is unchanged.
+
+`preamble_execution_fingerprint(preamble, pipeline_dir)` is the project code's one record,
+which the runtime-input identity (and so every preview, trace, snapshot and seed plan), the
+graph fingerprint, the preamble compile cache and the assistant's brief all sign: the
+preamble's text when it is not blank, and every file of the `utility` an import would load
+(`src/haute/_project_imports.py::find_utility_spec`, listed by
+`src/haute/_project_imports.py::utility_tree_files`: the module file, or every file under the
+package folder but in `UTILITY_SKIPPED_DIRS`, `__pycache__`), whatever imports it, with
+`missing` when there is none. It is `None` only when there is neither a preamble nor a
+`utility`. Outside an installed project the import system's own search finds `utility`. The
+deploy bundle's copy (`src/haute/deploy/_container.py`), a release's utility hashes
+(`src/haute/_workbench_app.py::_utility_hashes`) and a test quote's basis
+(`src/haute/_workbench_test_quotes.py::_utility_digest`) list the tree through the same
+function; deploy's import check reads its `.py` files.
 
 Utility-file hashes use a request memo in front of the shared content signature
 (`_source_proof.file_signature`), which execution's runtime-path fingerprints and the Data
@@ -612,7 +634,8 @@ upstream of it after the executor's own live-switch pruning (`prepare_graph` →
 `prune_live_switch_edges`) for the signature's source. The lineage fingerprint is
 `graph_fingerprint` of that graph, the runtime-input fingerprint is
 `dataframe_graph_input_fingerprint` of the same graph targeted at the node, and the
-execution semantics version is `node-snapshot:v1`, beside the installed Polars version.
+execution semantics version is `node-snapshot:v1`, kept for a deliberate break, beside the
+installed Polars version and `haute_code`.
 A branch into a live switch that the
 source does not read is therefore not signed: editing its code or rewriting its input
 files leaves the signature, and every capture keyed by it, unchanged, and its files are
@@ -786,6 +809,15 @@ cache lifecycle changes.
   proves that every declared config field of every node type, and a field no table declares,
   moves the execution identity, that exactly the specified presentation fields and editor
   state leave it alone.
+- `tests/test_stale_results.py` changes each kind of input a stored result is computed
+  from in turn (a node's code, a utility module imported by the preamble and one imported
+  only inside a node, a data file beside the utility code, a params file, a data file, the
+  order of a node's inputs, a constant, the preamble and Haute's own code) and requires every
+  reader the case reaches to report its answer old: the node-snapshot signature, the
+  preview/trace key, the graph fingerprint, the assistant brief's key, a form's revision and
+  a test quote's basis, with a utility edit computed again from the new code in the same
+  process. It enumerates `CacheConsumer`, so a consumer it does not drive fails it, and scans
+  `src/haute`, so a listing of the `utility` tree outside `utility_tree_files` fails it.
 - `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized rejection,
   non-promoting reads, and concurrency.
 - `tests/test_stat_gated_cache.py` covers hit/reload, LRU bounds, single flight, moving

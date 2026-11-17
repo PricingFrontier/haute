@@ -124,6 +124,29 @@ def _frame(
     return frame
 
 
+def params_files(project_root: Path) -> dict[str, Path]:
+    """Every params file, by its name: each CSV directly in the params folder, as
+    :func:`read_param_file` takes one, sorted by name; none for a project without the folder.
+
+    A form's revision signs them all (:func:`haute._workbench_folder.folder_revision`): any
+    column's allowed values can come from any of them, so a params file that changes, as a
+    colleague's pull changes one, makes a form read before it out of date.
+    """
+    files = pipeline_files_folder(project_root)
+    if files is None:
+        return {}
+    folder = project_root / files / PARAMS_FOLDER
+    if not folder.is_dir():
+        return {}
+    return {
+        entry.name: entry
+        for entry in sorted(folder.iterdir(), key=lambda entry: entry.name)
+        if entry.name.casefold().endswith(".csv")
+        and not entry.name.startswith(".")
+        and entry.is_file()
+    }
+
+
 def read_param_file(project_root: Path, file: str, column: str | None = None) -> ParamFile:
     """The header of the params file *file* names, with the distinct values of *column*, its
     allowed values, when one is named; none otherwise.

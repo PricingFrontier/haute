@@ -5,7 +5,7 @@ import { deleteProjectFile, listProjectFiles, projectFileDownloadUrl, uploadProj
 import { apiErrorMessage } from "../api/errors"
 import type { ProjectFileEntry, ProjectFilePlace, ProjectFolderResponse } from "../api/types"
 import { reportSaveCapture } from "../stores/saveCapture"
-import useDataEpochStore from "../stores/useDataEpochStore"
+import { noteProjectInputsChanged } from "../stores/projectInputs"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -181,8 +181,8 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
     useSettingsStore.getState().clearFileListCache()
     // A displayed preview may have read the file just replaced.
     if (replaced) useNodeDataStore.getState().bumpEpoch()
-    // What was priced on the data before is stale: a file the pipeline reads may be new.
-    if (wrote) useDataEpochStore.getState().moved()
+    // What was priced or previewed on the data before is stale: a file the pipeline reads may be new.
+    if (wrote) noteProjectInputsChanged()
     refresh()
   }
 
@@ -265,7 +265,7 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       const removed = await deleteProjectFile(place, entry.path, entry.revision ?? "")
       if (place === "pipeline") reportSaveCapture(removed)
       useSettingsStore.getState().clearFileListCache()
-      useDataEpochStore.getState().moved()
+      noteProjectInputsChanged()
     } catch (caught) {
       addToast("error", `${entry.name}: ${apiErrorMessage(caught, "The file was not deleted.")}`)
     }

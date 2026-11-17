@@ -33,7 +33,6 @@ from haute._builders import _build_node_fn
 from haute._cache import (
     GraphFingerprintMemo,
     preamble_execution_fingerprint,
-    preamble_imports_utility,
 )
 from haute._data_points import DataPointResolver
 from haute._env import int_env
@@ -56,7 +55,7 @@ from haute._path_resolution import (
     _normalise_path_text,
 )
 from haute._pipeline_settings import project_pipeline_settings
-from haute._project_context import current_project, graph_pipeline_dir
+from haute._project_context import current_project, graph_pipeline_dir, installed_project
 from haute._project_imports import (
     bind_project_utility,
     evict_utility_modules,
@@ -364,15 +363,18 @@ def _compile_preamble_into_cell(
     The lock covers the entire bind/eviction/import/exec window. Even preambles
     without literal import statements execute with the ordinary ``__import__``
     and can consult process-global import state.
+
+    A compile is a cache miss: the preamble or a file of the ``utility`` tree changed,
+    or this project was not bound. Whatever imports ``utility`` (the preamble, a node's
+    code, a helper while Polars collects), the modules loaded from the old files are put
+    aside first, so the next import loads the source again, which the finder's loader
+    always compiles: no module or bytecode from before the change can stand in.
     """
-    validate_user_code(preamble)
-    rebound = bind_project_utility(pipeline_dir_str, project_root=project_root)
-    if rebound or preamble_imports_utility(preamble):
-        # A cache miss for a utility-importing preamble (a changed digest) or a
-        # newly bound project: the next import loads utility's source again, which
-        # the finder's loader always compiles, so no stale bytecode can stand in.
-        evict_utility_modules()
-    return _exec_preamble_namespace(preamble)
+    if preamble.strip():
+        validate_user_code(preamble)
+    bind_project_utility(pipeline_dir_str, project_root=project_root)
+    evict_utility_modules()
+    return _exec_preamble_namespace(preamble) if preamble.strip() else {}
 
 
 def _compile_preamble(
@@ -409,16 +411,7 @@ def _compile_preamble(
     source line number when the preamble fails to execute (e.g. a utility
     module has a NameError).
     """
-    # Short-circuit empty / whitespace preambles BEFORE touching the cache
-    # — empty preambles are common and shouldn't evict cache entries.
-    if not preamble or not preamble.strip():
-        return {}
-
-    # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``
-    # subfolder), then in the project root (``haute._project_imports``); both
-    # are part of the cache key, as two projects can share a preamble's text.
-    project_root = str(current_project().root)
-
+    preamble = preamble or ""
     # Normalise pipeline_dir to a string at the boundary so lru_cache's
     # argument-hashing treats ``Path("/x")`` and ``"/x"`` identically.
     pipeline_dir_str: str | None = None  # pragma: no mutate
@@ -431,8 +424,17 @@ def _compile_preamble(
             pipeline_dir=pipeline_dir_str,
             memo=memo,
         )
-        if execution_fingerprint is None:
+    # No preamble and no ``utility`` (or no project to bind one from): no project code,
+    # so nothing to bind or compile.
+    if execution_fingerprint is None or (not preamble.strip() and installed_project() is None):
+        if preamble.strip():
             raise RuntimeError("non-empty preamble did not produce an execution fingerprint")
+        return {}
+
+    # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``
+    # subfolder), then in the project root (``haute._project_imports``); both
+    # are part of the cache key, as two projects can share a preamble's text.
+    project_root = str(current_project().root)
 
     # Cell lookup under its own tiny guard (never held during exec), so a
     # hot hit returns without touching ``_preamble_lock`` — a slow compile

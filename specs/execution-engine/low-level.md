@@ -2029,10 +2029,13 @@ present a structural or schema result as execution evidence.
   each call recomputes the dependency fingerprint (`preamble_execution_fingerprint`). A
   compile binds the project's `utility` finder (`_project_imports.bind_project_utility`)
   to the pipeline directory and the current project's root, and evicts every imported
-  `utility` module when the binding changed or the preamble imports `utility`; the
-  finder's loader compiles each `utility` module from its source and never reads or
-  writes bytecode, so a same-size, same-mtime edit, which changes the fingerprint, reaches
-  the next compile. `sys.path` is never edited: a helper that imports `utility` while
+  `utility` module, whatever imported it: a compile is a miss, so the preamble or a file of
+  the `utility` tree changed, or the project was not bound. A pipeline with a blank
+  preamble and a project `utility` compiles too (to an empty namespace), so a node's own
+  `import utility` finds this project's package and follows its edits; with neither, the
+  call returns an empty namespace and binds nothing. The finder's loader compiles each
+  `utility` module from its source and never reads or writes bytecode, so a same-size,
+  same-mtime edit, which changes the fingerprint, reaches the next compile. `sys.path` is never edited: a helper that imports `utility` while
   Polars collects resolves it through the finder, bound to the project of the last
   compile or cache hit: a hot hit whose project differs from the finder's binding rebinds
   it and evicts the other project's `utility` modules under `_preamble_lock`

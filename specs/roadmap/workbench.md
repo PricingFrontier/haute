@@ -42,7 +42,7 @@ phase's carrying of projects made on Windows to Linux, and was run again on Wind
 over the code changed since the 31 October audit. A worker ran each in a browser, and the
 main session ran each journey again on 13 November 2026.
 
-`WB-63` to `WB-69` come from the review plan's phase 5, a reader from a second
+`WB-63` to `WB-66` and `WB-68` come from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
@@ -89,9 +89,7 @@ A cause several packages here share has its own file and is taken first:
 | WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
 | WB-65 | Planned | P3 | A single-precision column for a Decimal field is named as a difference, not left to round values. |
 | WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
-| WB-67 | Planned | P2 | A changed params file changes the form's revision, so a test quote typed against the old values is refused as stale. |
 | WB-68 | Planned | P3 | A number in a params file is read as the same text typed in a cell, thousands separators included. |
-| WB-69 | Planned | P2 | Accept is refused when a data file the helper code reads changed after the run. |
 | WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
 | WB-71 | Planned | P2 | A store connection lost in the middle of a write answers 503 in words, not a bare 500. |
 | WB-72 | Planned | P3 | The store check reports a foreign key that refers to other columns or another schema. |
@@ -1190,27 +1188,6 @@ After the reorder `01` shows 100 and `02` shows 200.
 **Evidence:** `src/haute/_workbench_test_quotes.py`;
 `src/haute/_workbench_tables.py`; `specs/workbench/high-level.md`.
 
-### WB-67 — A change to a params file changes the form's revision
-**Why:** Reproduced on 14 November 2026 through the designer's routes. A
-table's index takes its values, `A` and `B`, from a params file outside
-the form's folder. Preview is open with 100 against `A` and 200 against
-`B`. The file is changed to `A`, `C`, as a colleague's pull would. A test
-quote saved from Preview is answered 200 and holds `A` with 100 and `C`
-with nothing: the 200 is lost and nothing is said. The specification has
-the quote saved be the one typed, or the save refused as stale. The
-revision that guards the save is made from the form's folder only, and
-was the same before and after.
-
-**Plan:** Put the params files the form reads into its revision.
-
-**Acceptance:** The save above is refused as stale, and Preview shows the
-new codes after it reloads.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_folder.py`;
-`specs/workbench/high-level.md`.
-
 ### WB-68 — A number in a params file is read as the same number typed in a cell
 **Why:** Reproduced on 14 November 2026. A field takes its allowed values
 from a params file. With `1,000` for an Integer field, `1,000.00` for a
@@ -1231,28 +1208,6 @@ gives. A value that is not a number is refused with the type's own name.
 
 **Evidence:** `src/haute/_workbench_params.py`;
 `src/haute/_workbench_tables.py`.
-
-### WB-69 — Accept is refused when a data file the helper code reads has changed
-**Why:** Reproduced on 14 November 2026 through the designer's routes. A
-project's `utility` code reads a factor from `utility/rates.json`. A test
-quote expects a premium of 100. The factor is changed to 2 and the test
-is run: it shows the premium moving from 100 to 200. The factor is then
-changed to 3, and Accept is pressed. The answer is 200 and the test's
-expected premium becomes 300, a number the analyst was never shown. With
-the change made in `utility/__init__.py` instead, Accept is refused:
-"What the run priced on changed since". The check hashes the `.py` files
-of `utility` only.
-
-**Plan:** Hash every file under `utility`, as `CCH-05` asks of the
-preview's cache.
-
-**Acceptance:** The Accept above is refused with the sentence the code
-change gets.
-
-**Dependencies:** `CCH-05`.
-
-**Evidence:** `src/haute/_workbench_test_quotes.py`;
-`specs/workbench/high-level.md`.
 
 ### WB-70 — A creation repeated under its key is answered with the quote it made
 **Why:** Reproduced on 16 November 2026 with two instances of the

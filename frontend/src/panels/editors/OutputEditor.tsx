@@ -8,7 +8,7 @@ import {
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel, ValidatedTextField } from "../../components/form"
-import { useGraph, useRequestScope } from "../useGraph"
+import { useDerivedRequestKey, useGraph, useRequestScope } from "../useGraph"
 import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -343,16 +343,18 @@ export default function OutputEditor({
   // saved file. Capped to PREVIEW_ROW_LIMIT source rows; document rows beyond
   // the cap render with a "showing N of M" note rather than silently truncating.
   const [outputPreviewOpen, setOutputPreviewOpen] = useState(false)
-  // A preview is of one mapping read from one data source at one node-data
-  // epoch: it is shown only while all three are still the editor's, so an
-  // edit, a source switch or new data (a workbench sample changed, an input
-  // replaced) never leaves an earlier document beside the current rows.
+  // A preview is of one mapping over the document upstream (its nodes, constants and
+  // preamble) read from one data source at one node-data epoch: it is shown only while
+  // all of them are still the editor's, so an edit or an Undo upstream, a source switch
+  // or new data (a workbench sample changed, an input replaced) never leaves an earlier
+  // document beside the current rows.
   const activeSource = useSettingsStore((s) => s.activeSource)
   const dataEpoch = useNodeDataStore((s) => s.epoch)
+  const upstreamKey = useDerivedRequestKey(nodeId)
   const persistedMapping = useMemo(() => writeV2(v2).output_mapping as Array<Record<string, unknown>>, [v2])
   const previewKey = useMemo(
-    () => JSON.stringify([persistedMapping, activeSource, dataEpoch]),
-    [persistedMapping, activeSource, dataEpoch],
+    () => JSON.stringify([persistedMapping, upstreamKey, activeSource, dataEpoch]),
+    [persistedMapping, upstreamKey, activeSource, dataEpoch],
   )
   const [assembled, setAssembled] = useState<
     | { key: string; status: "loading" }

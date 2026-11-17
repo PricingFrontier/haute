@@ -11,10 +11,10 @@ against a local server, first by the sweep and then by the main session on
 the scaffolded test project, with a data file replaced on disk while the
 editor was open. The main session added the Banding editor's case.
 
-`FEP-03` and `FEP-04` come from the review plan's phase 5, a reader
-from a second model family (Codex) over the code changed since the 31
-October audit. A worker drove each journey in a browser and the main
-session ran each again on 15 November 2026.
+`FEP-04` comes from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker drove its journey in a browser and the main session ran it again on
+15 November 2026.
 
 ## Priorities
 
@@ -22,7 +22,6 @@ session ran each again on 15 November 2026.
 |---|---|---:|---|
 | FEP-01 | Planned | P2 | After a data file's columns change, one Refresh previews the file as it is, instead of failing on the columns the editor remembered. |
 | FEP-02 | Planned | P2 | A node's Refresh brings the Explore overview, and the Banding editor's counts and values, up to date with the data, as it does the preview. |
-| FEP-03 | Planned | P2 | After a utility file is saved, a preview of a node that uses it is requested again or marked out of date. |
 | FEP-04 | Planned | P2 | An edit to one utility file made while another is being deleted is kept and saved. |
 
 ## Planned improvements
@@ -131,27 +130,6 @@ same test. A schema refreshed from long to short shows every column.
 `frontend/src/panels/editors/shared/useWholeDataAnswer.ts`;
 `frontend/src/panels/editors/banding/useBandingStats.ts`;
 `frontend/src/panels/explore/SchemaTableCard.tsx`.
-
-### FEP-03 — A saved utility file makes the previews that use it out of date
-**Why:** Reproduced on 15 November 2026 in the browser. A Transform reads
-`RATE` from a utility file; its preview showed 10. In the Utility panel
-`RATE` was changed to 20 and saved (the file holds 20), and the panel was
-closed. Selecting the node again sends no preview request and shows no
-out-of-date mark: the grid still reads 10. Refresh, and `haute run`, give
-20. A saved edit to a node's own code does invalidate its preview; a
-saved edit to the helper code it calls does not.
-
-**Plan:** Count a utility save as a change to every preview on screen or
-cached in the browser: request the selected node again, or mark the rows
-out of date, as a node edit does.
-
-**Acceptance:** After the save above, selecting the node shows 20, or
-shows the old rows marked out of date, without pressing Refresh.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/usePipelineAPI.ts`;
-`frontend/src/panels/UtilityPanel.tsx`.
 
 ### FEP-04 — A utility file edited while another is being deleted keeps its edit
 **Why:** Reproduced on 15 November 2026 in the browser with the delete's

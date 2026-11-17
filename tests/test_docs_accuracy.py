@@ -173,7 +173,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "rating",
     "root-cause-column-kinds",
     "root-cause-error-boundaries",
-    "root-cause-freshness",
     "root-cause-git-intent",
     "root-cause-late-answers",
     "root-cause-panel-drafts",

@@ -9,7 +9,8 @@
 
 import { createContext, useContext, useMemo } from "react"
 import type { SimpleNode, SimpleEdge } from "./editors/_shared"
-import useGraphStore from "../stores/useGraphStore"
+import useDataEpochStore from "../stores/useDataEpochStore"
+import useGraphStore, { derivedRequestKey } from "../stores/useGraphStore"
 import { documentRequestScope, resultKey, type RequestScope } from "../utils/requestGateway"
 
 /** Shape exposed by `useGraph()`. */
@@ -74,4 +75,24 @@ export function useResultKey(nodeId: string | null | undefined): string | null {
     if (nodeId === null || nodeId === undefined) return null
     return scope === null ? nodeId : resultKey(nodeId)
   }, [nodeId, occurrence, scope])
+}
+
+/**
+ * The key of what a request this panel derives for `nodeId` is computed from
+ * ({@link derivedRequestKey}): the nearest provider's graph, its preamble and the
+ * document's constants, with `nodeId`'s own settings left to the caller's key.
+ */
+export function useDerivedRequestKey(nodeId: string): string {
+  const { allNodes, edges, submodels, preamble } = useGraph()
+  const globalConstants = useGraphStore((state) => state.globalConstants)
+  // The files a run reads outside the document (utility code, data, params), which move
+  // this epoch when the browser writes them (`noteProjectInputsChanged`).
+  const projectInputs = useDataEpochStore((state) => state.epoch)
+  return useMemo(
+    () => `${projectInputs}|${derivedRequestKey(
+      { nodes: allNodes, edges, submodels, preamble, globalConstants },
+      nodeId,
+    )}`,
+    [allNodes, edges, submodels, preamble, globalConstants, nodeId, projectInputs],
+  )
 }

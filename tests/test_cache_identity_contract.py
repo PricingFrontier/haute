@@ -1,8 +1,8 @@
 """Cache-fingerprint completeness contracts, and graph fingerprint determinism.
 
-The base graph fingerprint is independent of node and edge order, changes with
-any config change, tolerates values JSON cannot encode, and folds extra keys in
-order.
+The base graph fingerprint is independent of node order and of the order of edges
+into different nodes (a node's own inputs keep theirs), changes with any config
+change, tolerates values JSON cannot encode, and folds extra keys in order.
 """
 
 from __future__ import annotations
@@ -207,14 +207,14 @@ def test_every_consumer_totally_classifies_the_closed_logical_input_set() -> Non
 
 def test_checked_contract_versions_advance_with_changed_byte_layouts() -> None:
     assert ALGO_VERSION == 9
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.GRAPH_STRUCTURE].version == 2
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 5
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.GRAPH_STRUCTURE].version == 3
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 6
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 4
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.DEPLOY_SCHEMA].version == 3
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.NODE_SNAPSHOT_SIGNATURE].version == 3
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.DEPLOY_SCHEMA].version == 4
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.NODE_SNAPSHOT_SIGNATURE].version == 4
 
 
-def test_every_identity_of_polars_computed_contents_signs_the_polars_version() -> None:
+def test_every_identity_of_computed_contents_signs_polars_and_haute_code() -> None:
     signed = {
         CacheConsumer.PREVIEW_TRACE,
         CacheConsumer.DEPLOY_SCHEMA,
@@ -223,7 +223,7 @@ def test_every_identity_of_polars_computed_contents_signs_the_polars_version() -
     for consumer, contract in CACHE_CONSUMER_CONTRACTS.items():
         disposition = contract.input_classes[CacheInputClass.ENGINE_VERSION]
         if consumer in signed:
-            assert disposition.fields == ("polars_version",), consumer
+            assert disposition.fields == ("polars_version", "haute_code"), consumer
         else:
             assert disposition.fields == (), consumer
             assert disposition.exclusion_reason, consumer
@@ -700,7 +700,8 @@ class TestGraphBaseFingerprint:
         assert _graph_base_fingerprint(g1) == _graph_base_fingerprint(g2)
 
     def test_edge_order_does_not_matter(self):
-        """Edges are sorted by (source, target), so insertion order is irrelevant."""
+        """Edges into different nodes are grouped by the node they feed, so their
+        insertion order is irrelevant."""
         from haute._cache import _graph_base_fingerprint
         from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 

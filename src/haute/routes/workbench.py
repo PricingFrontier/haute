@@ -198,7 +198,7 @@ def _stale(
     raise StaleDocumentRevisionError(
         expected_revision=current,
         provided_revision=body.base_revision,
-        message=f"{config.form} changed on disk after the workbench read it. "
+        message=f"{config.form} or a params file changed on disk after the workbench read it. "
         "Reload the workbench before saving.",
     )
 
@@ -270,7 +270,10 @@ def _save_form(
     changed = [f"{config.form}/{path}" for path in [*writes, *deletes]]
     captured = capture_save_in_ledger(config.project_root, changed, warnings)
     return WorkbenchFormSaveResponse(
-        form=form, revision=folder_revision(files), warnings=warnings, **captured._asdict()
+        form=form,
+        revision=folder_revision(files, snapshot.params),
+        warnings=warnings,
+        **captured._asdict(),
     )
 
 
@@ -729,7 +732,8 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
         if release.document.revision != body.form_revision:
             raise _RefusedError(
                 409,
-                f"{config.form} was saved again since this panel saved it: save the project "
+                f"{config.form} was saved again, or a params file changed, since this panel "
+                "saved it: save the project "
                 "again to save this quote.",
             )
         request = effective_request(release.form)
@@ -763,7 +767,8 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
             if read_folder_unlocked(config).revision != body.form_revision:
                 raise _RefusedError(
                     409,
-                    f"{config.form} was saved again while the quote priced: save the project "
+                    f"{config.form} was saved again, or a params file changed, while the quote "
+                    "priced: save the project "
                     "again to save this quote.",
                 )
         folder = _test_quote_folder(config)

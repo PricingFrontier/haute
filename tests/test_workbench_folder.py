@@ -55,6 +55,7 @@ from haute._workbench_form import (
     render_form,
     with_quote_details,
 )
+from haute._workbench_params import params_files
 from haute._workbench_tables import sample_quote
 from tests._source_files import source_files
 from tests._workbench_helpers import FORM as FOLDER
@@ -62,6 +63,11 @@ from tests._workbench_helpers import enable, form_files, form_folder, write_file
 
 #: The golden folder: the test project's form as the folder module writes it.
 GOLDEN = Path(__file__).parent / "fixtures" / "workbench_folder"
+
+
+def params_of(project: Path) -> dict[str, bytes]:
+    """The params files a form's revision signs, as the project holds them."""
+    return {name: path.read_bytes() for name, path in params_files(project).items()}
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
@@ -698,7 +704,7 @@ def test_a_form_round_trips_through_its_folder_with_the_folder_s_revision(projec
 
     assert document.spec.model_dump(mode="json") == spec_of(FORM).model_dump(mode="json")
     assert document.spec == spec_of(FORM)
-    assert document.revision == folder_revision(files)
+    assert document.revision == folder_revision(files, params_of(project))
     assert document.repairs == ()
     # Saved again as it was read, it is the same files.
     assert form_files(document.spec, form_folder(project)) == files
@@ -1102,7 +1108,11 @@ def test_the_same_files_read_as_the_same_revision(project: Path) -> None:
     write_files(form_folder(project), files)
 
     # A save that writes the same files has the same revision, which is the files' own.
-    assert read_form_document(config(project)).revision == revision == folder_revision(files)
+    assert (
+        read_form_document(config(project)).revision
+        == revision
+        == folder_revision(files, params_of(project))
+    )
     assert read_folder(config(project)).revision == revision
     assert read_folder(config(project)).files == files
 
@@ -1145,9 +1155,9 @@ def test_a_changed_added_or_deleted_file_reads_as_another_revision(
     change(folder)
 
     document = read_form_document(config(project))
-    assert document.revision != folder_revision(files)
+    assert document.revision != folder_revision(files, params_of(project))
     # The revision is the hash of every file's path and bytes as the read took them.
-    assert document.revision == folder_revision(on_disk(folder))
+    assert document.revision == folder_revision(on_disk(folder), params_of(project))
 
 
 def test_a_whitespace_change_reads_as_the_same_form_at_another_revision(project: Path) -> None:
@@ -1157,7 +1167,7 @@ def test_a_whitespace_change_reads_as_the_same_form_at_another_revision(project:
 
     document = read_form_document(config(project))
     assert document.spec == spec_of(FORM)
-    assert document.revision != folder_revision(files)
+    assert document.revision != folder_revision(files, params_of(project))
 
 
 def test_a_file_the_index_does_not_name_counts_in_the_revision(project: Path) -> None:
@@ -1166,21 +1176,23 @@ def test_a_file_the_index_does_not_name_counts_in_the_revision(project: Path) ->
 
     write_files(folder, {"notes.md": b"Rates from the 2026 filing.\n"})
 
-    assert read_folder(config(project)).revision == folder_revision(on_disk(folder))
-    assert read_folder(config(project)).revision != folder_revision(files)
+    assert read_folder(config(project)).revision == folder_revision(
+        on_disk(folder), params_of(project)
+    )
+    assert read_folder(config(project)).revision != folder_revision(files, params_of(project))
 
 
 def test_the_revision_hashes_each_file_s_path_and_bytes_in_any_order() -> None:
     files = {"form.json": b"{}\n", "schema/a.json": b"[]\n"}
 
-    assert folder_revision(files) == folder_revision(dict(reversed(list(files.items()))))
-    assert folder_revision(files) != folder_revision(
-        {"form.json": b"{}\n", "schema/b.json": b"[]\n"}
+    assert folder_revision(files, {}) == folder_revision(dict(reversed(list(files.items()))), {})
+    assert folder_revision(files, {}) != folder_revision(
+        {"form.json": b"{}\n", "schema/b.json": b"[]\n"}, {}
     )
-    assert folder_revision(files) != folder_revision(
-        {"form.json": b"{} \n", "schema/a.json": b"[]\n"}
+    assert folder_revision(files, {}) != folder_revision(
+        {"form.json": b"{} \n", "schema/a.json": b"[]\n"}, {}
     )
-    assert folder_revision(files) != folder_revision({"form.json": b"{}\n"})
+    assert folder_revision(files, {}) != folder_revision({"form.json": b"{}\n"}, {})
 
 
 # -- What a save writes ------------------------------------------------------------------
@@ -3134,7 +3146,7 @@ def test_a_reader_in_another_process_waits_on_a_save_and_reads_the_saved_form_wh
 
     assert reader.returncode == 0, err
     answer = json.loads(out)
-    assert answer["revision"] == folder_revision(after)
+    assert answer["revision"] == folder_revision(after, params_of(project))
     assert answer["form"] == spec_of(region).model_dump(mode="json")
 
 
@@ -3200,7 +3212,7 @@ def test_a_read_that_a_lockless_writer_changes_reads_again_and_answers_one_side_
     document = read_form_document(config(project))
 
     assert len(listings) == 4
-    assert document.revision == folder_revision(after)
+    assert document.revision == folder_revision(after, params_of(project))
     assert document.spec == spec_of(region)
 
 
@@ -3230,7 +3242,9 @@ def test_a_folder_that_changes_on_each_of_three_tries_is_refused(
     else:
         # Changed on two tries, the third reads it.
         document = read_form_document(config(project))
-        assert document.revision == folder_revision(on_disk(form_folder(project)))
+        assert document.revision == folder_revision(
+            on_disk(form_folder(project)), params_of(project)
+        )
         assert document.spec == spec_of(FORM)
         assert len(listings) == 6
 
@@ -3257,7 +3271,7 @@ def test_the_golden_folder_reads_as_the_test_project_s_form(project: Path) -> No
     document = read_form_document(config(project))
 
     assert document.spec.model_dump(mode="json") == spec_of(FORM).model_dump(mode="json")
-    assert document.revision == folder_revision(golden_files())
+    assert document.revision == folder_revision(golden_files(), params_of(project))
     assert document.repairs == ()
 
 

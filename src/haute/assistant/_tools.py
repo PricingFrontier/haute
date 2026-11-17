@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import polars as pl
 
-from haute._cache import canonical_json
+from haute._cache import canonical_json, preamble_execution_fingerprint
 from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._column_summary import (
     CATEGORICAL_COUNT_FIELD,
@@ -1225,9 +1225,10 @@ class TurnContextError(HauteError):
 
 # The brief's resolved facts for the latest project revisions. A revision covers
 # the pipeline file, `haute.toml` and the capability hash, so an edit always
-# misses. The revision does not cover the data files the schemas are read from or
-# the tables the workbench nodes take from the form, so both join the key
-# (`_cached_brief_nodes`).
+# misses. The revision does not cover the data files the schemas are read from, the
+# project code a run executes (the preamble and every file of `utility`, as every
+# result identity signs it) or the tables the workbench nodes take from the form, so
+# all three join the key (`_cached_brief_nodes`).
 _BRIEF_CACHE: OrderedDict[str, tuple[BriefNode, ...]] = OrderedDict()
 _BRIEF_CACHE_SIZE = 8
 _BRIEF_CACHE_LOCK = threading.Lock()
@@ -1446,7 +1447,8 @@ def _cached_brief_nodes(graph: PipelineGraph, revision: str) -> tuple[BriefNode,
     if inputs is None:
         return _brief_nodes(graph, flat)
     tables = [node.data.config for node in flat.nodes if node.data.nodeType in WORKBENCH_NODE_TYPES]
-    material = canonical_json({"inputs": inputs, "tables": tables})
+    code = preamble_execution_fingerprint(flat.preamble, pipeline_dir=graph_pipeline_dir(flat))
+    material = canonical_json({"inputs": inputs, "code": code, "tables": tables})
     key = f"{revision}:{content_hash_bytes(material.encode('utf-8'))}"
     with _BRIEF_CACHE_LOCK:
         cached = _BRIEF_CACHE.get(key)

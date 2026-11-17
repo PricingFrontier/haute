@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import ast as _ast
+import functools
 import importlib as _importlib
 import json as _json
 import math as _math
@@ -318,7 +318,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
     {
         CacheConsumer.GRAPH_STRUCTURE: _consumer_contract(
             CacheConsumer.GRAPH_STRUCTURE,
-            version=2,
+            version=3,
             fields=("nodes", "edges"),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("nodes",),
@@ -370,7 +370,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.PREVIEW_TRACE: _consumer_contract(
             CacheConsumer.PREVIEW_TRACE,
-            version=5,
+            version=6,
             fields=(
                 "preamble",
                 "global_constants",
@@ -388,6 +388,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "runtime_input_fingerprint",
                 "execution_semantics_version",
                 "polars_version",
+                "haute_code",
             ),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("nodes",),
@@ -413,7 +414,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "execution_semantics_version",
                 ),
                 CacheInputClass.GLOBAL_CONSTANTS: ("global_constants",),
-                CacheInputClass.ENGINE_VERSION: ("polars_version",),
+                CacheInputClass.ENGINE_VERSION: ("polars_version", "haute_code"),
             },
             excluded={},
         ),
@@ -450,7 +451,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.DEPLOY_SCHEMA: _consumer_contract(
             CacheConsumer.DEPLOY_SCHEMA,
-            version=3,
+            version=4,
             fields=(
                 "graph_fingerprint",
                 "runtime_input_fingerprint",
@@ -461,6 +462,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "row_limit",
                 "execution_policy",
                 "polars_version",
+                "haute_code",
             ),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("graph_fingerprint",),
@@ -477,7 +479,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.REQUEST_SHAPE: ("output_node_id", "input_node_ids"),
                 CacheInputClass.EXECUTION_POLICY: ("execution_policy",),
                 CacheInputClass.GLOBAL_CONSTANTS: ("graph_fingerprint",),
-                CacheInputClass.ENGINE_VERSION: ("polars_version",),
+                CacheInputClass.ENGINE_VERSION: ("polars_version", "haute_code"),
             },
             excluded={},
         ),
@@ -560,7 +562,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.NODE_SNAPSHOT_SIGNATURE: _consumer_contract(
             CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
-            version=3,
+            version=4,
             fields=(
                 "lineage_fingerprint",
                 "runtime_input_fingerprint",
@@ -570,6 +572,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 "preamble_supplied",
                 "execution_semantics_version",
                 "polars_version",
+                "haute_code",
             ),
             consumed={
                 CacheInputClass.NODE_CONFIG: ("lineage_fingerprint",),
@@ -589,7 +592,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "execution_semantics_version",
                 ),
                 CacheInputClass.GLOBAL_CONSTANTS: ("lineage_fingerprint",),
-                CacheInputClass.ENGINE_VERSION: ("polars_version",),
+                CacheInputClass.ENGINE_VERSION: ("polars_version", "haute_code"),
             },
             excluded={
                 CacheInputClass.ROW_LIMIT: _FULL_FRAME_NO_ROW_LIMIT,
@@ -612,6 +615,38 @@ def polars_version() -> str:
     import polars
 
     return polars.__version__
+
+
+#: Which files of the installed ``haute`` package are its code: its modules and the data
+#: files they read (node defaults, the IO registry). The browser bundle under ``static``
+#: computes no result.
+_HAUTE_CODE_SUFFIXES = frozenset({".py", ".json"})
+_HAUTE_CODE_SKIPPED_DIRS = frozenset({"__pycache__", "static"})
+
+
+@functools.cache
+def haute_code_fingerprint() -> str:
+    """A digest of the installed Haute's own code, which every identity that signs the Polars
+    version signs beside it.
+
+    Derived from the files themselves, once per process: a released build and a source
+    checkout alike, so a change to how any node computes its output (a fix to rating, a
+    builder, a scorer) makes every result computed before it old, with no version for a
+    developer to remember to raise, and two processes of one build agree.
+    """
+    package = Path(__file__).resolve().parent
+    files = sorted(
+        path
+        for path in package.rglob("*")
+        if path.suffix in _HAUTE_CODE_SUFFIXES
+        and path.is_file()
+        and _HAUTE_CODE_SKIPPED_DIRS.isdisjoint(path.relative_to(package).parts)
+    )
+    material = bytearray()
+    for path in files:
+        material += path.relative_to(package).as_posix().encode("utf-8") + b"\0"
+        material += content_hash_bytes(path.read_bytes()).encode("ascii") + b"\0"
+    return content_hash_bytes(bytes(material))
 
 
 @dataclass(frozen=True, slots=True)
@@ -765,9 +800,9 @@ class GraphFingerprintMemo:
         default_factory=dict
     )
     # The canonical graph_node and graph_edge records of the node and edge
-    # objects it has seen; an edge's also keeps its canonical JSON, its sort key.
+    # objects it has seen.
     graph_node_records: dict[str, tuple[GraphNode, Any]] = field(default_factory=dict)
-    graph_edge_records: dict[str, tuple[GraphEdge, Any, str]] = field(default_factory=dict)
+    graph_edge_records: dict[str, tuple[GraphEdge, Any]] = field(default_factory=dict)
 
 
 def canonical_json(value: Any) -> str:
@@ -923,13 +958,7 @@ def _graph_base_fingerprint(
     nodes = [_canonical_node_record(n, memo) for n in sorted(graph.nodes, key=lambda n: n.id)]
     # Handles select which frame/role reaches a consumer. Edge IDs are canvas
     # identity only, so endpoint/handle tuples define execution wiring.
-    edges = [
-        record
-        for record, _text in sorted(
-            (_canonical_edge_record(edge, memo) for edge in graph.edges),
-            key=lambda item: item[1],
-        )
-    ]
+    edges = [_canonical_edge_record(edge, memo) for edge in input_ordered_edges(graph.edges)]
     inputs = checked_cache_inputs(
         CacheConsumer.GRAPH_STRUCTURE,
         {
@@ -939,6 +968,19 @@ def _graph_base_fingerprint(
     )
     # Every record is already canonical, so the payload is not walked again.
     return content_hash_bytes(_canonical_dumps(inputs.payload).encode("utf-8"))
+
+
+def input_ordered_edges(edges: Iterable[GraphEdge]) -> list[GraphEdge]:
+    """*edges* in the order every identity signs them: by the node each feeds, and within
+    one node in the graph's own order, which is the order the executor gives that node its
+    inputs (:func:`haute._graph_utils.build_parents_of`).
+
+    A node's code reads its first input as ``df``, and a node of several inputs reads them
+    by position, so the same edges connected the other way round compute something else:
+    sorting a node's incoming edges would sign the two alike. Edges into different nodes
+    are independent, so their relative order is not signed.
+    """
+    return sorted(edges, key=lambda edge: edge.target)
 
 
 def _canonical_node_record(node: GraphNode, memo: GraphFingerprintMemo | None) -> Any:
@@ -962,11 +1004,11 @@ def _canonical_node_record(node: GraphNode, memo: GraphFingerprintMemo | None) -
     return record
 
 
-def _canonical_edge_record(edge: GraphEdge, memo: GraphFingerprintMemo | None) -> tuple[Any, str]:
+def _canonical_edge_record(edge: GraphEdge, memo: GraphFingerprintMemo | None) -> Any:
     if memo is not None:
         known = memo.graph_edge_records.get(edge.id)
         if known is not None and known[0] is edge:
-            return known[1], known[2]
+            return known[1]
     record = _canonicalise(
         checked_cache_identity_record(
             CacheIdentityRecord.GRAPH_EDGE,
@@ -978,10 +1020,9 @@ def _canonical_edge_record(edge: GraphEdge, memo: GraphFingerprintMemo | None) -
             },
         )
     )
-    text = _canonical_dumps(record)
     if memo is not None:
-        memo.graph_edge_records[edge.id] = (edge, record, text)
-    return record, text
+        memo.graph_edge_records[edge.id] = (edge, record)
+    return record
 
 
 def _node_config_for_execution_fingerprint(node: GraphNode) -> dict[str, Any]:
@@ -1162,10 +1203,7 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
         "nodes": [
             _lineage_node_identity(relevant_nodes[node_id]) for node_id in sorted(relevant_nodes)
         ],
-        "edges": sorted(
-            (_lineage_edge_identity(edge) for edge in relevant_edges),
-            key=canonical_json,
-        ),
+        "edges": [_lineage_edge_identity(edge) for edge in input_ordered_edges(relevant_edges)],
         "target_node_id": request.target_node_id,
         "source": request.source,
         "requested_columns": requested_columns,
@@ -1180,73 +1218,12 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
         "runtime_input_fingerprint": request.runtime_input_fingerprint,
         "execution_semantics_version": request.execution_semantics_version,
         "polars_version": polars_version(),
+        "haute_code": haute_code_fingerprint(),
     }
     inputs = checked_cache_inputs(CacheConsumer.PREVIEW_TRACE, payload)
     return f"lineage-preview:v{LINEAGE_CACHE_KEY_VERSION}:" + content_hash_bytes(
         inputs.canonical_bytes,
     )
-
-
-def _is_utility_module_name(value: str) -> bool:
-    return value == "utility" or value.startswith("utility.")
-
-
-def _string_contains_utility_import(value: str) -> bool:
-    stripped = value.strip()
-    return (
-        _is_utility_module_name(stripped)
-        or "import utility" in stripped
-        or "from utility" in stripped
-    )
-
-
-def _call_imports_utility(node: _ast.Call) -> bool:
-    if not node.args:
-        return False
-    first_arg = node.args[0]
-    if not isinstance(first_arg, _ast.Constant) or not isinstance(first_arg.value, str):
-        return False
-
-    func = node.func
-    if isinstance(func, _ast.Name) and func.id == "__import__":
-        return _is_utility_module_name(first_arg.value)
-    if (
-        isinstance(func, _ast.Attribute)
-        and func.attr == "import_module"
-        and isinstance(func.value, _ast.Name)
-        and func.value.id == "importlib"
-    ):
-        return _is_utility_module_name(first_arg.value)
-    if isinstance(func, _ast.Name) and func.id == "exec":
-        return _string_contains_utility_import(first_arg.value)
-    return False
-
-
-def preamble_imports_utility(preamble: str) -> bool:
-    """Return whether *preamble* imports the project ``utility`` package."""
-    if not preamble.strip():
-        return False
-    try:
-        tree = _ast.parse(preamble)
-    except SyntaxError:
-        # The executor will surface the syntax error later.  For cache-key
-        # purposes, keep invalid preambles that mention utility sensitive
-        # to utility edits instead of serving stale error/output entries.
-        return "utility" in preamble
-
-    for node in _ast.walk(tree):
-        if isinstance(node, _ast.Import):
-            for alias in node.names:
-                if _is_utility_module_name(alias.name):
-                    return True
-        elif isinstance(node, _ast.ImportFrom):
-            module = node.module or ""
-            if _is_utility_module_name(module):
-                return True
-        elif isinstance(node, _ast.Call):
-            if _call_imports_utility(node):
-                return True
-    return False
 
 
 def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
@@ -1314,22 +1291,21 @@ def _hash_utility_candidate(
     path: Path,
     memo: GraphFingerprintMemo | None,
 ) -> dict[str, Any]:
+    from haute._project_imports import utility_tree_files
+
     if not path.exists():
         return {"kind": "missing"}
     if path.is_file():
         return {"kind": "file", "hash": _utility_file_hash(path, memo)}
     if not path.is_dir():
         raise TypeError(f"Cannot fingerprint utility module root at {path!s}")
-
-    files: list[dict[str, str]] = []
-    for file_path in sorted(path.rglob("*.py")):
-        if file_path.is_file():
-            files.append(
-                {
-                    "path": file_path.relative_to(path).as_posix(),
-                    "hash": _utility_file_hash(file_path, memo),
-                }
-            )
+    files = [
+        {
+            "path": file_path.relative_to(path).as_posix(),
+            "hash": _utility_file_hash(file_path, memo),
+        }
+        for file_path in utility_tree_files(path)
+    ]
     return {"kind": "package", "files": files}
 
 
@@ -1339,27 +1315,29 @@ def preamble_execution_fingerprint(
     pipeline_dir: str | Path | None = None,
     memo: GraphFingerprintMemo | None = None,
 ) -> str | None:
-    """Return a digest of preamble inputs that can affect execution.
+    """The digest of the project code a run executes: the preamble and the ``utility`` tree.
 
-    Empty preambles return ``None`` so callers can stay on their cheapest
-    cache paths. Non-empty preambles always include the preamble text and,
-    when they import the project ``utility`` package, the current contents
-    of nearby ``utility.py`` / ``utility/**/*.py`` files.
+    It signs the preamble's text and every file of the ``utility`` an import would load
+    (:func:`haute._project_imports.utility_tree_files`), whatever imports it: the preamble,
+    a node's own code, or a helper while Polars collects. Which modules a run imports and
+    which files its code opens are not gathered, so the whole tree counts as read, and an
+    edit to any file of it, data beside the code included, makes every result old.
+    ``None`` only when there is neither a preamble nor a ``utility``, so a pipeline with no
+    project code stays on its callers' cheapest paths.
     """
     preamble = preamble or ""
-    if not preamble.strip():
+    locations = _resolve_utility_locations(pipeline_dir)
+    if not preamble.strip() and locations is None:
         return None
-
-    parts: list[dict[str, Any]] = [
-        {"kind": "preamble", "hash": content_hash_bytes(preamble.encode())}
-    ]
-    if preamble_imports_utility(preamble):
-        locations = _resolve_utility_locations(pipeline_dir)
-        if locations is None:
-            utility_entries: list[dict[str, Any]] = [{"kind": "missing"}]
-        else:
-            utility_entries = [_hash_utility_candidate(location, memo) for location in locations]
-        parts.append({"kind": "utility", "entries": utility_entries})
+    parts: list[dict[str, Any]] = []
+    if preamble.strip():
+        parts.append({"kind": "preamble", "hash": content_hash_bytes(preamble.encode())})
+    utility_entries: list[dict[str, Any]] = (
+        [{"kind": "missing"}]
+        if locations is None
+        else [_hash_utility_candidate(location, memo) for location in locations]
+    )
+    parts.append({"kind": "utility", "entries": utility_entries})
     return content_hash_bytes(canonical_json(parts).encode())
 
 

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from importlib.machinery import PathFinder
 from pathlib import Path
 
-from haute._project_imports import UTILITY_PACKAGE, utility_search_dirs
+from haute._project_imports import UTILITY_PACKAGE, utility_search_dirs, utility_tree_files
 from haute.errors import DeployError
 
 __all__ = ["UTILITY_PACKAGE", "ProjectModules", "resolve_project_modules"]
@@ -94,8 +94,8 @@ def _utility_sources(utility: Path) -> list[tuple[str, str]]:
     else:
         files = [
             (f"{UTILITY_PACKAGE}/{path.relative_to(utility).as_posix()}", path)
-            for path in sorted(utility.rglob("*.py"))
-            if "__pycache__" not in path.relative_to(utility).parts
+            for path in utility_tree_files(utility)
+            if path.suffix == ".py"
         ]
     return [(label, _read_source(path, label=label)) for label, path in files]
 

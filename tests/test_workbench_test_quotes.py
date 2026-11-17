@@ -633,6 +633,33 @@ def test_the_basis_moves_with_helper_code_outputs_and_artifact_content(project: 
         changed.close()
 
 
+def test_the_basis_moves_with_a_data_file_the_helper_code_reads(project: Path) -> None:
+    """WB-69: what a run priced on includes every file of the utility code, so Accept is
+    refused when a data file it reads changes, as it is for its ``.py`` files."""
+    package = project / "utility"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        "import json\nfrom pathlib import Path\n"
+        "FACTOR = json.loads((Path(__file__).parent / 'rates.json').read_text())['factor']\n",
+        encoding="utf-8",
+    )
+    (package / "rates.json").write_text('{"factor": 2}', encoding="utf-8")
+    (project / "main.py").write_text(
+        "import utility  # noqa\n" + (project / "main.py").read_text(), encoding="utf-8"
+    )
+    before = resolve_release(project)
+    try:
+        priced_on = basis(before)
+    finally:
+        before.close()
+    (package / "rates.json").write_text('{"factor": 3}', encoding="utf-8")
+    after = resolve_release(project)
+    try:
+        assert basis(after) != priced_on
+    finally:
+        after.close()
+
+
 # ── The build ─────────────────────────────────────────────────────────────
 
 

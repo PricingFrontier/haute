@@ -8,6 +8,7 @@ import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore, { type OptimiserPane } from "../../stores/useUIStore"
 import useGraphStore from "../../stores/useGraphStore"
+import { noteProjectInputsChanged } from "../../stores/projectInputs"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import { solveConfigHash } from "../optimiser/solveActions"
 import type { SimpleNode, SimpleEdge } from "../editors/_shared"
@@ -1203,6 +1204,28 @@ describe("OptimiserConfig", () => {
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(2))
       rerenderWith({ ...made.componentProps.config, constraints: { volume: { min: 5 }, loss: { max: 1 } }, scenario_value: "premium" })
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(3))
+    })
+
+    it("re-requests the size estimate when Undo puts a constant back and when a utility file is saved", async () => {
+      // FEM-04: the estimate is keyed by the document it reads, constants included.
+      mockEstimateOptimiserSolve.mockResolvedValue({
+        total_rows: 10, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
+        scenarios_per_quote_mean: 2, expanded_row_count: 20,
+        solve_memory_forecast_bytes: 285212672, solve_memory_cap_bytes: 8589934592,
+      })
+      const limit = { name: "row_limit", type: "integer" as const, split: false, value: "40", bySource: {} }
+      useGraphStore.getState().setGlobalConstantsRaw([limit])
+      renderConfig(makeProps())
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1))
+
+      act(() => useGraphStore.getState().setGlobalConstants([{ ...limit, value: "20" }]))
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(2))
+      act(() => useGraphStore.getState().undo())
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(3))
+      expect(useGraphStore.getState().globalConstants).toEqual([limit])
+
+      act(() => noteProjectInputsChanged())
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(4))
     })
 
     it("does not mark the solve stale for export edits", () => {

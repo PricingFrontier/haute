@@ -526,22 +526,34 @@ function edgeStructuralKey(edge: StructuralEdge): string {
   return `${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}`
 }
 
+/**
+ * Edges as the server's identities sign them (`haute._cache.input_ordered_edges`): by the
+ * node each feeds, and within one node in the graph's own order, which is the order the
+ * executor gives that node its inputs. The same edges connected the other way round are
+ * another computation; edges into different nodes keep their key in any order.
+ */
+function inputOrderedEdgeParts(edges: readonly StructuralEdge[]): string[] {
+  return [...edges]
+    .sort((a, b) => (a.target < b.target ? -1 : a.target > b.target ? 1 : 0))
+    .map(edgeStructuralKey)
+}
+
 function hasSameEdgeStructure(current: StructuralEdge[], next: StructuralEdge[]): boolean {
   if (current.length !== next.length) return false
 
-  const currentParts = current.map(edgeStructuralKey).sort()
-  const nextParts = next.map(edgeStructuralKey).sort()
+  const currentParts = inputOrderedEdgeParts(current)
+  const nextParts = inputOrderedEdgeParts(next)
   return currentParts.every((part, index) => part === nextParts[index])
 }
 
-function structuralGraphParts(nodes: StructuralNode[], edges: StructuralEdge[]): string {
+function structuralGraphParts(
+  nodes: readonly StructuralNode[],
+  edges: readonly StructuralEdge[],
+): string {
   const nodeParts = nodes
     .map((n) => `${n.id}:${shallowNodeDataHash(nodeData(n) as unknown as Record<string, unknown>)}`)
     .sort()
-  const edgeParts = edges
-    .map((e) => `${e.source}:${e.sourceHandle ?? ""}->${e.target}:${e.targetHandle ?? ""}`)
-    .sort()
-  return `nodes:${nodeParts.join("|")}||edges:${edgeParts.join("|")}`
+  return `nodes:${nodeParts.join("|")}||edges:${inputOrderedEdgeParts(edges).join("|")}`
 }
 
 // Submodels change by replacement, so one hash per object keeps drag frames cheap.
@@ -574,8 +586,8 @@ function submodelsStructuralHash(submodels: Record<string, unknown>): string {
 }
 
 export function computeStructuralFingerprint(
-  nodes: StructuralNode[],
-  edges: StructuralEdge[],
+  nodes: readonly StructuralNode[],
+  edges: readonly StructuralEdge[],
   preamble = "",
   globalConstants: readonly GlobalConstantDraft[] = [],
   submodels: Record<string, unknown> = {},
@@ -583,6 +595,36 @@ export function computeStructuralFingerprint(
   return `${structuralGraphParts(nodes, edges)}||preamble:${JSON.stringify(preamble)}`
     + `||constants:${JSON.stringify(globalConstants)}`
     + `||submodels:${submodelsStructuralHash(submodels)}`
+}
+
+/** The document a derived request is computed from, as {@link derivedRequestKey} reads it. */
+export type DerivedRequestDocument = {
+  nodes: readonly StructuralNode[]
+  edges: readonly StructuralEdge[]
+  submodels?: Record<string, unknown>
+  preamble?: string
+  globalConstants: readonly GlobalConstantDraft[]
+}
+
+/**
+ * The one key of a request derived from the document as it stands: every node's inputs
+ * but `exceptNodeId`'s (the node whose own settings the caller keys beside it), the edges
+ * in input order, the submodel definitions, the preamble and the constants, read as the
+ * structural fingerprint reads them. Every estimate and preview kept in a panel keys what
+ * it was computed from by this, never by a list of its own, so an Undo that moves any of
+ * them, a constant included, makes the kept answer old.
+ */
+export function derivedRequestKey(document: DerivedRequestDocument, exceptNodeId?: string): string {
+  const nodes = exceptNodeId === undefined
+    ? document.nodes
+    : document.nodes.filter((node) => node.id !== exceptNodeId)
+  return computeStructuralFingerprint(
+    nodes,
+    document.edges,
+    document.preamble,
+    document.globalConstants,
+    document.submodels,
+  )
 }
 
 const PANEL_CONTEXT_NODE_DATA_KEYS = [

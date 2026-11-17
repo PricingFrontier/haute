@@ -27,9 +27,31 @@ from importlib.machinery import ModuleSpec, PathFinder, SourceFileLoader
 from pathlib import Path
 from types import CodeType, ModuleType
 
-from haute._project_context import current_project
+from haute._project_context import current_project, installed_project
 
 UTILITY_PACKAGE = "utility"
+
+#: The folders of a ``utility`` package that are no part of it: the interpreter's bytecode,
+#: which the finder never reads. Everything else under the package is the project's code
+#: and what that code reads beside itself, and is shipped, hashed and checked as one tree.
+UTILITY_SKIPPED_DIRS = frozenset({"__pycache__"})
+
+
+def utility_tree_files(location: Path) -> list[Path]:
+    """Every file of the ``utility`` at *location*, sorted: the module file itself, or each
+    file anywhere under the package folder but in :data:`UTILITY_SKIPPED_DIRS`.
+
+    The one listing of a project's utility code: the cache identities hash these files, the
+    deploy bundle ships them and a test quote's basis signs them, so a data file the code
+    reads beside itself (a ``rates.json``) counts wherever a ``.py`` file does.
+    """
+    if location.is_file():
+        return [location]
+    return sorted(
+        path
+        for path in location.rglob("*")
+        if path.is_file() and UTILITY_SKIPPED_DIRS.isdisjoint(path.relative_to(location).parts)
+    )
 
 
 def utility_search_dirs(
@@ -57,10 +79,13 @@ def find_utility_spec(pipeline_dir: str | Path | None) -> ModuleSpec | None:
     a ``utility``, the rest of the import path, as the import system falls through. A
     project ``utility`` that is a namespace package (no ``__init__.py``) therefore wins
     over a regular package of that name elsewhere on the path, as it does when imported.
+    Outside a project, Haute binds no finder, so the import system's own search is the
+    answer.
     """
-    spec = PathFinder.find_spec(UTILITY_PACKAGE, utility_search_dirs(pipeline_dir))
-    if spec is not None:
-        return spec
+    if installed_project() is not None:
+        spec = PathFinder.find_spec(UTILITY_PACKAGE, utility_search_dirs(pipeline_dir))
+        if spec is not None:
+            return spec
     return PathFinder.find_spec(UTILITY_PACKAGE, sys.path)
 
 

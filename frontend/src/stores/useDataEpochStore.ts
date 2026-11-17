@@ -1,8 +1,9 @@
 /**
- * The data the pipeline reads, as an epoch (specs/workbench): moved by every write of a
- * data file through Files and by every import of a Data Input's source that completes, so
- * a price made on the data before is stale (`pricingContext`). A file changed outside Haute
- * is not seen.
+ * The files the pipeline reads outside the document, as an epoch (specs/workbench, specs/
+ * caching): moved only through `noteProjectInputsChanged`, by every write of a data file
+ * through Files, every utility file saved, created or deleted, and every import of a Data
+ * Input's source that completes, so a price, a preview or an estimate made before is stale
+ * (`pricingContext`, `useDerivedRequestKey`). A file changed outside Haute is not seen.
  */
 import { create } from "zustand"
 

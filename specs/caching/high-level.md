@@ -30,6 +30,35 @@ Explore's cards), so a newly declared setting needs no registration; editor stat
 beside the config and is never signed. `lineage_cache_key()` is the common preview/trace factory; callers
 do not key directly from `graph_fingerprint()` alone.
 
+**Stale results.** A stored result is checked against what its run read, and every
+reader of it, in the server and in the browser, reads that one record rather than a list of
+its own:
+
+- *A node's inputs in their order.* Every identity signs a node's incoming edges in the
+  order the executor gives them to it (the graph's order within one node; edges into
+  different nodes in any order), so the same inputs connected the other way round, which a
+  node reading its first input as `df` computes on differently, are another result.
+- *The project's code.* A run executes the preamble and whatever it, a node's own code, or a
+  helper called while Polars collects imports from the project's `utility`. Which modules a
+  run imports and which files its code opens are not gathered: across a lazy plan collected
+  on Polars' threads and in a spawned worker, a read made after the key is taken cannot be
+  recorded before it, so the record is made wider instead. Every file of the `utility` tree
+  counts as read (each file under the package but its `__pycache__`, data beside the code
+  included: the files the deploy bundle ships), signed with the preamble's text whatever
+  imports it, so an edit to any of them makes every result old, at the cost of some work done
+  again. A compile of the preamble for a changed tree first puts aside every `utility`
+  module loaded from the old files, in the server and in each worker, so the result is
+  computed again from the new code.
+- *Haute's own code*, as above.
+- *Readers outside the engine.* The assistant's brief of the graph keys on the same project
+  code; a Workbench form's revision signs every params file beside the form's own files, so
+  a test quote typed against values a params file no longer gives is refused as stale; and
+  a test quote's basis, which Accept compares, signs every file of the `utility` tree. In the
+  browser, every estimate and preview a panel keeps keys what it was derived from by one key,
+  built from the document as it stands with its constants and preamble, and a write of a file
+  a run reads (a utility module, a data or params file through Files, an import of a Data
+  Input's source) is announced through one notifier that moves every browser clock together.
+
 Every identity that covers a node's result signs the global constants that node's lineage
 reads, so editing a constant re-runs only the nodes that read it and their descendants. Preview
 and trace keys sign the value for their source, so editing one source's value leaves other
@@ -41,9 +70,13 @@ runtime graph input, deploy schema, model contract, input snapshot, and
 node-snapshot signature — each declare one complete versioned field set.
 The node-snapshot signature identifies the data at a pipeline point independently of
 any consumer: upstream lineage, runtime inputs, source, execution semantics class,
-contract enforcement, preamble presence, execution semantics version, and the Polars
-version. Everything whose contents Polars computed signs the installed Polars version,
-so an upgrade never mixes one release's results into another's run; an input snapshot,
+contract enforcement, preamble presence, execution semantics version, the Polars
+version, and Haute's own code. Everything whose contents Polars computed signs the
+installed Polars version, and beside it a digest of the installed Haute's own code (its
+modules and the data files they read, derived from the files once per process, for a
+released build and a source checkout alike), so an upgrade of either never mixes one
+release's results into another's run, and a Haute upgrade starts node outputs cold as a
+Polars upgrade does; an input snapshot,
 a copy of its source, records the version instead and is re-described, not fetched
 again, under another. Every logical
 input class is either mapped to named fields or excluded with a rationale;

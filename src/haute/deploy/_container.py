@@ -20,6 +20,7 @@ from haute._model_flavors import XGBOOST_DISTRIBUTION, family_for_suffix
 from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
 from haute._price_contour import PriceContourCompatibilityError, price_contour_install
+from haute._project_imports import UTILITY_SKIPPED_DIRS
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._lock import DOCKER_PLATFORM, TARGET_PLATFORM, lock_requirements
 from haute.deploy._mlflow import DeployResult
@@ -180,7 +181,7 @@ def write_bundle(
         shutil.copytree(
             utility,
             build_dir / UTILITY_PACKAGE,
-            ignore=shutil.ignore_patterns("__pycache__"),
+            ignore=shutil.ignore_patterns(*UTILITY_SKIPPED_DIRS),
         )
     elif utility is not None:
         shutil.copy2(utility, build_dir / f"{UTILITY_PACKAGE}.py")

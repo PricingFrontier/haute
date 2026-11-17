@@ -14,6 +14,7 @@ from haute._cache import (
     GraphFingerprintMemo,
     checked_cache_inputs,
     graph_fingerprint,
+    haute_code_fingerprint,
     polars_version,
 )
 from haute._file_ops import atomic_write_text
@@ -145,6 +146,7 @@ def deploy_schema_cache_fingerprint(
             "row_limit": 1,
             "execution_policy": _DEPLOY_SCHEMA_EXECUTION_POLICY,
             "polars_version": polars_version(),
+            "haute_code": haute_code_fingerprint(),
         },
     )
     return f"deploy-schema:v{inputs.contract.version}:{content_hash_bytes(inputs.canonical_bytes)}"
