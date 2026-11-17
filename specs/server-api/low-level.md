@@ -450,9 +450,10 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    column, a builder's refusal of a node's settings, a stale column selection, a wide integer,
    an unconnected input, a node with no input data, a walk's progress label ("Computing
    <name>"), an unreadable snapshot, a data point's refusals, the memory strategy's and
-   projection's suggested actions, a trace's correlation diagnostics, the labels a preview gives
-   its timings, memory and seed plan, and the `node_name` of a trace's steps, omissions and input
-   sources. A `HauteError` raised inside a walk, its planning or an execution names the nodes
+   projection's suggested actions, a trace's correlation diagnostics, the graph's shape
+   refusals (a node with the wrong number of edges, its `node_label` and the nodes it lists
+   included), the labels a preview gives its timings, memory and seed plan, and the
+   `node_name` of a trace's steps, omissions and input sources. A `HauteError` raised inside a walk, its planning or an execution names the nodes
    its context holds by key (`NODE_KEY_CONTEXT_FIELDS`) by name in its text, `(node=<name>)`,
    when it is raised, so the text survives a worker's pickle; `context` keeps the keys. A public
    contract error about a node keeps its key in `node_id` and, where the route holds the graph
@@ -462,13 +463,13 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    the deployed scorer, whose graph carries no expansion record and whose messages no browser
    reads, and internal invariant errors.
 
-   `tests/test_node_display_names.py` checks a copy's child in each message above except the
-   trace's Workbench Output and multi-frame refusals, a seed continuation's diagnostics, the
-   executor's schema-warning and Data Output messages, a capture's unreadable snapshot (one
-   found when a seed plan leases or a worker adopts its generations is checked: a seed carries
-   its node's name for it, which the error's text uses outside a naming scope too), a data
-   point's refusals other than a missing port, a trace omission's and an input source's name, a
-   walk's progress label, "No input data" and a training join's downsampling warning. It also
+   `tests/test_node_display_names.py` checks a copy's child in each message above that a copy
+   can produce: a capture's unreadable snapshot at its publication and at its lease (a seed
+   carries its node's name, which the error's text uses outside a naming scope too), and the
+   Data Output messages through the executor, since a route refuses a Data Output a reused
+   definition holds. A copy cannot produce the trace's Workbench Output refusals or a data
+   point's API Input and Workbench Input table refusals: a definition holding one of those
+   nodes cannot be reused. A copy's flat name and its children's keys appear in none. It also
    checks that no key or flat name shows outside a key position in a failing preview or trace
    over a copy (seven kinds of failure), a trace that succeeds, or a training run, node-data
    build, solve, auto range or Data Output write over a copy whose child is refused in its
