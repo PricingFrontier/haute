@@ -72,20 +72,17 @@ function documentLayout(definitionId: string): DocumentLayout {
   }
 }
 
-/** Where `now` has a node that `base` had elsewhere, or did not have: a move made since `base`. */
-function movedSince(id: string, base: Positions, now: Positions): XYPosition | undefined {
+/** Whether `now` places the node other than `base` did, or `base` lacked it: moved since `base`. */
+function movedSince(id: string, base: Positions, now: Positions): boolean {
   const position = now.get(id)
   const was = base.get(id)
-  return position && !(was && was.x === position.x && was.y === position.y) ? position : undefined
+  return position !== undefined && !(was && was.x === position.x && was.y === position.y)
 }
 
-/**
- * `nodes` with the moves made since `base`, which win; the others keep their place in
- * `nodes`, which holds the edit's own moves.
- */
-function placedAs(nodes: Node[], base: Positions, now: Positions): Node[] {
+/** `nodes`, each one `moved` placed where `now` has it; the others keep their place. */
+function placedAs(nodes: Node[], now: Positions, moved: (id: string) => boolean): Node[] {
   return nodes.map((node) => {
-    const position = movedSince(node.id, base, now)
+    const position = moved(node.id) ? now.get(node.id) : undefined
     return position && (position.x !== node.position.x || position.y !== node.position.y)
       ? { ...node, position }
       : node
@@ -97,19 +94,18 @@ function placedAs(nodes: Node[], base: Positions, now: Positions): Node[] {
  *
  * A pending candidate is kept across selection and position changes made while
  * parent identities resolve; committing it must not revert those, so the
- * presentation-only fields are taken from the current view by node id, and a
- * position where the node was moved since `base`.
+ * presentation-only fields are taken from the current view by node id, and so
+ * is the position of each node `moved`.
  */
 function mergeViewPresentation<T extends { viewNodes: Node[] }>(
   result: T,
   currentNodes: Node[],
-  base: Positions,
+  moved: (id: string) => boolean,
 ): T {
   const byId = new Map(currentNodes.map((node) => [node.id, node]))
-  const now = positionsOf(currentNodes)
   return {
     ...result,
-    viewNodes: placedAs(result.viewNodes, base, now).map((node) => {
+    viewNodes: placedAs(result.viewNodes, positionsOf(currentNodes), moved).map((node) => {
       const live = byId.get(node.id)
       if (!live) return node
       return {
@@ -159,28 +155,35 @@ function focusedOccurrence() {
 
 /**
  * `result`, prepared when the document was laid out as `base`, with the moves made
- * since. An edit prepared before nodes were moved (while it waited for server names,
- * or built on such a candidate) keeps those moves on the canvas, the open
- * definition's children and the pipeline's own nodes, and keeps its own moves (a
- * deletion batch's) where nothing moved the node since.
+ * since (while it waited for server names, or built on such a candidate), which win;
+ * every other node keeps its place in `result`, which holds the edit's own moves (a
+ * deletion batch's). A child is moved when the definition moved it (a drag that
+ * ended, which the canvas shows there too) or only the canvas did (a drag under
+ * way). Judging the canvas and the definition apart would part them when a drag
+ * under way as the edit was prepared ends before it commits.
  */
 function withCurrentLayout(result: SubmodelBoundaryEditResult, base: DocumentLayout): SubmodelBoundaryEditResult {
   const { nodes } = useGraphStore.getState()
   const now = documentLayout(result.definitionId)
-  const merged = mergeViewPresentation(result, nodes, base.view)
+  const authoredMove = (id: string) => movedSince(id, base.definition, now.definition)
+  const merged = mergeViewPresentation(
+    result,
+    nodes,
+    (id) => authoredMove(id) || movedSince(id, base.view, now.view),
+  )
   const definition = merged.submodels[merged.definitionId]
   const placedSubmodels = isSubmodelDefinition(definition, merged.definitionId)
     ? {
         ...merged.submodels,
         [merged.definitionId]: {
           ...definition,
-          graph: { ...definition.graph, nodes: placedAs(definition.graph.nodes, base.definition, now.definition) },
+          graph: { ...definition.graph, nodes: placedAs(definition.graph.nodes, now.definition, authoredMove) },
         },
       }
     : merged.submodels
   return {
     ...merged,
-    parentNodes: placedAs(merged.parentNodes, base.parent, now.parent),
+    parentNodes: placedAs(merged.parentNodes, now.parent, (id) => movedSince(id, base.parent, now.parent)),
     submodels: placedSubmodels,
   }
 }

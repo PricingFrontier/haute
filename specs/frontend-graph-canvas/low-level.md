@@ -1119,9 +1119,13 @@ reconciliation rather than dropping them or committing a second mutation.
     gesture on it) merges the layout three ways (`withCurrentLayout`): a node
     moved since the candidate was prepared takes the position it has then, so
     a move made meanwhile is not reverted, and every other node keeps the
-    candidate's position, so a deletion batch's own moves land; the view
-    nodes' `selected`, `dragging`, `measured`, `width` and `height` are
-    taken from the canvas then, by id. A shared-node deletion whose
+    candidate's position, so a deletion batch's own moves land. A child counts
+    as moved when the definition moved it (a drag that ended, placed there on
+    the canvas too) or only the canvas did (a drag under way), so a drag under
+    way as the candidate was prepared that ends before it commits leaves the
+    canvas and the definition together. The view nodes' `selected`,
+    `dragging`, `measured`, `width` and `height` are taken from the canvas
+    then, by id. A shared-node deletion whose
     commit went asynchronous reports `"pending"` and settles its caller through
     an `onSettled(committed)` callback, so selection, preview, cached-result and
     dialog cleanup only runs once the commit actually lands. The projection
@@ -1987,7 +1991,8 @@ again through the editor and save paths.
     their order, output names and consumer mappings; the collapsed generic input at the
     root; a refused route shown with its reason; and the prepared transaction of an edit
     waiting on server names: a move made meanwhile is kept and the edit commits, with a
-    deletion batch's own moves in the definition through Undo and Redo, while a
+    deletion batch's own moves in the definition through Undo and Redo and a drag that
+    ends meanwhile placing the canvas and the definition alike, while a
     superseding edit, Undo then Redo back to the same document, or leaving and reopening
     the submodel discards it.
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.boundaryPorts.test.ts`,
