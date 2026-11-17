@@ -18,9 +18,9 @@ that fill the sheets from databases and APIs.
 
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
-`WB-38` comes from the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md): what the review found in the Workbench view's
-Allowed field.
+`WB-38` comes from the 25 October 2026 codebase review (finding FWB-7): what it found
+in the Workbench view's Allowed field. `WB-41` comes from the 31 October 2026 codebase
+review, which found its three defects by source inspection.
 
 `WB-46` to `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
 it was confirmed by running the code or read from the source; none was run against a
@@ -475,8 +475,7 @@ them" (`TYPED_IN`), a shape the builder can no longer produce and `schemaProblem
 as a problem, while the server's `FormSpec` still accepts `options` with
 `options_source` null. Under the canonical-only policy historical input gets no special
 status: either the server refuses the shape and the branch goes, or the shape is
-canonical and should not be called "older". From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (FWB-7).
+canonical and should not be called "older".
 
 **Plan:** Decide. Either `FormSpec` refuses `options` without `options_source` for input
 columns, and `TYPED_IN`, its test and the problem text are removed; or both stay and the
@@ -516,6 +515,12 @@ both `graph.nodes` and `graph.submodels` for `NODE_TYPES.WORKBENCH_OUTPUT` in
 `priceSample` and resolve a submodel child output's qualified runtime node ID through
 `qualifiedRuntimeNodeId` before calling `previewNode`; and remove the stale
 `The blank form is a form` bullet from `specs/workbench/high-level.md`.
+
+The regression for the first defect holds an old list's `more()`, loads another list,
+and asks for its next page both before and after the old request settles; the defect
+shows as the new list's pagination blocked, or the old completion clearing the new
+list's `loadingMore`. The 28 October 2026 review recorded this sequence as a candidate
+it did not run.
 
 **Acceptance:** Switching quote lists while `more()` is in flight resets `loadingMore`
 immediately and the stale `more()` completion cannot clear a newer list's `loadingMore`
