@@ -6064,7 +6064,7 @@
       "type": "object"
     },
     "ExecutionMetricsPayload": {
-      "description": "An execution's metrics. They name nodes by runtime key, each addressed in\n``node_addresses`` (specs/server-api/low-level.md, \"Node addresses\"), so every answer\ncarrying them does.",
+      "description": "An execution's metrics. They name nodes by runtime key, each addressed in\n``node_addresses`` with each named child's occurrence (specs/server-api/low-level.md,\n\"Node addresses\"), so every answer carrying them does.",
       "properties": {
         "admission": {
           "anyOf": [

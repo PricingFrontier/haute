@@ -1020,8 +1020,8 @@ export interface PipelineRepairFieldChange {
 }
 /**
  * An execution's metrics. They name nodes by runtime key, each addressed in
- * ``node_addresses`` (specs/server-api/low-level.md, "Node addresses"), so every answer
- * carrying them does.
+ * ``node_addresses`` with each named child's occurrence (specs/server-api/low-level.md,
+ * "Node addresses"), so every answer carrying them does.
  */
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
