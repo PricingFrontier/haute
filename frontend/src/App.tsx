@@ -1059,12 +1059,12 @@ function FlowEditor() {
     })
   }, [loadGitReadiness, addToast])
 
-  const handleDocumentReloadRef = useRef<((reloaded: { nodes: Node[]; edges: Edge[] }) => void) | null>(null)
+  const handleDocumentReloadRef = useRef<(() => void) | null>(null)
   const wsStatus = useWebSocketSync({
     graphRefreshingRef, sourceFileRef,
     sourceRevisionRef, preservedBlocksRef, nodeIdCounter, fitView,
     enabled: !loading && loadError === null,
-    onDocumentReload: (reloaded) => handleDocumentReloadRef.current?.(reloaded),
+    onDocumentReload: () => handleDocumentReloadRef.current?.(),
   })
   // A first load that failed (the page opened on a branch the pipeline is not on)
   // left no document for live sync to replace: once a git action from the Git panel
@@ -1134,7 +1134,6 @@ function FlowEditor() {
     handleCreateSubmodel, handleCreateNodeInstance, handleDissolveSubmodel,
   } = useSubmodelNavigation({
     
-    setNodesRaw, setEdgesRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     cancelPreview, clearTrace,
     setLastSelectedId, lastSelectedKeyRef,
@@ -1427,17 +1426,12 @@ function FlowEditor() {
   const saveProjectNow = useCallback(async (): Promise<boolean> => {
     // The fence that disables Save in both toolbars, and the pipeline save's own
     // checks, read as they are now: before the form is saved, and again after each
-    // wait, since a submodel can open, the assistant's turn can start or the document
-    // can change while the save waits. A save asked for inside a submodel, during the
-    // assistant's turn or of a document that cannot be saved is refused by the
-    // pipeline's save anyway; refused before the form is saved it never saves the
-    // form ahead of a pipeline that is not, and refused after, it saves no pipeline
-    // on a fence that closed meanwhile.
+    // wait, since the assistant's turn can start or the document can change while the
+    // save waits. A save asked for during the assistant's turn or of a document that
+    // cannot be saved is refused by the pipeline's save anyway; refused before the form
+    // is saved it never saves the form ahead of a pipeline that is not, and refused
+    // after, it saves no pipeline on a fence that closed meanwhile.
     const refused = (): boolean => {
-      if (useGraphStore.getState().focus !== null) {
-        addToast("error", "Return to the main pipeline before saving.")
-        return true
-      }
       if (useUIStore.getState().assistantTurn !== null) {
         addToast("error", "The assistant is working on the pipeline: wait for its turn to finish, then save.")
         return true

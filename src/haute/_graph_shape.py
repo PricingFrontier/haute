@@ -59,6 +59,8 @@ def validate_graph_shape_contracts(
         if node_id in outgoing:
             outgoing[node_id].extend(targets)
 
+    from haute._node_addresses import node_display_name
+
     for node in graph.nodes:
         if validate_node_ids is not None and node.id not in validate_node_ids:
             continue
@@ -66,15 +68,17 @@ def validate_graph_shape_contracts(
         if not spec.input_count_enforced:
             continue
 
+        # By label, a submodel child's with its occurrence's, never a copy's flat name or
+        # key (specs/server-api/low-level.md, "Node addresses").
         incoming_sources = incoming.get(node.id, [])
         if len(incoming_sources) != 1:
             raise ParseError(
                 f"{spec.display_name} nodes must have exactly one incoming edge.",
                 graph=graph_label,
                 node_id=node.id,
-                node_label=node.data.label,
+                node_label=node_display_name(graph, node.id),
                 incoming_count=len(incoming_sources),
-                incoming_sources=incoming_sources,
+                incoming_sources=[node_display_name(graph, key) for key in incoming_sources],
             )
 
         outgoing_targets = outgoing.get(node.id, [])
@@ -83,9 +87,9 @@ def validate_graph_shape_contracts(
                 "Explore nodes cannot have outgoing edges.",
                 graph=graph_label,
                 node_id=node.id,
-                node_label=node.data.label,
+                node_label=node_display_name(graph, node.id),
                 outgoing_count=len(outgoing_targets),
-                outgoing_targets=outgoing_targets,
+                outgoing_targets=[node_display_name(graph, key) for key in outgoing_targets],
             )
 
 

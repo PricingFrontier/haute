@@ -7,19 +7,16 @@ and [its low-level design](../submodels/low-level.md); how the canvas shows and 
 submodel in [the graph canvas specification](../frontend-graph-canvas/high-level.md) and
 [its low-level design](../frontend-graph-canvas/low-level.md); and the requests that run a
 graph in [the server API design](../server-api/low-level.md). The packages below finish how
-the editor saves an open submodel and edits its boundary.
+the editor edits an open submodel's boundary.
 
 The graph store owns one authored document: an open submodel is a focus on it, the canvas is
 its projection, every request that runs the graph goes through one gateway and names its
 target by address, the server labels every node an answer names with its address, and
-results are kept under the occurrence they belong to. Two things remain:
-
-1. **Save and reload.** Saving inside a submodel is refused, and a reload returns to the main
-   pipeline (SUBE-06).
-2. **Boundary actions.** Connecting to a card, removing an input and the other boundary
-   actions still rebuild a definition from the canvas
-   (`reconcileCanonicalSubmodelBoundaryState`), reading parent bindings back from fields on
-   the Input and Output cards (SUBE-07).
+results are kept under the occurrence they belong to. Saving works inside a submodel, and a
+reload keeps the open submodel while it still exists. One thing remains: connecting to a card,
+removing an input and the other boundary actions still rebuild a definition from the canvas
+(`reconcileCanonicalSubmodelBoundaryState`), reading parent bindings back from fields on the
+Input and Output cards (SUBE-07).
 
 ## Target model
 
@@ -79,35 +76,9 @@ specification before code changes.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SUBE-06 | Planned | P2 | Saving works inside a submodel, and a reload keeps the open submodel when it still exists. |
 | SUBE-07 | Planned | P2 | Boundary actions edit the document directly: the Input and Output cards carry no parent bindings, and no edit rebuilds a definition from the canvas. |
 
 ## Planned improvements
-
-### SUBE-06 — Save and reload inside a submodel
-**Why:** Saving inside a submodel is refused, and a reload returns to the main pipeline; both
-follow only from the canvas not being the document.
-
-**Plan:** Specify in the submodels and graph-canvas designs. Save serialises the document whatever
-the focus, and records that
-exact document as saved. A clean external reload replaces the document atomically, keeps the
-focus when the same occurrence and definition still exist, and otherwise shows the root with a
-notice; dirty-document conflict handling and execution fences stay as they are.
-
-**Acceptance:**
-- Save inside a submodel saves the whole pipeline and leaves the view clean; an edit accepted
-  while a save is in flight stays dirty after the save completes (the save acknowledges the
-  exact document it sent).
-- A clean reload that changes the open definition's contents keeps the focus, and the canvas and
-  the open panel show the new contents; an external change to another file keeps the open
-  submodel.
-- Deleting the open occurrence externally, or a reload in which its instance id names a
-  different definition, shows the root with a notice.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useSubmodelNavigation.ts`;
-`frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/hooks/useWebSocketSync.ts`.
 
 ### SUBE-07 — Boundary actions as document commands
 **Why:** Canvas writes inside a submodel change the document directly, but the

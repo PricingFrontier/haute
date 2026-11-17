@@ -1770,7 +1770,7 @@ _MISSING_COLUMN_WORDINGS = (
 )
 
 
-def _failure_message(exc: Exception) -> str:
+def node_failure_message(exc: Exception) -> str:
     """A node failure's message as the node records it: a Polars error's without its plan.
 
     A missing column reads ``Column "x" does not exist.``, without the frame's other

@@ -28,7 +28,7 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useGraphStore, { captureGraphSnapshot , canvasGraph } from "../stores/useGraphStore"
+import useGraphStore, { captureGraphSnapshot, canvasGraph, documentGraph } from "../stores/useGraphStore"
 import { reportSaveCapture } from "../stores/saveCapture"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
@@ -1634,11 +1634,9 @@ export default function usePipelineAPI({
       addToast("error", documentReadOnlyReason())
       return false
     }
-    if (useGraphStore.getState().focus !== null) {
-      addToast("error", "Return to the main pipeline before saving.")
-      return false
-    }
-    const { nodes: n, edges: e } = canvasGraph()
+    // The document whatever the view shows: inside a submodel the pipeline's own nodes and
+    // edges, which every edit there has already reached through its definition.
+    const { nodes: n, edges: e } = documentGraph()
     // Warn about broken config references before saving
     const refWarnings = validateConfigRefs(n)
     if (refWarnings.length > 0) {
@@ -1718,7 +1716,8 @@ export default function usePipelineAPI({
           : {}),
       },
       preamble: savePreamble,
-      source_file: sourceFileRef.current,
+      // The pipeline's file, also while a submodel's own file is the one shown.
+      source_file: saveSourceFile,
       // A never-persisted document keeps an empty revision ref; the server wants null.
       base_revision: saveSourceRevision || null,
       sources: sc,
@@ -1774,7 +1773,7 @@ export default function usePipelineAPI({
     } finally {
       settleSave()
     }
-  }, [descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
+  }, [descriptionRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   // In automatic calculation, the displayed preview is fetched again once a
   // snapshot is published, refreshed, or cleared after its request was sent: its rows may have been

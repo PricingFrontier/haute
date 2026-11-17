@@ -44,7 +44,7 @@
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview, trace and the free-code column resolution. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `"output_mapping"`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_worker_failure_http.py` | `worker_failure_http_exception`, the one HTTP answer for a worker failure, used by preview, trace, the OUTPUT dry run, free-code columns, the Data Output write and the optimiser estimate: a memory outcome 507 with the closed memory-limit payload, a deadline 504 with the route's detail, a stop 409, a worker that could not start 503, a child's exact-identity memory error, unavailable native cap or curated public contract error its own 507 or 422 (or 410 for an expired seed plan), a route's own remote exceptions through its `RemoteAnswer`, and anything else a logged 500. |
-| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
+| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `PIPELINE_ERROR_TYPES`, the pipeline's own failures a job or a write reports as the user's to fix, and `pipeline_error_message`, the message it gives them. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
 | `src/haute/routes/_validation_errors.py` | `request_validation_error_handler`: FastAPI's 422 for a request its models refuse, the list of errors as FastAPI gives them, `loc`, `msg` and `type` each, without the `input` refused or its `ctx`, so a refused form is never repeated in the answer; the editor's server and the underwriter app both install it. |
 | `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: a request its models refuse → `request_validation_error_handler`, public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`, `PathOutsideProjectError` / `InvalidPathError` → 403 / 400 with the bare message. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
@@ -263,8 +263,12 @@ latest (otherwise raises `SupersededRequestError` without ever running the worke
 the worker exclusively for that key.
 
 **`SavePipelineService._TouchedFile`** (`routes/_save_pipeline.py`) is a `NamedTuple` of
-`(target: Path, previous_bytes: bytes | None)` — `None` means the file did not exist before
-this save (rollback deletes it); otherwise rollback restores the snapshotted bytes.
+`(target: Path, previous_bytes: bytes | None, written_digest, deleted, unchanged)` — `None`
+means the file did not exist before this save (rollback deletes it); otherwise rollback
+restores the snapshotted bytes. `unchanged` marks a file that already held the bytes the save
+commits: `_stage_artifact_write_bytes` (and `save_sidecar` for a position sidecar) does not
+write it, and rollback skips it, so an unchanged file keeps its modification time; the save,
+a workbench form's save and a repair all write through it.
 
 **HTTP endpoint contracts owned here** (FastAPI adds its standard 422 validation envelope
 when a path/query/body fails model validation):
@@ -450,9 +454,10 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    column, a builder's refusal of a node's settings, a stale column selection, a wide integer,
    an unconnected input, a node with no input data, a walk's progress label ("Computing
    <name>"), an unreadable snapshot, a data point's refusals, the memory strategy's and
-   projection's suggested actions, a trace's correlation diagnostics, the labels a preview gives
-   its timings, memory and seed plan, and the `node_name` of a trace's steps, omissions and input
-   sources. A `HauteError` raised inside a walk, its planning or an execution names the nodes
+   projection's suggested actions, a trace's correlation diagnostics, the graph's shape
+   refusals (a node with the wrong number of edges, its `node_label` and the nodes it lists
+   included), the labels a preview gives its timings, memory and seed plan, and the
+   `node_name` of a trace's steps, omissions and input sources. A `HauteError` raised inside a walk, its planning or an execution names the nodes
    its context holds by key (`NODE_KEY_CONTEXT_FIELDS`) by name in its text, `(node=<name>)`,
    when it is raised, so the text survives a worker's pickle; `context` keeps the keys. A public
    contract error about a node keeps its key in `node_id` and, where the route holds the graph
@@ -462,17 +467,18 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    the deployed scorer, whose graph carries no expansion record and whose messages no browser
    reads, and internal invariant errors.
 
-   `tests/test_node_display_names.py` checks a copy's child in each message above except the
-   trace's Workbench Output and multi-frame refusals, a seed continuation's diagnostics, the
-   executor's schema-warning and Data Output messages, a capture's unreadable snapshot (one
-   found when a seed plan leases or a worker adopts its generations is checked: a seed carries
-   its node's name for it, which the error's text uses outside a naming scope too), a data
-   point's refusals other than a missing port, a trace omission's and an input source's name, a
-   walk's progress label, "No input data" and a training join's downsampling warning. It also
+   `tests/test_node_display_names.py` checks a copy's child in each message above that a copy
+   can produce: a capture's unreadable snapshot at its publication and at its lease (a seed
+   carries its node's name, which the error's text uses outside a naming scope too), and the
+   Data Output messages through the executor, since a route refuses a Data Output a reused
+   definition holds. A copy cannot produce the trace's Workbench Output refusals or a data
+   point's API Input and Workbench Input table refusals: a definition holding one of those
+   nodes cannot be reused. A copy's flat name and its children's keys appear in none. It also
    checks that no key or flat name shows outside a key position in a failing preview or trace
    over a copy (seven kinds of failure), a trace that succeeds, or a training run, node-data
-   build or Data Output write refused in its planning (a malformed contract, a builder's
-   refusal). A solve or an auto range over a copy is not checked.
+   build, solve, auto range or Data Output write over a copy whose child is refused in its
+   planning (a malformed contract, a builder's refusal) or fails in its walk (a Polars
+   error), each ending as the user's to fix with no plan Polars appends to a failure.
 
 **Every family is on addresses.** The preview, its inputs, the trace, the node-data family
 (a consumer's data point, run, profile and clear, an Explore pivot and its members,
@@ -1320,6 +1326,7 @@ later write and cleanup checks still compare against the captured identities.
 | `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`, `WorkerCrashedError` (memory-classified), remote `builtins.MemoryError`, remote `NativeMemoryLimitUnsupportedError`, a remote exception the child found to be a memory error | every route that waits on a worker (`worker_failure_http_exception`) | 507 | Parent-authored data-free detail with `error_code="memory_limit"`, the operation, and a closed reason, with the RSS and limit for a watchdog breach and the cap a hard-capped worker ran under; a non-memory worker crash stays a redacted 500. |
 | `WorkerStartError`, `WorkerHostError` | every route that waits on a worker | 503 | No worker could run the request: the host, not the request, is at fault, and the next request starts one again. The detail is the error's message. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
+| Pipeline errors (`PIPELINE_ERROR_TYPES`: `ContractMismatchError`, `SchemaMismatchError`, `ConfigError`, `ParseError`, `DataOutputRowsError`, a Polars error) | output write; node-data builds and profiles; training preparation and its evaluation preview; the optimiser's setup | 422 / 400 (optimiser setup) / `contract_error` job | The pipeline's own code, contracts, settings or data failed, as a preview of the node shows it. Raised in the parent (its planning, its input preparation) or in the worker, which reports it as its own `contract` failure rather than letting it cross as a remote error, the write answers 422 (a `ParseError` in its parent still answers 400 through the application handler), the optimiser's setup 400, and a job ends `contract_error`, with `pipeline_error_message`: the message, a Polars error's as a node records it (`node_failure_message`: without the plan Polars appends, whose scans print the cache's paths), training's prefixed "Pipeline execution failed: ". Never `_INTERNAL_ERROR_DETAIL`. One with a `MemoryError` behind it is a memory outcome, not the user's error (`is_pipeline_error`; a worker raises the `MemoryError` itself, `raise_memory_behind`, so its parent reports the memory limit; training preparation ends `memory_limited` and its evaluation preview answers 507, through `memory_error_refusal`). Checked after the public contract errors, one of which (`NodeConfigError`) is also a `ConfigError`, and after a route's narrower clauses. `tests/test_data_output_seeding.py`, `tests/test_node_data_routes.py` and `tests/test_training_seeding.py` cover a malformed contract refused while the parent plans and a Polars error in a worker process. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace, free-code columns | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. Preview and trace answer it through `_interactive_failures` with the structured detail `{"error_code": "request_superseded", "message": ...}` (the code is `SupersededRequestError.error_code`), so the browser recognises a superseded request by its code whatever the message says; free-code columns answers the message alone. A worker stopped for another reason (`WorkerStoppedError`) is a 409 without that code. |
 | `WorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, input-snapshot and API Input table builds, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |

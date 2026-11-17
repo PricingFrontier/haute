@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -2387,6 +2388,173 @@ def _make_graph_payload(extra_node_label: str | None = None) -> dict:
             }
         )
     return {"nodes": nodes, "edges": []}
+
+
+class TestUnchangedFilesKeepTheirTime:
+    """A save writes only the files whose bytes change: the others keep their modification
+    time, which an editor, a sync client or a watcher on the folder reads as an edit."""
+
+    _OLD = 1_000_000_000  # A modification time no write of this test can leave behind.
+
+    @pytest.fixture()
+    def client(self, tmp_path: Path) -> TestClient:
+        use_project(tmp_path)
+        return TestClient(project_app())
+
+    def _save(self, client: TestClient, graph: dict, base_revision: str | None) -> Any:
+        return client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "kept_pipeline",
+                "description": "",
+                "graph": graph,
+                "source_file": "kept_pipeline.py",
+                "base_revision": base_revision,
+            },
+        )
+
+    def _age(self, root: Path) -> dict[str, bytes]:
+        """Every file under *root*, set to the old time; their bytes."""
+        files = _snapshot_files(root)
+        for name in files:
+            os.utime(root / name, (self._OLD, self._OLD))
+        return files
+
+    def _rewritten(self, root: Path) -> set[str]:
+        return {
+            name for name in _snapshot_files(root) if (root / name).stat().st_mtime != self._OLD
+        }
+
+    def test_a_save_writes_only_what_changed_and_an_identical_one_nothing(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        graph = _make_graph_payload("extra")
+        first = self._save(client, graph, None)
+        assert first.status_code == 200, first.text
+        self._age(tmp_path)
+
+        moved = json.loads(json.dumps(graph))
+        moved["nodes"][1]["position"] = {"x": 400, "y": 80}
+        second = self._save(client, moved, first.json()["source_revision"])
+
+        assert second.status_code == 200, second.text
+        # Only the layout moved, so only its file was written.
+        assert self._rewritten(tmp_path) == {"kept_pipeline.haute.json"}
+
+        before = self._age(tmp_path)
+        third = self._save(client, moved, second.json()["source_revision"])
+
+        assert third.status_code == 200, third.text
+        assert self._rewritten(tmp_path) == set()
+        assert _snapshot_files(tmp_path) == before
+
+    def test_a_failed_save_rewrites_no_unchanged_file_as_it_rolls_back(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        graph = _make_graph_payload("extra")
+        first = self._save(client, graph, None)
+        assert first.status_code == 200, first.text
+        before = self._age(tmp_path)
+
+        def failing_sidecar(*_args: Any, **_kwargs: Any) -> list[str]:
+            raise RuntimeError("forced sidecar failure")
+
+        monkeypatch.setattr(SavePipelineService, "_write_sidecar", staticmethod(failing_sidecar))
+        failed = TestClient(project_app(), raise_server_exceptions=False).post(
+            "/api/pipeline/save",
+            json={
+                "name": "kept_pipeline",
+                "description": "",
+                "graph": graph,
+                "source_file": "kept_pipeline.py",
+                "base_revision": first.json()["source_revision"],
+            },
+        )
+
+        assert failed.status_code >= 500
+        # The code was the same, so it was neither written nor written back.
+        assert self._rewritten(tmp_path) == set()
+        assert _snapshot_files(tmp_path) == before
+
+
+class TestRenamedSubmodelChild:
+    """A child a submodel's ports name, renamed: the editor keeps its id until Save, which
+    writes it as a function of its new name, so the module's ports must name it so too."""
+
+    @pytest.fixture()
+    def client(self, tmp_path: Path) -> TestClient:
+        use_project(tmp_path)
+        return TestClient(project_app())
+
+    @staticmethod
+    def _graph(child_label: str) -> dict:
+        from haute._types import SubmodelEndpoint, SubmodelInputPort, SubmodelOutputPort
+
+        definition = SubmodelDefinition(
+            definitionId="pricing",
+            file="modules/pricing.py",
+            graph=PipelineGraph(
+                nodes=[_make_node("rate", child_label, config={"code": "df = policy"})],
+                edges=[],
+                pipeline_name="pricing",
+            ),
+            inputPorts=[
+                SubmodelInputPort(name="policy", targets=[SubmodelEndpoint(node_id="rate")])
+            ],
+            outputPorts=[
+                SubmodelOutputPort(name="premium", source=SubmodelEndpoint(node_id="rate"))
+            ],
+        )
+        graph = PipelineGraph(
+            nodes=[
+                _make_node("src", "src", config={"code": "df = pl.DataFrame({'x': [1]}).lazy()"}),
+                _make_node(
+                    "pricing",
+                    "pricing",
+                    "submodel",
+                    {"definition_id": "pricing", "alias": "pricing"},
+                ),
+                _make_node("consumer", "consumer", config={"code": "df = pricing"}),
+            ],
+            edges=[
+                GraphEdge(id="feed", source="src", target="pricing", targetHandle="in__policy"),
+                GraphEdge(
+                    id="use", source="pricing", target="consumer", sourceHandle="out__premium"
+                ),
+            ],
+            submodels={"pricing": definition},
+        )
+        return graph.model_dump(mode="json", by_alias=True)
+
+    def test_a_save_after_renaming_a_port_target_writes_the_ports_with_its_new_name(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        def save(graph: dict, base_revision: str | None) -> Any:
+            return client.post(
+                "/api/pipeline/save",
+                json={
+                    "name": "renamed",
+                    "description": "",
+                    "graph": graph,
+                    "source_file": "renamed.py",
+                    "base_revision": base_revision,
+                },
+            )
+
+        first = save(self._graph("rate"), None)
+        assert first.status_code == 200, first.text
+
+        renamed = save(self._graph("rate_b"), first.json()["source_revision"])
+
+        assert renamed.status_code == 200, renamed.text
+        reloaded = parse_pipeline_to_graph(tmp_path / "renamed.py", project_root=tmp_path)
+        assert reloaded.submodels is not None
+        definition = reloaded.submodels["pricing"]
+        assert [node.id for node in definition.graph.nodes] == ["rate_b"]
+        assert [target.node_id for target in definition.input_ports[0].targets] == ["rate_b"]
+        assert definition.output_ports[0].source.node_id == "rate_b"
 
 
 class TestStaleSavePrecondition:

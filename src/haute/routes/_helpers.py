@@ -863,6 +863,9 @@ def save_sidecar(
     # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
     # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
     content = serialised
+    # A sidecar that already holds these bytes is left alone, so its modification time stays.
+    if sidecar.is_file() and sidecar.read_bytes() == content.encode("utf-8"):
+        return warnings
     # The server's own write: the watcher must not take it for an external edit.
     mark_self_write(sidecar, content=content.encode("utf-8"))
     atomic_write_text(sidecar, content)

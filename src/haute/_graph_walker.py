@@ -52,7 +52,6 @@ from haute._execute_lazy import (
     _declared_api_input_frame_schema_items,
     _edge_join_recipe,
     _extract_error_line,
-    _failure_message,
     _is_plain_model_score,
     _located_step,
     _pick_source_frame,
@@ -64,6 +63,7 @@ from haute._execute_lazy import (
     _schema_pairs,
     _shapes_output,
     _write_recipe,
+    node_failure_message,
 )
 from haute._execution_context import (
     ExecutionCancelledError,
@@ -1981,7 +1981,7 @@ class _Walk:
         self.failed.add(node_id)
         self.frames.pop(node_id, None)
         self.collected[node_id] = None
-        message = _failure_message(exc)
+        message = node_failure_message(exc)
         self.errors[node_id] = message
         error_line = _extract_error_line(exc)
         inputs = self.failed_inputs.pop(node_id, None)

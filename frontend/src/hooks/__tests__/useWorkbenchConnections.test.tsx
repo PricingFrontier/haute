@@ -181,6 +181,48 @@ describe("useWorkbenchConnections", () => {
     expect(edgeIds()).toEqual(["e_account", "e_boundary"])
   })
 
+  it("holds the pipeline's own connections behind an open submodel for a save, which sends them", () => {
+    const occurrence = makeNode("pricing", "submodel", {
+      data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
+    })
+    // The removed table also fed the open occurrence, whose Input card carries that binding.
+    const intoPricing = edge("e_into_pricing", "wb_in", "policy_input", "pricing", "in__policy")
+    act(() => {
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [input, priced, occurrence],
+        edges: [policy, account, intoPricing],
+        preamble: "",
+        submodels: {
+          definition_pricing: {
+            definitionId: "definition_pricing",
+            file: "modules/pricing.py",
+            graph: { nodes: [makeNode("rate")], edges: [] },
+            inputPorts: [{ name: "policy", targets: [{ nodeId: "rate", handleId: null }] }],
+            outputPorts: [],
+          },
+        },
+      })
+      useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+      // A child selected on the canvas, which the redrawn view keeps selected.
+      useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (node.id === "rate" ? { ...node, selected: true } : node)))
+    })
+    const hook = render()
+    publish(1, ["account"])
+
+    act(() => {
+      expect(hook.result.current.holdConnections()).toBe(true)
+    })
+
+    expect(useGraphStore.getState().focus?.rootEdges.map((each) => each.id)).toEqual(["e_account"])
+    expect(addToast).toHaveBeenCalledWith("warning", expect.stringContaining("wb_in"))
+    // The open view is drawn from the pipeline's edges as they now are: no card holds the
+    // removed binding, which a later boundary edit would otherwise bring back.
+    const cards = useGraphStore.getState().nodes.filter((node) => node.data.nodeType === "submodelPort")
+    expect(cards.length).toBeGreaterThan(0)
+    expect(JSON.stringify(cards)).not.toContain("e_into_pricing")
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "rate")?.selected).toBe(true)
+  })
+
   it("never changes a Quote Input's connections", () => {
     const quote = makeNode("quote", "apiInput", { data: { label: "quote", nodeType: "apiInput", config: {} } })
     show([quote, priced], [edge("e_quote", "quote", "policy", "priced")])

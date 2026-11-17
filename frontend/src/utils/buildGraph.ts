@@ -1,8 +1,7 @@
-import type { PipelineEdge } from "../types/node"
 import type { GraphPayload } from "../api/types"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
 import { isPlainObject } from "../types/guards"
-import useGraphStore from "../stores/useGraphStore"
+import useGraphStore, { documentGraph } from "../stores/useGraphStore"
 import { constantsPayload } from "./globalConstants"
 
 /**
@@ -95,9 +94,10 @@ export function graphForRequestIdentity(
  */
 export function documentGraphPayload() {
   const state = useGraphStore.getState()
+  const { nodes, edges } = documentGraph()
   return toCanonicalGraphPayload({
-    nodes: state.focus ? state.focus.rootNodes : state.nodes,
-    edges: (state.focus ? state.focus.rootEdges : state.edges) as PipelineEdge[],
+    nodes,
+    edges,
     submodels: state.submodels,
     preamble: state.preamble,
     ...storeGlobalConstants(),

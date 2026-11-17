@@ -17,8 +17,6 @@ import {
 } from "../types/node"
 
 interface SubmodelNavParams {
-  setNodesRaw: (nodes: Node[]) => void
-  setEdgesRaw: (edges: Edge[]) => void
   setSelectedNode: (node: Node | null) => void
   setLastSelectedId?: (id: string | null) => void
   /** The result key of the node whose panel is open; leaving a view forgets it with the panel. */
@@ -49,11 +47,27 @@ export interface SubmodelNavReturn {
   handleDrillIntoSubmodel: (nodeId: string) => void
   handleBreadcrumbNavigate: (depth: number) => void
   resetToAuthoritativeRoot: (sourceFile: string, pipelineName: string) => void
-  handleDocumentReload: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
+  /** After live sync installed a new document: the view stack follows the view it kept or closed. */
+  handleDocumentReload: () => void
   /** Creates the submodel, or says why not; the dialog shows a refusal inline. */
   handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   handleCreateNodeInstance: (nodeId: string) => Promise<SubmodelCreateResult>
   handleDissolveSubmodel: (instanceId: string) => Promise<void>
+}
+
+/** The breadcrumb of the submodel the store shows, as its document names it; null at the root. */
+function openViewLevel(): ViewLevel | null {
+  const { focus, submodels } = useGraphStore.getState()
+  if (!focus) return null
+  const occurrence = canonicalOccurrence(focus.instanceId, focus.rootNodes, submodels)
+  return {
+    type: "submodel",
+    name: occurrence.label,
+    file: occurrence.definition.file,
+    instanceId: occurrence.instanceId,
+    definitionId: occurrence.definitionId,
+    readOnly: occurrence.readOnly,
+  }
 }
 
 interface CanonicalOccurrence {
@@ -141,7 +155,6 @@ function instanceCount(nodes: Node[], definitionId: string): number {
 
 export default function useSubmodelNavigation({
   
-  setNodesRaw, setEdgesRaw,
   setSelectedNode, setLastSelectedId, lastSelectedKeyRef, setPreviewData, cancelPreview, clearTrace,
   sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView, reservedApiInputFrameLabels,
@@ -378,37 +391,32 @@ export default function useSubmodelNavigation({
     if (shown === focusKey) return
     transformRequestSerialRef.current += 1
     const root = viewStackRef.current[0]
-    const { focus, submodels } = useGraphStore.getState()
-    let nextStack: ViewLevel[] = [root]
-    if (focus) {
-      const occurrence = canonicalOccurrence(focus.instanceId, focus.rootNodes, submodels)
-      nextStack = [root, {
-        type: "submodel",
-        name: occurrence.label,
-        file: occurrence.definition.file,
-        instanceId: occurrence.instanceId,
-        definitionId: occurrence.definitionId,
-        readOnly: occurrence.readOnly,
-      }]
-      sourceFileRef.current = occurrence.definition.file
-    } else {
-      sourceFileRef.current = root.file
-    }
+    const nextStack: ViewLevel[] = [root]
+    const open = openViewLevel()
+    if (open) nextStack.push(open)
+    sourceFileRef.current = (open ?? root).file
     viewStackRef.current = nextStack
     setViewStack(nextStack)
     leaveView()
   }, [focusKey, leaveView, sourceFileRef])
 
-  const handleDocumentReload = useCallback((
-    reloaded: { nodes: Node[]; edges: Edge[] },
-  ) => {
+  const handleDocumentReload = useCallback(() => {
     transformRequestSerialRef.current += 1
-    const { nodes: reloadedNodes, edges: reloadedEdges } = reloaded
     const activeView = viewStackRef.current[viewStackRef.current.length - 1]
     if (activeView?.type !== "submodel") return
-
-    // The synchronizer has installed a new root snapshot, which closed the
-    // open submodel, so breadcrumbs and canvas describe the same document.
+    const open = openViewLevel()
+    if (open) {
+      // The reload kept the open submodel: its breadcrumb names the occurrence and its
+      // definition's file as the new document has them, and the canvas and open panel
+      // already show its new contents.
+      const nextStack: ViewLevel[] = [viewStackRef.current[0], open]
+      sourceFileRef.current = open.file
+      viewStackRef.current = nextStack
+      setViewStack(nextStack)
+      return
+    }
+    // The store showed the main pipeline (the occurrence is gone), so breadcrumbs and
+    // canvas describe the same document.
     const rootFile = viewStackRef.current[0]?.file || sourceFileRef.current
     const rootName = viewStackRef.current[0]?.name || pipelineNameRef.current || "main"
     sourceFileRef.current = rootFile
@@ -419,8 +427,6 @@ export default function useSubmodelNavigation({
     }]
     viewStackRef.current = rootView
     setViewStack(rootView)
-    setNodesRaw(reloadedNodes)
-    setEdgesRaw(normalizeEdges(reloadedEdges))
     setSelectedNode(null)
     setLastSelectedId?.(null)
     setPreviewData(null)
@@ -428,8 +434,6 @@ export default function useSubmodelNavigation({
   }, [
     sourceFileRef,
     pipelineNameRef,
-    setNodesRaw,
-    setEdgesRaw,
     setSelectedNode,
     setLastSelectedId,
     setPreviewData,

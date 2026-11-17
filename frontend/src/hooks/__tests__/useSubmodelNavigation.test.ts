@@ -71,8 +71,6 @@ function makeParams(
   pipeline: Partial<CanvasDocument> = {},
 ) {
   const params = {
-    setNodesRaw: vi.fn(),
-    setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
@@ -378,8 +376,6 @@ describe("useSubmodelNavigation", () => {
       await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
     })
     expect(mockCreate).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
       INSTANCE_ID,
     ])
@@ -708,8 +704,6 @@ describe("useSubmodelNavigation", () => {
       await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
     expect(result.current.viewStack).toHaveLength(2)
-    vi.mocked(params.setNodesRaw).mockClear()
-    vi.mocked(params.setEdgesRaw).mockClear()
     vi.mocked(params.setSelectedNode).mockClear()
 
     // Adoption installs the authoritative document, which closes the view.
@@ -722,12 +716,10 @@ describe("useSubmodelNavigation", () => {
       { type: "pipeline", name: "repaired", file: "repaired.py" },
     ])
     expect(useGraphStore.getState().focus).toBeNull()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setSelectedNode).not.toHaveBeenCalled()
   })
 
-  it.each([false, true])("returns to the root on document reload (occurrence retained: %s)", async (retained) => {
+  it.each([false, true])("follows the view a document reload keeps or closes (occurrence retained: %s)", async (retained) => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({
       status: "ok",
@@ -747,18 +739,36 @@ describe("useSubmodelNavigation", () => {
     expect(result.current.viewStack).toHaveLength(2)
     expect(useGraphStore.getState().focus).toMatchObject({ instanceId: "pricing", definitionId: DEFINITION_ID })
 
-    // The synchronizer installs the reloaded document, then tells navigation.
+    vi.mocked(params.setSelectedNode).mockClear()
+    // The synchronizer installs the reloaded document, then tells navigation. The
+    // reloaded definition lives in another file and holds another child.
     const reloadedNodes = [makeNode("other_node", "polars"), ...(retained ? [makeOccurrence()] : [])]
+    const reloadedDefinition = { ...makeDefinition([makeNode("child2")]), file: "modules/pricing_v2.py" }
     act(() => {
-      useGraphStore.getState().loadGraphSnapshot({ nodes: reloadedNodes, edges: [], preamble: "", submodels: makeDocument().submodels })
-      result.current.handleDocumentReload({ nodes: reloadedNodes, edges: [] })
+      useGraphStore.getState().loadGraphSnapshot(
+        { nodes: reloadedNodes, edges: [], preamble: "", submodels: { [DEFINITION_ID]: reloadedDefinition } },
+        { keepOpenSubmodel: true },
+      )
+      result.current.handleDocumentReload()
     })
 
-    expect(result.current.viewStack).toHaveLength(1)
-    expect(result.current.viewStack[0]).toMatchObject({ type: "pipeline" })
-    expect(useGraphStore.getState().focus).toBeNull()
-    expect(params.setNodesRaw).toHaveBeenLastCalledWith(reloadedNodes)
-    expect(params.setEdgesRaw).toHaveBeenLastCalledWith([])
+    if (retained) {
+      // The view stays open on the new contents, its breadcrumb naming the new file.
+      expect(useGraphStore.getState().focus).toMatchObject({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID })
+      expect(result.current.viewStack).toHaveLength(2)
+      expect(result.current.viewStack[1]).toMatchObject({ type: "submodel", name: "pricing", file: "modules/pricing_v2.py" })
+      expect(params.sourceFileRef.current).toBe("modules/pricing_v2.py")
+      expect(canvasGraph().nodes.map((node) => node.id)).toContain("child2")
+      expect(params.setSelectedNode).not.toHaveBeenCalled()
+    } else {
+      expect(useGraphStore.getState().focus).toBeNull()
+      expect(result.current.viewStack).toHaveLength(1)
+      expect(result.current.viewStack[0]).toMatchObject({ type: "pipeline" })
+      expect(params.sourceFileRef.current).toBe("test.py")
+      // The canvas is the pipeline the load installed.
+      expect(canvasGraph().nodes.map((node) => node.id)).toEqual(["other_node"])
+      expect(params.setSelectedNode).toHaveBeenCalledWith(null)
+    }
     vi.useRealTimers()
   })
 
@@ -831,10 +841,7 @@ describe("useSubmodelNavigation", () => {
         definition_other: independentDefinition,
       },
     }
-    const params = makeParams({
-      setNodesRaw: (nodes) => useGraphStore.getState().setNodesRaw(nodes),
-      setEdgesRaw: (edges) => useGraphStore.getState().setEdgesRaw(edges),
-    }, pipeline)
+    const params = makeParams({}, pipeline)
     seedCanonicalGraph(pipeline)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
@@ -974,8 +981,6 @@ describe("useSubmodelNavigation", () => {
       await result.current.handleDissolveSubmodel(INSTANCE_ID)
     })
     expect(mockDissolve).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(useGraphStore.getState().submodels).toEqual({})
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["n1", "n2"])
     expect(useGraphStore.getState().nodes[0]?.data._functionName).toBe("resolved_dissolve")
@@ -1225,8 +1230,6 @@ describe("useSubmodelNavigation", () => {
     })
 
     const changed = useGraphStore.getState()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(changed.nodes.map((node) => node.id)).toEqual([INSTANCE_ID])
     expect(changed.submodels).toEqual({ [DEFINITION_ID]: definition })
     expect(changed.preamble).toBe("PARENT = 1\nCHILD_HELPER = 2")
@@ -1300,8 +1303,6 @@ describe("useSubmodelNavigation", () => {
     })
 
     const changed = useGraphStore.getState()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setPreamble).not.toHaveBeenCalled()
     expect(changed.nodes.map((node) => node.id)).toEqual(["child1"])
     expect(changed.submodels).toEqual({})

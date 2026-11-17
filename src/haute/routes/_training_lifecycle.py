@@ -55,14 +55,12 @@ from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
     ConflictError,
-    ContractMismatchError,
     HauteValidationError,
     InsufficientMemoryError,
     InvalidRequestError,
     NotFoundError,
     ParseError,
     RequestRefusedError,
-    SchemaMismatchError,
     ServiceFailedError,
     UnprocessableError,
 )
@@ -94,8 +92,12 @@ from haute.routes._background_jobs import (
     start_job_thread,
 )
 from haute.routes._contract_errors import (
+    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_refusal,
+    is_pipeline_error,
+    memory_error_refusal,
+    pipeline_error_message,
 )
 from haute.routes._job_lifecycle import (
     JobLifecycle,
@@ -546,20 +548,19 @@ class TrainService:
             raise _evaluation_preview_refusal(
                 f"Evaluation preview cannot run in bounded mode: {exc}"
             ) from exc
-        except (
-            ContractMismatchError,
-            SchemaMismatchError,
-            ParseError,
-            ConfigError,
-            pl.exceptions.PolarsError,
-        ) as exc:
+        except PIPELINE_ERROR_TYPES as exc:
+            if not is_pipeline_error(exc):
+                # Out of memory behind it: the memory limit, never the user's to fix.
+                raise memory_error_refusal(exc, operation="training_evaluation_preview") from exc
             # Graph-shape and schema failures raised while the bounded
             # projection executes are the user's to fix, exactly like the
             # data-dependent validation failures above: name the cause. A
             # Polars failure here comes from planning or collecting the
             # pipeline's own code and data — the preview shows the same
             # failure as a node error — so it is reported, never a 500.
-            raise _evaluation_preview_refusal(f"Evaluation preview failed: {exc}") from exc
+            raise _evaluation_preview_refusal(
+                f"Evaluation preview failed: {pipeline_error_message(exc)}"
+            ) from exc
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)
