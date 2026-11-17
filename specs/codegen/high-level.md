@@ -459,9 +459,10 @@ code (`NodeData`). The writers and what names their edits:
 
 A node saved with unfinished steps has the raising placeholder for a body and its list in
 `.haute.json`. Unless its steps were edited, a save writes it from that record, the
-server's own copy, while the node carries the code that record loads as; a graph that does
-not descend from the file, such as an earlier commit's, carries its own code and is
-written from it. The save's answer returns, in `step_code`, the code each named node loads
+server's own copy, while its body in the file is still that placeholder (the parse's
+`steps_placeholder`, so a record a hand edit left behind is never read) and the node
+carries the code the record loads as; a graph that does not descend from the file, such as
+an earlier commit's, carries its own code and is written from it. The save's answer returns, in `step_code`, the code each named node loads
 with from the file it wrote, which the editor puts in its saved baseline, so a node saved
 again before the browser's own rendering arrives is sent with the code the save wrote.
 The steps editor makes a rendering the node's code only once its steps differ from the

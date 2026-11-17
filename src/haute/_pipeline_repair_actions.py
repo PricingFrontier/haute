@@ -712,6 +712,20 @@ def _finalise_action_plan(
     )
 
 
+def _function_body(path: Path, name: str) -> str | None:
+    """The body of the top-level function *name* in the Python file *path*, as written."""
+    raw = path.read_bytes()
+    _prefix, source, _body = _decode_utf8_artifact(raw, artifact="Repair source")
+    for statement in _parse(raw).body:
+        if (
+            isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and statement.name == name
+        ):
+            lines = source.splitlines()
+            return "\n".join(lines[statement.body[0].lineno - 1 : statement.end_lineno])
+    return None
+
+
 def _scoped_config_to_write(
     path: Path,
     target: RecoveryPipelineNode,
@@ -719,16 +733,21 @@ def _scoped_config_to_write(
     steps_edited: bool,
 ) -> dict[str, Any]:
     """The settings a node-scoped save writes the node from (CGEN-11): unless its steps
-    were edited, the code it carries, its steps not read, or, while the file's
-    ``.haute.json`` holds the node's unfinished steps and the node carries the code they
-    load as, that record."""
+    were edited, the code it carries, its steps not read, or, while its body in the file
+    is the placeholder an unfinished step list is saved with and the node carries the
+    code that list loads as, the list the file's ``.haute.json`` records: the parse's own
+    rule (``steps_placeholder``), so a record a hand edit left behind is never read."""
+    from haute._code_extraction import holds_incomplete_steps_placeholder
     from haute._sidecar import read_sidecar_state
     from haute._step_authority import with_recorded_unfinished_steps, without_unread_steps
 
     if target.node_type not in STEPS_FROM_CODE:
         return config
-    held = read_sidecar_state(path)
-    recorded = held.data.unfinished_steps.get(target.authored_id) if held.data else None
+    recorded = None
+    body = _function_body(path, target.authored_id)
+    if body is not None and holds_incomplete_steps_placeholder(body):
+        held = read_sidecar_state(path)
+        recorded = held.data.unfinished_steps.get(target.authored_id) if held.data else None
     from_record = with_recorded_unfinished_steps(
         target.node_type, config, recorded, edited=steps_edited
     )

@@ -128,10 +128,7 @@ def _project(tmp_path: Path, source: Path | None = None) -> Path:
     # Into the layout a save writes, by a save on the server that no browser has held: what
     # a save of the same document through a browser must then leave as it is.
     py_path = _pipeline_file(root)
-    try:
-        graph = parse_pipeline_to_graph(py_path, project_root=root)
-    except Exception as exc:  # an example built to be refused has no document to save
-        pytest.skip(f"{py_path.name} does not load: {type(exc).__name__}")
+    graph = parse_pipeline_to_graph(py_path, project_root=root)
     SavePipelineService(root, pipeline_root=py_path.parent).save(
         SavePipelineRequest(
             name=graph.pipeline_name or "main",
@@ -424,6 +421,66 @@ def test_a_scoped_save_keeps_an_unedited_nodes_code(tmp_path: Path) -> None:
 
     assert 'pl.lit(1.0).alias("x")' in (root / "main.py").read_text(encoding="utf-8")
     assert json.loads((root / "b.json").read_text(encoding="utf-8"))["path"] == "data/other.parquet"
+
+
+def test_a_scoped_save_never_reads_a_record_a_hand_edit_left_behind(tmp_path: Path) -> None:
+    """Working code written by hand over the placeholder leaves the record of its unfinished
+    steps in ``.haute.json``; the load ignores it, and so does a scoped save of the node with
+    nothing edited, even when the record renders as the code does without the node's inputs."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+    from haute._polars_steps_lift import lift_steps
+    from haute._types import NodeType
+    from haute.schemas import PipelineNodeSaveRequest
+
+    root = tmp_path
+    (root / "haute.toml").write_text('[project]\nname="demo"\n', encoding="utf-8")
+    code = "\n".join(
+        [
+            "df = source_a",
+            "source_a = 365",
+            'df = df.with_columns((pl.col("days") / source_a).alias("years"))',
+        ]
+    )
+    body = "".join(f"    {line}\n" for line in code.split("\n"))
+    (root / "main.py").write_text(
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        "@pipeline.polars\n"
+        f"def transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n{body}    return df\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    broken = {
+        "input_type": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": "",
+        "arguments": {},
+    }
+    (root / "a.json").write_text(json.dumps({**broken, "cacheMode": "snapshot"}), encoding="utf-8")
+    record = lift_steps(NodeType.POLARS, code)
+    (root / "main.haute.json").write_text(
+        json.dumps({"unfinished_steps": {"transform": record}}), encoding="utf-8"
+    )
+    use_project(root)
+    document = load_pipeline_editor_document(root / "main.py", project_root=root)
+    target = next(node for node in document.nodes if node.authored_id == "transform")
+    assert target.scoped_editable
+    request = PipelineNodeSaveRequest(
+        source_file=document.source_file,
+        source_revision=document.source_revision,
+        target_source_file=target.source_file,
+        target_recovery_id=target.recovery_id,
+        config=_as_javascript_holds_it(target.config),
+    )
+
+    apply_scoped_node_save(project_root=root, request=request)
+
+    saved = (root / "main.py").read_text(encoding="utf-8")
+    assert "    source_a = 365\n" in saved
+    assert "NotImplementedError" not in saved
 
 
 # ---------------------------------------------------------------------------
