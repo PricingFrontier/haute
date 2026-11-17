@@ -58,7 +58,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/submodelRuntimeTarget.ts` | `submodelOutputPreview` resolves an occurrence's selected public output to its authoritative display name, its output-port frame target and its cache key (`frameKey`), using `canonicalSubmodelBoundary` and `resolveSubmodelBoundaryNodes`; `DrilledOccurrenceIdentity` is the open occurrence's identity. The browser builds no runtime id. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | The boundary commands (submodels low-level, "Boundary commands"): each reads the gesture's card, port, child or edge from the canvas and the open definition and the pipeline's own graph from the document, edits the definition's ports, children and edges and the parent edges directly, refuses a retirement any occurrence binds, and draws the view from the result with the canvas's own children and the cards where they were. It maps the collapsed generic input gesture to an existing or newly minted named port. Nothing reads a document fact back from a card. |
 | `frontend/src/utils/submodelBoundaryEditing.ts` | The boundary commands' entry points: the state a command reads (the canvas, the open occurrence and the document behind it) and the result it leaves, over `canonicalSubmodelBoundaryEditing.ts`. |
-| `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Runs the boundary commands for the main-canvas generic submodel input, drilled React Flow connection/deletion events, and explicit Input-inspector port removal; accumulates identity-dependent gestures in one pending candidate, validates exact parent-handle identity coverage, reads the open submodel from the graph store's document and `focus`, and commits each boundary action through `commitSubmodelBoundaryEdit` as one undo step, with error toasts; at the root, the collapsed generic input commits through the history-aware atomic graph setter. Undo and Redo restore the whole document from the store's history, so nothing reconciles on render. |
+| `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Runs the boundary commands for the main-canvas generic submodel input, drilled React Flow connection/deletion events (a node batch through `commitNodesChange`, which App's node-change handler calls first), and explicit Input-inspector port removal; accumulates identity-dependent gestures in one pending candidate, validates exact parent-handle identity coverage, reads the open submodel from the graph store's document and `focus`, and commits each boundary action through `commitSubmodelBoundaryEdit` as one undo step, with error toasts; at the root, the collapsed generic input commits through the history-aware atomic graph setter. Undo and Redo restore the whole document from the store's history, so nothing reconciles on render. |
 | `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`, with stable callbacks for its setters: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
 | `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings (`KEYBOARD_SHORTCUT_BINDINGS`, shared with `KeyboardShortcuts.tsx` so the Hotkeys modal and the window listener read one bindings table including `Ctrl+Y`, `Ctrl+G`, and `Escape`) for save, undo/redo, copy/paste, delete (removing eligible selected nodes, their incident edges, and separately selected edges in one undoable transaction while honouring protected submodel owners), search, Submodel creation, and panel dismissal, registered only while `enabled` (false while the workbench's view shows, so keys pressed there never edit the hidden canvas); through `hooks/keyboardTargets.ts` it honours editable controls so keystrokes do not leak from a text field into graph mutation, and leaves keys inside an open modal dialog to that dialog, except that Ctrl/Cmd+K still closes the node-search palette, which is itself a modal. Ctrl+G delegates to the same `requestSubmodelCreation` policy as the toolbar. Save from a focused text field blurs it first and saves on the next tick, so a field that commits on blur is included in the save. |
@@ -1113,23 +1113,18 @@ reconciliation rather than dropping them or committing a second mutation.
     Undo, Redo, view change and load, so a superseding edit, Undo then Redo
     back to identical content, or leaving the submodel and opening it again
     discards the candidate, while a click or a move during resolution leaves it
-    current. The candidate also records the document's layout when it is
-    prepared (the canvas's, the open definition's children's and the
-    pipeline's own node positions). Committing it (and building a later
-    gesture on it) merges the layout three ways (`withCurrentLayout`): a node
-    moved since the candidate was prepared takes the position it has then, so
-    a move made meanwhile is not reverted, and every other node keeps the
-    candidate's position, so a deletion batch's own moves land. A child is
-    placed once, on the canvas and in the definition alike: where the
-    definition has it then when the definition moved it (a drag that ended),
-    else where the candidate put it. Only a drag still under way (`dragging`)
-    shows the canvas's position, its end reaching the definition as its own
-    step; a drag released where it started leaves the document as it was, so
-    the candidate's place stands. A view node's position, `dragging` and
-    `selected` are each the canvas's when the canvas changed them since the
-    candidate was prepared, else the candidate's, so the candidate's own
-    selection and a release in its own batch land; `measured`, `width` and
-    `height` are the canvas's, by id. A shared-node deletion whose
+    current. Committing it (and building a later gesture on it) keeps the
+    layout the document has then (`withCurrentLayout`): the view nodes'
+    `position`, `selected`, `dragging`, `measured`, `width` and `height`, the
+    open definition's child positions and the pipeline's own node positions,
+    by id, so a move made meanwhile is not reverted. A React Flow node batch
+    inside an open submodel goes through `commitNodesChange`: its removals
+    are one deletion command, and its other changes (a move, a drag's
+    release, a selection) are part of that step when it commits at once.
+    When it waits for server names, or is refused, they go to the canvas's
+    own change handler at once, as any change does (a move landing as the
+    canvas lands one), so the canvas never shows a gesture the batch already
+    ended and the layout the commit keeps already holds them. A shared-node deletion whose
     commit went asynchronous reports `"pending"` and settles its caller through
     an `onSettled(committed)` callback, so selection, preview, cached-result and
     dialog cleanup only runs once the commit actually lands. The projection
@@ -1994,12 +1989,11 @@ again through the editor and save paths.
     action as one step of the document, with Undo and Redo restoring parent bindings,
     their order, output names and consumer mappings; the collapsed generic input at the
     root; a refused route shown with its reason; and the prepared transaction of an edit
-    waiting on server names: a move made meanwhile is kept and the edit commits, with a
-    deletion batch's own moves in the definition through Undo and Redo, a drag that
-    ends meanwhile, or that the batch itself ends, placing the canvas and the definition
-    alike, while a
+    waiting on server names: a move made meanwhile is kept and the edit commits, while a
     superseding edit, Undo then Redo back to the same document, or leaving and reopening
-    the submodel discards it.
+    the submodel discards it; a deletion batch's other changes kept in its step when it
+    commits at once, and landed on the canvas at once when it waits, fails or is
+    refused, the later gesture winning on the canvas and in the definition alike.
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.boundaryPorts.test.ts`,
     `frontend/src/utils/__tests__/submodelViewGraph.test.ts`, and
     `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — canonical

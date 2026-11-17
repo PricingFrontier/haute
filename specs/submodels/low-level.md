@@ -217,7 +217,7 @@ annotations stay on the canvas while the definition holds them in their authored
 | Route an input | connect an Input card port to a child's handle | the child's endpoint joins the port's `targets` (an existing one changes nothing) | the port is not declared, or the target is not a child (the Output card) |
 | Declare an output | connect a child's handle to the Output card | a new output port sourced at that endpoint, named from the frame (`_2`, `_3` on collision across both directions); an endpoint already an output changes nothing | the source is not a child, or its frame has no identity |
 | Remove boundary and internal edges | delete edges, from the canvas or the keyboard, in one batch | each input boundary edge's target leaves its port; each output boundary edge retires its port; each internal edge leaves the definition; an input left with no target that had one is retired, while one never routed stays | a retired port is bound by any occurrence's parent edge (naming every affected occurrence and port) |
-| Delete children | delete children and the selected edges with them | the children and every edge touching them leave the definition; their targets leave their input ports and the outputs they source are retired, as above; a move the same React Flow batch made to a surviving child is part of the step | as above |
+| Delete children | delete children and the selected edges with them | the children and every edge touching them leave the definition; their targets leave their input ports and the outputs they source are retired, as above; the same React Flow batch's other changes (a move, a drag's release, a selection) are part of the step when it commits at once, and land on the canvas at once, as the canvas lands any change, when it waits for server names or is refused | as above |
 | Retire an input | the Input inspector's remove | the port, its internal routes and every occurrence's `in__<name>` parent edge leave the document | never on a binding, which it removes |
 | Bind an input from the pipeline | connect a frame to a collapsed occurrence's generic input | the parent edge on `in__<name>`, minting the port on the owner when the frame names none | as the generic input's rules below |
 | Unbind or move a binding | delete the parent edge in the pipeline, or pick another input in the occurrence panel | the parent edge leaves, or moves to the other `in__<name>` (`retargetSubmodelInput`); the definition is unchanged | the panel's input is not declared |
@@ -225,9 +225,8 @@ annotations stay on the canvas while the definition holds them in their authored
 A refusal is shown as "Submodel edit refused: <reason>". A command that changes the outputs
 resolves the occurrences' output identities with the server before it commits (see the
 paragraph above), as one pending candidate: a gesture made while it waits is read against
-that candidate's document, and the commit keeps both the candidate's own moves and the moves
-made while it waited, the later winning for a node both moved. A port's name is immutable:
-no command renames one.
+that candidate's document, and the commit keeps the layout the document has then, so the
+later gesture wins. A port's name is immutable: no command renames one.
 
 ### Instance bindings, output names and previews (normative)
 

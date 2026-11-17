@@ -7,7 +7,6 @@ import {
   type EdgeChange,
   type Node,
   type NodeChange,
-  type XYPosition,
 } from "@xyflow/react"
 import {
   isSubmodelDefinition,
@@ -51,93 +50,25 @@ const isBoundaryEdge = (edge: Edge) => {
   return data?.submodelBoundary?.direction === "input" || data?.submodelBoundary?.direction === "output"
 }
 
-type Positions = ReadonlyMap<string, XYPosition>
-
-/** A canvas node's place and the state a gesture changes: whether it is dragged or selected. */
-interface ViewState {
-  position: XYPosition
-  dragging: boolean
-  selected: boolean
-}
-
-/**
- * Where the document's nodes are: the canvas (with its nodes' drag and selection),
- * the pipeline's own nodes and the open definition's children.
- */
-interface DocumentLayout {
-  view: ReadonlyMap<string, ViewState>
-  parent: Positions
-  definition: Positions
-}
-
-const positionsOf = (nodes: readonly Node[]): Positions => new Map(nodes.map((node) => [node.id, node.position]))
-
-const samePosition = (a: XYPosition, b: XYPosition) => a.x === b.x && a.y === b.y
-
-function documentLayout(definitionId: string): DocumentLayout {
-  const { nodes, focus, submodels } = useGraphStore.getState()
-  const definition = submodels[definitionId]
-  return {
-    view: new Map(nodes.map((node) => [node.id, {
-      position: node.position,
-      dragging: node.dragging === true,
-      selected: node.selected === true,
-    }])),
-    parent: positionsOf(focus?.rootNodes ?? []),
-    definition: positionsOf(isSubmodelDefinition(definition, definitionId) ? definition.graph.nodes : []),
-  }
-}
-
-/** Whether `now` places the node other than `base` did, or `base` lacked it: moved since `base`. */
-function movedSince(id: string, base: Positions, now: Positions): boolean {
-  const position = now.get(id)
-  const was = base.get(id)
-  return position !== undefined && !(was && samePosition(was, position))
-}
-
-/** `nodes`, each one `moved` placed where `now` has it; the others keep their place. */
-function placedAs(nodes: Node[], now: Positions, moved: (id: string) => boolean): Node[] {
-  return nodes.map((node) => {
-    const position = moved(node.id) ? now.get(node.id) : undefined
-    return position && !samePosition(position, node.position)
-      ? { ...node, position }
-      : node
-  })
-}
-
 /**
  * Carry the live canvas presentation onto a candidate's view nodes.
  *
- * A pending candidate is kept across selection, drag and position changes made
- * while parent identities resolve; committing it must not revert those, nor the
- * candidate's own (a deletion batch's selection, or the release ending a drag).
- * So each of a node's position, drag and selection takes the canvas's value when
- * the canvas changed it since `base`, else the candidate's; its measured size is
- * the canvas's. A child that is not being dragged is then placed where `children`
- * has it, so the canvas and the definition agree; a drag under way, and a card,
- * keep the position chosen.
+ * A pending candidate is kept across selection and position changes made while
+ * parent identities resolve; committing it must not revert those, so the
+ * presentation-only fields are taken from the current view by node id.
  */
-function mergeViewPresentation<T extends { viewNodes: Node[] }>(
-  result: T,
-  currentNodes: Node[],
-  base: ReadonlyMap<string, ViewState>,
-  children: Positions,
-): T {
+function mergeViewPresentation<T extends { viewNodes: Node[] }>(result: T, currentNodes: Node[]): T {
   const byId = new Map(currentNodes.map((node) => [node.id, node]))
   return {
     ...result,
     viewNodes: result.viewNodes.map((node) => {
       const live = byId.get(node.id)
       if (!live) return node
-      const was = base.get(node.id)
-      const position = !was || !samePosition(was.position, live.position) ? live.position : node.position
-      const dragging = !was || was.dragging !== (live.dragging === true) ? live.dragging : node.dragging
-      const selected = !was || was.selected !== (live.selected === true) ? live.selected : node.selected
       return {
         ...node,
-        position: dragging ? position : children.get(node.id) ?? position,
-        selected,
-        dragging,
+        position: live.position,
+        selected: live.selected,
+        dragging: live.dragging,
         measured: live.measured,
         width: live.width,
         height: live.height,
@@ -179,32 +110,42 @@ function focusedOccurrence() {
   return { focus, submodelName: name }
 }
 
+/** `nodes` placed where `placedNodes` has nodes of the same ids. */
+function placedAs(nodes: Node[], placedNodes: readonly Node[]): Node[] {
+  const positions = new Map(placedNodes.map((node) => [node.id, node.position]))
+  return nodes.map((node) => {
+    const position = positions.get(node.id)
+    return position && (position.x !== node.position.x || position.y !== node.position.y)
+      ? { ...node, position }
+      : node
+  })
+}
+
 /**
- * `result`, prepared when the document was laid out as `base`, with the moves made
- * since (while it waited for server names, or built on such a candidate), which win;
- * every other node keeps its place in `result`, which holds the edit's own moves (a
- * deletion batch's). A child is placed once, on the canvas and in the definition
- * alike: where the definition has it now when the definition moved it (a drag that
- * ended), else where `result` put it. Only a drag still under way shows the canvas's
- * position, its end reaching the definition as its own step; a drag released where
- * it started leaves the document as it was, so `result`'s place stands. Whether a
- * drag is under way is itself judged against `base`, so a release in the edit's own
- * batch ends it.
+ * `result` with the layout the document has now. A boundary edit moves no node, so
+ * one prepared before nodes were moved (while it waited for server names, or built
+ * on such a candidate) keeps those moves: the canvas's presentation, the open
+ * definition's children and the pipeline's own nodes keep where they are.
  */
-function withCurrentLayout(result: SubmodelBoundaryEditResult, base: DocumentLayout): SubmodelBoundaryEditResult {
-  const { nodes } = useGraphStore.getState()
-  const now = documentLayout(result.definitionId)
-  const definition = result.submodels[result.definitionId]
-  const owned = isSubmodelDefinition(definition, result.definitionId) ? definition : null
-  const children = owned
-    ? placedAs(owned.graph.nodes, now.definition, (id) => movedSince(id, base.definition, now.definition))
-    : []
+function withCurrentLayout(result: SubmodelBoundaryEditResult): SubmodelBoundaryEditResult {
+  const { nodes, focus, submodels } = useGraphStore.getState()
+  const merged = mergeViewPresentation(result, nodes)
+  const definition = merged.submodels[merged.definitionId]
+  const current = submodels[merged.definitionId]
+  const placedSubmodels = isSubmodelDefinition(definition, merged.definitionId)
+    && isSubmodelDefinition(current, merged.definitionId)
+    ? {
+        ...merged.submodels,
+        [merged.definitionId]: {
+          ...definition,
+          graph: { ...definition.graph, nodes: placedAs(definition.graph.nodes, current.graph.nodes) },
+        },
+      }
+    : merged.submodels
   return {
-    ...mergeViewPresentation(result, nodes, base.view, positionsOf(children)),
-    parentNodes: placedAs(result.parentNodes, now.parent, (id) => movedSince(id, base.parent, now.parent)),
-    submodels: owned
-      ? { ...result.submodels, [result.definitionId]: { ...owned, graph: { ...owned.graph, nodes: children } } }
-      : result.submodels,
+    ...merged,
+    parentNodes: focus ? placedAs(merged.parentNodes, focus.rootNodes) : merged.parentNodes,
+    submodels: placedSubmodels,
   }
 }
 
@@ -222,7 +163,6 @@ export default function useSubmodelBoundaryEditing({
   // that generation is current.
   const pendingBoundaryCandidateRef = useRef<{
     result: SubmodelBoundaryEditResult
-    layout: DocumentLayout
     generation: number
     instanceId: string
     definitionId: string
@@ -250,7 +190,7 @@ export default function useSubmodelBoundaryEditing({
       && pending.instanceId === focus.instanceId
       && pending.definitionId === focus.definitionId
     ) {
-      return withCurrentLayout(pending.result, pending.layout)
+      return withCurrentLayout(pending.result)
     }
     return {
       submodelName,
@@ -285,7 +225,6 @@ export default function useSubmodelBoundaryEditing({
     }
     const candidate = {
       result,
-      layout: documentLayout(result.definitionId),
       generation: useGraphStore.getState().semanticGeneration,
       instanceId: result.instanceId,
       definitionId: result.definitionId,
@@ -333,7 +272,7 @@ export default function useSubmodelBoundaryEditing({
         ...result,
         parentNodes: rebound.nodes,
         parentEdges: rebound.edges,
-      }, candidate.layout))
+      }))
       onSettled?.(true)
     }).catch((error: unknown) => {
       if (identityRequestSerialRef.current !== serial) {
@@ -484,11 +423,32 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [state, commitWithParentIdentities, reportBoundaryError])
 
+  /**
+   * A React Flow node batch while a submodel is open: its removals are one deletion
+   * command. The batch's other changes (a move, a drag's release, a selection) are part
+   * of that step when it commits at once. When it waits for server names or is refused,
+   * they land on the canvas now through `applyToCanvas` (the canvas's own change
+   * handler, which keeps its drag bookkeeping), so the canvas never shows a gesture the
+   * batch already ended. False when the batch is not the command's.
+   */
+  const commitNodesChange = useCallback((
+    changes: NodeChange[],
+    applyToCanvas: (changes: NodeChange[]) => void,
+  ): boolean => {
+    const removed = new Set(changes.flatMap((change) => (change.type === "remove" ? [change.id] : [])))
+    const outcome = commitSharedNodeDeletion(removed, new Set(), changes)
+    if (outcome === "not-applicable") return false
+    const others = changes.filter((change) => change.type !== "remove")
+    if (outcome !== "committed" && others.length > 0) applyToCanvas(others)
+    return true
+  }, [commitSharedNodeDeletion])
+
   return {
     commitBoundaryConnection,
     deleteBoundaryEdge,
     deleteBoundaryInputPort,
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
+    commitNodesChange,
   }
 }
