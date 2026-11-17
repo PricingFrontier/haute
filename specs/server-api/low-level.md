@@ -417,9 +417,11 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    `tests/test_node_address_contracts.py` and `tests/test_node_instance_proof.py` check never
    happens for a real preview (a cached one too), training run or solve, nor for a training
    run that fails after its parent prepared an input. Opening a seed plan (`open_seed_plan`,
-   which every operation's planning goes through) records the table before it prepares inputs,
-   and the executor before it serves a preview, so the metrics of a run that fails before its
-   walk, or of a preview served from the cache, still address what they name. The metrics also
+   through which training, a Data Output write, the optimiser's setup and a preview plan)
+   records the table before it prepares inputs, as a node-data build does before it prepares
+   its own, and the executor before it serves a preview, so the metrics of a run that fails
+   before its walk, those a running job publishes during preparation, and those of a preview
+   served from the cache still address what they name. The metrics also
    address each named child's occurrence, so a reader without the graph names a child with its
    occurrence's label.
    A deployed scorer's metrics, which no browser reads, carry an empty table.
@@ -464,7 +466,7 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    trace's Workbench Output and multi-frame refusals, a seed continuation's diagnostics, the
    executor's schema-warning and Data Output messages, a capture's unreadable snapshot (one
    found when a seed plan leases or a worker adopts its generations is checked: a seed carries
-   its node's name for it), a data
+   its node's name for it, which the error's text uses outside a naming scope too), a data
    point's refusals other than a missing port, a trace omission's and an input source's name, a
    walk's progress label, "No input data" and a training join's downsampling warning. It also
    checks that no key or flat name shows outside a key position in a failing preview or trace

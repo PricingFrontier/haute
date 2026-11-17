@@ -701,6 +701,10 @@ class SnapshotCorruptError(ExecutionError):
             node_id=node_id,
             node_label=node_label,
         )
+        if node_label is not None:
+            # Raised where no walk names nodes (a plan's lease, a worker adopting it), its
+            # text names the node by the label it carries, never by its key.
+            self._name_nodes(lambda _key: node_label)
 
 
 class SeedPlanExpiredError(ExecutionError):

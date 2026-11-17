@@ -1362,6 +1362,9 @@ class NodeDataService:
         from haute.execution import prepare_graph
 
         store = NodeSnapshotStore(current_project().root)
+        # Preparation names inputs in the metrics, which a running job publishes, before
+        # the plan this build opens afterwards records the graph's addresses.
+        execution_context.provenance.record_node_addresses(request.graph)
         graph = DataPointResolver(request.graph, source=request.source, store=store).graph
         prepared = prepare_graph(graph, request.node_id, source=request.source)
         prepare_input_snapshots(

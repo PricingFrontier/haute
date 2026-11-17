@@ -1046,6 +1046,58 @@ def test_cancelling_during_input_preparation_ends_the_job_cancelled(
     del real_prepare
 
 
+def test_a_builds_metrics_address_the_inputs_it_prepared_before_its_plan(
+    client: TestClient,
+    project: Path,
+    in_process_worker: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A running build publishes its metrics when memory pressure fires, during
+    preparation too: what preparation names there is addressed before any walk."""
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._node_addresses import named_keys
+
+    csv_path = project / "quotes.csv"
+    pl.DataFrame({"policy_id": [1, 2], "premium": [1.0, 2.0]}).write_csv(csv_path)
+    graph = _graph(
+        project,
+        source_config={
+            "input_type": "file",
+            "format": "csv",
+            "mode": "scan",
+            "path": str(csv_path),
+            "arguments": {},
+        },
+    )
+    contexts: list[Any] = []
+    before_plan: list[dict[str, Any]] = []
+    bind = service_mod.bind_running_execution_metrics_publisher
+    open_plan = service_mod.open_resolved_seed_plan
+
+    def binding(store: Any, job_id: str, context: Any) -> None:
+        contexts.append(context)
+        bind(store, job_id, context)
+
+    def opening(*args: Any, **kwargs: Any) -> Any:
+        before_plan.append(contexts[-1].metrics_payload())
+        return open_plan(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "bind_running_execution_metrics_publisher", binding)
+    monkeypatch.setattr(service_mod, "open_resolved_seed_plan", opening)
+
+    started = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    assert _poll(client, started["job_id"], timeout=120)["status"] == "completed"
+
+    [metrics] = before_plan
+    assert [record["node_id"] for record in metrics["input_preparation"]] == ["source"]
+    assert set(metrics["node_addresses"]) == named_keys(ExecutionMetricsPayload, metrics)
+    assert metrics["node_addresses"]["source"] == {
+        "occurrence": None,
+        "node_id": "source",
+        "label": "source",
+    }
+
+
 def test_a_build_after_input_preparation_is_found_by_point_and_joined(
     client: TestClient,
     project: Path,

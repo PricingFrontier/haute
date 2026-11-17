@@ -349,6 +349,13 @@ def test_a_seed_found_unreadable_at_its_lease_names_the_copys_child(
     assert raised.value.to_payload()["message"].startswith(
         "The cached data for 'scale in rating_ie' is unreadable."
     )
+    # A job's failure message is the error's whole text, which names no key either.
+    assert str(raised.value) == (
+        "The cached data for 'scale in rating_ie' is unreadable. Refresh that node to rebuild "
+        "it, or clear it to run without a cache. (node=scale in rating_ie, "
+        "node_label=scale in rating_ie)"
+    )
+    assert _leaked_keys(str(pickle.loads(pickle.dumps(raised.value)))) == []
 
 
 def test_a_copys_child_that_returns_no_frame_is_named_by_label(client: Any) -> None:
