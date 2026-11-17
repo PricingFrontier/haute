@@ -1304,11 +1304,17 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (view === null) {
         throw new Error(`Submodel occurrence ${focus.instanceId} is not in the document`)
       }
-      const fields: GraphFields = { ...state, nodes: view.nodes, edges: view.edges, focus: view.focus }
+      // The view is drawn from the authored forms, which hold no selection: what was selected
+      // on the canvas stays selected.
+      const selectedNodes = new Set(state.nodes.filter((node) => node.selected).map((node) => node.id))
+      const selectedEdges = new Set(state.edges.filter((each) => each.selected).map((each) => each.id))
+      const nodes = view.nodes.map((node) => (selectedNodes.has(node.id) ? { ...node, selected: true } : node))
+      const edges = view.edges.map((each) => (selectedEdges.has(each.id) ? { ...each, selected: true } : each))
+      const fields: GraphFields = { ...state, nodes, edges, focus: view.focus }
       const patch = derivedPatch(state, fields)
       set({
-        nodes: view.nodes,
-        edges: view.edges,
+        nodes,
+        edges,
         focus: view.focus,
         ...patch,
         ...(patch.persistedFingerprint !== state.persistedFingerprint

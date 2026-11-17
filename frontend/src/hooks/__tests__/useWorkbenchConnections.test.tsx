@@ -203,6 +203,8 @@ describe("useWorkbenchConnections", () => {
         },
       })
       useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+      // A child selected on the canvas, which the redrawn view keeps selected.
+      useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (node.id === "rate" ? { ...node, selected: true } : node)))
     })
     const hook = render()
     publish(1, ["account"])
@@ -218,6 +220,7 @@ describe("useWorkbenchConnections", () => {
     const cards = useGraphStore.getState().nodes.filter((node) => node.data.nodeType === "submodelPort")
     expect(cards.length).toBeGreaterThan(0)
     expect(JSON.stringify(cards)).not.toContain("e_into_pricing")
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "rate")?.selected).toBe(true)
   })
 
   it("never changes a Quote Input's connections", () => {
