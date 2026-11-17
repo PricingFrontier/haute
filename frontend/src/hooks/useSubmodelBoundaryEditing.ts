@@ -7,6 +7,7 @@ import {
   type EdgeChange,
   type Node,
   type NodeChange,
+  type XYPosition,
 } from "@xyflow/react"
 import {
   isSubmodelDefinition,
@@ -50,23 +51,69 @@ const isBoundaryEdge = (edge: Edge) => {
   return data?.submodelBoundary?.direction === "input" || data?.submodelBoundary?.direction === "output"
 }
 
+type Positions = ReadonlyMap<string, XYPosition>
+
+/** Where the document's nodes are: the canvas, the pipeline's own nodes and the open definition's children. */
+interface DocumentLayout {
+  view: Positions
+  parent: Positions
+  definition: Positions
+}
+
+const positionsOf = (nodes: readonly Node[]): Positions => new Map(nodes.map((node) => [node.id, node.position]))
+
+function documentLayout(definitionId: string): DocumentLayout {
+  const { nodes, focus, submodels } = useGraphStore.getState()
+  const definition = submodels[definitionId]
+  return {
+    view: positionsOf(nodes),
+    parent: positionsOf(focus?.rootNodes ?? []),
+    definition: positionsOf(isSubmodelDefinition(definition, definitionId) ? definition.graph.nodes : []),
+  }
+}
+
+/** Where `now` has a node that `base` had elsewhere, or did not have: a move made since `base`. */
+function movedSince(id: string, base: Positions, now: Positions): XYPosition | undefined {
+  const position = now.get(id)
+  const was = base.get(id)
+  return position && !(was && was.x === position.x && was.y === position.y) ? position : undefined
+}
+
+/**
+ * `nodes` with the moves made since `base`, which win; the others keep their place in
+ * `nodes`, which holds the edit's own moves.
+ */
+function placedAs(nodes: Node[], base: Positions, now: Positions): Node[] {
+  return nodes.map((node) => {
+    const position = movedSince(node.id, base, now)
+    return position && (position.x !== node.position.x || position.y !== node.position.y)
+      ? { ...node, position }
+      : node
+  })
+}
+
 /**
  * Carry the live canvas presentation onto a candidate's view nodes.
  *
  * A pending candidate is kept across selection and position changes made while
  * parent identities resolve; committing it must not revert those, so the
- * presentation-only fields are taken from the current view by node id.
+ * presentation-only fields are taken from the current view by node id, and a
+ * position where the node was moved since `base`.
  */
-function mergeViewPresentation<T extends { viewNodes: Node[] }>(result: T, currentNodes: Node[]): T {
+function mergeViewPresentation<T extends { viewNodes: Node[] }>(
+  result: T,
+  currentNodes: Node[],
+  base: Positions,
+): T {
   const byId = new Map(currentNodes.map((node) => [node.id, node]))
+  const now = positionsOf(currentNodes)
   return {
     ...result,
-    viewNodes: result.viewNodes.map((node) => {
+    viewNodes: placedAs(result.viewNodes, base, now).map((node) => {
       const live = byId.get(node.id)
       if (!live) return node
       return {
         ...node,
-        position: live.position,
         selected: live.selected,
         dragging: live.dragging,
         measured: live.measured,
@@ -110,41 +157,30 @@ function focusedOccurrence() {
   return { focus, submodelName: name }
 }
 
-/** `nodes` placed where `placedNodes` has nodes of the same ids. */
-function placedAs(nodes: Node[], placedNodes: readonly Node[]): Node[] {
-  const positions = new Map(placedNodes.map((node) => [node.id, node.position]))
-  return nodes.map((node) => {
-    const position = positions.get(node.id)
-    return position && (position.x !== node.position.x || position.y !== node.position.y)
-      ? { ...node, position }
-      : node
-  })
-}
-
 /**
- * `result` with the layout the document has now. A boundary edit moves no node, so
- * one prepared before nodes were moved (while it waited for server names, or built
- * on such a candidate) keeps those moves: the canvas's presentation, the open
- * definition's children and the pipeline's own nodes keep where they are.
+ * `result`, prepared when the document was laid out as `base`, with the moves made
+ * since. An edit prepared before nodes were moved (while it waited for server names,
+ * or built on such a candidate) keeps those moves on the canvas, the open
+ * definition's children and the pipeline's own nodes, and keeps its own moves (a
+ * deletion batch's) where nothing moved the node since.
  */
-function withCurrentLayout(result: SubmodelBoundaryEditResult): SubmodelBoundaryEditResult {
-  const { nodes, focus, submodels } = useGraphStore.getState()
-  const merged = mergeViewPresentation(result, nodes)
+function withCurrentLayout(result: SubmodelBoundaryEditResult, base: DocumentLayout): SubmodelBoundaryEditResult {
+  const { nodes } = useGraphStore.getState()
+  const now = documentLayout(result.definitionId)
+  const merged = mergeViewPresentation(result, nodes, base.view)
   const definition = merged.submodels[merged.definitionId]
-  const current = submodels[merged.definitionId]
   const placedSubmodels = isSubmodelDefinition(definition, merged.definitionId)
-    && isSubmodelDefinition(current, merged.definitionId)
     ? {
         ...merged.submodels,
         [merged.definitionId]: {
           ...definition,
-          graph: { ...definition.graph, nodes: placedAs(definition.graph.nodes, current.graph.nodes) },
+          graph: { ...definition.graph, nodes: placedAs(definition.graph.nodes, base.definition, now.definition) },
         },
       }
     : merged.submodels
   return {
     ...merged,
-    parentNodes: focus ? placedAs(merged.parentNodes, focus.rootNodes) : merged.parentNodes,
+    parentNodes: placedAs(merged.parentNodes, base.parent, now.parent),
     submodels: placedSubmodels,
   }
 }
@@ -163,6 +199,7 @@ export default function useSubmodelBoundaryEditing({
   // that generation is current.
   const pendingBoundaryCandidateRef = useRef<{
     result: SubmodelBoundaryEditResult
+    layout: DocumentLayout
     generation: number
     instanceId: string
     definitionId: string
@@ -170,7 +207,7 @@ export default function useSubmodelBoundaryEditing({
   const reportBoundaryError = useCallback((error: unknown) => {
     addToast(
       "error",
-      `Shared submodel edit blocked: ${error instanceof Error ? error.message : String(error)}`,
+      `Submodel edit refused: ${error instanceof Error ? error.message : String(error)}`,
     )
   }, [addToast])
   const state = useCallback((): SubmodelBoundaryEditState | null => {
@@ -190,7 +227,7 @@ export default function useSubmodelBoundaryEditing({
       && pending.instanceId === focus.instanceId
       && pending.definitionId === focus.definitionId
     ) {
-      return withCurrentLayout(pending.result)
+      return withCurrentLayout(pending.result, pending.layout)
     }
     return {
       submodelName,
@@ -225,6 +262,7 @@ export default function useSubmodelBoundaryEditing({
     }
     const candidate = {
       result,
+      layout: documentLayout(result.definitionId),
       generation: useGraphStore.getState().semanticGeneration,
       instanceId: result.instanceId,
       definitionId: result.definitionId,
@@ -272,7 +310,7 @@ export default function useSubmodelBoundaryEditing({
         ...result,
         parentNodes: rebound.nodes,
         parentEdges: rebound.edges,
-      }))
+      }, candidate.layout))
       onSettled?.(true)
     }).catch((error: unknown) => {
       if (identityRequestSerialRef.current !== serial) {

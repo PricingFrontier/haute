@@ -510,6 +510,17 @@ describe("submodelBoundaryEditing", () => {
     })).toBeNull()
   })
 
+  it("refuses a route from an undeclared input or to anything but a child, saying why", () => {
+    const current = state()
+    const input = boundary(current.viewNodes, "input").id
+    expect(() => applySubmodelBoundaryConnection(current, {
+      source: input, sourceHandle: "claims", target: "prepare", targetHandle: null,
+    })).toThrow('The submodel has no input "claims"')
+    expect(() => applySubmodelBoundaryConnection(current, {
+      source: input, sourceHandle: "policy", target: boundary(current.viewNodes, "output").id, targetHandle: null,
+    })).toThrow("An input can only be routed to a node inside the submodel")
+  })
+
   it("keeps both cards where the user put them", () => {
     const current = state()
     const moved = { x: -480, y: 17 }

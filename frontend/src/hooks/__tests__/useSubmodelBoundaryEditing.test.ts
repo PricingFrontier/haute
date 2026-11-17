@@ -917,6 +917,21 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(useToastStore.getState().toasts).toEqual([])
   })
 
+  it("refuses an input routed straight to the Output card, saying why", () => {
+    const fixture = makeFixture()
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+    const card = (direction: "input" | "output") => fixture.view.nodes.find((node) => (
+      node.type === "submodelPort" && (node.data as SubmodelPortData).portDirection === direction))!
+    expect(result.current.commitBoundaryConnection({
+      source: card("input").id, sourceHandle: "incoming", target: card("output").id, targetHandle: null,
+    })).toBe(true)
+    expect(store().undoStack).toHaveLength(0)
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([
+      "Submodel edit refused: An input can only be routed to a node inside the submodel",
+    ])
+  })
+
   it("blocks deletion of a bound child without committing", () => {
     const fixture = makeFixture({ outputPorts: ["child_a"] })
     openInStore(fixture)
@@ -1092,6 +1107,43 @@ describe("useSubmodelBoundaryEditing", () => {
       expect(store().nodes.map((node) => node.id)).not.toContain("child_a")
     })
 
+    it("keeps the batch's own moves, and moves made meanwhile, when the deletion waits for identities", async () => {
+      const fixture = makeUnresolvedFixture()
+      const { resolutions, resolveGraphIdentities } = deferredResolver()
+      openInStore(fixture)
+      const { result } = renderHook(() => useSubmodelBoundaryEditing({
+        ...hookParams(fixture), resolveGraphIdentities,
+      }))
+      const definitionPosition = () => storedDefinition().graph.nodes.find((node) => node.id === "child_b")!.position
+      const before = definitionPosition()
+
+      act(() => {
+        expect(result.current.commitSharedNodeDeletion(new Set(["child_a"]), new Set(), [
+          { type: "remove", id: "child_a" },
+          { type: "position", id: "child_b", position: { x: 42, y: 24 }, dragging: false },
+        ])).toBe("pending")
+      })
+      // The Output card is moved while the names resolve.
+      const card = store().nodes.find((node) => (
+        node.type === "submodelPort" && (node.data as SubmodelPortData).portDirection === "output"))!
+      useGraphStore.setState({
+        nodes: store().nodes.map((node) => node.id === card.id ? { ...node, position: { x: 900, y: 9 } } : node),
+      })
+      const request = resolveGraphIdentities.mock.calls[0]![0]
+      await act(async () => resolutions[0]!.resolve({
+        nodes: [...request.nodes], edges: [...request.edges] as PipelineEdge[],
+      }))
+
+      expect(store().undoStack).toHaveLength(1)
+      expect(store().nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 42, y: 24 })
+      expect(definitionPosition()).toEqual({ x: 42, y: 24 })
+      expect(store().nodes.find((node) => node.id === card.id)?.position).toEqual({ x: 900, y: 9 })
+      act(() => store().undo())
+      expect(definitionPosition()).toEqual(before)
+      act(() => store().redo())
+      expect(definitionPosition()).toEqual({ x: 42, y: 24 })
+    })
+
     it("voids the gesture when the document is edited while identities resolve", async () => {
       const fixture = makeUnresolvedFixture()
       const { resolutions, resolveGraphIdentities } = deferredResolver()
@@ -1123,7 +1175,7 @@ describe("useSubmodelBoundaryEditing", () => {
       expect(store().submodels).toBe(submodelsBefore)
       expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
       expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([
-        "Shared submodel edit blocked: the workspace changed while parent identities were resolving",
+        "Submodel edit refused: the workspace changed while parent identities were resolving",
       ])
     })
   })

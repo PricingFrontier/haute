@@ -395,9 +395,11 @@ export function applyCanonicalSubmodelBoundaryConnection(
   const definition = definitionFor(state)
   const childIds = new Set(definition.graph.nodes.map((node) => node.id))
   if (input && connection.source === input.id && connection.sourceHandle && connection.target) {
-    if (!childIds.has(connection.target)) return null
+    if (!childIds.has(connection.target)) {
+      throw new Error("An input can only be routed to a node inside the submodel")
+    }
     const port = definition.inputPorts.find((candidate) => candidate.name === connection.sourceHandle)
-    if (!port) return null
+    if (!port) throw new Error(`The submodel has no input "${connection.sourceHandle}"`)
     const handleId = normalizeDefaultTargetHandle(connection.targetHandle)
     if (port.targets.some((target) => target.nodeId === connection.target && (target.handleId ?? null) === handleId)) {
       return null
@@ -411,7 +413,9 @@ export function applyCanonicalSubmodelBoundaryConnection(
   }
 
   if (output && connection.target === output.id && connection.source) {
-    if (!childIds.has(connection.source)) return null
+    if (!childIds.has(connection.source)) {
+      throw new Error("Only a node inside the submodel can be declared an output")
+    }
     const handleId = connection.sourceHandle ?? null
     if (definition.outputPorts.some((port) => (
       port.source.nodeId === connection.source && (port.source.handleId ?? null) === handleId

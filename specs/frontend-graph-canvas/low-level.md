@@ -1113,11 +1113,15 @@ reconciliation rather than dropping them or committing a second mutation.
     Undo, Redo, view change and load, so a superseding edit, Undo then Redo
     back to identical content, or leaving the submodel and opening it again
     discards the candidate, while a click or a move during resolution leaves it
-    current. Committing it (and building a later gesture on it) keeps the
-    layout the document has then (`withCurrentLayout`): the view nodes'
-    `position`, `selected`, `dragging`, `measured`, `width` and `height`, the
-    open definition's child positions and the pipeline's own node positions,
-    by id, so a move made meanwhile is not reverted. A shared-node deletion whose
+    current. The candidate also records the document's layout when it is
+    prepared (the canvas's, the open definition's children's and the
+    pipeline's own node positions). Committing it (and building a later
+    gesture on it) merges the layout three ways (`withCurrentLayout`): a node
+    moved since the candidate was prepared takes the position it has then, so
+    a move made meanwhile is not reverted, and every other node keeps the
+    candidate's position, so a deletion batch's own moves land; the view
+    nodes' `selected`, `dragging`, `measured`, `width` and `height` are
+    taken from the canvas then, by id. A shared-node deletion whose
     commit went asynchronous reports `"pending"` and settles its caller through
     an `onSettled(committed)` callback, so selection, preview, cached-result and
     dialog cleanup only runs once the commit actually lands. The projection
@@ -1981,9 +1985,11 @@ again through the editor and save paths.
   - `frontend/src/hooks/__tests__/useSubmodelBoundaryEditing.test.ts` — each boundary
     action as one step of the document, with Undo and Redo restoring parent bindings,
     their order, output names and consumer mappings; the collapsed generic input at the
-    root; and the prepared transaction of an edit waiting on server names: a move made
-    meanwhile is kept and the edit commits, while a superseding edit, Undo then Redo back
-    to the same document, or leaving and reopening the submodel discards it.
+    root; a refused route shown with its reason; and the prepared transaction of an edit
+    waiting on server names: a move made meanwhile is kept and the edit commits, with a
+    deletion batch's own moves in the definition through Undo and Redo, while a
+    superseding edit, Undo then Redo back to the same document, or leaving and reopening
+    the submodel discards it.
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.boundaryPorts.test.ts`,
     `frontend/src/utils/__tests__/submodelViewGraph.test.ts`, and
     `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — canonical
@@ -1991,9 +1997,10 @@ again through the editor and save paths.
     shared-interface compatibility preflight and atomic rejection; public-port
     creation/removal, including cross-direction name minting with `_2` suffixes; collapsed
     generic-input owner/copy binding policy; the boundary commands' rules (a route, a
-    declared output, a removal retiring an input left with no route while keeping one never
-    routed, the explicit retirement with its bindings); cards that hold only their ports'
-    names; boundary-position and server-identity preservation; and invalid
+    declared output, a duplicate of either changing nothing, a route from an undeclared
+    input or to the Output card refused with its reason, a removal retiring an input left
+    with no route while keeping one never routed, the explicit retirement with its
+    bindings); cards that hold only their ports' names; boundary-position and server-identity preservation; and invalid
     identity/topology rejection.
   - `frontend/src/hooks/__tests__/useTracing.test.ts` — flat external node ids
     represented by a composite boundary resolve to that Input/Output card for
