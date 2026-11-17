@@ -803,6 +803,8 @@ class GraphFingerprintMemo:
     # objects it has seen.
     graph_node_records: dict[str, tuple[GraphNode, Any]] = field(default_factory=dict)
     graph_edge_records: dict[str, tuple[GraphEdge, Any]] = field(default_factory=dict)
+    # (preamble, pipeline folder) -> its project code fingerprint, resolved once per memo.
+    project_code: dict[tuple[str, str | None], str | None] = field(default_factory=dict)
 
 
 def canonical_json(value: Any) -> str:
@@ -1324,21 +1326,41 @@ def preamble_execution_fingerprint(
     edit to any file of it, data beside the code included, makes every result old.
     ``None`` only when there is neither a preamble nor a ``utility``, so a pipeline with no
     project code stays on its callers' cheapest paths.
+
+    The digest is ``<preamble part>.<utility part>``, so the ``utility`` generation a
+    fingerprint was taken at can be read back from it (:func:`utility_generation`), pinned
+    or not. With *memo*, one request resolves and hashes the tree once per preamble and
+    folder.
     """
     preamble = preamble or ""
+    key = (preamble, None if pipeline_dir is None else str(pipeline_dir))
+    if memo is not None and key in memo.project_code:
+        return memo.project_code[key]
     locations = _resolve_utility_locations(pipeline_dir)
+    fingerprint: str | None
     if not preamble.strip() and locations is None:
-        return None
-    parts: list[dict[str, Any]] = []
-    if preamble.strip():
-        parts.append({"kind": "preamble", "hash": content_hash_bytes(preamble.encode())})
-    utility_entries: list[dict[str, Any]] = (
-        [{"kind": "missing"}]
-        if locations is None
-        else [_hash_utility_candidate(location, memo) for location in locations]
-    )
-    parts.append({"kind": "utility", "entries": utility_entries})
-    return content_hash_bytes(canonical_json(parts).encode())
+        fingerprint = None
+    else:
+        utility_entries: list[dict[str, Any]] = (
+            [{"kind": "missing"}]
+            if locations is None
+            else [_hash_utility_candidate(location, memo) for location in locations]
+        )
+        preamble_part = content_hash_bytes(preamble.encode()) if preamble.strip() else "none"
+        utility_part = content_hash_bytes(canonical_json(utility_entries).encode())
+        fingerprint = f"{preamble_part}.{utility_part}"
+    if memo is not None:
+        memo.project_code[key] = fingerprint
+    return fingerprint
+
+
+def utility_generation(execution_fingerprint: str) -> str:
+    """The ``utility`` tree's part of a :func:`preamble_execution_fingerprint`: equal for two
+    fingerprints exactly when the files an import of ``utility`` loads are the same."""
+    preamble_part, separator, utility_part = execution_fingerprint.rpartition(".")
+    if not separator or not preamble_part or not utility_part:
+        raise ValueError(f"not a project code fingerprint: {execution_fingerprint!r}")
+    return utility_part
 
 
 def _read_constant_names(graph: PipelineGraph, reads: ConstantReads) -> list[str]:

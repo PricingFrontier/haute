@@ -3851,7 +3851,7 @@ class TestPreambleLockConcurrency:
         use_project(tmp_path)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
         source = "HOT_HIT = 1\n"
-        ns_first = _compile_preamble(source, execution_fingerprint="pinned-hot")
+        ns_first = _compile_preamble(source, execution_fingerprint="pinned.hot")
 
         errors: list[BaseException] = []
         finished = threading.Event()
@@ -3861,7 +3861,7 @@ class TestPreambleLockConcurrency:
 
         def compile_worker():
             try:
-                result.append(_compile_preamble(source, execution_fingerprint="pinned-hot"))
+                result.append(_compile_preamble(source, execution_fingerprint="pinned.hot"))
             except BaseException as exc:
                 errors.append(exc)
             finally:
@@ -3881,11 +3881,11 @@ class TestPreambleLockConcurrency:
     def test_compile_preamble_pinned_fingerprint_is_used_verbatim(self):
         _compile_preamble.cache_clear()
         try:
-            ns_a1 = _compile_preamble("X = 1\n", execution_fingerprint="pinned-a")
-            ns_a2 = _compile_preamble("X = 1\n", execution_fingerprint="pinned-a")
+            ns_a1 = _compile_preamble("X = 1\n", execution_fingerprint="pinned.a")
+            ns_a2 = _compile_preamble("X = 1\n", execution_fingerprint="pinned.a")
             assert ns_a1 is ns_a2
 
-            ns_b = _compile_preamble("X = 1\n", execution_fingerprint="pinned-b")
+            ns_b = _compile_preamble("X = 1\n", execution_fingerprint="pinned.b")
             assert ns_b is not ns_a1
             assert ns_b["X"] == 1
 

@@ -33,6 +33,7 @@ from haute._builders import _build_node_fn
 from haute._cache import (
     GraphFingerprintMemo,
     preamble_execution_fingerprint,
+    utility_generation,
 )
 from haute._data_points import DataPointResolver
 from haute._env import int_env
@@ -353,27 +354,49 @@ def _compile_preamble_cached(
     return _PreambleCell()
 
 
+#: The ``utility`` generation (:func:`haute._cache.utility_generation`) whose modules
+#: ``sys.modules`` may hold: the one the last compile or cache hit loaded, or put the
+#: modules aside for. Read and written under ``_preamble_lock``.
+_loaded_utility_generation: str | None = None
+
+
+def _align_loaded_utility(
+    pipeline_dir_str: str | None,  # pragma: no mutate
+    project_root: str,
+    generation: str,
+) -> None:
+    """Bind the finder to this project and, when the binding or the ``utility`` generation
+    changed, put aside every loaded ``utility`` module. Caller holds ``_preamble_lock``.
+
+    Whatever imports ``utility`` (the preamble, a node's code, a helper while Polars
+    collects), it then loads the files of *generation*: a cached namespace taken at one
+    generation never runs beside modules loaded at another, as after an edit undone
+    (A, then B, then A again). The next import loads the source again, which the
+    finder's loader always compiles, so no bytecode from before a change can stand in.
+    Modules are put aside only when the generation moves, never for a preamble edit alone.
+    """
+    global _loaded_utility_generation
+    rebound = bind_project_utility(pipeline_dir_str, project_root=project_root)
+    if rebound or _loaded_utility_generation != generation:
+        evict_utility_modules()
+        _loaded_utility_generation = generation
+
+
 def _compile_preamble_into_cell(
     preamble: str,
     project_root: str,
     pipeline_dir_str: str | None,  # pragma: no mutate
+    generation: str,
 ) -> dict[str, Any]:
     """Compile preamble bytes into a namespace. Caller holds ``_preamble_lock``.
 
     The lock covers the entire bind/eviction/import/exec window. Even preambles
     without literal import statements execute with the ordinary ``__import__``
     and can consult process-global import state.
-
-    A compile is a cache miss: the preamble or a file of the ``utility`` tree changed,
-    or this project was not bound. Whatever imports ``utility`` (the preamble, a node's
-    code, a helper while Polars collects), the modules loaded from the old files are put
-    aside first, so the next import loads the source again, which the finder's loader
-    always compiles: no module or bytecode from before the change can stand in.
     """
     if preamble.strip():
         validate_user_code(preamble)
-    bind_project_utility(pipeline_dir_str, project_root=project_root)
-    evict_utility_modules()
+    _align_loaded_utility(pipeline_dir_str, project_root, generation)
     return _exec_preamble_namespace(preamble) if preamble.strip() else {}
 
 
@@ -435,6 +458,7 @@ def _compile_preamble(
     # subfolder), then in the project root (``haute._project_imports``); both
     # are part of the cache key, as two projects can share a preamble's text.
     project_root = str(current_project().root)
+    generation = utility_generation(execution_fingerprint)
 
     # Cell lookup under its own tiny guard (never held during exec), so a
     # hot hit returns without touching ``_preamble_lock`` — a slow compile
@@ -449,13 +473,14 @@ def _compile_preamble(
     ns = cell.ns
     if ns is not None:
         # A cached namespace's deferred ``utility`` imports run when the frame is
-        # collected, so they must find this project's package even when another
-        # project's compile bound the finder since: rebind it and forget the other
-        # project's modules. A process serves one project at a time.
-        if not utility_bound_to(pipeline_dir_str, project_root=project_root):
+        # collected, so they must find this project's package, at the generation the
+        # namespace was taken at, even when another compile bound the finder or loaded
+        # another generation since. A process serves one project at a time.
+        if _loaded_utility_generation != generation or not utility_bound_to(
+            pipeline_dir_str, project_root=project_root
+        ):
             with _preamble_lock:
-                if bind_project_utility(pipeline_dir_str, project_root=project_root):
-                    evict_utility_modules()
+                _align_loaded_utility(pipeline_dir_str, project_root, generation)
         return ns
 
     # Single-flight population: first caller compiles under ``_preamble_lock``
@@ -465,7 +490,9 @@ def _compile_preamble(
     # semantically-equal-but-distinct namespace.
     with _preamble_lock:
         if cell.ns is None:
-            cell.ns = _compile_preamble_into_cell(preamble, project_root, pipeline_dir_str)
+            cell.ns = _compile_preamble_into_cell(
+                preamble, project_root, pipeline_dir_str, generation
+            )
         return cell.ns
 
 

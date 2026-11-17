@@ -343,10 +343,12 @@ def test_every_reader_an_input_reaches_reports_its_answer_old(
 # ---------------------------------------------------------------------------
 
 
-def _preview(graph: PipelineGraph, node_id: str, column: str) -> float:
+def _preview(graph: PipelineGraph, node_id: str, column: str, *, row_limit: int = 10) -> float:
     from haute.executor import execute_graph
 
-    results = execute_graph(graph, target_node_id=node_id, row_limit=10, target_preview_only=True)
+    results = execute_graph(
+        graph, target_node_id=node_id, row_limit=row_limit, target_preview_only=True
+    )
     assert results[node_id].status == "ok", results[node_id].error
     return float(results[node_id].preview[0][column])
 
@@ -367,6 +369,21 @@ def test_a_utility_edit_is_computed_again_from_the_new_code_in_the_same_process(
 
     (project / "utility" / "rates.json").write_text(json.dumps({"factor": 5}), encoding="utf-8")
     assert _preview(graph, "rated", "rated") == 100 * 1 * 30 * 5
+
+
+def test_an_undone_utility_edit_runs_the_restored_code_not_the_edit(project: Path) -> None:
+    """A, then B, then A again: the compile cache holds A's namespace, and the modules
+    loaded for B are put aside before it is reused, so a node's own import loads A."""
+    graph = _graph(project, preamble="X = 1\n" + _TOP_IMPORT)
+    assert _preview(graph, "rated", "rated") == 100 * 1 * 10 * 2
+
+    (project / "utility" / "inner.py").write_text("INNER = 20\n", encoding="utf-8")
+    assert _preview(graph, "rated", "rated") == 100 * 1 * 20 * 2
+
+    (project / "utility" / "inner.py").write_text("INNER = 10\n", encoding="utf-8")
+    # Another row limit, so the preview is computed again rather than served from the
+    # entry the first one stored, and A's cached namespace is reused.
+    assert _preview(graph, "rated", "rated", row_limit=11) == 100 * 1 * 10 * 2
 
 
 def test_a_node_import_of_utility_runs_and_follows_edits_with_a_blank_preamble(

@@ -1176,8 +1176,12 @@ def _place(loc: tuple[Any, ...], folder: FolderIndex) -> str:
 def read_form_document(config: WorkbenchConfig) -> FormDocument:
     """The form the project's folder holds now, with the folder's revision and what reading
     it grew; a :class:`WorkbenchFormError` for a folder that cannot be read as a form."""
+    from haute._workbench_params import captured_param_values
+
     snapshot = read_folder(config)
-    spec, repairs = form_from_files(config, snapshot.files)
+    spec, repairs = form_from_files(
+        config, snapshot.files, captured_param_values(config.project_root, snapshot.params)
+    )
     return FormDocument(spec, snapshot.revision, repairs)
 
 

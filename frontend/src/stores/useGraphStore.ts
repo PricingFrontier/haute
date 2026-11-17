@@ -69,6 +69,7 @@ import {
   selectIsDirty,
   cloneGraphSnapshot,
 } from "../utils/graphSnapshot"
+import { inputOrderedEdges } from "../utils/inputOrderedEdges"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 import { isSubmodelDefinition, isSubmodelInstanceConfig, nodeData } from "../types/node"
 import { isPlainObject } from "../types/guards"
@@ -526,16 +527,9 @@ function edgeStructuralKey(edge: StructuralEdge): string {
   return `${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}`
 }
 
-/**
- * Edges as the server's identities sign them (`haute._cache.input_ordered_edges`): by the
- * node each feeds, and within one node in the graph's own order, which is the order the
- * executor gives that node its inputs. The same edges connected the other way round are
- * another computation; edges into different nodes keep their key in any order.
- */
+/** Each edge's key, in input order (`inputOrderedEdges`). */
 function inputOrderedEdgeParts(edges: readonly StructuralEdge[]): string[] {
-  return [...edges]
-    .sort((a, b) => (a.target < b.target ? -1 : a.target > b.target ? 1 : 0))
-    .map(edgeStructuralKey)
+  return inputOrderedEdges(edges).map(edgeStructuralKey)
 }
 
 function hasSameEdgeStructure(current: StructuralEdge[], next: StructuralEdge[]): boolean {

@@ -8,6 +8,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { beforeEach, describe, expect, it } from "vitest"
 import useDataEpochStore from "../useDataEpochStore"
+import useNodeDataStore from "../useNodeDataStore"
 import useGraphStore, { computeStructuralFingerprint, derivedRequestKey, type DerivedRequestDocument } from "../useGraphStore"
 import { noteProjectInputsChanged } from "../projectInputs"
 import type { GlobalConstantDraft } from "../../utils/globalConstants"
@@ -61,9 +62,11 @@ describe("noteProjectInputsChanged", () => {
 
   it("moves every browser clock a kept answer is checked against", () => {
     const structural = useGraphStore.getState().structuralVersion
+    const nodeData = useNodeDataStore.getState().epoch
     noteProjectInputsChanged()
     expect(useDataEpochStore.getState().epoch).toBe(1)
     expect(useGraphStore.getState().structuralVersion).toBe(structural + 1)
+    expect(useNodeDataStore.getState().epoch).toBe(nodeData + 1)
   })
 
   it("leaves the graph, its history and its dirty state as they are", () => {
@@ -112,6 +115,24 @@ describe("the browser's readers of a run's inputs", () => {
   it("move the data epoch only through the one notifier", () => {
     const movers = files.filter(({ text }) => /useDataEpochStore\.getState\(\)\.moved\(/.test(text))
     expect(movers.map(({ file }) => file)).toEqual(["stores/projectInputs.ts"])
+  })
+
+  it("order the edges of an answer's identity only through inputOrderedEdges", () => {
+    // A key that sorts a node's incoming edges signs two different computations alike.
+    const sortedEdges = /\.map\(\(\s*(?:edge|e)\b[^)]*\)\s*=>(?:(?!const |return |\n\s*\n)[\s\S]){0,400}?\.target(?:(?!const |return |\n\s*\n)[\s\S]){0,300}?\.sort\(/
+    const notAnswers: Record<string, string> = {
+      "hooks/useNodeHandlers.ts": "the canvas layout's topology, which computes nothing",
+      "stores/useGraphStore.ts": "the panel context key, which keeps no computed answer",
+      "utils/structuralFingerprint.ts": "a submodel boundary edit's identity, which keeps no computed answer",
+    }
+    const sorters = files.filter(({ text }) => sortedEdges.test(text)).map(({ file }) => file)
+    expect(sorters.filter((file) => !(file in notAnswers))).toEqual([])
+    const users = files.filter(({ text }) => /\binputOrderedEdges\(/.test(text)).map(({ file }) => file).sort()
+    expect(users).toEqual([
+      "panels/dataPointIdentity.ts",
+      "stores/useGraphStore.ts",
+      "utils/trainedJobHandles.ts",
+    ])
   })
 
   it("key a request by node data only through the graph store", () => {

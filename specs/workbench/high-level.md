@@ -691,7 +691,8 @@ Out of scope:
   and its bytes, and of every params file (each CSV directly in `files/params/`), its name
   and its bytes: a column's allowed values can come from any of them, so a params file that
   changes, as a colleague's pull changes one, makes a form read before it, and a test quote
-  typed against it, stale. `PUT /api/workbench/form` takes the whole form and the
+  typed against it, stale. The form is parsed from the params bytes its revision signs, never
+  from the working tree read again. `PUT /api/workbench/form` takes the whole form and the
   `base_revision` it was read at and, under the pipeline save's lock, as every write to the
   project is, so two saves never pass the revision check together, writes each of the
   form's files whose bytes differ from the file's, making the folders it needs, and deletes

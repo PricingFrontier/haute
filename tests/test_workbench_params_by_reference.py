@@ -63,6 +63,27 @@ def test_a_schema_file_holds_the_reference_and_reading_fills_the_values(project:
     assert _state_options(project) == ["CA", "NY"]
 
 
+def test_a_form_reads_the_params_its_revision_signs_when_a_file_changes_during_the_read(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revision signs the params files' bytes as one read took them; the form is parsed
+    from those bytes, not from the working tree read again a moment later (WB-67)."""
+    from haute import _workbench_folder
+
+    (project / PARAMS / "states.csv").write_bytes(b"code\nCA\nNY\n")
+    _write(project, _sourced({"file": "states.csv", "column": "code"}))
+    taken = _workbench_folder.read_folder
+
+    def read_then_changed(workbench_config):  # type: ignore[no-untyped-def]
+        snapshot = taken(workbench_config)
+        (project / PARAMS / "states.csv").write_bytes(b"code\nTX\n")
+        return snapshot
+
+    monkeypatch.setattr(_workbench_folder, "read_folder", read_then_changed)
+
+    assert _state_options(project) == ["CA", "NY"]
+
+
 @pytest.mark.parametrize(("table", "name"), [("policy", "state"), ("quote_details", "broker")])
 def test_a_loaded_forms_values_are_written_as_their_reference_alone(
     project: Path, table: str, name: str

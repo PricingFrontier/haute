@@ -185,7 +185,13 @@ preamble's text when it is not blank, and every file of the `utility` an import 
 `src/haute/_project_imports.py::utility_tree_files`: the module file, or every file under the
 package folder but in `UTILITY_SKIPPED_DIRS`, `__pycache__`), whatever imports it, with
 `missing` when there is none. It is `None` only when there is neither a preamble nor a
-`utility`. Outside an installed project the import system's own search finds `utility`. The
+`utility`. Its digest is `<preamble part>.<utility part>`; `utility_generation` reads the
+utility part back, which the preamble compile cache compares with the generation whose
+modules `sys.modules` holds (`executor._loaded_utility_generation`): a compile or a hot hit
+for another generation, or a rebinding, puts every loaded `utility` module aside first, so a
+namespace cached at generation A never runs beside modules loaded at B (an edit undone), and
+a preamble edit alone puts none aside. With a request memo the record is resolved once per
+preamble and folder (`GraphFingerprintMemo.project_code`). Outside an installed project the import system's own search finds `utility`. The
 deploy bundle's copy (`src/haute/deploy/_container.py`), a release's utility hashes
 (`src/haute/_workbench_app.py::_utility_hashes`) and a test quote's basis
 (`src/haute/_workbench_test_quotes.py::_utility_digest`) list the tree through the same

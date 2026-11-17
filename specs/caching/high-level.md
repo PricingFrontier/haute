@@ -57,7 +57,9 @@ its own:
   browser, every estimate and preview a panel keeps keys what it was derived from by one key,
   built from the document as it stands with its constants and preamble, and a write of a file
   a run reads (a utility module, a data or params file through Files, an import of a Data
-  Input's source) is announced through one notifier that moves every browser clock together.
+  Input's source) is announced through one notifier that moves every browser clock together
+  (the data epoch, the structural version and the node-data epoch). Every browser identity
+  of a computed answer orders its edges as the server's do.
 
 Every identity that covers a node's result signs the global constants that node's lineage
 reads, so editing a constant re-runs only the nodes that read it and their descendants. Preview

@@ -341,7 +341,11 @@ class TestUtilityFileContentHashMemo:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Edits/creates/replacements hash affected files; deletes hash nothing."""
+        """Edits/creates/replacements hash affected files; deletes hash nothing.
+
+        A memo reads the project code once per request, so each step after a change is a
+        new request with its own memo; the process-wide freshness gate still hashes only
+        the files whose metadata moved."""
         from haute._json_shred import _source_proof
 
         use_project(tmp_path)
@@ -364,21 +368,21 @@ class TestUtilityFileContentHashMemo:
         changed = files[2]
         calls.clear()
         changed.write_text("VALUE_1 = 100\nEXTRA = 'changed'\n", encoding="utf-8")
-        fp_changed = graph_fingerprint(graph, memo=memo)
+        fp_changed = graph_fingerprint(graph, memo=GraphFingerprintMemo())
         assert fp_changed != fp_initial
         assert calls == [changed.resolve()]
 
         created = tmp_path / "utility" / "new_module.py"
         calls.clear()
         created.write_text("CREATED = True\n", encoding="utf-8")
-        fp_created = graph_fingerprint(graph, memo=memo)
+        fp_created = graph_fingerprint(graph, memo=GraphFingerprintMemo())
         assert fp_created != fp_changed
         assert calls == [created.resolve()]
 
         deleted = files[3]
         calls.clear()
         deleted.unlink()
-        fp_deleted = graph_fingerprint(graph, memo=memo)
+        fp_deleted = graph_fingerprint(graph, memo=GraphFingerprintMemo())
         assert fp_deleted != fp_created
         assert calls == []
 
@@ -387,7 +391,7 @@ class TestUtilityFileContentHashMemo:
         calls.clear()
         replacement.write_text("VALUE_3 = 300\nREPLACED = True\n", encoding="utf-8")
         replacement.replace(replaced)
-        fp_replaced = graph_fingerprint(graph, memo=memo)
+        fp_replaced = graph_fingerprint(graph, memo=GraphFingerprintMemo())
         assert fp_replaced != fp_deleted
         assert calls == [replaced.resolve()]
 

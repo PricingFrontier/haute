@@ -2029,8 +2029,10 @@ present a structural or schema result as execution evidence.
   each call recomputes the dependency fingerprint (`preamble_execution_fingerprint`). A
   compile binds the project's `utility` finder (`_project_imports.bind_project_utility`)
   to the pipeline directory and the current project's root, and evicts every imported
-  `utility` module, whatever imported it: a compile is a miss, so the preamble or a file of
-  the `utility` tree changed, or the project was not bound. A pipeline with a blank
+  `utility` module, whatever imported it, when the binding changed or the `utility`
+  generation the fingerprint names differs from the one whose modules are loaded; a hot hit
+  makes the same check, so a namespace cached before an edit that was later undone runs
+  beside the modules of its own generation. A pipeline with a blank
   preamble and a project `utility` compiles too (to an empty namespace), so a node's own
   `import utility` finds this project's package and follows its edits; with neither, the
   call returns an empty namespace and binds nothing. The finder's loader compiles each

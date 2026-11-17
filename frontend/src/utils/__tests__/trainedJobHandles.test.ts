@@ -92,6 +92,17 @@ describe("trainingLineage", () => {
     preamble: "import polars as pl",
   }
 
+  it("changes when a node's inputs are connected the other way round", () => {
+    const twoInputs = (order: string[]) => ({
+      ...graph,
+      nodes: [...graph.nodes, node("other", { code: "df" })],
+      edges: order.map((source) => ({ source, target: "model", sourceHandle: null })),
+    })
+
+    expect(trainingLineage(twoInputs(["other", "source"])))
+      .not.toBe(trainingLineage(twoInputs(["source", "other"])))
+  })
+
   it("changes when a global constant's value changes, so a restored result reads as stale", () => {
     const withConstants = (value: number) => ({
       ...graph,

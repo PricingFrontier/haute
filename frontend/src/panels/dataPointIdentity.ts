@@ -1,4 +1,5 @@
 import type { GlobalConstantDraft } from "../utils/globalConstants"
+import { inputOrderedEdges } from "../utils/inputOrderedEdges"
 import { authoredPolarsConfig } from "../utils/polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 
@@ -129,8 +130,9 @@ export function buildNodeDataCacheIdentity({
     }))
     .sort((a, b) => a.id.localeCompare(b.id))
 
-  const graphEdges = edges
-    .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+  const graphEdges = inputOrderedEdges(
+    edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)),
+  )
     .map((edge) => ({
       id: edge.id,
       source: edge.source,
@@ -140,7 +142,6 @@ export function buildNodeDataCacheIdentity({
       sourceHandle: edge.sourceHandle ?? null,
       targetHandle: edge.targetHandle ?? null,
     }))
-    .sort((a, b) => a.id.localeCompare(b.id))
 
   return {
     nodeId: node.id,
