@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest"
 import type { Edge, Node } from "@xyflow/react"
 import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
 import { makeIdentifiedNode, makeNode } from "../../test-utils/factories"
-import { reconcileCanonicalSubmodelBoundaryState } from "../canonicalSubmodelBoundaryEditing"
 import { canonicalJson } from "../canonicalJson"
-import { authoredNodeForm, serializeSnapshot } from "../graphSnapshot"
+import { authoredNodeForm } from "../graphSnapshot"
 import {
   childAnnotations,
   definitionEdgeForm,
@@ -59,25 +58,15 @@ function lift(next: { nodes: Node[]; edges: Edge[] }, readOnly = false): Submode
   return liftSubmodelCanvas({ definition, readOnly, previous: view, next })
 }
 
-/** What the old rebuild made of the same canvas, in the document's authored form. */
-function oracle(next: { nodes: Node[]; edges: Edge[] }) {
-  const { rootNodes, rootEdges, submodels } = document()
-  const result = reconcileCanonicalSubmodelBoundaryState({
-    submodelName: "pricing",
-    instanceId: focus.instanceId,
-    definitionId: DEFINITION_ID,
-    viewNodes: next.nodes,
-    viewEdges: next.edges as PipelineEdge[],
-    parentNodes: rootNodes,
-    parentEdges: rootEdges,
-    submodels,
-  })!
-  const definition = result.submodels[DEFINITION_ID] as SubmodelDefinition
-  // The parent is untouched by any write the lift accepts.
-  const persisted = (edges: PipelineEdge[]) => serializeSnapshot({ nodes: [], edges, preamble: "", submodels: {} })
-  expect(persisted(result.parentEdges)).toBe(persisted(rootEdges))
-  return authored(definition)
+/** The document's definition with one authored change, in its authored form. */
+function expected(change: (definition: SubmodelDefinition) => SubmodelDefinition) {
+  return authored(change(document().definition))
 }
+
+const withGraph = (
+  definition: SubmodelDefinition,
+  graph: Partial<SubmodelDefinition["graph"]>,
+): SubmodelDefinition => ({ ...definition, graph: { ...definition.graph, ...graph } })
 
 function authored(definition: SubmodelDefinition) {
   return canonicalJson({
@@ -88,11 +77,14 @@ function authored(definition: SubmodelDefinition) {
   })
 }
 
-function expectSameAsOracle(next: { nodes: Node[]; edges: Edge[] }) {
+function expectDefinition(
+  next: { nodes: Node[]; edges: Edge[] },
+  change: (definition: SubmodelDefinition) => SubmodelDefinition,
+) {
   const result = lift(next)
   expect(result.kind).toBe("definition")
   if (result.kind !== "definition") return
-  expect(authored(result.definition)).toBe(oracle(next))
+  expect(authored(result.definition)).toBe(expected(change))
   for (const node of result.definition.graph.nodes) {
     expect(node).not.toHaveProperty("selected")
     expect(Object.keys(node.data).filter((key) => key === "_columns")).toEqual([])
@@ -103,35 +95,49 @@ const mapNodes = (nodes: Node[], id: string, change: (node: Node) => Node) =>
   nodes.map((node) => (node.id === id ? change(node) : node))
 
 describe("liftSubmodelCanvas", () => {
-  it("changes the definition as the old rebuild did, for every write it accepts", () => {
+  it("changes the definition by exactly the write, for every write it accepts", () => {
     const { view } = document()
     const moved = { ...view, nodes: mapNodes(view.nodes, "prepare", (node) => ({ ...node, position: { x: 140, y: 90 } })) }
-    expectSameAsOracle(moved)
+    expectDefinition(moved, (definition) => withGraph(definition, {
+      nodes: mapNodes(definition.graph.nodes, "prepare", (node) => ({ ...node, position: { x: 140, y: 90 } })),
+    }))
 
     const configured = { ...view, nodes: mapNodes(view.nodes, "score", (node) => ({ ...node, data: { ...node.data, config: { how: "left" } } })) }
-    expectSameAsOracle(configured)
+    expectDefinition(configured, (definition) => withGraph(definition, {
+      nodes: mapNodes(definition.graph.nodes, "score", (node) => ({ ...node, data: { ...node.data, config: { how: "left" } } })),
+    }))
 
-    const added = { ...view, nodes: [...view.nodes, makeIdentifiedNode("extra", "polars", { position: { x: 700, y: 0 } })] }
-    expectSameAsOracle(added)
+    const extra = makeIdentifiedNode("extra", "polars", { position: { x: 700, y: 0 } })
+    const added = { ...view, nodes: [...view.nodes, extra] }
+    expectDefinition(added, (definition) => withGraph(definition, { nodes: [...definition.graph.nodes, extra] }))
 
     const deleted = { nodes: view.nodes.filter((node) => node.id !== "spare"), edges: view.edges }
-    expectSameAsOracle(deleted)
+    expectDefinition(deleted, (definition) => withGraph(definition, {
+      nodes: definition.graph.nodes.filter((node) => node.id !== "spare"),
+    }))
 
-    const connected = { ...view, edges: [...view.edges, { id: "e_prepare_spare", source: "prepare", target: "spare", data: { _inputName: "prepare" } }] }
-    expectSameAsOracle(connected)
+    const join: PipelineEdge = { id: "e_prepare_spare", source: "prepare", target: "spare", data: { _inputName: "prepare" } }
+    const connected = { ...view, edges: [...view.edges, join] }
+    expectDefinition(connected, (definition) => withGraph(definition, { edges: [...definition.graph.edges, join] }))
 
     const disconnected = { ...view, edges: view.edges.filter((edge) => edge.id !== "e_prepare_score") }
-    expectSameAsOracle(disconnected)
+    expectDefinition(disconnected, (definition) => withGraph(definition, { edges: [] }))
 
     // An Edge Join's inputs swapped where one comes from the Input card: the port follows the handle.
     const input = card(view.nodes, "input")
     const swapped = { ...view, edges: view.edges.map((edge) => (edge.source === input.id ? { ...edge, targetHandle: "join" } : edge)) }
-    expectSameAsOracle(swapped)
+    expectDefinition(swapped, (definition) => ({
+      ...definition,
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "prepare", handleId: "join" }] }],
+    }))
 
     // A frame renamed at the child feeding the Output card.
     const output = card(view.nodes, "output")
     const renamed = { ...view, edges: view.edges.map((edge) => (edge.target === output.id ? { ...edge, sourceHandle: "joined" } : edge)) }
-    expectSameAsOracle(renamed)
+    expectDefinition(renamed, (definition) => ({
+      ...definition,
+      outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: "joined" } }],
+    }))
   })
 
   it("refuses a write that adds or removes a boundary edge, a card's ports or a port's child", () => {

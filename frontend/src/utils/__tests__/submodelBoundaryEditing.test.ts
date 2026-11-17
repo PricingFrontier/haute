@@ -8,12 +8,14 @@ import {
   applySubmodelBoundaryConnection,
   connectSubmodelInputFromParentConnection,
   removeSubmodelBoundaryEdges,
+  removeSubmodelElements,
   removeSubmodelInputPort,
   type SubmodelBoundaryEditState,
 } from "../submodelBoundaryEditing"
 import { SUBMODEL_INPUT_HANDLE } from "../flowHandles"
 import { chooseInstanceInput, retargetSubmodelInput } from "../canonicalSubmodelBoundaryEditing"
-function state(bound = false): SubmodelBoundaryEditState {
+const INTERNAL: PipelineEdge = { id: "e_prepare_score", source: "prepare", target: "score", data: { _inputName: "prepare_input" } }
+function state(bound = false, internal = false): SubmodelBoundaryEditState {
   const children = ["prepare", "score"].map((id) => makeNode(id, "polars", {
     data: {
       _functionName: `${id}_function`,
@@ -24,7 +26,7 @@ function state(bound = false): SubmodelBoundaryEditState {
   const definition: SubmodelDefinition = {
     definitionId: "definition_pricing",
     file: "modules/pricing.py",
-    graph: { nodes: children, edges: [] },
+    graph: { nodes: children, edges: internal ? [INTERNAL] : [] },
     inputPorts: [{
       name: "policy",
       targets: [{ nodeId: "prepare", handleId: null }],
@@ -47,7 +49,7 @@ function state(bound = false): SubmodelBoundaryEditState {
     instanceId: "pricing",
     definition,
     childNodes: children,
-    childEdges: [],
+    childEdges: internal ? [INTERNAL] : [],
     parentNodes,
     parentEdges,
   })
@@ -151,7 +153,7 @@ describe("submodelBoundaryEditing", () => {
       parentEdges: created!.edges,
     })
     expect((boundary(drilled.nodes, "input").data as SubmodelPortData).ports)
-      .toEqual([{ id: "incoming_frame", label: "incoming_frame", parentEdges: created!.edges }])
+      .toEqual([{ id: "incoming_frame", label: "incoming_frame" }])
     expect(drilled.edges.some((edge) => edge.source === boundary(drilled.nodes, "input").id))
       .toBe(false)
   })
@@ -463,6 +465,61 @@ describe("submodelBoundaryEditing", () => {
 
   it("blocks deletion of a used public output", () => { const current = state(true); const output = boundary(current.viewNodes, "output"); const declaration = current.viewEdges.find((edge) => edge.target === output.id)!; expect(() => removeSubmodelBoundaryEdges(current, [declaration.id])).toThrow(/Pricing.*premium/i) })
   it("removes an unbound public output from the shared definition", () => { const current = state(); const output = boundary(current.viewNodes, "output"); const declaration = current.viewEdges.find((edge) => edge.target === output.id)!; expect(removeSubmodelBoundaryEdges(current, [declaration.id])?.submodels.definition_pricing).toMatchObject({ outputPorts: [] }) })
+
+  it("removes a child with its routes, the outputs it sources and its edges, in one command", () => {
+    const current = state(false, true)
+    const result = removeSubmodelElements(current, { nodeIds: new Set(["score"]) })
+    const definition = result.submodels.definition_pricing as SubmodelDefinition
+    expect(definition.graph.nodes.map((node) => node.id)).toEqual(["prepare"])
+    expect(definition.graph.edges).toEqual([])
+    expect(definition.outputPorts).toEqual([])
+    expect(definition.inputPorts).toEqual([{ name: "policy", targets: [{ nodeId: "prepare", handleId: null }] }])
+    expect(result.viewEdges.some((edge) => edge.source === "score" || edge.target === "score")).toBe(false)
+    expect(result.parentEdges).toBe(current.parentEdges)
+  })
+
+  it("removes an internal edge and a boundary edge of one batch together", () => {
+    const current = state(false, true)
+    const declaration = current.viewEdges.find((edge) => edge.target === boundary(current.viewNodes, "output").id)!
+    const result = removeSubmodelElements(current, { edgeIds: new Set([INTERNAL.id, declaration.id]) })
+    const definition = result.submodels.definition_pricing as SubmodelDefinition
+    expect(definition.graph.edges).toEqual([])
+    expect(definition.outputPorts).toEqual([])
+    expect(definition.graph.nodes.map((node) => node.id)).toEqual(["prepare", "score"])
+  })
+
+  it("retires an input whose last route goes and keeps one never routed", () => {
+    const current = state()
+    const definition = current.submodels.definition_pricing as SubmodelDefinition
+    current.submodels = {
+      definition_pricing: { ...definition, inputPorts: [...definition.inputPorts, { name: "claims", targets: [] }] },
+    }
+    const route = current.viewEdges.find((edge) => edge.source === boundary(current.viewNodes, "input").id)!
+    const result = removeSubmodelBoundaryEdges(current, [route.id])!
+    expect((result.submodels.definition_pricing as SubmodelDefinition).inputPorts)
+      .toEqual([{ name: "claims", targets: [] }])
+  })
+
+  it("changes nothing for a route or an output the definition already has", () => {
+    const current = state()
+    expect(applySubmodelBoundaryConnection(current, {
+      source: boundary(current.viewNodes, "input").id, sourceHandle: "policy", target: "prepare", targetHandle: null,
+    })).toBeNull()
+    expect(applySubmodelBoundaryConnection(current, {
+      source: "score", sourceHandle: "result", target: boundary(current.viewNodes, "output").id, targetHandle: null,
+    })).toBeNull()
+  })
+
+  it("keeps both cards where the user put them", () => {
+    const current = state()
+    const moved = { x: -480, y: 17 }
+    current.viewNodes = current.viewNodes.map((node) => (node.type === "submodelPort" ? { ...node, position: moved } : node))
+    const result = applySubmodelBoundaryConnection(current, {
+      source: boundary(current.viewNodes, "input").id, sourceHandle: "policy", target: "score", targetHandle: null,
+    })!
+    expect(boundary(result.viewNodes, "input").position).toEqual(moved)
+    expect(boundary(result.viewNodes, "output").position).toEqual(moved)
+  })
 
   it("mints output port names from child executable name and appends _2 on collision", () => {
     const current = state()

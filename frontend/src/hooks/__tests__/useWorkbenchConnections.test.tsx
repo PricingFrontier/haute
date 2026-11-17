@@ -171,7 +171,7 @@ describe("useWorkbenchConnections", () => {
     })
     const throughBoundary: Edge = {
       ...edge("e_boundary", "wb_in", "policy_input", "boundary_out"),
-      data: { submodelBoundary: { direction: "output", parentConsumerEdges: [], name: "policy" } },
+      data: { submodelBoundary: { direction: "output", name: "policy" } },
     }
     show([input, priced, outputCard], [policy, account, throughBoundary])
     render()

@@ -17,8 +17,8 @@ import {
 import {
   applySubmodelBoundaryConnection,
   connectSubmodelInputFromParentConnection,
-  reconcileSubmodelBoundaryState,
   removeSubmodelBoundaryEdges,
+  removeSubmodelElements,
   removeSubmodelInputPort,
   type SubmodelBoundaryEditResult,
   type SubmodelBoundaryEditState,
@@ -27,7 +27,6 @@ import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
-import { captureParentOutputState } from "../utils/submodelViewGraph"
 
 type Setter = (nodes: Node[] | ((nodes: Node[]) => Node[]), edges: Edge[] | ((edges: Edge[]) => Edge[]), submodels: Record<string, unknown>) => void
 
@@ -205,13 +204,8 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [])
   const commit = useCallback((result: SubmodelBoundaryEditResult) => {
-    const outputState = captureParentOutputState(result.definitionId, result.parentNodes, result.parentEdges)
-    const viewNodes = result.viewNodes.map((node) => (
-      node.type === "submodelPort" && node.data.portDirection === "output"
-        ? { ...node, data: { ...node.data, _parentOutputState: outputState } } : node
-    ))
     useGraphStore.getState().commitSubmodelBoundaryEdit({
-      viewNodes,
+      viewNodes: result.viewNodes,
       viewEdges: result.viewEdges,
       parentNodes: result.parentNodes,
       parentEdges: result.parentEdges,
@@ -380,17 +374,15 @@ export default function useSubmodelBoundaryEditing({
     try {
       const current = state()
       if (!current) return false
-      const removed = removeSubmodelBoundaryEdges(current, removedBoundaryIds)
-      if (!removed) return true
-      const remaining = changes.filter(
-        (change) => !(change.type === "remove" && removedBoundaryIds.includes(change.id)),
-      )
-      const viewEdges = applyEdgeChanges(remaining, removed.viewEdges)
-      const reconciled = reconcileSubmodelBoundaryState({
-        ...removed,
-        viewEdges: viewEdges as PipelineEdge[],
-      })
-      if (reconciled) commitWithParentIdentities(reconciled)
+      // One command for the whole batch: its boundary and internal edges, with the batch's
+      // other changes (a selection) kept on the canvas.
+      const removedIds = new Set(changes.flatMap((change) => (change.type === "remove" ? [change.id] : [])))
+      const kept = applyEdgeChanges(changes.filter((change) => change.type !== "remove"), current.viewEdges)
+      commitWithParentIdentities(removeSubmodelElements(
+        current,
+        { edgeIds: removedIds },
+        { nodes: current.viewNodes, edges: kept as PipelineEdge[] },
+      ))
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
@@ -410,18 +402,15 @@ export default function useSubmodelBoundaryEditing({
       if (!current) return "not-applicable"
       const viewNodeIds = new Set(current.viewNodes.map((node) => node.id))
       if (![...nodeIds].some((id) => viewNodeIds.has(id))) return "not-applicable"
-      const reconciled = reconcileSubmodelBoundaryState({
-        ...current,
-        viewNodes: nodeChanges
-          ? applyNodeChanges(nodeChanges, current.viewNodes)
-          : current.viewNodes.filter((node) => !nodeIds.has(node.id)),
-        viewEdges: current.viewEdges.filter((edge) =>
-          !nodeIds.has(edge.source)
-          && !nodeIds.has(edge.target)
-          && !selectedEdgeIds.has(edge.id)),
-      })
-      if (!reconciled) throw new Error("The shared submodel boundary could not be reconciled")
-      return commitWithParentIdentities(reconciled, onSettled) ? "committed" : "pending"
+      const removed = removeSubmodelElements(
+        current,
+        { nodeIds, edgeIds: selectedEdgeIds },
+        {
+          nodes: nodeChanges ? applyNodeChanges(nodeChanges, current.viewNodes) : current.viewNodes,
+          edges: current.viewEdges,
+        },
+      )
+      return commitWithParentIdentities(removed, onSettled) ? "committed" : "pending"
     } catch (error: unknown) {
       reportBoundaryError(error)
       return "blocked"

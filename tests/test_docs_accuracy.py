@@ -151,7 +151,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-2",
     "polars-node-clarity",
-    "submodel-editing",
     "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (

@@ -6,7 +6,7 @@ import useGraphStore, { canvasGraph } from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
-import { buildSubmodelViewGraph, captureParentOutputState } from "../../utils/submodelViewGraph"
+import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 import { SUBMODEL_INPUT_HANDLE } from "../../utils/flowHandles"
 import { attachEditorEdgeIdentities } from "../../utils/editorIdentities"
 
@@ -810,6 +810,25 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(focus().rootEdges).toEqual(fixture.parentEdges)
   })
 
+  it("keeps a deletion batch's other changes on the canvas, never in the definition", () => {
+    const fixture = makeFixture({ includeInternalEdge: true })
+    const route = fixture.view.edges.find((edge) => edge.target === "child_a" && edge.id !== "internal")!
+    openInStore(fixture)
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+
+    act(() => {
+      expect(result.current.onBoundaryEdgesChange([
+        { type: "remove", id: route.id },
+        { type: "select", id: "internal", selected: true },
+      ])).toBe(true)
+    })
+
+    expect(store().undoStack).toHaveLength(1)
+    expect(storedDefinition().inputPorts).toEqual([])
+    expect(store().edges.find((edge) => edge.id === "internal")?.selected).toBe(true)
+    expect(storedDefinition().graph.edges.find((edge) => edge.id === "internal")).not.toHaveProperty("selected")
+  })
+
   it("leaves a bound public output in the document when the canvas re-renders without it", () => {
     // Undo and Redo restore the whole document, so nothing re-reconciles the
     // parent from whatever the canvas shows on a re-render.
@@ -952,8 +971,6 @@ describe("useSubmodelBoundaryEditing", () => {
       const fixture = makeFixture({ outputPorts: ["child_b"] })
       const placeholder = fixture.parentNodes.find((node) => node.id === PLACEHOLDER_ID)!
       placeholder.data._sourceHandleInputNames = {}
-      const output = fixture.view.nodes.find((node) => node.data.portDirection === "output")!
-      output.data._parentOutputState = captureParentOutputState(DEFINITION_ID, fixture.parentNodes, fixture.parentEdges)
       return fixture
     }
 

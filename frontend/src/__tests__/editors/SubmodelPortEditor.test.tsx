@@ -110,7 +110,7 @@ describe("SubmodelPortEditor", () => {
 
   it("fails visibly when boundary projection data is malformed", () => {
     const malformed = inputBoundary()
-    malformed.data.ports = [{ id: "policy", label: "Policy data" }]
+    malformed.data.ports = [{ id: "policy", label: " " }]
 
     render(<SubmodelPortEditor node={malformed} />)
 

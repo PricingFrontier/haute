@@ -10,7 +10,7 @@
 | `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, then gives the flattened graph's workbench nodes their tables from the form folder of the configured project root (the current project's, `haute._project_context.current_project`), its sample replaced by the one an editor request carries (its `sample`), or from the form a preview request carries (`haute._workbench_nodes.with_form_tables`, [workbench](../workbench/low-level.md)); `flatten_with_form_tables` does the same for a graph read from disk or planned in process, which the assistant resolves and runs. Internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names, and gives nothing. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transforms: extract selected nodes out of a `PipelineGraph` into a new submodel, and, for a plain node's Create Instance, wrap one node in place in a one-node definition and place an unbound instance beside it; each produces the updated parent graph and submodel metadata. `_REFUSES_NODE_INSTANCE` names the types a node instance cannot wrap besides a singleton. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create`, `POST /instance` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
-| `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). `chooseInstanceInput` applies the instance binding rule; `retargetSubmodelInput` moves or removes an occurrence binding without changing its definition. Boundary transforms preserve the shared public interface. |
+| `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). `chooseInstanceInput` applies the instance binding rule; `retargetSubmodelInput` moves or removes an occurrence binding without changing its definition. The boundary commands ("Boundary commands" below) refuse a retirement an occurrence binds. |
 | `frontend/src/components/ConnectionDropMenu.tsx` | Owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). The keyboard-accessible drop picker lists only unbound public inputs when an instance binding needs a choice. |
 
 Related but external to this component:
@@ -198,9 +198,33 @@ returns to its own position rather than to the end of the parent edge list.
 An output-interface edit reconciles the occurrence output identities,
 outgoing edge names, and affected parent consumer configs before it commits,
 in the same step, so Undo and Redo restore output-count names and Quote Response
-source mappings together without changing unrelated parent state. When an edge
-connects two occurrences of that definition, restore its binding before its
-output name: the input projection must not overwrite the resolved output identity.
+source mappings together without changing unrelated parent state.
+
+### Boundary commands (normative)
+
+Each boundary action of an open submodel is a command on the document: it reads the open
+definition, the pipeline's own nodes and edges (every occurrence and its parent edges) and
+the gesture, applies one transaction to them, and returns the new document, or refuses whole
+with its reason. The canvas only says which card, port, child or edge the gesture touched;
+the cards hold no document fact (no parent edge, edge order, binding scope or output state),
+only what they show: their ports' names, the external nodes they stand for, and an Input
+card's columns. The view is drawn from the document the command returns
+(`buildSubmodelViewGraph`), with the canvas's own children, so their selection, size and
+annotations stay on the canvas while the definition holds them in their authored form.
+
+| Command | Gesture | Change to the document | Refused when |
+|---|---|---|---|
+| Route an input | connect an Input card port to a child's handle | the child's endpoint joins the port's `targets` (an existing one changes nothing) | the port is not declared, or the target is not a child |
+| Declare an output | connect a child's handle to the Output card | a new output port sourced at that endpoint, named from the frame (`_2`, `_3` on collision across both directions) | the endpoint is already an output, or its frame has no identity |
+| Remove boundary and internal edges | delete edges, from the canvas or the keyboard, in one batch | each input boundary edge's target leaves its port; each output boundary edge retires its port; each internal edge leaves the definition; an input left with no target that had one is retired, while one never routed stays | a retired port is bound by any occurrence's parent edge (naming every affected occurrence and port) |
+| Delete children | delete children and the selected edges with them | the children and every edge touching them leave the definition; their targets leave their input ports and the outputs they source are retired, as above | as above |
+| Retire an input | the Input inspector's remove | the port, its internal routes and every occurrence's `in__<name>` parent edge leave the document | never on a binding, which it removes |
+| Bind an input from the pipeline | connect a frame to a collapsed occurrence's generic input | the parent edge on `in__<name>`, minting the port on the owner when the frame names none | as the generic input's rules below |
+
+A command that changes the outputs resolves the occurrences' output identities with the
+server before it commits (see the paragraph above), as one pending candidate: a gesture made
+while it waits is read against that candidate's document. A port's name is immutable: no
+command renames one.
 
 ### Instance bindings, output names and previews (normative)
 
@@ -902,7 +926,8 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts` — deletion
   policy guarding definition owners and instance copies.
 - `frontend/src/utils/__tests__/submodelViewGraph.test.ts` — submodel view graph
-  projection, public port boundaries, and multi-occurrence input bindings.
+  projection, public port boundaries, and cards that hold only what they show with
+  bindings from several occurrences.
 
 Canonical-only identities are pinned throughout these suites: submodel paths
 are project-relative, boundary edge ids include port identity, and recorded
