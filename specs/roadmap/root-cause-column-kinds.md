@@ -50,15 +50,23 @@ way.
 **Plan:** One module answers what kind a type is, float, integer, number,
 date or time, text, from Polars' own classification, and the browser reads
 the same answer from the generated contract. Remove the hand-kept lists and
-functions. Add a test that fails when a line outside the module names two
-or more float or integer types as a list.
+functions. Add a test that finds, outside the module and on both sides,
+any code that decides a column's kind from the name of a type: a
+comparison with a float or integer type, a membership test, or a pattern
+matched against a type's name. A place that must name one type, such as a
+cast, is on a list with its reason. Counting lines that name two types
+was set aside: the browser's present rule is a pattern, `Float(?:32|64)`,
+and would pass.
 
 **Acceptance:** One test takes every data type the installed Polars
 defines, read from Polars so that an upgrade adds its new types, and sends
 a column of each through every reader: the pivot, the profile, the Banding
 statistics, a Rating lookup, the optimiser's analysis and the editor's
 column lists. Each handles the column as its kind or refuses it by name.
-The test for hand-kept lists passes. The acceptance of `RTG-07`, `XPL-02`,
+The readers are found from the code, so one the test does not drive fails
+it. The test for kinds decided by hand passes, and the pull request shows
+it failing on the browser's present pattern. The acceptance of `RTG-07`,
+`XPL-02`,
 `OPM-05` and `FES-02` is met.
 
 **Dependencies:** None. Deliver before the packages its acceptance names.

@@ -20,8 +20,13 @@ keeps something of its own to do.
 
 | Package | Roadmap | What it records | Expected |
 |---|---|---|---|
-| `VCS-01` | [git-integration](git-integration.md) | A catch-up that could not remove a file puts the branch back | Resolves |
 | `VCS-04` | [git-integration](git-integration.md) | A restore cut short is found at the next start | Resolves |
+| `VCS-01` | [git-integration](git-integration.md) | A catch-up that could not remove a file puts the branch back | In part |
+
+`VCS-01` asks for the clone to be as it was before the failed call
+returns. The record made here gives its put-back the commits to return to;
+comparing commits and not branch names, and counting a held file that is
+not tracked, stay with that package.
 
 ## Priorities
 
@@ -36,25 +41,36 @@ keeps something of its own to do.
 then writes files can stop between the two. Haute marks the clone
 interrupted at two places in the code, and both run only after a failure
 has been caught. So a stop that nothing catches leaves no mark: a server
-process that dies after the ledger moved (`VCS-04`), and git itself moving
-the branch and exiting 0 with a file still held open (`VCS-01`). The clone
-is then in between, the save ledger at one commit and the working branch
-at another, and nothing says so. Earlier roadmaps dealt with checkouts
-that stop part-way and gave the operations one helper to put things back;
-both act after the fact.
+process that dies after the ledger moved (`VCS-04`). A failure that is
+caught is put back from what the code noted along the way, a branch's name
+and flags set after each step returned, so git moving the branch and
+exiting 0 with a file still held open is put back to the wrong place
+(`VCS-01`). The clone is then somewhere no operation meant it to be, and
+nothing says so. Earlier roadmaps dealt with checkouts that stop part-way
+and gave the operations one helper to put things back; both act after the
+fact. This cause rests on those two findings.
 
-**Plan:** Before its first step, each operation of several steps, catch up,
-restore, switching branch and a save's pair of commits, writes what it is
-about to do: the operation, where the ledger and the branch are, where they
-will be, and the files. It removes the record after its last step. At
-start, and before any git action, a record that is still there is the
-interruption: readiness names it, and Retry finishes it or puts it back.
+**Plan:** Before its first step, each operation that moves a ref and then
+writes files, or moves more than one ref (catch up, restore, switching
+branch), writes what it is about to do: the operation, the commit each ref
+it touches is at, the commit each will be at, and the files. It removes the
+record after its last step. A failure the operation catches is put back
+from the record, to the commits it holds, before the call returns, and the
+result is checked against them; the record stays only when the put-back
+could not finish. At start, and before any git action, a record that is
+still there is the interruption: readiness names it, and Retry finishes it
+or puts it back. Add a test that fails when a function moves a ref outside
+an operation that holds a record, apart from a save's one commit to the
+ledger.
 
 **Acceptance:** A test stops the process after each step of each such
 operation in turn. At the next start readiness names the operation and its
-files, Retry completes it or returns the clone to where it was, and at no
-point do the ledger and the working branch differ with nothing recorded.
-The acceptance of `VCS-01` and `VCS-04` is met.
+files, and Retry completes it or returns every ref to the commit the record
+holds. A second test makes each step fail and be caught, and requires the
+refs and the files as they were before the call returned. At no point are
+the refs anywhere but where the record says the step reached; a save that
+moves the ledger ahead of the working branch is no such case. The
+acceptance of `VCS-04` is met.
 
 **Dependencies:** None. Deliver before `VCS-01` and `VCS-04`.
 

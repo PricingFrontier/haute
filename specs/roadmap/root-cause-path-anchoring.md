@@ -48,12 +48,20 @@ from different files whenever one copy is refreshed.
 analyst checked) and give the bundler, the served scorer's runtime path
 resolution and the schema reader that rule through one function. Where a
 relative path exists in both places and the two files differ, refuse the
-deploy naming both files; identical copies may pass.
+deploy naming both files; identical copies may pass. Which file a path
+means is one question and whether that file may ship is another: the
+deployment specification's rule that a Data Input the quote depends on
+must lie in the pipeline folder stays, and is applied to the file the one
+rule names. The precedence the deployment specification states is brought
+into line in the same pull request.
 
 **Acceptance:** With differing copies of one relative path under the project
 root and the pipeline folder, `haute deploy` refuses and names both files.
-With a single copy in either place, the bundle ships the file preview read,
-asserted by content. A test resolves each path-bearing node setting through
+With a single copy, in a place its kind of node may ship from, the bundle
+ships the file preview read, asserted by content. With a single copy of a
+Data Input's file outside the pipeline folder, the deploy refuses as it
+does today, naming the node and the path. A test resolves each
+path-bearing node setting through
 the engine and through the bundler and requires the same file. A test lists the
 functions outside `src/haute/_path_resolution.py` that anchor a relative
 path, and only lets the list shrink.

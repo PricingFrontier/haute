@@ -25,11 +25,16 @@ keeps something of its own to do.
 | `FEP-04` | [frontend-preview-explore](frontend-preview-explore.md) | A utility file edited while another is being deleted keeps its edit | Resolves |
 | `FEN-01` | [frontend-node-editors](frontend-node-editors.md) | A late answer does not replace the chosen catalog's schemas | Resolves |
 | `FEN-10` | [frontend-node-editors](frontend-node-editors.md) | Imported values that arrive after their factor was removed are dropped | Resolves |
-| `WB-61` | [workbench](workbench.md) | Text being typed when a test quote opens is kept | Resolves |
-| `MLR-10` | [mlflow-model-registry](mlflow-model-registry.md) | Retry after a changed experiment does not show the old run as the new one | Resolves |
-| `FEG-04` | [frontend-graph-canvas](frontend-graph-canvas.md) | A lost answer to a save does not lock the editor against itself | In part |
-| `FEG-05` | [frontend-graph-canvas](frontend-graph-canvas.md) | A tab locked by a change on disk unlocks when the change is gone | In part |
-| `AST-06` | [assistant](assistant.md) | An apply that lands after the turn's time limit is shown as applied | In part |
+| `WB-61` | [workbench](workbench.md) | Text being typed when a test quote opens is kept | In part |
+| `WB-41` | [workbench](workbench.md) | Fence `loadingMore` in `useQuoteListStore`, resolve submodel `WORKBENCH_OUTPUT` runtime targets in `priceSample`, and remove stale blank-form rationale | In part |
+
+`WB-61` needs the helper to see text typed and not yet committed, which
+[panel values and Undo](root-cause-panel-drafts.md) provides. Of `WB-41`
+only the quote list's unguarded `loadingMore` is this cause. Four packages
+that look alike are not: `MLR-10` (a retry that reuses an operation's id
+with other settings), `AST-06` (an event the server does not send) and
+`FEG-04` and `FEG-05` (a save whose outcome is not known). No answer
+arrives late in them, and they keep their own plans.
 
 ## Priorities
 
@@ -46,31 +51,40 @@ checks it after. It was an earlier roadmap's work, and where it is used no
 finding of this review falls. It is used by choice. Of 105 source files
 that wait for an answer, 12 use the fence, 8 use the optimiser's
 latest-request hook, and 22 keep a counter or a cancelled flag of their
-own. The files behind this review's late-answer findings use none of them:
-`App.tsx`, the utility panel, the repair dialog, the catalog selector, the
-MLflow export section and the test-quotes store (`FEG-10`, `FEP-04`,
-`FEN-01`, `MLR-10`, `WB-61`). The fence was also built for execution
-answers; an answer that writes to the document or to a panel, such as a
-repair, a catch up, a delete or imported values (`VCS-10`, `FEN-10`), has
-no shared equivalent. A new panel is correct only if its author remembers.
+own. The files behind this review's late-answer findings use none, or a
+guard of their own that misses a case: `App.tsx`, the utility panel, the
+repair dialog and the catalog selector (`FEG-10`, `FEP-04`, `FEN-01`). The
+test-quotes store keeps a counter and compares the form, and so cannot see
+text typed and not yet committed (`WB-61`); the quote list guards its
+answer and not the flag it clears afterwards (`WB-41`). The fence was also
+built for execution answers; an answer that writes to the document or to a
+panel, such as a repair, a catch up, a delete or imported values
+(`VCS-10`, `FEN-10`), has no shared equivalent. A new panel is correct only
+if its author remembers.
 
 **Plan:** One request helper that every call goes through when its answer
 will be written to state. It records what the answer belongs to: the
-document, the node, the panel and the edit it was asked under. A late
-answer is dropped, or handed back marked stale for the caller to settle.
-Replace the 22 hand-kept guards with it. Add a test that lists the files
-which write state after waiting without the helper, and only lets the list
-shrink, to none.
+document, the node, the panel, the edit it was asked under, and whether a
+field it would write to is being typed in, read from the shared draft. A
+late answer is dropped, or handed back marked stale for the caller to
+settle, and what runs after the answer (a flag cleared, a list reloaded) is
+under the same check. Replace the 22 hand-kept guards with it. Add a test
+that finds each function which writes state after waiting without the
+helper, and fails for any; the pull request shows it failing on a guard
+written by hand.
 
 **Acceptance:** One test drives every surface that calls the server: it
 holds the answer, changes what it belongs to (another document, the node
-deleted, an Undo, text typed), lets the answer go, and requires the page to
-show the current state. The list of files outside the helper is empty. The
-journeys of `FEG-10`, `VCS-10`, `FEP-04`, `FEN-01`, `FEN-10`, `WB-61` and
-`MLR-10` pass.
+deleted, an Undo, text typed and not committed), lets the answer go, and
+requires the page to show the current state. No function writes state
+after waiting outside the helper. The journeys of `FEG-10`, `VCS-10`,
+`FEP-04`, `FEN-01` and `FEN-10` pass.
 
-**Dependencies:** None. Deliver before the packages its acceptance names.
+**Dependencies:** [Panel values and Undo](root-cause-panel-drafts.md), for
+the draft the helper asks. Deliver before the packages its table names.
 
 **Evidence:** `frontend/src/stores/useDocumentStatusStore.ts`;
 `frontend/src/panels/optimiser/useLatestRequest.ts`; `frontend/src/App.tsx`;
-`frontend/src/panels/UtilityPanel.tsx`.
+`frontend/src/panels/UtilityPanel.tsx`;
+`frontend/src/stores/useWorkbenchTestQuotesStore.ts`;
+`frontend/src/app/useQuoteListStore.ts`.

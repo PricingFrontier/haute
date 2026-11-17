@@ -22,8 +22,11 @@ keeps something of its own to do.
 |---|---|---|---|
 | `WB-72` | [workbench](workbench.md) | The store check reads what a foreign key refers to | Resolves |
 | `WB-73` | [workbench](workbench.md) | The store check requires the unique operation key | Resolves |
-| `WB-64` | [workbench](workbench.md) | The migration SQL for SQL Server leaves a column's NOT NULL as it says it does | In part |
 | `WB-65` | [workbench](workbench.md) | A single-precision column is named as a difference for a Decimal field | In part |
+
+`WB-64` is not this cause: the check already reports a column's
+nullability, and the fault is in the migration SQL that changes a column's
+type.
 
 ## Priorities
 
@@ -40,13 +43,13 @@ tables in code written by hand: columns, primary keys, and each foreign
 key's table and constrained columns. Whatever that code does not read, a
 store can lack and still pass, and each such gap has been found one at a
 time: a missing unique constraint (`WB-73`), a foreign key's referred
-columns and schema (`WB-72`), a NOT NULL the migration SQL does not leave
-as it says (`WB-64`), and a column's precision (`WB-65`). An earlier
+columns and schema (`WB-72`), and a column's precision (`WB-65`). An earlier
 roadmap delivered the store on PostgreSQL and SQL Server and its changes
 as SQL; nothing ties what that SQL creates to what the check reads.
 
 **Plan:** A test takes Haute's own SQL for each database and, for every
-column, type, nullability, default, key and constraint it creates, makes a
+column, type, nullability, default, key and constraint it creates, read
+from the schema's own description so that a new one is a new case, makes a
 store with that one thing removed or altered. It requires the check to
 report each store as different, naming the thing. What the SQL creates and
 the check cannot see fails the test, so the check is extended, or the line

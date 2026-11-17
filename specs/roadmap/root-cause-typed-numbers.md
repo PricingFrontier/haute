@@ -41,31 +41,45 @@ number, kept the same on the sheet and the server on purpose
 rule gets wrong. Everywhere else each field reads its own text. The
 editor's panels, nodes and components call the language's own number
 parsing 212 times in 62 files, so `1,5` in a Rating Step's Default is 15
-in an English browser and 1.5 in a German one (`RTG-03`). On the server a
-Constant's value goes through Python's `float`, which takes `0123`, `1E5`
-and `nan` (`EXE-02`), and a params file refuses `1,000` where a cell of
-the same type accepts it (`WB-68`). The same keystrokes give different
-numbers by field, by browser language and by which side reads them.
+in an English browser and 1.5 in a German one (`RTG-03`). A params file
+refuses `1,000` where a cell of the same type accepts it (`WB-68`). A
+Constant asks a second question of the same text, whether it is a number
+at all, and two pieces of code answer it differently: its settings file
+keeps `0123` and `1E5` as text, and the run passes every value, a boolean
+and a whole number included, through Python's `float` (`EXE-02`). The same
+keystrokes give different numbers by field, by browser language and by
+which side reads them.
 
-**Plan:** State one rule: which thousands separators, decimal marks,
+**Plan:** State one grammar: which thousands separators, decimal marks,
 signs, spaces and exponent forms are a number, with text that could be two
-numbers refused and never guessed. Keep it as one file of cases, text to
-number or refusal, that the browser's reader and the server's reader are
-both tested against. Give every number field the one shared field, and
-read a Constant's value and a params file by the same rule. Add a test
-that lists the input handlers which parse a number themselves, and only
-lets the list shrink.
+numbers refused and never guessed. It is read in two named ways, because
+the two questions differ. A field declared numeric takes the text as a
+number or refuses it. A Constant's value, which has no declared type, is a
+number only when it is canonical finite decimal text; a whole number stays
+an integer, a boolean stays a boolean, anything else stays text, and a
+value that is not finite is refused. Keep both as one file of cases, text
+to the expected type and value or a refusal under each way, that the
+browser's reader and the server's reader are both tested against. Give
+every number field the one shared field, built on the shared draft, read a
+params file as a numeric field is read, and give the Constant's settings
+file and its run the one reading. Add a test that finds a call to the
+language's own number parsing on typed text outside the reader, on either
+side, and fails for any not on a list of named exceptions.
 
 **Acceptance:** The file of cases holds at least `1,5`, `1,000`,
-`1 000,50`, `0123`, `1E5`, `1_000`, `nan` and a number of 19 digits, and
-both readers pass it. A browser test types each case into every number
-field of the editor and the Workbench under English and under German and
-requires the same saved value. The acceptance of `RTG-03`, `WB-48`, `WB-68`
-and `EXE-02` is met.
+`1 000,50`, `0123`, `1E5`, `1_000`, `nan`, `True`, `5`, `2.5` and a number
+of 19 digits, each with its type and exact value under both ways, and both
+readers pass it. A browser test types each case into every number field of
+the editor and the Workbench under English and under German and requires
+the same saved value. A new field that parses its own text fails the test
+for unlisted calls. The acceptance of `RTG-03`, `WB-48`, `WB-68` and
+`EXE-02` is met.
 
-**Dependencies:** None. Deliver before the packages its acceptance names.
+**Dependencies:** [Panel values and Undo](root-cause-panel-drafts.md), for
+the draft the number field is built on. Deliver before the packages its
+table names.
 
 **Evidence:** `frontend/src/utils/sheetValues.ts`;
 `src/haute/_workbench_tables.py`; `src/haute/_node_apply.py`;
-`src/haute/_workbench_params.py`;
+`src/haute/_constant_config.py`; `src/haute/_workbench_params.py`;
 `frontend/src/components/form/CommittedTextField.tsx`.
