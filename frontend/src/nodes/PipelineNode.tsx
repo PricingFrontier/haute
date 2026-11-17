@@ -438,7 +438,7 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
         {isWorkbenchOutput ? (
           tableLabels.length > 0 ? (
             <FramePortRows
-              ports={tableLabels.map((label) => ({ id: label, label, parentEdges: [] }))}
+              ports={tableLabels.map((label) => ({ id: label, label }))}
               direction="target"
               accent={accent}
               testIdPrefix="workbench-output"
@@ -455,7 +455,7 @@ function PipelineNode(props: NodeProps<PipelineFlowNode>) {
               <NodeTraceValuePill accent={accent} value={traceValue} className="mb-1" />
             )}
             <FramePortRows
-              ports={frameLabels.map((label) => ({ id: label, label, parentEdges: [] }))}
+              ports={frameLabels.map((label) => ({ id: label, label }))}
               direction="source"
               accent={accent}
               testIdPrefix="api-input"

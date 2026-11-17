@@ -37,7 +37,7 @@ function makeProps(
     ports: data.ports ?? (
       portName === undefined
         ? []
-        : [{ id: portName || fallbackFrameLabel, label: fallbackFrameLabel, parentEdges: [] }]
+        : [{ id: portName || fallbackFrameLabel, label: fallbackFrameLabel }]
     ),
     externalNodeIds: data.externalNodeIds ?? [],
   }
@@ -233,8 +233,8 @@ describe("SubmodelPortNode", () => {
     renderPortNode({
       portDirection: "input",
       ports: [
-        { id: "api-a:quote", label: "quote", parentEdges: [] },
-        { id: "api-a:claims", label: "claims", parentEdges: [] },
+        { id: "api-a:quote", label: "quote" },
+        { id: "api-a:claims", label: "claims" },
       ],
     })
 
@@ -257,8 +257,8 @@ describe("SubmodelPortNode", () => {
     const { container } = renderPortNode({
       portDirection: "output",
       ports: [
-        { id: "out__claims", label: "claims", parentEdges: [] },
-        { id: "out__quote", label: "quote", parentEdges: [] },
+        { id: "out__claims", label: "claims" },
+        { id: "out__quote", label: "quote" },
       ],
     })
 

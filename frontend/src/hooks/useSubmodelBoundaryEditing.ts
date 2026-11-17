@@ -17,8 +17,8 @@ import {
 import {
   applySubmodelBoundaryConnection,
   connectSubmodelInputFromParentConnection,
-  reconcileSubmodelBoundaryState,
   removeSubmodelBoundaryEdges,
+  removeSubmodelElements,
   removeSubmodelInputPort,
   type SubmodelBoundaryEditResult,
   type SubmodelBoundaryEditState,
@@ -27,7 +27,6 @@ import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
-import { captureParentOutputState } from "../utils/submodelViewGraph"
 
 type Setter = (nodes: Node[] | ((nodes: Node[]) => Node[]), edges: Edge[] | ((edges: Edge[]) => Edge[]), submodels: Record<string, unknown>) => void
 
@@ -171,7 +170,7 @@ export default function useSubmodelBoundaryEditing({
   const reportBoundaryError = useCallback((error: unknown) => {
     addToast(
       "error",
-      `Shared submodel edit blocked: ${error instanceof Error ? error.message : String(error)}`,
+      `Submodel edit refused: ${error instanceof Error ? error.message : String(error)}`,
     )
   }, [addToast])
   const state = useCallback((): SubmodelBoundaryEditState | null => {
@@ -205,13 +204,8 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [])
   const commit = useCallback((result: SubmodelBoundaryEditResult) => {
-    const outputState = captureParentOutputState(result.definitionId, result.parentNodes, result.parentEdges)
-    const viewNodes = result.viewNodes.map((node) => (
-      node.type === "submodelPort" && node.data.portDirection === "output"
-        ? { ...node, data: { ...node.data, _parentOutputState: outputState } } : node
-    ))
     useGraphStore.getState().commitSubmodelBoundaryEdit({
-      viewNodes,
+      viewNodes: result.viewNodes,
       viewEdges: result.viewEdges,
       parentNodes: result.parentNodes,
       parentEdges: result.parentEdges,
@@ -380,17 +374,15 @@ export default function useSubmodelBoundaryEditing({
     try {
       const current = state()
       if (!current) return false
-      const removed = removeSubmodelBoundaryEdges(current, removedBoundaryIds)
-      if (!removed) return true
-      const remaining = changes.filter(
-        (change) => !(change.type === "remove" && removedBoundaryIds.includes(change.id)),
-      )
-      const viewEdges = applyEdgeChanges(remaining, removed.viewEdges)
-      const reconciled = reconcileSubmodelBoundaryState({
-        ...removed,
-        viewEdges: viewEdges as PipelineEdge[],
-      })
-      if (reconciled) commitWithParentIdentities(reconciled)
+      // One command for the whole batch: its boundary and internal edges, with the batch's
+      // other changes (a selection) kept on the canvas.
+      const removedIds = new Set(changes.flatMap((change) => (change.type === "remove" ? [change.id] : [])))
+      const kept = applyEdgeChanges(changes.filter((change) => change.type !== "remove"), current.viewEdges)
+      commitWithParentIdentities(removeSubmodelElements(
+        current,
+        { edgeIds: removedIds },
+        { nodes: current.viewNodes, edges: kept as PipelineEdge[] },
+      ))
       return true
     } catch (error: unknown) {
       reportBoundaryError(error)
@@ -410,23 +402,46 @@ export default function useSubmodelBoundaryEditing({
       if (!current) return "not-applicable"
       const viewNodeIds = new Set(current.viewNodes.map((node) => node.id))
       if (![...nodeIds].some((id) => viewNodeIds.has(id))) return "not-applicable"
-      const reconciled = reconcileSubmodelBoundaryState({
-        ...current,
-        viewNodes: nodeChanges
-          ? applyNodeChanges(nodeChanges, current.viewNodes)
-          : current.viewNodes.filter((node) => !nodeIds.has(node.id)),
-        viewEdges: current.viewEdges.filter((edge) =>
-          !nodeIds.has(edge.source)
-          && !nodeIds.has(edge.target)
-          && !selectedEdgeIds.has(edge.id)),
-      })
-      if (!reconciled) throw new Error("The shared submodel boundary could not be reconciled")
-      return commitWithParentIdentities(reconciled, onSettled) ? "committed" : "pending"
+      // The batch's own moves are part of the step; a drag still under way elsewhere is not.
+      const moves = new Map((nodeChanges ?? []).flatMap((change) => (
+        change.type === "position" && change.position && !nodeIds.has(change.id)
+          ? [[change.id, change.position] as const]
+          : []
+      )))
+      const removed = removeSubmodelElements(
+        current,
+        { nodeIds, edgeIds: selectedEdgeIds, moves },
+        {
+          nodes: nodeChanges ? applyNodeChanges(nodeChanges, current.viewNodes) : current.viewNodes,
+          edges: current.viewEdges,
+        },
+      )
+      return commitWithParentIdentities(removed, onSettled) ? "committed" : "pending"
     } catch (error: unknown) {
       reportBoundaryError(error)
       return "blocked"
     }
   }, [state, commitWithParentIdentities, reportBoundaryError])
+
+  /**
+   * A React Flow node batch while a submodel is open: its removals are one deletion
+   * command. The batch's other changes (a move, a drag's release, a selection) are part
+   * of that step when it commits at once. When it waits for server names or is refused,
+   * they land on the canvas now through `applyToCanvas` (the canvas's own change
+   * handler, which keeps its drag bookkeeping), so the canvas never shows a gesture the
+   * batch already ended. False when the batch is not the command's.
+   */
+  const commitNodesChange = useCallback((
+    changes: NodeChange[],
+    applyToCanvas: (changes: NodeChange[]) => void,
+  ): boolean => {
+    const removed = new Set(changes.flatMap((change) => (change.type === "remove" ? [change.id] : [])))
+    const outcome = commitSharedNodeDeletion(removed, new Set(), changes)
+    if (outcome === "not-applicable") return false
+    const others = changes.filter((change) => change.type !== "remove")
+    if (outcome !== "committed" && others.length > 0) applyToCanvas(others)
+    return true
+  }, [commitSharedNodeDeletion])
 
   return {
     commitBoundaryConnection,
@@ -434,5 +449,6 @@ export default function useSubmodelBoundaryEditing({
     deleteBoundaryInputPort,
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
+    commitNodesChange,
   }
 }

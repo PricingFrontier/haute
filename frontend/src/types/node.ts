@@ -269,28 +269,18 @@ export interface SubmodelNodeData extends HauteNodeData {
 }
 export type SubmodelFlowNode = Node<SubmodelNodeData>
 
+/** A card's port as the card shows it: its public name. */
 export interface SubmodelBoundaryPort {
   id: string
   label: string
-  /** Every persisted parent edge represented by this logical input frame. */
-  parentEdges: PipelineEdge[]
 }
 
+/** A boundary edge names the port it draws; the document holds everything else. */
 export type SubmodelBoundaryEdgeData = {
   submodelBoundary: {
-    direction: "input"
-    parentEdges: PipelineEdge[]
-    name: string
-  } | {
-    direction: "output"
-    parentConsumerEdges: PipelineEdge[]
+    direction: "input" | "output"
     name: string
   }
-}
-
-export interface ParentOutputState {
-  nodes: Array<{ id: string; data: Record<string, unknown> }>
-  edges: Array<{ id: string; inputName: unknown }>
 }
 
 export interface SubmodelPortData extends Record<string, unknown> {
@@ -299,12 +289,6 @@ export interface SubmodelPortData extends Record<string, unknown> {
   definitionId: string
   portDirection: "input" | "output"
   ports: SubmodelBoundaryPort[]
-  /** Input rows retain bindings for every shared occurrence so history can restore the parent graph. */
-  _parentBindingScope?: "definition"
-  /** Parent edge ids in their authoritative order, so a restored binding returns to its own position. */
-  _parentEdgeOrder?: string[]
-  /** Output identities and consumer configs changed by public output-count edits. */
-  _parentOutputState?: ParentOutputState
   externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean

@@ -16,9 +16,7 @@ const isNonBlankText = (value: unknown): value is string =>
 function isBoundaryPort(value: unknown): value is SubmodelBoundaryPort {
   if (typeof value !== "object" || value === null) return false
   const port = value as Partial<SubmodelBoundaryPort>
-  return isNonBlankText(port.id)
-    && isNonBlankText(port.label)
-    && Array.isArray(port.parentEdges)
+  return isNonBlankText(port.id) && isNonBlankText(port.label)
 }
 
 export default function SubmodelPortEditor({

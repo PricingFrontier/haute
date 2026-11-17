@@ -365,9 +365,7 @@ describe("useGraphStore with a submodel open", () => {
   it("keeps a boundary edit's definition in its authored form, its annotations on the view", () => {
     store().enterSubmodelView(OPEN)
     const columns = [{ name: "premium", dtype: "Float64" }]
-    // The rebuild a boundary action runs hands back canvas objects as the definition's children.
     const viewNodes = store().nodes.map((node) => (node.id === "score" ? { ...node, selected: true, data: { ...node.data, _columns: columns } } : node))
-    const children = viewNodes.filter((node) => node.type !== "submodelPort")
     const focus = store().focus!
 
     store().commitSubmodelBoundaryEdit({
@@ -375,7 +373,7 @@ describe("useGraphStore with a submodel open", () => {
       viewEdges: store().edges,
       parentNodes: focus.rootNodes,
       parentEdges: focus.rootEdges,
-      submodels: { [DEFINITION_ID]: { ...openDefinition(), graph: { ...openDefinition().graph, nodes: children }, inputPorts: [] } },
+      submodels: { [DEFINITION_ID]: { ...openDefinition(), inputPorts: [] } },
     })
 
     expect(child("score")).not.toHaveProperty("selected")
@@ -383,6 +381,31 @@ describe("useGraphStore with a submodel open", () => {
     expect(onCanvas("score").data._columns).toEqual(columns)
     expect(store().submodelAnnotations[OPEN.instanceId]).toEqual({ score: { _columns: columns } })
     expect(store().undoStack).toHaveLength(1)
+  })
+
+  it("refuses a boundary edit whose definition holds the canvas's state, and changes nothing", () => {
+    store().enterSubmodelView(OPEN)
+    const before = { nodes: store().nodes, submodels: store().submodels, fingerprint: store().persistedFingerprint }
+    const focus = store().focus!
+    const holding = (change: (node: Node) => Node) => {
+      const children = openDefinition().graph.nodes.map((node) => (node.id === "score" ? change(node) : node))
+      return () => store().commitSubmodelBoundaryEdit({
+        viewNodes: store().nodes,
+        viewEdges: store().edges,
+        parentNodes: focus.rootNodes,
+        parentEdges: focus.rootEdges,
+        submodels: { [DEFINITION_ID]: { ...openDefinition(), graph: { ...openDefinition().graph, nodes: children }, inputPorts: [] } },
+      })
+    }
+
+    // A boundary command edits the document, so a canvas object here is its defect.
+    expect(holding((node) => ({ ...node, selected: true }))).toThrow(/canvas's state of score/)
+    expect(holding((node) => ({ ...node, measured: { width: 10, height: 10 } }))).toThrow(/canvas's state of score/)
+    expect(holding((node) => ({ ...node, data: { ...node.data, _columns: [] } }))).toThrow(/canvas's state of score/)
+    expect(store().nodes).toBe(before.nodes)
+    expect(store().submodels).toBe(before.submodels)
+    expect(store().persistedFingerprint).toBe(before.fingerprint)
+    expect(store().undoStack).toHaveLength(0)
   })
 
   it("refuses a boundary edit that would change a read-only copy's definition", () => {

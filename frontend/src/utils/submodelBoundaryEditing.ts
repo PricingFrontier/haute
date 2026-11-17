@@ -3,10 +3,11 @@ import type { PipelineEdge } from "../types/node"
 import {
   applyCanonicalSubmodelBoundaryConnection,
   connectCanonicalSubmodelInputFromParentConnection,
-  reconcileCanonicalSubmodelBoundaryState,
   removeCanonicalSubmodelBoundaryEdges,
+  removeCanonicalSubmodelElements,
   removeCanonicalSubmodelInputPort,
   type CanonicalSubmodelInputConnectionState,
+  type CanonicalSubmodelRemoval,
 } from "./canonicalSubmodelBoundaryEditing"
 
 export interface SubmodelBoundaryEditState {
@@ -32,5 +33,8 @@ export const removeSubmodelBoundaryEdges = (state: SubmodelBoundaryEditState, ed
   removeCanonicalSubmodelBoundaryEdges(state, edgeIds)
 export const removeSubmodelInputPort = (state: SubmodelBoundaryEditState, portName: string) =>
   removeCanonicalSubmodelInputPort(state, portName)
-export const reconcileSubmodelBoundaryState = (state: SubmodelBoundaryEditState) =>
-  reconcileCanonicalSubmodelBoundaryState(state)
+export const removeSubmodelElements = (
+  state: SubmodelBoundaryEditState,
+  removal: CanonicalSubmodelRemoval,
+  canvas?: { nodes: Node[]; edges: PipelineEdge[] },
+) => removeCanonicalSubmodelElements(state, removal, canvas)

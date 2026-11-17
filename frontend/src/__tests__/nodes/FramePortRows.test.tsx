@@ -8,8 +8,8 @@ afterEach(cleanup)
 function renderRows(
   direction: "source" | "target",
   ports = [
-    { id: "frame-a", label: "frame_a", parentEdges: [] },
-    { id: "frame-b", label: "frame_b", parentEdges: [] },
+    { id: "frame-a", label: "frame_a" },
+    { id: "frame-b", label: "frame_b" },
   ],
 ) {
   return render(
@@ -70,8 +70,8 @@ describe("FramePortRows", () => {
       <ReactFlowProvider>
         <FramePortRows
           ports={[
-            { id: "frame-a", label: "frame_a", parentEdges: [] },
-            { id: "frame-b", label: "frame_b", parentEdges: [] },
+            { id: "frame-a", label: "frame_a" },
+            { id: "frame-b", label: "frame_b" },
           ]}
           direction="source"
           accent="#56B4E9"
@@ -99,8 +99,8 @@ describe("FramePortRows", () => {
 
   it("keeps duplicate display labels independent through stable handle ids", () => {
     renderRows("source", [
-      { id: "source-a:quote", label: "quote", parentEdges: [] },
-      { id: "source-b:quote", label: "quote", parentEdges: [] },
+      { id: "source-a:quote", label: "quote" },
+      { id: "source-b:quote", label: "quote" },
     ])
 
     expect(screen.getAllByText("quote")).toHaveLength(2)

@@ -1,17 +1,26 @@
 /**
  * Property tests for an open submodel as a view of the one document: over seeded
- * random definitions and random sequences of the canvas's writes, the canvas stays
- * a projection of the document, each edit is one step, and Undo and Redo walk the
- * whole sequence back and forth.
+ * random definitions and random sequences of the canvas's writes and the boundary
+ * commands, the canvas stays a projection of the document, each edit is one step, a
+ * refused command changes nothing, and Undo and Redo walk the whole sequence back and
+ * forth.
  */
 import { beforeEach, describe, expect, it } from "vitest"
 import type { Node } from "@xyflow/react"
 import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeIdentifiedNode, makeNode } from "../../test-utils/factories"
-import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
+import type { PipelineEdge, SubmodelDefinition, SubmodelPortData } from "../../types/node"
 import { canonicalJson } from "../canonicalJson"
-import { authoredNodeForm } from "../graphSnapshot"
+import { authoredNodeForm, holdsCanvasState } from "../graphSnapshot"
+import {
+  applySubmodelBoundaryConnection,
+  removeSubmodelBoundaryEdges,
+  removeSubmodelElements,
+  removeSubmodelInputPort,
+  type SubmodelBoundaryEditResult,
+  type SubmodelBoundaryEditState,
+} from "../submodelBoundaryEditing"
 import { definitionEdgeForm, isSubmodelCard, projectSubmodelFocus } from "../submodelDocument"
 
 const DEFINITION_ID = "definition_pricing"
@@ -85,11 +94,47 @@ const portChildren = () => new Set([
 
 type Write = { name: string; step: boolean; run: () => void } | null
 
+const card = (direction: "input" | "output") => store().nodes.find((node) => (
+  isSubmodelCard(node) && (node.data as SubmodelPortData).portDirection === direction))!
+const isBoundaryEdge = (edge: { data?: Record<string, unknown> }) => edge.data?.submodelBoundary !== undefined
+
+/** What the hook hands a boundary command: the canvas, and the document behind it. */
+function boundaryState(): SubmodelBoundaryEditState {
+  const { focus, nodes, edges, submodels } = store()
+  return {
+    submodelName: "pricing",
+    instanceId: OPEN.instanceId,
+    definitionId: DEFINITION_ID,
+    viewNodes: nodes,
+    viewEdges: edges as PipelineEdge[],
+    parentNodes: focus!.rootNodes,
+    parentEdges: focus!.rootEdges,
+    submodels,
+  }
+}
+
+/**
+ * Run a boundary command and commit the document it leaves, as the hook does. A command
+ * refused for a binding throws before anything is committed.
+ */
+function boundary(command: (state: SubmodelBoundaryEditState) => SubmodelBoundaryEditResult | null) {
+  return () => {
+    let result: SubmodelBoundaryEditResult | null
+    try {
+      result = command(boundaryState())
+    } catch (error) {
+      if (error instanceof Error && /bound by shared instances/.test(error.message)) return
+      throw error
+    }
+    if (result) store().commitSubmodelBoundaryEdit(result)
+  }
+}
+
 /** One of the canvas's writes, chosen at random; null when none of its kind applies. */
 function randomWrite(rng: ReturnType<typeof random>, serial: number): Write {
   const nodes = children()
   const target = rng.pick(nodes)
-  switch (rng.int(8)) {
+  switch (rng.int(14)) {
     case 0:
       return {
         name: `configure ${target.id}`,
@@ -146,6 +191,51 @@ function randomWrite(rng: ReturnType<typeof random>, serial: number): Write {
           frame(target.position.x + 37, false)
         },
       }
+    case 8: {
+      const ports = definition().inputPorts
+      if (ports.length === 0) return null
+      const port = rng.pick(ports).name
+      return {
+        name: `route ${port} to ${target.id}`,
+        step: true,
+        run: boundary((state) => applySubmodelBoundaryConnection(state, {
+          source: card("input").id, sourceHandle: port, target: target.id, targetHandle: null,
+        })),
+      }
+    }
+    case 9:
+      return {
+        name: `declare an output from ${target.id}`,
+        step: true,
+        run: boundary((state) => applySubmodelBoundaryConnection(state, {
+          source: target.id, sourceHandle: null, target: card("output").id, targetHandle: null,
+        })),
+      }
+    case 10: {
+      const edges = store().edges.filter(isBoundaryEdge)
+      if (edges.length === 0) return null
+      const gone = rng.pick(edges).id
+      return { name: `remove boundary edge ${gone}`, step: true, run: boundary((state) => removeSubmodelBoundaryEdges(state, [gone])) }
+    }
+    case 11: {
+      const ports = definition().inputPorts
+      if (ports.length === 0) return null
+      const port = rng.pick(ports).name
+      return { name: `retire input ${port}`, step: true, run: boundary((state) => removeSubmodelInputPort(state, port)) }
+    }
+    case 12: {
+      // A batch: a child, with the selection a deletion carries, and one more edge.
+      const edges = store().edges
+      const extra = edges.length > 0 ? rng.pick(edges).id : undefined
+      return {
+        name: `delete ${target.id}${extra ? ` and ${extra}` : ""} as one command`,
+        step: true,
+        run: boundary((state) => removeSubmodelElements(
+          state,
+          { nodeIds: new Set([target.id]), edgeIds: new Set(extra ? [extra] : []) },
+        )),
+      }
+    }
     case 6:
       return {
         name: `select ${target.id}`,
@@ -173,8 +263,7 @@ function expectCanvasIsTheDocument(label: string) {
   expect(authoredSet(children()), label).toBe(authoredSet(definition().graph.nodes))
   expect(authoredEdgeSet(internalEdges() as PipelineEdge[]), label).toBe(authoredEdgeSet(definition().graph.edges as PipelineEdge[]))
   for (const node of definition().graph.nodes) {
-    expect(node, label).not.toHaveProperty("selected")
-    expect(Object.keys(node.data).filter((key) => key === "_columns"), label).toEqual([])
+    expect(holdsCanvasState(node), `${label}: ${node.id} in authored form`).toBe(false)
   }
   const projected = projectSubmodelFocus({
     rootNodes: focus!.rootNodes,
@@ -185,6 +274,19 @@ function expectCanvasIsTheDocument(label: string) {
     previous: { nodes, edges },
   })
   expect(authoredSet(projected.nodes.filter((node) => !isSubmodelCard(node))), label).toBe(authoredSet(children()))
+  // The cards and boundary edges are the document's ports, and the cards hold nothing more
+  // than they show.
+  const cards = (all: readonly Node[]) => canonicalJson(all.filter(isSubmodelCard).map((node) => node.data))
+  expect(cards(nodes), label).toBe(cards(projected.nodes))
+  const boundaryEdges = (all: readonly PipelineEdge[]) => all.filter(isBoundaryEdge)
+    .map((edge) => canonicalJson([edge.source, edge.sourceHandle ?? null, edge.target, edge.targetHandle ?? null, edge.data]))
+    .sort()
+  expect(boundaryEdges(edges as PipelineEdge[]), label).toEqual(boundaryEdges(projected.edges))
+  for (const node of nodes.filter(isSubmodelCard)) {
+    for (const carrier of ["_parentBindingScope", "_parentEdgeOrder", "_parentOutputState"]) {
+      expect(node.data, label).not.toHaveProperty(carrier)
+    }
+  }
 }
 
 describe("an open submodel as a view of the one document (property)", () => {

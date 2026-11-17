@@ -64,7 +64,7 @@ import { create } from "zustand"
 import type { Node } from "@xyflow/react"
 import {
   EMPTY_SNAPSHOT,
-  authoredNodeForm,
+  holdsCanvasState,
   serializeSnapshot,
   selectIsDirty,
   cloneGraphSnapshot,
@@ -77,7 +77,6 @@ import type { GlobalConstantDraft } from "../utils/globalConstants"
 import {
   READ_ONLY_REASON,
   childAnnotations,
-  definitionEdgeForm,
   liftSubmodelCanvas,
   projectSubmodelFocus,
   type SubmodelFocusIdentity,
@@ -1208,22 +1207,17 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       if (focus === null) {
         throw new Error("A boundary edit needs an open submodel.")
       }
-      // The definition holds its children in their authored form, as a canvas
-      // write leaves them: presentation and annotations stay on the view.
+      // A boundary command edits the document, so its definition holds its children as
+      // the document does: one holding the canvas's state (a selection, a size, a
+      // preview's columns) is a defect of the command, refused rather than cleaned.
       const open = edit.submodels[focus.definitionId]
-      const submodels = isSubmodelDefinition(open, focus.definitionId)
-        ? {
-            ...edit.submodels,
-            [focus.definitionId]: {
-              ...open,
-              graph: {
-                ...open.graph,
-                nodes: open.graph.nodes.map(authoredNodeForm),
-                edges: (open.graph.edges ?? []).map(definitionEdgeForm),
-              },
-            },
-          }
-        : edit.submodels
+      const withCanvasState = isSubmodelDefinition(open, focus.definitionId)
+        ? open.graph.nodes.find(holdsCanvasState)
+        : undefined
+      if (withCanvasState) {
+        throw new Error(`A boundary edit's definition holds the canvas's state of ${withCanvasState.id}`)
+      }
+      const submodels = edit.submodels
       const nextFocus: SubmodelFocus = { ...focus, rootNodes: edit.parentNodes, rootEdges: edit.parentEdges }
       const fields: GraphFields = {
         ...state,

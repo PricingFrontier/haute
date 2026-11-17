@@ -1179,6 +1179,7 @@ function FlowEditor() {
     deleteBoundaryInputPort,
     onBoundaryEdgesChange,
     commitSharedNodeDeletion,
+    commitNodesChange: commitSubmodelNodesChange,
   } = useSubmodelBoundaryEditing({
     
     
@@ -1325,10 +1326,7 @@ function FlowEditor() {
   )
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!editingReadOnly) {
-      const removedNodeIds = new Set(changes
-        .filter((change): change is Extract<NodeChange, { type: "remove" }> => change.type === "remove")
-        .map((change) => change.id))
-      if (commitSharedNodeDeletion(removedNodeIds, new Set(), changes) !== "not-applicable") return
+      if (commitSubmodelNodesChange(changes, onNodesChange)) return
       onNodesChange(changes)
       return
     }
@@ -1336,7 +1334,7 @@ function FlowEditor() {
       (change) => change.type === "select" || change.type === "dimensions",
     )
     if (presentationChanges.length > 0) onNodesChange(presentationChanges)
-  }, [editingReadOnly, commitSharedNodeDeletion, onNodesChange])
+  }, [editingReadOnly, commitSubmodelNodesChange, onNodesChange])
 
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
     if (editingReadOnly) {
