@@ -413,6 +413,41 @@ def test_a_removed_utility_package_no_longer_runs_from_a_node_import(project: Pa
     assert "utility" in (results["rated"].error or "")
 
 
+def test_a_pipeline_without_utility_does_not_import_another_pipelines(project: Path) -> None:
+    """Pipeline A's folder has a ``utility``; pipeline B's does not, nor the project root. B
+    run after A in the same process must not load A's package through a finder still bound
+    to A, as a fresh process would not."""
+    import shutil
+
+    from haute.executor import execute_graph
+
+    shutil.rmtree(project / "utility")
+    (project / "a").mkdir()
+    (project / "b").mkdir()
+    _write_utility(project / "a")
+    code = "from utility.top import TOP\n" + _RATED_CODE
+
+    def pipeline(folder: str) -> PipelineGraph:
+        graph = _graph(project, preamble="")
+        return graph.model_copy(
+            update={
+                "source_file": str(project / folder / "main.py"),
+                "nodes": [
+                    node.with_config({"code": code}) if node.id == "rated" else node
+                    for node in graph.nodes
+                ],
+            }
+        )
+
+    assert _preview(pipeline("a"), "rated", "rated") == 100 * 1 * 10 * 2
+
+    results = execute_graph(
+        pipeline("b"), target_node_id="rated", row_limit=10, target_preview_only=True
+    )
+    assert results["rated"].status == "error"
+    assert "utility" in (results["rated"].error or "")
+
+
 def test_a_node_import_of_utility_runs_and_follows_edits_with_a_blank_preamble(
     project: Path,
 ) -> None:

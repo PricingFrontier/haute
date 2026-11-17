@@ -60,6 +60,8 @@ from haute._project_context import current_project, graph_pipeline_dir, installe
 from haute._project_imports import (
     bind_project_utility,
     evict_utility_modules,
+    project_utility_bound,
+    unbind_project_utility,
     utility_bound_to,
 )
 from haute._registry import ensure_registry_ready
@@ -383,16 +385,17 @@ def _align_loaded_utility(
 
 
 def _forget_loaded_utility() -> None:
-    """Put aside every loaded ``utility`` module when the project has no ``utility`` (or no
-    project) any more: a removed package's code must not run under an identity that signs
-    no ``utility``, so the next import fails as it would in a fresh process."""
+    """For a pipeline with no ``utility`` (or no project): unbind the finder and put aside
+    every loaded ``utility`` module, so neither a removed package nor another pipeline's
+    folder runs under an identity that signs no ``utility``; the next import fails as it
+    would in a fresh process."""
     global _loaded_utility_generation
-    if _loaded_utility_generation is None:
+    if _loaded_utility_generation is None and not project_utility_bound():
         return
     with _preamble_lock:
-        if _loaded_utility_generation is not None:
-            evict_utility_modules()
-            _loaded_utility_generation = None
+        unbind_project_utility()
+        evict_utility_modules()
+        _loaded_utility_generation = None
 
 
 def _compile_preamble_into_cell(

@@ -143,6 +143,20 @@ def bind_project_utility(pipeline_dir: str | Path | None, *, project_root: str |
     return changed
 
 
+def unbind_project_utility() -> bool:
+    """Bind the finder to no project, so ``utility`` is left to the normal import system, as
+    in a process that never compiled a project's code; return whether it was bound. The
+    caller holds the executor's preamble lock and evicts ``utility``."""
+    bound = bool(_FINDER.search_dirs)
+    _FINDER.search_dirs = ()
+    return bound
+
+
+def project_utility_bound() -> bool:
+    """Whether the finder answers ``utility`` from some project's directories now."""
+    return bool(_FINDER.search_dirs)
+
+
 def utility_bound_to(pipeline_dir: str | Path | None, *, project_root: str | Path) -> bool:
     """Whether the finder is bound to these project directories now."""
     return _FINDER in sys.meta_path and _FINDER.search_dirs == tuple(
