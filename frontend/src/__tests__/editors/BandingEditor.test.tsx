@@ -252,7 +252,7 @@ describe("BandingEditor", () => {
 
   it("column selection with upstream columns renders dropdown", () => {
     const columns = [
-      { name: "age", dtype: "int64" },
+      { name: "age", dtype: "Int64" },
       { name: "region", dtype: "Utf8" },
     ]
     renderEditor(
@@ -267,14 +267,14 @@ describe("BandingEditor", () => {
     // A dropdown with a search box, never a box to type a name into.
     fireEvent.click(screen.getByRole("button", { name: "Column 1 input column" }))
     expect(screen.getByRole("combobox", { name: "Search Column 1 input column" })).toBeInTheDocument()
-    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["ageint64", "regionUtf8"])
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["ageInt64", "regionUtf8"])
     expect(screen.queryByRole("textbox", { name: /input column/ })).toBeNull()
   })
 
   it("column selection auto-detects type for numeric dtype -> breakpoints", () => {
     const onUpdate = vi.fn()
     const columns = [
-      { name: "age", dtype: "int64" },
+      { name: "age", dtype: "Int64" },
       { name: "region", dtype: "Utf8" },
     ]
     const config = {
@@ -291,7 +291,7 @@ describe("BandingEditor", () => {
     )
     chooseInputColumn("Column 1", "age")
 
-    // Should auto-detect to breakpoints for int64 dtype
+    // Should auto-detect to breakpoints for an Int64 column
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
       expect.objectContaining({ column: "age", banding: "breakpoints" }),
     ]))
@@ -300,7 +300,7 @@ describe("BandingEditor", () => {
   it("column selection switches a new Numeric factor to categorical for a string dtype", () => {
     const onUpdate = vi.fn()
     const columns = [
-      { name: "age", dtype: "int64" },
+      { name: "age", dtype: "Int64" },
       { name: "region", dtype: "Utf8" },
     ]
     const config = {
@@ -675,9 +675,9 @@ describe("BandingEditor", () => {
     expect(screen.getByText("Numeric").closest("button")).toBeEnabled()
   })
 
-  it("auto-detect selects 'breakpoints' for numeric columns", () => {
+  it("auto-detect selects 'breakpoints' for numeric columns, a half-precision float among them", () => {
     const onUpdate = vi.fn()
-    const columns = [{ name: "age", dtype: "int64" }]
+    const columns = [{ name: "age", dtype: "Float16" }]
     const config = {
       factors: [{ banding: "categorical", column: "", output_column: "", rules: [] }],
     }
@@ -743,7 +743,7 @@ describe("BandingEditor", () => {
 
   it("output column auto-suggests from input column", () => {
     const onUpdate = vi.fn()
-    const columns = [{ name: "driver_age", dtype: "int64" }]
+    const columns = [{ name: "driver_age", dtype: "Int64" }]
     const config = {
       factors: [{ banding: "categorical", column: "", output_column: "", rules: [] }],
     }

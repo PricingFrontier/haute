@@ -16,9 +16,6 @@ which gave 79 awkward files to the Data Input, the Quote Input and Load
 File through the preview and `haute run`. Each was reproduced on that day,
 as were the additions that sweep made to `IOL-01` and `IOL-02`.
 
-A cause several packages here share has its own file and is taken first:
-[column kinds](root-cause-column-kinds.md).
-
 ## Priorities
 
 | Package | State | Priority | Outcome |

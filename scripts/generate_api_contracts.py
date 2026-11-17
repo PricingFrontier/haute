@@ -30,6 +30,7 @@ from haute._node_address_schemas import (
     OccurrenceInputTargetPayload,
     OccurrenceOutputTargetPayload,
 )
+from haute._polars_dtypes import COLUMN_KIND_GROUPS, COLUMN_KINDS, polars_type_kinds
 from haute._types import PipelineGraph
 from haute.schemas import (
     AssistantSessionListResponse,
@@ -198,6 +199,9 @@ _ContractModel = type[BaseModel] | type[RootModel[Any]]
 RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups"
 REQUEST_GROUPS_KEYWORD = "x-haute-request-groups"
 SHARED_RESPONSE_GROUPS_KEYWORD = "x-haute-shared-response-groups"
+# What kind of column each Polars type is, read from the installed Polars by the one
+# kind module (specs/io-layer, "Column kinds"), so the browser asks the same table.
+COLUMN_KINDS_KEYWORD = "x-haute-column-kinds"
 
 # Request bodies the browser sends, by module group, described as their routes read them
 # (validation mode: a defaulted field may be left out), so what the browser builds is typed
@@ -684,6 +688,11 @@ def build_contract_bundle() -> dict[str, Any]:
             for group, models in RESPONSE_CONTRACT_GROUPS.items()
         },
         SHARED_RESPONSE_GROUPS_KEYWORD: list(SHARED_RESPONSE_GROUPS),
+        COLUMN_KINDS_KEYWORD: {
+            "kinds": list(COLUMN_KINDS),
+            "groups": {name: sorted(kinds) for name, kinds in COLUMN_KIND_GROUPS.items()},
+            "types": dict(polars_type_kinds()),
+        },
         "$defs": definitions,
     }
 

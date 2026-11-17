@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute.errors import HauteValidationError
+from haute.errors import HauteValidationError, SchemaMismatchError
 from haute.modelling._glm_terms import (
     DEFAULT_FIT_BY_CLASS,
     MAIN_FITS_BY_CLASS,
@@ -33,42 +33,27 @@ def _fixture(name: str) -> dict:
 
 
 class TestDtypeClasses:
+    """Every Polars type's GLM class, and the editor's, are the shared column-kind cases
+    (``tests/test_column_kinds.py``); these name the classes a fit reads."""
+
     @pytest.mark.parametrize(
-        "dtype",
+        ("dtype", "expected"),
         [
-            pl.Float16,
-            pl.Float32,
-            pl.Float64,
-            pl.Decimal(10, 2),
-            pl.Int8,
-            pl.Int64,
-            pl.Int128,
-            pl.UInt8,
-            pl.UInt64,
-            pl.Boolean,
-            pl.String,
-            pl.Categorical,
-            pl.Enum(["a", "b"]),
-            pl.Date,
-            pl.Datetime("us"),
-            pl.Datetime("ms", "UTC"),
-            pl.Duration("us"),
-            pl.Time,
-            pl.List(pl.Int64),
-            pl.Array(pl.Int64, 2),
-            pl.Struct({"a": pl.Int64}),
-            pl.Binary,
-            pl.Null,
-            pl.Object,
+            (pl.Float16, "continuous"),
+            (pl.Decimal(10, 2), "continuous"),
+            (pl.UInt128, "integer"),
+            (pl.Boolean, "boolean"),
+            (pl.Enum(["a", "b"]), "categorical"),
+            (pl.Datetime("ms", "UTC"), "unsupported"),
+            (pl.List(pl.Int64), "unsupported"),
         ],
     )
-    def test_every_real_polars_dtype_name_is_pinned_by_the_shared_fixture(self, dtype):
-        assert str(dtype) in _fixture("glmDtypeClasses.json")["polars"]
+    def test_a_rendering_is_classed_by_its_column_kind(self, dtype, expected):
+        assert glm_dtype_class(str(dtype)) == expected
 
-    def test_backend_classification_matches_the_shared_fixture(self):
-        fixture = _fixture("glmDtypeClasses.json")
-        cases = {**fixture["polars"], **fixture["aliases"]}
-        assert {name: glm_dtype_class(name) for name in cases} == cases
+    def test_text_that_is_not_a_polars_rendering_is_refused_by_name(self):
+        with pytest.raises(SchemaMismatchError, match="f64"):
+            glm_dtype_class("f64")
 
 
 class TestExpressionIdentifiers:

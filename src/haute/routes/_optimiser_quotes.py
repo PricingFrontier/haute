@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from haute._polars_dtypes import TEXT_KINDS, ColumnKind, base_type_kind, column_kind
 from haute.errors import InvalidRequestError, RequestRefusedError, ServiceFailedError
 from haute.routes._optimiser_limits import APPLY_PREVIEW_ROW_LIMIT, QUOTE_PAGE_DEPTH_LIMIT
 from haute.routes._optimiser_outcomes import (
@@ -45,12 +46,8 @@ if TYPE_CHECKING:
 
 EqualityValue = str | int | float | bool | None
 
-_STRING_DTYPES = frozenset({"String", "Categorical", "Enum"})
-_INTEGER_DTYPES = frozenset(
-    {"Int8", "Int16", "Int32", "Int64", "Int128", "UInt8", "UInt16", "UInt32", "UInt64"}
-)
-_FLOAT_DTYPES = frozenset({"Float32", "Float64"})
-_BOOLEAN_DTYPES = frozenset({"Boolean"})
+#: The column kinds an analysis column is filtered by equality on.
+_EQUALITY_KINDS: frozenset[ColumnKind] = TEXT_KINDS | {"integer", "float", "boolean"}
 
 _SCENARIO = "optimal_scenario_value"
 _FACTOR_PRODUCT = "factor_product"
@@ -60,36 +57,36 @@ def _bad_request(message: str) -> RequestRefusedError:
     return InvalidRequestError(message)
 
 
-def equality_filter_supported(dtype_name: str) -> bool:
-    """Whether an analysis column of *dtype_name* (``str(dtype.base_type())``) can be
-    filtered by equality: strings, integers, floats and booleans."""
-    return dtype_name in _STRING_DTYPES | _INTEGER_DTYPES | _FLOAT_DTYPES | _BOOLEAN_DTYPES
+def equality_filter_supported(kind: ColumnKind) -> bool:
+    """Whether an analysis column of *kind* can be filtered by equality: text, integers,
+    floats and booleans."""
+    return kind in _EQUALITY_KINDS
 
 
-def _value_suits(dtype_name: str, value: EqualityValue) -> bool:
+def _value_suits(kind: ColumnKind, value: EqualityValue) -> bool:
     if value is None:
         return True
-    if dtype_name in _STRING_DTYPES:
+    if kind in TEXT_KINDS:
         return isinstance(value, str)
-    if dtype_name in _INTEGER_DTYPES:
+    if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
-    if dtype_name in _FLOAT_DTYPES:
+    if kind == "float":
         return isinstance(value, int | float) and not isinstance(value, bool)
-    if dtype_name in _BOOLEAN_DTYPES:
+    if kind == "boolean":
         return isinstance(value, bool)
     return False
 
 
-def _equals(column: str, dtype_name: str, value: EqualityValue) -> pl.Expr:
+def _equals(column: str, kind: ColumnKind, value: EqualityValue) -> pl.Expr:
     """*column* equal to *value*; ``None`` matches a missing value (null, or NaN for a float)."""
     import polars as pl
 
     if value is None:
         missing = pl.col(column).is_null()
-        return missing | pl.col(column).is_nan() if dtype_name in _FLOAT_DTYPES else missing
-    if dtype_name in _STRING_DTYPES:
+        return missing | pl.col(column).is_nan() if kind == "float" else missing
+    if kind in TEXT_KINDS:
         return pl.col(column).cast(pl.String) == pl.lit(value, dtype=pl.String)
-    if dtype_name in _FLOAT_DTYPES:
+    if kind == "float":
         return pl.col(column).cast(pl.Float64) == pl.lit(float(value), dtype=pl.Float64)
     return pl.col(column) == pl.lit(value)
 
@@ -109,7 +106,8 @@ def quote_output_columns(spec: ChoiceFrameSpec) -> tuple[str, ...]:
 def quote_columns(
     spec: ChoiceFrameSpec, analysis_dtypes: Mapping[str, str]
 ) -> list[OptimiserQuoteColumn]:
-    """Every page column with its role; *analysis_dtypes* names each analysis column's dtype."""
+    """Every page column with its role; *analysis_dtypes* names each analysis column's base
+    type, as ``str(dtype.base_type())`` renders it."""
     sortable = set(sortable_columns(spec))
     roles: dict[str, Any] = {
         CHOICE_QUOTE_ID: "id",
@@ -127,7 +125,8 @@ def quote_columns(
                 name=name,
                 role="analysis" if analysis else roles[name],
                 sortable=name in sortable,
-                filterable=analysis and equality_filter_supported(analysis_dtypes[name]),
+                filterable=analysis
+                and equality_filter_supported(base_type_kind(analysis_dtypes[name])),
             )
         )
     return columns
@@ -306,15 +305,16 @@ class QuotePage:
                 raise RuntimeError("An analysis filter needs the leased analysis side table.")
             schema = frames.analysis.collect_schema()
             for column, value in filters.analysis_equals:
-                dtype_name = str(schema[column].base_type())
-                if not equality_filter_supported(dtype_name) or not _value_suits(dtype_name, value):
+                dtype = schema[column]
+                kind = column_kind(dtype)
+                if not equality_filter_supported(kind) or not _value_suits(kind, value):
                     raise _bad_request(
-                        f"Analysis column {column!r} ({dtype_name}) cannot be filtered by "
+                        f"Analysis column {column!r} ({dtype}) cannot be filtered by "
                         f"equality to {value!r}: use a string for a text column, an integer "
                         "for an integer column, a number for a float column, a boolean for a "
                         "Boolean column, or null for a missing value."
                     )
-                parts.append(_equals(column, dtype_name, value))
+                parts.append(_equals(column, kind, value))
         return pl.all_horizontal(parts) if parts else None
 
 

@@ -18,22 +18,22 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from haute._polars_dtypes import column_kind, integer_range, numpy_float_type
+
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
-_INTEGER_RANGES: dict[type[pl.DataType], tuple[int, int]] = {
-    pl.Int8: (-(2**7), 2**7 - 1),
-    pl.Int16: (-(2**15), 2**15 - 1),
-    pl.Int32: (-(2**31), 2**31 - 1),
-    pl.Int64: (-(2**63), 2**63 - 1),
-    pl.UInt8: (0, 2**8 - 1),
-    pl.UInt16: (0, 2**16 - 1),
-    pl.UInt32: (0, 2**32 - 1),
-    pl.UInt64: (0, 2**64 - 1),
-}
-
-#: The declared types a request value can be checked against; any other refuses the deploy.
+#: The declared types a request value can be checked against; any other refuses the deploy,
+#: naming its type. A 128-bit integer and a half-precision float are not among them: a
+#: deployed model's MLflow signature has no type for either.
 REQUEST_DTYPES: tuple[type[pl.DataType], ...] = (
-    *_INTEGER_RANGES,
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
     pl.Float32,
     pl.Float64,
     pl.String,
@@ -59,12 +59,13 @@ def json_value(value: object, dtype: pl.DataType) -> Any:
     if value is None:
         return None
     base = dtype.base_type()
-    if base in _INTEGER_RANGES:
-        low, high = _INTEGER_RANGES[base]
+    kind = column_kind(dtype)
+    if kind == "integer":
+        low, high = integer_range(dtype)
         if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
             return value
-    elif base is pl.Float64 or base is pl.Float32:
-        number = _exact_float(value, base)
+    elif kind == "float":
+        number = _exact_float(value, dtype)
         if number is not None:
             return number
     elif base is pl.String or base is pl.Categorical:
@@ -87,13 +88,14 @@ def json_value(value: object, dtype: pl.DataType) -> Any:
     raise JsonValueError(f"not {dtype}")
 
 
-def _exact_float(value: object, base: type[pl.DataType]) -> float | None:
+def _exact_float(value: object, dtype: pl.DataType) -> float | None:
     """*value* as a finite float the type holds exactly when it is an integer."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    if base is pl.Float32:
+    width = numpy_float_type(dtype)
+    if width is not np.float64:
         with np.errstate(over="ignore"):
-            narrowed = np.float32(value)
+            narrowed = width(value)
         if not np.isfinite(narrowed) or (isinstance(value, int) and int(narrowed) != value):
             return None
         return float(narrowed) if isinstance(value, int) else float(value)

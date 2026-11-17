@@ -24,8 +24,9 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, cast
 
-import numpy as np
 import polars as pl
+
+from haute._polars_dtypes import column_kind, numpy_float_type
 
 __all__ = [
     "AssignmentPhases",
@@ -2482,16 +2483,19 @@ def _display_values(values: dict[str, Any], row: pl.DataFrame | None) -> dict[st
 
     A Float32 value arrives widened to a Python float (``528.0900268554688``);
     shown with its float32 digits (``528.09``) it reads as the pipeline stored
-    it. Only the text changes: the values computed on stay exact.
+    it, and a float of any width the same. Only the text changes: the values
+    computed on stay exact.
     """
     if row is None:
         return values
-    return {
-        name: float(str(np.float32(value)))
-        if isinstance(value, float) and row.schema.get(name) == pl.Float32
-        else value
-        for name, value in values.items()
-    }
+
+    def shown(name: str, value: Any) -> Any:
+        dtype = row.schema.get(name)
+        if not isinstance(value, float) or dtype is None or column_kind(dtype) != "float":
+            return value
+        return float(str(numpy_float_type(dtype)(value)))
+
+    return {name: shown(name, value) for name, value in values.items()}
 
 
 def _format_value(val: Any) -> str:

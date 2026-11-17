@@ -18,6 +18,13 @@ describe("modelColumnChoices", () => {
     expect(names(choices.offsetColumns)).toEqual(["log_offset"])
   })
 
+  it("offers a half-precision float column as a weight and an offset", () => {
+    const withHalf = [...columns, { name: "exposure_f16", dtype: "Float16" }]
+    const choices = modelColumnChoices(withHalf, { target: "claims", weight: "", offset: "" })
+    expect(names(choices.weightColumns)).toContain("exposure_f16")
+    expect(names(choices.offsetColumns)).toContain("exposure_f16")
+  })
+
   it("offers every numeric column while nothing is chosen", () => {
     const choices = modelColumnChoices(columns, { target: "", weight: "", offset: "" })
     expect(names(choices.targetColumns)).toEqual(names(columns))

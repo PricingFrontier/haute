@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 
 import polars as pl
 
+from haute._polars_dtypes import NUMBER_KINDS, column_kind
+
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
 
@@ -472,22 +474,6 @@ def _segment_breakdown(
     return result
 
 
-_NUMERIC_DTYPES = frozenset(
-    {
-        pl.Float64,
-        pl.Float32,
-        pl.Int64,
-        pl.Int32,
-        pl.Int16,
-        pl.Int8,
-        pl.UInt64,
-        pl.UInt32,
-        pl.UInt16,
-        pl.UInt8,
-    }
-)
-
-
 def build_report(
     staging_preds: list,
     prod_preds: list,
@@ -519,7 +505,9 @@ def build_report(
     prd_df = _preds_to_df(prod_preds)
 
     num_cols = [
-        c for c in stg_df.columns if stg_df[c].dtype in _NUMERIC_DTYPES and c in prd_df.columns
+        c
+        for c in stg_df.columns
+        if column_kind(stg_df[c].dtype) in NUMBER_KINDS and c in prd_df.columns
     ]
 
     stats = [_column_stats(stg_df[c], prd_df[c], c) for c in num_cols]

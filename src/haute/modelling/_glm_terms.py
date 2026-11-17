@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
+from haute._polars_dtypes import ColumnKind, rendered_column_kind
 from haute.errors import HauteValidationError
 
 # ── Term types and keys ──────────────────────────────────────────────────
@@ -107,22 +108,16 @@ _TYPE_LABELS: Mapping[str, str] = MappingProxyType(
 
 DtypeClass = Literal["continuous", "integer", "boolean", "categorical", "unsupported"]
 
-_DTYPE_CLASS_PATTERNS: tuple[tuple[DtypeClass, re.Pattern[str]], ...] = (
-    (
-        "continuous",
-        re.compile(
-            r"float(?:16|32|64)|f(?:16|32|64)|decimal(?:\(.*\))?", re.IGNORECASE | re.DOTALL
-        ),
-    ),
-    ("integer", re.compile(r"u?int(?:8|16|32|64|128)|[iu](?:8|16|32|64|128)", re.IGNORECASE)),
-    ("boolean", re.compile(r"bool(?:ean)?", re.IGNORECASE)),
-    (
-        "categorical",
-        re.compile(
-            r"string|str|utf8|categorical(?:\(.*\))?|enum(?:\(.*\))?",
-            re.IGNORECASE | re.DOTALL,
-        ),
-    ),
+#: The GLM class of each column kind a GLM fit takes; every other kind is unsupported.
+_DTYPE_CLASS_BY_KIND: Mapping[ColumnKind, DtypeClass] = MappingProxyType(
+    {
+        "float": "continuous",
+        "decimal": "continuous",
+        "integer": "integer",
+        "boolean": "boolean",
+        "text": "categorical",
+        "category": "categorical",
+    }
 )
 
 MAIN_FITS_BY_CLASS: Mapping[DtypeClass, frozenset[str]] = MappingProxyType(
@@ -158,16 +153,12 @@ JOINT_ENCODING_CLASSES: frozenset[DtypeClass] = frozenset({"integer", "boolean",
 
 
 def glm_dtype_class(dtype: str) -> DtypeClass:
-    """Classify a Polars dtype name (``str(dtype)``) for GLM fits.
+    """Classify a Polars dtype rendering (``str(dtype)``) for GLM fits, by its column kind.
 
-    The frontend classifies the same names identically; a shared fixture pins
-    the two together.
+    The editor classifies the same renderings identically; the shared column-kind
+    cases pin the two together.
     """
-    name = dtype.strip()
-    for dtype_class, pattern in _DTYPE_CLASS_PATTERNS:
-        if pattern.fullmatch(name):
-            return dtype_class
-    return "unsupported"
+    return _DTYPE_CLASS_BY_KIND.get(rendered_column_kind(dtype), "unsupported")
 
 
 # ── Message helpers ──────────────────────────────────────────────────────

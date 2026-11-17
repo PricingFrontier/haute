@@ -30,7 +30,7 @@ from haute._banding_config import (
     require_distinct_banding_outputs,
 )
 from haute._logging import get_logger
-from haute._polars_dtypes import dtype_to_spec, parse_dtype
+from haute._polars_dtypes import DATE_KINDS, column_kind, dtype_to_spec, parse_dtype
 from haute._rating_step_config import (
     normalise_rating_tables,
     rating_default_value,
@@ -235,7 +235,7 @@ def _column_kind_fix(dtype: Any) -> str:
 
 
 def _is_temporal(dtype: Any) -> bool:
-    return isinstance(dtype, pl.Date | pl.Datetime) or dtype in (pl.Date, pl.Datetime)
+    return dtype is not None and column_kind(dtype) in DATE_KINDS
 
 
 def banding_comparison_expr(
@@ -262,7 +262,7 @@ def banding_comparison_expr(
                 setting="factors",
                 fix=_column_kind_fix(dtype),
             )
-        if dtype in (pl.Float32, pl.Float64):
+        if dtype is not None and column_kind(dtype) == "float":
             return pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
         return col
     if isinstance(dtype, pl.Datetime) or dtype == pl.Datetime:
@@ -1004,7 +1004,7 @@ def normalise_rating_key(
         typed = raw.cast(dtype, strict=True)
 
     # This is the eager scalar equivalent of _rating_key_expr.
-    if dtype in (pl.Float32, pl.Float64):
+    if column_kind(dtype) == "float":
         item = typed.item()
         if item is None:
             return None
@@ -1043,7 +1043,7 @@ def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     """
     rating_dtype_descriptor(dtype)
     col = pl.col(name)
-    if dtype in (pl.Float32, pl.Float64):
+    if column_kind(dtype) == "float":
         int_like = (
             col.is_finite()
             & (col == col.round())

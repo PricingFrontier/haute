@@ -30728,6 +30728,74 @@
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
+  "x-haute-column-kinds": {
+    "groups": {
+      "date": [
+        "date",
+        "datetime"
+      ],
+      "number": [
+        "decimal",
+        "float",
+        "integer"
+      ],
+      "text": [
+        "category",
+        "text"
+      ]
+    },
+    "kinds": [
+      "integer",
+      "float",
+      "decimal",
+      "boolean",
+      "text",
+      "category",
+      "date",
+      "datetime",
+      "duration",
+      "time",
+      "binary",
+      "null",
+      "nested",
+      "object",
+      "extension"
+    ],
+    "types": {
+      "Array": "nested",
+      "BaseExtension": "extension",
+      "Binary": "binary",
+      "Boolean": "boolean",
+      "Categorical": "category",
+      "Date": "date",
+      "Datetime": "datetime",
+      "Decimal": "decimal",
+      "Duration": "duration",
+      "Enum": "category",
+      "Extension": "extension",
+      "Float16": "float",
+      "Float32": "float",
+      "Float64": "float",
+      "Int128": "integer",
+      "Int16": "integer",
+      "Int32": "integer",
+      "Int64": "integer",
+      "Int8": "integer",
+      "List": "nested",
+      "Map": "nested",
+      "Null": "null",
+      "Object": "object",
+      "String": "text",
+      "Struct": "nested",
+      "Time": "time",
+      "UInt128": "integer",
+      "UInt16": "integer",
+      "UInt32": "integer",
+      "UInt64": "integer",
+      "UInt8": "integer",
+      "Utf8": "text"
+    }
+  },
   "x-haute-request-groups": {
     "address-requests": [
       "NodeAddressPayload",

@@ -8,9 +8,6 @@ numbers in a pivot are. The package below comes from the review plan's sweep
 of 11 November 2026 that computed answers a second way: every cell of
 fourteen pivots was compared with plain Polars, and the integer sums with
 Python's own integers. The main session ran it again on another file.
-`XPL-02` comes from the plan's phase 5, a reader from a second model
-family (Codex); a worker built its run and the main session ran it again
-on 13 November.
 
 `XPL-03` comes from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
@@ -22,7 +19,6 @@ worker built each run and the main session ran each again on 14 November
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | XPL-01 | Planned | P1 | A pivot's Sum of an integer column is the sum of its rows whatever the column's width: a total past a 32-bit or 64-bit integer's range is shown in full, not wrapped round. |
-| XPL-02 | Planned | P3 | A Float16 column gives the pivot and the profile the numbers its Float32 and Float64 twins give: NaN is left out of counts and sums, and infinities out of the histogram. |
 | XPL-03 | Planned | P2 | A pivot by a nanosecond timestamp shows every group: rows that differ below a microsecond are no longer merged out of the rows while kept in the Total. |
 
 ## Planned improvements
@@ -73,37 +69,6 @@ integers give it, the 64-bit one as a decimal string.
 
 **Evidence:** `src/haute/routes/_pivot_service.py::_aggregation_expression`;
 `src/haute/routes/_pivot_service.py::_normalise_cell`;
-`specs/explore-eda/low-level.md`.
-
-### XPL-02 — A Float16 column is a float to the pivot and to the profile
-**Why:** Reproduced on 13 November 2026 through the editor's routes, on an
-Explore node over a Parquet file holding the same values as Float16,
-Float32 and Float64: 1, NaN and 2 in region A, 3 and infinity in B, minus
-infinity and 4 in C. In a pivot by region the Float32 and Float64 columns
-give A a count of 2, a sum of 3 and an average of 1.5. The Float16 column
-gives A a count of 3 and a blank sum and average, and a total count of 7
-against 6. The specification says "Numeric operations first map floating
-NaN to null". Chosen as a row field, the Float16 column is refused, "Pivot
-field 'g16' is not groupable", where its Float64 twin makes four groups.
-
-The column's profile differs too. For Float32 and Float64 it reports one
-NaN, six distinct values, four finite and three not, and a histogram of the
-four finite values. For Float16 it reports no NaN count, seven distinct
-values, seven finite and none not, and a histogram whose first and last
-bins hold the infinities and the NaN. Both places decide what a float is
-by the names `Float32` and `Float64`.
-
-**Plan:** Ask the type whether it is a float in the pivot's and the
-profile's checks, in place of the two names.
-
-**Acceptance:** In the run above the Float16 column gives the numbers its
-Float32 and Float64 twins give, in the pivot, as a row field and in the
-profile.
-
-**Dependencies:** `RTG-07` and `OPM-05` are the same list in other places.
-
-**Evidence:** `src/haute/routes/_pivot_service.py`;
-`src/haute/_frame_profile.py::_is_float_dtype`;
 `specs/explore-eda/low-level.md`.
 
 ### XPL-03 — A pivot by a timestamp keeps rows that differ below a microsecond

@@ -2342,9 +2342,10 @@ analysis columns (in configured order) and, for a ratebook result, its rating fa
 factor whose name is also an analysis column is listed once, as the rating factor, so its levels
 are the Rates tab's. `_finalize_solve_result` records them on the result as `segment_keys`, one
 `{key, source, binning, available, unavailable_reason}` per key: `source` is `"analysis"` or
-`"factor"`; `binning` is `"numeric"` for an analysis column of an integer, float or decimal dtype
-(from the side table's `column_stats`) and `"categorical"` otherwise (every factor, and String,
-Categorical, Enum, Boolean or temporal analysis columns). `segment_keys` survives every slimming
+`"factor"`; `binning` is `"numeric"` for an analysis column of a number kind (integer, float of any
+width or decimal, `_polars_dtypes.NUMBER_KINDS`, recorded as `kind` in the side table's
+`column_stats`) and `"categorical"` otherwise (every factor, and String,
+Categorical, Enum, Boolean, date, time or binary analysis columns). `segment_keys` survives every slimming
 and is shared by every target: a frontier point has the same quotes and the same levels. The
 **cardinality gate** decides availability, before any query:
 
@@ -2352,6 +2353,10 @@ and is shared by every target: a frontier point has the same quotes and the same
   `ADMITTED_APPROX_LEVELS = 1800` (a margin under the exact limit for the HyperLogLog estimate's
   error) or its `max_string_bytes` exceeds `MAX_SEGMENT_KEY_BYTES = 256`. A numeric column is
   binned, so its cardinality never refuses it.
+- An analysis column of a kind a breakdown has no level labels for is unavailable, its
+  reason naming the type (`Duration values cannot be broken down.`): a categorical level
+  is labelled by its value's text, which Polars 2 does not write for a duration, a nested
+  value, an object or an extension type (`_UNLABELLED_KINDS`).
 - A rating factor is unavailable when its factor table (the as-solved result's
   `factor_tables[name]`, an exact count) has more than `MAX_SEGMENT_LEVELS = 2000` rows, or its
   longest level label (the full composite `__factor_group__`, UTF-8 bytes) exceeds 256 bytes.

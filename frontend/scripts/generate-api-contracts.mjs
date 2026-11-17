@@ -47,6 +47,8 @@ const PILOT_VALIDATOR_MODULES = [
 const RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups";
 const REQUEST_GROUPS_KEYWORD = "x-haute-request-groups";
 const SHARED_RESPONSE_GROUPS_KEYWORD = "x-haute-shared-response-groups";
+// What kind of column each Polars type is, by its name: the server's one answer.
+const COLUMN_KINDS_KEYWORD = "x-haute-column-kinds";
 const TYPE_ROOT_NAME = "HauteApiContractRoots";
 
 function groupValidatorModules(schema, keyword, kind) {
@@ -453,6 +455,32 @@ function requiredEnum(schema, definitionName, ...segments) {
   return node.enum;
 }
 
+function columnKindConstants(schema) {
+  const table = schema[COLUMN_KINDS_KEYWORD];
+  const kinds = table?.kinds;
+  if (!Array.isArray(kinds) || kinds.length === 0 || kinds.some((kind) => typeof kind !== "string")) {
+    throw new Error(`Contract bundle is missing its ${COLUMN_KINDS_KEYWORD} kinds`);
+  }
+  const known = new Set(kinds);
+  const checked = (label, entries) => {
+    if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+      throw new Error(`Contract bundle is missing its ${COLUMN_KINDS_KEYWORD} ${label}`);
+    }
+    for (const [name, value] of Object.entries(entries)) {
+      const values = Array.isArray(value) ? value : [value];
+      if (values.length === 0 || values.some((kind) => !known.has(kind))) {
+        throw new Error(`Unknown column kind in ${COLUMN_KINDS_KEYWORD} ${label}: ${name}`);
+      }
+    }
+    return entries;
+  };
+  return [
+    ["COLUMN_KIND_VALUES", kinds],
+    ["COLUMN_KIND_GROUPS", checked("groups", table.groups)],
+    ["COLUMN_KINDS", checked("types", table.types)],
+  ];
+}
+
 function generateConstants(schema) {
   const values = [
     [
@@ -473,6 +501,7 @@ function generateConstants(schema) {
       "EXPLORE_CHART_LEGEND_POSITION_VALUES",
       requiredEnum(schema, "ChartLegend", "properties", "position"),
     ],
+    ...columnKindConstants(schema),
   ];
   const declarations = values.map(
     ([name, value]) => `export const ${name} = ${JSON.stringify(value)} as const;`,
