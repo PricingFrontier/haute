@@ -197,7 +197,7 @@ export function FieldGrid({
   const fixed = options.fixed_rows || given || readOnly || inputTables.length === 0
   // The row whose menu is open, and where the right-click was.
   const [menu, setMenu] = useState<{ row: number; x: number; y: number } | null>(null)
-  // A right-click on a row opens its menu, unless its rows are fixed: then the browser's own opens.
+  // A right-click on a row opens its menu, unless its rows are fixed: then the page it is on decides.
   const menuOn = (row: number) =>
     fixed
       ? undefined

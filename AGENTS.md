@@ -1,6 +1,7 @@
 # Engineering priorities
 
 - Prioritise user experience, correctness, maintainability, and engineering quality over quick fixes or band-aids.
+- Fix the root cause of a bug, not the instance that was reported. Find why the code allowed the defect and where else the same cause reaches, then fix it where those places meet: make the shared mechanism the only path, or build it where it is missing, and add a test that fails when new code goes round it. Patch one instance only when the cause is local to it, and say so in the pull request.
 - Build new functionality consistently with the existing codebase. Reuse and extend existing abstractions when that produces a clearer design.
 - Do not add speculative or silent fallbacks. Let unexpected states fail clearly so the underlying defect can be found and fixed.
 - Preserve existing user changes and avoid unrelated edits.
@@ -50,11 +51,12 @@ is unavailable, report it; do not fall back to another model silently.
 # Fix and tweak workflow
 
 1. Establish a narrow scope and preserve unrelated user changes. Inspect the relevant code and define expected behaviour, risks, acceptance criteria, and a verification strategy before editing.
-2. For a bug, reproduce it with the smallest failing regression test before implementing the fix. For new behaviour, add the smallest non-overlapping tests that prove the acceptance criteria. Cover boundaries, invalid input, state transitions, concurrency, and past regressions only when relevant; prefer extending an existing test module or parameterisation over creating a redundant test matrix.
-3. Keep fixes in the main session; delegate only as described in "Models and delegation".
-4. Work in tight red-green-refactor loops. Run the new or failing test first, make the smallest coherent implementation, rerun the targeted test, then clean up without broadening scope.
-5. Inspect the actual diff and run the affected tests and checks below once the change is complete. Never accept a subagent summary in place of reviewing its changes and evidence.
-6. Before the PR, follow "Before a pull request" below. Work is complete only after the acceptance criteria are met, the review findings are resolved, and CI is green.
+2. For a bug, find the root cause before choosing the fix. Establish why the code allowed it, whether a shared mechanism already exists that should have prevented it and why it did not, and where else the same cause applies: search for sibling call sites, and read the component's earlier roadmap in git history (`git log -p -- specs/roadmap/<component>.md`) for past fixes of the same kind. Choose the design that removes the cause, and write the cause, the design and the alternatives you set aside into the pull request. If the cause is wider than the task, stop and bring the options to the user; do not patch the instance and move on.
+3. For a bug, reproduce it with the smallest failing regression test before implementing the fix, and add the test that holds the cause closed (a new call site that goes round the shared mechanism fails it). For new behaviour, add the smallest non-overlapping tests that prove the acceptance criteria. Cover boundaries, invalid input, state transitions, concurrency, and past regressions only when relevant; prefer extending an existing test module or parameterisation over creating a redundant test matrix.
+4. Keep fixes in the main session; delegate only as described in "Models and delegation".
+5. Work in tight red-green-refactor loops. Run the new or failing test first, make the smallest coherent implementation of the chosen design, rerun the targeted test, then clean up without broadening scope.
+6. Inspect the actual diff and run the affected tests and checks below once the change is complete. Never accept a subagent summary in place of reviewing its changes and evidence.
+7. Before the PR, follow "Before a pull request" below. Work is complete only after the acceptance criteria are met, the review findings are resolved, and CI is green.
 
 # Targeted verification
 
@@ -107,12 +109,19 @@ review text) in a scratch directory outside the repository.
   a finding rebutted with a reason.
 - **The prompt** names the diff (`git diff origin/main...HEAD` for a branch),
   the intent or package entries, the specifications changed, and the
-  verification already run with its results. It asks for a review against the
-  checklist below, citing `file:line`, with a severity for each finding and one
-  final tag on its own line: `APPROVED`, `REQUEST_CHANGES`, or `NEEDS_REWORK`
-  (structural problems).
+  verification already run with its results. For a bug fix it also states the
+  root cause, the design chosen to remove it, and the alternatives set aside.
+  It asks Codex to judge the solution before the implementation: to read the
+  surrounding code, not only the diff, and say whether this is the right way
+  to solve the problem. It then asks for a review against the checklist below,
+  citing `file:line`, with a severity for each finding and one final tag on
+  its own line: `APPROVED`, `REQUEST_CHANGES`, or `NEEDS_REWORK` (structural
+  problems, or a solution that should be designed differently).
 
-Review priorities, in order: correctness (wrong results, data loss, silent
+Review priorities, in order: the solution itself (whether the change removes
+the root cause or patches a symptom, whether its design is the right one for
+this codebase, and whether anything stops the defect returning); correctness
+(wrong results, data loss, silent
 failure); security and safety; conformance to the changed specifications, where
 drift between spec and code in either direction is a finding; test quality;
 practical concerns (performance on real inputs, messages a user can act on).
@@ -123,6 +132,14 @@ repeating a finding already addressed or rebutted.
 
 Checklist:
 
+0. **Solution, judged first:** the stated root cause is the real one, and the
+   change removes it instead of handling the reported instance; sibling
+   instances of the same cause are fixed or listed; where a shared mechanism
+   exists the change makes it the only path, and does not add another
+   call-site check, special case or hand-kept list beside it; a simpler or
+   more general design would not serve better; a test fails when new code
+   goes round the fix. Say plainly when a well-built change is the wrong
+   solution.
 1. **Function:** the logic matches the requirements and specifications; error
    scenarios and edge cases are handled.
 2. **Code quality:** typed (mypy-clean in `src/haute/`, tsc-clean in `frontend/`);
@@ -155,19 +172,23 @@ Checklist:
 
 Severity: **Critical** blocks a merge (security hole, data corruption or silently
 wrong results, breaking interface change, sandbox or auth bypass); **Major** must
-be fixed (wrong logic, significant slowdown, missing error handling or a silent
-failure path, build errors); **Minor** should be fixed (style, missing
+be fixed (wrong logic, a fix that leaves its root cause in place, significant
+slowdown, missing error handling or a silent failure path, build errors);
+**Minor** should be fixed (style, missing
 documentation, duplication, a missed edge case); **Suggestion** is optional.
 
-Approval gate: the requirements are implemented; no Critical or Major finding is
-open; the build passes; the affected tests pass; new logic has behavioural
+Approval gate: the requirements are implemented; a bug fix removes its root
+cause, or the pull request says why the cause is local or out of scope with
+the user's agreement; no Critical or Major finding is open; the build passes; the affected tests pass; new logic has behavioural
 tests; and the affected specifications are updated, with
 `tests/test_docs_accuracy.py` passing.
 
 Handling a review: read the code at each cited `file:line`; fix the legitimate
 findings; rebut an incorrect one with the reason; weigh each finding's cost
 against its risk and push back on one that grows the scope without matching
-risk. Rerun only the tests the fixes touch, then resume the thread once. Bring
+risk. A finding that the solution should be designed differently is not scope
+growth: answer it on its merits, and bring it to the user when you agree or
+cannot settle it. Rerun only the tests the fixes touch, then resume the thread once. Bring
 `NEEDS_REWORK` to the user before making large changes.
 
 **Plan or specification review** uses the same command. Codex reviews the

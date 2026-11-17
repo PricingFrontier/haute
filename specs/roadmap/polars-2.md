@@ -9,6 +9,9 @@ baselines. Current behaviour and memory-policy decisions are specified in
 contracts in [the IO layer](../io-layer/low-level.md) and
 [caching](../caching/low-level.md).
 
+`PL2-17` and `PL2-18` go together, in that order, on one branch and one pull request
+of several days; each applies only the policy changes its measurements justify.
+
 New capabilities beyond the migration—the `Map` dtype as a column type Haute
 carries, and quantile and rank binning—remain deferred.
 
@@ -80,7 +83,10 @@ cleaner thread lazily, on the first spill, and dropped memory-mapping from
 Parquet scans, so the address space a worker reserves after its baseline may
 differ, and a thread that cannot start under the cap is a memory-limit
 failure. The RLIMIT fallback lane already flakes with `can't start new thread`
-on CI's Python 3.11.
+on CI's Python 3.11. The one recorded Polars 2 figure is from Windows, under
+Polars 2.0.0, on 25 October 2026: a child's resident set after importing Polars
+and two haute modules was 55,517,184 bytes, against a parent sample of
+2,154,496 bytes taken straight after start; no Linux backend was measured.
 
 **Plan:** Measure a worker's address-space and resident baseline on Polars 2
 under each backend (Job Object, cgroup, `RLIMIT_AS`); with spilling off, as

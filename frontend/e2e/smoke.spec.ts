@@ -35,4 +35,34 @@ test.describe("cross-browser smoke", () => {
     }).toPass({ timeout: 15_000 })
     await expect(page.getByTestId("node-panel-label-input")).toHaveValue("raw_rows")
   })
+
+  test("@smoke a right-click opens the editor's menu or nothing, and the browser's own in a text field", async ({ page }) => {
+    await page.goto("/")
+    // The window hears a right-click after every handler below it: whether any cancelled it.
+    await page.evaluate(() => {
+      window.addEventListener("contextmenu", (event) => {
+        document.documentElement.dataset.rightClick = event.defaultPrevented ? "cancelled" : "browser"
+      })
+    })
+    const rightClick = () => page.locator("html").getAttribute("data-right-click")
+
+    const rawRowsNode = page.getByRole("button", { name: /raw_rows/i })
+    await expect(rawRowsNode).toBeVisible()
+    // Selected as the smoke test above does, retried as one unit for Firefox.
+    await expect(async () => {
+      await rawRowsNode.click({ force: true })
+      await expect(page.getByTestId("node-panel")).toBeVisible({ timeout: 2_000 })
+    }).toPass({ timeout: 15_000 })
+
+    await page.getByTestId("node-panel-label-input").click({ button: "right" })
+    expect(await rightClick()).toBe("browser")
+
+    await page.getByRole("toolbar", { name: /pipeline toolbar/i }).click({ button: "right", position: { x: 2, y: 2 } })
+    expect(await rightClick()).toBe("cancelled")
+    await expect(page.getByTestId("context-menu")).toHaveCount(0)
+
+    await rawRowsNode.click({ button: "right" })
+    await expect(page.getByTestId("context-menu")).toBeVisible()
+    expect(await rightClick()).toBe("cancelled")
+  })
 })
