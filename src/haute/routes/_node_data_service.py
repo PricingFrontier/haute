@@ -75,11 +75,9 @@ from haute._worker_failures import WorkerError, WorkerMemoryLimitError, WorkerRe
 from haute._worker_isolation import run_isolated_worker, worker_config_for_memory_policy
 from haute.errors import (
     BoundedMemoryUnsupportedError,
-    ContractMismatchError,
     InvalidRequestError,
     NotFoundError,
     RequestRefusedError,
-    SchemaMismatchError,
 )
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -87,9 +85,11 @@ from haute.routes._background_jobs import (
     start_job_thread,
 )
 from haute.routes._contract_errors import (
+    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
     contract_error_terminal_reason,
+    pipeline_error_message,
 )
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import (
@@ -204,6 +204,22 @@ def _slot_key(resolution: PointResolution, source: str) -> str:
     return f"{point.producer_node_id}|{point.port_label or ''}|{source}"
 
 
+#: What a build or a profile reports as the user's to fix ("contract"), with its message:
+#: the pipeline's own failures and the node-data refusals.
+_BUILD_CONTRACT_FAILURES: tuple[type[Exception], ...] = (
+    BoundedMemoryUnsupportedError,
+    NodeSnapshotMultiFrameUnsupportedError,
+    NodeSnapshotInputsChangedError,
+    NodeDataPointInvalidError,
+    *PIPELINE_ERROR_TYPES,
+)
+_PROFILE_CONTRACT_FAILURES: tuple[type[Exception], ...] = (
+    BoundedMemoryUnsupportedError,
+    PointColumnsMissingError,
+    *PIPELINE_ERROR_TYPES,
+)
+
+
 def _columns_payload(columns: NodeSnapshotColumns) -> list[str] | Literal["all"]:
     return "all" if columns.names is None else sorted(columns.names)
 
@@ -246,16 +262,9 @@ def _run_node_snapshot_worker(
             payload=exc.to_payload(),
             worker_evidence=evidence(),
         )
-    except (
-        ContractMismatchError,
-        SchemaMismatchError,
-        BoundedMemoryUnsupportedError,
-        NodeSnapshotMultiFrameUnsupportedError,
-        NodeSnapshotInputsChangedError,
-        NodeDataPointInvalidError,
-    ) as exc:
+    except _BUILD_CONTRACT_FAILURES as exc:
         return _NodeSnapshotWorkerOutcome(
-            failure_kind="contract", detail=str(exc), worker_evidence=evidence()
+            failure_kind="contract", detail=pipeline_error_message(exc), worker_evidence=evidence()
         )
 
 
@@ -430,13 +439,8 @@ def _run_profile_worker(
         )
     except (CacheRequiredError, PointDataChangedError) as exc:
         return _ProfileWorkerOutcome(failure_kind="changed", detail=str(exc))
-    except (
-        ContractMismatchError,
-        SchemaMismatchError,
-        BoundedMemoryUnsupportedError,
-        PointColumnsMissingError,
-    ) as exc:
-        return _ProfileWorkerOutcome(failure_kind="contract", detail=str(exc))
+    except _PROFILE_CONTRACT_FAILURES as exc:
+        return _ProfileWorkerOutcome(failure_kind="contract", detail=pipeline_error_message(exc))
 
 
 def _profile_point(
@@ -1324,6 +1328,17 @@ class NodeDataService:
                 to="contract_error",
                 message=str(exc),
                 fields={"error": str(exc), "error_code": exc.error_code},
+                elapsed_seconds=elapsed,
+            )
+        elif isinstance(exc, PIPELINE_ERROR_TYPES):
+            # The parent's planning or input preparation met the pipeline's own error, as
+            # the worker's build would have.
+            message = pipeline_error_message(exc)
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=message,
+                fields={"error": message},
                 elapsed_seconds=elapsed,
             )
         elif isinstance(exc, PipelineSettingsError):

@@ -484,7 +484,10 @@ pipeline's sources.
   or git stderr — is logged server-side with its traceback. This is deliberate defence
   against information disclosure, not an oversight; contrast with explicitly surfaced
   domain subclasses such as `ConfigError`, `ContractMismatchError`, and
-  `SchemaMismatchError`, whose hand-authored messages are safe to return.
+  `SchemaMismatchError`, whose hand-authored messages are safe to return. A failure of the
+  pipeline's own code or data (a Polars error) is the user's to fix too: the routes and jobs
+  that run the pipeline report it as a preview shows it at the node, Polars' message without
+  the plan it appends, whose scans print the cache's absolute paths.
   `HauteError` ancestry alone is not a safety marker: plain
   `GitError` can wrap raw stderr and is deliberately sanitized.
 - **Event bus, not a direct watcher→WebSocket call.** The file watcher publishes typed

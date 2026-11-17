@@ -81,8 +81,6 @@ from haute._worker_isolation import run_isolated_worker, worker_config_for_memor
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
-    ContractMismatchError,
-    SchemaMismatchError,
 )
 from haute.execution import (
     execute_lazy_graph,
@@ -97,10 +95,12 @@ from haute.routes._background_jobs import (
     start_job_thread,
 )
 from haute.routes._contract_errors import (
+    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
     contract_error_refusal,
     contract_error_terminal_reason,
+    pipeline_error_message,
 )
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
@@ -3146,8 +3146,9 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise contract_error_refusal(exc) from None
-        except (ContractMismatchError, SchemaMismatchError) as exc:
-            error_msg = f"Pipeline execution failed: {exc}"
+        except PIPELINE_ERROR_TYPES as exc:
+            # The pipeline's own code, contracts or data, as a preview of the node shows it.
+            error_msg = f"Pipeline execution failed: {pipeline_error_message(exc)}"
             logger.warning(
                 "pipeline_contract_mismatch",
                 error=str(exc),
@@ -3178,7 +3179,9 @@ class OptimiserSolveService:
             )
             raise UnprocessableError(error_msg) from exc
         except Exception as exc:
-            error_msg = f"Pipeline execution failed: {exc}"
+            # Anything else is a fault the user cannot act on: the job says what the
+            # answer says, and the log keeps the exception.
+            error_msg = "Pipeline execution failed. Check the server logs for details."
             logger.error(
                 "pipeline_exec_failed",
                 error=str(exc),
@@ -3191,9 +3194,7 @@ class OptimiserSolveService:
                 message=error_msg,
                 execution_context=execution_context,
             )
-            raise ServiceFailedError(
-                "Pipeline execution failed. Check the server logs for details."
-            ) from exc
+            raise ServiceFailedError(error_msg) from exc
         finally:
             if execution_context is not None:
                 self._record_execution_metrics(job_id, execution_context)

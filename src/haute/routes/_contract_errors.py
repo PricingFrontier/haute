@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import polars as pl
 from fastapi import HTTPException
 
 from haute._api_input_schema import ApiInputSchemaError
@@ -13,13 +14,17 @@ from haute._output_assembler import OutputNestingKeyError
 from haute._workbench_input import WorkbenchInputError
 from haute._workbench_tables import WorkbenchTablesError
 from haute.errors import (
+    ConfigError,
+    ContractMismatchError,
     ContractResolutionError,
+    DataOutputRowsError,
     GroupByExecutionUnsupportedError,
     HauteError,
     InputPreparationError,
     InsufficientMemoryError,
     LiveSwitchScenarioError,
     NodeConfigError,
+    ParseError,
     PreambleError,
     QuoteAnswerRowsError,
     QuoteInputError,
@@ -27,6 +32,7 @@ from haute.errors import (
     RatingFactorDtypeContractError,
     RatingFactorMissingError,
     RequestRefusedError,
+    SchemaMismatchError,
     SeedPlanExpiredError,
     SnapshotCorruptError,
     SnapshotPlanInputsChangedError,
@@ -72,6 +78,29 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     QuoteAnswerRowsError,
     QuoteInputError,
 )
+
+
+#: The pipeline's own failures: its code, contracts, settings or data, which a preview of
+#: the node shows as its error. A job or a write reports one as the user's to fix, with
+#: ``pipeline_error_message``, never as an internal failure. Checked after the public
+#: contract errors, one of which (``NodeConfigError``) is also a ``ConfigError``.
+PIPELINE_ERROR_TYPES: tuple[type[Exception], ...] = (
+    ContractMismatchError,
+    SchemaMismatchError,
+    ConfigError,
+    ParseError,
+    DataOutputRowsError,
+    pl.exceptions.PolarsError,
+)
+
+
+def pipeline_error_message(exc: Exception) -> str:
+    """What a job or a write says of one of the ``PIPELINE_ERROR_TYPES``: its message, a
+    Polars error's as a preview records it for the node (without the plan Polars appends,
+    whose scans print absolute cache paths)."""
+    from haute._execute_lazy import node_failure_message
+
+    return node_failure_message(exc)
 
 
 def _is_memory_limited_contract_error(exc: BaseException) -> bool:

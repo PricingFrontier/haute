@@ -639,9 +639,20 @@ def _jobs_graph(**scale: Any) -> dict[str, Any]:
         "format": "parquet",
         "path": str(current_project().root / "out" / "result.parquet"),
     }
+    optimiser = {
+        "mode": "online",
+        "objective": "x",
+        "constraints": {"volume": {"min": 0.90}},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+        "max_iter": 20,
+        "tolerance": 1e-4,
+    }
     for node_id, node_type, config in [
         ("model", NodeType.MODELLING, model),
         ("out", NodeType.DATA_OUTPUT, output),
+        ("opt", NodeType.OPTIMISER, optimiser),
     ]:
         graph.nodes.append(
             GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config))
@@ -663,12 +674,17 @@ def _job_status(client: Any, path: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     "scale",
-    [{"contract": {"outputs": ["promised"]}}, {"keyword_parameters": "not a list"}],
-    ids=["malformed-contract", "builder-refusal"],
+    [
+        {"contract": {"outputs": ["promised"]}},
+        {"keyword_parameters": "not a list"},
+        {"code": "df = policy.with_columns(pl.col('missing'))"},
+    ],
+    ids=["malformed-contract", "builder-refusal", "polars-error"],
 )
 def test_no_job_over_a_copy_names_a_key_or_a_flat_name(scale: dict[str, Any]) -> None:
-    """A training run, a node-data build and a Data Output write plan before they walk:
-    what planning raises names the copy's child too."""
+    """A training run, a node-data build, a solve, an auto range and a Data Output write
+    over a copy whose child fails, in their planning or their walk: what they report names
+    the copy's child by label, never by its key or flat name."""
     from fastapi.testclient import TestClient
 
     client = TestClient(project_app(), raise_server_exceptions=False)
@@ -680,8 +696,18 @@ def test_no_job_over_a_copy_names_a_key_or_a_flat_name(scale: dict[str, Any]) ->
             {"target": {"occurrence": "rating_ie", "node_id": "finish"}, "refresh": True},
         ),
         "training": ("/api/modelling/train", {"target": {"occurrence": None, "node_id": "model"}}),
+        "solve": ("/api/optimiser/solve", {"target": {"occurrence": None, "node_id": "opt"}}),
+        "auto range": (
+            "/api/optimiser/frontier/auto-range/start",
+            {"target": {"occurrence": None, "node_id": "opt"}},
+        ),
     }
-    status_paths = {"node data": "/api/node-data/status", "training": "/api/modelling/train/status"}
+    status_paths = {
+        "node data": "/api/node-data/status",
+        "training": "/api/modelling/train/status",
+        "solve": "/api/optimiser/solve/status",
+        "auto range": "/api/optimiser/frontier/auto-range/status",
+    }
     for name, (path, body) in jobs.items():
         started = client.post(path, json={"graph": graph, **body})
         assert started.status_code == 200, started.text
@@ -691,7 +717,11 @@ def test_no_job_over_a_copy_names_a_key_or_a_flat_name(scale: dict[str, Any]) ->
         json={"graph": graph, "target": {"occurrence": None, "node_id": "out"}, "overwrite": True},
     ).json()
 
-    # Each fails before it runs anything, and names no node by its key or flat name.
-    assert answers["training"]["status"] == "contract_error", answers["training"]
+    # Each fails as the user's to fix, and names no node by its key or flat name.
+    for name in ("training", "node data", "solve", "auto range"):
+        assert answers[name]["status"] == "contract_error", (name, answers[name])
+    # No answer carries the plan Polars appends to a failure, whose scans print cache paths.
+    assert [name for name, answer in answers.items() if "Resolved plan" in str(answer)] == []
+    assert "detail" in answers["Data Output write"], answers["Data Output write"]
     leaks = {name: _leaked_keys(answer) for name, answer in answers.items()}
     assert leaks == {name: [] for name in answers}

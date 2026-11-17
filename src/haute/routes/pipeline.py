@@ -183,9 +183,11 @@ from haute.graph_utils import (
     graph_fingerprint,
 )
 from haute.routes._contract_errors import (
+    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
     contract_error_payload,
+    pipeline_error_message,
 )
 from haute.routes._helpers import (
     connection_owner,
@@ -2346,6 +2348,10 @@ def _prepare_data_output_worker(
             detail=str(exc),
             payload=exc.to_payload(),
         )
+    except PIPELINE_ERROR_TYPES as exc:
+        return _OutputWriteWorkerOutcome(
+            failure_kind="contract", detail=pipeline_error_message(exc)
+        )
     finally:
         if context is not None:
             context.release_admission(preserve_primary_error=True)
@@ -2607,6 +2613,10 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
             error=repr(e.__cause__),
         )
         raise HTTPException(status_code=500, detail=str(e)) from None
+    except PIPELINE_ERROR_TYPES as e:
+        # The parent's planning or input preparation met the pipeline's own error.
+        logger.warning("sink_pipeline_error", error=str(e))
+        raise HTTPException(status_code=422, detail=pipeline_error_message(e)) from None
     finally:
         if output_context is not None:
             output_context.release_admission(preserve_primary_error=True)
