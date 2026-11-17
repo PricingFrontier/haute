@@ -239,7 +239,11 @@ and by every git dialog. The focus trap is installed for the modal lifetime;
 parent re-renders update callback refs without refocusing the dialog or
 rebuilding its listener. `Tooltip` is a zero-delay, self-clamping hover
 label that repositions to avoid clipping the viewport edge. `ContextMenu` is
-the right-click node menu with roving-tabindex arrow-key navigation.
+the right-click node menu with roving-tabindex arrow-key navigation. In the pipeline
+editor a right-click opens one of the editor's menus or nothing: the browser's own
+menu opens only in a text field, a text area or a code editor (for cut, copy, paste and
+spelling) and on a link (to copy its address or open it in a new tab). The underwriter
+app leaves the browser's menu alone.
 `Toolbar` is the app's top chrome: it organizes controls into a 56px 2-tier stacked
 column layout. The brand section displays the lowercase brand heading and
 package-derived browser version, aligned to the node palette
