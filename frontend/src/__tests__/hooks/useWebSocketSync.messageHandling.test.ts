@@ -320,6 +320,7 @@ describe("useWebSocketSync - message handling", () => {
 
       expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenLastCalledWith(
         expect.objectContaining({ preamble: "" }),
+        { keepOpenSubmodel: true },
       )
     })
   })

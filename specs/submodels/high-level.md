@@ -113,7 +113,8 @@ by one shared **definition** and any number of parent-graph **instances**:
   Accepted consequence: preview caches, trace snapshots and drilled targets
   keyed on the old runtime id are invalidated by the rename, and a drilled
   view whose occurrence no longer exists after a reload returns to the root
-  view.
+  view with a notice; one whose occurrence still exists stays open and shows
+  the reloaded contents. Saving inside a submodel saves the whole pipeline.
   There is no second top-level instances map. Internal definition positions are
   occurrence-local: grouping subtracts the first occurrence's origin and each
   expansion adds the selected occurrence's position, so copies never inherit

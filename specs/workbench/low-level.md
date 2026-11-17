@@ -2096,7 +2096,7 @@ no longer has; and `InputSource` in
   no form toast. A form save refused, as stale or failed, saves no pipeline and refuses
   the milestone, as a refused pipeline save refuses the milestone: the pipeline is never
   saved over a form the view does not show. A save of a document that cannot be
-  saved, one asked for inside a submodel, or one asked for during the assistant's turn,
+  saved, or one asked for during the assistant's turn,
   is refused before the form is saved, with the pipeline save's reason, so the form is
   never saved ahead of a pipeline that is not; the fence is read as the save runs, not
   as it was asked for, since a save may have waited its turn, and again after each wait

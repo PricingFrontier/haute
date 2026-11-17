@@ -302,6 +302,49 @@ describe("useGraphStore with a submodel open", () => {
     expect(() => store().enterSubmodelView(OPEN)).not.toThrow()
   })
 
+  it("keeps the open submodel on a reload whose document still holds it, showing its new contents", () => {
+    store().enterSubmodelView(COPY)
+    store().setNodesRaw((nodes) => nodes.map((node) => (node.id === "score" ? { ...node, data: { ...node.data, _columns: [] } } : node)))
+    const serial = store().navigationSerial
+    const reloaded = structuredClone(store().lastSavedSnapshot!)
+    const changed = reloaded.submodels[DEFINITION_ID] as SubmodelDefinition
+    changed.graph.nodes.push(makeIdentifiedNode("discount", "polars", { position: { x: 700, y: 100 } }))
+    // The copy is no longer read-only: the reload reads the occurrence again.
+    reloaded.nodes = reloaded.nodes.map((node) => (node.id === COPY.instanceId ? occurrence(COPY.instanceId) : node))
+
+    store().loadGraphSnapshot(reloaded, { keepOpenSubmodel: true })
+
+    expect(store().focus).toMatchObject({ ...COPY, readOnly: false })
+    expect(store().nodes.map((node) => node.id)).toContain("discount")
+    // The old document's annotations go with it.
+    expect(onCanvas("score").data._columns).toBeUndefined()
+    expect(store().navigationSerial).toBe(serial)
+    expect(store().dirty).toBe(false)
+    expect(store().isDirty()).toBe(false)
+  })
+
+  it.each([
+    ["its occurrence is gone", (nodes: Node[]) => nodes.filter((node) => node.id !== OPEN.instanceId)],
+    [
+      "its instance id names another definition",
+      (nodes: Node[]) => nodes.map((node) => (node.id === OPEN.instanceId
+        ? { ...node, data: { ...node.data, config: { definition_id: "definition_other", alias: OPEN.instanceId } } }
+        : node)),
+    ],
+  ])("shows the main pipeline, with a notice, on a reload in which %s", (_case, change) => {
+    store().enterSubmodelView(OPEN)
+    const serial = store().navigationSerial
+    const reloaded = structuredClone(store().lastSavedSnapshot!)
+    reloaded.nodes = change(reloaded.nodes)
+
+    store().loadGraphSnapshot(reloaded, { keepOpenSubmodel: true })
+
+    expect(store().focus).toBeNull()
+    expect(store().nodes.map((node) => node.id)).toEqual(reloaded.nodes.map((node) => node.id))
+    expect(store().navigationSerial).toBe(serial + 1)
+    expect(lastToast()).toBe("The submodel that was open is gone, so the main pipeline is shown.")
+  })
+
   it("keeps a boundary edit's definition in its authored form, its annotations on the view", () => {
     store().enterSubmodelView(OPEN)
     const columns = [{ name: "premium", dtype: "Float64" }]

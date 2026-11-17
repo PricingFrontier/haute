@@ -41,7 +41,6 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | Phase | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---|---:|---|---|---|---|---|
 | J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |
-| N | 27 | Lifecycle | `SUBE-06` | — | M | Save and reload inside a submodel, once the canvas is the document's projection. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
@@ -49,9 +48,7 @@ Sizes are rough: M is a day or so, L several days or more than one PR.
 
 A package that changes what a user sees or relies on is listed here, with the
 date it was decided, so an objection can be raised before its round starts.
-
-- `SUBE-06` (2026-11-15): Save works inside a submodel, and a reload keeps the
-  open submodel when it still exists.
+None is scheduled now.
 
 ## Not scheduled
 

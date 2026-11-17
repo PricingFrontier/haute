@@ -1242,6 +1242,7 @@ describe("useWebSocketSync", () => {
         expect.objectContaining({
           nodes: [expect.objectContaining({ id: "disk" })],
         }),
+        { keepOpenSubmodel: true },
       )
     })
 
@@ -1264,6 +1265,7 @@ describe("useWebSocketSync", () => {
         expect.objectContaining({
           nodes: [expect.objectContaining({ id: "disk" })],
         }),
+        { keepOpenSubmodel: true },
       )
     })
 

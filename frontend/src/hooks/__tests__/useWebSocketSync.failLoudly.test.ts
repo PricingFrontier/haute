@@ -399,6 +399,7 @@ describe("useWebSocketSync - partial failure rolls back consistently (#37)", () 
           expect.objectContaining({ id: "good" }),
         ]),
       }),
+      { keepOpenSubmodel: true },
     )
     // And the ref must be at 0 after the second update's guard timer
     act(() => { vi.advanceTimersByTime(200) })

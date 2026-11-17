@@ -1,6 +1,6 @@
 # Submodel
 
-As your pipeline grows, the canvas gets crowded. Submodels let you collapse a group of nodes into a single block. Double-click to step inside; click the breadcrumb to come back out.
+As your pipeline grows, the canvas gets crowded. Submodels let you collapse a group of nodes into a single block. Double-click to step inside; click the breadcrumb to come back out. **Save** works inside a submodel and saves the whole pipeline. If the pipeline changes on disk while you are inside, the submodel stays open and shows the change; if the submodel was removed, you are returned to the main pipeline.
 
 !!! info "When to use"
     Use this when your canvas is getting crowded and you want to group related nodes into a single collapsible block. Also useful for reusing the same logic across multiple pipelines.
