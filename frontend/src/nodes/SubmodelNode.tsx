@@ -49,7 +49,7 @@ function SubmodelNode({
     const handle = `out__${port.name}`
     const label = nodeData._sourceHandleInputNames?.[handle]
     if (typeof label !== "string" || !label) throw new Error(`Submodel ${id} output ${port.name} has no authoritative identity`)
-    return { id: handle, label, parentEdges: [] }
+    return { id: handle, label }
   }) ?? []
   const loadAvailability = nodeData._loadAvailability ?? "ready"
   const showRecoveryHandles = definitionInvalid && loadAvailability !== "ready"

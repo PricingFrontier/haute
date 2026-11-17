@@ -136,8 +136,10 @@ reported as failed workspace changes. Staleness is judged structurally — node
 and edge identities and every definition's public interface — not by object
 identity, so selecting or moving a node while identities resolve extends the
 pending candidate and those positions and selections are merged into the
-committed view rather than reverted. Only a structural change voids the
-candidate, with the error toast.
+committed view rather than reverted. A deletion batch's other changes (a
+move, a drag's release, a selection) land on the canvas at once while the
+deletion waits. Only a structural change voids the candidate, with the error
+toast.
 
 - **Node rendering.** All pipeline node types other than `submodel`,
   `submodelPort`, and the recovery renderer render through one component,

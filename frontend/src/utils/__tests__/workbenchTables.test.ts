@@ -129,7 +129,7 @@ describe("workbenchDisconnections", () => {
     const quoted = edge("e_quote", "quote", "gone", "priced")
     const boundary: Edge = {
       ...edge("e_boundary", "wb_in", "gone", "boundary_out"),
-      data: { submodelBoundary: { direction: "output", parentConsumerEdges: [], name: "out" } },
+      data: { submodelBoundary: { direction: "output", name: "out" } },
     }
 
     expect(workbenchDisconnections({ nodes, edges: [quoted, boundary] }, tablesOf([]))).toBeNull()

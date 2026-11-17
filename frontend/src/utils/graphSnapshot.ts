@@ -45,9 +45,6 @@ const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
   "_defaultInputName",
   "_sourceHandleInputNames",
   "_configReference",
-  "_parentBindingScope",
-  "_parentEdgeOrder",
-  "_parentOutputState",
 ])
 
 const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
@@ -371,6 +368,15 @@ export function nodeExecutionAnnotations(node: Node): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(data).filter(([key]) => key.startsWith("_") && !LIVE_HISTORY_NODE_METADATA_FIELDS.has(key)),
   )
+}
+
+/**
+ * Whether a node carries the canvas's state, which its authored form leaves out: a React
+ * Flow field (a selection, a size, a drag) or an execution annotation.
+ */
+export function holdsCanvasState(node: Node): boolean {
+  return REACT_FLOW_NODE_UI_FIELDS.some((field) => field in node)
+    || Object.keys(nodeExecutionAnnotations(node)).length > 0
 }
 
 /** Pre-computed empty-workspace sentinel (fast path for fresh sessions). */

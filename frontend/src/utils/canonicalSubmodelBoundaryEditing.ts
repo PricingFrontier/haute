@@ -1,12 +1,10 @@
-import type { Connection, Edge, Node } from "@xyflow/react"
+import type { Connection, Edge, Node, XYPosition } from "@xyflow/react"
 import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type PipelineEdge,
-  type ParentOutputState,
   type SubmodelBoundaryEdgeData,
   type SubmodelDefinition,
-  type SubmodelEndpoint,
   type SubmodelInputPort,
   type SubmodelOutputPort,
   type SubmodelPortData,
@@ -22,7 +20,7 @@ import {
 } from "./apiInputPorts"
 import { withEdgeIdentity } from "./edgeIds"
 import { appEdge } from "./flowElements"
-import { buildSubmodelViewGraph, restoreParentOutputState } from "./submodelViewGraph"
+import { buildSubmodelViewGraph } from "./submodelViewGraph"
 import type {
   SubmodelBoundaryEditResult,
   SubmodelBoundaryEditState,
@@ -49,13 +47,6 @@ function boundaryNode(
   )
 }
 
-function childGraph(state: SubmodelBoundaryEditState): { nodes: Node[]; edges: Edge[] } {
-  return {
-    nodes: state.viewNodes.filter((node) => node.type !== "submodelPort"),
-    edges: state.viewEdges.filter((edge) => boundaryInfo(edge) === null),
-  }
-}
-
 function definitionFor(state: CanonicalSubmodelBoundaryEditState): SubmodelDefinition {
   const value = state.submodels[state.definitionId]
   if (!isSubmodelDefinition(value, state.definitionId)) {
@@ -71,43 +62,9 @@ function boundaryPortName(info: SubmodelBoundaryEdgeData["submodelBoundary"], di
   return info.name
 }
 
-const isPipelineEdge = (value: unknown): value is PipelineEdge => isPlainObject(value)
-  && typeof value.id === "string"
-  && value.id.length > 0
-  && typeof value.source === "string"
-  && value.source.length > 0
-  && typeof value.target === "string"
-  && value.target.length > 0
-
-/**
- * Input boundary rows retain every binding for their shared definition. This
- * lets a restored history projection authoritatively restore just that slice
- * of the parent graph without disturbing unrelated parent edges.
- *
- * Parent edge order is persisted state: `serializeSnapshot` keeps array order,
- * so the dirty flag compares it, and codegen emits `connect` calls in it. The
- * boundary therefore also records the parent edge order it was projected from,
- * and a restored binding returns to its own position rather than the end.
- */
-function parentEdgesForInputProjection(
-  state: CanonicalSubmodelBoundaryEditState,
-  intentionallyOmittedPortNames: ReadonlySet<string>,
-): PipelineEdge[] {
-  const input = boundaryNode(state.viewNodes, "input")
-  const data = input?.data as Partial<SubmodelPortData> | undefined
-  if (data?._parentBindingScope !== "definition") {
-    throw new Error("Canonical submodel Input boundary has no authoritative parent bindings")
-  }
-  if (!Array.isArray(data.ports)) {
-    throw new Error("Canonical submodel Input boundary has malformed public ports")
-  }
-  if (!Array.isArray(data._parentEdgeOrder)) {
-    throw new Error("Canonical submodel Input boundary has no authoritative parent edge order")
-  }
-  const ranks = new Map(data._parentEdgeOrder.map((id, index) => [id, index]))
-  const rank = (edge: PipelineEdge) => ranks.get(edge.id) ?? Infinity
-
-  const occurrenceIds = new Set([state.instanceId, ...state.parentNodes.flatMap((node) => {
+/** The occurrences of the open definition in the pipeline, the open one included. */
+function occurrenceIds(state: CanonicalSubmodelBoundaryEditState): Set<string> {
+  return new Set([state.instanceId, ...state.parentNodes.flatMap((node) => {
     const config = node.data.config
     return node.data.nodeType === "submodel"
       && isSubmodelInstanceConfig(config)
@@ -115,140 +72,19 @@ function parentEdgesForInputProjection(
       ? [node.id]
       : []
   })])
-  const projected: PipelineEdge[] = []
-  const projectedById = new Map<string, PipelineEdge>()
-  for (const port of data.ports) {
-    if (
-      !isPlainObject(port)
-      || typeof port.id !== "string"
-      || port.id.length === 0
-      || !Array.isArray(port.parentEdges)
-    ) {
-      throw new Error("Canonical submodel Input boundary has a malformed public port")
-    }
-    if (intentionallyOmittedPortNames.has(port.id)) continue
-    const handle = `in__${port.id}`
-    for (const edge of port.parentEdges) {
-      if (
-        !isPipelineEdge(edge)
-        || !occurrenceIds.has(edge.target)
-        || edge.targetHandle !== handle
-      ) {
-        throw new Error(`Canonical submodel input port ${port.id} has a malformed parent binding`)
-      }
-      if (projectedById.has(edge.id)) {
-        throw new Error(`Canonical submodel parent edge ${edge.id} is represented more than once`)
-      }
-      projected.push(edge)
-      projectedById.set(edge.id, edge)
-    }
-  }
-
-  const remaining = new Map(projectedById)
-  const merged: PipelineEdge[] = []
-  const mergedIds = new Set<string>()
-  const claim = (edge: PipelineEdge) => {
-    if (mergedIds.has(edge.id)) {
-      throw new Error(`Canonical parent graph contains duplicate edge ${edge.id}`)
-    }
-    mergedIds.add(edge.id)
-  }
-  const append = (edge: PipelineEdge) => {
-    claim(edge)
-    merged.push(edge)
-  }
-  for (const edge of state.parentEdges) {
-    const governedInput = occurrenceIds.has(edge.target)
-      && typeof edge.targetHandle === "string"
-      && edge.targetHandle.startsWith("in__")
-    if (!governedInput) {
-      append(edge)
-      continue
-    }
-    const replacement = remaining.get(edge.id)
-    if (replacement) {
-      append(replacement)
-      remaining.delete(edge.id)
-    }
-  }
-  // Whatever is still outstanding was restored by history rather than retained,
-  // so it has no position in `state.parentEdges`. Reinstate each one ahead of
-  // the first edge the recorded order puts after it.
-  for (const edge of projected) {
-    if (!remaining.delete(edge.id)) continue
-    claim(edge)
-    const at = merged.findIndex((other) => rank(other) > rank(edge))
-    merged.splice(at === -1 ? merged.length : at, 0, edge)
-  }
-
-  return merged.length === state.parentEdges.length
-    && merged.every((edge, index) => edge === state.parentEdges[index])
-    ? state.parentEdges
-    : merged
 }
 
-function endpointKey(endpoint: SubmodelEndpoint): string {
-  return JSON.stringify([endpoint.nodeId, endpoint.handleId])
-}
-
-function deriveInputPorts(
-  state: CanonicalSubmodelBoundaryEditState,
-  definition: SubmodelDefinition,
-  intentionallyOmittedPortNames: ReadonlySet<string> = new Set(),
+/**
+ * The inputs of `after`, retiring each one `before` routed that `after` routes nowhere: an
+ * input whose last route goes is retired, while one never routed (a port the pipeline
+ * created, waiting for its route) stays.
+ */
+function retiringUnroutedInputs(
+  before: readonly SubmodelInputPort[],
+  after: readonly SubmodelInputPort[],
 ): SubmodelInputPort[] {
-  const input = boundaryNode(state.viewNodes, "input")
-  if (!input) throw new Error("Canonical submodel view is missing its Input boundary")
-  const edges = state.viewEdges.filter((edge) => edge.source === input.id)
-  const result: SubmodelInputPort[] = []
-  for (const existing of definition.inputPorts) {
-    if (intentionallyOmittedPortNames.has(existing.name)) continue
-    const targets: SubmodelEndpoint[] = []
-    for (const edge of edges) {
-      const info = boundaryInfo(edge)
-      if (!info || info.direction !== "input" || boundaryPortName(info, "input") !== existing.name) continue
-      const endpoint = {
-        nodeId: edge.target,
-        handleId: edge.targetHandle ?? null,
-      }
-      if (!targets.some((candidate) => endpointKey(candidate) === endpointKey(endpoint))) {
-        targets.push(endpoint)
-      }
-    }
-    // A parent-created port is intentionally visible before it has an
-    // internal route. Preserve that draft declaration; a previously routed
-    // and now unbound port retains the established delete-last-edge behavior.
-    if (targets.length === 0 && existing.targets.length > 0) continue
-    result.push({
-      ...existing,
-      targets,
-    })
-  }
-  return result
-}
-
-function deriveOutputPorts(
-  state: CanonicalSubmodelBoundaryEditState,
-): SubmodelOutputPort[] {
-  const output = boundaryNode(state.viewNodes, "output")
-  if (!output) throw new Error("Canonical submodel view is missing its Output boundary")
-  const result: SubmodelOutputPort[] = []
-  const seen = new Set<string>()
-  for (const edge of state.viewEdges) {
-    if (edge.target !== output.id) continue
-    const info = boundaryInfo(edge)
-    if (!info || info.direction !== "output") continue
-    const name = boundaryPortName(info, "output")
-    if (seen.has(name)) throw new Error(`Canonical output port ${name} has more than one source`)
-    seen.add(name)
-    result.push({
-      name,
-      source: {
-        nodeId: edge.source,
-        handleId: edge.sourceHandle ?? null,
-      },
-    })
-  }
-  return result
+  const routed = new Set(before.filter((port) => port.targets.length > 0).map((port) => port.name))
+  return after.filter((port) => port.targets.length > 0 || !routed.has(port.name))
 }
 
 function changedPorts(
@@ -331,86 +167,50 @@ function preserveBoundaryPositions(previous: Node[], next: Node[]): Node[] {
   })
 }
 
-export function reconcileCanonicalSubmodelBoundaryState(
+/**
+ * The document a boundary command leaves (submodels low-level, "Boundary commands"): the
+ * open definition as `definition`, the pipeline's own edges as `parentEdges`, refused whole
+ * when a port it retires is bound by an occurrence. The view is drawn from it with the
+ * canvas's own children (`canvas`), so their selection, size and annotations stay on the
+ * canvas while the definition holds them as the document does, and with the cards where
+ * they were.
+ */
+function committed(
   state: CanonicalSubmodelBoundaryEditState,
-  intentionallyOmittedInputPortNames: ReadonlySet<string> = new Set(),
-): SubmodelBoundaryEditResult | null {
-  if (!boundaryNode(state.viewNodes, "input") || !boundaryNode(state.viewNodes, "output")) {
-    return null
+  definition: SubmodelDefinition,
+  parentEdges: PipelineEdge[] = state.parentEdges,
+  canvas: { nodes: Node[]; edges: Edge[] } = { nodes: state.viewNodes, edges: state.viewEdges },
+): SubmodelBoundaryEditResult {
+  if (!boundaryNode(canvas.nodes, "input") || !boundaryNode(canvas.nodes, "output")) {
+    throw new Error("Canonical submodel view is missing its Input or Output boundary")
   }
-  const outputState = boundaryNode(state.viewNodes, "output")!.data._parentOutputState as ParentOutputState | undefined
-  if (!outputState) throw new Error("Canonical Output boundary has no parent output state")
-  const projectedParentEdges = parentEdgesForInputProjection(
-    state,
-    intentionallyOmittedInputPortNames,
+  assertCompatibleSharedEdit(
+    { ...state, parentEdges },
+    definitionFor(state),
+    definition.inputPorts,
+    definition.outputPorts,
   )
-  // A connection between two occurrences belongs to both boundary snapshots.
-  // Restore its binding first, then the name resolved for this output count.
-  const restored = restoreParentOutputState(outputState, state.parentNodes, projectedParentEdges)
-  const effectiveState = { ...state, parentNodes: restored.nodes, parentEdges: restored.edges }
-  const definition = definitionFor(effectiveState)
-  const children = childGraph(effectiveState)
-  const childIds = new Set(children.nodes.map((node) => node.id))
-  for (const edge of effectiveState.viewEdges) {
-    const info = boundaryInfo(edge)
-    if (info?.direction === "input" && !childIds.has(edge.target)) {
-      throw new Error(`Canonical input port ${boundaryPortName(info, "input")} targets missing child ${edge.target}`)
-    }
-    if (info?.direction === "output" && !childIds.has(edge.source)) {
-      throw new Error(`Canonical output port ${boundaryPortName(info, "output")} sources missing child ${edge.source}`)
-    }
-  }
-
-  const inputPorts = deriveInputPorts(
-    effectiveState,
-    definition,
-    intentionallyOmittedInputPortNames,
-  )
-  const outputPorts = deriveOutputPorts(effectiveState)
-  assertCompatibleSharedEdit(effectiveState, definition, inputPorts, outputPorts)
-  const nextDefinition: SubmodelDefinition = {
-    ...definition,
-    graph: {
-      ...definition.graph,
-      nodes: children.nodes,
-      edges: children.edges,
-    },
-    inputPorts,
-    outputPorts,
-  }
-  const submodels = {
-    ...effectiveState.submodels,
-    [effectiveState.definitionId]: nextDefinition,
-  }
+  const children = new Set(definition.graph.nodes.map((node) => node.id))
+  const internal = new Set((definition.graph.edges ?? []).map((edge) => edge.id))
   const view = buildSubmodelViewGraph({
-    submodelName: effectiveState.submodelName,
-    instanceId: effectiveState.instanceId,
-    definition: nextDefinition,
-    childNodes: children.nodes,
-    childEdges: children.edges,
-    parentNodes: effectiveState.parentNodes,
-    parentEdges: effectiveState.parentEdges,
+    submodelName: state.submodelName,
+    instanceId: state.instanceId,
+    definition,
+    childNodes: canvas.nodes.filter((node) => node.type !== "submodelPort" && children.has(node.id)),
+    childEdges: canvas.edges.filter((edge) => boundaryInfo(edge) === null && internal.has(edge.id)),
+    parentNodes: state.parentNodes,
+    parentEdges,
   })
-  const viewNodes = preserveBoundaryPositions(effectiveState.viewNodes, view.nodes)
-  const viewEdges = view.edges
   return {
-    submodelName: effectiveState.submodelName,
-    instanceId: effectiveState.instanceId,
-    definitionId: effectiveState.definitionId,
-    viewNodes,
-    viewEdges,
-    parentNodes: effectiveState.parentNodes,
-    parentEdges: effectiveState.parentEdges,
-    submodels,
+    submodelName: state.submodelName,
+    instanceId: state.instanceId,
+    definitionId: state.definitionId,
+    viewNodes: preserveBoundaryPositions(canvas.nodes, view.nodes),
+    viewEdges: view.edges as PipelineEdge[],
+    parentNodes: state.parentNodes,
+    parentEdges,
+    submodels: { ...state.submodels, [state.definitionId]: definition },
   }
-}
-
-function nextEdgeId(base: string, edges: readonly Edge[]): string {
-  const ids = new Set(edges.map((edge) => edge.id))
-  let candidate = base
-  let suffix = 1
-  while (ids.has(candidate)) candidate = `${base}__${suffix++}`
-  return candidate
 }
 
 function mintPortName(definition: SubmodelDefinition, base: string): string {
@@ -585,73 +385,41 @@ export function connectCanonicalSubmodelInputFromParentConnection(
   }
 }
 
+/** Connect to or from a card: route an input to a child, or declare an output. */
 export function applyCanonicalSubmodelBoundaryConnection(
   state: CanonicalSubmodelBoundaryEditState,
   connection: Connection,
 ): SubmodelBoundaryEditResult | null {
   const input = boundaryNode(state.viewNodes, "input")
   const output = boundaryNode(state.viewNodes, "output")
-  const childIds = new Set(
-    state.viewNodes.filter((node) => node.type !== "submodelPort").map((node) => node.id),
-  )
+  const definition = definitionFor(state)
+  const childIds = new Set(definition.graph.nodes.map((node) => node.id))
   if (input && connection.source === input.id && connection.sourceHandle && connection.target) {
-    if (!childIds.has(connection.target)) return null
-    const definition = definitionFor(state)
-    if (!definition.inputPorts.some((port) => port.name === connection.sourceHandle)) return null
+    if (!childIds.has(connection.target)) {
+      throw new Error("An input can only be routed to a node inside the submodel")
+    }
+    const port = definition.inputPorts.find((candidate) => candidate.name === connection.sourceHandle)
+    if (!port) throw new Error(`The submodel has no input "${connection.sourceHandle}"`)
     const handleId = normalizeDefaultTargetHandle(connection.targetHandle)
-    const duplicate = state.viewEdges.some(
-      (edge) =>
-        edge.source === input.id
-        && edge.sourceHandle === connection.sourceHandle
-        && edge.target === connection.target
-        && (edge.targetHandle ?? null) === handleId,
-    )
-    if (duplicate) return null
-    const row = (input.data as unknown as SubmodelPortData).ports.find(
-      (port) => port.id === connection.sourceHandle,
-    )
-    if (!row) {
-      throw new Error(`Canonical input boundary is missing public port ${connection.sourceHandle}`)
+    if (port.targets.some((target) => target.nodeId === connection.target && (target.handleId ?? null) === handleId)) {
+      return null
     }
-    const parentEdges = row.parentEdges
-    const edge: PipelineEdge = {
-      id: nextEdgeId(
-        `submodel-view__input-edge__${encodeURIComponent(JSON.stringify([
-          state.instanceId,
-          connection.sourceHandle,
-          connection.target,
-          handleId,
-        ]))}`,
-        state.viewEdges,
-      ),
-      source: input.id,
-      sourceHandle: connection.sourceHandle,
-      target: connection.target,
-      targetHandle: handleId,
-      data: {
-        submodelBoundary: {
-          direction: "input",
-          name: connection.sourceHandle,
-          parentEdges,
-        },
-      } satisfies SubmodelBoundaryEdgeData,
-    }
-    return reconcileCanonicalSubmodelBoundaryState({
-      ...state,
-      viewEdges: [...state.viewEdges, edge],
+    return committed(state, {
+      ...definition,
+      inputPorts: definition.inputPorts.map((candidate) => candidate === port
+        ? { ...candidate, targets: [...candidate.targets, { nodeId: connection.target!, handleId }] }
+        : candidate),
     })
   }
 
   if (output && connection.target === output.id && connection.source) {
-    if (!childIds.has(connection.source)) return null
+    if (!childIds.has(connection.source)) {
+      throw new Error("Only a node inside the submodel can be declared an output")
+    }
     const handleId = connection.sourceHandle ?? null
-    const duplicate = state.viewEdges.some(
-      (edge) =>
-        edge.target === output.id
-        && edge.source === connection.source
-        && (edge.sourceHandle ?? null) === handleId,
-    )
-    if (duplicate) return null
+    if (definition.outputPorts.some((port) => (
+      port.source.nodeId === connection.source && (port.source.handleId ?? null) === handleId
+    ))) return null
     const childNode = state.viewNodes.find((node) => node.id === connection.source)
     if (!childNode) return null
     const probe = appEdge({
@@ -668,48 +436,95 @@ export function applyCanonicalSubmodelBoundaryConnection(
     if (outputName === UNRESOLVED_INPUT_NAME) {
       throw new Error("The child frame has no authoritative identity")
     }
-    const newPortName = mintPortName(definitionFor(state), outputName)
-    const edge: PipelineEdge = {
-      id: nextEdgeId(
-        `submodel-view__output-edge__${encodeURIComponent(JSON.stringify([
-          state.instanceId,
-          newPortName,
-        ]))}`,
-        state.viewEdges,
-      ),
-      source: connection.source,
-      sourceHandle: handleId,
-      target: output.id,
-      targetHandle: null,
-      data: {
-        submodelBoundary: {
-          direction: "output",
-          name: newPortName,
-          parentConsumerEdges: [],
-        },
-      } satisfies SubmodelBoundaryEdgeData,
-    }
-    return reconcileCanonicalSubmodelBoundaryState({
-      ...state,
-      viewEdges: [...state.viewEdges, edge],
+    return committed(state, {
+      ...definition,
+      outputPorts: [
+        ...definition.outputPorts,
+        { name: mintPortName(definition, outputName), source: { nodeId: connection.source, handleId } },
+      ],
     })
   }
   return null
 }
 
+/**
+ * What a removal takes away: children, and edges (boundary or internal) by id. `moves` are
+ * the positions the same gesture gave surviving children (a React Flow batch can carry
+ * them), written to the definition as part of the step.
+ */
+export interface CanonicalSubmodelRemoval {
+  nodeIds?: ReadonlySet<string>
+  edgeIds?: ReadonlySet<string>
+  moves?: ReadonlyMap<string, XYPosition>
+}
+
+/**
+ * Remove children and edges in one command. Each removed input edge's target leaves its
+ * port and each removed output edge retires its port; each removed internal edge leaves the
+ * definition. A removed child takes with it, read from the definition, its routes, the
+ * outputs it sources and every edge touching it. An input left with no route is retired.
+ * `canvas` is the canvas the view keeps its children from, when the same gesture also
+ * changed them (a selection).
+ */
+export function removeCanonicalSubmodelElements(
+  state: CanonicalSubmodelBoundaryEditState,
+  { nodeIds = new Set(), edgeIds = new Set(), moves = new Map() }: CanonicalSubmodelRemoval,
+  canvas?: { nodes: Node[]; edges: Edge[] },
+): SubmodelBoundaryEditResult {
+  const definition = definitionFor(state)
+  const removedTargets = new Set<string>()
+  const removedOutputs = new Set<string>()
+  const removedInternal = new Set<string>()
+  for (const edge of state.viewEdges) {
+    if (!edgeIds.has(edge.id)) continue
+    const info = boundaryInfo(edge)
+    if (info?.direction === "input") {
+      removedTargets.add(JSON.stringify([boundaryPortName(info, "input"), edge.target, edge.targetHandle ?? null]))
+    } else if (info?.direction === "output") {
+      removedOutputs.add(boundaryPortName(info, "output"))
+    } else {
+      removedInternal.add(edge.id)
+    }
+  }
+  const inputPorts = retiringUnroutedInputs(
+    definition.inputPorts,
+    definition.inputPorts.map((port) => ({
+      ...port,
+      targets: port.targets.filter((target) => (
+        !nodeIds.has(target.nodeId)
+        && !removedTargets.has(JSON.stringify([port.name, target.nodeId, target.handleId ?? null]))
+      )),
+    })),
+  )
+  const outputPorts = definition.outputPorts.filter((port) => (
+    !removedOutputs.has(port.name) && !nodeIds.has(port.source.nodeId)
+  ))
+  return committed(state, {
+    ...definition,
+    graph: {
+      ...definition.graph,
+      nodes: definition.graph.nodes.flatMap((node) => {
+        if (nodeIds.has(node.id)) return []
+        const position = moves.get(node.id)
+        return [position ? { ...node, position } : node]
+      }),
+      edges: (definition.graph.edges ?? []).filter((edge) => (
+        !removedInternal.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)
+      )),
+    },
+    inputPorts,
+    outputPorts,
+  }, state.parentEdges, canvas)
+}
+
+/** Remove boundary edges by id; null when none of them is one. */
 export function removeCanonicalSubmodelBoundaryEdges(
   state: CanonicalSubmodelBoundaryEditState,
   edgeIds: string[],
 ): SubmodelBoundaryEditResult | null {
   const wanted = new Set(edgeIds)
-  const selected = state.viewEdges.filter(
-    (edge) => wanted.has(edge.id) && boundaryInfo(edge) !== null,
-  )
-  if (selected.length === 0) return null
-  return reconcileCanonicalSubmodelBoundaryState({
-    ...state,
-    viewEdges: state.viewEdges.filter((edge) => !wanted.has(edge.id)),
-  })
+  if (!state.viewEdges.some((edge) => wanted.has(edge.id) && boundaryInfo(edge) !== null)) return null
+  return removeCanonicalSubmodelElements(state, { edgeIds: wanted })
 }
 
 /**
@@ -723,36 +538,13 @@ export function removeCanonicalSubmodelInputPort(
 ): SubmodelBoundaryEditResult | null {
   const definition = definitionFor(state)
   if (!definition.inputPorts.some((port) => port.name === inputPortName)) return null
-
-  const input = boundaryNode(state.viewNodes, "input")
-  if (!input) throw new Error("Canonical submodel view is missing its Input boundary")
-  const boundaryPorts = (input.data as unknown as SubmodelPortData).ports
-  if (!Array.isArray(boundaryPorts) || !boundaryPorts.some((port) => port.id === inputPortName)) {
-    throw new Error(`Canonical input boundary is missing public port ${inputPortName}`)
-  }
-
-  const occurrenceIds = new Set([state.instanceId, ...state.parentNodes.flatMap((node) => {
-    const config = node.data.config
-    return node.data.nodeType === "submodel"
-      && isSubmodelInstanceConfig(config)
-      && config.definition_id === state.definitionId
-      ? [node.id]
-      : []
-  })])
+  const occurrences = occurrenceIds(state)
   const parentHandle = `in__${inputPortName}`
-  const omitted = new Set([inputPortName])
-  return reconcileCanonicalSubmodelBoundaryState({
-    ...state,
-    viewEdges: state.viewEdges.filter((edge) => {
-      const info = boundaryInfo(edge)
-      return !(
-        info?.direction === "input"
-        && boundaryPortName(info, "input") === inputPortName
-      )
-    }),
-    parentEdges: state.parentEdges.filter((edge) =>
-      !occurrenceIds.has(edge.target) || edge.targetHandle !== parentHandle),
-  }, omitted)
+  return committed(
+    state,
+    { ...definition, inputPorts: definition.inputPorts.filter((port) => port.name !== inputPortName) },
+    state.parentEdges.filter((edge) => !occurrences.has(edge.target) || edge.targetHandle !== parentHandle),
+  )
 }
 
 /**

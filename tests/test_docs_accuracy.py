@@ -184,7 +184,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "root-cause-typed-numbers",
     "sandbox-security",
     "server-api",
-    "submodel-editing",
     "tracing",
     "workbench",
 )

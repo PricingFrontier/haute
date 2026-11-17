@@ -45,14 +45,14 @@ describe("buildSubmodelViewGraph", () => {
     const graph = buildSubmodelViewGraph({ submodelName: "pricing", instanceId: "pricing", definition: makeDefinition(children), childNodes: children, childEdges: [makeEdge("prepare", "score")], parentNodes: [makeNode("api"), instance(), makeNode("output")], parentEdges })
     const input = boundary(graph.nodes, "input").data as SubmodelPortData
     const output = boundary(graph.nodes, "output").data as SubmodelPortData
-    expect(input).toMatchObject({ instanceId: "pricing", definitionId: "definition_pricing", ports: [{ id: "policy", label: "policy", parentEdges: [parentEdges[0]] }] })
+    expect(input).toMatchObject({ instanceId: "pricing", definitionId: "definition_pricing", ports: [{ id: "policy", label: "policy" }] })
     expect(output).toMatchObject({ instanceId: "pricing", definitionId: "definition_pricing", externalNodeIds: ["output"] })
-    expect(graph.edges).toEqual(expect.arrayContaining([expect.objectContaining({ sourceHandle: "policy", target: "prepare", data: { _inputName: "policy", submodelBoundary: { direction: "input", name: "policy", parentEdges: [parentEdges[0]] } } }), expect.objectContaining({ source: "score", sourceHandle: "out", data: { _inputName: "score", submodelBoundary: { direction: "output", name: "premium", parentConsumerEdges: [parentEdges[1]] } } })]))
+    expect(graph.edges).toEqual(expect.arrayContaining([expect.objectContaining({ sourceHandle: "policy", target: "prepare", data: { _inputName: "policy", submodelBoundary: { direction: "input", name: "policy" } } }), expect.objectContaining({ source: "score", sourceHandle: "out", data: { _inputName: "score", submodelBoundary: { direction: "output", name: "premium" } } })]))
     // The cards are named from their ports, as the server names them, so the view asks it nothing.
     expect(input).toMatchObject({ _functionName: "INPUT", _defaultInputName: null, _sourceHandleInputNames: { policy: "policy" } })
     expect(output).toMatchObject({ _functionName: "OUTPUT", _defaultInputName: null, _sourceHandleInputNames: {} })
   })
-  it("retains input bindings from every occurrence in the shared frame projection", () => {
+  it("draws the cards with only what they show, whatever the occurrences bind", () => {
     const children = [makeIdentifiedNode("prepare"), makeIdentifiedNode("score")]
     const secondary = makeNode("pricing_copy", "submodel", {
       data: {
@@ -91,16 +91,19 @@ describe("buildSubmodelViewGraph", () => {
     })
 
     const input = boundary(graph.nodes, "input").data as SubmodelPortData
-    expect(input.ports[0].parentEdges).toEqual(parentEdges)
-    expect(input._parentBindingScope).toBe("definition")
-    // Parent edge order is persisted state, so the projection records it and a
-    // binding restored by history returns to its own position.
-    expect(input._parentEdgeOrder).toEqual(["feed-owner", "feed-copy"])
-    expect((boundary(graph.nodes, "output").data as SubmodelPortData)._parentEdgeOrder)
-      .toBeUndefined()
+    const output = boundary(graph.nodes, "output").data as SubmodelPortData
+    // A card holds only what it shows: its ports' names and the external nodes it stands
+    // for (the open occurrence's feed); the document holds every binding and their order.
+    expect(input.ports).toEqual([{ id: "policy", label: "policy" }])
     expect(input.externalNodeIds).toEqual(["api-owner"])
+    for (const card of [input, output]) {
+      for (const carrier of ["_parentBindingScope", "_parentEdgeOrder", "_parentOutputState"]) {
+        expect(card).not.toHaveProperty(carrier)
+      }
+      expect(JSON.stringify(card)).not.toContain("feed-")
+    }
     expect(graph.edges.find((edge) => edge.sourceHandle === "policy")?.data)
-      .toMatchObject({ submodelBoundary: { parentEdges: [parentEdges[0]] } })
+      .toEqual(expect.objectContaining({ submodelBoundary: { direction: "input", name: "policy" } }))
   })
   it("starts the Input card with the columns its parent feeds last recorded, never an invalidated stash", () => {
     const policy = [{ name: "policy_id", dtype: "String" }]
