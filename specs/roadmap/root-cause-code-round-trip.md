@@ -85,7 +85,8 @@ step and saves twice, edits during a save, and saves, undoes, redoes and
 saves; each save writes the code of the steps on screen and no other
 node's. With the browser's own rendering held back, a step is edited and
 the pipeline saved twice: the second save leaves the file as the first
-wrote it. A test fails when code is rendered from a step list anywhere but through
+wrote it. A test fails when code is rendered from a step list anywhere but
+through
 the nodes a save names. The journey of `CGEN-09` with no step edited passes
 without its own remedy.
 
