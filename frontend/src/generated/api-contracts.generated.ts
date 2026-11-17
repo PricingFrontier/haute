@@ -931,6 +931,10 @@ export interface RecoveryPipelineNode {
  * the parse's finding. A request may carry the field back, as a transform of the
  * graph echoes it, but a save never reads the finding from it: it reparses the
  * file on disk.
+ *
+ * ``steps_recorded`` is a finding of a parse on the server, never sent or read
+ * from a request: the node's body is the placeholder an unfinished step list is
+ * saved with, and its steps are the list its ``.haute.json`` records.
  */
 export interface NodeEditorState {
   steps_discarded: string | null;
@@ -2934,8 +2938,18 @@ export interface SavePipelineResponse {
   pipeline_name: string;
   source_revision: string;
   status: string;
+  step_code: SavedStepCode[];
   uncaptured: string[];
   warnings: string[];
+}
+/**
+ * The code a node the save rendered from its steps loads with from the file it wrote:
+ * the steps' rendering, as a reload builds it, and empty when they do not render.
+ */
+export interface SavedStepCode {
+  code: string;
+  node_id: string;
+  submodel: string | null;
 }
 export interface CreateSubmodelResponse {
   graph: PipelineGraph;

@@ -169,12 +169,27 @@ class NodeEditorState(BaseModel):
     the parse's finding. A request may carry the field back, as a transform of the
     graph echoes it, but a save never reads the finding from it: it reparses the
     file on disk.
+
+    ``steps_recorded`` is a finding of a parse on the server, never sent or read
+    from a request: the node's body is the placeholder an unfinished step list is
+    saved with, and its steps are the list its ``.haute.json`` records.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     steps_error: str | None = None
     steps_discarded: str | None = None
+    _steps_recorded: bool = PrivateAttr(default=False)
+
+    @property
+    def steps_recorded(self) -> bool:
+        return self._steps_recorded
+
+    def recorded(self) -> NodeEditorState:
+        """This state, for a node given its steps from its file's record of unfinished steps."""
+        state = self.model_copy()
+        state._steps_recorded = True
+        return state
 
 
 class NodeData(BaseModel):

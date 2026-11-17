@@ -1543,7 +1543,9 @@ repair detail for the confirmation UI. Recover responses additionally parse the
 field-outcome report, completeness entries and previous configuration. Requests
 never carry client-authored replacement source/config. `saveNodeScoped` posts one
 node's proposed configuration to `/api/pipeline/node/save` and parses the
-authoritative document.
+authoritative document. `useScopedNodeSave` sends a stepped node whose steps are the
+saved baseline's with the code saved for them and `steps_edited: false`, and any other
+stepped node with `steps_edited: true` (`utils/editedSteps.savedCodeForSteps`).
 
 ## Recovery surfaces
 

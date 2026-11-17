@@ -723,6 +723,7 @@ def test_node_scoped_save_updates_the_transform_s_code(tmp_path: Path) -> None:
         target_source_file=target.source_file,
         target_recovery_id=target.recovery_id,
         config={**target.config, "steps": new_steps},
+        steps_edited=True,
     )
     apply_scoped_node_save(project_root=tmp_path, request=request)
 

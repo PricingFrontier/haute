@@ -434,6 +434,42 @@ parser does not require extraction to be a fixpoint of rendering: it rebuilds a
 surface's steps from the extracted body, and `canonical_steps` models the finaliser
 extraction ends with.
 
+**Which steps a write renders (CGEN-11).** A stepped node's code is its program and its
+steps are a view of that code: the load rebuilds them and accepts each only when it
+renders the statement's own text. A list that has been held anywhere since, a browser
+above all (`1.0` arrives as `1`, an integer past 2^53 as its nearest double), may have
+lost what the code holds, so a write renders a node's code from its steps only when the
+writer names the node as one whose steps were edited, or when the node carries no code,
+its steps then being the only copy. Every other stepped node is written from the code it
+carries, byte for byte, and the list it carries is not read: `haute._step_authority`
+takes it off before the node is built, since building a node renders its steps into its
+code (`NodeData`). The writers and what names their edits:
+
+- `POST /api/pipeline/save` names them in `edited_steps`, by scope (the pipeline's own
+  nodes, or a submodel definition's by its id) and node id. The editor names the stepped
+  nodes whose steps differ from the saved baseline's, or that the baseline does not hold,
+  and sends every other one with the code the baseline saved for its steps. A name that
+  is not a node holding a step list in that scope is a 422.
+- `POST /api/pipeline/node/save` says whether its node's steps were edited
+  (`steps_edited`), decided the same way.
+- The assistant's apply and undo name the nodes whose steps the change edited and those
+  whose steps are their file's record of unfinished steps
+  (`_step_authority.steps_to_render`); its check that steps survive a save generates
+  the same source.
+
+A node saved with unfinished steps has the raising placeholder for a body and its list in
+`.haute.json`. Unless its steps were edited, a save writes it from that record, the
+server's own copy, while its body in the file is still that placeholder (the parse's
+`steps_placeholder`, so a record a hand edit left behind is never read) and the node
+carries the code the record loads as; a graph that does not descend from the file, such as
+an earlier commit's, carries its own code and is written from it. The save's answer returns, in `step_code`, the code each named node loads
+with from the file it wrote, which the editor puts in its saved baseline, so a node saved
+again before the browser's own rendering arrives is sent with the code the save wrote.
+The steps editor makes a rendering the node's code only once its steps differ from the
+saved ones; steps as saved keep the code saved for them, so opening a panel edits
+nothing. `tests/test_save_code_authority.py` lists the functions that generate a node's or
+a pipeline's code and fails on a new one.
+
 ## Design rationale
 
 - **Configured behaviour lives in the decorator.** Canvas execution, preview, trace and

@@ -712,6 +712,52 @@ def _finalise_action_plan(
     )
 
 
+def _holds_unfinished_placeholder(path: Path, name: str) -> bool:
+    """Whether the body of the top-level function *name* in the Python file *path*, as the
+    parser extracts it (``_function_body_source``), is the placeholder an unfinished step
+    list is saved with: the parse's own test (``steps_placeholder``)."""
+    from haute._ast_helpers import _function_body_source
+    from haute._code_extraction import holds_incomplete_steps_placeholder
+    from haute._source_layout import python_lines
+
+    raw = path.read_bytes()
+    _prefix, source, _body = _decode_utf8_artifact(raw, artifact="Repair source")
+    lines = python_lines(source)
+    return any(
+        holds_incomplete_steps_placeholder(_function_body_source(lines, statement))
+        for statement in _parse(raw).body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name
+    )
+
+
+def _scoped_config_to_write(
+    path: Path,
+    target: RecoveryPipelineNode,
+    config: dict[str, Any],
+    steps_edited: bool,
+) -> dict[str, Any]:
+    """The settings a node-scoped save writes the node from (CGEN-11): unless its steps
+    were edited, the code it carries, its steps not read, or, while its body in the file
+    is the placeholder an unfinished step list is saved with and the node carries the
+    code that list loads as, the list the file's ``.haute.json`` records: the parse's own
+    rule (``steps_placeholder``), so a record a hand edit left behind is never read."""
+    from haute._sidecar import read_sidecar_state
+    from haute._step_authority import with_recorded_unfinished_steps, without_unread_steps
+
+    if target.node_type not in STEPS_FROM_CODE:
+        return config
+    recorded = None
+    if _holds_unfinished_placeholder(path, target.authored_id):
+        held = read_sidecar_state(path)
+        recorded = held.data.unfinished_steps.get(target.authored_id) if held.data else None
+    from_record = with_recorded_unfinished_steps(
+        target.node_type, config, recorded, edited=steps_edited
+    )
+    if from_record is not None:
+        return from_record
+    return without_unread_steps(config, edited=steps_edited)
+
+
 def apply_scoped_node_save(
     *, project_root: Path, request: PipelineNodeSaveRequest
 ) -> PipelineEditorDocument:
@@ -741,12 +787,13 @@ def apply_scoped_node_save(
     )
     if not target.scoped_editable or target.node_type is None:
         raise _unsupported("This node cannot be saved in isolation; recover or repair it first.")
+    proposed = _scoped_config_to_write(path, target, request.config, request.steps_edited)
     # Code generation keeps only declared keys and a sidecar write refuses the
     # rest, so an undeclared key is refused first, for every node type, before
     # anything is written. The per-type validators then check the declared keys.
     try:
         reject_unrecognized_config_keys(
-            NodeType(target.node_type), request.config, node_label=target.label
+            NodeType(target.node_type), proposed, node_label=target.label
         )
     except ConfigError as exc:
         raise PipelineRepairError(
@@ -758,7 +805,7 @@ def apply_scoped_node_save(
     try:
         config = validate_node_config(
             target.node_type,
-            deepcopy(request.config),
+            deepcopy(proposed),
             require_complete=False,
             node_label=target.label,
         )

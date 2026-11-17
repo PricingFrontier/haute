@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json as _json
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -84,11 +84,15 @@ class SidecarReadResult:
     error_type: str | None = None
 
 
-def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[GraphNode]:
+def with_unfinished_steps(
+    nodes: list[GraphNode], unfinished: Any, placeholders: Collection[str] = frozenset()
+) -> list[GraphNode]:
     """*nodes* with each stepped node saved with an unfinished step list given its steps
     from the sidecar (READ-22, READ-44): one whose body is the placeholder, which loads
-    with no code and no steps. An entry for any other node is ignored; the next save
-    drops it. Every loader of a pipeline file applies it, the editor's document included."""
+    with no code and no steps. A node in *placeholders*, whose body the parse found to be
+    that placeholder, is marked ``steps_recorded``: its steps are its program. An entry
+    for any other node is ignored; the next save drops it. Every loader of a pipeline
+    file applies it, the editor's document included."""
     if not isinstance(unfinished, dict) or not unfinished:
         return nodes
     given: list[GraphNode] = []
@@ -101,7 +105,16 @@ def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[Graph
             and not config.get("code")
             and "steps" not in config
         ):
-            given.append(node.with_config({**config, "steps": steps}))
+            recorded = node.with_config({**config, "steps": steps})
+            if node.id not in placeholders:
+                given.append(recorded)
+                continue
+            editor = recorded.data.editor.recorded()
+            given.append(
+                recorded.model_copy(
+                    update={"data": recorded.data.model_copy(update={"editor": editor})}
+                )
+            )
         else:
             given.append(node)
     return given
@@ -165,7 +178,7 @@ def with_saved_unfinished_steps(
     recovery passes its load's capture."""
     read = read_sidecar_state(py_path, read_bytes=read_bytes)
     held = read.data.unfinished_steps if read.data is not None else {}
-    given = with_unfinished_steps(nodes, held)
+    given = with_unfinished_steps(nodes, held, placeholders)
     for node in given:
         if node.id in placeholders and missing_unfinished_steps(
             node.data.nodeType, "steps" in node.data.config

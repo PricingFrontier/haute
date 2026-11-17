@@ -24,6 +24,7 @@ import { addressKey, nodeFrame } from "../utils/nodeAddress"
 import { answerTargetKey, keyText, keysOnCanvas, placeAddress } from "../utils/answerAddresses"
 import type { PreparedGraph, PreviewInputsResponse } from "../api/types"
 import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
+import { type SavedStepCode, withEditedSteps, withSavedStepCode } from "../utils/editedSteps"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
 import useToastStore from "../stores/useToastStore"
@@ -1672,14 +1673,19 @@ export default function usePipelineAPI({
     // if a newer save hasn't already landed (concurrency guard via
     // saveRequestSeq / appliedSaveSeq).
     const savePreamble = useGraphStore.getState().preamble
-    const saveSubmodels = structuredClone(useGraphStore.getState().submodels)
     const saveSourceRevision = sourceRevisionRef.current
     const saveSourceFile = documentStatus.sourceFile
+    // Only the stepped nodes whose steps were edited since the last save are rendered from
+    // them; every other one is sent with the code that save wrote (CGEN-11).
+    const authored = withEditedSteps(
+      { nodes: n, submodels: structuredClone(useGraphStore.getState().submodels) },
+      useGraphStore.getState().lastSavedSnapshot,
+    )
     const savedSnapshot = captureGraphSnapshot({
-      nodes: n,
+      nodes: authored.document.nodes,
       edges: e,
       preamble: savePreamble,
-      submodels: saveSubmodels,
+      submodels: authored.document.submodels,
       globalConstants: saveConstants,
     })
     const requestGraph = toCanonicalGraphPayload(savedSnapshot)
@@ -1689,14 +1695,16 @@ export default function usePipelineAPI({
     const savePreservedBlocks = preservedBlocksRef.current
     // Mark the exact graph snapshot that reached the backend, unless a newer
     // save has already been applied or another revision arrived meanwhile.
-    const acknowledge = (sourceRevision: string, documentFingerprint: string) => {
+    const acknowledge = (sourceRevision: string, documentFingerprint: string, stepCode: readonly SavedStepCode[]) => {
       if (
         saveRequestId <= appliedSaveSeq.current ||
         useDocumentStatusStore.getState().sourceFile !== saveSourceFile
       ) return
       const observedRevision = sourceRevisionRef.current
       if (observedRevision !== saveSourceRevision && observedRevision !== sourceRevision) return
-      useGraphStore.getState().markSaved(savedSnapshot)
+      // The baseline holds the code the server wrote for each edited node: the browser's own
+      // rendering may not have arrived, and the next save sends this code for those steps.
+      useGraphStore.getState().markSaved(withSavedStepCode(savedSnapshot, stepCode))
       appliedSaveSeq.current = saveRequestId
       sourceRevisionRef.current = sourceRevision
       const status = useDocumentStatusStore.getState()
@@ -1727,6 +1735,7 @@ export default function usePipelineAPI({
       // A repeat under the same operation writes once: the server answers it with
       // what the first request did when that one committed.
       operation: operationKey(),
+      edited_steps: authored.edited,
     }
     // Live sync holds a frame of this file until the save, its repeat included,
     // has settled.
@@ -1742,7 +1751,7 @@ export default function usePipelineAPI({
         if (!isLostAnswer(err)) throw err
         data = await savePipeline(request)
       }
-      acknowledge(data.source_revision, data.document_fingerprint)
+      acknowledge(data.source_revision, data.document_fingerprint, data.step_code ?? [])
       addToast("success", `Saved → ${data.file}`)
       // The ledger commit, the warnings and the identity prompt, as every save reports them.
       reportSaveCapture(data)

@@ -152,6 +152,7 @@ function makeSavePipelineResponse() {
     pipeline_name: "test",
     source_revision: "revision-save",
     document_fingerprint: "fingerprint-save",
+    step_code: [],
     warnings: [],
     git_sha: null,
     identity_required: false,
@@ -848,6 +849,7 @@ describe("endpoint contracts", () => {
       preserved_blocks: [],
       connection_id: "tab-1",
       operation: "save-test-operation",
+      edited_steps: [{ submodel: null, node_id: "t" }],
     }
     await savePipeline(payload)
     const [url, opts] = mockFetch.mock.calls[0]
@@ -859,6 +861,7 @@ describe("endpoint contracts", () => {
     expect(body.base_revision).toBe("rev-1")
     expect(body.connection_id).toBe("tab-1")
     expect(body.operation).toBe("save-test-operation")
+    expect(body.edited_steps).toEqual([{ submodel: null, node_id: "t" }])
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
@@ -867,6 +870,7 @@ describe("endpoint contracts", () => {
       source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
       connection_id: null,
       operation: "save-test-operation",
+      edited_steps: [],
     })
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",
@@ -1992,6 +1996,7 @@ describe("no request carries streaming_chunk_size", () => {
       targetSourceFile: "main.py",
       targetRecoveryId: "node@10",
       config: { path: "data/quotes.parquet" },
+      stepsEdited: false,
     })
     expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/node/save")
     expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
@@ -2000,6 +2005,7 @@ describe("no request carries streaming_chunk_size", () => {
       target_source_file: "main.py",
       target_recovery_id: "node@10",
       config: { path: "data/quotes.parquet" },
+      steps_edited: false,
     })
     expect(document.document_kind).toBe("haute.pipeline_editor_document")
     expect(documentFingerprint).toBe("fp-saved")
@@ -2007,7 +2013,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it.each([
     ["saveNodeScoped", () => import("../client").then(({ saveNodeScoped }) => saveNodeScoped({
-      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "node@10", config: {},
+      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "node@10", config: {}, stepsEdited: false,
     }))],
     ["applyRemoveUnavailableNode", () => applyRemoveUnavailableNode({
       sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false,

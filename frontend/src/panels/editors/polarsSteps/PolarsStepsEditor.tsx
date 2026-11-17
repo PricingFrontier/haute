@@ -2,7 +2,9 @@ import { AlertTriangle } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 
 import useListReorder from "../../../hooks/useListReorder"
+import useGraphStore from "../../../stores/useGraphStore"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
+import { savedCodeForSteps } from "../../../utils/editedSteps"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnUpdateConfig } from "../_shared"
@@ -161,7 +163,12 @@ export default function PolarsStepsEditor({
     [inputSources, isFrame, frameColumns],
   )
   const rendered = useRenderedSteps(steps, inputNames, start, known, nodeId, (code) => {
-    if (config.code !== code) onUpdate("code", code)
+    // A rendering becomes the node's code only once its steps were edited: steps as saved
+    // keep the code saved for them, so opening a panel changes nothing (CGEN-11).
+    const graph = useGraphStore.getState()
+    const saved = savedCodeForSteps(graph.lastSavedSnapshot, graph.focus?.definitionId ?? null, nodeId, steps)
+    const next = saved ?? code
+    if (config.code !== next) onUpdate("code", next)
   })
   const source: ColumnSource = useMemo(
     () => ({

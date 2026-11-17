@@ -84,8 +84,10 @@ from haute.routes._helpers import (
 from haute.schemas import (
     PipelineEditorDocument,
     PipelineRecoveryDiagnostic,
+    SavedStepCode,
     SavePipelineRequest,
     SavePipelineResponse,
+    SteppedNodeRef,
 )
 
 logger = get_logger(component="server.pipeline.save")
@@ -608,6 +610,15 @@ class SavePipelineService:
         warnings.extend(self._global_constant_source_warnings(graph, body.sources))
         py_path = self._resolve_source_file(body.source_file)
         on_disk = self._read_on_disk(py_path, body.base_revision)
+        edited = {(ref.submodel, ref.node_id) for ref in body.edited_steps}
+        recorded = self._with_recorded_unfinished_steps(graph, on_disk.graph, edited)
+        if recorded is not graph:
+            # A node written from its record of unfinished steps warns as an unfinished
+            # list does; validation saw the code it carried.
+            unfinished: list[str] = []
+            self._validate_transforms_are_runnable(recorded, unfinished)
+            warnings.extend(warning for warning in unfinished if warning not in warnings)
+            graph = recorded
         derived_new_files, derived_delete_files = self._derive_definition_file_lifecycle(
             parent_path=py_path,
             graph=graph,
@@ -738,8 +749,69 @@ class SavePipelineService:
             source_revision=source_revision,
             document_fingerprint=self.committed.fingerprint,
             warnings=warnings,
+            step_code=self._saved_step_code(graph, edited),
             **captured._asdict(),
         )
+
+    @staticmethod
+    def _with_recorded_unfinished_steps(
+        graph: PipelineGraph,
+        on_disk: PipelineGraph | None,
+        edited: set[tuple[str | None, str]],
+    ) -> PipelineGraph:
+        """*graph* with each node it does not name in *edited*, saved with unfinished steps,
+        given the list its ``.haute.json`` records in place of the code it carries, so the
+        save writes the record as the file holds it (CGEN-11)."""
+        from haute._step_authority import recorded_unfinished_steps, with_recorded_unfinished_steps
+
+        recorded = recorded_unfinished_steps(on_disk) if on_disk is not None else {}
+        if not recorded:
+            return graph
+
+        def given(scope: str | None, nodes: list[GraphNode]) -> list[GraphNode]:
+            out: list[GraphNode] = []
+            for node in nodes:
+                ref = (scope, node.id)
+                config = with_recorded_unfinished_steps(
+                    node.data.nodeType, node.data.config, recorded.get(ref), edited=ref in edited
+                )
+                out.append(node if config is None else node.with_config(config))
+            return out
+
+        submodels = {
+            definition_id: definition.model_copy(
+                update={
+                    "graph": definition.graph.model_copy(
+                        update={"nodes": given(definition_id, definition.graph.nodes)}
+                    )
+                }
+            )
+            for definition_id, definition in (graph.submodels or {}).items()
+        }
+        return graph.model_copy(
+            update={
+                "nodes": given(None, graph.nodes),
+                "submodels": submodels if graph.submodels is not None else None,
+            }
+        )
+
+    @staticmethod
+    def _saved_step_code(
+        graph: PipelineGraph, edited: set[tuple[str | None, str]]
+    ) -> list[SavedStepCode]:
+        """The code each node in *edited* loads with from the file this save wrote: its
+        steps' rendering, as a reload builds it (``NodeData``), and empty when they do not
+        render."""
+        scopes: list[tuple[str | None, PipelineGraph]] = [(None, graph)]
+        scopes.extend((key, d.graph) for key, d in (graph.submodels or {}).items())
+        return [
+            SavedStepCode(
+                submodel=scope, node_id=node.id, code=str(node.data.config.get("code") or "")
+            )
+            for scope, scoped in scopes
+            for node in scoped.nodes
+            if (scope, node.id) in edited
+        ]
 
     def _capture_save_in_ledger(
         self,
@@ -766,6 +838,7 @@ class SavePipelineService:
         preamble: str | None,
         source_file: str,
         base_revision: str | None,
+        edited_steps: Sequence[tuple[str | None, str]] = (),
         commit_message: str | None = None,
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
@@ -774,6 +847,9 @@ class SavePipelineService:
         same write contract as ``/pipeline/save``: path allowlisting,
         rollback, config filtering, sidecar staging, and post-commit index
         invalidation. This wrapper keeps that contract in one service.
+        *edited_steps* names the stepped nodes, by scope and id, whose steps
+        the mutation changed (``haute._step_authority.steps_to_render``):
+        every other one is written from its code.
 
         Submodel create/dissolve routes deliberately do not call this method:
         they return transform-only graph edits that remain dirty until Save.
@@ -789,6 +865,10 @@ class SavePipelineService:
                 active_source=graph.active_source,
                 preserved_blocks=graph.preserved_blocks,
                 base_revision=base_revision,
+                edited_steps=[
+                    SteppedNodeRef(submodel=scope, node_id=node_id)
+                    for scope, node_id in edited_steps
+                ],
             ),
             commit_message=commit_message,
         )

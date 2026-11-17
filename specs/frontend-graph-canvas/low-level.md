@@ -86,6 +86,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings. |
 | `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
 | `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and canonical request projection: every graph sent to a canonical backend schema recursively strips editor-only identities and React Flow presentation without mutating live state; dirty serialization uses the same projection, while live history clones retain only the server-owned identity subset. `authoredNodeForm` and `authoredEdgeForm` are a node's or edge's authored form, without presentation fields or execution annotations, `nodeExecutionAnnotations` the annotations a node carries, and `holdsCanvasState` whether a node carries either. |
+| `frontend/src/utils/editedSteps.ts` | Which stepped nodes a save names (codegen high-level "Which steps a write renders"): `withEditedSteps` names the nodes whose steps differ from the saved baseline's and gives every other one the code saved for its steps; `savedCodeForSteps` is that code for one node (the steps editor and the node-scoped save); `withSavedStepCode` puts the code a save wrote in the baseline it becomes |
 | `frontend/src/utils/structuralFingerprint.ts` | Pure structural fingerprint of a graph (node ids and kinds, edge endpoints, and every submodel definition's public port ids and labels) that the boundary-editing hook compares to decide whether the workspace changed while parent identities were resolving; positions, selection, dragging, and dimensions are excluded on purpose. |
 | `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations; Explore presentation keys and the modelling and optimiser export settings (`exportConfigKeysFor`) do not contribute to a node's config hash. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
@@ -931,7 +932,12 @@ reconciliation rather than dropping them or committing a second mutation.
     submodel saves the whole pipeline and leaves the view as it is. Runs
     `validateConfigRefs` (warns, does not block) and `findFirstInvalidEdgeJoin` (blocks with
     an error toast if invalid) over the pipeline's own nodes and edges, as from the main
-    pipeline. Captures an exact live document snapshot for the successful
+    pipeline. Names in `edited_steps` the stepped nodes whose steps differ from the
+    saved baseline's, or that the baseline does not hold, and gives every other stepped
+    node the code the baseline saved for its steps, never the live node's own copy, a
+    cache Undo and Redo restore with whatever rendering it held
+    (`utils/editedSteps.withEditedSteps`; [codegen](../codegen/high-level.md), "Which
+    steps a write renders"). Captures that document as the snapshot for the successful
     saved baseline, then projects a separate immutable canonical request graph.
     That request recursively strips React Flow presentation and every
     underscore-prefixed node/edge field; the live snapshot keeps its authoritative
@@ -939,8 +945,9 @@ reconciliation rather than dropping them or committing a second mutation.
     request also sends `preservedBlocksRef.current` unchanged.
     It then stamps the attempt with
     `++saveRequestSeq.current`. On a successful `savePipeline()` response,
-    calls `markSaved(savedSnapshot)` only if this request's id is still the
-    newest applied (`saveRequestId > appliedSaveSeq.current`), then updates
+    calls `markSaved` with `savedSnapshot` given the response's `step_code` (the code
+    the server wrote for each named node, `withSavedStepCode`) only if this request's id
+    is still the newest applied (`saveRequestId > appliedSaveSeq.current`), then updates
     `useGitStore`'s last-save SHA and notifies its history-changed
     subscribers and, unless a distinct intervening watcher revision arrived,
     replaces `sourceRevisionRef.current` with the committed `source_revision`.

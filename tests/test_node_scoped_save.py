@@ -60,7 +60,7 @@ def _recover(root: Path, authored_id: str) -> None:
     apply_recover_unavailable_node_plan(project_root=root, request=request)
 
 
-def _save_request(root: Path, authored_id: str, config: dict):
+def _save_request(root: Path, authored_id: str, config: dict, *, steps_edited: bool = False):
     from haute.schemas import PipelineNodeSaveRequest
 
     document = load_pipeline_editor_document(root / "main.py", project_root=root)
@@ -71,6 +71,7 @@ def _save_request(root: Path, authored_id: str, config: dict):
         target_source_file=target.source_file,
         target_recovery_id=target.recovery_id,
         config=config,
+        steps_edited=steps_edited,
     )
 
 
@@ -170,7 +171,9 @@ def test_scoped_save_edits_blocked_node_downstream_of_broken_input(tmp_path):
     assert [step["kind"] for step in config["steps"]] == ["source"]
     limit = {"id": "limit-2", "kind": "limit", "n": 1}
 
-    request = _save_request(tmp_path, "transform", {**config, "steps": [*config["steps"], limit]})
+    request = _save_request(
+        tmp_path, "transform", {**config, "steps": [*config["steps"], limit]}, steps_edited=True
+    )
     saved = apply_scoped_node_save(project_root=tmp_path, request=request)
     node = next(item for item in saved.nodes if item.authored_id == "transform")
     assert node.availability == "blocked"
@@ -201,7 +204,9 @@ def test_scoped_save_keeps_an_unfinished_step_list_until_it_is_complete(tmp_path
 
     saved = apply_scoped_node_save(
         project_root=tmp_path,
-        request=_save_request(tmp_path, "transform", {**config, "steps": unfinished}),
+        request=_save_request(
+            tmp_path, "transform", {**config, "steps": unfinished}, steps_edited=True
+        ),
     )
 
     assert "raise NotImplementedError" in main.read_text()
@@ -216,7 +221,9 @@ def test_scoped_save_keeps_an_unfinished_step_list_until_it_is_complete(tmp_path
     complete = [*config["steps"], {"id": "limit-2", "kind": "limit", "n": 1}]
     apply_scoped_node_save(
         project_root=tmp_path,
-        request=_save_request(tmp_path, "transform", {**config, "steps": complete}),
+        request=_save_request(
+            tmp_path, "transform", {**config, "steps": complete}, steps_edited=True
+        ),
     )
 
     assert "df.head(1)" in main.read_text()
@@ -247,7 +254,9 @@ def test_scoped_save_of_unfinished_steps_refuses_a_sidecar_the_editor_refuses(tm
     ).config
     assert request_config is not None
     unfinished = [*request_config["steps"], {"id": "filter-2", "kind": "filter", "match": "all"}]
-    request = _save_request(tmp_path, "transform", {**request_config, "steps": unfinished})
+    request = _save_request(
+        tmp_path, "transform", {**request_config, "steps": unfinished}, steps_edited=True
+    )
     before = {path: path.read_bytes() for path in (main, sidecar)}
 
     with pytest.raises(PipelineRepairError, match="cannot be read"):
@@ -341,7 +350,9 @@ def test_scoped_save_that_adds_code_imports_polars_for_the_hook(tmp_path):
     added = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
     apply_scoped_node_save(
         project_root=tmp_path,
-        request=_save_request(tmp_path, "rate", {**(rate.config or {}), "steps": added}),
+        request=_save_request(
+            tmp_path, "rate", {**(rate.config or {}), "steps": added}, steps_edited=True
+        ),
     )
 
     saved = main.read_text(encoding="utf-8")

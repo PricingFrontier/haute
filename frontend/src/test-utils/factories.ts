@@ -1015,6 +1015,7 @@ export function makeSavePipelineResponse(
     pipeline_name: "main",
     source_revision: "revision-save",
     document_fingerprint: "fingerprint-save",
+    step_code: [],
     warnings: [],
     git_sha: null,
     identity_required: false,

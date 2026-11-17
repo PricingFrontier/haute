@@ -15987,7 +15987,7 @@
     },
     "NodeEditorState": {
       "additionalProperties": false,
-      "description": "What the server knows about a node for its editor, carried beside the config.\n\nNone of it is a setting: it is never persisted, hashed or validated as config.\n``steps_error`` is derived from the node's ``steps`` whenever its data is\nbuilt; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is\nthe parse's finding. A request may carry the field back, as a transform of the\ngraph echoes it, but a save never reads the finding from it: it reparses the\nfile on disk.",
+      "description": "What the server knows about a node for its editor, carried beside the config.\n\nNone of it is a setting: it is never persisted, hashed or validated as config.\n``steps_error`` is derived from the node's ``steps`` whenever its data is\nbuilt; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is\nthe parse's finding. A request may carry the field back, as a transform of the\ngraph echoes it, but a save never reads the finding from it: it reparses the\nfile on disk.\n\n``steps_recorded`` is a finding of a parse on the server, never sent or read\nfrom a request: the node's body is the placeholder an unfinished step list is\nsaved with, and its steps are the list its ``.haute.json`` records.",
       "properties": {
         "steps_discarded": {
           "anyOf": [
@@ -23099,6 +23099,13 @@
           "title": "Status",
           "type": "string"
         },
+        "step_code": {
+          "items": {
+            "$ref": "#/$defs/SavedStepCode"
+          },
+          "title": "Step Code",
+          "type": "array"
+        },
         "uncaptured": {
           "items": {
             "type": "string"
@@ -23123,9 +23130,46 @@
         "file",
         "pipeline_name",
         "source_revision",
-        "document_fingerprint"
+        "document_fingerprint",
+        "step_code"
       ],
       "title": "SavePipelineResponse",
+      "type": "object"
+    },
+    "SavedStepCode": {
+      "additionalProperties": false,
+      "description": "The code a node the save rendered from its steps loads with from the file it wrote:\nthe steps' rendering, as a reload builds it, and empty when they do not render.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "node_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "submodel": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodel"
+        }
+      },
+      "required": [
+        "submodel",
+        "node_id",
+        "code"
+      ],
+      "title": "SavedStepCode",
       "type": "object"
     },
     "ScenarioExpanderConfig": {

@@ -120,7 +120,10 @@ This fits the boundary above. The standard-library AST is used only to propose s
 Nothing is unparsed over authored code, and LibCST is not needed, since nothing is
 rewritten. A statement becomes a step only when the renderer, given that step after the
 steps rebuilt before it, prints exactly the statement's text. Every other statement keeps
-its text as code. The rebuilt steps never take authority over Python they cannot describe.
+its text as code. The rebuilt steps never take authority over Python they cannot describe,
+and a save writes a node from its steps only when they were edited: a list that has been
+held elsewhere since the load is not read for a node nobody edited ("Which steps a write
+renders" in [high-level](high-level.md)).
 
 ### Canonical form
 

@@ -164,6 +164,7 @@ describe("client runtime contracts", () => {
         preserved_blocks: [],
         connection_id: null,
         operation: "save-test-operation",
+        edited_steps: [],
       }),
     ).rejects.toThrow("SavePipelineResponse: invalid contract")
   })
