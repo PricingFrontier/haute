@@ -263,8 +263,12 @@ latest (otherwise raises `SupersededRequestError` without ever running the worke
 the worker exclusively for that key.
 
 **`SavePipelineService._TouchedFile`** (`routes/_save_pipeline.py`) is a `NamedTuple` of
-`(target: Path, previous_bytes: bytes | None)` — `None` means the file did not exist before
-this save (rollback deletes it); otherwise rollback restores the snapshotted bytes.
+`(target: Path, previous_bytes: bytes | None, written_digest, deleted, unchanged)` — `None`
+means the file did not exist before this save (rollback deletes it); otherwise rollback
+restores the snapshotted bytes. `unchanged` marks a file that already held the bytes the save
+commits: `_stage_artifact_write_bytes` (and `save_sidecar` for a position sidecar) does not
+write it, and rollback skips it, so an unchanged file keeps its modification time; the save,
+a workbench form's save and a repair all write through it.
 
 **HTTP endpoint contracts owned here** (FastAPI adds its standard 422 validation envelope
 when a path/query/body fails model validation):

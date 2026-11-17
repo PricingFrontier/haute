@@ -504,7 +504,10 @@ pipeline's sources.
   parent position sidecar, managed child position/ownership sidecars, and
   requested submodel source-plus-sidecar deletions form the rollback-covered
   transaction: previous bytes are snapshotted (or a file is recorded as new) before mutation,
-  and a failure restores/deletes every touched path best-effort before re-raising. Stale-config
+  and a failure restores/deletes every touched path best-effort before re-raising. A file that
+  already holds the bytes the save commits is not written, so its modification time stays (an
+  editor, a sync client or a watcher on the folder would read a rewrite as an edit), and
+  rollback leaves it alone; it is still one of the save's files, for the ledger's capture. Stale-config
   deletion and git-ledger capture occur only after that transaction succeeds and are not
   rolled back. Typed git failures become response warnings because the filesystem save is
   already durable; an unexpected non-`GitError` still propagates. API-input cache mirroring is
