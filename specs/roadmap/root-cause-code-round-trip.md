@@ -64,7 +64,13 @@ code text it carries, byte for byte, and the list it carries is not read.
 An acknowledged save moves the baseline as it does today, so the next save
 names only what changed since, an edit made while a save ran is still
 named, and an Undo or Redo after a save is named when it leaves the list
-different from what was saved. The store's history is not changed.
+different from what was saved. The store's history is not changed. A node
+that goes unnamed must carry the code that was saved for its steps, and
+the browser's own rendering arrives late and separately. So the save's
+answer returns the code the server wrote for each node it rendered, and
+the acknowledgement puts that code in the baseline, and on the live node
+where its steps are still the ones saved. A node whose steps have changed
+again keeps its own and is named by the next save.
 Comparing the carried list with one rebuilt from the code was set aside: a
 field lost in the browser makes the two differ, which is the case that must
 not render. The steps editor adopts a rendering as the node's code only
@@ -77,7 +83,9 @@ for byte. A second test removes or changes one field of an unedited step in
 transit and requires the node's code unchanged. A browser test edits a
 step and saves twice, edits during a save, and saves, undoes, redoes and
 saves; each save writes the code of the steps on screen and no other
-node's. A test fails when code is rendered from a step list anywhere but through
+node's. With the browser's own rendering held back, a step is edited and
+the pipeline saved twice: the second save leaves the file as the first
+wrote it. A test fails when code is rendered from a step list anywhere but through
 the nodes a save names. The journey of `CGEN-09` with no step edited passes
 without its own remedy.
 
