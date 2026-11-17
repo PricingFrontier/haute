@@ -30,7 +30,8 @@ keeps something of its own to do.
 
 `WB-61` needs the helper to see text typed and not yet committed, which
 [panel values and Undo](root-cause-panel-drafts.md) provides. Of `WB-41`
-only the quote list's unguarded `loadingMore` is this cause. Four packages
+the quote list's `loadingMore`, its reset and its guard, is done here; the
+rest of that package is not this cause. Four packages
 that look alike are not: `MLR-10` (a retry that reuses an operation's id
 with other settings), `AST-06` (an event the server does not send) and
 `FEG-04` and `FEG-05` (a save whose outcome is not known). No answer
@@ -68,7 +69,12 @@ document, the node, the panel, the edit it was asked under, and whether a
 field it would write to is being typed in, read from the shared draft. A
 late answer is dropped, or handed back marked stale for the caller to
 settle, and what runs after the answer (a flag cleared, a list reloaded) is
-under the same check. Replace the 22 hand-kept guards with it. Add a test
+under the same check. Whatever a request set while it waited, such as a
+loading flag, is reset at the moment the request stops being current, not
+when its answer comes: otherwise dropping the late answer would leave the
+flag set for good, and the quote list could not load a further page. The
+quote list's reset on a change of list is part of this work. Replace
+the 22 hand-kept guards with it. Add a test
 that finds each function which writes state after waiting without the
 helper, and fails for any; the pull request shows it failing on a guard
 written by hand.
@@ -76,7 +82,10 @@ written by hand.
 **Acceptance:** One test drives every surface that calls the server: it
 holds the answer, changes what it belongs to (another document, the node
 deleted, an Undo, text typed and not committed), lets the answer go, and
-requires the page to show the current state. No function writes state
+requires the page to show the current state. With a further page of one
+quote list still awaited, another list is opened: it loads its own further
+page before the first answer comes, and is unchanged when it does. No
+function writes state
 after waiting outside the helper. The journeys of `FEG-10`, `VCS-10`,
 `FEP-04`, `FEN-01` and `FEN-10` pass.
 

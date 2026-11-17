@@ -54,11 +54,17 @@ browser will be found the same way, in a saved file.
 
 **Plan:** Make the code the authority and the steps a view of it. A step
 list reaches the code through one operation only: an edit made in the steps
-editor. The editor records that edit on the node, with the source revision
-it was made on, and Undo takes the record away with the edit. A save
-renders a node's code from its steps only where that record is present and
-its revision is the one being saved on. Every other node keeps the code
-text it carries, byte for byte, and the list it carries is not read.
+editor. Whether a node's steps were edited is not a mark kept on the node,
+which would need a life of its own through saves, Undo and Redo. It is
+worked out in the browser when a save is sent: the node's step list is
+compared with the list in the store's saved baseline, two values that
+never left the browser. A save names the nodes whose lists differ, and the
+server renders code from steps for those alone. Every other node keeps the
+code text it carries, byte for byte, and the list it carries is not read.
+An acknowledged save moves the baseline as it does today, so the next save
+names only what changed since, an edit made while a save ran is still
+named, and an Undo or Redo after a save is named when it leaves the list
+different from what was saved. The store's history is not changed.
 Comparing the carried list with one rebuilt from the code was set aside: a
 field lost in the browser makes the two differ, which is the case that must
 not render. The steps editor adopts a rendering as the node's code only
@@ -68,10 +74,11 @@ after such an edit, never on opening a panel.
 hand-written statements, passes the document through a number and text
 round trip as JavaScript performs it, saves, and requires each file byte
 for byte. A second test removes or changes one field of an unedited step in
-transit and requires the node's code unchanged. A third sends a step edit
-recorded on another revision and requires the save refused naming the node.
-A test fails when code is rendered from a step list anywhere but through
-the recorded edit. The journey of `CGEN-09` with no step edited passes
+transit and requires the node's code unchanged. A browser test edits a
+step and saves twice, edits during a save, and saves, undoes, redoes and
+saves; each save writes the code of the steps on screen and no other
+node's. A test fails when code is rendered from a step list anywhere but through
+the nodes a save names. The journey of `CGEN-09` with no step edited passes
 without its own remedy.
 
 **Dependencies:** None. Deliver before `CGEN-09`, `CGEN-10` and `PCF-06`.

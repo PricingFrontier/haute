@@ -74,9 +74,15 @@ Workbench one revision of the project's inputs, taken from the same
 record, in place of their own lists, and give the browser one key for a
 derived request, built from the document as it stands with its constants
 and preamble, that every estimate and preview uses. The pull request first
-proves that the reads can be gathered across a lazy plan and a worker;
-where they cannot, a read the graph does not declare is refused at save
-and lint, naming the node, as `CCH-05` allows.
+proves that the reads can be gathered across a lazy plan and a worker.
+Where they cannot, the record is made wider, never narrower: every file
+under the project's utility folder and every params file counts as read,
+so a change to any of them makes the result old. That still meets the
+acceptance of each package marked "Resolves", at the cost of some work
+done again. Refusing a read is kept to the one case `CCH-05` allows, a
+utility import inside a node's code. If neither a gathered nor a wider
+record can be made for some kind of input, that is brought to the user
+before the work goes on, and the package it leaves open becomes "In part".
 
 **Acceptance:** One table-driven test changes each kind of input in turn: a
 node's code, a utility module imported at the top and one imported inside a

@@ -54,10 +54,14 @@ fact. This cause rests on those two findings.
 writes files, or moves more than one ref (catch up, restore, switching
 branch), writes what it is about to do: the operation, the commit each ref
 it touches is at, the commit each will be at, and the files. It removes the
-record after its last step. A failure the operation catches is put back
-from the record, to the commits it holds, before the call returns, and the
-result is checked against them; the record stays only when the put-back
-could not finish. At start, and before any git action, a record that is
+record after its last step. The record also names the operation's commit
+point, the step after which it goes forward and not back. A failure caught
+before that point is put back from the record, to the commits it holds,
+before the call returns, and the result is checked against them. A failure
+after it keeps what was committed: a restore that has published its commit
+to the ledger stays recorded, as the git specification requires, and Retry
+finishes its files. The record stays whenever the operation could neither
+be put back nor finished. At start, and before any git action, a record that is
 still there is the interruption: readiness names it, and Retry finishes it
 or puts it back. Add a test that fails when a function moves a ref outside
 an operation that holds a record, apart from a save's one commit to the
@@ -66,8 +70,10 @@ ledger.
 **Acceptance:** A test stops the process after each step of each such
 operation in turn. At the next start readiness names the operation and its
 files, and Retry completes it or returns every ref to the commit the record
-holds. A second test makes each step fail and be caught, and requires the
-refs and the files as they were before the call returned. At no point are
+holds. A second test makes each step fail and be caught: before the
+operation's commit point it requires the refs and the files as they were,
+before the call returns; after it, the commit kept, the interruption
+recorded and Retry finishing the files. At no point are
 the refs anywhere but where the record says the step reached; a save that
 moves the ledger ahead of the working branch is no such case. The
 acceptance of `VCS-04` is met.
