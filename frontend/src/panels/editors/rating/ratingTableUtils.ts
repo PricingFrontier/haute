@@ -20,10 +20,8 @@ export type RatingTable = {
   factors: string[]
   factor_dtypes?: Record<string, RatingFactorDtype>
   output_column: string
-  /** Fills every miss; absent (or null) means a miss follows `on_missing`. */
+  /** Fills every miss (On miss: Use default); absent, null or blank leaves a miss empty. */
   default_value?: string | null
-  /** What a miss does without a usable default: `"error"` (the engine's default) or `"neutral"`. */
-  on_missing?: string
   entries: Record<string, string | number>[]
 }
 
@@ -37,9 +35,18 @@ export type RatingTableStatus = {
   issues: string[]
 }
 
-/** A new table has no default, so a level it does not list stops the run. */
+/** A new table has no default, so a level it does not list leaves its rate empty. */
 export function newRatingTable(): RatingTable {
   return { factors: [], output_column: "", entries: [] }
+}
+
+/**
+ * Whether a table's misses take its default (On miss: Use default) rather than
+ * staying empty: the engine's rule, a `default_value` that is not blank. A
+ * normalised table holds a number's default as its text, so a number counts.
+ */
+export function tableUsesDefault(table: RatingTable): boolean {
+  return typeof table.default_value === "string" && table.default_value.trim() !== ""
 }
 
 function isEntry(value: unknown): value is Record<string, string | number> {
@@ -139,7 +146,6 @@ function normaliseRatingTable(raw: unknown): RatingTable {
     ...(factorDtypes ? { factor_dtypes: factorDtypes } : {}),
     output_column: outputColumn,
     ...normaliseDefaultValue(table.default_value),
-    ...(typeof table.on_missing === "string" ? { on_missing: table.on_missing } : {}),
     entries: Array.isArray(table.entries) ? table.entries.filter(isEntry) : [],
   }
 }

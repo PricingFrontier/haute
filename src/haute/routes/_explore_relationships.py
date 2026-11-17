@@ -146,7 +146,7 @@ def _named(column: str | None) -> str | None:
 def _question(body: ExploreRelationshipsRequest) -> _Question:
     features = _distinct(body.features)
     key_columns = _distinct(body.key_columns)
-    target = _named(body.target)
+    target = _named(body.target_column)
     weight = _named(body.weight)
     if not features and not key_columns:
         raise _unprocessable("Choose at least one feature or key column.")

@@ -75,6 +75,7 @@ from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.node_data import node_data_service
 from haute.schemas import EditorIdentityRequestNode
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._source_files import source_files
 from tests._workbench_helpers import form_table, without_form_tables, workbench_project
@@ -918,7 +919,11 @@ def test_the_node_data_routes_read_a_workbench_table_directly(project: Path, cli
     graph = without_form_tables(_pricing(project, NodeType.WORKBENCH_INPUT))
     graph.nodes.append(_node("explore", NodeType.EXPLORE, {"steps": []}))
     graph.edges.append(_edge("workbench_input", "explore", "items_input"))
-    body = {"graph": graph.model_dump(mode="json"), "node_id": "explore", "source": "live"}
+    body = {
+        "graph": graph.model_dump(mode="json"),
+        "target": {"occurrence": None, "node_id": "explore"},
+        "source": "live",
+    }
 
     point = client.post("/api/node-data/point", json=body)
     run = client.post("/api/node-data/run", json=body)
@@ -1213,7 +1218,7 @@ def test_a_misfit_sample_answers_the_preview_route_with_422(
         with TestClient(app, raise_server_exceptions=False) as client:
             response = client.post(
                 "/api/pipeline/preview",
-                json={"graph": graph.model_dump(mode="json"), "node_id": "listed"},
+                json={"graph": graph.model_dump(mode="json"), "target": node_target("listed")},
             )
     finally:
         shutdown_interactive_worker_pool()

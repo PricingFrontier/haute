@@ -446,7 +446,9 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
         side_effect=fake_execute_sink,
     ):
         response = await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            WriteOutputRequest(
+                graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+            )
         )
 
     assert response.status == "ok"

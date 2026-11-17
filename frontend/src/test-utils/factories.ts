@@ -39,6 +39,28 @@ export function makeNode(
   } as Node
 }
 
+/**
+ * A node carrying the editor identities a loaded document gives it (named by its
+ * id), as a submodel's children always do, so a view projected from it can name
+ * its edges.
+ */
+export function makeIdentifiedNode(
+  id: string,
+  nodeType = "polars",
+  overrides: Partial<Node> = {},
+): Node {
+  const { data: dataOverrides, ...rest } = overrides
+  return makeNode(id, nodeType, {
+    ...rest,
+    data: {
+      _functionName: id,
+      _defaultInputName: id,
+      _sourceHandleInputNames: {},
+      ...dataOverrides,
+    },
+  })
+}
+
 // ---------------------------------------------------------------------------
 // makeEdge — React Flow Edge
 // ---------------------------------------------------------------------------
@@ -61,7 +83,7 @@ export function makeEdge(
 }
 
 // ---------------------------------------------------------------------------
-// makeSimpleNode — Lightweight SimpleNode (used by buildGraph, NodePanel)
+// makeSimpleNode — Lightweight SimpleNode (used by NodePanel and editor tests)
 // ---------------------------------------------------------------------------
 
 /**
@@ -345,14 +367,24 @@ import type {
   TrainStatusResponse,
 } from "../api/types"
 
+/** A training estimate's fields, the nodes it names given as the text a fixture names them by. */
+export type TrainEstimateFixture = Omit<Partial<TrainEstimate>, "unavailable" | "unbounded_join_node_ids"> & {
+  unavailable?:
+    | { reason: "row_count_unprovable"; blocking_node_id: FixtureKey }
+    | { reason: "schema_unresolvable"; blocking_node_id: null }
+    | null
+  unbounded_join_node_ids?: FixtureKey[]
+}
+
 /**
- * Create a `TrainEstimate` with sensible defaults.
- *
- * @param overrides – Partial overrides for any TrainEstimate field.
+ * Create a `TrainEstimate` with sensible defaults. Every node it names is addressed as a node
+ * of the pipeline under its own text, unless `node_addresses` says otherwise.
  */
-export function makeTrainEstimate(
-  overrides: Partial<TrainEstimate> = {},
-): TrainEstimate {
+export function makeTrainEstimate(overrides: TrainEstimateFixture = {}): TrainEstimate {
+  const { unavailable = null, unbounded_join_node_ids = [], node_addresses, ...rest } = overrides
+  const blocking = unavailable?.reason === "row_count_unprovable" ? fixtureKey(unavailable.blocking_node_id) : null
+  const joins = unbounded_join_node_ids.map(fixtureKey)
+  const named = [...(blocking ? [blocking] : []), ...joins].map((key) => key as unknown as string)
   return {
     total_rows: 10000,
     safe_row_limit: null,
@@ -366,11 +398,16 @@ export function makeTrainEstimate(
     gpu_vram_rows: null,
     gpu_vram_available_mb: null,
     gpu_warning: null,
-    unavailable: null,
-    unbounded_join_node_ids: [],
     fit_mode: "in_memory",
     evaluation_preview: null,
-    ...overrides,
+    ...rest,
+    unavailable: unavailable === null
+      ? null
+      : blocking
+        ? { reason: "row_count_unprovable", blocking_node_id: blocking }
+        : { reason: "schema_unresolvable", blocking_node_id: null },
+    unbounded_join_node_ids: joins,
+    node_addresses: { ...rootAddresses(...named), ...node_addresses },
   }
 }
 
@@ -442,7 +479,7 @@ export function makeTrainStatus(
 
 export function makeInputSummary(overrides: Partial<OptimiserInputSummary> = {}): OptimiserInputSummary {
   return {
-    node_id: "optimiser_1",
+    node: { occurrence: null, node_id: "optimiser_1", label: "optimiser_1" },
     data_source: "batch",
     source_file: "main.py",
     graph_fingerprint: "3f9a1c",
@@ -571,12 +608,28 @@ import type {
   NodeDataStatusResponse,
 } from "../api/types"
 
-export function makeNodeDataPoint(
-  overrides: Partial<NodeDataPointResponse> = {},
-): NodeDataPointResponse {
+/** A point's fields, its consumer and producer given as the text a fixture names them by. */
+export type NodeDataPointFixture = Omit<Partial<NodeDataPointResponse>, "consumer_node_id" | "point"> & {
+  consumer_node_id?: FixtureKey
+  point?: { producer_node_id: FixtureKey; port_label?: string | null }
+}
+
+/**
+ * A data point with every field the server sends. Its consumer and producer are addressed as
+ * nodes of the pipeline under their own text, unless `node_addresses` says otherwise.
+ */
+export function makeNodeDataPoint(overrides: NodeDataPointFixture = {}): NodeDataPointResponse {
+  const {
+    consumer_node_id = "explore",
+    point = { producer_node_id: "source", port_label: null },
+    node_addresses,
+    ...rest
+  } = overrides
+  const consumer = fixtureKey(consumer_node_id)
+  const producer = fixtureKey(point.producer_node_id)
   return {
-    consumer_node_id: "explore",
-    point: { producer_node_id: "source", port_label: null },
+    consumer_node_id: consumer,
+    point: { producer_node_id: producer, port_label: point.port_label ?? null },
     slot_key: "slot",
     kind: "node_output",
     state: "missing",
@@ -590,7 +643,11 @@ export function makeNodeDataPoint(
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
-    ...overrides,
+    ...rest,
+    node_addresses: {
+      ...rootAddresses(consumer as unknown as string, producer as unknown as string),
+      ...node_addresses,
+    },
   }
 }
 
@@ -698,15 +755,86 @@ export function makeInputCacheSnapshot(
 // makePreviewResponse — a whole POST /api/pipeline/preview answer
 // ---------------------------------------------------------------------------
 
-import type { PreviewNodeResponse } from "../api/types"
+import type { PreviewInputsResponse, PreviewNodeResponse } from "../api/types"
+import type { OccurrencePortProvenance, RuntimeNodeKey } from "../generated/api-contracts.generated"
+import type { FrameTargetPayload } from "../utils/requestGateway"
 
-/** A preview response as the server sends it, every field present. */
+/** A runtime key as an answer names it: opaque text the browser only looks up. */
+export function runtimeKey(text: string): RuntimeNodeKey {
+  return text as unknown as RuntimeNodeKey
+}
+
+/** A node frame target as a preview request sends it: a pipeline node, or a child of `occurrence`. */
+export function nodeTarget(
+  nodeId: string,
+  { occurrence = null, portLabel = null, portLabels = null }: {
+    occurrence?: string | null
+    portLabel?: string | null
+    portLabels?: string[] | null
+  } = {},
+): FrameTargetPayload {
+  return { kind: "node", occurrence, node_id: nodeId, port_label: portLabel, port_labels: portLabels }
+}
+
+/** The node a preview request's node target names, by its id in its occurrence (or the pipeline). */
+export function targetNodeId(target: FrameTargetPayload): string {
+  if (target.kind !== "node") throw new Error(`Not a node target: ${JSON.stringify(target)}`)
+  return target.node_id
+}
+
+/** The pipeline node a preview request's body targets, or null when it targets anything else. */
+export function previewTargetNode(body: unknown): string | null {
+  const target = (body as { target?: Partial<FrameTargetPayload> } | null)?.target
+  if (target?.kind !== "node" || target.occurrence !== null) return null
+  return typeof target.node_id === "string" && target.node_id.length > 0 ? target.node_id : null
+}
+
+/** One entry of a preview answer's frame provenance: what an occurrence's port resolves to. */
+export function occurrencePort(
+  occurrence: string,
+  direction: "input" | "output",
+  port: string,
+  endpoint: { key: string; handle?: string | null } | null,
+): OccurrencePortProvenance {
+  return {
+    occurrence,
+    direction,
+    port,
+    endpoint: endpoint ? { key: runtimeKey(endpoint.key), handle: endpoint.handle ?? null } : null,
+  }
+}
+
+/**
+ * Addresses for keys an answer names as the pipeline's own nodes, labelled by their ids:
+ * what the server sends for nodes of a pipeline with no submodel open.
+ */
+export function rootAddresses(...keys: string[]): PreviewNodeResponse["node_addresses"] {
+  return Object.fromEntries(keys.map((key) => [key, { occurrence: null, node_id: key, label: key }]))
+}
+
+/** A preview-inputs answer naming the pipeline's own input nodes `ids`, each addressed. */
+export function makePreviewInputsResponse(...ids: string[]): PreviewInputsResponse {
+  return { input_node_ids: ids.map(runtimeKey), node_addresses: rootAddresses(...ids) }
+}
+
+/**
+ * A preview response as the server sends it, every field present. Unless `overrides`
+ * gives `node_addresses`, every key its maps name is addressed as a pipeline node.
+ */
 export function makePreviewResponse(
   overrides: Partial<PreviewNodeResponse> = {},
 ): PreviewNodeResponse {
+  const named = [
+    ...Object.keys(overrides.node_statuses ?? {}),
+    ...Object.keys(overrides.node_columns ?? {}),
+    ...Object.keys(overrides.node_available_columns ?? {}),
+    ...Object.keys(overrides.node_frame_columns ?? {}),
+    ...Object.keys(overrides.node_schema_warnings ?? {}),
+    ...(overrides.timings ?? []).map((timing) => timing.node_id as unknown as string),
+    ...(overrides.memory ?? []).map((entry) => entry.node_id as unknown as string),
+  ]
   return {
     status: "ok",
-    node_id: "n1",
     row_count: 0,
     column_count: 0,
     columns: [],
@@ -733,7 +861,9 @@ export function makePreviewResponse(
     node_schema_warnings: {},
     execution_metrics: null,
     seed_plan: [],
+    occurrence_ports: [],
     ...overrides,
+    node_addresses: overrides.node_addresses ?? rootAddresses(...new Set(named)),
   }
 }
 
@@ -741,12 +871,23 @@ export function makePreviewResponse(
 // Trace factories — a trace as POST /api/pipeline/trace answers it
 // ---------------------------------------------------------------------------
 
-import type { TraceCorrelationDiagnostic, TraceResult, TraceStep } from "../types/trace"
+import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult, TraceStep } from "../types/trace"
+
+/** A node key as a trace fixture names it: plain text, or a key already made. */
+type FixtureKey = string | RuntimeNodeKey
+
+function fixtureKey(key: FixtureKey): RuntimeNodeKey {
+  return typeof key === "string" ? runtimeKey(key) : key
+}
+
+/** A trace step's fields, its key given as the text a fixture names it by. */
+export type TraceStepFixture = Omit<Partial<TraceStep>, "node_id"> & { node_id?: FixtureKey }
 
 /** A trace step with every field the server sends. */
-export function makeTraceStep(overrides: Partial<TraceStep> = {}): TraceStep {
+export function makeTraceStep(overrides: TraceStepFixture = {}): TraceStep {
+  const { node_id = "n1", ...rest } = overrides
   return {
-    node_id: "n1",
+    node_id: fixtureKey(node_id),
     node_name: "Step",
     node_type: "polars",
     schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] },
@@ -762,14 +903,55 @@ export function makeTraceStep(overrides: Partial<TraceStep> = {}): TraceStep {
     row_lineage_type: null,
     snapshot_generation_id: null,
     identical_row_count: null,
-    ...overrides,
+    ...rest,
   }
 }
 
-/** A trace result with every field the server sends. */
-export function makeTraceResult(overrides: Partial<TraceResult> = {}): TraceResult {
+/** A trace omission's fields, its key given as the text a fixture names it by. */
+export type TraceOmissionFixture = Omit<Partial<TraceOmission>, "node_id"> & { node_id?: FixtureKey }
+
+/** A trace omission with every field the server sends, its key given as text. */
+export function makeTraceOmission(overrides: TraceOmissionFixture = {}): TraceOmission {
+  const { node_id = "n1", ...rest } = overrides
   return {
-    target_node_id: "n1",
+    node_id: fixtureKey(node_id),
+    node_name: "Step",
+    node_type: "polars",
+    topological_rank: 0,
+    reason: "not correlated",
+    diagnostic_index: 0,
+    ...rest,
+  }
+}
+
+/** Every key a trace names, by text. */
+function traceKeys(trace: Omit<TraceResult, "node_addresses">): string[] {
+  const keys: RuntimeNodeKey[] = [trace.target_node_id]
+  for (const step of trace.steps) {
+    keys.push(step.node_id)
+    for (const derivation of step.derivations) {
+      for (const read of derivation.reads ?? []) keys.push(...read.sources.map((source) => source.node_id))
+    }
+  }
+  keys.push(...trace.omissions.map((omission) => omission.node_id))
+  for (const diagnostic of trace.correlation_diagnostics) {
+    if (diagnostic.node_id) keys.push(diagnostic.node_id)
+    if (diagnostic.child_node_id) keys.push(diagnostic.child_node_id)
+    keys.push(...diagnostic.seed_node_ids)
+  }
+  return keys.map((key) => key as unknown as string)
+}
+
+/** A trace result's fields, its target's key given as the text a fixture names it by. */
+export type TraceResultFixture = Omit<Partial<TraceResult>, "target_node_id"> & { target_node_id?: FixtureKey }
+
+/**
+ * A trace result with every field the server sends. Every key it names is addressed as a
+ * node of the pipeline under its own text, unless `node_addresses` says otherwise.
+ */
+export function makeTraceResult(overrides: TraceResultFixture = {}): TraceResult {
+  const { target_node_id = "n1", node_addresses, ...rest } = overrides
+  const trace = {
     row_index: 0,
     column: null,
     output_value: null,
@@ -784,29 +966,36 @@ export function makeTraceResult(overrides: Partial<TraceResult> = {}): TraceResu
     correlation_diagnostics: [],
     generated_at: "2026-01-01T00:00:00+00:00",
     pipeline_source: null,
-    execution_origin: "fresh_execution",
-    ...overrides,
+    execution_origin: "fresh_execution" as const,
+    ...rest,
+    target_node_id: fixtureKey(target_node_id),
   }
+  return { ...trace, node_addresses: { ...rootAddresses(...traceKeys(trace)), ...node_addresses } }
 }
 
-/** A trace correlation diagnostic with every field the server sends. */
+/** A trace correlation diagnostic with every field the server sends, its keys given as text. */
 export function makeTraceDiagnostic(
-  overrides: Partial<TraceCorrelationDiagnostic> = {},
+  overrides: Omit<Partial<TraceCorrelationDiagnostic>, "node_id" | "child_node_id" | "seed_node_ids"> & {
+    node_id?: FixtureKey | null
+    child_node_id?: FixtureKey | null
+    seed_node_ids?: FixtureKey[]
+  } = {},
 ): TraceCorrelationDiagnostic {
+  const { node_id = null, child_node_id = null, seed_node_ids = [], ...rest } = overrides
   return {
     code: "ambiguous_source_frame",
     severity: "warning",
     reason: "ambiguous_source_frame",
     message: "",
-    node_id: null,
-    child_node_id: null,
+    node_id: node_id === null ? null : fixtureKey(node_id),
+    child_node_id: child_node_id === null ? null : fixtureKey(child_node_id),
     match_strategy: null,
     match_columns: [],
     ignored_columns: [],
     matched_row_count: null,
     matched_row_indices: [],
-    seed_node_ids: [],
-    ...overrides,
+    seed_node_ids: seed_node_ids.map(fixtureKey),
+    ...rest,
   }
 }
 
@@ -887,4 +1076,18 @@ export function makeCanonicalGraph(
     warning: null,
     ...overrides,
   }
+}
+
+// ---------------------------------------------------------------------------
+// preparedGraph — a test's graph as the request gateway's branded payload
+// ---------------------------------------------------------------------------
+
+import type { GraphPayload, PreparedGraph } from "../api/types"
+
+/**
+ * A graph a test sends straight to a client function that runs the pipeline. In the
+ * app only the request gateway (`utils/requestGateway`) makes a `PreparedGraph`.
+ */
+export function preparedGraph(graph: GraphPayload): PreparedGraph {
+  return graph as PreparedGraph
 }

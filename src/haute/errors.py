@@ -25,12 +25,17 @@ module are the ones the ``HauteError`` promise applies to.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar, TypeGuard
 
 from haute._validation_error import ConfigSettingError as ConfigSettingError
 from haute._validation_error import HauteValidationError as HauteValidationError
 from haute._validation_error import restore_exception
+
+#: Context fields that hold a node by the key the flat graph runs it under.
+NODE_KEY_CONTEXT_FIELDS = frozenset(
+    {"node_id", "source_node_id", "target_node_id", "parent_id", "left_parent", "right_parent"}
+)
 
 
 class HauteError(Exception):
@@ -42,15 +47,37 @@ class HauteError(Exception):
     def __init__(self, message: str = "", **context: Any) -> None:
         self.message = message
         self.context: dict[str, Any] = dict(context)
+        #: The nodes the context holds by key, by display name, for the rendered text only.
+        self.node_names: dict[str, str] = {}
+        _name_nodes_in_execution(self)
         super().__init__(self._render())
+
+    def _name_nodes(self, name_of: Callable[[str], str]) -> None:
+        """Name each node the context holds by key (:data:`NODE_KEY_CONTEXT_FIELDS`) by
+        ``name_of(key)`` in the rendered text, so it never shows a runtime key
+        (specs/server-api/low-level.md, "Node addresses"). ``context`` keeps the keys."""
+        self.node_names = {
+            field: name_of(value)
+            for field, value in self.context.items()
+            if field in NODE_KEY_CONTEXT_FIELDS and isinstance(value, str)
+        }
+        self.args = (self._render(),)
 
     def _render(self) -> str:
         if not self.context:
             return self.message
-        rendered_ctx = "(" + ", ".join(f"{k}={v}" for k, v in self.context.items()) + ")"
+        rendered_ctx = (
+            "(" + ", ".join(self._render_item(k, v) for k, v in self.context.items()) + ")"
+        )
         if not self.message:
             return rendered_ctx
         return f"{self.message} {rendered_ctx}"
+
+    def _render_item(self, field: str, value: Any) -> str:
+        name = self.node_names.get(field)
+        if name is None:
+            return f"{field}={value}"
+        return f"{field.removesuffix('_id')}={name}"
 
     def __str__(self) -> str:
         return self._render()
@@ -77,6 +104,18 @@ class HauteError(Exception):
         for field_name in self.public_fields:
             payload[field_name] = getattr(self, field_name)
         return payload
+
+
+def _name_nodes_in_execution(error: HauteError) -> None:
+    """Name *error*'s nodes through the walk or execution raising it, when one is running:
+    its text is rendered again later (``__str__``, a worker's pickle), after it."""
+    if not any(field in NODE_KEY_CONTEXT_FIELDS for field in error.context):
+        return
+    from haute._execution_context import current_node_namer
+
+    name_of = current_node_namer()
+    if name_of is not None:
+        error._name_nodes(name_of)
 
 
 _FAILING_NODE_ATTRIBUTE = "haute_failing_node"
@@ -558,10 +597,14 @@ class TraceNodeFailedError(ExecutionError):
     """
 
     error_code = "trace_node_failed"
-    public_fields = ("node_id",)
+    public_fields = ("node_id", "node")
 
-    def __init__(self, message: str, *, node_id: str) -> None:
+    def __init__(
+        self, message: str, *, node_id: str, node: dict[str, str | None] | None = None
+    ) -> None:
         self.node_id = node_id
+        #: The node by key, address and label (`haute._node_addresses.node_reference`).
+        self.node = node
         super().__init__(message, node_id=node_id)
 
 
@@ -658,6 +701,10 @@ class SnapshotCorruptError(ExecutionError):
             node_id=node_id,
             node_label=node_label,
         )
+        if node_label is not None:
+            # Raised where no walk names nodes (a plan's lease, a worker adopting it), its
+            # text names the node by the label it carries, never by its key.
+            self._name_nodes(lambda _key: node_label)
 
 
 class SeedPlanExpiredError(ExecutionError):
@@ -704,10 +751,11 @@ class ContractMismatchError(HauteError):
 class ContractColumnsMissingError(ContractMismatchError):
     """A node's frame lacks columns its contract names, at a node boundary.
 
-    ``context["missing"]`` keeps every missing column for callers. The rendered
-    text, which a preview shows as it is, is the message (naming at most five of
-    them) and the node id, so a long list never swamps it.
+    ``context["missing"]`` keeps every missing column, and ``context["node_id"]`` the
+    node's key, for callers. The rendered text, which a preview shows as it is, is the
+    message alone: it names the node by its display name and at most five of the columns,
+    so a long list never swamps it and no runtime key shows.
     """
 
     def _render(self) -> str:
-        return f"{self.message} (node_id={self.context['node_id']})"
+        return self.message

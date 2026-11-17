@@ -20,11 +20,11 @@ import { FieldGrid } from "./sheet/FieldGrid"
 import { HeadingBody } from "./sheet/HeadingBody"
 import { sheetColours } from "./sheet/sheetColours"
 
-export default function WidgetBody({ widget, drawn }: { widget: Widget; drawn: DrawnFields }) {
+export default function WidgetBody({ widget, drawn, problem = null }: { widget: Widget; drawn: DrawnFields; problem?: string | null }) {
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
   const colours = sheetColours(useWorkbenchFormStore((s) => s.form?.theme ?? BLANK_THEME))
   if (widget.type === "heading") return <HeadingBody widget={widget} colours={colours} />
-  if (isButton(widget)) return <ButtonBody widget={widget} colours={colours} previewing={previewing} />
+  if (isButton(widget)) return <ButtonBody widget={widget} colours={colours} previewing={previewing} problem={problem} />
   // A Table or a Collection without its frame sits on the sheet as its title and fields alone.
   const framed = widget.type === "chart" || widget.frame
   // A Table's or a Collection's frame, and the rule under its title, in its own colour and weight while it sets them.

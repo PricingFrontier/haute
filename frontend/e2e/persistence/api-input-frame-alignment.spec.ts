@@ -6,7 +6,7 @@
  * live boxes and separately pin the persisted edge identity and downstream
  * frame names that make the geometry meaningful to a user.
  */
-import { makePreviewResponse, makeTraceResult, makeTraceStep } from "../../src/test-utils/factories"
+import { makePreviewResponse, makeTraceResult, makeTraceStep, previewTargetNode } from "../../src/test-utils/factories"
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
@@ -156,7 +156,6 @@ async function expectFrameRowsAligned(
 function previewResponse(nodeId: string, withWarning = false): string {
   return JSON.stringify(makePreviewResponse({
     status: "ok",
-    node_id: nodeId,
     row_count: 1,
     column_count: 1,
     columns: [{ name: "quote_id", dtype: "Utf8" }],
@@ -177,14 +176,15 @@ function previewResponse(nodeId: string, withWarning = false): string {
 
 async function installPreviewRoute(page: Page, withWarning = false): Promise<void> {
   await page.route("**/api/pipeline/preview", async (route) => {
-    const body = route.request().postDataJSON() as { node_id?: unknown }
-    if (typeof body.node_id !== "string" || body.node_id.length === 0) {
-      throw new Error(`Expected preview node_id, received ${String(body.node_id)}`)
+    const body: unknown = route.request().postDataJSON()
+    const nodeId = previewTargetNode(body)
+    if (nodeId === null) {
+      throw new Error(`Expected a pipeline node preview target, received ${JSON.stringify(body)}`)
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: previewResponse(body.node_id, withWarning),
+      body: previewResponse(nodeId, withWarning),
     })
   })
 }

@@ -8,10 +8,12 @@ store construction may create the cache root and sweep retired directories.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 from fastapi import APIRouter
 
 from haute._flatten import flatten_executable_graph
+from haute._node_addresses import labelled
 from haute._node_snapshots import (
     CacheOwnerUsage,
     NodeSnapshotStore,
@@ -27,6 +29,7 @@ from haute.schemas import (
     CacheNodesRequest,
     CacheNodesResponse,
     CacheOwnerEntry,
+    CacheSnapshotOwner,
     CacheUsageResponse,
     NodeDataPointResponse,
 )
@@ -34,11 +37,31 @@ from haute.schemas import (
 router = APIRouter(prefix="/api/cache", tags=["cache"])
 
 
+def _pipeline_shown(pipeline_source_file: str | None) -> str | None:
+    """A snapshot's pipeline file as the project names it: relative when it is inside."""
+    if pipeline_source_file is None:
+        return None
+    path = Path(pipeline_source_file)
+    try:
+        return path.relative_to(current_project().root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def _owner_entry(owner: CacheOwnerUsage) -> CacheOwnerEntry:
+    recorded = owner.owner
     return CacheOwnerEntry(
         bucket=owner.bucket,
         label=owner.label,
-        node_id=owner.node_id,
+        pipeline=_pipeline_shown(owner.pipeline_source_file),
+        owner=CacheSnapshotOwner(
+            occurrence=recorded.occurrence,
+            occurrence_label=recorded.occurrence_label,
+            node_id=recorded.node_id,
+            label=recorded.label,
+        )
+        if recorded is not None
+        else None,
         source=owner.source,
         generations=owner.generations,
         row_count=owner.newest_row_count,
@@ -147,7 +170,7 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
     they are cached — individually — rather than as the one node the canvas
     draws at this depth.
     """
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
 
@@ -217,7 +240,10 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
     other = [
         _owner_entry(owner) for owner in inventory.owners if not (owner.identity_digests & carried)
     ]
-    return CacheNodesResponse(
+    # The rows are the graph's nodes, addressed; `other` names no key, only what it recorded.
+    return labelled(
+        CacheNodesResponse,
+        graph,
         source=body.source,
         nodes=nodes,
         other=other,

@@ -7,8 +7,10 @@
  * and the hook together — they're inseparable in practice.
  */
 
-import { createContext, useContext } from "react"
+import { createContext, useContext, useMemo } from "react"
 import type { SimpleNode, SimpleEdge } from "./editors/_shared"
+import useGraphStore from "../stores/useGraphStore"
+import { documentRequestScope, resultKey, type RequestScope } from "../utils/requestGateway"
 
 /** Shape exposed by `useGraph()`. */
 export type GraphContextValue = {
@@ -18,6 +20,11 @@ export type GraphContextValue = {
   preamble?: string
   /** Opens a node on the canvas in the panel, as clicking it does; absent where there is no canvas. */
   openNode?: (nodeId: string) => void
+  /**
+   * The document the panel's requests run (`utils/requestGateway`): the open pipeline,
+   * or null where the panel shows a saved version and runs nothing.
+   */
+  requestScope: RequestScope | null
 }
 
 // `undefined` distinguishes "no provider" from "provider with empty graph".
@@ -41,4 +48,30 @@ export function useGraph(): GraphContextValue {
     )
   }
   return ctx
+}
+
+/**
+ * The document a request from here runs: the nearest provider's, which is none in the
+ * comparison view; with no provider at all, only the open pipeline is there to run.
+ */
+export function useRequestScope(): RequestScope | null {
+  const ctx = useContext(GraphContext)
+  return ctx === undefined ? documentRequestScope : ctx.requestScope
+}
+
+/**
+ * The key `nodeId`'s results are kept under (`resultKey`), renewed when the open view
+ * changes; null without a node. Read in render, and taken before any await. A view of a
+ * saved version (no request scope) is not the open document's, so its nodes keep their ids.
+ */
+export function useResultKey(nodeId: string): string
+export function useResultKey(nodeId: string | null | undefined): string | null
+export function useResultKey(nodeId: string | null | undefined): string | null {
+  const occurrence = useGraphStore((state) => state.focus?.instanceId ?? null)
+  const scope = useRequestScope()
+  return useMemo(() => {
+    void occurrence
+    if (nodeId === null || nodeId === undefined) return null
+    return scope === null ? nodeId : resultKey(nodeId)
+  }, [nodeId, occurrence, scope])
 }

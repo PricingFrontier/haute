@@ -21,7 +21,7 @@ describe("SubmodelEditor", () => {
     ]
     useGraphStore.setState({ edges: [], nodes: applyPreviewResultColumnsToNodes(nodes, "submodel_runtime/copy/score", makePreviewResponse({
       status: "ok", node_schema_warnings: { copy: warnings },
-    }), "live", 0), submodels: { definition_pricing: definition } })
+    }), "live", 0, null, null), submodels: { definition_pricing: definition } })
     const view = render(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     const section = screen.getByRole("region", { name: "Missing columns" })
     expect(within(section).getByText("policy")).toBeVisible()
@@ -34,7 +34,7 @@ describe("SubmodelEditor", () => {
     view.rerender(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     const refreshed = applyPreviewResultColumnsToNodes(useGraphStore.getState().nodes, "submodel_runtime/copy/score", makePreviewResponse({
       status: "ok", node_schema_warnings: { copy: [] },
-    }), "live", 0)
+    }), "live", 0, null, null)
     useGraphStore.setState({ nodes: refreshed })
     view.rerender(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     expect(screen.queryByRole("region", { name: "Missing columns" })).toBeNull()
@@ -60,5 +60,29 @@ describe("SubmodelEditor", () => {
     expect(useGraphStore.getState().edges).toEqual([{ ...edges[1], id: "e-b-copy--in__policy", targetHandle: "in__policy" }])
   })
   it("renders definition-owned metadata and public port names", () => { renderEditor(); expect(screen.getByText("Submodel")).toBeTruthy(); expect(screen.getByText("2 nodes")).toBeTruthy(); expect(screen.getByText("pipelines/pricing.py")).toBeTruthy(); expect(screen.getByText("policy")).toBeTruthy(); expect(screen.getByText("premium")).toBeTruthy() })
+  it("moves an owner's outputs by Alt+arrows or by dragging, in one undoable definition edit", () => {
+    const outputPorts = ["premium", "audit", "tax"].map((name) => ({ name, source: { nodeId: "score", handleId: null } }))
+    const names = () => (useGraphStore.getState().submodels.definition_pricing as typeof definition).outputPorts.map((port) => port.name)
+    useGraphStore.setState({ nodes: [makeNode("pricing", "submodel", { data: { label: "pricing", config } })], edges: [], submodels: { definition_pricing: { ...definition, outputPorts } }, undoStack: [], redoStack: [] })
+    render(<SubmodelEditor nodeId="pricing" config={config} accentColor="#64748b" />)
+    const outputs = screen.getByRole("list", { name: "Outputs" })
+    fireEvent.keyDown(within(outputs).getByRole("listitem", { name: "premium" }), { key: "ArrowDown", altKey: true })
+    expect(names()).toEqual(["audit", "premium", "tax"])
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    useGraphStore.getState().undo()
+    expect(names()).toEqual(["premium", "audit", "tax"])
+    fireEvent.dragStart(within(outputs).getByRole("listitem", { name: "tax" }))
+    fireEvent.dragOver(within(outputs).getByRole("listitem", { name: "premium" }))
+    fireEvent.drop(within(outputs).getByRole("listitem", { name: "premium" }))
+    expect(names()).toEqual(["tax", "premium", "audit"])
+  })
+  it("lists an instance's outputs in the definition's order without moving them", () => {
+    const outputPorts = ["premium", "audit"].map((name) => ({ name, source: { nodeId: "score", handleId: null } }))
+    const instanceConfig = { ...config, alias: "copy", instance_of: "pricing" }
+    useGraphStore.setState({ nodes: [], edges: [], submodels: { definition_pricing: { ...definition, outputPorts } } })
+    render(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
+    expect(screen.queryByRole("list", { name: "Outputs" })).toBeNull()
+    expect(screen.getByText("premium").compareDocumentPosition(screen.getByText("audit")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
   it("renders an error for an unavailable definition", () => { render(<SubmodelEditor nodeId="pricing" config={config} accentColor="#64748b" />); expect(screen.getByRole("alert")).toHaveTextContent("invalid") })
 })

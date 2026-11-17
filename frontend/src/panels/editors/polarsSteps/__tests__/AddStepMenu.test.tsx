@@ -19,9 +19,9 @@ describe("AddStepMenu", () => {
     open()
     const sections = within(screen.getByRole("menu")).getAllByRole("group")
     expect(sections.map((section) => section.getAttribute("aria-label"))).toEqual(["Add column", "Rows", "Columns", "Combine", "Other"])
-    expect(within(sections[0]).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Formula", "If-then", "Window", "Number function", "Text function", "Date function"])
+    expect(within(sections[0]).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Formula", "If-then", "Window", "Coalesce", "Number function", "Text function", "Date function"])
     expect(within(sections[4]).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Define variable", "Free code"])
-    expect(screen.getAllByRole("menuitem")).toHaveLength(22)
+    expect(screen.getAllByRole("menuitem")).toHaveLength(23)
   })
 
   it("opens on its search box, moves between entries with the arrow keys, and returns focus to the button on Escape", () => {
@@ -67,6 +67,9 @@ describe("AddStepMenu", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     fireEvent.click(screen.getByRole("menuitem", { name: "Date function" }))
     expect(onAdd.mock.calls.at(-1)?.[1].expr).toMatchObject({ type: "function", fn: "offset_by" })
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Coalesce" }))
+    expect(onAdd.mock.calls.at(-1)).toEqual(["with_column", { expr: { type: "coalesce", parts: [{ kind: "column", name: "" }, { kind: "column", name: "" }] } }])
   })
 
   it("searches every calculation, window aggregate and Change types preset, saying which step a hit adds", () => {
@@ -92,6 +95,8 @@ describe("AddStepMenu", () => {
     const { search } = open()
     fireEvent.change(search, { target: { value: "join" } })
     expect(names()).toEqual(["Join another input", "Join text"])
+    fireEvent.change(search, { target: { value: "coalesce" } })
+    expect(names()[0]).toBe("Coalesce")
     fireEvent.change(search, { target: { value: "round" } })
     expect(names()).toEqual(["Round", "Round down", "Round up", "Number function"])
     fireEvent.change(search, { target: { value: "clip" } })
@@ -151,7 +156,7 @@ describe("AddStepMenu", () => {
       "Pivot to columns",
       "Unpivot to rows",
     ])
-    expect(screen.getAllByRole("menuitem")).toHaveLength(20)
+    expect(screen.getAllByRole("menuitem")).toHaveLength(21)
     fireEvent.change(search, { target: { value: "join" } })
     expect(names()).toEqual(["Join text"])
   })

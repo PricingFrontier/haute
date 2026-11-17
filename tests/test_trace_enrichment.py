@@ -103,7 +103,7 @@ def test_an_input_a_node_computed_without_its_code_keeps_the_value_it_produced()
         ),
     }
 
-    entry = input_source_entry(model, "scoring", "prediction", node_map, None)
+    entry = input_source_entry(model, "scoring", "prediction", node_map, None, name_of=str)
 
     assert entry == {
         "node_id": "scoring",

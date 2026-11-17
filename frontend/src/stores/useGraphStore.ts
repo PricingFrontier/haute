@@ -39,8 +39,14 @@
  * The 100-entry MAX_HISTORY cap prevents unbounded growth on long editing
  * sessions.
  *
- * A drilled submodel view (`enterSubmodelView` / `exitSubmodelView`) gets its
- * own stacks and saved baseline; the root's wait in `submodelView` until exit.
+ * An open submodel (`enterSubmodelView` / `exitSubmodelView`) is a view of the
+ * one document: `focus` names the occurrence and keeps the pipeline's own nodes
+ * and edges while the canvas shows the submodel. Every write the canvas takes
+ * there changes the document in the same update (`liftSubmodelCanvas`), or is
+ * refused whole; a drag's frames move the canvas only and reach the document
+ * with the write that ends the drag. History entries are documents recording
+ * the view their step was made in, and Undo or Redo shows that view again
+ * (`projectSubmodelFocus`).
  *
  * ── Dirty derivation ──────────────────────────────────────────────────
  *
@@ -58,15 +64,25 @@ import { create } from "zustand"
 import type { Node } from "@xyflow/react"
 import {
   EMPTY_SNAPSHOT,
+  authoredNodeForm,
   serializeSnapshot,
   selectIsDirty,
   cloneGraphSnapshot,
 } from "../utils/graphSnapshot"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
-import { nodeData } from "../types/node"
+import { isSubmodelDefinition, isSubmodelInstanceConfig, nodeData } from "../types/node"
 import { isPlainObject } from "../types/guards"
 import type { PipelineEdge } from "../types/node"
 import type { GlobalConstantDraft } from "../utils/globalConstants"
+import {
+  READ_ONLY_REASON,
+  childAnnotations,
+  definitionEdgeForm,
+  liftSubmodelCanvas,
+  projectSubmodelFocus,
+  type SubmodelFocusIdentity,
+} from "../utils/submodelDocument"
+import useToastStore from "./useToastStore"
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -79,6 +95,11 @@ export interface GraphSnapshot {
   globalConstants?: GlobalConstantDraft[]
   /** Why the constants file failed to load; only a document load sets it. */
   globalConstantsError?: string | null
+  /**
+   * A history entry's view: the occurrence its step was made in, or null for
+   * the main pipeline. `nodes` and `edges` are then the pipeline's own.
+   */
+  focus?: SubmodelFocusIdentity | null
 }
 
 /** A version-control operation (branch switch / archive / delete) riding the
@@ -101,28 +122,24 @@ export const isVcEntry = (e: HistoryEntry): e is VcHistoryEntry =>
   "kind" in e && e.kind === "vc"
 
 /**
- * The root document's state while a submodel definition is on the canvas.
- *
- * Drilling in swaps the canvas for the child view, so the live `nodes`,
- * `edges`, history stacks and saved baseline all describe that view. The
- * root's own history and saved baseline wait here until the view is left.
+ * The open submodel: which occurrence the canvas shows, and the pipeline's own
+ * nodes and edges while it does. The document is these with `submodels`, the
+ * preamble and the global constants; the canvas is drawn from it.
  */
-export interface SubmodelViewContext {
-  /** The root document on entry; leaving after a change records it as one undo step. */
-  entrySnapshot: GraphSnapshot
-  entryPersistedFingerprint: string
-  /** The view on entry: the clean baseline while the root it came from is saved. */
-  entryViewSnapshot: GraphSnapshot
-  entryViewPersistedFingerprint: string
-  parentUndoStack: HistoryEntry[]
-  parentRedoStack: HistoryEntry[]
-  parentSavedSnapshot: GraphSnapshot | null
-  parentSavedPersistedFingerprint: string | null
-  /**
-   * The whole document was marked saved while drilled, with the view at this
-   * fingerprint: leaving from that view makes the root on exit the baseline.
-   */
-  savedViewPersistedFingerprint: string | null
+export interface SubmodelFocus extends SubmodelFocusIdentity {
+  /** A read-only copy (`instance_of`): the document refuses its edits. */
+  readOnly: boolean
+  rootNodes: Node[]
+  rootEdges: PipelineEdge[]
+}
+
+/** The result of a boundary edit: the open view, and the document it leaves. */
+export interface SubmodelBoundaryEdit {
+  viewNodes: Node[]
+  viewEdges: PipelineEdge[]
+  parentNodes: Node[]
+  parentEdges: PipelineEdge[]
+  submodels: Record<string, unknown>
 }
 
 export interface GraphStore {
@@ -151,8 +168,22 @@ export interface GraphStore {
   persistedFingerprint: string
   savedPersistedFingerprint: string | null
   dirty: boolean
-  /** Set while a submodel definition is on the canvas instead of the root. */
-  submodelView: SubmodelViewContext | null
+  /** Set while a submodel is open: the canvas shows that occurrence of its definition. */
+  focus: SubmodelFocus | null
+  /**
+   * The execution annotations (a preview's columns, statuses) each open
+   * occurrence's view last held for its children, by occurrence and child id:
+   * they belong to the view, never to the shared definition.
+   */
+  submodelAnnotations: Record<string, Record<string, Record<string, unknown>>>
+  /** Advances whenever the open view changes (opening, leaving, Undo or Redo moving it, a load). */
+  navigationSerial: number
+  /**
+   * Advances with every change to the document other than moving nodes, and with
+   * every Undo, Redo, view change and load, even one back to identical content: an
+   * edit prepared against one generation commits only while it is still current.
+   */
+  semanticGeneration: number
 
   // History-aware actions
   setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
@@ -195,22 +226,17 @@ export interface GraphStore {
 
   // Submodel navigation
   /**
-   * Put a submodel's view on the canvas with history of its own: Undo and
-   * Redo cannot reach the root's entries, and the view is clean exactly when
-   * it is unchanged and the root it came from was clean. Throws while a view
-   * is already open or a version-control step is running.
+   * Show an occurrence of a submodel, drawn from the document. Navigation,
+   * not an edit: history and the dirty state stay as they are. Throws while a
+   * submodel is already open, and when the occurrence cannot be drawn.
    */
-  enterSubmodelView: (view: { nodes: Node[]; edges: PipelineEdge[] }) => void
-  /**
-   * Return to the root document, reconciled with the view's edits. The root's
-   * history comes back; a changed document gains one undo step to the root as
-   * it was on entry.
-   */
-  exitSubmodelView: (root: {
-    nodes: Node[]
-    edges: PipelineEdge[]
-    submodels: Record<string, unknown>
-  }) => void
+  enterSubmodelView: (occurrence: SubmodelFocusIdentity) => void
+  /** Show the main pipeline of the same document. Throws when no submodel is open. */
+  exitSubmodelView: () => void
+  /** Apply a boundary edit as one undo step: the view, the pipeline's nodes and edges, the definitions. */
+  commitSubmodelBoundaryEdit: (edit: SubmodelBoundaryEdit) => void
+  /** Replace the pipeline's own nodes (behind an open submodel, or on the canvas), without an undo entry (preview columns). */
+  setRootNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
 
   /**
    * Replace the complete persisted document and make it the clean saved
@@ -273,10 +299,24 @@ export function captureGraphSnapshot(
   return cloneGraphSnapshot(state)
 }
 
-/**
- * Apply an updater that may be a direct replacement value or a functional
- * updater (matches React's useState / React Flow's useNodesState signature).
- */
+/** The document's own nodes: the pipeline's, also while a submodel is open. */
+function documentNodes(state: { nodes: Node[]; focus: SubmodelFocus | null }): Node[] {
+  return state.focus ? state.focus.rootNodes : state.nodes
+}
+
+/** The document's own edges: the pipeline's, also while a submodel is open. */
+function documentEdges(state: { edges: PipelineEdge[]; focus: SubmodelFocus | null }): PipelineEdge[] {
+  return state.focus ? state.focus.rootEdges : state.edges
+}
+
+function focusIdentity(focus: SubmodelFocus | null): SubmodelFocusIdentity | null {
+  return focus ? { instanceId: focus.instanceId, definitionId: focus.definitionId } : null
+}
+
+function focusKey(focus: SubmodelFocusIdentity | null | undefined): string {
+  return focus ? JSON.stringify([focus.instanceId, focus.definitionId]) : ""
+}
+
 /**
  * `nodes` with every position on whole pixels (READ-11): a node placed or dragged lands on
  * one, so a save writes the position the canvas compares, and a nudge smaller than a pixel
@@ -293,6 +333,10 @@ export function wholePositions<N extends { position: { x: number; y: number } }>
   return changed ? next : nodes
 }
 
+/**
+ * Apply an updater that may be a direct replacement value or a functional
+ * updater (matches React's useState / React Flow's useNodesState signature).
+ */
 function applyUpdater<T>(current: T, updater: T | ((prev: T) => T)): T {
   return typeof updater === "function" ? (updater as (prev: T) => T)(current) : updater
 }
@@ -359,6 +403,22 @@ function hasOnlyNodeUiFieldChanges(current: Node[], next: Node[]): boolean {
     }
   }
   return changed
+}
+
+/**
+ * Whether `next` only moves nodes of `current`: the same nodes in the same order,
+ * each the same object or differing only in its position and presentation fields.
+ */
+function onlyNodesMoved(current: Node[], next: Node[]): boolean {
+  if (current.length !== next.length) return false
+  return next.every((node, index) => {
+    const previous = current[index]
+    if (previous === node) return true
+    if (previous.id !== node.id || previous.data !== node.data) return false
+    const keys = new Set([...Object.keys(previous), ...Object.keys(node)])
+    return [...keys].every((key) => key === "position" || REACT_FLOW_NODE_UI_FIELDS.has(key)
+      || Object.is((previous as unknown as Record<string, unknown>)[key], (node as unknown as Record<string, unknown>)[key]))
+  })
 }
 
 function hasOnlyNodePositionChanges(current: Node[], next: Node[]): boolean {
@@ -604,7 +664,34 @@ function computePanelContextPatch(
       }
 }
 
-type GraphFields = Pick<GraphStore, "nodes" | "edges" | "preamble" | "submodels" | "globalConstants">
+type GraphFields = Pick<GraphStore, "nodes" | "edges" | "preamble" | "submodels" | "globalConstants" | "focus">
+
+/**
+ * The structural fingerprint of the document: the pipeline's own nodes and edges (also
+ * while a submodel is open), every definition, the preamble and the constants. It is the
+ * clock results are checked against, so opening or leaving a submodel leaves it as it
+ * is, and an edit inside one moves it through the definition.
+ */
+function structuralFingerprintOf(fields: GraphFields): string {
+  return computeStructuralFingerprint(
+    documentNodes(fields),
+    documentEdges(fields),
+    fields.preamble,
+    fields.globalConstants,
+    fields.submodels,
+  )
+}
+
+/** The persisted fingerprint of the document the fields hold. */
+function persistedFingerprintOf(fields: GraphFields): string {
+  return computePersistedFingerprint(
+    documentNodes(fields),
+    documentEdges(fields),
+    fields.preamble,
+    fields.submodels,
+    fields.globalConstants,
+  )
+}
 
 /**
  * What a change to the persisted fields moves, the one derivation every action shares: the
@@ -622,13 +709,7 @@ function derivedPatch(
   next: GraphFields,
   structural = true,
 ): Partial<GraphStore> {
-  const persistedFingerprint = computePersistedFingerprint(
-    next.nodes,
-    next.edges,
-    next.preamble,
-    next.submodels,
-    next.globalConstants,
-  )
+  const persistedFingerprint = persistedFingerprintOf(next)
   const patch: Partial<GraphStore> = {
     persistedFingerprint,
     dirty: computeDirty(state.lastSavedSnapshot, state.savedPersistedFingerprint, persistedFingerprint),
@@ -637,20 +718,14 @@ function derivedPatch(
       : computePanelContextPatch(state, next.nodes, next.edges)),
   }
   if (!structural) return patch
-  const structuralFingerprint = computeStructuralFingerprint(
-    next.nodes,
-    next.edges,
-    next.preamble,
-    next.globalConstants,
-    next.submodels,
-  )
+  const structuralFingerprint = structuralFingerprintOf(next)
   return structuralFingerprint === state.structuralFingerprint
     ? patch
     : { ...patch, structuralFingerprint, structuralVersion: state.structuralVersion + 1 }
 }
 
-/** A graph history entry's fields, which undo and redo restore together. */
-function restoredFields(entry: GraphSnapshot): GraphFields {
+/** The document a graph history entry holds, which undo and redo restore together. */
+function restoredDocument(entry: GraphSnapshot): Omit<GraphFields, "focus"> {
   return {
     nodes: entry.nodes,
     edges: entry.edges,
@@ -695,94 +770,236 @@ function createInitialGraphState(): GraphStoreData {
     redoStack: [],
     vcBusy: false,
     structuralVersion: 0,
-    structuralFingerprint: computeStructuralFingerprint([], [], "", [], {}),
+    structuralFingerprint: structuralFingerprintOf({
+      nodes: [], edges: [], preamble: "", globalConstants: [], submodels: {}, focus: null,
+    }),
     panelContextVersion: 0,
     panelContextFingerprint: computePanelContextFingerprint([], []),
     persistedFingerprint: computePersistedFingerprint([], [], "", {}, []),
     savedPersistedFingerprint: null,
     dirty: false,
-    submodelView: null,
+    focus: null,
+    submodelAnnotations: {},
+    navigationSerial: 0,
+    semanticGeneration: 0,
   }
 }
 
 const useGraphStore = create<GraphStore>()((set, get) => {
   /**
-   * Push the current pre-mutation state onto undoStack, clear redoStack,
-   * and respect MAX_HISTORY by dropping the oldest entry when overflowing.
+   * The document as one history entry: the pipeline's own nodes and edges with
+   * the definitions, preamble and constants, recording `focus` as the view the
+   * step is made in (the open one unless given).
    */
-  function pushSnapshotInternal(): HistoryEntry[] {
-    const { undoStack } = get()
-    const snap = captureGraphSnapshot(get())
-    return appendHistoryEntry(undoStack, snap)
-  }
-
-  /**
-   * The one commit of a change to the graph's persisted fields: the changed fields with
-   * the fingerprints, versions and dirty state they move, and, when `history` holds and
-   * the authored graph changed, an undo step of the state before it (clearing redo). A
-   * change of no authored state — a selection, or a render refreshing generated step
-   * code — consumes neither Undo nor Redo.
-   */
-  function commitGraphChange(state: GraphStore, change: Partial<GraphFields>, history: boolean): Partial<GraphStore> {
-    const patch = derivedPatch(state, { ...state, ...change })
-    // A drag's position-only raw updates leave the cached fingerprint behind, so
-    // the state before the change is fingerprinted as it is.
-    const recorded = history && patch.persistedFingerprint !== computePersistedFingerprint(
-      state.nodes, state.edges, state.preamble, state.submodels, state.globalConstants,
-    )
+  function captureDocument(
+    state: GraphStore,
+    focus: SubmodelFocusIdentity | null = focusIdentity(state.focus),
+  ): GraphSnapshot {
     return {
-      ...(recorded ? { undoStack: pushSnapshotInternal(), redoStack: [] } : {}),
-      ...change,
-      ...patch,
+      ...captureGraphSnapshot({
+        nodes: documentNodes(state),
+        edges: documentEdges(state),
+        preamble: state.preamble,
+        submodels: state.submodels,
+        globalConstants: state.globalConstants,
+      }),
+      focus,
     }
   }
 
   /**
-   * `markSaved` while a submodel view is open. A snapshot is a root document
-   * (saving is refused while drilled, so it is a save begun before entry):
-   * it becomes the root's baseline, and the view is clean against it only if
-   * the root on entry was that document. Without a snapshot the whole current
-   * document counts as saved, so leaving from this same view makes the root on
-   * exit the baseline.
+   * The step a gesture inside an open submodel began (`pushSnapshot` before
+   * separate raw writes, such as a drag): recorded when the first of its writes
+   * changes the document, and dropped when one is refused, so a gesture is one
+   * step or none.
    */
-  function markSavedInSubmodelView(context: SubmodelViewContext, snapshot: GraphSnapshot | undefined) {
-    set((state) => {
-      if (snapshot === undefined) {
-        return {
-          lastSavedSnapshot: captureGraphSnapshot(state),
-          savedPersistedFingerprint: state.persistedFingerprint,
-          dirty: false,
-          submodelView: { ...context, savedViewPersistedFingerprint: state.persistedFingerprint },
-        }
+  let pendingGesture: GraphSnapshot | null = null
+
+  /**
+   * The canvas the document last agreed with, kept while drag frames move the
+   * canvas ahead of it: the write that ends the drag is lifted against it, so
+   * the moves the frames made reach the definition.
+   */
+  let liftBase: { nodes: Node[]; edges: PipelineEdge[] } | null = null
+
+  /** A view or document change ends any gesture in progress. */
+  function endGesture() {
+    pendingGesture = null
+    liftBase = null
+  }
+
+  function refuse(reason: string) {
+    pendingGesture = null
+    useToastStore.getState().addToast("error", reason)
+  }
+
+  /**
+   * The one commit of a change to the graph's fields: the changed fields with the
+   * fingerprints, versions and dirty state they move, and, when `history` holds and
+   * the document changed, an undo step of the document before it (clearing redo). A
+   * change of no authored state — a selection, or a render refreshing generated step
+   * code — consumes neither Undo nor Redo. While a submodel is open, a change to the
+   * canvas changes the document through `liftSubmodelCanvas`, or is refused whole.
+   */
+  function commitGraphChange(
+    state: GraphStore,
+    change: Partial<Omit<GraphFields, "focus">>,
+    history: boolean,
+  ): { patch: Partial<GraphStore> } | { refused: string } {
+    const focus = state.focus
+    const nodes = change.nodes ?? state.nodes
+    const edges = change.edges ?? state.edges
+    let submodels = change.submodels ?? state.submodels
+    let annotations: Partial<GraphStore> = {}
+    // A canvas write inside an open submodel ends the gesture it belongs to,
+    // whether or not it changed the document.
+    let endsGesture = false
+    const onlyCanvas = (change.submodels === undefined || change.submodels === state.submodels)
+      && (change.preamble === undefined || change.preamble === state.preamble)
+      && (change.globalConstants === undefined || change.globalConstants === state.globalConstants)
+    // Whether the change only moves nodes, which leaves the semantic generation as it is.
+    let layoutOnly = !focus
+      && onlyCanvas
+      && edges === state.edges
+      && nodes !== state.nodes
+      && onlyNodesMoved(state.nodes, nodes)
+    if (focus && (nodes !== state.nodes || edges !== state.edges)) {
+      // A drag frame moves the canvas only; the move reaches the definition when it ends.
+      if (
+        nodes.some((node) => node.dragging)
+        && change.submodels === undefined
+        && change.preamble === undefined
+        && change.globalConstants === undefined
+      ) {
+        liftBase ??= { nodes: state.nodes, edges: state.edges }
+        return { patch: { nodes, edges } }
       }
-      const parentSavedSnapshot = captureGraphSnapshot({
-        ...snapshot,
-        globalConstants: snapshot.globalConstants ?? state.globalConstants,
+      const definition = submodels[focus.definitionId]
+      if (!isSubmodelDefinition(definition, focus.definitionId)) {
+        throw new Error(`The open submodel's definition ${focus.definitionId} is not in the document`)
+      }
+      const lifted = liftSubmodelCanvas({
+        definition,
+        readOnly: focus.readOnly,
+        previous: liftBase ?? { nodes: state.nodes, edges: state.edges },
+        next: { nodes, edges },
       })
-      const parentSavedPersistedFingerprint = computePersistedFingerprint(
-        parentSavedSnapshot.nodes,
-        parentSavedSnapshot.edges,
-        parentSavedSnapshot.preamble,
-        parentSavedSnapshot.submodels,
-        parentSavedSnapshot.globalConstants ?? [],
-      )
-      const entryWasSaved = parentSavedPersistedFingerprint === context.entryPersistedFingerprint
-      const lastSavedSnapshot = entryWasSaved ? context.entryViewSnapshot : parentSavedSnapshot
-      const savedPersistedFingerprint = entryWasSaved
-        ? context.entryViewPersistedFingerprint
-        : parentSavedPersistedFingerprint
-      return {
-        lastSavedSnapshot,
-        savedPersistedFingerprint,
-        dirty: computeDirty(lastSavedSnapshot, savedPersistedFingerprint, state.persistedFingerprint),
-        submodelView: {
-          ...context,
-          parentSavedSnapshot,
-          parentSavedPersistedFingerprint,
-          savedViewPersistedFingerprint: null,
-        },
+      if (lifted.kind === "refused") return { refused: lifted.reason }
+      liftBase = null
+      endsGesture = true
+      layoutOnly = onlyCanvas && (lifted.kind === "canvas" || lifted.layoutOnly)
+      if (lifted.kind === "definition") {
+        submodels = { ...submodels, [focus.definitionId]: lifted.definition }
       }
-    })
+      annotations = {
+        submodelAnnotations: { ...state.submodelAnnotations, [focus.instanceId]: childAnnotations(nodes) },
+      }
+    }
+    const fields: GraphFields = { ...state, ...change, nodes, edges, submodels, focus }
+    const patch = derivedPatch(state, fields)
+    // A drag's position-only raw updates leave the cached fingerprint behind, so
+    // the state before the change is fingerprinted as it is.
+    const changed = patch.persistedFingerprint !== persistedFingerprintOf(state)
+    let historyPatch: Partial<GraphStore> = {}
+    const gesture = pendingGesture
+    if (changed && (history || gesture)) {
+      historyPatch = {
+        undoStack: appendHistoryEntry(state.undoStack, history || !gesture ? captureDocument(state) : gesture),
+        redoStack: [],
+      }
+    }
+    if (changed || history || endsGesture) pendingGesture = null
+    return {
+      patch: {
+        ...historyPatch,
+        ...(changed && !layoutOnly ? { semanticGeneration: state.semanticGeneration + 1 } : {}),
+        ...change,
+        nodes,
+        edges,
+        submodels,
+        ...annotations,
+        ...patch,
+      },
+    }
+  }
+
+  function commit(change: (state: GraphStore) => Partial<Omit<GraphFields, "focus">>, history: boolean) {
+    const state = get()
+    const planned = commitGraphChange(state, change(state), history)
+    if ("refused" in planned) {
+      // A refused drag end puts back the canvas the document agrees with.
+      if (liftBase) {
+        const base = liftBase
+        liftBase = null
+        set({ nodes: base.nodes, edges: base.edges })
+      }
+      refuse(planned.refused)
+      return
+    }
+    set(planned.patch)
+  }
+
+  /**
+   * The state an undo or redo of `entry` leaves: its document, shown in the view
+   * its step was made in, or the main pipeline (with a notice) when that
+   * occurrence is gone. The entry for the other stack is the document as it is,
+   * recording the same view, so the step can be crossed again from anywhere.
+   */
+  function restore(state: GraphStore, entry: GraphSnapshot): { patch: Partial<GraphStore>; notice: string | null } {
+    const document = restoredDocument(entry)
+    const wanted = entry.focus ?? null
+    let focus: SubmodelFocus | null = null
+    let canvas = { nodes: document.nodes, edges: document.edges }
+    let notice: string | null = null
+    if (wanted) {
+      const occurrence = document.nodes.find((node) => node.id === wanted.instanceId)
+      const config = occurrence?.data.config
+      if (
+        occurrence
+        && isSubmodelInstanceConfig(config)
+        && config.definition_id === wanted.definitionId
+        && isSubmodelDefinition(document.submodels[wanted.definitionId], wanted.definitionId)
+      ) {
+        const sameView = focusKey(focusIdentity(state.focus)) === focusKey(wanted)
+        canvas = projectSubmodelFocus({
+          rootNodes: document.nodes,
+          rootEdges: document.edges,
+          submodels: document.submodels,
+          focus: wanted,
+          annotations: state.submodelAnnotations[wanted.instanceId],
+          previous: sameView ? { nodes: state.nodes, edges: state.edges } : undefined,
+        })
+        focus = {
+          ...wanted,
+          readOnly: config.instance_of !== undefined,
+          rootNodes: document.nodes,
+          rootEdges: document.edges,
+        }
+      } else {
+        notice = "The submodel that step was made in is gone, so the main pipeline is shown."
+      }
+    }
+    // A step undone or redone from inside a submodel that takes the submodel away
+    // (its occurrence created or deleted by the step) shows the main pipeline too.
+    const open = state.focus
+    if (notice === null && open !== null && focus === null) {
+      const occurrence = document.nodes.find((node) => node.id === open.instanceId)
+      const config = occurrence?.data.config
+      if (!occurrence || !isSubmodelInstanceConfig(config) || config.definition_id !== open.definitionId) {
+        notice = "The submodel that was open is gone, so the main pipeline is shown."
+      }
+    }
+    const fields: GraphFields = { ...document, nodes: canvas.nodes, edges: canvas.edges, focus }
+    const viewChanged = focusKey(focusIdentity(state.focus)) !== focusKey(focusIdentity(focus))
+    return {
+      patch: {
+        ...fields,
+        ...derivedPatch(state, fields),
+        ...(viewChanged ? { navigationSerial: state.navigationSerial + 1 } : {}),
+        semanticGeneration: state.semanticGeneration + 1,
+      },
+      notice,
+    }
   }
 
   return {
@@ -791,38 +1008,42 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // ── History-aware actions ────────────────────────────────────────────
 
     setNodes: (updater) => {
-      set((state) => commitGraphChange(state, { nodes: wholePositions(applyUpdater(state.nodes, updater)) }, true))
+      commit((state) => ({ nodes: wholePositions(applyUpdater(state.nodes, updater)) }), true)
     },
 
     setEdges: (updater) => {
-      set((state) => commitGraphChange(state, { edges: applyUpdater(state.edges, updater) }, true))
+      commit((state) => ({ edges: applyUpdater(state.edges, updater) }), true)
     },
 
     setNodesAndEdges: (nodesUpdater, edgesUpdater) => {
-      // Both updaters in this single set(), so nodes and edges never render in
+      // Both updaters in this single commit, so nodes and edges never render in
       // an inconsistent in-between state, and a single undo restores both.
-      set((state) => commitGraphChange(state, {
+      commit((state) => ({
         nodes: wholePositions(applyUpdater(state.nodes, nodesUpdater)),
         edges: applyUpdater(state.edges, edgesUpdater),
-      }, true))
+      }), true)
     },
 
     setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
-      set((state) => commitGraphChange(state, {
+      commit((state) => ({
         nodes: wholePositions(applyUpdater(state.nodes, nodesUpdater)),
         edges: applyUpdater(state.edges, edgesUpdater),
         submodels,
         ...(preamble === undefined ? {} : { preamble }),
-      }, true))
+      }), true)
     },
 
     setPreamble: (value) => {
-      set((state) => commitGraphChange(state, { preamble: value }, true))
+      commit(() => ({ preamble: value }), true)
     },
 
     // ── Raw actions ─────────────────────────────────────────────────────
 
     setNodesRaw: (updater) => {
+      if (get().focus) {
+        commit((state) => ({ nodes: wholePositions(applyUpdater(state.nodes, updater)) }), false)
+        return
+      }
       set((state) => {
         const nodes = wholePositions(applyUpdater(state.nodes, updater))
         const sameStructural = hasSameNodeStructureByReference(state.nodes, nodes)
@@ -835,18 +1056,36 @@ const useGraphStore = create<GraphStore>()((set, get) => {
             dirty: computeDirtyForPositionOnlyNodes(state, nodes),
           }
         }
-        return { nodes, ...derivedPatch(state, { ...state, nodes }, !sameStructural) }
+        const patch = derivedPatch(state, { ...state, nodes }, !sameStructural)
+        return {
+          nodes,
+          ...patch,
+          ...(patch.persistedFingerprint !== state.persistedFingerprint
+            ? { semanticGeneration: state.semanticGeneration + 1 }
+            : {}),
+        }
       })
     },
 
     setEdgesRaw: (updater) => {
+      if (get().focus) {
+        commit((state) => ({ edges: applyUpdater(state.edges, updater) }), false)
+        return
+      }
       set((state) => {
         const edges = applyUpdater(state.edges, updater)
         const sameStructural = hasSameEdgeStructure(state.edges, edges)
         if (hasOnlyEdgeUiFieldChanges(state.edges, edges)) {
           return { edges }
         }
-        return { edges, ...derivedPatch(state, { ...state, edges }, !sameStructural) }
+        const patch = derivedPatch(state, { ...state, edges }, !sameStructural)
+        return {
+          edges,
+          ...patch,
+          ...(patch.persistedFingerprint !== state.persistedFingerprint
+            ? { semanticGeneration: state.semanticGeneration + 1 }
+            : {}),
+        }
       })
     },
 
@@ -855,110 +1094,167 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
 
     setSubmodelsRaw: (submodels) => {
-      set((state) => commitGraphChange(state, { submodels }, false))
+      commit(() => ({ submodels }), false)
     },
 
     setPreambleRaw: (value) => {
-      set((state) => commitGraphChange(state, { preamble: value }, false))
+      commit(() => ({ preamble: value }), false)
     },
 
     setGlobalConstantsRaw: (constants) => {
-      set((state) => commitGraphChange(state, { globalConstants: constants }, false))
+      commit(() => ({ globalConstants: constants }), false)
     },
 
     setGlobalConstants: (constants) => {
-      set((state) => commitGraphChange(state, { globalConstants: constants }, true))
+      commit(() => ({ globalConstants: constants }), true)
     },
 
     // ── Submodel navigation ─────────────────────────────────────────────
 
-    enterSubmodelView: (view) => {
+    enterSubmodelView: (occurrence) => {
       const state = get()
-      if (state.submodelView !== null) {
+      if (state.focus !== null) {
         throw new Error("A submodel is already open. Return to the main pipeline first.")
       }
       if (state.vcBusy) {
         throw new Error("A version-control undo or redo is still running.")
       }
-      const entrySnapshot = captureGraphSnapshot(state)
-      const entryViewSnapshot = captureGraphSnapshot({ ...state, nodes: view.nodes, edges: view.edges })
-      // A view entered from a clean root is clean until it changes. From a
-      // dirty root the root's own baseline stays, which no view matches.
-      const viewFields: GraphFields = { ...state, nodes: view.nodes, edges: view.edges }
-      const entryViewPersistedFingerprint = computePersistedFingerprint(
-        view.nodes,
-        view.edges,
-        state.preamble,
-        state.submodels,
-        state.globalConstants,
-      )
-      const lastSavedSnapshot = state.dirty ? state.lastSavedSnapshot : entryViewSnapshot
-      const savedPersistedFingerprint = state.dirty
-        ? state.savedPersistedFingerprint
-        : entryViewPersistedFingerprint
+      const node = state.nodes.find((candidate) => candidate.id === occurrence.instanceId)
+      const config = node?.data.config
+      if (!node || !isSubmodelInstanceConfig(config) || config.definition_id !== occurrence.definitionId) {
+        throw new Error(`Submodel instance ${occurrence.instanceId} is not on the canvas`)
+      }
+      const canvas = projectSubmodelFocus({
+        rootNodes: state.nodes,
+        rootEdges: state.edges,
+        submodels: state.submodels,
+        focus: occurrence,
+        annotations: state.submodelAnnotations[occurrence.instanceId],
+      })
+      const focus: SubmodelFocus = {
+        instanceId: occurrence.instanceId,
+        definitionId: occurrence.definitionId,
+        readOnly: config.instance_of !== undefined,
+        rootNodes: state.nodes,
+        rootEdges: state.edges,
+      }
+      endGesture()
+      const fields: GraphFields = { ...state, nodes: canvas.nodes, edges: canvas.edges, focus }
       set({
-        nodes: view.nodes,
-        edges: view.edges,
-        undoStack: [],
-        redoStack: [],
-        lastSavedSnapshot,
-        savedPersistedFingerprint,
-        ...derivedPatch({ ...state, lastSavedSnapshot, savedPersistedFingerprint }, viewFields),
-        submodelView: {
-          entrySnapshot,
-          entryPersistedFingerprint: state.persistedFingerprint,
-          entryViewSnapshot,
-          entryViewPersistedFingerprint,
-          parentUndoStack: state.undoStack,
-          parentRedoStack: state.redoStack,
-          parentSavedSnapshot: state.lastSavedSnapshot,
-          parentSavedPersistedFingerprint: state.savedPersistedFingerprint,
-          savedViewPersistedFingerprint: null,
-        },
+        nodes: canvas.nodes,
+        edges: canvas.edges,
+        focus,
+        navigationSerial: state.navigationSerial + 1,
+        semanticGeneration: state.semanticGeneration + 1,
+        ...derivedPatch(state, fields),
       })
     },
 
-    exitSubmodelView: (root) => {
+    exitSubmodelView: () => {
       const state = get()
-      const context = state.submodelView
-      if (context === null) {
+      const focus = state.focus
+      if (focus === null) {
         throw new Error("No submodel is open.")
       }
-      const rootFields: GraphFields = { ...state, ...root }
-      const persistedFingerprint = computePersistedFingerprint(
-        root.nodes,
-        root.edges,
-        state.preamble,
-        root.submodels,
-        state.globalConstants,
-      )
-      const changed = persistedFingerprint !== context.entryPersistedFingerprint
-      const leavingSavedView = context.savedViewPersistedFingerprint === state.persistedFingerprint
-      const lastSavedSnapshot = leavingSavedView
-        ? captureGraphSnapshot(rootFields)
-        : context.parentSavedSnapshot
-      const savedPersistedFingerprint = leavingSavedView
-        ? persistedFingerprint
-        : context.parentSavedPersistedFingerprint
+      endGesture()
+      const fields: GraphFields = { ...state, nodes: focus.rootNodes, edges: focus.rootEdges, focus: null }
       set({
-        nodes: root.nodes,
-        edges: root.edges,
-        submodels: root.submodels,
-        // The view's own steps end with it: one step undoes the whole visit.
-        undoStack: changed
-          ? appendHistoryEntry(context.parentUndoStack, context.entrySnapshot)
-          : context.parentUndoStack,
-        redoStack: changed ? [] : context.parentRedoStack,
-        lastSavedSnapshot,
-        savedPersistedFingerprint,
-        ...derivedPatch({ ...state, lastSavedSnapshot, savedPersistedFingerprint }, rootFields),
-        submodelView: null,
+        nodes: focus.rootNodes,
+        edges: focus.rootEdges,
+        focus: null,
+        navigationSerial: state.navigationSerial + 1,
+        semanticGeneration: state.semanticGeneration + 1,
+        ...derivedPatch(state, fields),
       })
+    },
+
+    commitSubmodelBoundaryEdit: (edit) => {
+      const state = get()
+      const focus = state.focus
+      if (focus === null) {
+        throw new Error("A boundary edit needs an open submodel.")
+      }
+      // The definition holds its children in their authored form, as a canvas
+      // write leaves them: presentation and annotations stay on the view.
+      const open = edit.submodels[focus.definitionId]
+      const submodels = isSubmodelDefinition(open, focus.definitionId)
+        ? {
+            ...edit.submodels,
+            [focus.definitionId]: {
+              ...open,
+              graph: {
+                ...open.graph,
+                nodes: open.graph.nodes.map(authoredNodeForm),
+                edges: (open.graph.edges ?? []).map(definitionEdgeForm),
+              },
+            },
+          }
+        : edit.submodels
+      const nextFocus: SubmodelFocus = { ...focus, rootNodes: edit.parentNodes, rootEdges: edit.parentEdges }
+      const fields: GraphFields = {
+        ...state,
+        nodes: edit.viewNodes,
+        edges: edit.viewEdges,
+        submodels,
+        focus: nextFocus,
+      }
+      const patch = derivedPatch(state, fields)
+      const changed = patch.persistedFingerprint !== persistedFingerprintOf(state)
+      const dragBase = liftBase
+      const dragGesture = pendingGesture
+      endGesture()
+      if (changed && focus.readOnly) {
+        refuse(READ_ONLY_REASON)
+        return
+      }
+      set({
+        ...(changed
+          ? {
+              undoStack: appendHistoryEntry(state.undoStack, captureDocument(state)),
+              redoStack: [],
+              semanticGeneration: state.semanticGeneration + 1,
+            }
+          : {}),
+        nodes: edit.viewNodes,
+        edges: edit.viewEdges,
+        submodels,
+        focus: nextFocus,
+        submodelAnnotations: { ...state.submodelAnnotations, [focus.instanceId]: childAnnotations(edit.viewNodes) },
+        ...patch,
+      })
+      // A drag still under way (an edit waiting on server names can land
+      // mid-drag) goes on over the edited view: its end is lifted against that
+      // view as the document has it, with the dragged children where the drag
+      // found them, and it records its own step after this one.
+      if (dragBase) {
+        const found = new Map(dragBase.nodes.map((node) => [node.id, node.position]))
+        liftBase = {
+          nodes: edit.viewNodes.map((node) => {
+            const position = found.get(node.id)
+            return position ? { ...node, position } : node
+          }),
+          edges: edit.viewEdges,
+        }
+        if (dragGesture) pendingGesture = captureDocument(get())
+      }
+    },
+
+    setRootNodesRaw: (updater) => {
+      const state = get()
+      const focus = state.focus
+      // With no submodel open the pipeline's own nodes are the canvas.
+      if (focus === null) {
+        get().setNodesRaw(updater)
+        return
+      }
+      const nextFocus: SubmodelFocus = { ...focus, rootNodes: applyUpdater(focus.rootNodes, updater) }
+      set({ focus: nextFocus, ...derivedPatch(state, { ...state, focus: nextFocus }, false) })
     },
 
     // ── Explicit history operations ─────────────────────────────────────
 
     loadGraphSnapshot: (snapshot) => {
+      endGesture()
       set((state) => {
         // Keep live state and the saved baseline independently cloned. Some
         // React Flow/editor paths mutate node objects in place; sharing
@@ -969,44 +1265,31 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         // that strips transient fields.
         const loaded = structuredClone(snapshot)
         const lastSavedSnapshot = captureGraphSnapshot(loaded)
-        const structuralFingerprint = computeStructuralFingerprint(
-          loaded.nodes,
-          loaded.edges,
-          loaded.preamble,
-          loaded.globalConstants ?? [],
-          loaded.submodels,
-        )
-        const panelContextFingerprint = computePanelContextFingerprint(
-          loaded.nodes,
-          loaded.edges,
-        )
-        const persistedFingerprint = computePersistedFingerprint(
-          loaded.nodes,
-          loaded.edges,
-          loaded.preamble,
-          loaded.submodels,
-          loaded.globalConstants ?? [],
-        )
-        return {
+        const fields: GraphFields = {
           nodes: loaded.nodes,
           edges: loaded.edges,
           preamble: loaded.preamble,
           submodels: loaded.submodels,
           globalConstants: loaded.globalConstants ?? [],
+          focus: null,
+        }
+        const persistedFingerprint = persistedFingerprintOf(fields)
+        return {
+          ...fields,
           globalConstantsError: loaded.globalConstantsError ?? null,
           lastSavedSnapshot,
           // Graph snapshots from before the load would bring back the old
           // document; a version-control entry is an API inverse, still valid
           // (a switch's own document arrives through this load). A load is
-          // always a root document, so an open submodel view ends here.
-          undoStack: [...(state.submodelView?.parentUndoStack ?? []), ...state.undoStack]
-            .filter(isVcEntry),
-          redoStack: [...(state.submodelView?.parentRedoStack ?? []), ...state.redoStack]
-            .filter(isVcEntry),
-          submodelView: null,
-          structuralFingerprint,
+          // always the main pipeline, so an open submodel closes here.
+          undoStack: state.undoStack.filter(isVcEntry),
+          redoStack: state.redoStack.filter(isVcEntry),
+          submodelAnnotations: {},
+          navigationSerial: state.navigationSerial + (state.focus ? 1 : 0),
+          semanticGeneration: state.semanticGeneration + 1,
+          structuralFingerprint: structuralFingerprintOf(fields),
           structuralVersion: state.structuralVersion + 1,
-          panelContextFingerprint,
+          panelContextFingerprint: computePanelContextFingerprint(loaded.nodes, loaded.edges),
           panelContextVersion: state.panelContextVersion + 1,
           persistedFingerprint,
           savedPersistedFingerprint: persistedFingerprint,
@@ -1016,7 +1299,13 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
 
     pushSnapshot: () => {
-      set(() => ({ undoStack: pushSnapshotInternal(), redoStack: [] }))
+      const state = get()
+      if (state.focus) {
+        // Recorded when the gesture's first write changes the document.
+        pendingGesture = captureDocument(state)
+        return
+      }
+      set({ undoStack: appendHistoryEntry(state.undoStack, captureDocument(state)), redoStack: [] })
     },
 
     pushVcEntry: (entry) => {
@@ -1054,11 +1343,15 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           .finally(() => set({ vcBusy: false }))
         return
       }
-      set((state) => ({
-        ...commitGraphChange(state, restoredFields(prev), false),
+      endGesture()
+      const state = get()
+      const { patch, notice } = restore(state, prev)
+      set({
+        ...patch,
         undoStack: newUndo,
-        redoStack: appendHistoryEntry(state.redoStack, captureGraphSnapshot(state)),
-      }))
+        redoStack: appendHistoryEntry(state.redoStack, captureDocument(state, prev.focus ?? null)),
+      })
+      if (notice) useToastStore.getState().addToast("info", notice)
     },
 
     redo: () => {
@@ -1083,35 +1376,28 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           .finally(() => set({ vcBusy: false }))
         return
       }
-      set((state) => ({
-        ...commitGraphChange(state, restoredFields(next), false),
+      endGesture()
+      const state = get()
+      const { patch, notice } = restore(state, next)
+      set({
+        ...patch,
         redoStack: newRedo,
-        undoStack: appendHistoryEntry(state.undoStack, captureGraphSnapshot(state)),
-      }))
+        undoStack: appendHistoryEntry(state.undoStack, captureDocument(state, next.focus ?? null)),
+      })
+      if (notice) useToastStore.getState().addToast("info", notice)
     },
 
     // ── Dirty tracking ──────────────────────────────────────────────────
 
     markSaved: (snapshot?: GraphSnapshot) => {
-      const context = get().submodelView
-      if (context !== null) {
-        markSavedInSubmodelView(context, snapshot)
-        return
-      }
       set((state) => {
         const lastSavedSnapshot = snapshot === undefined
-          ? captureGraphSnapshot(state)
+          ? captureDocument(state, null)
           : captureGraphSnapshot({
               ...snapshot,
               globalConstants: snapshot.globalConstants ?? state.globalConstants,
             })
-        const currentPersistedFingerprint = computePersistedFingerprint(
-          state.nodes,
-          state.edges,
-          state.preamble,
-          state.submodels,
-          state.globalConstants,
-        )
+        const currentPersistedFingerprint = persistedFingerprintOf(state)
         const savedPersistedFingerprint = computePersistedFingerprint(
           lastSavedSnapshot.nodes,
           lastSavedSnapshot.edges,
@@ -1135,12 +1421,18 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // ── Pure selectors ──────────────────────────────────────────────────
 
     isDirty: () => {
-      const { lastSavedSnapshot, nodes, edges, preamble, submodels, globalConstants } = get()
-      const current = serializeSnapshot({ nodes, edges, preamble, submodels, globalConstants })
-      if (lastSavedSnapshot === null) {
+      const state = get()
+      const current = serializeSnapshot({
+        nodes: documentNodes(state),
+        edges: documentEdges(state),
+        preamble: state.preamble,
+        submodels: state.submodels,
+        globalConstants: state.globalConstants,
+      })
+      if (state.lastSavedSnapshot === null) {
         return current !== EMPTY_SNAPSHOT
       }
-      return current !== serializeSnapshot(lastSavedSnapshot)
+      return current !== serializeSnapshot(state.lastSavedSnapshot)
     },
 
     canUndo: () => get().undoStack.length > 0 && !get().vcBusy,
@@ -1161,6 +1453,20 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
   }
 })
+
+let canvasSeen: { nodes: Node[]; edges: PipelineEdge[] } | null = null
+
+/**
+ * The canvas as one object, the same object while its nodes and edges are the
+ * same: for readers that capture the graph and later ask whether it changed.
+ */
+export function canvasGraph(): { nodes: Node[]; edges: PipelineEdge[] } {
+  const { nodes, edges } = useGraphStore.getState()
+  if (canvasSeen === null || canvasSeen.nodes !== nodes || canvasSeen.edges !== edges) {
+    canvasSeen = { nodes, edges }
+  }
+  return canvasSeen
+}
 
 // Convenience wrapper for suites that import the store statically (parity
 // with resetOutputWriteStoreForTests); consumed by the undoAtomicity and

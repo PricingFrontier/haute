@@ -46,6 +46,9 @@ pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 _fast_optional_training_diagnostics = _modelling_route_helpers._fast_optional_training_diagnostics
 training_data = _modelling_route_helpers.training_data
 
+# The modelling node every graph here trains, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
+
 
 def _completed_train_result() -> object:
     """Small successful TrainResult for endpoint tests that do not care about fit quality."""
@@ -189,7 +192,7 @@ class TestTrainEndpoint:
         """The exact training demand meets the missing column at its source: a
         422 contract failure naming it, never a generic pipeline failure."""
         graph = _make_modelling_graph(training_data, target=target, feature_columns=feature_columns)
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        resp = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
         assert resp.status_code == 200
         status = _poll_until_done(client, resp.json()["job_id"])
         assert status["status"] == "contract_error"
@@ -198,12 +201,18 @@ class TestTrainEndpoint:
 
     def test_train_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "nonexistent"})
+        resp = client.post(
+            "/api/modelling/train",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "nonexistent"}},
+        )
         assert resp.status_code == 404
 
     def test_train_wrong_node_type(self, client, training_data):
         graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "source"})
+        resp = client.post(
+            "/api/modelling/train",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "source"}},
+        )
         assert resp.status_code == 400
 
     @pytest.mark.parametrize(
@@ -223,7 +232,7 @@ class TestTrainEndpoint:
         else:
             config["feature_columns"] = feature_columns
 
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        resp = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
 
         assert resp.status_code == 400
         assert "Modelling config has no features" in resp.json()["detail"]
@@ -231,7 +240,7 @@ class TestTrainEndpoint:
 
     def test_train_success(self, client, training_data):
         graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        resp = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "started"
@@ -261,7 +270,7 @@ class TestTrainEndpoint:
         # more than the 200 that really arrive.
         monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 1)
 
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        resp = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
 
         assert resp.status_code == 200, resp.text
         status = _poll_until_done(client, resp.json()["job_id"])
@@ -293,7 +302,7 @@ class TestTrainEndpoint:
 
         resp = client.post(
             "/api/modelling/train",
-            json={"graph": _make_modelling_graph(str(data)), "node_id": "train"},
+            json={"graph": _make_modelling_graph(str(data)), "target": _TRAIN_TARGET},
         )
 
         assert resp.status_code == 200, resp.text
@@ -306,7 +315,7 @@ class TestTrainEndpoint:
     def test_train_reports_progress(self, client, training_data):
         """Training should report iteration progress via the status endpoint."""
         graph = _make_modelling_graph(training_data, params=_fast_training_params(iterations=8))
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        resp = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
         data = resp.json()
         job_id = data["job_id"]
         # Poll a few times — we should see iteration progress at some point
@@ -342,7 +351,7 @@ class TestTrainEndpoint:
             graph = _make_modelling_graph(training_data)
             resp = client.post(
                 "/api/modelling/train",
-                json={"graph": graph, "node_id": "train"},
+                json={"graph": graph, "target": _TRAIN_TARGET},
             )
             assert resp.status_code == 409
             assert "already running" in resp.json()["detail"]
@@ -362,7 +371,7 @@ class TestTrainEndpoint:
         ):
             resp = client.post(
                 "/api/modelling/train",
-                json={"graph": graph, "node_id": "train"},
+                json={"graph": graph, "target": _TRAIN_TARGET},
             )
             assert resp.status_code == 200
             status = _poll_until_done(client, resp.json()["job_id"])
@@ -380,7 +389,9 @@ class TestTrainEndpoint:
             patch("haute._host_memory.available_vram_bytes", return_value=1),
             patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()) as run,
         ):
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
             assert resp.status_code == 200
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "memory_limited"
@@ -1016,7 +1027,9 @@ class TestBackgroundThreadErrors:
 
         service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
             data = resp.json()
             assert data["status"] == "started"
             join_training_preparation(data["job_id"])
@@ -1043,7 +1056,9 @@ class TestBackgroundThreadErrors:
 
         service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
             data = resp.json()
             assert data["status"] == "started"
             join_training_preparation(data["job_id"])
@@ -1072,7 +1087,9 @@ class TestBackgroundThreadErrors:
 
         service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
             data = resp.json()
             join_training_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
@@ -1103,7 +1120,9 @@ class TestBackgroundThreadErrors:
 
         service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
             data = resp.json()
             join_training_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
@@ -1142,7 +1161,7 @@ class TestBackgroundThreadErrors:
             with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
                 resp = client.post(
                     "/api/modelling/train",
-                    json={"graph": graph, "node_id": "train"},
+                    json={"graph": graph, "target": _TRAIN_TARGET},
                 )
                 data = resp.json()
                 join_training_preparation(data["job_id"])
@@ -1180,7 +1199,7 @@ class TestBackgroundThreadErrors:
             with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
                 resp = client.post(
                     "/api/modelling/train",
-                    json={"graph": graph, "node_id": "train"},
+                    json={"graph": graph, "target": _TRAIN_TARGET},
                 )
                 data = resp.json()
                 join_training_preparation(data["job_id"])
@@ -1263,12 +1282,13 @@ class TestTrainModelDirect:
                 "edges": [make_edge("source", "train").model_dump()],
             }
         )
-        body = TrainRequest(graph=graph, node_id="train")
+        body = TrainRequest(graph=graph, target=_TRAIN_TARGET)
         fake_response = TrainResponse(status="started", job_id="abc123")
 
         with patch.object(_train_service, "start", return_value=fake_response) as mock_start:
             result = train_model(body)
-            mock_start.assert_called_once_with(body)
+            # The service gets the request with its target resolved to the node's key.
+            mock_start.assert_called_once_with(body.with_node_key("train"))
             assert result.status == "started"
             assert result.job_id == "abc123"
 

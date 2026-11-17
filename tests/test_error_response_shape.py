@@ -36,6 +36,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._source_files import source_files
 
@@ -139,7 +140,7 @@ _ERROR_CASES = [
     pytest.param(
         "post",
         "/api/pipeline/preview",
-        {"graph": {"nodes": [], "edges": []}, "node_id": "x"},
+        {"graph": {"nodes": [], "edges": []}, "target": node_target("x")},
         400,
         id="preview-empty-graph",
     ),
@@ -147,7 +148,7 @@ _ERROR_CASES = [
     pytest.param(
         "post",
         "/api/pipeline/write-output",
-        {"graph": {"nodes": [], "edges": []}, "node_id": "x"},
+        {"graph": {"nodes": [], "edges": []}, "target": {"occurrence": None, "node_id": "x"}},
         400,
         id="sink-empty-graph",
     ),
@@ -159,7 +160,7 @@ _ERROR_CASES = [
             "graph": {"nodes": [], "edges": []},
             "seed_plan": [],
             "row_index": 0,
-            "target_node_id": "x",
+            "target": node_target("x"),
             "column": "y",
         },
         400,

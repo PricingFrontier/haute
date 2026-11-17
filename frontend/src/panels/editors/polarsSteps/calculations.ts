@@ -13,7 +13,7 @@ import { calculationIcon, STEP_ICONS } from "./stepIcons"
 import type { Expr, FunctionName, Operand, Step } from "./types"
 
 export type CalculationSection = "General" | "Number" | "Text" | "Dates"
-export type CalculationId = "formula" | "if_then" | "window" | "sum_across" | "join_text" | "value" | FunctionName
+export type CalculationId = "formula" | "if_then" | "window" | "coalesce" | "sum_across" | "join_text" | "value" | FunctionName
 /** `name` titles a card; the list shows `qualifier` after it where the name alone would mislead. */
 export type Calculation = { id: CalculationId; section: CalculationSection; name: string; qualifier?: string }
 
@@ -21,6 +21,7 @@ export const CALCULATIONS: readonly Calculation[] = [
   { id: "formula", section: "General", name: "Formula" },
   { id: "if_then", section: "General", name: "If-then" },
   { id: "window", section: "General", name: "Window" },
+  { id: "coalesce", section: "General", name: "Coalesce" },
   { id: "sum_across", section: "General", name: "Sum across" },
   { id: "join_text", section: "General", name: "Join text" },
   { id: "value", section: "General", name: "Value" },
@@ -60,6 +61,7 @@ const EXPR_CALCULATIONS = {
   binary: "formula",
   conditional: "if_then",
   window: "window",
+  coalesce: "coalesce",
   sum_horizontal: "sum_across",
   concat: "join_text",
   operand: "value",
@@ -82,7 +84,7 @@ export type FunctionSection = "Number" | "Text" | "Dates"
 /**
  * The section an Add column step computed as `id` keeps, so its Function list
  * offers that section's functions, or null for a step that keeps its one
- * calculation (a Formula, If-then, Window, Sum across, Join text or Value, or
+ * calculation (a Formula, If-then, Window, Coalesce, Sum across, Join text or Value, or
  * an unlisted function).
  */
 export function stepSection(id: CalculationId): FunctionSection | null {
@@ -103,7 +105,7 @@ export function calculationLabel(calculation: Calculation): string {
   return calculation.qualifier ? `${calculation.name} (${calculation.qualifier})` : calculation.name
 }
 
-/** The value an expression computes from: a function's Of, a window's value, a sum across's or text join's first part, a Value's value. */
+/** The value an expression computes from: a function's Of, a window's value, a coalesce's, sum across's or text join's first part, a Value's value. */
 export function computedValue(expr: Expr): Operand | undefined {
   switch (expr.type) {
     case "function":
@@ -111,6 +113,7 @@ export function computedValue(expr: Expr): Operand | undefined {
       return expr.operand
     case "window":
       return expr.of
+    case "coalesce":
     case "sum_horizontal":
     case "concat":
       return expr.parts[0]
@@ -141,6 +144,8 @@ export function calculationExpr(id: CalculationId, previous?: Expr, variables: r
       return defaultExpr("conditional")
     case "window":
       return { type: "window", agg: "sum", of: value?.kind === "column" || value?.kind === "expr" ? value : empty, over: [] }
+    case "coalesce":
+      return { type: "coalesce", parts: [value ?? empty, empty] }
     case "sum_across":
       return { type: "sum_horizontal", parts: [value ?? empty, empty] }
     case "join_text":

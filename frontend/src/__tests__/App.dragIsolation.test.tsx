@@ -337,6 +337,76 @@ describe("App — chrome drag-frame isolation (FGC-R03)", () => {
     expect(renderCounts.dataPreview).toBeLessThanOrEqual(1)
   })
 
+  it("keeps a drag inside a submodel of 200 children to the dragged child until it ends, as one step", () => {
+    render(<App />)
+    const children: Node[] = Array.from({ length: 200 }, (_, index) => ({
+      id: `step_${index}`,
+      type: "polars",
+      position: { x: index * 10, y: 0 },
+      data: {
+        label: `Step ${index}`,
+        nodeType: "polars",
+        config: { code: "df = df" },
+        _functionName: `step_${index}`,
+        _defaultInputName: `step_${index}`,
+        _sourceHandleInputNames: {},
+      },
+    }))
+    act(() => {
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [{
+          id: "pricing",
+          type: "submodel",
+          position: { x: 0, y: 0 },
+          data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
+        }],
+        edges: [],
+        preamble: "",
+        submodels: {
+          definition_pricing: {
+            definitionId: "definition_pricing",
+            file: "modules/pricing.py",
+            graph: { nodes: children, edges: [] },
+            inputPorts: [],
+            outputPorts: [],
+          },
+        },
+      })
+      useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+    })
+    const dragged = useGraphStore.getState().nodes.find((n) => n.id === "step_7")!
+    act(() => {
+      capturedFlowProps.onNodeClick?.({} as React.MouseEvent, dragged)
+    })
+    const untouched = () => useGraphStore.getState().nodes.filter((n) => n.id !== "step_7")
+    const before = untouched()
+    const settledDefinitions = useGraphStore.getState().submodels
+    renderCounts.toolbar = 0
+    renderCounts.nodePanel = 0
+    renderCounts.dataPreview = 0
+
+    for (let frame = 1; frame <= 5; frame += 1) {
+      act(() => {
+        capturedFlowProps.onNodesChange?.([
+          { id: "step_7", type: "position", dragging: true, position: { x: 70 + frame * 10, y: frame * 5 } },
+        ])
+      })
+      // Only the dragged child changes object; the definitions are untouched mid-drag.
+      expect(untouched().every((node, index) => node === before[index])).toBe(true)
+      expect(useGraphStore.getState().submodels).toBe(settledDefinitions)
+    }
+    act(() => {
+      capturedFlowProps.onNodesChange?.([{ id: "step_7", type: "position", dragging: false, position: { x: 130, y: 30 } }])
+    })
+
+    const definition = useGraphStore.getState().submodels.definition_pricing as { graph: { nodes: Node[] } }
+    expect(definition.graph.nodes.find((n) => n.id === "step_7")?.position).toEqual({ x: 130, y: 30 })
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    expect(renderCounts.toolbar).toBeLessThanOrEqual(1)
+    expect(renderCounts.nodePanel).toBeLessThanOrEqual(1)
+    expect(renderCounts.dataPreview).toBeLessThanOrEqual(1)
+  })
+
   it("shows a training result that lands while its node is the active preview", async () => {
     render(<App />)
     act(() => {

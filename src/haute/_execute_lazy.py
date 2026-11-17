@@ -11,6 +11,7 @@ import difflib
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
@@ -35,6 +36,7 @@ from haute._edge_join import (
 from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
+    execution_node_name,
 )
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import (
@@ -45,6 +47,7 @@ from haute._graph_utils import (
     upstream_node_ids,
 )
 from haute._logging import get_logger
+from haute._node_addresses import node_display_name
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import (
@@ -91,9 +94,10 @@ def _edge_join_recipe(
         return None
     base_index, join_index = roles
     shaping = dict(node.data.config)
+    name = execution_node_name(node.id, node.data.label)
 
     def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
-        selected = _apply_selected_columns(lf, shaping, node_label=node.data.label)
+        selected = _apply_selected_columns(lf, shaping, node_label=name)
         renamed = _apply_column_renames(selected, shaping)
         return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
 
@@ -162,9 +166,10 @@ def _write_recipe(
         frame_names=[*frame_names, *(orig_frame_names or ())],
         selector_aliases=selector_aliases,
     )
+    name = execution_node_name(node.id, node.data.label)
 
     def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
-        selected = _apply_selected_columns(lf, shaping, node_label=node.data.label)
+        selected = _apply_selected_columns(lf, shaping, node_label=name)
         renamed = _apply_column_renames(selected, shaping)
         return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
 
@@ -344,9 +349,11 @@ def _assert_inputs_satisfy_contract(
     node: GraphNode,
     contract: Contract,
     upstream_columns: frozenset[str],
+    name: str | None = None,
 ) -> None:
     """Raise ``ContractMismatchError`` if *upstream_columns* is missing
-    any column the node's contract says it reads.
+    any column the node's contract says it reads, naming the node *name* (its display
+    name), or by its label.
 
     No-op when the contract's input side is opaque (``None``).
     """
@@ -355,7 +362,7 @@ def _assert_inputs_satisfy_contract(
     missing = sorted(contract.inputs - upstream_columns)
     if not missing:
         return
-    subject = f"{_node_display_name(node)} needs {_name_columns(missing)}"
+    subject = f"{_node_display_name(node, name)} needs {_name_columns(missing)}"
     if not upstream_columns:
         message = f"{subject}, but its input has no columns."
     else:
@@ -371,9 +378,11 @@ def _assert_outputs_satisfy_contract(
     node: GraphNode,
     contract: Contract,
     output_columns: frozenset[str],
+    name: str | None = None,
 ) -> None:
     """Raise ``ContractMismatchError`` if *output_columns* is missing
-    any column the node's contract promised to produce.
+    any column the node's contract promised to produce, naming the node *name* (its
+    display name), or by its label.
 
     We check ⊇ (outputs must be present) rather than == because
     pass-through style nodes legitimately carry additional columns
@@ -388,7 +397,7 @@ def _assert_outputs_satisfy_contract(
     if not missing:
         return
     raise ContractColumnsMissingError(
-        f"{_node_display_name(node)} did not create {_name_columns(missing)}, "
+        f"{_node_display_name(node, name)} did not create {_name_columns(missing)}, "
         "which its contract says it outputs.",
         node_id=node.id,
         missing=missing,
@@ -400,8 +409,8 @@ def _assert_outputs_satisfy_contract(
 _MESSAGE_COLUMN_LIMIT = 5
 
 
-def _node_display_name(node: GraphNode) -> str:
-    return repr(node.data.label or node.id)
+def _node_display_name(node: GraphNode, name: str | None) -> str:
+    return repr(name or node.data.label or node.id)
 
 
 def _name_columns(columns: Sequence[str]) -> str:
@@ -590,7 +599,10 @@ class NodeBoundaryRunner:
         if boundary.is_source:
             return boundary.fn()
         if not input_frames:
-            raise ValueError(f"No input data available for node '{boundary.node_id}'")
+            raise ValueError(
+                "No input data available for node "
+                f"'{node_display_name(self.prepared.graph, boundary.node_id)}'"
+            )
         if self.enforce_contracts:
             _assert_simple_join_key_dtypes_compatible(
                 boundary.node, list(boundary.parent_ids), list(input_frames)
@@ -612,6 +624,7 @@ class NodeBoundaryRunner:
             boundary.node,
             boundary.contract,
             upstream_columns,
+            node_display_name(self.prepared.graph, boundary.node_id),
         )
 
     def assert_outputs(
@@ -626,7 +639,12 @@ class NodeBoundaryRunner:
             or boundary.is_passthrough_runtime
         ):
             return
-        _assert_outputs_satisfy_contract(boundary.node, boundary.contract, output_columns)
+        _assert_outputs_satisfy_contract(
+            boundary.node,
+            boundary.contract,
+            output_columns,
+            node_display_name(self.prepared.graph, boundary.node_id),
+        )
 
 
 if TYPE_CHECKING:
@@ -912,6 +930,7 @@ def _replanned_target_preview_strategy(
             relevant_edges=scoped_edges,
             submodels=graph.submodels,
         ),
+        node_name=partial(node_display_name, graph),
         **_admitted_strategy_passthrough(diagnostic),
     )
 
@@ -1392,6 +1411,7 @@ class _PlannedCaptures:
         from haute._node_snapshots import (
             NodeSnapshotColumns,
             NodeSnapshotMultiFrameUnsupportedError,
+            NodeSnapshotOwner,
         )
 
         plan = self.plan
@@ -1491,6 +1511,7 @@ class _PlannedCaptures:
                     if self.execution_context is not None
                     else None
                 ),
+                owner=NodeSnapshotOwner.of(self.graph, node_id),
             )
         except SourceCacheCorruptError as exc:
             # The publication rule reports corruption rather than repairing it,
@@ -1501,10 +1522,11 @@ class _PlannedCaptures:
             from haute.errors import SnapshotCorruptError
 
             artifact.close()
-            node = self.graph.node_map.get(node_id)
+            from haute._node_addresses import node_display_name
+
             raise SnapshotCorruptError(
                 node_id=node_id,
-                node_label=(node.data.label if node is not None else None),
+                node_label=node_display_name(self.graph, node_id),
             ) from exc
         except BaseException:
             artifact.close()
@@ -1650,8 +1672,8 @@ def _build_funcs(
         duplicates = duplicate_input_names(src_names)
         if duplicates:
             raise ConfigError(
-                f"Node {nid!r} has duplicate input name(s) derived from its "
-                f"incoming edges: {duplicates!r}.",
+                f"Node {execution_node_name(nid, node_map[nid].data.label)!r} has duplicate "
+                f"input name(s) derived from its incoming edges: {duplicates!r}.",
                 node_id=nid,
                 duplicate_input_names=duplicates,
             )
@@ -1699,8 +1721,10 @@ def _unnamed_request_input(node: GraphNode, source: GraphNode) -> Callable[..., 
     """A node function refusing an input from a request input that names no table."""
 
     def refuse(*_frames: Any, **_kwargs: Any) -> Any:
+        name = execution_node_name(node.id, node.data.label)
+        source_name = execution_node_name(source.id, source.data.label)
         raise ConfigError(
-            f"Node {node.data.label!r} takes an input from {source.data.label!r} that "
+            f"Node {name!r} takes an input from {source_name!r} that "
             "does not name the table it takes. Connect it again from the table.",
             node_id=node.id,
             source_node_id=source.id,
@@ -1729,6 +1753,41 @@ def _extract_error_line(exc: Exception) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+#: What Polars appends to a lazy plan's failure, in this order: the plan it resolved
+#: (whose scans print absolute cache paths), then the operations it was resolving.
+_POLARS_PLAN_DUMPS = (
+    "\n\nResolved plan until failure:",
+    "\n\nThis error occurred with the following context stack:",
+)
+
+
+#: The two ways Polars words a missing column, as the first part of its message.
+_MISSING_COLUMN_WORDINGS = (
+    re.compile(r'unable to find column "(?P<name>.*?)"; valid columns: \[.*\]', re.DOTALL),
+    re.compile(r'"(?P<name>.*)" not found', re.DOTALL),
+)
+
+
+def _failure_message(exc: Exception) -> str:
+    """A node failure's message as the node records it: a Polars error's without its plan.
+
+    A missing column reads ``Column "x" does not exist.``, without the frame's other
+    columns; any other Polars sentence is kept as it is. The log keeps the whole text,
+    and any other exception's message is unchanged.
+    """
+    message = str(exc)
+    if not isinstance(exc, pl.exceptions.PolarsError):
+        return message
+    for dump in _POLARS_PLAN_DUMPS:
+        message = message.split(dump, 1)[0]
+    if isinstance(exc, pl.exceptions.ColumnNotFoundError):
+        for wording in _MISSING_COLUMN_WORDINGS:
+            missing = wording.fullmatch(message)
+            if missing is not None:
+                return f'Column "{missing["name"]}" does not exist.'
+    return message
 
 
 def _located_step(

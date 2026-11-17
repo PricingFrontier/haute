@@ -196,7 +196,7 @@ describe("PolarsStepsEditor", () => {
     render(<Harness initial={{ steps: [source] }} inputSources={[quotes, rates]} spy={spy} />)
     fireEvent.click(screen.getByRole("button", { name: "Add step" }))
     const menu = screen.getByRole("menu", { name: "Add step" })
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(22)
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(23)
     expect(within(menu).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(["Add column", "Rows", "Columns", "Combine", "Other"])
     expect(within(within(menu).getByRole("group", { name: "Combine" })).getAllByRole("menuitem")).toHaveLength(5)
     expect(within(menu).getByRole("menuitem", { name: "Limit rows" })).toHaveAttribute("title", "Keep the first N rows")
@@ -553,7 +553,7 @@ describe("PolarsStepsEditor in frame mode", () => {
     expect(within(menu).queryByRole("menuitem", { name: "Append inputs" })).not.toBeInTheDocument()
     const combine = within(menu).getByRole("group", { name: "Combine" })
     expect(within(combine).getAllByRole("menuitem")).toHaveLength(3)
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(20)
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(21)
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Limit rows" }))
     await waitFor(() => expect(lastSteps(spy)).toHaveLength(1), { timeout: 5000 })
     expect((lastSteps(spy) as Step[])[0]).toMatchObject({ kind: "limit" })
@@ -614,6 +614,8 @@ const addGross: Step = {
 }
 
 function mountCanvasShortcuts(nodes: Node[]) {
+  // The canvas the shortcuts act on, as the graph store holds it.
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges: [], preamble: "", submodels: {} })
   const params = {
     enabled: true,
     handleSave: vi.fn(),
@@ -623,10 +625,10 @@ function mountCanvasShortcuts(nodes: Node[]) {
     undo: vi.fn(),
     redo: vi.fn(),
     fitView: vi.fn(),
-    graphRef: { current: { nodes, edges: [] as Edge[] } },
     clipboard: { current: { nodes: [{ id: "copied", position: { x: 0, y: 0 }, data: { label: "Copied" } } as Node], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     setSelectedNode: vi.fn(),
+    lastSelectedKeyRef: { current: null as string | null },
     setPreviewData: vi.fn(),
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
@@ -934,5 +936,14 @@ describe("GeneratedCodePanel", () => {
     act(() => vi.advanceTimersByTime(PENDING_FADE_MS))
     expect(pre().style.opacity).toBe("1")
     expect(screen.queryByText("rendering…")).not.toBeInTheDocument()
+  })
+
+  it("says there is no code only when a render has none, never while the first render is pending", () => {
+    const props = { start: "input" as const, code: "", error: null }
+    const { rerender } = render(<GeneratedCodePanel {...props} pending />)
+    expect(screen.queryByText("No code yet.")).not.toBeInTheDocument()
+
+    rerender(<GeneratedCodePanel {...props} pending={false} />)
+    expect(screen.getByText("No code yet.")).toBeInTheDocument()
   })
 })

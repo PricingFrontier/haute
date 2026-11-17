@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test"
 
+import { previewTargetNode } from "../src/test-utils/factories"
 import { resetE2eProject } from "./projectIsolation"
 
 async function openApp(page: Page): Promise<void> {
@@ -127,8 +128,7 @@ test.describe("Explore cached field pivot journey", () => {
     })
     let heldRoute: Route | null = null
     await page.route("**/api/pipeline/preview", async (route) => {
-      const body = route.request().postDataJSON() as { node_id?: string } | null
-      if (body?.node_id !== reloadedExploreId || heldRoute) {
+      if (previewTargetNode(route.request().postDataJSON()) !== reloadedExploreId || heldRoute) {
         await route.continue()
         return
       }

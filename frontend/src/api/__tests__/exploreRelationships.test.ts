@@ -4,6 +4,7 @@ import { getExploreRelationships } from "../exploreRelationships"
 import { validateExploreRelationshipsResponse } from "../../generated/api-contracts.explore.validators.mjs"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { expectGeneratedContract } from "../../types/generatedContractValidation"
+import { preparedGraph } from "../../test-utils/factories"
 
 const parseExploreRelationshipsResponse = (value: unknown) =>
   expectGeneratedContract("ExploreRelationshipsResponse", validateExploreRelationshipsResponse, value)
@@ -87,10 +88,10 @@ describe("getExploreRelationships", () => {
   it("posts the question without its signal and parses the answer", async () => {
     const controller = new AbortController()
     const parsed = await getExploreRelationships({
-      graph: { nodes: [], edges: [] },
-      node_id: "explore",
+      graph: preparedGraph({ nodes: [], edges: [] }),
+      target: { occurrence: null, node_id: "explore" },
       source: "live",
-      target: "claims",
+      target_column: "claims",
       weight: null,
       features: ["region"],
       key_columns: ["policy_id"],
@@ -102,9 +103,9 @@ describe("getExploreRelationships", () => {
     expect(options.method).toBe("POST")
     expect(JSON.parse(options.body)).toEqual({
       graph: { nodes: [], edges: [] },
-      node_id: "explore",
+      target: { occurrence: null, node_id: "explore" },
       source: "live",
-      target: "claims",
+      target_column: "claims",
       weight: null,
       features: ["region"],
       key_columns: ["policy_id"],

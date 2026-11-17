@@ -68,10 +68,11 @@ _SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
 
 #: haute's own requirements a scoring image leaves out, reviewed against the scoring
 #: runtime policy (specs/deploy, Scoring runtime): the editor, assistant, training,
-#: tuning, workbench-store and registry stacks, and each model engine, which the image
-#: installs only when a bundled artefact needs it (``_extra_deps_by_artifact``) or the
-#: graph loads from MLflow. The image's runtime check accepts haute's requirement on one of
-#: these being absent, and no other: a requirement haute adds is reviewed here first.
+#: tuning, workbench-store, workbench-export and registry stacks, and each model engine,
+#: which the image installs only when a bundled artefact needs it
+#: (``_extra_deps_by_artifact``) or the graph loads from MLflow. The image's runtime check
+#: accepts haute's requirement on one of these being absent, and no other: a requirement
+#: haute adds is reviewed here first.
 HAUTE_SCORING_OMISSIONS: frozenset[str] = frozenset(
     {
         "alembic",
@@ -82,6 +83,7 @@ HAUTE_SCORING_OMISSIONS: frozenset[str] = frozenset(
         "lightgbm",
         "mlflow",
         "openai",
+        "openpyxl",
         "optuna",
         "pandas",
         "python-multipart",

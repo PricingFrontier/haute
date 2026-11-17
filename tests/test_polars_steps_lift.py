@@ -100,8 +100,7 @@ def rebuild_or_reject(node_type: NodeType, steps: list[Step]) -> list[Step]:
     if all(step["kind"] != "free_code" for step in steps):
         assert len(lifted) == len(steps)
         for step, lifted_step in zip(steps, lifted, strict=True):
-            as_pivot = step["kind"] == "group_by" and lifted_step["kind"] == "pivot"
-            assert lifted_step["kind"] == step["kind"] or as_pivot
+            assert lifted_step["kind"] == step["kind"]
     return lifted
 
 
@@ -372,7 +371,7 @@ def expressions(variables: tuple[str, ...], depth: int) -> Strategy:
         annotated(
             st.fixed_dictionaries(
                 {
-                    "type": st.just("sum_horizontal"),
+                    "type": st.sampled_from(("sum_horizontal", "coalesce")),
                     "parts": st.lists(operands(variables, depth), min_size=2, max_size=3),
                 }
             )
@@ -446,7 +445,7 @@ def pivot_cells(draw: st.DrawFn) -> list[Step]:
 
 @st.composite
 def pivot_shaped_group_bys(draw: st.DrawFn, keys: list[str]) -> Step:
-    """A group-by of one ``on`` value's cell per aggregate, which a pivot renders too."""
+    """A group-by of one ``on`` value's cell per aggregate, which a pivot expresses too."""
     values, on = draw(columns), draw(columns)
     agg = draw(st.sampled_from([a for a in PIVOT_AGGREGATIONS if a != "len"]))
     entries = [
@@ -567,7 +566,7 @@ def free_codes(draw: st.DrawFn) -> Step:
     return {"kind": "free_code", "code": "\n".join(lines)}
 
 
-def commented(draw: st.DrawFn, step: Step) -> Step:
+def commented(draw: Callable[[st.SearchStrategy[Any]], Any], step: Step) -> Step:
     """*step*, a structured one sometimes with a comment above it."""
     if step["kind"] == "free_code" or draw(st.integers(0, 2)):
         return step
@@ -706,7 +705,7 @@ def test_step_chains_rebuild_from_their_code(program: tuple[NodeType, list[Step]
 @given(data=st.data())
 def test_every_function_rebuilds_from_its_code(fn: str, data: st.DataObject) -> None:
     expr = data.draw(functions(("rate",), 1, fn))
-    steps = [
+    steps: list[Step] = [
         {"kind": "source", "input": "quotes"},
         {"kind": "variable", "name": "rate", "value": literal("number", 2)},
         {"kind": "with_column", "name": "out", "expr": expr},
@@ -719,7 +718,7 @@ def test_every_function_rebuilds_from_its_code(fn: str, data: st.DataObject) -> 
 @given(data=st.data())
 def test_every_window_aggregate_rebuilds_from_its_code(agg: str, data: st.DataObject) -> None:
     expr = data.draw(windows((), 1, agg))
-    steps = [
+    steps: list[Step] = [
         {"kind": "source", "input": "quotes"},
         {"kind": "with_column", "name": "out", "expr": expr},
     ]
@@ -733,7 +732,7 @@ def test_every_condition_operator_rebuilds_from_its_code(
     operator: str, data: st.DataObject
 ) -> None:
     condition = data.draw(conditions((), 1, False, operator))
-    steps = [
+    steps: list[Step] = [
         {"kind": "source", "input": "quotes"},
         {"kind": "filter", "match": "all", "conditions": [condition]},
     ]
@@ -775,7 +774,7 @@ def test_rebuilt_steps_carry_ids_from_kind_and_place_only() -> None:
     assert [step["id"] for step in lifted] == ["source-1", "limit-2"]
 
 
-def test_a_filtered_group_by_that_a_pivot_renders_is_the_pivot() -> None:
+def test_a_pivot_and_the_group_by_it_lowers_to_each_read_back_as_themselves() -> None:
     def cell(value: str, name: str, match: str = "all") -> Step:
         condition = {"column": "region", "operator": "eq", "value": literal("text", value)}
         return {
@@ -796,19 +795,29 @@ def test_a_filtered_group_by_that_a_pivot_renders_is_the_pivot() -> None:
             {"value": literal("text", "south"), "name": "south"},
         ],
     }
-    group_by = {
+    group_by: Step = {
         "kind": "group_by",
         "keys": ["channel"],
         "aggregations": [cell("north", "north"), cell("south", "south", "any")],
     }
-    assert rebuilt([SOURCE, group_by])[1] == pivot
+    # The pivot names its index as one list and the group-by its keys one by one, so
+    # the code tells them apart and neither becomes the other on a round trip.
+    pivot_code = render_node_steps(NodeType.POLARS, numbered([SOURCE, pivot])).code
+    group_by_code = render_node_steps(NodeType.POLARS, numbered([SOURCE, group_by])).code
+    assert 'df.group_by(["channel"], maintain_order=True)' in pivot_code
+    assert 'df.group_by("channel", maintain_order=True)' in group_by_code
     assert rebuilt([SOURCE, pivot])[1] == pivot
-    # Two values columns cannot be one pivot, so that group-by stays a group-by.
-    mixed = {
-        **group_by,
-        "aggregations": [cell("north", "north"), {**cell("south", "south"), "column": "a"}],
+    one_condition = {
+        "match": "all",
+        "conditions": group_by["aggregations"][1]["where"]["conditions"],
     }
-    assert rebuilt([SOURCE, mixed])[1]["kind"] == "group_by"
+    assert rebuilt([SOURCE, group_by])[1] == {
+        **group_by,
+        "aggregations": [
+            cell("north", "north"),
+            {**cell("south", "south"), "where": one_condition},
+        ],
+    }
 
 
 def test_adjacent_code_steps_rebuild_as_one() -> None:
@@ -1149,7 +1158,7 @@ def test_a_body_ending_in_newlines_rebuilds_as_without_them() -> None:
 
 def test_a_frame_surface_rebuilds_its_start_as_code() -> None:
     """A frame surface has no start step, so ``df = <name>`` there is code."""
-    steps = [{"kind": "free_code", "code": "df = quotes"}, {"kind": "limit", "n": 2}]
+    steps: list[Step] = [{"kind": "free_code", "code": "df = quotes"}, {"kind": "limit", "n": 2}]
     assert rebuilt(steps, NodeType.EXTERNAL_FILE) == steps
     assert lift_steps(NodeType.DATA_INPUT, "") == []
 

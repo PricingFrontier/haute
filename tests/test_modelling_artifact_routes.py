@@ -69,7 +69,7 @@ class TestExportEndpoint:
             "/api/modelling/export",
             json={
                 "graph": graph,
-                "node_id": "train",
+                "target": {"occurrence": None, "node_id": "train"},
                 "data_path": "output/data.parquet",
             },
         )
@@ -109,7 +109,8 @@ class TestExportEndpoint:
         }
         resp = client.post(
             "/api/modelling/export",
-            json={"graph": graph, "node_id": "submodel_runtime/rating/train"},
+            # The child is addressed by its occurrence and its own id.
+            json={"graph": graph, "target": {"occurrence": "rating", "node_id": "train"}},
         )
         assert resp.status_code == 200, resp.text
         assert "TrainingJob" in resp.json()["script"]
@@ -121,7 +122,7 @@ class TestExportEndpoint:
             "/api/modelling/export",
             json={
                 "graph": graph,
-                "node_id": "nonexistent",
+                "target": {"occurrence": None, "node_id": "nonexistent"},
             },
         )
         assert resp.status_code == 404
@@ -133,7 +134,7 @@ class TestExportEndpoint:
             "/api/modelling/export",
             json={
                 "graph": graph,
-                "node_id": "train",
+                "target": {"occurrence": None, "node_id": "train"},
             },
         )
         assert resp.status_code == 400
@@ -705,7 +706,11 @@ class TestExportScriptDirect:
                 "edges": [make_edge("source", "model").model_dump()],
             }
         )
-        body = ExportScriptRequest(graph=graph, node_id="model", data_path="output/data.parquet")
+        body = ExportScriptRequest(
+            graph=graph,
+            target={"occurrence": None, "node_id": "model"},
+            data_path="output/data.parquet",
+        )
         result = await export_script(body)
         assert "TrainingJob" in result.script
         assert "feature_columns=['x1', 'x2']," in result.script
@@ -740,7 +745,7 @@ class TestExportScriptDirect:
                 "edges": [],
             }
         )
-        body = ExportScriptRequest(graph=graph, node_id="m1")
+        body = ExportScriptRequest(graph=graph, target={"occurrence": None, "node_id": "m1"})
         result = await export_script(body)
         assert "TrainingJob" in result.script
         # Where a Data Output with that bare name writes its file.
@@ -752,7 +757,9 @@ class TestExportScriptDirect:
         from haute.schemas import ExportScriptRequest
 
         graph = make_graph({"nodes": [], "edges": []})
-        body = ExportScriptRequest(graph=graph, node_id="nonexistent")
+        body = ExportScriptRequest(
+            graph=graph, target={"occurrence": None, "node_id": "nonexistent"}
+        )
         with pytest.raises(RequestRefusedError) as exc_info:
             await export_script(body)
         assert exc_info.value.status_code == 404

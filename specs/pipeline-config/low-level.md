@@ -476,8 +476,8 @@ otherwise the single node with no outgoing edge; otherwise raise, naming every c
 A lazy output is collected by `_collect_standalone_output` through Haute's
 `execution_collect` inside the call's scenario context, so `run()` and `score()` always return a
 `pl.DataFrame`, a node reading the scenario context during collection observes the run's
-source (`run(source=...)`) or `live` (`score()`), and typed Haute errors raised while collecting (such as `RatingTableMissError` from a
-rating step's miss guard) keep their types; the scenario context is reset whether collection
+source (`run(source=...)`) or `live` (`score()`), and typed Haute errors raised while collecting (such as `RatingExtremaUndefinedError` from a
+rating combination's min/max guard) keep their types; the scenario context is reset whether collection
 succeeds or fails. An eager output is returned unchanged.
 `Pipeline.to_graph()` converts the same live objects into a React-Flow-shaped plain `dict`,
 taking each node's display type from `config["_node_type"]` (defaulting to `POLARS` when absent).
@@ -716,7 +716,7 @@ to `{relative_path: json_string}` through `node_config_json`: the config record'
 sorted, a setting at the default its loader reads for an absent key left out
 (its `_SIDECAR_CODECS` row's `defaults`: a Rating Step's empty `combined_outputs`, a Data
 Input's or Data Output's empty `arguments`), a rating table's keys in their order (`name`, `factors`,
-`factor_dtypes`, `output_column`, `on_missing`, `default_value`, `entries`, then any other as
+`factor_dtypes`, `output_column`, `default_value`, `entries`, then any other as
 given) and each entry's factors in the table's order then `value`, each entry on one line,
 written by the one printer every committed JSON file goes through
 (`src/haute/_json_files.py::render_json`, high-level **JSON files Haute writes**).
@@ -1433,7 +1433,7 @@ writing `strict=False` on a cast and a text parse when false and nothing when tr
   lines; `tests/test_parser_fail_loudly.py` the constructor keyword and every refused binding;
   `tests/test_pipeline.py` the keyword, the sentinel and importing generated files;
   `tests/test_polars_steps_persistence.py` the reserved step variable name.
-- `tests/test_polars_steps_catalogue.py` reads the editor's `catalogue.ts` and holds its step kinds and required fields, operators, aggregates, join and fill vocabularies, cast types, function argument shapes and depth cap equal to the renderer's.
+- `tests/test_polars_steps_catalogue.py` reads the editor's `catalogue.ts` and holds its step kinds and required fields, operators, aggregates, join and fill vocabularies, cast types, function argument shapes and depth cap equal to the renderer's. It also holds the step shapes fixture (`frontend/src/panels/editors/polarsSteps/__tests__/fixtures/stepShapes.json`) equal, byte for byte, to what `scripts/regen_step_shapes_fixture.py` writes: each case a step list rendered by `render_node_steps` and read back by `lift_steps`, as `_config_builder` gives a node's steps to the editor, built from the renderer's vocabularies (every aggregate, with and without a row filter and over every column of a type, every window aggregate, function, operator, condition operator, number, operand and literal type, cast type, fill strategy, join type, row order and validation, pivot aggregate) with each optional setting present and left out, plus the corpus translations; and it requires every entry of those vocabularies, and every expression type the renderer dispatches on, to appear in the fixture, so a new entry cannot go unchecked. A change to the renderer or reader that changes a case fails until the fixture is regenerated; the editor's `frontend/src/panels/editors/polarsSteps/__tests__/stepShapes.test.ts` then checks it.
 - The free-code cases in `tests/test_polars_steps_rendering.py`, `tests/test_polars_steps_persistence.py` and `tests/test_polars_steps_routes.py` cover multiline rendering and inclusive line ranges, syntax and control-flow validation without executing code, execution between structured steps, actual runtime error locations, helper-return and trailing-comment round trips, and render API responses, including the columns resolved after each free-code step (a column the code creates, a `Datetime` column's type carried through, a frame-mode `df`) and the reason given when they cannot be (an input with no known columns, code that fails on an empty frame).
 - `tests/test_polars_steps_corpus.py` executes the 47-snippet equivalence corpus in `tests/fixtures/polars_steps_corpus/` (hand-written Polars across 18 categories and each snippet's step translation, auxiliary upstream nodes included) on a normal and a hard synthetic dataset (`tests/assistant_eval/_frames.py`, shared with the assistant evaluation), comparing exact dtypes, null patterns and row order (order-free only where the snippet leaves it unspecified) and requiring the same exception class when the snippet raises; the two snippets the vocabulary does not express (Enum categories, `cut` banding) are listed with their reasons and the suite asserts those constructs are still absent from the vocabulary.
 

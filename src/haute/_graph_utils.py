@@ -257,17 +257,20 @@ def incoming_edge_for_name(
     input_name: str,
 ) -> GraphEdge:
     """Resolve one exact executable input name to its physical incoming edge."""
+    from haute._node_addresses import node_display_name
+
     bindings = incoming_edge_bindings(graph, node_id)
     matches = [edge for edge, name in bindings if name == input_name]
     if len(matches) != 1:
         available = [name for _edge, name in bindings]
+        node_name = node_display_name(graph, node_id)
         if not matches:
             raise ValueError(
-                f"Input {input_name!r} is not connected to node {node_id!r}; "
+                f"Input {input_name!r} is not connected to node {node_name!r}; "
                 f"available inputs: {available!r}."
             )
         raise ValueError(
-            f"Input {input_name!r} is ambiguous for node {node_id!r}; "
+            f"Input {input_name!r} is ambiguous for node {node_name!r}; "
             f"matching edge ids: {[edge.id for edge in matches]!r}."
         )
     return matches[0]

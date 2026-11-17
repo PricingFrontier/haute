@@ -14,7 +14,9 @@
 ## Key types and data structures
 
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
-  `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
+  `node_name` (the node's label, a submodel child's with its occurrence's:
+  `haute._node_addresses.node_display_name`, as for an omission and an input source),
+  `node_type`, `schema_diff: SchemaDiff`, `input_values` /
   `output_values` (column → value dicts), `topological_rank`,
   `column_relevant: bool` (default `True`; in a column trace, whether the step is on
   the traced value's lineage), `contributed_columns: list[str]` (in a column trace,
@@ -213,8 +215,9 @@ resolved is an omission with its continuation's reason, linked to a diagnostic (
 column relevance. Source ids are computed per request from these final parents. The
 continuation is never cached: every click proves again.
 
-1. Validate `nodes` non-empty; resolve `target_node_id` (defaults to the last
-   node in topological order, computed from the node list in *declared* order —
+1. Validate `nodes` non-empty; resolve `target_node_id` (the HTTP route always
+   passes the runtime key its required address target resolves to; a Python caller
+   that gives none gets the last node in topological order, computed from the node list in *declared* order —
    not a set — so the tie-break is deterministic across process invocations,
    independent of CPython hash randomisation).
 2. Call `execution_facade.preview_lineage_cache_key(...)` with target, source,

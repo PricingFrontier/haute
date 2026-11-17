@@ -215,18 +215,17 @@ test.describe("frontend canvas assurance", () => {
     await expect(
       bandingPanel.getByRole("radio", { name: "Numeric", exact: true }),
     ).toBeChecked()
-    await expect(bandingPanel.getByLabel("Output Column")).toHaveValue(
-      "vehicle_age_band",
-    )
+    // The factor is named in the list; there is no Output Column field.
+    await expect(vehicleRow).toHaveAttribute("aria-pressed", "true")
     // Browsing the factor list made no edit: nothing to undo.
     await expect(page.getByRole("button", { name: "Undo", exact: true })).toBeDisabled()
     // Banding shows numbers only for the whole dataset, so its data is cached
     // first; until then it says so rather than counting the preview.
-    await expect(bandingPanel.getByText("Not cached · Refresh this node to count all rows")).toBeVisible()
+    await expect(bandingPanel.getByText("Not cached · Refresh this node to read all rows")).toBeVisible()
     await page.getByRole("button", { name: "Refresh", exact: true }).click()
     await expect(bandingPanel.getByText(/^All rows · /)).toBeVisible({ timeout: 60_000 })
     await expect(bandingPanel.getByRole("img", { name: "Distribution histogram" })).toBeVisible()
-    await expect(bandingPanel.getByRole("combobox", { name: "Input Column", exact: true })).toHaveValue("vehicle_age")
+    await expect(bandingPanel.getByRole("button", { name: "vehicle_age_band input column", exact: true })).toHaveText("vehicle_age")
     await stabiliseCanvasScreenshot(page)
 
     await expectCanvasScreenshot(
@@ -245,14 +244,14 @@ test.describe("frontend canvas assurance", () => {
       "Rating Step node: browser_rating",
     )
     await expect(
-      ratingPanel.getByRole("combobox", { name: "Factor 1", exact: true }),
-    ).toHaveValue("proposer_age_band")
+      ratingPanel.getByRole("button", { name: "Factor 1", exact: true }),
+    ).toHaveText("proposer_age_band")
     await expect(
-      ratingPanel.getByRole("combobox", { name: "Factor 2", exact: true }),
-    ).toHaveValue("channel_band")
+      ratingPanel.getByRole("button", { name: "Factor 2", exact: true }),
+    ).toHaveText("channel_band")
     await expect(
-      ratingPanel.getByRole("combobox", { name: "Factor 3", exact: true }),
-    ).toHaveValue("vehicle_age_band")
+      ratingPanel.getByRole("button", { name: "Factor 3", exact: true }),
+    ).toHaveText("vehicle_age_band")
 
     const rebuildButton = ratingPanel.getByRole("button", {
       name: /Rebuild from factor levels/i,
@@ -260,7 +259,7 @@ test.describe("frontend canvas assurance", () => {
     await rebuildButton.focus()
     await expect(rebuildButton).toBeFocused()
     await rebuildButton.press("Enter")
-    await expect(ratingPanel.getByText(/8 entries/)).toBeVisible()
+    await expect(ratingPanel.getByText("n=8", { exact: true })).toBeVisible()
 
     const relativity = ratingPanel.getByLabel(
       "Relativity for proposer_age_band Age 40 or below and channel_band Direct",
@@ -302,7 +301,7 @@ test.describe("frontend canvas assurance", () => {
         "Relativity for proposer_age_band Age 40 or below and channel_band Direct",
       ),
     ).toHaveValue("1.23")
-    await expect(reloadedRatingPanel.getByText(/8 entries/)).toBeVisible()
+    await expect(reloadedRatingPanel.getByText("n=8", { exact: true })).toBeVisible()
   })
 
   test("persists optimiser ranges and preserves selected-point identity across local and intercepted MLflow exports", async ({

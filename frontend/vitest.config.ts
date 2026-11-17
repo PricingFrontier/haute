@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config"
+import { configDefaults, defineConfig } from "vitest/config"
 
 export default defineConfig({
   test: {
@@ -23,6 +23,8 @@ export default defineConfig({
     // CI's default-off Node deleting it would go unnoticed.
     execArgv: ["--no-experimental-webstorage"],
     include: ["src/**/__tests__/**/*.test.{ts,tsx}", "e2e/__tests__/**/*.test.ts"],
+    // A lane test runs on its own schedule (`npm run test:lanes`, vitest.lanes.config.ts).
+    exclude: [...configDefaults.exclude, "**/*.lane.test.{ts,tsx}"],
     setupFiles: ["./src/setupStorageCanary.ts", "./src/setupTests.ts"],
     allowOnly: false,
     testTimeout: 30000,

@@ -407,8 +407,9 @@ fixed-budget family (EBM), and "published the winning trial's fit" for a validat
 family (t-boost), which is never refit. **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
-automatically. In a read-only document it asks nothing and says why, and an answer given after
-the document changed or became read-only writes nothing.
+automatically. In a read-only document, or a read-only copy of a submodel, it asks nothing and
+says why, and an answer given after the document changed or became read-only, or after the
+canvas moved to another view (where the node's id can name another node), writes nothing.
 
 **Non-goals.** No GLM structural-model tuning; no multi-objective, parallel,
 distributed or nested-CV tuning; no parameter-specific form builder; no run

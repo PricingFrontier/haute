@@ -75,7 +75,6 @@ class TestRatingStepP3:
                 {
                     "factors": ["band"],
                     "output_column": "factor",
-                    "on_missing": "neutral",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ],
@@ -96,7 +95,6 @@ class TestRatingStepP3:
                 {
                     "factors": ["band"],
                     "output_column": "factor",
-                    "on_missing": "neutral",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ],
@@ -175,15 +173,13 @@ class TestRatingStepExecutor:
 
     def test_two_way_lookup(self):
         """Two-factor table: join on two columns."""
-        # PIN REVISION (3a.3): the older/Flat miss needs the explicit
-        # on_missing="neutral" opt-in; the default is fail-loud
-        # (tests/test_rating_miss_fail_loud.py).
+        # The older/Flat combination has no entry: a miss, left null
+        # (tests/test_rating_misses.py).
         tables = [
             {
                 "factors": ["age_band", "prop_band"],
                 "output_column": "factor",
                 "default_value": None,
-                "on_missing": "neutral",
                 "entries": [
                     {"age_band": "young", "prop_band": "House", "value": 1.2},
                     {"age_band": "young", "prop_band": "Flat", "value": 1.5},
@@ -484,13 +480,11 @@ class TestRatingStepExecutor:
 
     def test_string_factor_values_match(self):
         """Factor values are cast to Utf8 so string bands match."""
-        # PIN REVISION (3a.3): the miss on band 2 needs on_missing="neutral".
         tables = [
             {
                 "factors": ["band"],
                 "output_column": "out",
                 "default_value": None,
-                "on_missing": "neutral",
                 "entries": [{"band": "1", "value": 9.9}],
             }
         ]
@@ -1558,7 +1552,6 @@ def test_canonical_rows_preserve_scalar_identity_order_and_metadata() -> None:
                 "factor_dtypes": {"age": {"kind": "Float64"}},
                 "output_column": "factor",
                 "default_value": 1.0,
-                "on_missing": "neutral",
                 "entries": entries,
             }
         ]
@@ -1606,7 +1599,6 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
                 "factor_dtypes": {factor: {"kind": "String"} for factor in factors},
                 "output_column": "rating",
                 "default_value": "1.0",
-                "on_missing": "neutral",
                 "entries": entries,
             }
         ]

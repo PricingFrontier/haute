@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests import _server_helpers
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._server_helpers import (
     DOCUMENT_FINGERPRINT_HEADER,
@@ -218,13 +219,17 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(),
-                "node_id": node_id,
+                "target": node_target(node_id),
                 "row_limit": 10,
             },
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["node_id"] == node_id
+        assert data["node_addresses"][node_id] == {
+            "occurrence": None,
+            "node_id": node_id,
+            "label": graph.nodes[0].data.label,
+        }
         assert data["status"] == "ok"
         assert data["row_count"] <= 10
         assert len(data["columns"]) > 0
@@ -275,7 +280,7 @@ class TestPreviewNode:
                 "/api/pipeline/preview",
                 json={
                     "graph": graph.model_dump(),
-                    "node_id": graph.nodes[0].id,
+                    "target": node_target(graph.nodes[0].id),
                     "row_limit": 10,
                 },
             )
@@ -318,7 +323,7 @@ class TestPreviewNode:
 
         resp = client.post(
             "/api/pipeline/preview",
-            json={"graph": graph.model_dump(), "node_id": "expander", "row_limit": 10},
+            json={"graph": graph.model_dump(), "target": node_target("expander"), "row_limit": 10},
         )
 
         assert resp.status_code == 422, resp.text
@@ -406,7 +411,7 @@ class TestPreviewNode:
         ) as execute_graph:
             response = client.post(
                 "/api/pipeline/preview",
-                json={"graph": graph, "node_id": "nb_batch"},
+                json={"graph": graph, "target": node_target("nb_batch")},
             )
 
         # The flattener refuses the draft before anything runs, and the preview shows
@@ -430,7 +435,7 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(),
-                "node_id": "transform",
+                "target": node_target("transform"),
                 "row_limit": 10,
             },
         )
@@ -460,7 +465,7 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": {"nodes": [], "edges": []},
-                "node_id": "x",
+                "target": node_target("x"),
             },
         )
         assert resp.status_code == 400
@@ -525,14 +530,13 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph,
-                "node_id": "join",
+                "target": node_target("join"),
                 "row_limit": 10,
             },
         )
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["node_id"] == "join"
         assert data["status"] == "error"
         assert "edgeJoin non-cross joins require join keys" in data["error"]
 
@@ -558,7 +562,7 @@ class TestPreviewNode:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(),
-                "node_id": node_id,
+                "target": node_target(node_id),
                 "row_limit": 10,
             },
         )
@@ -587,6 +591,7 @@ class TestTraceRow:
             json={
                 "seed_plan": [],
                 "graph": graph.model_dump(),
+                "target": node_target("transform"),
                 "row_index": 0,
             },
         )
@@ -602,6 +607,7 @@ class TestTraceRow:
             json={
                 "seed_plan": [],
                 "graph": {"nodes": [], "edges": []},
+                "target": node_target("x"),
             },
         )
         assert resp.status_code == 400
@@ -628,6 +634,7 @@ class TestTraceRow:
             json={
                 "seed_plan": [],
                 "graph": graph.model_dump(),
+                "target": node_target("transform"),
                 "row_index": 0,
             },
         )
@@ -816,7 +823,7 @@ class TestExecuteSinkEndpoint:
 
         response = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
 
         assert response.status_code == 200
@@ -830,7 +837,7 @@ class TestExecuteSinkEndpoint:
         graph["nodes"][0]["data"]["config"]["path"] = "report.csv"
         mismatch = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
         assert mismatch.status_code == 200
         assert mismatch.json() == {
@@ -861,7 +868,7 @@ class TestExecuteSinkEndpoint:
 
         response = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
 
         assert response.status_code == 200
@@ -900,7 +907,7 @@ class TestExecuteSinkEndpoint:
 
         response = client.post(
             "/api/pipeline/output-destination",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
 
         assert response.status_code == 200
@@ -940,7 +947,7 @@ class TestExecuteSinkEndpoint:
             "/api/pipeline/write-output",
             json={
                 "graph": graph,
-                "node_id": "sink",
+                "target": {"occurrence": None, "node_id": "sink"},
             },
         )
         assert resp.status_code == 200
@@ -951,7 +958,7 @@ class TestExecuteSinkEndpoint:
 
         collision = client.post(
             "/api/pipeline/write-output",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
         )
         assert collision.status_code == 409
         assert collision.json()["detail"] == (
@@ -960,14 +967,22 @@ class TestExecuteSinkEndpoint:
 
         overwrite = client.post(
             "/api/pipeline/write-output",
-            json={"graph": graph, "node_id": "sink", "overwrite": True},
+            json={
+                "graph": graph,
+                "target": {"occurrence": None, "node_id": "sink"},
+                "overwrite": True,
+            },
         )
         assert overwrite.status_code == 200
         assert overwrite.json()["row_count"] == 3
 
         non_boolean = client.post(
             "/api/pipeline/write-output",
-            json={"graph": graph, "node_id": "sink", "overwrite": "true"},
+            json={
+                "graph": graph,
+                "target": {"occurrence": None, "node_id": "sink"},
+                "overwrite": "true",
+            },
         )
         assert non_boolean.status_code == 422
 
@@ -1007,7 +1022,10 @@ class TestExecuteSinkEndpoint:
             "edges": [{"id": "e1", "source": "src", "target": "sink"}],
         }
 
-        resp = client.post("/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"})
+        resp = client.post(
+            "/api/pipeline/write-output",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
+        )
 
         assert resp.status_code == 400
         assert "/secure/" not in resp.json()["detail"]
@@ -1212,11 +1230,19 @@ class TestPipelineTimeouts:
 
             graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
             if endpoint == "trace":
-                body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
+                body = {
+                    "graph": graph.model_dump(),
+                    "target": node_target("transform"),
+                    "row_index": 0,
+                    "seed_plan": [],
+                }
             else:
-                body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
+                body = {"graph": graph.model_dump(), "target": node_target(graph.nodes[0].id)}
         else:
-            body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
+            body = {
+                "graph": self._sink_graph(pipeline_dir),
+                "target": {"occurrence": None, "node_id": "sink"},
+            }
 
         if endpoint == "write-output":
             from haute._worker_failures import WorkerTimeoutError
@@ -1305,11 +1331,19 @@ class TestPipelineExceptions:
 
             graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
             if endpoint == "trace":
-                body = {"graph": graph.model_dump(), "row_index": 0, "seed_plan": []}
+                body = {
+                    "graph": graph.model_dump(),
+                    "target": node_target("transform"),
+                    "row_index": 0,
+                    "seed_plan": [],
+                }
             else:
-                body = {"graph": graph.model_dump(), "node_id": graph.nodes[0].id}
+                body = {"graph": graph.model_dump(), "target": node_target(graph.nodes[0].id)}
         else:
-            body = {"graph": self._sink_graph(pipeline_dir), "node_id": "sink"}
+            body = {
+                "graph": self._sink_graph(pipeline_dir),
+                "target": {"occurrence": None, "node_id": "sink"},
+            }
 
         with patch(patch_target, side_effect=RuntimeError(error_msg)):
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)
@@ -1351,7 +1385,10 @@ class TestPipelineExceptions:
         with patch("haute.routes.pipeline._output_write_transaction", side_effect=error):
             response = client.post(
                 "/api/pipeline/write-output",
-                json={"graph": self._sink_graph(pipeline_dir), "node_id": "sink"},
+                json={
+                    "graph": self._sink_graph(pipeline_dir),
+                    "target": {"occurrence": None, "node_id": "sink"},
+                },
             )
 
         assert response.status_code == 500
@@ -1383,7 +1420,7 @@ class TestPipelineExceptions:
 
         response = client.post(
             "/api/pipeline/preview",
-            json={"graph": graph, "node_id": "api"},
+            json={"graph": graph, "target": node_target("api")},
         )
 
         assert response.status_code == 422
@@ -1417,11 +1454,11 @@ class TestPreviewEdgeCases:
                 "/api/pipeline/preview",
                 json={
                     "graph": graph.model_dump(),
-                    "node_id": "nonexistent_node",
+                    "target": node_target("nonexistent_node"),
                 },
             )
         assert resp.status_code == 404
-        assert "not found in results" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Node 'nonexistent_node' not found"
 
 
 class TestListPipelinesParseError:
@@ -1501,7 +1538,7 @@ class TestSinkEmptyGraph:
             "/api/pipeline/write-output",
             json={
                 "graph": {"nodes": [], "edges": []},
-                "node_id": "x",
+                "target": {"occurrence": None, "node_id": "x"},
             },
         )
         assert resp.status_code == 400

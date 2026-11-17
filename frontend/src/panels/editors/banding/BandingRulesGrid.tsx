@@ -37,7 +37,7 @@ function parsePastedRules(text: string): CategoricalRule[] {
 }
 
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors text-[var(--text-muted)] hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
-const ACTION_BUTTON_CLASS = "accent-hover-btn flex size-6 items-center justify-center rounded"
+const ACTION_BUTTON_CLASS = "accent-hover-btn -my-1 flex size-6 items-center justify-center rounded"
 const CELL_CLASS = "px-0.5 py-0.5"
 const DELETE_CELL_CLASS = `${CELL_CLASS} text-center`
 const MATCH_CELL_CLASS = `${CELL_CLASS} text-right text-[10px]`

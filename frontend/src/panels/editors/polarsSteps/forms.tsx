@@ -46,6 +46,7 @@ import {
   defaultLiteral,
   exprProblem,
   exprTypeProblem,
+  freshLiteral,
   functionTakes,
   joinOrderAfterHowChange,
   literal,
@@ -750,7 +751,9 @@ function ExprEditor({ expr, onChange, ctx, depth = 1, unfinished }: { expr: Expr
     case "concat":
       return <ConcatEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
     case "sum_horizontal":
-      return <SumAcrossEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+      return <PartsEditor label="Sum of" expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
+    case "coalesce":
+      return <PartsEditor label="Parts, in order" expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
   }
 }
 
@@ -963,11 +966,23 @@ function ConcatEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { ty
   )
 }
 
-/** A sum across two or more parts, each a column or any expression. */
-function SumAcrossEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "sum_horizontal" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
+/** A sum across, or a coalesce, of two or more parts in order, each a column, a value or any expression. */
+function PartsEditor({
+  label,
+  expr,
+  onChange,
+  ctx,
+  depth,
+}: {
+  label: string
+  expr: Extract<Expr, { type: "sum_horizontal" | "coalesce" }>
+  onChange: (next: Expr) => void
+  ctx: StepFormContext
+  depth: number
+}) {
   const operandProps = anyOperand(ctx, depth + 1)
   return (
-    <Field label="Sum of">
+    <Field label={label}>
       <RowList
         rows={expr.parts}
         onChange={(parts) => onChange({ ...expr, parts })}
@@ -1203,9 +1218,24 @@ function UniqueForm({ step, onChange, ctx }: FormProps<UniqueStep>) {
  * `next` named from its function and column when the name was still empty or
  * the one suggested for `previous`; a typed name is never replaced.
  */
-function renamed(previous: ColumnAggregation, next: ColumnAggregation): ColumnAggregation {
-  const untouched = previous.name === "" || previous.name === suggestedAggregationName(previous)
-  return untouched ? { ...next, name: suggestedAggregationName(next) } : next
+function renamed(previous: ColumnAggregation, next: ColumnAggregation, taken: ReadonlySet<string>): ColumnAggregation {
+  const untouched = previous.name === "" || previous.name === freeName(suggestedAggregationName(previous), taken)
+  return untouched ? { ...next, name: freeName(suggestedAggregationName(next), taken) } : next
+}
+
+/** `name`, or the first `name_2`, `name_3`… the step does not already use. */
+function freeName(name: string, taken: ReadonlySet<string>): string {
+  if (!name || !taken.has(name)) return name
+  let n = 2
+  while (taken.has(`${name}_${n}`)) n += 1
+  return `${name}_${n}`
+}
+
+/** `entry` with function `agg`: a row count drops its column, and another function after one starts an empty column. */
+function withColumnAggregate(entry: ColumnAggregation, agg: ColumnAggregation["agg"]): ColumnAggregation {
+  const next = withAggregate(entry, agg)
+  if (agg === "len") return omitKeys(next, ["column"])
+  return next.column === undefined ? { ...next, column: "" } : next
 }
 
 /** The common column types an aggregation can take every column of, offered after the column names. */
@@ -1217,9 +1247,11 @@ const TYPE_WIDE_ENTRIES: Completion[] = TYPE_WIDE_TARGETS.map(({ dtype, label })
   note: "type",
 }))
 
-function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilter, firstId }: {
+function AggregationRow({ entry, index, taken, onChange, onRemove, ctx, boxed, showFilter, firstId }: {
   entry: ColumnAggregation
   index: number
+  /** The names the step's other aggregations and its group columns already use. */
+  taken: ReadonlySet<string>
   onChange: (next: AggregationSpec) => void
   onRemove?: () => void
   ctx: StepFormContext
@@ -1243,7 +1275,7 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
             <SelectField
               value={entry.agg}
               options={AGGREGATION_OPTIONS.filter((a) => a.value === entry.agg || aggregationTakes(a.value, entry.column ? schema.typeOf(entry.column) : null))}
-              onChange={(agg) => onChange(renamed(entry, withAggregate(entry, agg)))}
+              onChange={(agg) => onChange(renamed(entry, withColumnAggregate(entry, agg), taken))}
               ariaLabel={`${label} function`}
             />
           </span>
@@ -1252,8 +1284,8 @@ function AggregationRow({ entry, index, onChange, onRemove, ctx, boxed, showFilt
               <Words>of</Words>
               <span className="flex-1 min-w-0">
                 <ColumnPicker
-                  value={entry.column}
-                  onCommit={(column) => onChange(renamed(entry, { ...entry, column }))}
+                  value={entry.column ?? ""}
+                  onCommit={(column) => onChange(renamed(entry, { ...entry, column }, taken))}
                   suggestions={ctx.columns}
                   ariaLabel={`${label} column`}
                   placeholder="column"
@@ -1354,7 +1386,7 @@ function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
           label="Pivot column"
           addLabel="Add column"
           min={0}
-          create={() => ({ value: defaultLiteral(type), name: "" })}
+          create={() => ({ value: freshLiteral(type, step.columns.map((c) => c.value)), name: "" })}
           renderRow={(entry, set, index) => (
             <>
               <div className="flex-1 basis-28 min-w-0">
@@ -1363,8 +1395,15 @@ function PivotForm({ step, onChange, ctx }: FormProps<PivotStep>) {
                   onChange={(value) => {
                     if (value.kind !== "literal") return
                     if (value.type !== type) {
-                      // The rows share one type: convert every value, keep every name.
-                      onChange({ ...step, columns: step.columns.map((c, i) => ({ ...c, value: i === index ? value : defaultLiteral(value.type) })) })
+                      // The rows share one type: convert every value to one no other row has, keep every name.
+                      const used: LiteralOperand[] = [value]
+                      const columns = step.columns.map((c, i) => {
+                        if (i === index) return { ...c, value }
+                        const fresh = freshLiteral(value.type, used)
+                        used.push(fresh)
+                        return { ...c, value: fresh }
+                      })
+                      onChange({ ...step, columns })
                       return
                     }
                     const name = entry.name || (value.type === "text" ? String(value.value) : entry.name)
@@ -1419,6 +1458,8 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
     onChange({ ...step, aggregations: step.aggregations.map((a, i) => (i === index ? next : a)) })
   const many = step.aggregations.length > 1
   const lastColumn = [...step.aggregations].reverse().find((a): a is ColumnAggregation => !("dtype" in a))?.column ?? ""
+  const namesBesides = (index: number): ReadonlySet<string> =>
+    new Set([...step.keys, ...step.aggregations.flatMap((a, i) => (i === index || "dtype" in a ? [] : [a.name]))])
   return (
     <>
       <Field label="Group by" note="empty = summarise the whole frame" htmlFor={ctx.firstFieldId}>
@@ -1431,7 +1472,7 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
             return "dtype" in entry ? (
               <DtypeAggregationRow key={index} entry={entry} index={index} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} />
             ) : (
-              <AggregationRow key={index} entry={entry} index={index} ctx={ctx} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} showFilter={filters} />
+              <AggregationRow key={index} entry={entry} index={index} taken={namesBesides(index)} ctx={ctx} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} showFilter={filters} />
             )
           })}
           <QuietAction

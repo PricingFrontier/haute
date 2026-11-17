@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { keyText } from "../utils/answerAddresses"
 
 import type {
   ExecutionMetrics,
@@ -25,7 +26,8 @@ import type {
  */
 export interface NodeDataSlot {
   slotKey: string
-  producerNodeId: string
+  /** The label of the node whose output the slot holds, as the point addresses it. */
+  producerLabel: string
   portLabel: string | null
   source: string
   kind: NodeDataPointKind
@@ -148,7 +150,11 @@ export interface NodeDataStore {
    * *identity* is the asking consumer's data identity, which its own reads of
    * `consumerSlots` are then gated on.
    */
-  observePoint: (point: NodeDataPointResponse, source: string, identity: string) => void
+  /**
+   * Record a point a consumer read, under `consumerKey`: the consumer's result key
+   * (`resultKey`) taken when its request was prepared, not the id the answer names.
+   */
+  observePoint: (point: NodeDataPointResponse, source: string, identity: string, consumerKey: string) => void
   /** Record a profile a request or a completed job produced. */
   observeProfile: (
     slotKey: string,
@@ -212,9 +218,14 @@ function withoutKey<V>(record: Record<string, V>, key: string): Record<string, V
   return remaining
 }
 
-function pointRefLabel(point: NodeDataPointResponse): { producerNodeId: string; portLabel: string | null } {
+/** The label of the node a point's data comes from, as the point addresses it. */
+function producerLabel(point: NodeDataPointResponse): string {
+  return point.node_addresses[keyText(point.point.producer_node_id)]?.label ?? ""
+}
+
+function pointRefLabel(point: NodeDataPointResponse): { producerLabel: string; portLabel: string | null } {
   return {
-    producerNodeId: point.point.producer_node_id,
+    producerLabel: producerLabel(point),
     portLabel: point.point.port_label ?? null,
   }
 }
@@ -294,7 +305,7 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
   announcedCaptures: [],
   epoch: 0,
 
-  observePoint: (point, source, identity) =>
+  observePoint: (point, source, identity, consumerKey) =>
     set((state) => {
       const slotKey = point.slot_key
       const previous = state.slots[slotKey]
@@ -305,8 +316,8 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
             progress: point.job.progress,
             message: point.job.message,
             // A job this client did not start is still shown; the label of the
-            // consumer that started it is unknown, so the point names itself.
-            startedByLabel: previous?.job?.startedByLabel ?? point.point.producer_node_id,
+            // consumer that started it is unknown, so the point names its producer.
+            startedByLabel: previous?.job?.startedByLabel ?? producerLabel(point),
             startedHere: startedHereFor(previous?.job, point.job.job_id),
           }
         : previous?.job?.jobId && point.state === "building"
@@ -320,7 +331,7 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
         jobs: withJob(state.jobs, slotKey, job),
         consumerSlots: {
           ...state.consumerSlots,
-          [point.consumer_node_id]: { slotKey, identity },
+          [consumerKey]: { slotKey, identity },
         },
         epoch:
           generationChanged(previous, generation) || versionChanged ? state.epoch + 1 : state.epoch,

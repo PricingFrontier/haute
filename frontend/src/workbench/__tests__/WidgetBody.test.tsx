@@ -5,18 +5,20 @@
  * sample has moved on, a Table's output columns matched to its rows by key, the cells that
  * break their column's rules marked once anything is typed, while building a new quote's
  * cells, empty and inert, the underwriter app's quote typed apart from the sample, a
- * Heading drawn as its text, and an Import or an Export as a disabled button.
+ * Heading drawn as its text, an Import or an Export as a disabled button, and an Export to
+ * an Excel workbook of cells run in Preview.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { ReactNode } from "react"
 import type { ShowWhen } from "../../api/types"
+import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addSchemaTable, BLANK_THEME, createWidget, setColumnLook, setExportFormat, setIndexKind, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addExportCell, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, setExcelLayout, setExportFormat, setIndexKind, toggleField, updateSchemaColumn, updateWidget, withSampleCell, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import { everyField, spacersShown } from "../sheet/fieldCells"
@@ -1607,6 +1609,107 @@ describe("WidgetBody", () => {
     const empty = screen.getByRole("button", { name: "Export" })
     expect(empty).toHaveTextContent("")
     expect(empty.querySelector("svg.lucide-database")).not.toBeNull()
+  })
+
+  describe("an Export to an Excel workbook of cells", () => {
+    /** The sheet's form with an Export, Slip, writing the state into a cell, and the sample priced as it stands. */
+    function cellsExport(): void {
+      const form = sheetForm()
+      addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out", label: "Slip" })
+      loadForm(form)
+      act(() =>
+        useWorkbenchFormStore.getState().change((spec) => {
+          const cells = setExcelLayout(setExportFormat(spec, "w_out", "excel"), "w_out", "cells")
+          return withSampleCell(addExportCell(cells, "w_out", { table: "policy", column: "state" }), "policy", 0, "state", "NY")
+        }),
+      )
+      useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: { policy: { state: "NY" } }, tables: { premiums: [] } } })
+      act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
+    }
+    const slip = () => screen.getByRole("button", { name: "Slip" })
+    /** The links a download clicks, by the file name each names. */
+    function downloads(): string[] {
+      const clicked: string[] = []
+      vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:workbook"), revokeObjectURL: vi.fn() }))
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push(this.download)
+      })
+      return clicked
+    }
+
+    afterEach(() => {
+      act(() => useWorkbenchViewStore.setState({ mode: "build", underwriterApp: false }))
+      useToastStore.setState({ toasts: [] })
+    })
+
+    it("downloads the workbook the server writes from the price, under the name it gives", async () => {
+      cellsExport()
+      const clicked = downloads()
+      const fetch = vi.fn(async () =>
+        new Response("PK", { status: 200, headers: { "Content-Disposition": "attachment; filename=\"Slip _.xlsx\"; filename*=UTF-8''Slip%20%C3%A9.xlsx" } }),
+      )
+      vi.stubGlobal("fetch", fetch)
+      renderBody("w_out")
+
+      expect(slip()).toBeEnabled()
+      expect(slip()).not.toHaveClass("opacity-60")
+      await act(async () => {
+        fireEvent.click(slip())
+      })
+
+      await vi.waitFor(() => expect(clicked).toEqual(["Slip é.xlsx"]))
+      const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe("/api/workbench/export")
+      expect(JSON.parse(init.body as string)).toEqual({ form: currentForm(), component: "w_out", sample: { policy: { state: "NY" } }, tables: { premiums: [] } })
+      expect(slip()).toBeEnabled()
+    })
+
+    it("shows a refusal as an error toast and can be pressed again", async () => {
+      cellsExport()
+      downloads()
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "The sample changed after it was priced: export once it is priced again." }), { status: 409, headers: { "Content-Type": "application/json" } })))
+      renderBody("w_out")
+
+      await act(async () => {
+        fireEvent.click(slip())
+      })
+
+      await vi.waitFor(() => expect(useToastStore.getState().toasts).toMatchObject([{ type: "error", text: "The sample changed after it was priced: export once it is priced again." }]))
+      expect(slip()).toBeEnabled()
+    })
+
+    it("is disabled while the price is not the sample's as it stands, it has a problem, the view is building or it is the app", () => {
+      cellsExport()
+      const { rerender } = renderBody("w_out")
+      expect(slip()).toBeEnabled()
+
+      // Typed since it was priced: the price is out of date.
+      act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "state", "CA")))
+      rerender(body("w_out"))
+      expect(slip()).toBeDisabled()
+      expect(slip()).toHaveClass("opacity-60")
+      useWorkbenchPricingStore.setState({ price: null })
+      rerender(body("w_out"))
+      expect(slip()).toBeDisabled()
+
+      useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: { policy: { state: "CA" } }, tables: {} } })
+      rerender(body("w_out"))
+      expect(slip()).toBeEnabled()
+      rerender(
+        <OnSheet values="sample">
+          <WidgetBody widget={widget("w_out")} drawn={everyField(currentForm().schema, widget("w_out"))} problem='Export "Slip" writes no cells' />
+        </OnSheet>,
+      )
+      expect(slip()).toBeDisabled()
+
+      act(() => useWorkbenchViewStore.setState({ underwriterApp: true }))
+      rerender(body("w_out", "quote"))
+      expect(slip()).toBeDisabled()
+      act(() => useWorkbenchViewStore.setState({ mode: "build", underwriterApp: false }))
+      rerender(body("w_out", "new"))
+      expect(slip()).toBeDisabled()
+      expect(slip()).not.toHaveClass("opacity-60")
+    })
   })
 
   it("draws a Heading's description under it, both aligned as it says, and no description while it has no text", () => {

@@ -567,6 +567,47 @@ class SubmodelSharedBinding:
     instance: SubmodelEndpoint
 
 
+@dataclass(frozen=True)
+class ExpandedOccurrence:
+    """One occurrence as its expansion ran it: its children and its ports' endpoints.
+
+    ``children`` maps each local id of the definition to the runtime key its clone runs
+    under, and ``child_labels`` to its authored label (a copy's clone runs under an
+    aliased name, its address keeps the definition's). Every declared port has an entry,
+    in declared order: an input's the expanded endpoint feeding it, or ``None`` when no
+    parent edge does; an output's the clone and handle producing it, or ``None`` when
+    its source names no child.
+    """
+
+    instance_id: str
+    definition_id: str
+    label: str
+    children: Mapping[str, str]
+    child_labels: Mapping[str, str]
+    input_ports: Mapping[str, SubmodelEndpoint | None]
+    output_ports: Mapping[str, SubmodelEndpoint | None]
+
+
+@dataclass(frozen=True)
+class SubmodelExpansion:
+    """What an expansion did, kept on the flat graph it produced: each expanded
+    occurrence by instance id, and the occurrence and local id of every runtime key
+    (``origins``), so a request's address resolves, and an answer's keys are labelled,
+    without reading a key (specs/server-api/low-level.md, "Node addresses")."""
+
+    occurrences: Mapping[str, ExpandedOccurrence]
+    origins: Mapping[str, tuple[str, str]]
+
+    @classmethod
+    def of(cls, occurrences: Mapping[str, ExpandedOccurrence]) -> SubmodelExpansion:
+        origins = {
+            key: (occurrence.instance_id, local_id)
+            for occurrence in occurrences.values()
+            for local_id, key in occurrence.children.items()
+        }
+        return cls(occurrences=dict(occurrences), origins=origins)
+
+
 class PipelineGraph(BaseModel):
     """React Flow graph structure used throughout Haute.
 
@@ -649,6 +690,9 @@ class PipelineGraph(BaseModel):
     _submodel_shared_bindings: dict[str, dict[str, SubmodelSharedBinding]] = PrivateAttr(
         default_factory=dict
     )
+    # The record of the expansion that produced this flat graph; None for a graph no
+    # expansion produced.
+    _submodel_expansion: SubmodelExpansion | None = PrivateAttr(default=None)
 
     _parser_definition_id: str | None = PrivateAttr(default=None)
     _parser_input_ports: list[SubmodelInputPort] | None = PrivateAttr(default=None)

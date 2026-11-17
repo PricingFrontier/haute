@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import haute.routes.modelling as modelling_routes
-from haute._types import PipelineGraph
+from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.schemas import TrainRequest, TrainResponse
 from tests.job_store_support import seed_job
 
@@ -29,8 +29,12 @@ def test_train_model_start_route_matches_ui_contract_fixture(
 
     monkeypatch.setattr(modelling_routes._train_service, "start", lambda _body: expected)
 
+    # The route resolves the target before the service starts, so the graph holds it.
+    graph = PipelineGraph(
+        nodes=[GraphNode(id="train", data=NodeData(label="train", nodeType="modelling"))]
+    )
     response = modelling_routes.train_model(
-        TrainRequest(graph=PipelineGraph(), node_id="train"),
+        TrainRequest(graph=graph, target={"occurrence": None, "node_id": "train"}),
     )
 
     assert response.model_dump(mode="json") == fixture

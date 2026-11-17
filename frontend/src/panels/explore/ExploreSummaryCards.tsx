@@ -85,8 +85,8 @@ export function DatasetSnapshotCard({ report }: SummaryCardProps) {
         />
         <Metric
           label="Upstream"
-          value={<span className="font-mono">{report.producer_node_id}</span>}
-          title={report.producer_node_id}
+          value={report.producer_label}
+          title={report.producer_label}
         />
         <Metric
           label="Cached"

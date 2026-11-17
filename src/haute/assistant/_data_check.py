@@ -79,7 +79,6 @@ from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
 from haute._node_specs import SINK_ONLY_NODE_TYPES, STRUCTURAL_NODE_TYPES
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import (
-    RatingTableMissError,
     apply_banding_factors,
     apply_rating_table_lookup,
     banding_factor_is_active,
@@ -1467,7 +1466,6 @@ class _TablePlan:
     output_column: str
     measured: bool
     entries: int
-    guarded: bool = False
 
 
 @dataclass(slots=True)
@@ -1617,13 +1615,7 @@ class _DataCheckQueries:
             )
             parts.extend((missed, unused))
             plan.tables.append(
-                _TablePlan(
-                    index,
-                    output_column,
-                    measured=True,
-                    entries=built.keyed_entries.height,
-                    guarded=built.default_value is None and built.on_missing == "error",
-                )
+                _TablePlan(index, output_column, measured=True, entries=built.keyed_entries.height)
             )
             # The next table reads this one's output; misses stay null here.
             frame = apply_rating_table_lookup(frame, built, frame_schema=schema, guard_misses=False)
@@ -1943,28 +1935,25 @@ class _Judgement:
         return min(reporters, default=len(position))
 
     def _replaced(self, root: str, failure: AttributedFailure) -> bool:
-        """Whether a join's validation or a rating miss guard explains the failure instead.
+        """Whether a join's validation explains the failure instead.
 
         A join's duplicates explain only the ``ComputeError`` its ``validate`` raises. Any
         other failure, such as key dtypes that differ between the sides, stays reported, or
-        the model would fix the duplicates while the join still fails.
+        the model would fix the duplicates while the join still fails. A rating table's
+        misses never fail its node, so they explain no failure.
         """
         detail = self.details.get(root)
         if detail is None or failure.node_id != root or failure.at_or_upstream:
             return False
         if detail.join is not None and detail.validation_side() is not None:
             return isinstance(failure.error, pl.exceptions.ComputeError)
-        return isinstance(failure.error, RatingTableMissError) and any(
-            table["missed"] for table in detail.guarded_tables()
-        )
+        return False
 
     def _node_findings(self, node_id: str, detail: _NodeDetail) -> list[dict[str, Any]]:
-        failed = self.records[node_id]["status"] == "failed"
-        guard_raised = failed and self.records[node_id]["error"]["type"] == "RatingTableMissError"
         found: list[dict[str, Any]] = []
         found.extend(detail.rows_emptied())
         found.extend(detail.banding_findings())
-        found.extend(detail.rating_findings(guard_raised=guard_raised))
+        found.extend(detail.rating_findings())
         found.extend(detail.join_findings())
         found.extend(detail.column_findings())
         for finding in found:
@@ -1998,7 +1987,6 @@ class _NodeDetail:
     rating: list[dict[str, Any]] | None
     tables_omitted: int
     join: dict[str, Any] | None
-    guarded: frozenset[int]
     unclaimed_positions: dict[int, list[int]]
 
     @classmethod
@@ -2031,7 +2019,6 @@ class _NodeDetail:
             rating=rating,
             tables_omitted=max(0, plan.tables_total - DATA_CHECK_MAX_TABLES),
             join=(_join_record(plan, measurement, bound) if structured == "join" else None),
-            guarded=frozenset(table.index for table in plan.tables if table.guarded),
             unclaimed_positions=unclaimed,
         )
 
@@ -2096,14 +2083,7 @@ class _NodeDetail:
                 )
         return found
 
-    def guarded_tables(self) -> list[dict[str, Any]]:
-        return [
-            table
-            for table in self.rating or ()
-            if table["status"] == "measured" and table["table"] in self.guarded
-        ]
-
-    def rating_findings(self, *, guard_raised: bool) -> list[dict[str, Any]]:
+    def rating_findings(self) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         for table in self.rating or ():
             if table["status"] != "measured":
@@ -2115,9 +2095,7 @@ class _NodeDetail:
                 "output_column": table["output_column"],
             }
             if rows and missed:
-                # A miss guard that raised makes its table's misses advisory whatever the share.
-                forced = guard_raised and table["table"] in self.guarded
-                advisory = forced or Fraction(missed, rows) >= RATING_MISS_ADVISORY_SHARE
+                advisory = Fraction(missed, rows) >= RATING_MISS_ADVISORY_SHARE
                 found.append(
                     {
                         "kind": "rating_misses",

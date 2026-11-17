@@ -47,7 +47,6 @@ SNAKE_CASE_KEYS: dict[str, str] = {
     "outputColumn": "output_column",
     "rightClosed": "right_closed",
     "defaultValue": "default_value",
-    "onMissing": "on_missing",
     "factorDtypes": "factor_dtypes",
     "timeUnit": "time_unit",
     "timeZone": "time_zone",

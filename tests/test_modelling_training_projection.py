@@ -663,6 +663,14 @@ _GLM_SINK_CONFIG: dict = {
 }
 
 
+def _resolved(body):
+    """*body* with its target resolved over its own graph, as the route resolves it over
+    the flattened document (the graphs here have no submodels)."""
+    from haute._node_addresses import resolved_request
+
+    return resolved_request(body, body.graph)
+
+
 class TestTrainingSinkProjection:
     """A tree model's training sink keeps exactly its selected features and role
     columns. A GLM's column membership comes from its terms and interactions, so
@@ -675,19 +683,21 @@ class TestTrainingSinkProjection:
         from haute.schemas import TrainRequest
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
-        body = TrainRequest(
-            graph=_glm_schema_gate_graph(
-                glm_collision_data,
-                {
-                    "algorithm": "catboost",
-                    "task": "regression",
-                    "target": "y",
-                    "loss_function": "RMSE",
-                    "feature_columns": ["x"],
-                    "evaluation": _random_evaluation_config(),
-                },
-            ),
-            node_id="train",
+        body = _resolved(
+            TrainRequest(
+                graph=_glm_schema_gate_graph(
+                    glm_collision_data,
+                    {
+                        "algorithm": "catboost",
+                        "task": "regression",
+                        "target": "y",
+                        "loss_function": "RMSE",
+                        "feature_columns": ["x"],
+                        "evaluation": _random_evaluation_config(),
+                    },
+                ),
+                target={"occurrence": None, "node_id": "train"},
+            )
         )
         service, launched = _inline_sink_service(monkeypatch)
 
@@ -708,16 +718,18 @@ class TestTrainingSinkProjection:
         from haute.schemas import TrainRequest
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
-        body = TrainRequest(
-            graph=_glm_schema_gate_graph(
-                glm_collision_data,
-                {
-                    **_GLM_SINK_CONFIG,
-                    "family": "gaussian",
-                    "evaluation": _random_evaluation_config(),
-                },
-            ),
-            node_id="train",
+        body = _resolved(
+            TrainRequest(
+                graph=_glm_schema_gate_graph(
+                    glm_collision_data,
+                    {
+                        **_GLM_SINK_CONFIG,
+                        "family": "gaussian",
+                        "evaluation": _random_evaluation_config(),
+                    },
+                ),
+                target={"occurrence": None, "node_id": "train"},
+            )
         )
         service, launched = _inline_sink_service(monkeypatch)
 
@@ -740,17 +752,19 @@ class TestTrainingSinkProjection:
         captured = _spy_on_sink_projection(monkeypatch)
         from haute.schemas import DispersionEstimateRequest
 
-        body = DispersionEstimateRequest(
-            graph=_glm_schema_gate_graph(
-                glm_collision_data,
-                {
-                    **_GLM_SINK_CONFIG,
-                    "family": "tweedie",
-                    "evaluation": _random_evaluation_config(),
-                },
-            ),
-            node_id="train",
-            param="var_power",
+        body = _resolved(
+            DispersionEstimateRequest(
+                graph=_glm_schema_gate_graph(
+                    glm_collision_data,
+                    {
+                        **_GLM_SINK_CONFIG,
+                        "family": "tweedie",
+                        "evaluation": _random_evaluation_config(),
+                    },
+                ),
+                target={"occurrence": None, "node_id": "train"},
+                param="var_power",
+            )
         )
         service, launched = _inline_sink_service(monkeypatch)
 

@@ -823,6 +823,14 @@ def test_a_chained_comparison_is_not_mistaken_for_a_literal_output() -> None:
         ),
         ("df = rows.select(-1 < pl.col('a'))", "a", {"a"}),
         ("df = rows.select(2 * pl.col('a'))", "literal", {"a"}),
+        # pl.coalesce reads bare strings as columns and is named after its first part.
+        ("df = rows.select(pl.coalesce('b', 'a'))", "b", {"a", "b"}),
+        ("df = rows.select(pl.coalesce(pl.lit(0), pl.col('a')))", "literal", {"a"}),
+        (
+            "df = rows.with_columns(pl.coalesce(pl.col('a'), 'b', pl.lit(0)).alias('t'))",
+            "t",
+            {"a", "b"},
+        ),
     ],
 )
 def test_output_names_match_the_columns_polars_emits(

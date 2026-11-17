@@ -102,6 +102,8 @@ export type Expr =
   | { type: "concat"; parts: Operand[]; separator: string }
   /** `pl.sum_horizontal`: missing parts are skipped, so a row with every part missing sums to 0. */
   | { type: "sum_horizontal"; parts: Operand[]; text?: string }
+  /** `pl.coalesce`: each row takes its first part that isn't missing, and is missing where every part is. */
+  | { type: "coalesce"; parts: Operand[]; text?: string }
 
 export type StepBase = { id: string }
 /**
@@ -129,7 +131,8 @@ export type SortStep = StatementStep & {
 }
 export type UniqueStep = StatementStep & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" | "none" }
 export type ColumnAggregation = {
-  column: string
+  /** The column aggregated. A row count (`len`) reads none: `pl.len()` is read back from code without one. */
+  column?: string
   agg: Aggregation
   name: string
   /** The quantile in [0, 1] (`quantile` only). */

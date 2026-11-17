@@ -5,13 +5,25 @@ operator, aggregate, type and function the forms offer; the renderer in
 ``haute._polars_steps`` is the source of truth for what it accepts. This test
 reads the catalogue's declarations and fails as soon as either side gains,
 loses or reorders an entry the other does not know.
+
+The editor's shape check (``stepProblem``) is a second hand-written copy, of
+what a step may hold. ``scripts/regen_step_shapes_fixture.py`` writes the steps
+the backend reads back from code for every vocabulary entry; the tests below
+keep that file current and complete, and the editor's ``stepShapes.test.ts``
+requires it to take every one.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import json
 import re
+import sys
+from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import polars as pl
 import pytest
@@ -220,3 +232,122 @@ def test_join_output_fixture_matches_polars(case: dict[str, object]) -> None:
     frame = scope["df"]
     assert isinstance(frame, pl.LazyFrame)
     assert frame.collect_schema().names() == case["output"]
+
+
+REPO_ROOT = CATALOGUE.parents[5]
+
+
+def _load_step_shapes() -> ModuleType:
+    """The regenerator, the single source of the step shapes fixture's cases."""
+    path = REPO_ROOT / "scripts" / "regen_step_shapes_fixture.py"
+    spec = importlib.util.spec_from_file_location("regen_step_shapes_fixture", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+step_shapes = _load_step_shapes()
+
+
+def test_step_shapes_fixture_is_what_the_backend_reads_back() -> None:
+    """The editor is checked against exactly the steps today's renderer and reader produce."""
+    on_disk = step_shapes.FIXTURE.read_text(encoding="utf-8")
+    assert on_disk == step_shapes.canonical(step_shapes.build_fixture()), (
+        "The step shapes fixture is stale: the step renderer, reader or vocabulary changed. "
+        "Run `uv run python scripts/regen_step_shapes_fixture.py`, then the editor's "
+        "stepShapes.test.ts, and make the editor take any shape it refuses."
+    )
+
+
+#: The expression types the renderer dispatches on, read from the renderer itself.
+EXPRESSION_TYPES = frozenset(
+    re.findall(r'kind == "(\w+)"', inspect.getsource(steps._Renderer._expr_body))
+)
+
+
+def _objects(value: object) -> Iterator[dict[str, Any]]:
+    """Every JSON object in *value*, outermost first."""
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _objects(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _objects(child)
+
+
+def _vocabulary(fixture: dict[str, Any]) -> dict[str, set[str]]:
+    """Each vocabulary's entries as the fixture's steps use them, by where they appear."""
+    seen: dict[str, set[str]] = {}
+
+    def add(name: str, value: object) -> None:
+        seen.setdefault(name, set()).add(str(value))
+
+    for obj in _objects(fixture["cases"]):
+        if "id" in obj and "kind" in obj:
+            kind = obj["kind"]
+            add("step kinds", kind)
+            if kind == "group_by":
+                for entry in obj["aggregations"]:
+                    add("type-wide aggregates" if "dtype" in entry else "aggregates", entry["agg"])
+                    if "where" in entry:
+                        add("filtered aggregates", entry["agg"])
+            elif kind == "join":
+                add("join types", obj["how"])
+                add("join row orders", obj["maintain_order"])
+                if "validate" in obj:
+                    add("join validations", obj["validate"])
+            elif kind == "cast":
+                for entry in obj["casts"]:
+                    add("cast types", entry["dtype"])
+            elif kind == "fill_null" and obj["fill"]["kind"] == "strategy":
+                add("fill strategies", obj["fill"]["strategy"])
+            elif kind == "pivot":
+                add("pivot aggregates", obj["agg"])
+        elif "type" in obj and "kind" not in obj:
+            add("expression types", obj["type"])
+            if obj["type"] == "window":
+                add("window aggregates", obj["agg"])
+            elif obj["type"] == "function":
+                add("functions", obj["fn"])
+            elif obj["type"] == "binary":
+                add("operators", obj["op"])
+        elif "operator" in obj:
+            add("condition operators", obj["operator"])
+            if "number_type" in obj:
+                add("number types", obj["number_type"])
+        elif obj.get("kind") in steps.OPERAND_KINDS:
+            add("operand kinds", obj["kind"])
+            if obj["kind"] == "literal":
+                add("literal types", obj["type"])
+    return seen
+
+
+def test_step_shapes_fixture_uses_every_vocabulary_entry() -> None:
+    """Every entry the renderer takes has a case, so the editor is checked against its shape."""
+    seen = _vocabulary(json.loads(step_shapes.FIXTURE.read_text(encoding="utf-8")))
+    expected = {
+        "step kinds": steps.STEP_KINDS,
+        "aggregates": steps.AGGREGATIONS,
+        "filtered aggregates": steps.AGGREGATIONS,
+        "type-wide aggregates": tuple(a for a in steps.AGGREGATIONS if a != "len"),
+        "window aggregates": steps.WINDOW_AGGREGATIONS,
+        "pivot aggregates": steps.PIVOT_AGGREGATIONS,
+        "expression types": EXPRESSION_TYPES,
+        "functions": tuple(steps.FUNCTIONS),
+        "operators": steps.BINARY_OPERATORS,
+        "condition operators": steps.OPERATORS,
+        "number types": steps.NUMBER_TYPES,
+        "operand kinds": steps.OPERAND_KINDS,
+        "literal types": steps.LITERAL_TYPES,
+        "cast types": steps.CAST_DTYPES,
+        "fill strategies": steps.FILL_STRATEGIES,
+        "join types": steps.JOIN_HOW,
+        "join row orders": steps.JOIN_MAINTAIN_ORDER,
+        "join validations": steps.JOIN_VALIDATE,
+    }
+    assert {name: set(values) for name, values in expected.items()} == {
+        name: seen.get(name, set()) for name in expected
+    }

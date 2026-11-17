@@ -21,7 +21,8 @@ export interface ExploreDataView {
   data_version: string
   generated_at: number
   source: string
-  producer_node_id: string
+  /** The label of the node the data comes from. */
+  producer_label: string
 }
 
 /**
@@ -35,10 +36,10 @@ export interface ExploreDataView {
 export function exploreDataView(
   profile: NodeDataProfile | null | undefined,
   dataVersion: string | null | undefined,
-  producerNodeId: string | null | undefined,
+  producerLabel: string | null | undefined,
   source: string,
 ): ExploreDataView | null {
-  if (!profile || !producerNodeId || !dataVersion || dataVersion !== profile.data_version) {
+  if (!profile || !producerLabel || !dataVersion || dataVersion !== profile.data_version) {
     return null
   }
   return {
@@ -49,6 +50,6 @@ export function exploreDataView(
     data_version: profile.data_version,
     generated_at: profile.generated_at,
     source,
-    producer_node_id: producerNodeId,
+    producer_label: producerLabel,
   }
 }

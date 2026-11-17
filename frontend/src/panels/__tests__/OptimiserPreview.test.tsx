@@ -207,7 +207,7 @@ describe("OptimiserPreview", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useOptimiserPublishStore.setState({ byNode: {} })
+    useOptimiserPublishStore.setState({ byResultKey: {} })
     mockSolveState.results = {}
     mockSolveState.columnCache = {}
     mlflowMockState.current = mlflowMockState.base()
@@ -1353,7 +1353,7 @@ describe("OptimiserPreview", () => {
 
       expect(screen.getByText("The configuration has changed since this result was solved.")).toBeInTheDocument()
       fireEvent.click(screen.getByRole("button", { name: "Re-run" }))
-      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(expect.objectContaining({ node_id: "opt_1" })))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(expect.objectContaining({ target: { occurrence: null, node_id: "opt_1" } })))
       await waitFor(() => expect(mockStartSolveJob).toHaveBeenCalledWith(
         "opt_1", "job_999", "My Optimiser", {}, expect.any(String), "live", expect.any(Number),
       ))

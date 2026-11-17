@@ -1,3 +1,4 @@
+import { useRequestScope, useResultKey } from "../panels/useGraph"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { cancelNodeData, getNodeDataProfile } from "../api/client"
@@ -9,7 +10,7 @@ import {
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
-import { buildGraph } from "../utils/buildGraph"
+import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { NodeDataCache } from "./useNodeDataCache"
 
@@ -68,7 +69,10 @@ export default function useNodeDataProfile({
   cache,
   enabled = true,
 }: UseNodeDataProfileInput): NodeDataProfileState {
+  const requestScope = useRequestScope()
   const nodeId = node?.id ?? null
+  // A Stop pauses the node by its result key: inside a submodel, its occurrence's.
+  const nodeKey = useResultKey(nodeId)
   const nodeLabel = node ? String(node.data.label || node.id) : ""
   const activeSource = useSettingsStore((s) => s.activeSource)
   const addToast = useToastStore((s) => s.addToast)
@@ -87,11 +91,12 @@ export default function useNodeDataProfile({
   const asked = useRef<string | null>(null)
   // The node whose profiling Stop paused: a job id that arrives afterwards is
   // cancelled at once, and nothing asks for that node's profile on its own
-  // until it resumes. Kept by node, so another node opened in the same panel
-  // profiles as usual; kept in state as well, so resuming asks again.
+  // until it resumes. Kept by the node's result key, so another node opened in
+  // the same panel, or the same child in another occurrence, profiles as usual;
+  // kept in state as well, so resuming asks again.
   const [stoppedNodes, setStoppedNodes] = useState<ReadonlySet<string>>(() => new Set())
   const stoppedNodesRef = useRef<ReadonlySet<string>>(stoppedNodes)
-  const stopped = nodeId !== null && stoppedNodes.has(nodeId)
+  const stopped = nodeKey !== null && stoppedNodes.has(nodeKey)
   const setStopped = useCallback((node: string | null, isStopped: boolean) => {
     if (node === null) return
     const next = new Set(stoppedNodesRef.current)
@@ -113,11 +118,20 @@ export default function useNodeDataProfile({
       fence = captureDocumentExecutionFence(),
     ) => {
       if (!nodeId || !slotKey) return
-      // buildGraph reads the preamble from the store; listing it renews this callback.
+      // The graph is read from the store; listing the panel's graph and the preamble
+      // renews this callback.
+      void allNodes
+      void edges
+      void submodels
       void preamble
+      // Taken before the request: a Stop for this node, pressed while it is in
+      // flight, is read by it after the answer.
+      const askedKey = nodeKey
+      // Inside an open submodel, the whole pipeline and the node's address.
+      const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
       const response = await getNodeDataProfile({
-        graph: buildGraph(allNodes, edges, submodels),
-        node_id: nodeId,
+        graph: target.graph,
+        target: target.node,
         source: activeSource,
       })
       if (!isDocumentExecutionFenceCurrent(fence) || askedEpoch !== useNodeDataStore.getState().epoch) return
@@ -127,7 +141,7 @@ export default function useNodeDataProfile({
       }
       if ((response.status === "started" || response.status === "joined") && response.job_id) {
         if (response.status === "started") {
-          if (nodeId !== null && stoppedNodesRef.current.has(nodeId)) {
+          if (askedKey !== null && stoppedNodesRef.current.has(askedKey)) {
             // Stop was pressed while this request was in flight.
             void cancelNodeData(response.job_id).catch((err: unknown) => {
               addToast(
@@ -151,11 +165,13 @@ export default function useNodeDataProfile({
       }
     },
     [
+      requestScope,
       activeSource,
       addToast,
       allNodes,
       edges,
       nodeId,
+      nodeKey,
       nodeLabel,
       observeProfile,
       preamble,
@@ -190,7 +206,7 @@ export default function useNodeDataProfile({
   }, [addToast, cache.availability, dataVersion, enabled, epoch, failure, job, profile, slotKey, stopped])
 
   const refresh = useCallback(async () => {
-    setStopped(nodeId, false)
+    setStopped(nodeKey, false)
     if (!dataVersion) return
     if (slotKey) clearProfileFailure(slotKey)
     const fence = captureDocumentExecutionFence()
@@ -205,10 +221,10 @@ export default function useNodeDataProfile({
     }).finally(() => {
       if (asked.current === requestKey) asked.current = null
     })
-  }, [addToast, ask, clearProfileFailure, dataVersion, nodeId, reportProfileFailure, setStopped, slotKey])
+  }, [addToast, ask, clearProfileFailure, dataVersion, nodeKey, reportProfileFailure, setStopped, slotKey])
 
   const cancel = useCallback(async () => {
-    setStopped(nodeId, true)
+    setStopped(nodeKey, true)
     // The poller moves the cancelled job to its terminal state, so this only
     // asks; it never writes the shared store itself.
     if (!job?.startedHere) return
@@ -220,11 +236,11 @@ export default function useNodeDataProfile({
         `Cancelling the data profile failed: ${err instanceof Error ? err.message : String(err)}`,
       )
     }
-  }, [addToast, job, nodeId, setStopped])
+  }, [addToast, job, nodeKey, setStopped])
 
   const resume = useCallback(() => {
-    setStopped(nodeId, false)
-  }, [nodeId, setStopped])
+    setStopped(nodeKey, false)
+  }, [nodeKey, setStopped])
 
   return {
     profile,

@@ -115,6 +115,7 @@ import { InputSourcesBar } from "../../panels/editors/_shared"
 import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Path helpers — resolve `frontend/src/` regardless of cwd
@@ -488,12 +489,12 @@ function renderInputSourcesBarWithDelete() {
 
 /** Render RatingStepEditor wrapped in GraphProvider so hooks resolve. */
 function renderRatingStep(
-  props: Parameters<typeof RatingStepEditor>[0],
+  props: Omit<Parameters<typeof RatingStepEditor>[0], "section">,
   opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
 ) {
   return render(
-    <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
-      <RatingStepEditor {...props} />
+    <GraphProvider requestScope={documentRequestScope} allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
+      <RatingStepEditor section="tables" {...props} />
     </GraphProvider>,
   )
 }

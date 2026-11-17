@@ -54,6 +54,55 @@ describe("ColumnSelector", () => {
 
 afterEach(cleanup)
 
+describe("a compact ColumnSelector's trigger looks", () => {
+  afterEach(cleanup)
+
+  it("draws an add button reading its placeholder, whose menu adds the column chosen", () => {
+    const onChange = vi.fn()
+    render(<ColumnSelector compact trigger="add" label="Add factor" value="" placeholder="Add factor" columns={columns} onChange={onChange} />)
+    const trigger = screen.getByRole("button", { name: "Add factor" })
+    expect(trigger).toHaveTextContent("Add factor")
+    expect(trigger).toHaveClass("add-row-btn")
+
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getAllByRole("option").find((option) => option.firstElementChild?.textContent === "region")!)
+    expect(onChange).toHaveBeenCalledWith("region")
+  })
+
+  it("opens under its trigger, or over it near the window's foot where it would not fit below", () => {
+    // jsdom lays nothing out: the menu is 250px tall, the window 768px.
+    const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(250)
+    const openAt = (top: number) => {
+      render(<ColumnSelector compact label="Factor 1" value="" columns={columns} onChange={vi.fn()} />)
+      const trigger = screen.getByRole("button", { name: "Factor 1" })
+      vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(new DOMRect(100, top, 200, 24))
+      fireEvent.click(trigger)
+      return screen.getByRole("listbox", { name: "Factor 1 options" }).parentElement!.style
+    }
+    try {
+      const under = openAt(100)
+      expect([under.top, under.bottom]).toEqual(["128px", ""])
+      cleanup()
+
+      const over = openAt(720)
+      expect([over.top, over.bottom]).toEqual(["", "52px"])
+    } finally {
+      height.mockRestore()
+    }
+  })
+
+  it("draws a form field that marks a saved column the list lacks and names the type of a known one", () => {
+    const { rerender } = render(<ColumnSelector compact trigger="field" label="Factor 1" value="removed" columns={columns} onChange={vi.fn()} />)
+    const trigger = screen.getByRole("button", { name: "Factor 1" })
+    expect(trigger).toHaveClass("rounded-lg")
+    expect(trigger).toHaveAttribute("title", "removed is not in the input's columns")
+    expect(screen.queryByRole("alert")).toBeNull()
+
+    rerender(<ColumnSelector compact trigger="field" label="Factor 1" value="claim" columns={columns} onChange={vi.fn()} />)
+    expect(trigger).toHaveAttribute("title", "claim (Int64)")
+  })
+})
+
 describe("ColumnSelector before the columns load", () => {
   afterEach(cleanup)
 

@@ -1,6 +1,7 @@
+import type { NodeAddressPayload } from "../../generated/api-contracts.generated"
 import { useCallback, useEffect, useRef } from "react"
 import { Loader2, RefreshCw, X } from "lucide-react"
-import type { GraphPayload } from "../../api/types"
+import type { PreparedGraph } from "../../api/types"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 import { CommittedTextField } from "../../components/form"
 import { safeParseInt } from "../../utils/configField"
@@ -34,7 +35,8 @@ type OptimiserConstraintSettingsProps = {
   canAutoRange: boolean
   accentColor: string
   labelClassName: string
-  buildGraph: () => GraphPayload
+  /** The graph and this node's id in it that a request about the node sends. */
+  requestTarget: () => { graph: PreparedGraph; node: NodeAddressPayload }
   nodeId: string
   onUpdate: OnUpdateConfig
   onRemoveConstraint: (name: string) => void
@@ -70,7 +72,7 @@ export default function OptimiserConstraintSettings({
   canAutoRange,
   accentColor,
   labelClassName,
-  buildGraph,
+  requestTarget,
   nodeId,
   onUpdate,
   onRemoveConstraint,
@@ -103,7 +105,7 @@ export default function OptimiserConstraintSettings({
     run: handleAutoRange,
   } = useOptimiserAutoRange({
     nodeId,
-    buildGraph,
+    requestTarget,
     writeRanges,
   })
 

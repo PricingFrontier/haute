@@ -13,6 +13,7 @@ import { AlertCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "luci
 import { selectFrontierPoint as selectFrontierPointApi } from "../api/client"
 import { formatNumber, fractionToPercent } from "../utils/formatValue"
 import useGraphStore from "../stores/useGraphStore"
+import { useRequestScope, useResultKey } from "./useGraph"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
@@ -202,7 +203,11 @@ export default function OptimiserPreview({
   onRefresh,
   scenarioData = null,
 }: OptimiserPreviewProps) {
-  const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
+  const requestScope = useRequestScope()
+  // The node's solve and its frontier selection are kept under its result key; its id
+  // still names it on the canvas.
+  const resultKey = useResultKey(nodeId)
+  const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(resultKey))
   const displayData = liveData ?? data
   const { result, solvedResult, jobId } = displayData
 
@@ -308,10 +313,10 @@ export default function OptimiserPreview({
   const hasScenarioPanes = scenarioData != null && scenarioDataUnavailable(scenario) === null
 
   // The result is stale once the node's solve inputs no longer match it.
-  const cachedSolve = useNodeResultsStore((s) => s.solveResults[nodeId])
+  const cachedSolve = useNodeResultsStore((s) => s.solveResults[resultKey])
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
-  const solveRunning = useNodeResultsStore((s) => Boolean(s.solveJobs[nodeId]))
+  const solveRunning = useNodeResultsStore((s) => Boolean(s.solveJobs[resultKey]))
   const isStale = isSolveResultStale(cachedSolve, nodeConfig, activeSource, structuralVersion)
   // Re-run obeys the Solve pane's readiness, judged by the same hook and the
   // same column path (known columns, else the source-aware cache and fetch).
@@ -335,11 +340,11 @@ export default function OptimiserPreview({
     if (!rerunReadiness.canSolve) return
     setRerunning(true)
     try {
-      await startOptimiserSolve({ nodeId, config: nodeConfig, allNodes, edges, submodels })
+      await startOptimiserSolve({ nodeId, config: nodeConfig, allNodes, requestScope })
     } finally {
       setRerunning(false)
     }
-  }, [allNodes, edges, nodeConfig, nodeId, rerunReadiness.canSolve, submodels])
+  }, [allNodes, nodeConfig, nodeId, requestScope, rerunReadiness.canSolve])
 
   const factorLevelOrder = useMemo(
     () => bandingLevelOrderForOptimiser(nodeId, allNodes, edges),
@@ -364,14 +369,14 @@ export default function OptimiserPreview({
   // A request's identity is (job, point); a reply the view moved past is aborted and dropped.
   const ratesRequest = useLatestRequest(
     shouldMaterialiseSelectedRates && selectedIdx != null
-      ? { key: `${jobId}:${selectedIdx}`, nodeId, jobId, pointIndex: selectedIdx }
+      ? { key: `${jobId}:${selectedIdx}`, resultKey, jobId, pointIndex: selectedIdx }
       : null,
     (wanted, signal) => selectFrontierPointApi(
       { job_id: wanted.jobId, point_index: wanted.pointIndex, include_ratebook_tables: true },
       { signal },
     ),
     (wanted, response) => {
-      storeUpdateAfterSelect(wanted.nodeId, wanted.jobId, wanted.pointIndex, response)
+      storeUpdateAfterSelect(wanted.resultKey, wanted.jobId, wanted.pointIndex, response)
       if (!hasFactorTables(response.factor_tables)) {
         throw new Error("No rate tables were returned for this selected point.")
       }
@@ -386,9 +391,9 @@ export default function OptimiserPreview({
   const handlePointClick = useCallback(
     (index: number) => {
       if (index === selectedIdx) return
-      storeSelectPoint(nodeId, index)
+      storeSelectPoint(resultKey, index)
     },
-    [selectedIdx, nodeId, storeSelectPoint],
+    [selectedIdx, resultKey, storeSelectPoint],
   )
 
   // Tabs available

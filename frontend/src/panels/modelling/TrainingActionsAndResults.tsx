@@ -2,6 +2,8 @@ import { useMemo } from "react"
 import { Play, Loader2, AlertTriangle, RefreshCw, CheckCircle2, Database, XCircle } from "lucide-react"
 import type { TrainResult, TrainProgress } from "../../stores/useNodeResultsStore"
 import type { TrainEstimate, TrainEstimateUnavailable } from "../../api/types"
+import type { NodeAddressEntry, RuntimeNodeKey } from "../../generated/api-contracts.generated"
+import { keyText } from "../../utils/answerAddresses"
 import { MODEL_COLORS } from "../../theme/colors"
 import { TrainingProgress as TrainingProgressPanel } from "./TrainingProgress"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
@@ -19,7 +21,7 @@ function formatMb(mb: number): string {
 
 function unavailableEstimateReason(
   unavailable: TrainEstimateUnavailable,
-  nodeLabel: (nodeId: string) => string,
+  nodeLabel: (key: RuntimeNodeKey) => string,
 ): string {
   return unavailable.reason === "row_count_unprovable"
     ? `The row count at "${nodeLabel(unavailable.blocking_node_id)}" can't be proven before it runs, so training memory can't be estimated.`
@@ -27,8 +29,8 @@ function unavailableEstimateReason(
 }
 
 /** Joins named for a sentence: "a", "a" and "b", "a", "b" and "c". */
-function joinNames(nodeIds: readonly string[], nodeLabel: (nodeId: string) => string): string {
-  const names = nodeIds.map((nodeId) => `"${nodeLabel(nodeId)}"`)
+function joinNames(keys: readonly RuntimeNodeKey[], nodeLabel: (key: RuntimeNodeKey) => string): string {
+  const names = keys.map((key) => `"${nodeLabel(key)}"`)
   return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
 }
 
@@ -52,10 +54,8 @@ export type TrainingActionsAndResultsProps = {
   /** The estimate is waiting for the pipeline's input-snapshot build to release the budget. */
   estimateWaiting?: boolean
   rowLimit: number | null
-  /** Canvas label for a node the estimate names (a blocking node, or a join without a key contract). */
-  nodeLabel: (nodeId: string) => string
-  /** The action that opens a node the estimate names, or null when it is not on this canvas. */
-  nodeOpener?: (nodeId: string) => (() => void) | null
+  /** The action that opens a node the estimate addresses, or null when it is not on this canvas. */
+  nodeOpener?: (address: Pick<NodeAddressEntry, "occurrence" | "node_id">) => (() => void) | null
   terminalMetrics?: ExecutionMetrics | null
   terminalStatus?: string | null
   terminalReason?: string | null
@@ -85,7 +85,6 @@ export function TrainingActionsAndResults({
   ramEstimateErrorCode = null,
   estimateWaiting = false,
   rowLimit,
-  nodeLabel,
   nodeOpener,
   terminalMetrics = null,
   terminalStatus = null,
@@ -132,6 +131,8 @@ export function TrainingActionsAndResults({
   // A row total resting on a join without a key contract is its worst case,
   // never a count to call "fits" or "will downsample".
   const unboundedJoins = ramEstimate && !ramEstimate.unavailable ? ramEstimate.unbounded_join_node_ids : []
+  // The estimate addresses each node it names (a blocking node, a join without a key contract).
+  const nodeLabel = (key: RuntimeNodeKey) => ramEstimate?.node_addresses[keyText(key)]?.label ?? ""
 
   const busy = submitting || training
   // Training would be refused while the snapshot build holds the budget.
@@ -229,17 +230,18 @@ export function TrainingActionsAndResults({
             {`Up to ${ramEstimate.total_rows!.toLocaleString()} rows: ${joinNames(unboundedJoins, nodeLabel)} ${unboundedJoins.length === 1 ? "has" : "have"} no key contract. Declaring ${unboundedJoins.length === 1 ? "the join" : "each join"} many-to-one bounds the rows by its base input.`}
           </p>
           <div className="flex flex-wrap gap-1.5">
-            {unboundedJoins.map((nodeId) => {
-              const open = nodeOpener?.(nodeId) ?? null
+            {unboundedJoins.map((key) => {
+              const address = ramEstimate.node_addresses[keyText(key)]
+              const open = address ? nodeOpener?.(address) ?? null : null
               return open && (
                 <button
-                  key={nodeId}
+                  key={keyText(key)}
                   type="button"
                   onClick={open}
                   className="px-2 py-0.5 rounded text-[11px] font-medium"
                   style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
                 >
-                  {`Open "${nodeLabel(nodeId)}"`}
+                  {`Open "${nodeLabel(key)}"`}
                 </button>
               )
             })}

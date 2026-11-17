@@ -14,6 +14,7 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import PreambleError, _compile_preamble
+from tests._preview_targets import node_target
 from tests._project import use_project
 from tests.conftest import (
     make_file_input_config,
@@ -386,7 +387,7 @@ class TestPreviewRouteSourceFile:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(mode="json"),
-                "node_id": "calc",
+                "target": node_target("calc"),
                 "row_limit": 100,
                 "source": "live",
             },
@@ -421,7 +422,7 @@ class TestPreviewRouteSourceFile:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(mode="json"),
-                "node_id": "explore_8",
+                "target": node_target("explore_8"),
                 "row_limit": 100,
                 "source": "live",
             },
@@ -429,7 +430,6 @@ class TestPreviewRouteSourceFile:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["node_id"] == "explore_8"
         assert body["status"] == "error"
         assert "exactly one incoming edge" in body["error"]
 
@@ -469,7 +469,7 @@ class TestPreviewRouteSourceFile:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(mode="json"),
-                "node_id": "explore",
+                "target": node_target("explore"),
                 "row_limit": 3,
                 "source": "live",
             },

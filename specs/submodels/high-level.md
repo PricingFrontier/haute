@@ -159,8 +159,9 @@ removed or dissolved); blocked attempts say so visibly. The owner cannot be
 dissolved while instances still reference it. Renaming the owner changes
 presentation only; an instance's outputs are named after it, so renaming an
 instance renames those frames for its consumers (see Reuse). Drilling into the owner opens the shared definition editor and states
-that edits affect every instance; drilling into an instance opens the same
-definition as an explicitly read-only view. All mutation surfaces are disabled
+that edits affect every instance, and every edit there changes the shared
+definition at once; drilling into an instance opens the same definition as an
+explicitly read-only view, whose edits the editor's document itself refuses. All mutation surfaces are disabled
 there, including config fields, labels, node/edge edits, boundary edits,
 paste/delete/undo/redo, palette drops, imports, and auto-layout. Preview, trace,
 selection, copy, pan, and zoom remain available. In v1, an ordinary owner edit
@@ -225,14 +226,23 @@ migrated with that edge identity, including selector fields, live-switch maps,
 config rewrites are one atomic transform, so no consumer retains a stale
 identity.
 
-When the editor is drilled into one occurrence, preview and trace requests use
-the parent hierarchical graph and qualify the clicked child from the explicit
-occurrence identity before crossing the execution API boundary. Local editor
-ids remain the identity used for selection, result caching, and rendering;
-qualified runtime ids do not leak back into the visible definition graph.
+When the editor is drilled into one occurrence, every request that runs the
+graph sends the whole hierarchical pipeline and names its target by address:
+the occurrence and the child's local id, or the occurrence and one of its
+public ports for the Input and Output cards. The server resolves the address
+through the expansion's own record and labels every node its answer names
+with its address ([server API](../server-api/low-level.md), "Node addresses").
+Local editor ids remain the identity used for selection, result caching, and
+rendering; runtime ids never reach the browser as anything but opaque keys.
+A preview's schema maps are recorded on the children their keys' addresses
+name, and the Input card carries each port's columns from the endpoint its
+frame provenance names, so an editor inside the occurrence lists its input's
+columns as it does on the root canvas. The parents' columns are
+kept on the root graph too, so the card starts with them when the occurrence
+is drilled into again.
 The occurrence identity is authoritative navigation state, not inferred from
 rendered boundary-port cards: definitions with no public ports (including a
-group made entirely from disconnected source nodes) must use the same qualified
+group made entirely from disconnected source nodes) use the same addressed
 preview and trace targets.
 
 Code generation emits each definition module once, one `from modules import ...`
@@ -262,7 +272,7 @@ instances.
 
 Acceptance also requires grouping existing config-backed source nodes, saving,
 reloading, drilling into the occurrence, and previewing each child. The request
-must target that occurrence's qualified runtime node, strict source config must
+must name that occurrence's child by address, strict source config must
 remain unpolluted by composition metadata, and generated standalone execution
 must resolve the original pipeline-owned sidecars.
 
@@ -448,6 +458,13 @@ across a rewire.
   output previews its source node, and that node's frame, run on this
   occurrence's inputs as a qualified runtime target. An occurrence with no
   public output has nothing to preview.
+- **Output order.** The definition's public outputs are ordered, and every
+  occurrence draws its output rows in that order. The owner's panel lists them in
+  order and moves one by dragging it, or with Alt+Up and Alt+Down: one undoable
+  definition edit, saved as the order of the definition file's `output_ports`, which
+  moves every occurrence's rows and so which output a preview opens on. Edges follow
+  their outputs by name. An instance's panel lists the outputs in the same order
+  without moving them.
 - **Create Instance.** On a submodel occurrence it places another occurrence
   of the definition, as described above. On a plain node it wraps the node in
   place in a one-node definition: the definition and its module take the

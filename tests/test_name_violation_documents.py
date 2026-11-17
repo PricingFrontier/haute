@@ -20,6 +20,7 @@ from haute._types import PipelineGraph
 from haute.errors import ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_source_with_name_violations
 from haute.routes._save_pipeline import SavePipelineService
+from tests._preview_targets import node_target
 from tests._project import use_project
 
 _CHILD = """
@@ -172,7 +173,10 @@ def test_a_preview_of_a_graph_with_a_violation_reports_it_at_the_node(
 
     response = client.post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json", by_alias=True), "node_id": "pl"},
+        json={
+            "graph": graph.model_dump(mode="json", by_alias=True),
+            "target": node_target("pl"),
+        },
     )
 
     assert response.status_code == 200, response.text

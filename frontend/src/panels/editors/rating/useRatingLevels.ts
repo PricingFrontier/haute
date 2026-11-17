@@ -4,7 +4,7 @@ import { getRatingLevels } from "../../../api/client"
 import type { RatingLevelsResponse } from "../../../api/types"
 import type { NodeDataCache } from "../../../hooks/useNodeDataCache"
 import type { SimpleEdge, SimpleNode } from "../_shared"
-import useWholeDataAnswer, { type WholeDataBasis } from "../shared/useWholeDataAnswer"
+import useWholeDataAnswer, { type WholeDataBasis, type WholeDataStatus } from "../shared/useWholeDataAnswer"
 
 /** Where the levels on screen came from. */
 export type RatingLevelsBasis = WholeDataBasis
@@ -19,6 +19,8 @@ export interface RatingLevelsState {
   loading: boolean
   basis: RatingLevelsBasis
   error: string | null
+  /** What the editor says about the data it reads. */
+  status: WholeDataStatus
 }
 
 export interface UseRatingLevelsInput {
@@ -52,17 +54,17 @@ export default function useRatingLevels({
     const wanted = [...new Set(columns.filter((column) => column.trim() !== ""))].sort()
     return wanted.length > 0 ? JSON.stringify(wanted) : null
   }, [columns])
-  const { cache, answer, loading, basis, error } = useWholeDataAnswer<RatingLevelsResponse>({
+  const { cache, answer, loading, basis, error, status } = useWholeDataAnswer<RatingLevelsResponse>({
     node,
     allNodes,
     edges,
     submodels,
     preamble,
     askedFor,
-    ask: ({ asked, graph, nodeId, source, signal }) =>
+    ask: ({ asked, graph, target, source, signal }) =>
       getRatingLevels({
         graph,
-        node_id: nodeId,
+        target,
         source,
         columns: JSON.parse(asked) as string[],
         signal,
@@ -87,5 +89,6 @@ export default function useRatingLevels({
     loading,
     error,
     basis,
+    status,
   }
 }

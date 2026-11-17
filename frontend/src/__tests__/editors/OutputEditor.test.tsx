@@ -18,6 +18,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { act, render as rtlRender, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
+import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
@@ -30,14 +31,15 @@ vi.mock("../../api/client", async () => {
   return {
     ...actual,
     outputAssembleDryRun: vi.fn(),
-    previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
     previewNode: vi.fn(),
   }
 })
 
 // Imported AFTER the mock so these are the mocked references.
 import { outputAssembleDryRun, previewNode } from "../../api/client"
-import { makeOutputDryRun } from "../../test-utils/factories"
+import { makeOutputDryRun, nodeTarget } from "../../test-utils/factories"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 const mockOutputAssembleDryRun = vi.mocked(outputAssembleDryRun)
 const mockPreviewNode = vi.mocked(previewNode)
@@ -260,7 +262,7 @@ function render(
   opts: { allNodes?: SimpleNode[]; edges?: SimpleEdge[] } = {},
 ) {
   return rtlRender(
-    <GraphProvider allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={opts.allNodes ?? []} edges={opts.edges ?? []}>
       {element}
     </GraphProvider>,
   )
@@ -281,7 +283,7 @@ function StatefulHarness({
 }) {
   const [config, setConfig] = useState(initialConfig)
   return (
-    <GraphProvider allNodes={allNodes} edges={edges}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges}>
       <OutputEditor
         config={config}
         nodeId="output_1"
@@ -1244,7 +1246,7 @@ describe("OutputEditor - assembled-output preview", () => {
     const doc = [{ premium: 100 }]
     mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: doc, row_count: 1 }))
     const editor = (config: Record<string, unknown>) => (
-      <GraphProvider allNodes={SINGLE_PORT_NODES} edges={SINGLE_PORT_EDGES}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={SINGLE_PORT_NODES} edges={SINGLE_PORT_EDGES}>
         <OutputEditor {...DEFAULT_PROPS} config={config} />
       </GraphProvider>
     )
@@ -1265,7 +1267,27 @@ describe("OutputEditor - assembled-output preview", () => {
     expect(screen.queryByTestId("output-preview-json")).toBeNull()
   })
 
-  it("sends the CURRENT (unsaved) mapping + node id to the dry-run route", async () => {
+  it("drops an assembled document once the pipeline's data changes, and assembles it again on reopening", async () => {
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [{ premium: 100 }], row_count: 1 }))
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+
+    // A workbench sample changed, as the pipeline editor's reads take it, raises the epoch.
+    act(() => useNodeDataStore.getState().bumpEpoch())
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
+    expect(screen.getByText("Refresh to assemble the response from the current mapping.")).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+    expect(mockOutputAssembleDryRun).toHaveBeenCalledTimes(2)
+  })
+
+  it("sends the CURRENT (unsaved) mapping + the node's address to the dry-run route", async () => {
     mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [], row_count: 0 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
       allNodes: SINGLE_PORT_NODES,
@@ -1274,7 +1296,7 @@ describe("OutputEditor - assembled-output preview", () => {
     fireEvent.click(screen.getByTestId("output-preview-toggle"))
     await waitFor(() => expect(mockOutputAssembleDryRun).toHaveBeenCalled())
     const arg = mockOutputAssembleDryRun.mock.calls[0][0]
-    expect(arg.nodeId).toBe("output_1")
+    expect(arg.target).toEqual({ occurrence: null, node_id: "output_1" })
     expect(arg.outputMapping).toEqual(SINGLE_PORT_CONFIG.output_mapping)
   })
 
@@ -1361,7 +1383,6 @@ describe("OutputEditor - per-frame input-data preview", () => {
       { premium: 250, area: "B", power: 90 },
     ]
     mockPreviewNode.mockResolvedValue({
-      node_id: "upstream",
       status: "ok",
       preview: previewRows,
       preview_row_count: 2,
@@ -1379,7 +1400,7 @@ describe("OutputEditor - per-frame input-data preview", () => {
       JSON.stringify(previewRows, null, 2),
     )
     // It previewed the UPSTREAM source node, not the OUTPUT node.
-    expect(mockPreviewNode.mock.calls[0][0].nodeId).toBe("upstream")
+    expect(mockPreviewNode.mock.calls[0][0].target).toEqual(nodeTarget("upstream"))
   })
 
   it("surfaces a preview error for a frame's data", async () => {
@@ -1405,7 +1426,6 @@ describe("OutputEditor - per-frame input-data preview", () => {
     // frame via port_label and the preview is genuinely the drivers rows — no
     // caveat. (Pre-fix this surfaced a "first frame" note.)
     mockPreviewNode.mockResolvedValue({
-      node_id: "api",
       status: "ok",
       preview: [{ driver_id: 7 }],
       preview_row_count: 1,
@@ -1420,13 +1440,11 @@ describe("OutputEditor - per-frame input-data preview", () => {
       expect(screen.getByTestId("output-frame-1-data-preview-json")).toBeTruthy(),
     )
     // The frame's OWN port was selected, and the source node was previewed.
-    expect(mockPreviewNode.mock.calls[0][0].nodeId).toBe("api")
-    expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("drivers")
+    expect(mockPreviewNode.mock.calls[0][0].target).toEqual(nodeTarget("api", { portLabel: "drivers" }))
   })
 
   it("the first frame of a multi-frame source passes its port_label", async () => {
     mockPreviewNode.mockResolvedValue({
-      node_id: "api",
       status: "ok",
       preview: [{ policy_id: 1 }],
       preview_row_count: 1,
@@ -1440,6 +1458,6 @@ describe("OutputEditor - per-frame input-data preview", () => {
     await waitFor(() =>
       expect(screen.getByTestId("output-frame-0-data-preview-json")).toBeTruthy(),
     )
-    expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("policies")
+    expect(mockPreviewNode.mock.calls[0][0].target).toEqual(nodeTarget("api", { portLabel: "policies" }))
   })
 })

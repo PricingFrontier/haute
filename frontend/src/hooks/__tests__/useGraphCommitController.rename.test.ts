@@ -1,10 +1,22 @@
 import { act, cleanup, renderHook } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import useGraphCommitController from "../useGraphCommitController"
+import useGraphStore, { resetGraphStoreForTests } from "../../stores/useGraphStore"
 import { EditorNameCollisionError } from "../../utils/editorIdentities"
 import { makeNode } from "../../test-utils/factories"
+
+/** The document the controller reads, as the graph store holds it. */
+function loadDocument(nodes: Node[], edges: Edge[] = [], submodels: Record<string, unknown> = {}) {
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels })
+}
+
+/** A commit as App's: it lands in the graph store, which the controller then reads back. */
+function storeCommit() {
+  return vi.fn().mockImplementation((nodes: Node[], edges: Edge[], submodels: Record<string, unknown>) =>
+    useGraphStore.getState().setNodesAndEdgesAndSubmodels(nodes, edges, submodels))
+}
 
 function createController(
   nodes: Node[],
@@ -12,16 +24,13 @@ function createController(
   submodels: Record<string, unknown>,
   resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>,
 ) {
-  const commitGraph = vi.fn()
+  const commitGraph = storeCommit()
   const setSelectedNode = vi.fn()
   const addToast = vi.fn()
-  const graphRef = { current: { nodes, edges } }
-  const submodelsRef = { current: submodels }
+  loadDocument(nodes, edges, submodels)
 
   const hook = renderHook(() =>
     useGraphCommitController({
-      graphRef,
-      submodelsRef,
       readDocumentIdentity: () => "doc-1",
       readOnly: false,
       reservedApiInputFrameLabels: new Set<string>(),
@@ -36,16 +45,18 @@ function createController(
 
   return {
     hook,
-    graphRef,
     commitGraph,
   }
 }
 
 describe("useGraphCommitController submodel occurrence rename", () => {
+  beforeEach(() => resetGraphStoreForTests())
+
   it.each(["document", "readOnly"] as const)("cancels a pending rename after a %s change", async (change) => {
     const original = makeNode("source", "polars", { data: { label: "source", nodeType: "polars", config: { code: "df = source_data" } } })
-    const graphRef = { current: { nodes: [original], edges: [] as Edge[] } }
-    const commitGraph = vi.fn()
+    loadDocument([original])
+    const nodesBefore = useGraphStore.getState().nodes
+    const commitGraph = storeCommit()
     let finish!: (nodes: Node[]) => void
     let candidates: Node[] = []
     const resolveNodeIdentities = vi.fn((nodes: readonly Node[]) => {
@@ -54,7 +65,6 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     })
     const context = { document: "a.py:1", readOnly: false }
     const hook = renderHook(() => useGraphCommitController({
-      graphRef, submodelsRef: { current: {} },
       readDocumentIdentity: () => context.document, readOnly: context.readOnly,
       reservedApiInputFrameLabels: new Set(), resolveNodeIdentities, resolveRenameIdentities: resolveNodeIdentities, readNamingContextKey: () => "naming context",
       commitGraph, setSelectedNode: vi.fn(), addToast: vi.fn(),
@@ -72,7 +82,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
       await pending
     })
     expect(commitGraph).not.toHaveBeenCalled()
-    expect(graphRef.current.nodes[0]).toBe(original)
+    expect(useGraphStore.getState().nodes).toBe(nodesBefore)
     expect(resolveNodeIdentities).toHaveBeenCalledOnce()
   })
 
@@ -80,8 +90,8 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     "a refused rename superseded by a %s is not retried",
     async (change) => {
       const original = makeNode("source", "polars", { data: { label: "source", nodeType: "polars" } })
-      const graphRef = { current: { nodes: [original], edges: [] as Edge[] } }
-      const commitGraph = vi.fn()
+      loadDocument([original])
+      const commitGraph = storeCommit()
       const context = { document: "a.py:1", naming: "taken" }
       let refuse!: () => void
       const resolveRenameIdentities = vi.fn((nodes: readonly Node[]) => {
@@ -93,7 +103,6 @@ describe("useGraphCommitController submodel occurrence rename", () => {
         return Promise.resolve(nodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } })))
       })
       const hook = renderHook(() => useGraphCommitController({
-        graphRef, submodelsRef: { current: {} },
         readDocumentIdentity: () => context.document, readOnly: false,
         reservedApiInputFrameLabels: new Set(),
         resolveNodeIdentities: resolveRenameIdentities,
@@ -267,17 +276,15 @@ describe("useGraphCommitController submodel occurrence rename", () => {
   it("judges a rename again when another name changed while the server judged it", async () => {
     const first = makeNode("first", "polars", { data: { label: "first", nodeType: "polars" } })
     const second = makeNode("second", "polars", { data: { label: "second", nodeType: "polars" } })
-    const graphRef = { current: { nodes: [first, second], edges: [] as Edge[] } }
+    loadDocument([first, second])
     let namingKey = "before"
     const resolveRenameIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
       // The other node is renamed while the first verdict is on its way.
       if (resolveRenameIdentities.mock.calls.length === 1) namingKey = "after"
       return candidateNodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } }))
     })
-    const commitGraph = vi.fn()
+    const commitGraph = storeCommit()
     const { result } = renderHook(() => useGraphCommitController({
-      graphRef,
-      submodelsRef: { current: {} },
       readDocumentIdentity: () => "doc-1",
       readOnly: false,
       reservedApiInputFrameLabels: new Set<string>(),
@@ -299,7 +306,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
 
   it("judges a refused rename again when the other node gave up the name meanwhile", async () => {
     const first = makeNode("first", "polars", { data: { label: "first", nodeType: "polars" } })
-    const graphRef = { current: { nodes: [first], edges: [] as Edge[] } }
+    loadDocument([first])
     let namingKey = "taken"
     const resolveRenameIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
       if (resolveRenameIdentities.mock.calls.length === 1) {
@@ -308,10 +315,8 @@ describe("useGraphCommitController submodel occurrence rename", () => {
       }
       return candidateNodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } }))
     })
-    const commitGraph = vi.fn()
+    const commitGraph = storeCommit()
     const { result } = renderHook(() => useGraphCommitController({
-      graphRef,
-      submodelsRef: { current: {} },
       readDocumentIdentity: () => "doc-1",
       readOnly: false,
       reservedApiInputFrameLabels: new Set<string>(),
@@ -374,13 +379,12 @@ describe("useGraphCommitController submodel occurrence rename", () => {
       ...n,
       data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },
     })))
-    const { hook, graphRef, commitGraph } = createController([ordinarySource()], [], {}, resolveNodeIdentities)
+    const { hook, commitGraph } = createController([ordinarySource()], [], {}, resolveNodeIdentities)
     // A preview response lands while the request is in flight: only metadata changes.
     resolveNodeIdentities.mockImplementationOnce(async (candidateNodes: readonly Node[]) => {
-      graphRef.current = {
-        nodes: graphRef.current.nodes.map((node) => ({ ...node, data: { ...node.data, _status: "ok" } })),
-        edges: graphRef.current.edges,
-      }
+      useGraphStore.setState({
+        nodes: useGraphStore.getState().nodes.map((node) => ({ ...node, data: { ...node.data, _status: "ok" } })),
+      })
       return candidateNodes.map((n) => ({
         ...n,
         data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },
@@ -405,16 +409,15 @@ describe("useGraphCommitController submodel occurrence rename", () => {
       ...n,
       data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },
     })))
-    const { hook, graphRef, commitGraph } = createController([ordinarySource()], [], {}, resolveNodeIdentities)
+    const { hook, commitGraph } = createController([ordinarySource()], [], {}, resolveNodeIdentities)
     resolveNodeIdentities.mockImplementationOnce(async (candidateNodes: readonly Node[]) => {
-      graphRef.current = {
-        nodes: graphRef.current.nodes.map((node) => (
+      useGraphStore.setState({
+        nodes: useGraphStore.getState().nodes.map((node) => (
           node.id === "src_1"
             ? { ...node, data: { ...node.data, config: { code: "df = pl.DataFrame().head(1)" } } }
             : node
         )),
-        edges: graphRef.current.edges,
-      }
+      })
       return candidateNodes.map((n) => ({
         ...n,
         data: { ...n.data, _functionName: String(n.data.label), _defaultInputName: String(n.data.label) },

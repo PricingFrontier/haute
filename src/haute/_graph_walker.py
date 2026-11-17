@@ -52,6 +52,7 @@ from haute._execute_lazy import (
     _declared_api_input_frame_schema_items,
     _edge_join_recipe,
     _extract_error_line,
+    _failure_message,
     _is_plain_model_score,
     _located_step,
     _pick_source_frame,
@@ -69,11 +70,13 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
+    naming_nodes_from,
 )
 from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
+from haute._node_addresses import node_display_name
 from haute._node_specs import node_spec, node_type_table
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_selectors import preamble_selector_aliases
@@ -519,20 +522,25 @@ class _Walk:
     # ------------------------------------------------------------------ run
 
     def run(self) -> WalkResult:
-        if self.measuring:
-            from haute._mlflow_io import disk_cache_only_model_loads
+        # What the walk raises names its nodes from the graph it walks.
+        with naming_nodes_from(self.request.graph):
+            if self.measuring:
+                from haute._mlflow_io import disk_cache_only_model_loads
 
-            # A measuring walk loads a model only from the disk model cache:
-            # a model it does not find there is the node's failure, never a
-            # registry call or a download.
-            with disk_cache_only_model_loads():
-                self.prepare()
-                return self.walk()
-        self.prepare()
-        return self.walk()
+                # A measuring walk loads a model only from the disk model cache:
+                # a model it does not find there is the node's failure, never a
+                # registry call or a download.
+                with disk_cache_only_model_loads():
+                    self.prepare()
+                    return self.walk()
+            self.prepare()
+            return self.walk()
 
     def prepare(self) -> None:
         """Everything a walk does once: check, prepare, seed, plan, and build."""
+        if self.context is not None:
+            # The metrics address the nodes they name from the graph walked.
+            self.context.provenance.record_node_addresses(self.request.graph)
         self._check_plan()
         if self.policy.purpose is WalkPurpose.SINK:
             if self.context is not None:
@@ -586,9 +594,13 @@ class _Walk:
         if self.steps_total:
             self.step_reporter(StepProgress(done=0, total=self.steps_total, label=""))
 
+    def _name(self, node_id: str) -> str:
+        """How a message names *node_id*: its label, a submodel child's with its
+        occurrence's (``haute._node_addresses.node_display_name``)."""
+        return node_display_name(self.request.graph, node_id)
+
     def _step_label(self, kind: str, node_id: str) -> str:
-        node = self.node_map.get(node_id)
-        name = (node.data.label if node is not None else "") or node_id
+        name = self._name(node_id) or node_id
         return f"{'Caching' if kind == 'capture' else 'Computing'} {name}"
 
     def _step_started(self, kind: str, node_id: str) -> None:
@@ -1273,7 +1285,7 @@ class _Walk:
         self._check_parents(boundary)
         inputs = [self._input_frame(edge) for edge in boundary.incoming_edges]
         if not inputs:
-            raise ValueError(f"No input data available for node '{node_id}'")
+            raise ValueError(f"No input data available for node '{self._name(node_id)}'")
         runtime_demands = self._runtime_demands(boundary, inputs)
         projected: list[_Frame] = []
         known: list[frozenset[str] | None] = []
@@ -1367,6 +1379,7 @@ class _Walk:
             headroom_bytes=diagnostic.headroom_bytes,
             assumptions=diagnostic.assumptions,
             boundary_operators=self.projection.boundary_operators,
+            node_name=self._name,
             **_conservative_strategy_passthrough(diagnostic),
         )
         self.context.projection_plan = self.strategy
@@ -1502,7 +1515,7 @@ class _Walk:
             # snapshot records so a seeded preview can still report them.
             self.unshaped_frames[node_id] = frame
         config = boundary.node.data.config
-        selected = _apply_selected_columns(frame, config, node_label=boundary.node.data.label)
+        selected = _apply_selected_columns(frame, config, node_label=self._name(node_id))
         shaped = _lazy(_apply_column_renames(_lazy(selected), config))
         names = self._describe(node_id, boundary.node, frame, shaped) if self.display else None
         self._check_output(boundary, shaped, names, created=frame if shapes else None)
@@ -1518,7 +1531,7 @@ class _Walk:
         if isinstance(result, pl.LazyFrame | dict) or sink:
             return result
         raise TypeError(
-            f"Node '{node_id}' returned {type(result).__name__}; expected a Polars frame."
+            f"'{self._name(node_id)}' returned {type(result).__name__}; expected a Polars frame."
         )
 
     def _check_output(
@@ -1548,7 +1561,7 @@ class _Walk:
             columns = frozenset(names)
         else:
             columns = _columns_of(shaped)
-            refuse_wide_integers(_lazy(shaped).collect_schema(), node=boundary.node.data.label)
+            refuse_wide_integers(_lazy(shaped).collect_schema(), node=self._name(boundary.node_id))
             self.column_cache[(boundary.node_id, None)] = columns
             if self.context is not None:
                 self.context.record_column_widths(
@@ -1597,14 +1610,14 @@ class _Walk:
             return
         if not self._recipe_link_proved(edge, selected, parent_recipe):
             return
-        node = self.node_map[node_id]
-        config = node.data.config
+        config = self.node_map[node_id].data.config
+        name = self._name(node_id)
 
         def project(lf: pl.LazyFrame) -> pl.LazyFrame:
             return _lazy(self._project_edge(edge, lf)[0])
 
         def column_step(lf: pl.LazyFrame) -> pl.LazyFrame:
-            selected = _apply_selected_columns(lf, config, node_label=node.data.label)
+            selected = _apply_selected_columns(lf, config, node_label=name)
             return _lazy(_apply_column_renames(selected, config))
 
         self.write_recipes[node_id] = parent_recipe.then(project).then(column_step)
@@ -1712,7 +1725,7 @@ class _Walk:
                 available = list(recorded)
         output = self._full_model_score_schema(node_id, node, _schema_items(shaped))
         # The schema is resolved: a 128-bit integer is refused at the node that makes it.
-        refuse_wide_integers(shaped.collect_schema(), node=node.data.label)
+        refuse_wide_integers(shaped.collect_schema(), node=self._name(node_id))
         if _is_plain_model_score(node):
             available = output
         self.available_columns[node_id] = available
@@ -1847,7 +1860,7 @@ class _Walk:
             # contract: every declared port is reported without opening it.
             for label, items in declared.items():
                 self.frame_columns[(node_id, label)] = items
-        plans = _bundle_plans(node_id, bundle)
+        plans = _bundle_plans(self._name(node_id), bundle)
         if self.policy.collects(node_id):
             self._collect_bundle(node_id, bundle, plans, multi=multi, declared=declared)
         else:
@@ -1968,7 +1981,8 @@ class _Walk:
         self.failed.add(node_id)
         self.frames.pop(node_id, None)
         self.collected[node_id] = None
-        self.errors[node_id] = str(exc)
+        message = _failure_message(exc)
+        self.errors[node_id] = message
         error_line = _extract_error_line(exc)
         inputs = self.failed_inputs.pop(node_id, None)
         if error_line is None and inputs is not None:
@@ -1978,15 +1992,19 @@ class _Walk:
                 error_line = located.line
                 if located.remedy is not None:
                     # What to change comes first: the card's badge shows the first line.
-                    self.errors[node_id] = f"{located.remedy}\n{exc}"
+                    self.errors[node_id] = f"{located.remedy}\n{message}"
         if error_line is not None:
             self.error_lines[node_id] = error_line
 
     def _record_upstream_failure(self, node_id: str, failed: Sequence[str]) -> None:
         self.failed.add(node_id)
         self.collected[node_id] = None
+        # The failed nodes by their labels, a submodel child's with its occurrence's.
+        named = {parent: node_display_name(self.request.graph, parent) for parent in failed}
         self.errors[node_id] = "Upstream node(s) failed: " + "; ".join(
-            f"{parent}: {self.errors[parent]}" if parent in self.errors else f"{parent}: failed"
+            f"{named[parent]}: {self.errors[parent]}"
+            if parent in self.errors
+            else f"{named[parent]}: failed"
             for parent in failed
         )
         for parent in failed:
@@ -2054,7 +2072,7 @@ class _Walk:
         if joint is not None:
             progress.joint = self._collect_row(node_id, _resolved(joint))
         built = self._shape_output(boundary, self.boundaries.invoke(boundary, inputs))
-        for port, frame in _output_ports(node_id, built.frame):
+        for port, frame in _output_ports(self._name(node_id), built.frame):
             output_query = queries.output_query(node, port, frame.head(self._row_bound()), measured)
             if output_query is not None:
                 progress.outputs.append((port, self._collect_row(node_id, _resolved(output_query))))
@@ -2104,7 +2122,9 @@ class _Walk:
     def _keep(self, node_id: str, built: _NodeFrame) -> None:
         """Keep the node's uncut plan for the nodes that read it."""
         frame = built.frame
-        self.frames[node_id] = _bundle_plans(node_id, frame) if isinstance(frame, dict) else frame
+        self.frames[node_id] = (
+            _bundle_plans(self._name(node_id), frame) if isinstance(frame, dict) else frame
+        )
 
     def _queries(self) -> MeasurementQueries:
         queries = self.policy.queries
@@ -2277,10 +2297,11 @@ def _by_producer(item: MeasuredInput, action: Callable[[], Any]) -> Any:
         raise _AttributedError(AttributedFailure(item.producer, exc, at_or_upstream=True)) from exc
 
 
-def _output_ports(node_id: str, frame: Any) -> list[tuple[str | None, pl.LazyFrame]]:
-    """A node's output ports: a bundle's frames by label, or its one frame as ``None``."""
+def _output_ports(name: str, frame: Any) -> list[tuple[str | None, pl.LazyFrame]]:
+    """A node's output ports: a bundle's frames by label, or its one frame as ``None``.
+    *name* names the node in a refusal."""
     if isinstance(frame, dict):
-        return list(_bundle_plans(node_id, frame).items())
+        return list(_bundle_plans(name, frame).items())
     return [(None, _lazy(frame))]
 
 
@@ -2304,12 +2325,13 @@ def _plan_of(frame: Any) -> Any:
     return _lazy(frame)
 
 
-def _bundle_plans(node_id: str, bundle: Mapping[str, Any]) -> dict[str, pl.LazyFrame]:
+def _bundle_plans(name: str, bundle: Mapping[str, Any]) -> dict[str, pl.LazyFrame]:
+    """A bundle's frames as plans; a frame that is none is refused naming the node by *name*."""
     plans: dict[str, pl.LazyFrame] = {}
     for label, port_frame in bundle.items():
         if not isinstance(port_frame, pl.LazyFrame | pl.DataFrame):
             raise TypeError(
-                f"Node '{node_id}' multi-frame output for frame {label!r} is not a Polars "
+                f"'{name}' multi-frame output for frame {label!r} is not a Polars "
                 f"frame (got {type(port_frame).__name__})."
             )
         plans[label] = _lazy(port_frame)

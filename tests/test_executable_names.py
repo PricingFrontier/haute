@@ -26,6 +26,7 @@ from haute.errors import ExecutionError, ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 from tests._git_helpers import init_repo
+from tests._preview_targets import node_target
 
 # ---------------------------------------------------------------------------
 # Graph builders
@@ -301,16 +302,22 @@ def test_save_refuses_a_violation_naming_the_node(
     assert message in str(excinfo.value.detail)
 
 
+#: The pipeline node ``n0`` by address, as the node-data family names its target.
+_N0 = {"occurrence": None, "node_id": "n0"}
+
+
 @pytest.mark.parametrize(
     ("route", "fields"),
     [
-        pytest.param("/api/pipeline/trace", {"seed_plan": []}, id="trace"),
-        pytest.param("/api/pipeline/write-output", {"node_id": "n0"}, id="write-output"),
-        pytest.param("/api/pipeline/output-destination", {"node_id": "n0"}, id="destination"),
-        pytest.param("/api/output-assemble/dry-run", {"node_id": "n0"}, id="output-dry-run"),
-        pytest.param("/api/node-data/point", {"node_id": "n0"}, id="node-data"),
-        pytest.param("/api/banding/stats", {"node_id": "n0", "factor": {}}, id="banding"),
-        pytest.param("/api/rating/levels", {"node_id": "n0", "columns": ["x"]}, id="rating"),
+        pytest.param(
+            "/api/pipeline/trace", {"seed_plan": [], "target": node_target("n0")}, id="trace"
+        ),
+        pytest.param("/api/pipeline/write-output", {"target": _N0}, id="write-output"),
+        pytest.param("/api/pipeline/output-destination", {"target": _N0}, id="destination"),
+        pytest.param("/api/output-assemble/dry-run", {"target": _N0}, id="output-dry-run"),
+        pytest.param("/api/node-data/point", {"target": _N0}, id="node-data"),
+        pytest.param("/api/banding/stats", {"target": _N0, "factor": {}}, id="banding"),
+        pytest.param("/api/rating/levels", {"target": _N0, "columns": ["x"]}, id="rating"),
     ],
 )
 def test_every_route_taking_a_graph_answers_a_collision_with_400(
@@ -329,7 +336,8 @@ def test_a_preview_shows_a_collision_on_its_node(client: Any) -> None:
     graph = _labels("Rates", "rates")
 
     response = client.post(
-        "/api/pipeline/preview", json={"graph": graph.model_dump(mode="json"), "node_id": "n0"}
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json"), "target": node_target("n0")},
     )
 
     assert response.status_code == 200, response.text

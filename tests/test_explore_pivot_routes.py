@@ -73,6 +73,10 @@ def _clean_pivot_state(haute_scratch: Path):
     _pivot_service._members_cache.clear()
 
 
+#: The Explore node by address, as a request names the node it reads.
+_EXPLORE_TARGET = {"occurrence": None, "node_id": "explore"}
+
+
 def _graph(path: Path) -> dict[str, Any]:
     return make_graph(
         {
@@ -206,7 +210,7 @@ def _materialise(
     client: TestClient, graph: dict[str, Any], *, source: str = "live", refresh: bool = False
 ) -> dict[str, Any]:
     """Cache the data the Explore node reads, and return its point."""
-    body = {"graph": graph, "node_id": "explore", "source": source, "refresh": refresh}
+    body = {"graph": graph, "target": _EXPLORE_TARGET, "source": source, "refresh": refresh}
     response = client.post("/api/node-data/run", json=body)
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -221,7 +225,7 @@ def _materialise(
 def _point(client: TestClient, graph: dict[str, Any], *, source: str = "live") -> dict[str, Any]:
     response = client.post(
         "/api/node-data/point",
-        json={"graph": graph, "node_id": "explore", "source": source},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": source},
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -254,7 +258,7 @@ def _run_pivot(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     response = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": source, "pivot": pivot},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": source, "pivot": pivot},
     )
     assert response.status_code == 200, response.text
     started = response.json()
@@ -325,7 +329,7 @@ def test_pivot_run_requires_exact_materialised_explore_cache(
         "/api/explore/pivots/run",
         json={
             "graph": _graph_with_transform(path),
-            "node_id": "explore",
+            "target": _EXPLORE_TARGET,
             "source": "live",
             "pivot": _pivot(),
         },
@@ -444,14 +448,14 @@ def test_a_clear_during_a_calculation_cannot_remove_the_data_underneath_it(
 
     started = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": _pivot()},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "pivot": _pivot()},
     ).json()
     assert started["status"] == "started", started
     assert leased.wait(10.0)
 
     clear = client.post(
         "/api/node-data/clear",
-        json={"graph": graph, "node_id": "explore", "source": "live"},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live"},
     )
     assert clear.status_code == 200, clear.text
     assert clear.json()["status"] == "cleared"
@@ -547,7 +551,7 @@ def test_members_read_from_a_file_rewritten_underneath_them_are_not_answered(
         patched.setattr(_pivot_service, "_member_options", read_then_rewrite)
         response = client.post(
             "/api/explore/pivots/members",
-            json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+            json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "region"},
         )
 
     assert response.status_code == 200, response.text
@@ -555,7 +559,7 @@ def test_members_read_from_a_file_rewritten_underneath_them_are_not_answered(
     assert response.json()["status"] == "cache_required"
     answered = client.post(
         "/api/explore/pivots/members",
-        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "region"},
     ).json()
     assert answered["status"] == "ok"
     assert [option["label"] for option in answered["members"]] == ["East"]
@@ -1240,7 +1244,7 @@ def test_pivot_member_search_matches_the_column_lowercase_transform(
         "/api/explore/pivots/members",
         json={
             "graph": graph,
-            "node_id": "explore",
+            "target": _EXPLORE_TARGET,
             "source": "live",
             "field": "region",
             "search": "Straße",
@@ -1698,7 +1702,7 @@ def test_pivot_job_can_be_cancelled_without_publishing_a_result(
     monkeypatch.setattr(_pivot_service, "_calculate", blocking_calculation)
     started = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": _pivot()},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "pivot": _pivot()},
     ).json()
     assert started["status"] == "started"
     assert calculation_started.wait(3)
@@ -1747,7 +1751,7 @@ def test_newer_pivot_job_supersedes_only_the_same_card_family(
 
     first = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": _pivot()},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "pivot": _pivot()},
     ).json()
     assert first["status"] == "started"
     assert first_started.wait(3)
@@ -1761,7 +1765,7 @@ def test_newer_pivot_job_supersedes_only_the_same_card_family(
         "/api/explore/pivots/run",
         json={
             "graph": graph,
-            "node_id": "explore",
+            "target": _EXPLORE_TARGET,
             "source": "live",
             "pivot": _pivot(id="pivot_2", name="Sibling pivot"),
         },
@@ -1789,7 +1793,7 @@ def test_newer_pivot_job_supersedes_only_the_same_card_family(
     )
     second = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": updated},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "pivot": updated},
     ).json()
     assert second["status"] == "started"
     second_final = _poll(client, "/api/explore/pivots/status", second["job_id"])
@@ -1825,7 +1829,7 @@ def test_explore_and_pivot_endpoints_reject_each_others_job_ids(
     # must not accept it.
     node_data_run = client.post(
         "/api/node-data/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "refresh": True},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "refresh": True},
     ).json()
     assert node_data_run["status"] == "started"
     node_data_job_id = node_data_run["job_id"]
@@ -1854,7 +1858,7 @@ def test_explore_and_pivot_endpoints_reject_each_others_job_ids(
     monkeypatch.setattr(_pivot_service, "_calculate", first_call_blocks)
     pivot_run = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": _pivot()},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "pivot": _pivot()},
     ).json()
     assert pivot_run["status"] == "started"
     pivot_job_id = pivot_run["job_id"]
@@ -1927,7 +1931,7 @@ def test_pivot_members_are_typed_exact_and_cache_backed(client: TestClient, tmp_
 
     missing = client.post(
         "/api/explore/pivots/members",
-        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "region"},
     )
     assert missing.status_code == 200
     assert missing.json()["status"] == "cache_required"
@@ -1935,7 +1939,7 @@ def test_pivot_members_are_typed_exact_and_cache_backed(client: TestClient, tmp_
     _materialise(client, graph)
     response = client.post(
         "/api/explore/pivots/members",
-        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "region"},
     )
 
     assert response.status_code == 200, response.text
@@ -1984,7 +1988,7 @@ def test_pivot_runtime_members_and_exact_filters_cover_all_persisted_kinds(
     for field, member, expected_sum in cases:
         members = client.post(
             "/api/explore/pivots/members",
-            json={"graph": graph, "node_id": "explore", "source": "live", "field": field},
+            json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": field},
         )
         assert members.status_code == 200, members.text
         payload = members.json()
@@ -2038,7 +2042,7 @@ def test_a_member_of_a_time_zone_aware_datetime_filters_its_rows(
     _materialise(client, graph)
     members = client.post(
         "/api/explore/pivots/members",
-        json={"graph": graph, "node_id": "explore", "source": "live", "field": "moment"},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "moment"},
     ).json()
     summer = {"kind": "datetime", "value": "2024-06-01T12:00:00+01:00"}
     assert summer in [item["key"] for item in members["members"]]
@@ -2121,7 +2125,7 @@ def test_an_invalid_pivot_card_is_refused_naming_the_field(
 
     response = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": pivot},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "pivot": pivot},
     )
 
     assert response.status_code == 400, response.text
@@ -2130,7 +2134,7 @@ def test_an_invalid_pivot_card_is_refused_naming_the_field(
     assert "sort=sideways" in detail
 
 
-def test_a_cached_pivot_shared_by_two_explore_nodes_names_the_node_that_asked(
+def test_a_cached_pivot_is_shared_by_two_explore_nodes_reading_one_point(
     client: TestClient, tmp_path: Path
 ) -> None:
     path = tmp_path / "shared-point.parquet"
@@ -2145,13 +2149,18 @@ def test_a_cached_pivot_shared_by_two_explore_nodes_names_the_node_that_asked(
     first, first_result = _run_pivot(client, graph, _pivot())
     shared = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore_copy", "source": "live", "pivot": _pivot()},
+        json={
+            "graph": graph,
+            "target": {"occurrence": None, "node_id": "explore_copy"},
+            "source": "live",
+            "pivot": _pivot(),
+        },
     ).json()
 
     assert first["status"] == "completed" and first_result is not None
-    assert first_result["node_id"] == "explore"
     assert shared["status"] == "completed" and shared["cached"] is True
-    assert shared["result"]["node_id"] == "explore_copy"
+    # The matrix is keyed by the data point both nodes read, so it names neither.
+    assert "node_id" not in first_result and "node_id" not in shared["result"]
     assert shared["result"]["cells"] == first_result["cells"]
 
 
@@ -2311,7 +2320,7 @@ def test_pivot_filter_member_limits_apply_to_calculation_and_members_endpoint(
     assert boundary_result is not None
     endpoint_boundary = client.post(
         "/api/explore/pivots/members",
-        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "region"},
     ).json()
     assert endpoint_boundary["status"] == "ok"
 
@@ -2334,7 +2343,7 @@ def test_pivot_filter_member_limits_apply_to_calculation_and_members_endpoint(
     }
     endpoint_above = client.post(
         "/api/explore/pivots/members",
-        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "region"},
     ).json()
     assert endpoint_above["status"] == "error"
     assert endpoint_above["failure"]["reason_code"] == "pivot_cardinality_limit"

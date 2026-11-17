@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute.schemas import ColumnInfo, NodeResult
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
@@ -87,7 +88,7 @@ def test_preview_response_serializes_non_finite_values_as_sentinels(
     with patch("haute.routes.pipeline.execute_graph", return_value={"target": fake_result}):
         resp = client.post(
             "/api/pipeline/preview",
-            json={"graph": graph, "node_id": "target"},
+            json={"graph": graph, "target": node_target("target")},
         )
 
     assert resp.status_code == 200

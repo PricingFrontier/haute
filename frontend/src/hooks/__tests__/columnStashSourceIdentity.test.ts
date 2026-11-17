@@ -21,10 +21,10 @@
  *   5. refreshPreview treats an upstream stash captured under a different
  *      source as missing and re-previews that upstream node.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, targetNodeId } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -32,7 +32,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -50,7 +50,8 @@ vi.mock("../../api/client", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
-import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNode, makeEdge } from "../../test-utils/factories"
+import type { SubmodelDefinition } from "../../types/node"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 
 const mockLoad = vi.mocked(loadPipeline)
@@ -64,14 +65,10 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
   )
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodesRaw,
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -130,7 +127,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
   it("stamps the stash with the source the preview ran under", async () => {
     vi.useRealTimers()
     mockPreview.mockResolvedValue(makePreviewResponse({
-      node_id: "A",
       status: "ok",
       columns: LIVE_COLUMNS,
       available_columns: LIVE_COLUMNS,
@@ -138,7 +134,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     }))
     const A = makeNode("A")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
     useSettingsStore.setState({ activeSource: "staging" })
 
@@ -158,7 +153,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     vi.useRealTimers()
     const A = makeStashedNode("A", "live")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "live" }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -174,11 +168,61 @@ describe("column-stash source identity (cache-key completeness)", () => {
     expect(nodes[0].data._columnsSource).toBeUndefined()
   })
 
+  it("invalidates per-frame stashes, on screen and on the pipeline's own nodes behind an open submodel, when the active source changes", async () => {
+    vi.useRealTimers()
+    const frames = { policy: LIVE_COLUMNS }
+    const feeder = makeStashedNode("workbench", "live")
+    feeder.data = { ...feeder.data, _frameColumns: frames }
+    const occurrence = makeNode("pricing", "submodel", {
+      data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
+    })
+    const definition: SubmodelDefinition = {
+      definitionId: "definition_pricing",
+      file: "modules/pricing.py",
+      graph: { nodes: [makeIdentifiedNode("kept")], edges: [] },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "kept", handleId: null }] }],
+      outputPorts: [{ name: "premium", source: { nodeId: "kept", handleId: null } }],
+    }
+    const params = makeParams()
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => {
+      const store = useGraphStore.getState()
+      store.loadGraphSnapshot({
+        nodes: [feeder, occurrence],
+        edges: [{ id: "feed", source: "workbench", target: "pricing", targetHandle: "in__policy" }],
+        preamble: "",
+        submodels: { definition_pricing: definition },
+      })
+      store.enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+      // A drilled view's Input card holds only per-frame columns.
+      store.setNodesRaw((nodes) => nodes.map((node) => {
+        if (node.type === "submodelPort" && node.data.portDirection === "input") {
+          return { ...node, data: { ...node.data, _frameColumns: frames, _columnsSource: "live" } }
+        }
+        return node.id === "kept" ? { ...node, data: { ...node.data, _frameColumns: frames, _columnsSource: "staging" } } : node
+      }))
+    })
+    const rootBefore = useGraphStore.getState().focus!.rootNodes
+
+    act(() => { useSettingsStore.getState().setActiveSource("staging") })
+
+    const { nodes, focus } = useGraphStore.getState()
+    const card = nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === "input")!
+    expect(card.data._frameColumns).toBeUndefined()
+    expect(card.data._columnsSource).toBeUndefined()
+    expect(nodes.find((node) => node.id === "kept")!.data._frameColumns).toEqual(frames)
+    const [rootFeeder, rootOccurrence] = focus!.rootNodes
+    expect(rootFeeder.data._frameColumns).toBeUndefined()
+    expect(rootFeeder.data._columns).toBeUndefined()
+    expect(rootOccurrence).toBe(rootBefore[1])
+  })
+
   it("keeps a stash captured under the current source (no gratuitous invalidation)", async () => {
     vi.useRealTimers()
     const A = makeStashedNode("A", "staging")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
     useSettingsStore.setState({ activeSource: "staging" })
 
@@ -197,7 +241,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     vi.useRealTimers()
     const A = makeStashedNode("A") // no _columnsSource - unknown provenance
     const params = makeParams()
-    params.graphRef.current = { nodes: [A], edges: [] }
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -213,7 +256,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
   it("refreshPreview re-previews an upstream node whose stash was captured under another source", async () => {
     vi.useRealTimers()
     mockPreview.mockResolvedValue(makePreviewResponse({
-      node_id: "A",
       status: "ok",
       columns: LIVE_COLUMNS,
       available_columns: LIVE_COLUMNS,
@@ -224,7 +266,6 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A", "live")
     const B = makeNode("B")
     const params = makeParams()
-    params.graphRef.current = { nodes: [A, B], edges: [makeEdge("A", "B")] }
     useSettingsStore.setState({ activeSource: "staging" })
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [A, B], edges: [makeEdge("A", "B")], preserved_blocks: [], source_revision: "revision-test", sources: ["live", "staging"], active_source: "staging" }))
 
@@ -235,7 +276,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     await flushAsyncWork()
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
 
-    const previewedNodeIds = mockPreview.mock.calls.map((c) => c[0].nodeId)
+    const previewedNodeIds = mockPreview.mock.calls.map((c) => targetNodeId(c[0].target))
     expect(previewedNodeIds).toContain("A")
     expect(previewedNodeIds).toContain("B")
   })

@@ -112,6 +112,12 @@ export function usedBy(shown: number, tested: number, used: number): string {
   return parts.length > 2 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts.join(" and ")
 }
 
+/** What removing a column, or a table's columns (`what`), leaves in the `kept` Exports to a workbook of cells writing it: it, named as a problem. */
+export function keptBy(kept: number, what: "it" | "its columns"): string {
+  const writes = kept === 1 ? "An Export of cells writes" : `${kept} Exports of cells write`
+  return `${writes} ${what} and ${kept === 1 ? "keeps" : "keep"} ${what === "it" ? "it" : "them"} as a problem until changed.`
+}
+
 /** The column's name or its label holds the search's text, whatever its case. */
 export function columnMatches(column: SchemaColumn, text: string): boolean {
   const needle = text.toLowerCase()

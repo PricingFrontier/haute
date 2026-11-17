@@ -222,7 +222,6 @@ _RATING_TABLE_KEYS = (
     "factors",
     "factor_dtypes",
     "output_column",
-    "on_missing",
     "default_value",
     "columns",
     "rows",

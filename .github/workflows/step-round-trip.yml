@@ -1,0 +1,106 @@
+name: Step Round Trip
+
+# Weekly check that a step made in the step editor survives being saved as code
+# and read back (scripts/run_step_round_trip.py): every single edit each step
+# form offers, from every step of the step shapes fixture, is rendered, read
+# back and handed to the editor again, and random backend read-backs are
+# handed to the editor too. The step shapes fixture pins the vocabulary's
+# shapes on every pull request; this lane takes about twenty minutes, so it is
+# deliberately NOT a required per-PR check.
+#
+# Loud: a failure finds-or-creates a `step-round-trip-watch` issue with the run
+# URL. The report in the job summary names each finding with an example and
+# the Hypothesis seed, so a red week reproduces from the log alone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      examples:
+        description: "Random step lists to draw. Blank = 3000."
+        type: string
+        default: ""
+      force_fail:
+        description: "Fail deliberately to prove the alarm path rings"
+        type: boolean
+        default: false
+  schedule:
+    # 04:11 UTC Mondays - offset from the other Monday lanes
+    # (performance 03:17, property exploration 03:41, dependencies 04:41, mutation 05:00).
+    - cron: "11 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  step-round-trip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # uv is pinned exactly, like the rest of the development tooling; this
+      # value is repeated in every workflow and must move together (grep
+      # `setup-uv` across .github/workflows/).
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.14.0
+
+      - run: uv sync --group dev --locked
+
+      - run: npm ci
+        working-directory: frontend
+
+      - name: Forced failure (alarm-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail input set - failing deliberately to exercise the alarm step"
+          exit 1
+
+      - name: Save, read back and reopen every step the editor makes
+        env:
+          EXAMPLES: ${{ inputs.examples || '3000' }}
+        run: uv run python scripts/run_step_round_trip.py --examples "${EXAMPLES}" --work-dir "${RUNNER_TEMP}/step-round-trip"
+
+      - name: Keep the lane's files
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: step-round-trip
+          path: ${{ runner.temp }}/step-round-trip
+          if-no-files-found: ignore
+
+      # A green week never closes this issue: one passing week does not prove the
+      # shape gone. The fix adds it to the step shapes fixture or the forms tests,
+      # and its author closes the issue.
+      - name: Raise the alarm (find-or-create step-round-trip-watch issue)
+        if: failure() && (github.event_name == 'schedule' || inputs.force_fail)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly step round-trip lane is red"
+          body="A step made in the step editor did not survive being saved and read back, or the editor refused a step the backend reads back. Run: ${RUN_URL}
+
+          The job summary lists each finding with an example and the Hypothesis seed. Reproduce locally (from the repository root):
+              uv run python scripts/run_step_round_trip.py --seed <seed from the summary> --work-dir <empty directory>"
+          gh label create step-round-trip-watch --color FBCA04 --force \
+            --description "Automated: weekly step round-trip lane failures"
+          existing="$(gh issue list --state open --label step-round-trip-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label step-round-trip-watch --body "${body}"
+          fi

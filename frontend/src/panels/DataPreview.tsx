@@ -13,12 +13,16 @@ import type {
   PreviewProgressResponse,
   PreviewSeedPlanEntry,
 } from "../api/types"
+import type { FrameTarget } from "../utils/nodeAddress"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import { PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
 
 export interface PreviewData {
   nodeId: string
-  /** Separate result identity for an occurrence's public output. */
+  /**
+   * The key the preview is stored under when it is not `nodeId`: an occurrence's
+   * public output's own, or a child's result key inside an open submodel.
+   */
   cacheKey?: string
   /** Stable public output handle for the occurrence rows shown, even after a rename. */
   outputHandle?: string
@@ -52,6 +56,8 @@ export interface PreviewData {
   selected_frame?: string
   /** The shared-snapshot generations these rows were computed from. */
   seed_plan?: PreviewSeedPlanEntry[]
+  /** The frame these rows were read from, by address: a trace of one of them names it. */
+  target?: FrameTarget
 }
 
 interface DataPreviewProps {

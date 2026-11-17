@@ -17,7 +17,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { createElement, type ReactNode } from "react"
 import { renderHook, cleanup } from "@testing-library/react"
-import { GraphContext, useGraph, type GraphContextValue } from "../useGraph"
+import { GraphContext, useGraph, useRequestScope, type GraphContextValue } from "../useGraph"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 afterEach(cleanup)
 
@@ -43,6 +44,7 @@ describe("useGraph() - inside a provider", () => {
       edges: [],
       submodels: { sm1: { kind: "scorecard" } },
       preamble: "import numpy as np",
+      requestScope: documentRequestScope,
     }
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(GraphContext.Provider, { value }, children)
@@ -55,7 +57,7 @@ describe("useGraph() - inside a provider", () => {
   })
 
   it("does not throw for a provider holding an empty graph (distinct from no provider)", () => {
-    const value: GraphContextValue = { allNodes: [], edges: [] }
+    const value: GraphContextValue = { allNodes: [], edges: [], requestScope: documentRequestScope }
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(GraphContext.Provider, { value }, children)
 
@@ -65,6 +67,22 @@ describe("useGraph() - inside a provider", () => {
     // Optional fields are absent, not errors.
     expect(result.current.submodels).toBeUndefined()
     expect(result.current.preamble).toBeUndefined()
+  })
+})
+
+describe("useRequestScope", () => {
+  const providing = (requestScope: GraphContextValue["requestScope"]) =>
+    ({ children }: { children: ReactNode }) =>
+      createElement(GraphContext.Provider, { value: { allNodes: [], edges: [], requestScope } }, children)
+
+  it("is the nearest provider's scope, and none where it shows a saved version", () => {
+    expect(renderHook(() => useRequestScope(), { wrapper: providing(documentRequestScope) }).result.current)
+      .toBe(documentRequestScope)
+    expect(renderHook(() => useRequestScope(), { wrapper: providing(null) }).result.current).toBeNull()
+  })
+
+  it("is the open pipeline outside any provider, the one document there is to run", () => {
+    expect(renderHook(() => useRequestScope()).result.current).toBe(documentRequestScope)
   })
 })
 

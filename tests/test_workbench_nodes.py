@@ -20,6 +20,7 @@ from haute.deploy._config import DeployConfig, resolve_config
 from haute.deploy._utils import shipped_graph
 from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project, work_elsewhere
 from tests._workbench_helpers import tables_form, workbench_project
 from tests.test_workbench_output import FORM_SAMPLE, FORM_TABLES, _priced, _write
@@ -59,8 +60,7 @@ def _preview_policy(client: TestClient, **body: Any) -> Any:
         "/api/pipeline/preview",
         json={
             "graph": _editor_graph().model_dump(mode="json"),
-            "node_id": "workbench_input",
-            "port_label": "policy_input",
+            "target": node_target("workbench_input", port_label="policy_input"),
             **body,
         },
     )
@@ -97,6 +97,75 @@ def test_the_form_a_pricing_posts_is_run_in_place_of_the_folders(project: Path) 
     assert {
         path.name: path.read_bytes() for path in (project / "workbench").rglob("*.json")
     } == folder
+
+
+def test_the_sample_the_view_holds_runs_over_the_saved_form(project: Path) -> None:
+    app = project_app()
+
+    folder = {path.name: path.read_bytes() for path in (project / "workbench").rglob("*.json")}
+
+    previewed = _preview_policy(
+        TestClient(app),
+        workbench_sample={
+            # A column and a table the saved schema does not have, as a rename the view has not
+            # saved leaves them, read as nothing typed.
+            "policy": [{"state": "TX", "limit": "7", "county": "Kings"}],
+            "renamed": [{"state": "CA"}],
+        },
+    )
+
+    assert previewed["preview"] == [{**_POLICY, "state": "TX", "limit": 7}]
+    # Nothing is written.
+    assert {
+        path.name: path.read_bytes() for path in (project / "workbench").rglob("*.json")
+    } == folder
+
+
+def test_a_sample_under_names_the_saved_schema_lacks_is_nothing_typed(project: Path) -> None:
+    previewed = _preview_policy(
+        TestClient(project_app()), workbench_sample={"renamed": [{"state": "CA"}]}
+    )
+
+    # A sample with nothing typed: one row of nulls, as a blank quote's is.
+    assert previewed["preview"] == [{**_POLICY, "state": None, "limit": None}]
+
+
+def test_a_preview_takes_a_form_or_a_sample_not_both(project: Path) -> None:
+    answer = TestClient(project_app()).post(
+        "/api/pipeline/preview",
+        json={
+            "graph": _editor_graph().model_dump(mode="json"),
+            "target": node_target("workbench_input", port_label="policy_input"),
+            "workbench_form": tables_form(FORM_TABLES, FORM_SAMPLE).model_dump(
+                mode="json", by_alias=True
+            ),
+            "workbench_sample": {"policy": [{"state": "TX"}]},
+        },
+    )
+
+    assert answer.status_code == 422
+    assert "workbench_form for a whole form or workbench_sample" in answer.text
+
+
+def test_a_trace_takes_the_sample_the_view_holds(project: Path) -> None:
+    def traced(**body: Any) -> Any:
+        answer = TestClient(project_app()).post(
+            "/api/pipeline/trace",
+            json={
+                "graph": _editor_graph().model_dump(mode="json"),
+                "target": node_target("priced"),
+                "column": "premium",
+                "row_index": 0,
+                "seed_plan": [],
+                **body,
+            },
+        )
+        assert answer.status_code == 200, answer.text
+        return answer.json()["trace"]["output_value"]
+
+    # The saved sample's limit is 1,000; the view's is 70, and the premium is a tenth of it.
+    assert traced() == 100.0
+    assert traced(workbench_sample={"policy": [{"state": "NY", "limit": "70"}]}) == 7.0
 
 
 def test_a_workbench_node_inside_a_submodel_takes_the_form_too(project: Path) -> None:
@@ -170,7 +239,7 @@ def test_a_workbench_node_in_a_project_whose_workbench_is_off_is_refused(
     # A preview reports it at the node, as it reports any configuration it cannot run.
     answer = TestClient(app).post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json"), "node_id": graph.nodes[0].id},
+        json={"graph": graph.model_dump(mode="json"), "target": node_target(graph.nodes[0].id)},
     )
     assert answer.status_code == 200, answer.text
     assert (answer.json()["status"], answer.json()["error"]) == ("error", refused)

@@ -34,6 +34,7 @@ import {
   type SortableValuesColumn,
 } from "../SortableValuesTable"
 import { nextSort, type SortState } from "../valuesSort"
+import { useResultKey } from "../useGraph"
 import RequestFailureNotice from "./RequestFailureNotice"
 import { useLatestRequest, type RequestFailure } from "./useLatestRequest"
 
@@ -150,6 +151,7 @@ function asAnalysisValue(value: unknown, column: string): AnalysisValue {
 }
 
 interface QuotesTabProps {
+  /** The optimiser on the canvas. */
   nodeId: string
   jobId: string
   mode: "online" | "ratebook"
@@ -181,6 +183,8 @@ export default function QuotesTab({ nodeId, jobId, mode, pointIndex }: QuotesTab
 
   const identity: OptimiserApplyIdentity = { jobId, target, query }
   const key = optimiserApplyKey(identity)
+  // The pages are kept with the node's solve, under its result key.
+  const resultKey = useResultKey(nodeId)
   const cached = useNodeResultsStore((s) => s.optimiserApplyCache.find((entry) => entry.key === key))
   const recordApply = useNodeResultsStore((s) => s.recordOptimiserApply)
   const touchApply = useNodeResultsStore((s) => s.touchOptimiserApply)
@@ -191,7 +195,7 @@ export default function QuotesTab({ nodeId, jobId, mode, pointIndex }: QuotesTab
   }, [hasCached, key, touchApply])
   // The store also refuses a reply whose job or target is no longer the node's.
   const request = useLatestRequest(
-    hasCached ? null : { key, identity },
+    hasCached ? null : { key, identity, resultKey },
     (wanted, signal) => applyOptimiser(
       {
         job_id: wanted.identity.jobId,
@@ -200,7 +204,7 @@ export default function QuotesTab({ nodeId, jobId, mode, pointIndex }: QuotesTab
       },
       { signal },
     ),
-    (wanted, response) => recordApply(nodeId, wanted.identity, response),
+    (wanted, response) => recordApply(wanted.resultKey, wanted.identity, response),
   )
 
   const applyPreset = (preset: Preset) => setQuery((current) => ({

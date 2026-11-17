@@ -60,7 +60,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 type TracingParams = Parameters<typeof useTracing>[0]
@@ -70,12 +70,7 @@ function makeParams(overrides: Partial<TracingParams> = {}): TracingParams {
     nodes: [makeNode("n1"), makeNode("n2"), makeNode("n3")] as Node[],
     edges: [makeEdge("n1", "n2"), makeEdge("n2", "n3")] as Edge[],
     selectedNode: null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
-    submodels: {},
-    submodelsRef: { current: {} },
-    preambleRef: { current: "" },
     nodeStatuses: {} as Record<string, NodeStatus>,
     hoveredNodeId: null,
     ...overrides,

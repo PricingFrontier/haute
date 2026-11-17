@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from haute._flatten import flatten_executable_graph
+from haute._node_addresses import resolved_request
 from haute.routes._explore_relationships import ExploreRelationshipsService
 from haute.routes._job_store import get_job_store
 from haute.routes._pivot_service import PivotService
@@ -31,10 +32,10 @@ _explore_relationships_service = ExploreRelationshipsService(_node_data_service)
 @router.post("/pivots/run", response_model=ExplorePivotRunResponse)
 def run_pivot(body: ExplorePivotRunRequest) -> ExplorePivotRunResponse:
     """Calculate one pivot from an already materialised Explore dataframe."""
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    return _pivot_service.start(body.model_copy(update={"graph": graph}))
+    return _pivot_service.start(resolved_request(body, graph))
 
 
 @router.get("/pivots/status/{job_id}", response_model=ExplorePivotStatusResponse)
@@ -52,10 +53,10 @@ async def pivot_members(
     body: ExplorePivotMembersRequest, request: Request
 ) -> ExplorePivotMembersResponse:
     """List one dimension's members; a client that leaves cancels the scan."""
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    prepared = body.model_copy(update={"graph": graph})
+    prepared = resolved_request(body, graph)
     return await run_until_disconnected(
         request, lambda token: _pivot_service.members(prepared, cancellation_token=token)
     )
@@ -66,10 +67,10 @@ async def explore_relationships(
     body: ExploreRelationshipsRequest, request: Request
 ) -> ExploreRelationshipsResponse:
     """Relate features to a target and check a key; a client that leaves cancels the scan."""
-    graph = flatten_executable_graph(body.graph)
+    graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    prepared = body.model_copy(update={"graph": graph})
+    prepared = resolved_request(body, graph)
     return await run_until_disconnected(
         request,
         lambda token: _explore_relationships_service.relationships(

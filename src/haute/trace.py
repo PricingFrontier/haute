@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import functools
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -48,7 +48,12 @@ from haute._cache import GraphFingerprintMemo
 from haute._env import int_env
 from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
-from haute._execution_context import ExecutionCancelledError, ExecutionContext, ExecutionProfile
+from haute._execution_context import (
+    ExecutionCancelledError,
+    ExecutionContext,
+    ExecutionProfile,
+    naming_nodes_from,
+)
 from haute._expression_parser import (
     assigns_column,
     evaluate_expression,
@@ -63,6 +68,7 @@ from haute._input_preparation import preparation_base_dir, prepare_input_snapsho
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._node_addresses import node_display_name
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_type_table
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_steps import stepped_surface_allows_input_references
@@ -495,7 +501,7 @@ def execute_trace(
             seed_plan=seed_plan,
         )
 
-    core = functools.partial(
+    run_core = functools.partial(
         _execute_trace_core,
         graph,
         row_index=row_index,
@@ -511,6 +517,13 @@ def execute_trace(
         t_start=t_start,
         table_fill=table_fill,
     )
+
+    def core(*, snapshot_plan: SeedPlan | None) -> TraceResult:
+        # A trace's walk is no stage of its execution: what it raises, and what its
+        # planning raises, names nodes from the graph it traces.
+        with naming_nodes_from(graph):
+            return run_core(snapshot_plan=snapshot_plan)
+
     if not seed_plan:
         return core(snapshot_plan=None)
     snapshot_plan = _open_trace_seed_plan(
@@ -591,17 +604,18 @@ def _workbench_output_trace_target(
     config = graph.node_map[target_node_id].data.config
     tables = workbench_output_tables(config)
     names = ", ".join(repr(table.port) for table in tables)
+    name = node_display_name(graph, target_node_id)
     if port_label is None:
         if len(tables) > 1:
             raise TraceTargetUnsupportedError(
-                f"Target node {target_node_id!r} is a Workbench Output: name the table the "
+                f"Target node {name!r} is a Workbench Output: name the table the "
                 f"row is from, one of {names}."
             )
         port_label = tables[0].port
     table = next((table for table in tables if table.port == port_label), None)
     if table is None:
         raise TraceTargetUnsupportedError(
-            f"Target node {target_node_id!r} is a Workbench Output with no {port_label!r} "
+            f"Target node {name!r} is a Workbench Output with no {port_label!r} "
             f"table; its tables are {names}."
         )
     edge = next(
@@ -610,12 +624,12 @@ def _workbench_output_trace_target(
     )
     if edge is None:
         raise TraceTargetUnsupportedError(
-            f"Target node {target_node_id!r} is a Workbench Output with nothing connected to "
+            f"Target node {name!r} is a Workbench Output with nothing connected to "
             f"its {port_label!r} table: connect a frame to it."
         )
     if column is not None and column not in {c.name for c in table.columns}:
         raise TraceTargetUnsupportedError(
-            f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
+            f"Target node {name!r} is a Workbench Output whose {port_label!r} "
             f"table has no {column!r} column."
         )
     declared = {c.name: c.type for c in frame_columns(table)}
@@ -632,7 +646,7 @@ def _workbench_output_trace_target(
     fill = _TableFill(
         declared=declared,
         refusal=(
-            f"Target node {target_node_id!r} is a Workbench Output whose {port_label!r} "
+            f"Target node {name!r} is a Workbench Output whose {port_label!r} "
             f"table {why}, so it has no value to trace."
         ),
     )
@@ -841,11 +855,13 @@ def _continue_above_seed(
             execution_context=execution_context,
             selector_aliases=selector_aliases,
             child_input_aliases=child_input_aliases,
+            node_name=functools.partial(node_display_name, graph),
         )
         proof = _lookup_clicked_row(resolver, seed_id, seed_row)
         if proof is None:
             raise ValueError(
-                f"the snapshot row of {seed_id!r} cannot be compared with its recompute"
+                f"the snapshot row of {node_display_name(graph, seed_id)!r} cannot be compared "
+                "with its recompute"
             )
         if proof.height != 1:
             continuation.reason = (
@@ -904,7 +920,7 @@ def _continue_above_seed(
 def _merge_seed_continuations(
     continuations: Sequence[_SeedContinuation],
     *,
-    node_map: Mapping[str, Any],
+    node_name: Callable[[str], str],
     cached_rows: dict[str, dict[str, Any] | None],
     row_positions: dict[str, int],
     frames: dict[str, Any],
@@ -919,7 +935,8 @@ def _merge_seed_continuations(
     resolved must hold the same row, else neither is shown. The evidence of a
     failed attempt a continuation superseded is dropped with it. Returns the
     proven seeds and the ancestors reported for an unproven seed, which have no
-    schema to judge column relevance by.
+    schema to judge column relevance by. *node_name* names a node in a diagnostic's
+    message.
     """
     proven: set[str] = set()
     reported: set[str] = set()
@@ -952,7 +969,7 @@ def _merge_seed_continuations(
                         cached_rows[node_id] = None
                         row_positions.pop(node_id, None)
                         diagnostics.append(
-                            _ancestor_conflict_diagnostic(node_map, node_id, seed_id)
+                            _ancestor_conflict_diagnostic(node_name, node_id, seed_id)
                         )
                         unresolved[node_id] = ("ancestor_row_conflict", len(diagnostics) - 1)
                     continue
@@ -978,7 +995,7 @@ def _merge_seed_continuations(
                     unresolved[node_id] = (reason, index_of[index])
             continue
         reason = continuation.reason
-        label = node_map[seed_id].data.label
+        label = node_name(seed_id)
         for node_id in continuation.ancestors:
             if cached_rows.get(node_id) is not None or node_id in unresolved:
                 continue
@@ -1004,16 +1021,17 @@ def _merge_seed_continuations(
 
 
 def _ancestor_conflict_diagnostic(
-    node_map: Mapping[str, Any], node_id: str, seed_id: str
+    node_name: Callable[[str], str], node_id: str, seed_id: str
 ) -> dict[str, Any]:
-    label = node_map[seed_id].data.label
+    label = node_name(seed_id)
     return {
         "code": "ancestor_row_conflict",
         "severity": "warning",
         "reason": "ancestor_row_conflict",
         "message": (
             f"Tracing above the snapshot of {label} reached another row of node "
-            f"{node_id!r} than the trace did through its other children; neither is shown."
+            f"{node_name(node_id)!r} than the trace did through its other children; "
+            "neither is shown."
         ),
         "node_id": node_id,
         "seed_node_ids": [seed_id],
@@ -1215,7 +1233,7 @@ def _execute_trace_core(
         eager_outputs = {**eager_outputs, target_node_id: target_output}
     if isinstance(target_output, dict):
         raise TraceTargetUnsupportedError(
-            f"Target node {target_node_id!r} emits multiple frames; "
+            f"Target node {node_display_name(graph, target_node_id)!r} emits multiple frames; "
             "trace a node downstream of a specific frame instead."
         )
     if not isinstance(target_output, pl.DataFrame):
@@ -1288,6 +1306,7 @@ def _execute_trace_core(
         execution_context=execution_context,
         selector_aliases=selector_aliases,
         child_input_aliases=child_input_aliases,
+        node_name=functools.partial(node_display_name, graph),
     )
 
     # ---------- Verify row identity ----------
@@ -1424,7 +1443,7 @@ def _execute_trace_core(
             continuations.append(continuation)
     reproduced_seeds, reported_above_seeds = _merge_seed_continuations(
         continuations,
-        node_map=node_map,
+        node_name=functools.partial(node_display_name, graph),
         cached_rows=cached_rows,
         row_positions=row_positions,
         frames=frames,
@@ -1449,6 +1468,7 @@ def _execute_trace_core(
         order=rank_order,
         source_ids=source_ids,
         node_map=node_map,
+        name_of=functools.partial(node_display_name, graph),
         parents_of=parents_of,
         cached_rows=cached_rows,
         typed_rows=_TypedRows(
@@ -1522,7 +1542,15 @@ def _execute_trace_core(
         traced_steps = steps
         steps = _prune_to_column_relevance(steps, column, parents_of, node_map, lineage)
         _attach_derivations(steps, lineage, node_map, formula_names)
-        _attach_input_sources(steps, traced_steps, column, lineage, node_map, formula_names)
+        _attach_input_sources(
+            steps,
+            traced_steps,
+            column,
+            lineage,
+            node_map,
+            formula_names,
+            name_of=functools.partial(node_display_name, graph),
+        )
 
     # A node not traced above a seed was never computed for this trace, so no
     # schema says whether it bears on a traced column: it is always reported.
@@ -1532,6 +1560,7 @@ def _execute_trace_core(
         node_map=node_map,
         lineage=lineage,
         always_relevant=reported_above_seeds,
+        name_of=functools.partial(node_display_name, graph),
     )
 
     # ---------- Output value (already in cache from batch collect) ----------
@@ -1860,6 +1889,7 @@ def _assemble_steps(
     typed_rows: _TypedRows | None = None,
     row_frames: Mapping[str, str] | None = None,
     source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
+    name_of: Callable[[str], str],
 ) -> list[TraceStep]:
     """Build TraceStep entries from the post-hoc-correlated per-node rows.
 
@@ -1868,6 +1898,7 @@ def _assemble_steps(
     rows as one-row frames for evaluating its formulas. *row_frames* names
     the frame a multi-frame node's row came from; a child reading none of
     that node's frames by that name (``source_frames_of``) is not given it.
+    *name_of* names a step's node (``haute._node_addresses.node_display_name``).
     """
     steps: list[TraceStep] = []
     frames_read = source_frames_of or {}
@@ -1879,7 +1910,7 @@ def _assemble_steps(
     for topological_rank, nid in enumerate(order):
         is_source = nid in source_ids
         node_data = node_map[nid].data
-        node_name = node_data.label
+        node_name = name_of(nid)
         node_type = node_data.nodeType
 
         output_row = cached_rows.get(nid)
@@ -1971,6 +2002,7 @@ def _build_trace_omissions(
     node_map: dict[str, Any],
     lineage: ValueLineage | None,
     always_relevant: frozenset[str] = frozenset(),
+    name_of: Callable[[str], str],
 ) -> list[TraceOmission]:
     """Build evidence entries only for unresolved nodes relevant to the trace.
 
@@ -1978,6 +2010,7 @@ def _build_trace_omissions(
     column trace an unresolved node is relevant when the traced value's
     *lineage* reaches it; the lineage treats an unresolved node's derivation as
     unknown, so every attempted ancestor above one it reaches stays relevant.
+    *name_of* names an omitted node (``haute._node_addresses.node_display_name``).
     """
     if not unresolved_rows:
         return []
@@ -1999,7 +2032,7 @@ def _build_trace_omissions(
         omissions.append(
             TraceOmission(
                 node_id=node_id,
-                node_name=node.data.label,
+                node_name=name_of(node_id),
                 node_type=node.data.nodeType,
                 topological_rank=ranks[node_id],
                 reason=reason,
@@ -2116,6 +2149,8 @@ def _attach_input_sources(
     lineage: ValueLineage,
     node_map: dict[str, Any],
     preamble_ns: dict[str, Any] | None,
+    *,
+    name_of: Callable[[str], str],
 ) -> None:
     """Name the node behind every value a kept step's formula for *column* read.
 
@@ -2147,6 +2182,7 @@ def _attach_input_sources(
                         source.column,
                         node_map,
                         preamble_ns,
+                        name_of=name_of,
                     )
                 entry = dict(entries[key])
                 if depth < _INPUT_SOURCE_DEPTH:

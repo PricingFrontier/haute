@@ -261,7 +261,7 @@ class TestRatebookSolve:
         graph = _make_ratebook_graph(scored_path, banding_path)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -281,7 +281,10 @@ class TestRatebookSolve:
         does: the result's provenance strip reads N quotes x M scenario steps."""
         scored_path, banding_path = _make_ratebook_data(tmp_path, n_quotes=7, n_steps=4)
         graph = _make_ratebook_graph(scored_path, banding_path)
-        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         assert resp.status_code == 200
 
         status = _poll_until_done(client, resp.json()["job_id"])
@@ -303,7 +306,7 @@ class TestRatebookSolve:
 
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 200, resp.text
@@ -325,7 +328,7 @@ class TestRatebookSolve:
         )
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         assert resp.status_code == 400
         assert "factor_columns" in resp.json()["detail"].lower()

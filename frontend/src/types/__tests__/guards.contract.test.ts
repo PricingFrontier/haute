@@ -689,9 +689,15 @@ describe("API response guards", () => {
     )
   })
 
-  it("rejects malformed preview node ids", () => {
-    expect(() => parsePreview({ node_id: 42 })).toThrow(
-      "PreviewNodeResponse: invalid contract at /node_id",
+  it("rejects malformed preview node keys and addresses", () => {
+    expect(() => parsePreview({ timings: [{ node_id: 42, label: "Source", timing_ms: 1 }] })).toThrow(
+      "PreviewNodeResponse: invalid contract at /timings/0/node_id",
+    )
+    expect(() => parsePreview({ node_addresses: { source: { occurrence: null, node_id: 42, label: "Source" } } })).toThrow(
+      "PreviewNodeResponse: invalid contract at /node_addresses/source/node_id",
+    )
+    expect(() => parsePreview({ node_addresses: { source: { node_id: "source", label: "Source" } } })).toThrow(
+      "PreviewNodeResponse: invalid contract at /node_addresses/source/occurrence",
     )
   })
 
@@ -723,11 +729,17 @@ describe("API response guards", () => {
     )
   })
 
-  it("parses the inputs a preview would read", () => {
-    expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "quotes"] })).toEqual({
-      input_node_ids: ["policies", "quotes"],
+  it("parses the inputs a preview would read, each addressed", () => {
+    const node_addresses = {
+      policies: { occurrence: null, node_id: "policies", label: "Policies" },
+      "submodel_runtime/pricing/quotes": { occurrence: "pricing", node_id: "quotes", label: "Quotes" },
+    }
+    expect(parsePreviewInputsResponse({ input_node_ids: ["policies", "submodel_runtime/pricing/quotes"], node_addresses })).toEqual({
+      input_node_ids: ["policies", "submodel_runtime/pricing/quotes"],
+      node_addresses,
     })
-    expect(() => parsePreviewInputsResponse({ input_node_ids: [1] })).toThrow(/input_node_ids/)
+    expect(() => parsePreviewInputsResponse({ input_node_ids: [1], node_addresses: {} })).toThrow(/input_node_ids/)
+    expect(() => parsePreviewInputsResponse({ input_node_ids: [] })).toThrow(/node_addresses: required/)
   })
 
   it("parses preview truncation metadata", () => {
@@ -1070,6 +1082,7 @@ describe("API response guards", () => {
     expect(parsed.trace?.correlation_diagnostics).toEqual([])
     expect(parsed.trace?.generated_at).toBe("2026-07-23T12:00:00+00:00")
     expect(parsed.trace?.execution_origin).toBe("fresh_execution")
+    expect(parsed.trace?.node_addresses.score).toEqual({ occurrence: null, node_id: "score", label: "Score" })
   })
 
   it("parses a step that is one of several identical rows and rejects a count below two", () => {
@@ -1197,6 +1210,11 @@ describe("API response guards", () => {
 
     expect(() => parseTraceResponse({ ...fixture, trace: withoutOmissions }))
       .toThrow(/omissions/i)
+    // Every key a trace names is addressed: a trace without its addresses is refused.
+    const withoutAddresses = { ...trace }
+    delete withoutAddresses.node_addresses
+    expect(() => parseTraceResponse({ ...fixture, trace: withoutAddresses }))
+      .toThrow(/node_addresses/i)
     expect(() => parseTraceResponse({
       ...fixture,
       trace: { ...trace, execution_origin: "unknown_cache" },
@@ -2237,7 +2255,7 @@ describe("API response guards", () => {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
-      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null, node_addresses: {},
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
         development_rows: 800, final_test_rows: 200, validation_fit_count: 5,
@@ -2312,7 +2330,7 @@ describe("API response guards", () => {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, unbounded_join_node_ids: [], fit_mode: "in_memory", gpu_vram_estimated_mb: null, gpu_vram_rows: null,
-      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null, node_addresses: {},
     }
     expect(() => parseTrainEstimateResponse({
       ...estimate,

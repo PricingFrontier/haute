@@ -4,7 +4,6 @@
   "message": "Pivot calculation complete",
   "result": {
     "version": 1,
-    "node_id": "explore_1",
     "pivot_id": "pivot_1",
     "source": "pricing",
     "data_version": "explore_dataset:abc123",

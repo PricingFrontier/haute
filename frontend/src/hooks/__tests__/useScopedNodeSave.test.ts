@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Mock } from "vitest"
 import type { Node } from "@xyflow/react"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useGraphStore from "../../stores/useGraphStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import type { OnUpdateConfigResult } from "../../panels/editors/_shared"
 import type { HauteNodeData } from "../../types/node"
@@ -46,7 +47,6 @@ describe("useScopedNodeSave", () => {
   // here, and every authoritative document is built from this state alone.
   let serverConfigs: Map<string, Record<string, unknown>>
   let revisionCounter: number
-  let graphRef: { current: { nodes: Node[]; edges: never[] } }
   let onUpdateNode: Mock<(id: string, data: Record<string, unknown>) => OnUpdateConfigResult>
   let applyDocument: Mock<(document: PipelineEditorDocument, documentFingerprint: string, savedNodeId: string) => void>
 
@@ -83,13 +83,14 @@ describe("useScopedNodeSave", () => {
       ["b@1", { code: "authored-b" }],
     ])
     const initial = serverDocument("rev-1")
-    graphRef = { current: { nodes: canvasFromDocument(initial), edges: [] } }
+    useGraphStore.getState().resetForTests()
+    useGraphStore.setState({ nodes: canvasFromDocument(initial), edges: [] })
     // Accepted edits mutate the live graph, exactly as the commit controller
     // does — the hook must send the edited values, not the authored ones.
     onUpdateNode = vi.fn((id: string, data: Record<string, unknown>) => {
-      graphRef.current.nodes = graphRef.current.nodes.map((node) =>
-        node.id === id ? ({ ...node, data } as Node) : node,
-      )
+      useGraphStore.setState((state) => ({
+        nodes: state.nodes.map((node) => (node.id === id ? ({ ...node, data } as Node) : node)),
+      }))
       return { ok: true as const }
     })
     // The backend persists the submitted configuration and returns a full
@@ -104,7 +105,7 @@ describe("useScopedNodeSave", () => {
     // Adoption replaces the whole canvas from the response's nodes — if the
     // response omitted or reset another node, the canvas now shows it.
     applyDocument = vi.fn((document: PipelineEditorDocument, documentFingerprint: string) => {
-      graphRef.current.nodes = canvasFromDocument(document)
+      useGraphStore.setState({ nodes: canvasFromDocument(document) })
       useDocumentStatusStore.getState().loadDocumentStatus(document, true, documentFingerprint)
     })
     act(() => {
@@ -124,7 +125,6 @@ describe("useScopedNodeSave", () => {
         useScopedNodeSave({
           scopedEditingActive: true,
           selectedNodeId: props.selectedNodeId,
-          graphRef,
           onUpdateNode,
           applyDocument,
         }),
@@ -133,12 +133,12 @@ describe("useScopedNodeSave", () => {
   }
 
   function nodeConfig(id: string): Record<string, unknown> {
-    const node = graphRef.current.nodes.find((item) => item.id === id)
+    const node = useGraphStore.getState().nodes.find((item) => item.id === id)
     return ((node?.data as HauteNodeData)?.config ?? {}) as Record<string, unknown>
   }
 
   function editedData(id: string, code: string): Record<string, unknown> {
-    const node = graphRef.current.nodes.find((item) => item.id === id)
+    const node = useGraphStore.getState().nodes.find((item) => item.id === id)
     return { ...(node?.data as HauteNodeData), config: { code } }
   }
 
@@ -222,7 +222,7 @@ describe("useScopedNodeSave", () => {
     // The final canvas is exactly the simulated backend's persisted state:
     // both saves survived whole-document replacement, nothing was discarded
     // and no node was lost.
-    expect(graphRef.current.nodes.map((node) => node.id).sort()).toEqual(["a@1", "b@1"])
+    expect(useGraphStore.getState().nodes.map((node) => node.id).sort()).toEqual(["a@1", "b@1"])
     expect(nodeConfig("a@1")).toEqual({ code: "a-edit-1" })
     expect(nodeConfig("b@1")).toEqual({ code: "b-edit-2" })
     expect(serverConfigs.get("a@1")).toEqual({ code: "a-edit-1" })

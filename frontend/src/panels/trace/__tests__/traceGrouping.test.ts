@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { makeTraceStep } from "../../../test-utils/factories"
+import { makeTraceStep, type TraceStepFixture } from "../../../test-utils/factories"
 import {
   findTargetStep,
   collapsePassthroughs,
@@ -7,8 +7,9 @@ import {
 } from "../traceGrouping"
 import { isTraceGeneratedColumnOriginType, isTraceSourceNodeType } from "../../../trace/traceOrigins"
 import type { TraceStep } from "../../../types/trace"
+import { keyText } from "../../../utils/answerAddresses"
 
-function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
+function makeStep(overrides: TraceStepFixture = {}): TraceStep {
   return makeTraceStep({
     node_id: "n1",
     node_name: "Transform 1",
@@ -337,7 +338,7 @@ describe("collapsePassthroughs", () => {
     const flatSteps = result.flatMap((entry) =>
       "collapsed" in entry ? entry.collapsed : [entry],
     )
-    expect(flatSteps.some((s) => s.node_id === "p1")).toBe(true)
+    expect(flatSteps.some((s) => keyText(s.node_id) === "p1")).toBe(true)
   })
 
   it("consecutive passthroughs collapsed into one group", () => {
@@ -477,7 +478,7 @@ describe("collapsePassthroughs", () => {
 
     // Creator should be a standalone entry, not collapsed
     const nonCollapsed = result.filter((e) => !("collapsed" in e))
-    expect(nonCollapsed.some((e) => (e as TraceStep).node_id === "s1")).toBe(true)
+    expect(nonCollapsed.some((e) => keyText((e as TraceStep).node_id) === "s1")).toBe(true)
   })
 
   it("step that modifies the column is NOT collapsed", () => {
@@ -690,7 +691,7 @@ describe("collapsePassthroughs", () => {
     const result = collapsePassthroughs(steps, "premium")
 
     const nonCollapsed = result.filter((e) => !("collapsed" in e)) as TraceStep[]
-    expect(nonCollapsed.some((s) => s.node_id === "ds1")).toBe(true)
+    expect(nonCollapsed.some((s) => keyText(s.node_id) === "ds1")).toBe(true)
   })
 
   it("apiInput source type is NOT collapsed", () => {
@@ -711,7 +712,7 @@ describe("collapsePassthroughs", () => {
     const result = collapsePassthroughs(steps, "premium")
 
     const nonCollapsed = result.filter((e) => !("collapsed" in e)) as TraceStep[]
-    expect(nonCollapsed.some((s) => s.node_id === "api1")).toBe(true)
+    expect(nonCollapsed.some((s) => keyText(s.node_id) === "api1")).toBe(true)
   })
 
   it("dependency-story mode collapses unpreserved source-like steps", () => {

@@ -11,13 +11,12 @@ describe("preview notes", () => {
       { id: "src", position: { x: 0, y: 0 }, data: { label: "src", nodeType: "dataSource" } },
     ] as Node[]
     const result = makePreviewResponse({
-      node_id: "ms",
       columns: [{ name: "pred", dtype: "Float64" }],
       node_columns: { ms: [{ name: "pred", dtype: "Float64" }] },
       notes: [note],
     })
 
-    const [scored, source] = applyPreviewResultColumnsToNodes(nodes, "ms", result, "live", 1)
+    const [scored, source] = applyPreviewResultColumnsToNodes(nodes, "ms", result, "live", 1, null, "ms")
 
     expect(scored.data._notes).toEqual([note])
     expect(source.data._notes).toBeUndefined()

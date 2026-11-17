@@ -37,8 +37,8 @@ import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPane
 import PanelShell from "./PanelShell"
 import { SidePanelClose } from "../haute-ui"
 import PreviewPanelTabs from "./PreviewPanelTabs"
-import { useGraph } from "./useGraph"
-import { buildGraph } from "../utils/buildGraph"
+import { useGraph, useRequestScope, useResultKey } from "./useGraph"
+import { canvasTarget, prepareNodeRequest, resultKey } from "../utils/requestGateway"
 import { NODE_REFERENCE_URL } from "../utils/documentation"
 import { CommittedTextField } from "../components/form"
 import {
@@ -852,7 +852,7 @@ type NodeEditorTabStripProps = {
   tabs: NodePanelTab[]
   activeTab: NodePanelTab
   onSelect: (tab: NodePanelTab) => void
-  /** What the config tab is called for this node; a Transform's config is its Polars steps or code. */
+  /** What the config tab is called for this node: a Transform's config is its Polars steps or code, a Rating Step's its tables. */
   configLabel?: string
 }
 
@@ -866,7 +866,7 @@ function NodeEditorTabStrip({ visible, tabs, activeTab, onSelect, configLabel = 
           <button
             key={tab}
             onClick={() => onSelect(tab)}
-            className={`flex-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
+            className={`flex-1 px-1.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors${
               isActive ? "" : " hover:bg-[var(--bg-hover)]"
             }`}
             style={isActive
@@ -1168,6 +1168,7 @@ function NodePanelContent({
   documentReadOnly = false,
   scopedSave,
 }: ActiveNodePanelProps) {
+  const requestScope = useRequestScope()
   const [scopedSaving, setScopedSaving] = useState(false)
   // The editor freezes while a scoped save is in flight so keystrokes cannot
   // race the adoption of the authoritative response.
@@ -1202,10 +1203,12 @@ function NodePanelContent({
     setModellingPaneIssues({ nodeId, panes })
   }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
-  const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
+  // Training and solves are kept under the node's result key (its occurrence's own inside a submodel).
+  const jobKey = useResultKey(node.id)
+  const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[jobKey]))
   const rememberedOptimiserPane = useUIStore((s) => s.optimiserPanes[node.id])
   const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
-  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[node.id]))
+  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[jobKey]))
   // The lazily loaded optimiser editor owns its Solve issues; the panel only badges tabs.
   const [optimiserPaneIssues, setOptimiserPaneIssues] = useState<{ nodeId: string; panes: readonly OptimiserPane[] }>({ nodeId: "", panes: [] })
   const onOptimiserPaneIssuesChange = useCallback((nodeId: string, panes: readonly OptimiserPane[]) => {
@@ -1243,16 +1246,19 @@ function NodePanelContent({
   // point has already established them; never a request of its own. Gated on
   // the identity above, so the previous point's columns are never offered
   // after a source switch or a rewiring.
+  // Kept under the node's result key: inside a submodel, this occurrence's.
+  const consumerKey = resultKey(node.id)
   const exploreProfile = useNodeDataStore((s) =>
-    profileForConsumer(s, node.id, exploreConfigHash),
+    profileForConsumer(s, consumerKey, exploreConfigHash),
   )
 
   const loadPivotFilterMembers = useCallback(
     (field: string, search: string, signal: AbortSignal) => {
       if (!node) throw new Error("Explore node is unavailable.")
+      const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
       return fetchExplorePivotMembers({
-        graph: buildGraph(allNodes, edges, submodels),
-        node_id: node.id,
+        graph: target.graph,
+        target: target.node,
         field,
         source: activeSource,
         search: search || undefined,
@@ -1367,6 +1373,8 @@ function NodePanelContent({
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
   const showColumnsTab = isKnownNodeType && !NO_COLUMNS_TAB.has(nodeType)
   const showPolarsTab = isKnownNodeType && POLARS_TAB_TYPES.has(nodeType)
+  // A Rating Step's config is its tables; its combined outputs are a tab of their own.
+  const showCombinedTab = isKnownNodeType && nodeType === NODE_TYPES.RATING_STEP
   const showExplorePanes = isKnownNodeType && nodeType === NODE_TYPES.EXPLORE
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
@@ -1416,6 +1424,7 @@ function NodePanelContent({
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
       activeOptimiserPane={activeOptimiserPane}
+      ratingSection={showCombinedTab && activeTab === "combined" ? "combined" : "tables"}
       onOptimiserPaneIssuesChange={onOptimiserPaneIssuesChange}
       onUpdateNodeConfig={handleOtherNodeConfigUpdate}
       onModellingPaneIssuesChange={onModellingPaneIssuesChange}
@@ -1443,6 +1452,7 @@ function NodePanelContent({
   const schemaWarnings = (node.data._schemaWarnings as { column: string; status: string }[]) || []
   const editorTabs: NodePanelTab[] = [
     "config",
+    ...(showCombinedTab ? ["combined" as const] : []),
     ...(showPolarsTab ? ["polars" as const] : []),
     ...(showColumnsTab ? ["columns" as const] : []),
   ]
@@ -1475,7 +1485,7 @@ function NodePanelContent({
         tabs={editorTabs}
         activeTab={activeTab}
         onSelect={selectTab}
-        configLabel={nodeType === NODE_TYPES.POLARS ? "Transform" : undefined}
+        configLabel={nodeType === NODE_TYPES.POLARS ? "Transform" : showCombinedTab ? "Tables" : undefined}
       />
 
       {showExplorePanes && (

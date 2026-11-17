@@ -29,6 +29,7 @@ from haute.schemas import (
     UtilityWriteRequest,
     WriteOutputRequest,
 )
+from tests._preview_targets import node_target
 from tests._project import project_app
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -98,25 +99,27 @@ class TestEmptyStrings:
         """Empty node_id would cause KeyError in results dict lookup."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "",
+            "target": node_target(""),
         }
         resp = client.post("/api/pipeline/preview", json=body)
-        assert resp.status_code == 404
+        # A target names a node by a non-empty id.
+        assert resp.status_code == 422
 
     def test_empty_node_id_in_sink(self, client):
         """Empty sink node_id could skip the sink write entirely."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "",
+            "target": {"occurrence": None, "node_id": ""},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
-        assert resp.status_code == 404
+        # A target names a node by a non-empty id.
+        assert resp.status_code == 422
 
     def test_non_sink_node_id_in_sink(self, client):
         """Sink execution must reject ids that point at non-sink nodes."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": {"occurrence": None, "node_id": "src"},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 400
@@ -125,7 +128,7 @@ class TestEmptyStrings:
         """Empty graph (no nodes) should return 400, not crash during topo-sort."""
         body = {
             "graph": {"nodes": [], "edges": []},
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 400
@@ -134,6 +137,7 @@ class TestEmptyStrings:
         """Empty graph should be caught before attempting trace execution."""
         body = {
             "graph": {"nodes": [], "edges": []},
+            "target": node_target("x"),
             "seed_plan": [],
         }
         resp = client.post("/api/pipeline/trace", json=body)
@@ -185,7 +189,7 @@ class TestEmptyStrings:
                 ],
                 "edges": [],
             },
-            "node_id": "src",
+            "target": node_target("src"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 200
@@ -206,7 +210,7 @@ class TestNullValues:
         """null node_id would crash dict lookup with TypeError."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": None,
+            "target": {**node_target("src"), "node_id": None},
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422  # Pydantic validation error
@@ -215,7 +219,7 @@ class TestNullValues:
         """null node_id in sink request would skip sink detection."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": None,
+            "target": {"occurrence": None, "node_id": None},
         }
         resp = client.post("/api/pipeline/write-output", json=body)
         assert resp.status_code == 422
@@ -224,7 +228,7 @@ class TestNullValues:
         """null graph would cause AttributeError on .nodes access."""
         body = {
             "graph": None,
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -322,7 +326,7 @@ class TestLargePayloads:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": 2**31 - 1,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -479,7 +483,7 @@ class TestDeeplyNestedJSON:
                 ],
                 "edges": [],
             },
-            "node_id": "d",
+            "target": node_target("d"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 200
@@ -503,7 +507,7 @@ class TestIntegerOverflow:
         with pytest.raises(pydantic.ValidationError):
             PreviewNodeRequest(
                 graph=Graph(),
-                node_id="x",
+                target=node_target("x"),
                 row_limit=2**63,
             )
 
@@ -515,7 +519,7 @@ class TestIntegerOverflow:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": 2**63,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -528,7 +532,7 @@ class TestIntegerOverflow:
         Real failure: row_index used as DataFrame index; if data has < 2^32
         rows, Polars should return an error, not segfault.
         """
-        req = TraceRequest(graph=Graph(), row_index=2**32, seed_plan=[])
+        req = TraceRequest(graph=Graph(), target=node_target("x"), row_index=2**32, seed_plan=[])
         assert req.row_index == 2**32
 
     def test_scenario_expander_steps_overflow(self):
@@ -563,7 +567,7 @@ class TestNegativeValues:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": -1,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -574,20 +578,25 @@ class TestNegativeValues:
         """Negative row_limit in trace should not cause unexpected behavior."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
+            "seed_plan": [],
             "row_limit": -100,
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "row_limit"]]
 
     def test_negative_row_index_trace(self, client):
         """Negative row_index could be interpreted as counting from end."""
         body = {
             "graph": _minimal_graph_dict(),
+            "target": node_target("src"),
+            "seed_plan": [],
             "row_index": -1,
         }
         resp = client.post("/api/pipeline/trace", json=body)
         assert resp.status_code == 422
+        assert [error["loc"] for error in resp.json()["detail"]] == [["body", "row_index"]]
 
     def test_negative_point_index_frontier(self, client):
         """Negative point_index should be rejected, not used as Python negative index."""
@@ -602,7 +611,7 @@ class TestNegativeValues:
         """row_limit=0 should return empty preview, not error."""
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": 0,
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -628,7 +637,7 @@ class TestTypeConfusion:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src",
+            "target": node_target("src"),
             "row_limit": "100",
         }
         resp = client.post("/api/pipeline/preview", json=body)
@@ -642,7 +651,7 @@ class TestTypeConfusion:
         """
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": True,
+            "target": {**node_target("src"), "node_id": True},
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -655,7 +664,7 @@ class TestTypeConfusion:
         """
         body = {
             "graph": [1, 2, 3],
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -678,7 +687,7 @@ class TestTypeConfusion:
         """Raw string for graph field should fail Pydantic validation."""
         body = {
             "graph": "not a graph",
-            "node_id": "x",
+            "target": node_target("x"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 422
@@ -700,11 +709,11 @@ class TestTypeConfusion:
         Pydantic v2 rejects non-integer floats for int fields.
         """
         with pytest.raises(ValidationError):
-            PreviewNodeRequest(graph=Graph(), node_id="x", row_limit=100.5)
+            PreviewNodeRequest(graph=Graph(), target=node_target("x"), row_limit=100.5)
 
     def test_whole_float_for_int_row_limit(self):
         """Float 100.0 (whole number) should be coerced to int by Pydantic v2."""
-        req = PreviewNodeRequest(graph=Graph(), node_id="x", row_limit=100.0)
+        req = PreviewNodeRequest(graph=Graph(), target=node_target("x"), row_limit=100.0)
         assert isinstance(req.row_limit, int)
         assert req.row_limit == 100
 
@@ -850,7 +859,7 @@ class TestBinaryDataInStrings:
         # Send valid JSON with unicode escape for high byte
         body = {
             "graph": _minimal_graph_dict(),
-            "node_id": "src\u0080",
+            "target": node_target("src\u0080"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 400
@@ -929,7 +938,7 @@ class TestPathTraversalInPayloads:
                 ],
                 "edges": [],
             },
-            "node_id": "src",
+            "target": node_target("src"),
         }
         resp = client.post("/api/pipeline/preview", json=body)
         assert resp.status_code == 403
@@ -987,7 +996,7 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             PreviewNodeRequest()
 
-    def test_sink_requires_graph_and_node_id(self):
+    def test_sink_requires_graph_and_target(self):
         with pytest.raises(ValidationError):
             WriteOutputRequest()
 
@@ -995,9 +1004,11 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             TraceRequest()
 
-    def test_train_requires_graph_and_node_id(self):
-        with pytest.raises(ValidationError):
+    def test_train_requires_graph_and_target(self):
+        with pytest.raises(ValidationError) as caught:
             TrainRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert {"graph", "target"} <= missing
 
     def test_create_submodel_requires_fields(self):
         with pytest.raises(ValidationError):
@@ -1007,13 +1018,17 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             DissolveSubmodelRequest()
 
-    def test_export_script_requires_node_id(self):
-        with pytest.raises(ValidationError):
+    def test_export_script_requires_target(self):
+        with pytest.raises(ValidationError) as caught:
             ExportScriptRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert "target" in missing
 
     def test_optimiser_solve_requires_fields(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as caught:
             OptimiserSolveRequest()
+        missing = {error["loc"][0] for error in caught.value.errors() if error["type"] == "missing"}
+        assert {"graph", "target"} <= missing
 
     def test_optimiser_apply_requires_job_id(self):
         with pytest.raises(ValidationError):

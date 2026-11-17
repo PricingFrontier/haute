@@ -99,8 +99,9 @@
 - **`PivotCalculationSpec`** (`_pivot_service.py`, frozen dataclass) — resolved Explore cache
   request/key, validated v1 pivot, calculation hash, result-cache key, and latest-wins family key
   `("explore_pivot", source_file, node_id, source, pivot_id)`.
-- **`ExplorePivotResult`** (`schemas.py`) — result schema version, Explore/pivot/source/cache and
-  calculation identities, ordered row/column field names, stable value identities, typed row and
+- **`ExplorePivotResult`** (`schemas.py`) — result schema version, pivot/source/cache and
+  calculation identities (no node: the matrix is keyed by the data point, which several Explore
+  nodes can share, and the browser keeps it by the request's result key), ordered row/column field names, stable value identities, typed row and
   column paths with total markers, typed cells, warnings, generation time, and execution metrics.
   Result values never carry card/value display names; the UI joins those from current persisted
   presentation config so rename-only reuse cannot surface stale labels.
@@ -439,7 +440,8 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
 
 - **Cache miss and identity.** A point that is not current answers `status: "cache_required"`
   and reads nothing. An answer is memoised by point digest, data version and the normalised
-  question (`target`, `weight`, `features`, `key_columns`, `level_limit`, analysis version), so
+  question (the target column, which the request names `target_column` since its `target` is the
+  Explore node's address, `weight`, `features`, `key_columns`, `level_limit`, analysis version), so
   the same question on the same data is served without a scan and any other question, or a
   rebuilt point, is recomputed. The consumer's column demand is widened by every referenced
   column, as rating levels widen theirs.

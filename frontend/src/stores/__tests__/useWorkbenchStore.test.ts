@@ -3,6 +3,7 @@ import useWorkbenchStore from "../useWorkbenchStore"
 import useGraphStore from "../useGraphStore"
 import useNodeDataStore from "../useNodeDataStore"
 import useToastStore from "../useToastStore"
+import { workbenchSample, setWorkbenchSample } from "../../api/workbenchSample"
 
 function respond(body: unknown, status = 200) {
   return vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -12,7 +13,8 @@ function respond(body: unknown, status = 200) {
 
 describe("useWorkbenchStore", () => {
   beforeEach(() => {
-    useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null })
+    useWorkbenchStore.setState({ enabled: false, formPath: null, activeView: "pipeline", tables: null, sampleHeld: null, sampleRead: null })
+    setWorkbenchSample(null)
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
   })
 
@@ -232,5 +234,61 @@ describe("refreshTables", () => {
       text: `Could not fetch the workbench's tables: ${missing}`,
     })
     expect(store().tables).toBe(kept)
+  })
+
+  describe("noteSample", () => {
+    const epoch = () => useNodeDataStore.getState().epoch
+    const structure = () => useGraphStore.getState().structuralVersion
+    const typed = (limit: string) => ({ policy: [{ state: "NY", limit }] })
+
+    it("publishes the sample for the pipeline editor's reads, the first one noted, the folder's, raising nothing", () => {
+      const first = epoch()
+      useWorkbenchStore.getState().noteSample(typed("1,000"))
+
+      expect(workbenchSample()).toEqual(typed("1,000"))
+      expect(epoch()).toBe(first)
+
+      useWorkbenchStore.getState().noteSample(null)
+      expect(workbenchSample()).toBeNull()
+    })
+
+    it("runs nothing while the workbench shows, and raises the epoch once as the pipeline's view shows again", () => {
+      useWorkbenchStore.setState({ enabled: true })
+      const store = useWorkbenchStore.getState
+      store().noteSample(typed("1,000"))
+      store().showView("workbench")
+      const first = epoch()
+      const structural = structure()
+
+      store().noteSample(typed("70"))
+      store().noteSample(typed("700"))
+      expect(epoch()).toBe(first)
+
+      store().showView("pipeline")
+      expect(epoch()).toBe(first + 1)
+      // The sample is no part of the pipeline, and no job reads it.
+      expect(structure()).toBe(structural)
+
+      // Shown again with nothing changed meanwhile, nothing runs.
+      store().showView("workbench")
+      store().showView("pipeline")
+      expect(epoch()).toBe(first + 1)
+    })
+
+    it("raises the epoch at once for a change while the pipeline's view shows, and nothing for a sample changed back", () => {
+      useWorkbenchStore.setState({ enabled: true })
+      const store = useWorkbenchStore.getState
+      store().noteSample(typed("1,000"))
+      const first = epoch()
+
+      store().noteSample(typed("70"))
+      expect(epoch()).toBe(first + 1)
+
+      store().showView("workbench")
+      store().noteSample(typed("700"))
+      store().noteSample(typed("70"))
+      store().showView("pipeline")
+      expect(epoch()).toBe(first + 1)
+    })
   })
 })

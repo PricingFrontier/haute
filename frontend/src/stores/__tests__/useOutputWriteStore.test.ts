@@ -60,4 +60,19 @@ describe("useOutputWriteStore", () => {
     useOutputWriteStore.getState().clear("output-1", requestId)
     expect(useOutputWriteStore.getState().writes["output-1"]).toBeUndefined()
   })
+
+  it("forgets a deleted node's write while it is writing, and its late answer completes nothing", () => {
+    const requestId = useOutputWriteStore.getState().begin("output-1", "request-a")!
+    useOutputWriteStore.getState().begin("output-2", "request-b")
+
+    useOutputWriteStore.getState().forget("output-1")
+    useOutputWriteStore.getState().complete("output-1", requestId, "request-a", {
+      phase: "success",
+      result: makeWriteOutput({ status: "ok", path: "out.csv", row_count: 2 }),
+    })
+
+    expect(useOutputWriteStore.getState().writes["output-1"]).toBeUndefined()
+    expect(useOutputWriteStore.getState().writes["output-2"]?.phase).toBe("writing")
+    expect(useOutputWriteStore.getState().begin("output-1", "request-c")).not.toBeNull()
+  })
 })

@@ -5,6 +5,7 @@ import type {
   TraceResult,
   TraceStep,
 } from "../../types/trace"
+import { keyText } from "../../utils/answerAddresses"
 import { isSourceLikeTraceStep } from "./traceGrouping"
 import { asBandingDetail, bandingRows } from "../../trace/bandingRows"
 import { asModelScoreDetail, modelScoreFeatureColumns } from "../../trace/modelScoreHelpers"
@@ -80,7 +81,7 @@ export function isOptimiserApplyErrorDetail(
 }
 
 export function traceStoryKey(trace: TraceResult): string {
-  return `${trace.target_node_id}\u0000${trace.row_index}\u0000${trace.column ?? ""}`
+  return `${keyText(trace.target_node_id)}\u0000${trace.row_index}\u0000${trace.column ?? ""}`
 }
 
 export function stepCreatesOrModifiesColumn(step: TraceStep, column: string): boolean {
@@ -224,7 +225,7 @@ export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep
   if (!targetStep) return ids
 
   if (shouldDefaultExpandStep(targetStep, targetStep)) {
-    ids.add(targetStep.node_id)
+    ids.add(keyText(targetStep.node_id))
   }
 
   const targetIndex = steps.findIndex((step) => step.node_id === targetStep.node_id)
@@ -236,14 +237,14 @@ export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep
     if (targetIndex >= 0 && index > targetIndex) return
     if (sourceNodeNames.has(step.node_name)) {
       if (shouldDefaultExpandStep(step, targetStep)) {
-        ids.add(step.node_id)
+        ids.add(keyText(step.node_id))
       }
       return
     }
     for (const dependencyColumn of dependencyColumns) {
       if (stepCreatesOrModifiesColumn(step, dependencyColumn)) {
         if (shouldDefaultExpandStep(step, targetStep)) {
-          ids.add(step.node_id)
+          ids.add(keyText(step.node_id))
         }
         return
       }
@@ -262,11 +263,11 @@ export function traceStoryPreserveStepIds(steps: TraceStep[], targetStep: TraceS
   const ids = new Set<string>()
   for (const step of steps) {
     if (step.contributed_columns.length > 0) {
-      ids.add(step.node_id)
+      ids.add(keyText(step.node_id))
     }
   }
   if (targetStep) {
-    ids.add(targetStep.node_id)
+    ids.add(keyText(targetStep.node_id))
   }
   return ids
 }

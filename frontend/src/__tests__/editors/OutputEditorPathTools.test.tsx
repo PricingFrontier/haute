@@ -16,6 +16,7 @@ import OutputEditor from "../../panels/editors/OutputEditor"
 import { substitutePrefix } from "../../panels/editors/outputPathTools"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard")
 const originalSecure = Object.getOwnPropertyDescriptor(globalThis, "isSecureContext")
@@ -86,7 +87,7 @@ function StatefulHarness({
 }) {
   const [config, setConfig] = useState(initialConfig)
   return (
-    <GraphProvider allNodes={MULTI_FRAME_NODES} edges={MULTI_FRAME_EDGES}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={MULTI_FRAME_NODES} edges={MULTI_FRAME_EDGES}>
       <OutputEditor
         config={config}
         nodeId="output_1"

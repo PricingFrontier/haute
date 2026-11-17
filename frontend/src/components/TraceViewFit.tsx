@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react"
+import { keyText } from "../utils/answerAddresses"
 import { useReactFlow } from "@xyflow/react"
 import useUIStore from "../stores/useUIStore"
 import type { TraceResult } from "../types/trace"
@@ -13,7 +14,7 @@ const TRACE_FIT_OPTIONS = { padding: 0.2, duration: 300 }
  */
 export default function TraceViewFit({ traceResult, resolveNodeId }: {
   traceResult: TraceResult | null
-  resolveNodeId: (id: string) => string
+  resolveNodeId: (key: string) => string | null
 }) {
   const { fitView, getZoom } = useReactFlow()
   const centreRequest = useUIStore((s) => s.traceCentreRequest)
@@ -24,7 +25,10 @@ export default function TraceViewFit({ traceResult, resolveNodeId }: {
     if (!traceResult || fittedTraceRef.current === traceResult) return
     fittedTraceRef.current = traceResult
     const lineage = new Set(
-      traceResult.steps.filter((step) => step.column_relevant).map((step) => resolveNodeId(step.node_id)),
+      traceResult.steps
+        .filter((step) => step.column_relevant)
+        .map((step) => resolveNodeId(keyText(step.node_id)))
+        .filter((id): id is string => id !== null),
     )
     if (lineage.size > 0) void fitView({ nodes: [...lineage].map((id) => ({ id })), ...TRACE_FIT_OPTIONS })
   }, [traceResult, fitView, resolveNodeId])
@@ -33,8 +37,10 @@ export default function TraceViewFit({ traceResult, resolveNodeId }: {
   useEffect(() => {
     if (!centreRequest || centredRequestRef.current === centreRequest) return
     centredRequestRef.current = centreRequest
+    const id = resolveNodeId(centreRequest.nodeId)
+    if (id === null) return
     const zoom = getZoom()
-    void fitView({ nodes: [{ id: resolveNodeId(centreRequest.nodeId) }], duration: 300, minZoom: zoom, maxZoom: zoom })
+    void fitView({ nodes: [{ id }], duration: 300, minZoom: zoom, maxZoom: zoom })
   }, [centreRequest, fitView, getZoom, resolveNodeId])
 
   return null

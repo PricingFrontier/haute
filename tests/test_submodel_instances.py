@@ -40,6 +40,7 @@ from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import make_file_input_config
 
@@ -411,7 +412,7 @@ def test_instance_missing_columns_preview_response_and_refresh() -> None:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(mode="json", by_alias=True),
-                "node_id": qualified_runtime_node_id("copy", "score"),
+                "target": node_target("score", occurrence="copy"),
             },
         )
         assert response.status_code == 200, response.text
@@ -630,8 +631,7 @@ def test_preview_qualified_instance_output_uses_its_bound_inputs(frame: str | No
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(mode="json", by_alias=True),
-                "node_id": qualified_runtime_node_id(occurrence, "finish"),
-                "port_label": frame,
+                "target": node_target("finish", occurrence=occurrence, port_label=frame),
             },
         )
         assert response.status_code == 200, response.text
@@ -688,7 +688,10 @@ def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
     assert result.preview == expected
     response = TestClient(app).post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json", by_alias=True), "node_id": "consumer"},
+        json={
+            "graph": graph.model_dump(mode="json", by_alias=True),
+            "target": node_target("consumer"),
+        },
     )
     assert response.status_code == 200, response.text
     assert response.json()["preview"] == expected
@@ -792,6 +795,40 @@ def test_definition_rejects_missing_internal_endpoint() -> None:
                 )
             ]
         )
+
+
+@pytest.mark.parametrize("order", [["premium", "audit"], ["audit", "premium"]])
+def test_a_definition_keeps_its_output_order_through_a_save(
+    tmp_path: Path, order: list[str]
+) -> None:
+    """The owner's panel reorders the outputs; the definition file writes and reads them so."""
+    ports = {
+        "premium": SubmodelOutputPort(
+            name="premium", source=SubmodelEndpoint(node_id="local_output")
+        ),
+        "audit": SubmodelOutputPort(name="audit", source=SubmodelEndpoint(node_id="local_input")),
+    }
+    graph = PipelineGraph(
+        nodes=[_node("root_source"), _instance("scoring_a", "scoring_a")],
+        edges=[
+            GraphEdge(
+                id="feed", source="root_source", target="scoring_a", targetHandle="in__policy"
+            )
+        ],
+        submodels={"definition_scoring": _definition(output_ports=[ports[name] for name in order])},
+    )
+
+    files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+    for relative_path, source in files.items():
+        output = tmp_path / relative_path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(source, encoding="utf-8")
+    reparsed = parse_pipeline_source(
+        files["main.py"], source_file=str(tmp_path / "main.py"), _base_dir=tmp_path
+    )
+
+    definition = (reparsed.submodels or {})["definition_scoring"]
+    assert [port.name for port in definition.output_ports] == order
 
 
 def test_unrouted_input_port_round_trips_and_is_legal_when_unbound() -> None:

@@ -13,6 +13,7 @@ import pytest
 from haute._node_snapshots import NodeSnapshotStore
 from haute._seed_plans import ListedSeed
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._workbench_helpers import form_table, workbench_project
 from tests._worker_http import raise_worker_http
@@ -106,13 +107,14 @@ def _trace(
     *,
     row: dict[str, Any] | None = None,
     expect: int = 200,
+    port_label: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
     response = api.post(
         "/api/pipeline/trace",
         json={
             "graph": graph.model_dump(mode="json"),
-            "target_node_id": target,
+            "target": node_target(target, port_label=port_label),
             "row_index": 0,
             "row_limit": 200,
             "row_values": row,
@@ -307,7 +309,7 @@ def _refresh(
     store: NodeSnapshotStore, graph: PipelineGraph, node_id: str, frame: pl.DataFrame
 ) -> str:
     from haute._execution_context import ExecutionProfile
-    from haute._node_snapshots import NodeSnapshotColumns
+    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner
 
     identity = _identity(store, graph, node_id)
     artifact = store.stage_node_output(identity)
@@ -320,6 +322,7 @@ def _refresh(
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=True,
+        owner=NodeSnapshotOwner.of(graph, node_id),
     ) as publication:
         assert publication.generation is not None
         return publication.generation.generation_id
@@ -1115,14 +1118,8 @@ def test_the_recompute_above_a_seed_leaves_the_trace_plan_in_place(
 
 
 def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evidence() -> None:
-    from types import SimpleNamespace
-
     from haute.trace import _merge_seed_continuations, _SeedContinuation
 
-    node_map = {
-        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id))
-        for node_id in ("S", "A", "B", "C")
-    }
     # The trace resolved ``A`` through an executed branch and failed on ``B``;
     # it left ``C`` unresolved for its own reason.
     cached_rows: dict = {"A": {"id": 1, "v": 3}, "B": None, "C": None}
@@ -1141,7 +1138,7 @@ def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evid
 
     proven, reported = _merge_seed_continuations(
         [continuation],
-        node_map=node_map,
+        node_name=str,
         cached_rows=cached_rows,
         row_positions={},
         frames={},
@@ -1165,14 +1162,8 @@ def test_merging_a_continuation_never_overwrites_a_row_and_drops_superseded_evid
 
 
 def test_a_conflict_stays_final_and_a_later_continuation_supersedes_an_earlier_failure() -> None:
-    from types import SimpleNamespace
-
     from haute.trace import _merge_seed_continuations, _SeedContinuation
 
-    node_map = {
-        node_id: SimpleNamespace(data=SimpleNamespace(label=node_id))
-        for node_id in ("S1", "S2", "A", "B")
-    }
     cached_rows: dict = {"A": {"id": 1}}
     diagnostics: list = []
     unresolved: dict = {}
@@ -1194,7 +1185,7 @@ def test_a_conflict_stays_final_and_a_later_continuation_supersedes_an_earlier_f
 
     proven, _reported = _merge_seed_continuations(
         [first, second],
-        node_map=node_map,
+        node_name=str,
         cached_rows=cached_rows,
         row_positions={},
         frames={},

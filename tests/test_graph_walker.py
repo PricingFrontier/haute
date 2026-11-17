@@ -335,6 +335,41 @@ def test_a_display_walk_records_node_failures_when_the_policy_says_so(
         walk_graph(graph, _build_node_fn, policy=CollectPolicy.display())
 
 
+@pytest.mark.parametrize(
+    "code",
+    ["df = src.with_columns(y=pl.col('missing'))", "df = src.unpivot(on=['x'], index=['missing'])"],
+    ids=["expression", "unpivot"],
+)
+def test_a_missing_column_reads_as_one_sentence_naming_it(haute_scratch: Path, code: str) -> None:
+    graph = _chain_graph(haute_scratch)
+    graph.nodes[1] = _node("double", NodeType.POLARS, code=code)
+
+    walked = walk_graph(graph, _build_node_fn, policy=CollectPolicy.display(record_failures=True))
+
+    # Polars words it `unable to find column "missing"; valid columns: [...]` or
+    # `"missing" not found`, then appends the plan it resolved (whose scan prints the
+    # source's path) and the operations it was resolving.
+    assert walked.errors["double"] == 'Column "missing" does not exist.'
+    assert (
+        walked.errors["shaped"]
+        == 'Upstream node(s) failed: double: Column "missing" does not exist.'
+    )
+
+
+def test_any_other_recorded_polars_failure_is_its_sentence_without_the_plan(
+    haute_scratch: Path,
+) -> None:
+    graph = _chain_graph(haute_scratch)
+    graph.nodes[1] = _node(
+        "double", NodeType.POLARS, code="df = src.with_columns(y=pl.col('x') + 'a')"
+    )
+
+    walked = walk_graph(graph, _build_node_fn, policy=CollectPolicy.display(record_failures=True))
+
+    assert walked.errors["double"].startswith("arithmetic on dtypes i64 and str is not allowed")
+    assert "\n" not in walked.errors["double"]
+
+
 def _expander_graph(root: Path, *consumers: GraphNode, **shaping: object) -> PipelineGraph:
     """A Scenario Expander whose builder contract promises price_adjustment."""
     return PipelineGraph(
@@ -410,9 +445,9 @@ def test_a_consumer_of_a_deselected_column_fails_at_its_own_input(
         walk_graph(graph, _build_node_fn, policy=policy, enforce_contracts=True)
 
     assert str(raised.value) == (
-        "'uses_adj' needs the column 'price_adjustment', which is not in its input. "
-        "(node_id=uses_adj)"
+        "'uses_adj' needs the column 'price_adjustment', which is not in its input."
     )
+    assert raised.value.context["node_id"] == "uses_adj"
 
 
 @_DISPLAY_AND_LAZY_WALKS
@@ -437,7 +472,7 @@ def test_a_shaping_node_that_does_not_create_a_promised_column_still_fails(
         walk_graph(graph, _build_node_fn, policy=policy, enforce_contracts=True)
 
     assert str(raised.value) == (
-        "'t' did not create the column 'new_col', which its contract says it outputs. (node_id=t)"
+        "'t' did not create the column 'new_col', which its contract says it outputs."
     )
 
 
@@ -551,7 +586,7 @@ def test_a_display_walk_refuses_a_result_that_is_not_a_frame(record_failures: bo
 
     walked = walk_graph(_two_node_graph(), _builder(7), policy=policy, enforce_contracts=False)
 
-    assert walked.errors["src"] == "Node 'src' returned int; expected a Polars frame."
+    assert walked.errors["src"] == "'src' returned int; expected a Polars frame."
     assert walked.errors["child"].startswith("Upstream node(s) failed: src: ")
 
 

@@ -679,6 +679,37 @@ class TestHorizontalFunctions:
         assert step.calculation is not None
         assert step.calculation["result_value"] == 12
 
+    def test_coalesce(self, tmp_path):
+        """pl.coalesce(a, b, 0), as a Coalesce step renders it."""
+        p = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {"a": [None], "b": [7.0]}, schema={"a": pl.Float64, "b": pl.Float64}
+        ).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        "df = src.with_columns("
+                        "pl.coalesce(pl.col('a'), pl.col('b'), pl.lit(0)).alias('first'))",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="first")
+        step = _step_by_id(result, "t")
+
+        assert step.expression is not None
+        refs = step.expression["referenced_columns"]
+        assert "a" in refs
+        assert "b" in refs
+        assert step.calculation is not None
+        assert step.calculation["result_value"] == 7.0
+
     def test_horizontal_with_expression_arg(self, tmp_path):
         """pl.max_horizontal(pl.col('x') * 1.1, pl.col('y'))."""
         p = tmp_path / "data.parquet"

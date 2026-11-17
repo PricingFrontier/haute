@@ -67,7 +67,7 @@ A cause several packages here share has its own file and is taken first:
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
+| WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` previews a `WORKBENCH_OUTPUT` inside a submodel by its address, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
 | WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
 | WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
 | WB-48 | Planned | P3 | A typed number with a comma out of place is kept as typed and flagged, on the sheet and on the server alike. |
@@ -268,14 +268,30 @@ exports a quote; the sheets show it and Preview's results stay in the browser. T
 Export, a button on the sheets, holds what an export would be, kept in the form: the
 tables, a CSV of one or a workbook of a sheet each under a file name made of the quote's
 details, headed by names or labels, its values raw or formatted, or a database's named
-connection and the tables each is written to; it is drawn disabled in Preview and the
-app, since nothing runs it.
+connection and the tables each is written to; it is drawn disabled in the app, and in
+Preview but for an Excel workbook of cells (below).
+
+**Decided (12 November 2026):** the first format is an Excel workbook of cells: chosen
+fields of the one-row tables, each written into a cell of a sheet, `Slip!B3` say, of a
+workbook Haute makes, its values typed and formatted as their columns' formats show them,
+each cell naming another for its field's label if it wants one, `Slip!A3` say, the label
+the schema gives the field; and tables written as blocks, each a table's columns chosen
+and ordered, its rows under a header of their labels, their names or none from the
+block's top-left cell, `Slip!A12` say, nothing written under a block in its columns,
+whatever rows a quote gives it. A column or a table the schema loses stays in the
+export as a problem rather than dropping out of it.
+Its first run is Preview's: pressing the Export downloads the workbook of the sample as
+it was last priced. Still to come, each its own slice: the app's run of it (below); a
+template, the analyst's own workbook filled in place of one Haute makes; a cell for each
+row of a table with a row for each value; and cells named in a template in place of an
+address.
 
 **Plan:** Decision first, recorded here before the first slice: which formats the first
 release needs (the quote's tables as CSV or a spreadsheet, an import file for another
 system, a document from a template), whether the Export on the sheets is how the app
 exports or the quote's bar offers exports beside it, and whether a quote exported again
-later reproduces the template it was first exported with or uses the current one. Then exports of a final
+later reproduces the template it was first exported with or uses the current one; the
+first format is decided above. Then exports of a final
 quote, which the store's stages gate them behind, never of a draft, so every export is of a quote
 that does not change while it is final and names the release that priced it; run on the
 app's server for the signed-in underwriter and recorded in the quote's activity log. The
@@ -295,6 +311,8 @@ the workflow, and the template's output for the test quotes is checked in CI.
 
 **Evidence:** `src/haute/_workbench_form.py::ExportWidget` (the Export's settings, read
 strictly); `frontend/src/workbench/panel/ExportSettings.tsx` (where they are chosen);
+`src/haute/_workbench_export.py` (an Excel workbook of cells written, and Preview's
+route to it, `POST /api/workbench/export`);
 `frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
 show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);
 `src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
@@ -488,7 +506,7 @@ specification and the field stop calling the shape older.
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
 
-### WB-41 — Fence `loadingMore` in `useQuoteListStore`, resolve submodel `WORKBENCH_OUTPUT` runtime targets in `priceSample`, and remove stale blank-form rationale
+### WB-41 — Fence `loadingMore` in `useQuoteListStore`, preview a submodel `WORKBENCH_OUTPUT` by address in `priceSample`, and remove stale blank-form rationale
 **Why:** Three defects affect the underwriter app's quote list pagination store, live
 sample pricing in the Workbench view, and the workbench high-level specification:
 1. In `useQuoteListStore` (`frontend/src/app/useQuoteListStore.ts`), `load` does not
@@ -512,8 +530,8 @@ sample pricing in the Workbench view, and the workbench high-level specification
 **Plan:** Reset `loadingMore: false` in `useQuoteListStore.load` and guard
 `set({ loadingMore: false })` in `more()` with `if (listAsked.is(attempt))`; search
 both `graph.nodes` and `graph.submodels` for `NODE_TYPES.WORKBENCH_OUTPUT` in
-`priceSample` and resolve a submodel child output's qualified runtime node ID through
-`qualifiedRuntimeNodeId` before calling `previewNode`; and remove the stale
+`priceSample` and send a submodel child output as the preview's target by its address
+(`childAddress(occurrence, node)`) when calling `previewNode`; and remove the stale
 `The blank form is a form` bullet from `specs/workbench/high-level.md`.
 
 The regression for the first defect holds an old list's `more()`, loads another list,
@@ -525,15 +543,15 @@ it did not run.
 **Acceptance:** Switching quote lists while `more()` is in flight resets `loadingMore`
 immediately and the stale `more()` completion cannot clear a newer list's `loadingMore`
 state; `priceSample` prices a workbench pipeline whose `Workbench Output` is inside a
-submodel by sending the qualified runtime node ID to `/api/pipeline/preview` and
-returning its priced tables; and `specs/workbench/high-level.md` states one consistent
+submodel by sending the child's address to `/api/pipeline/preview` and returning its
+priced tables; and `specs/workbench/high-level.md` states one consistent
 missing-folder rule.
 
 **Dependencies:** None.
 
 **Evidence:** `frontend/src/app/useQuoteListStore.ts::useQuoteListStore`;
 `frontend/src/workbench/priceSample.ts::priceSample`;
-`frontend/src/utils/submodelRuntimeTarget.ts::qualifiedRuntimeNodeId`;
+`frontend/src/utils/nodeAddress.ts::childAddress`;
 `specs/workbench/high-level.md`.
 
 ### WB-46 — The quote store's connections and the gate have deadlines

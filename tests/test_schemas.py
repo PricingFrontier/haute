@@ -27,6 +27,7 @@ from haute.schemas import (
     TraceRequest,
     WriteOutputRequest,
 )
+from tests._preview_targets import node_target
 
 _LIST_UNBUILT_MODELS = textwrap.dedent(
     """
@@ -81,7 +82,7 @@ class TestValidation:
         with pytest.raises(ValidationError):
             GraphEdge()
 
-    def test_sink_request_requires_node_id(self):
+    def test_sink_request_requires_target(self):
         with pytest.raises(ValidationError):
             WriteOutputRequest(graph=Graph())
 
@@ -94,13 +95,13 @@ class TestValidation:
             PreviewNodeRequest(graph=Graph())
 
     def test_trace_request_accepts_minimal(self):
-        r = TraceRequest(seed_plan=[], graph=Graph())
+        r = TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"))
         assert r.row_index == 0
 
     def test_trace_request_requires_its_previews_seed_plan(self):
         # A trace names the generations its preview read, even when none.
         with pytest.raises(ValidationError, match="seed_plan"):
-            TraceRequest(graph=Graph())
+            TraceRequest(graph=Graph(), target=node_target("n"))
 
 
 class TestCompositeStructure:
@@ -147,40 +148,40 @@ class TestModelDumpRoundtrip:
 class TestPreviewNodeRequestBoundaries:
     def test_row_limit_zero_fails(self):
         with pytest.raises(ValidationError):
-            PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=0)
+            PreviewNodeRequest(graph=Graph(), target=node_target("n"), row_limit=0)
 
     def test_row_limit_above_max_fails(self):
         with pytest.raises(ValidationError):
-            PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=10001)
+            PreviewNodeRequest(graph=Graph(), target=node_target("n"), row_limit=10001)
 
     def test_row_limit_min_boundary(self):
-        r = PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=1)
+        r = PreviewNodeRequest(graph=Graph(), target=node_target("n"), row_limit=1)
         assert r.row_limit == 1
 
     def test_row_limit_max_boundary(self):
-        r = PreviewNodeRequest(graph=Graph(), node_id="n", row_limit=10000)
+        r = PreviewNodeRequest(graph=Graph(), target=node_target("n"), row_limit=10000)
         assert r.row_limit == 10000
 
 
 class TestTraceRequestBoundaries:
     def test_row_index_negative_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(seed_plan=[], graph=Graph(), row_index=-1)
+            TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_index=-1)
 
     def test_row_index_zero_succeeds(self):
-        r = TraceRequest(seed_plan=[], graph=Graph(), row_index=0)
+        r = TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_index=0)
         assert r.row_index == 0
 
     def test_row_limit_zero_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(seed_plan=[], graph=Graph(), row_limit=0)
+            TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_limit=0)
 
     def test_row_limit_above_max_fails(self):
         with pytest.raises(ValidationError):
-            TraceRequest(seed_plan=[], graph=Graph(), row_limit=10001)
+            TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_limit=10001)
 
     def test_row_limit_min_boundary(self):
-        r = TraceRequest(seed_plan=[], graph=Graph(), row_limit=1)
+        r = TraceRequest(seed_plan=[], graph=Graph(), target=node_target("n"), row_limit=1)
         assert r.row_limit == 1
 
 
@@ -385,10 +386,14 @@ class TestPreviewNodeResponseInheritance:
         )
 
     def test_serialization_includes_inherited_and_own_fields(self) -> None:
+        from haute._node_address_schemas import NodeAddressEntry
         from haute.schemas import ColumnInfo, PreviewNodeResponse
 
+        addresses = {
+            key: NodeAddressEntry(occurrence=None, node_id=key, label=key.upper())
+            for key in ("n1", "n2")
+        }
         resp = PreviewNodeResponse(
-            node_id="n1",
             status="ok",
             row_count=42,
             column_count=3,
@@ -400,6 +405,8 @@ class TestPreviewNodeResponseInheritance:
             timings=[],
             memory=[],
             node_statuses={"n1": "ok", "n2": "ok"},
+            node_addresses=addresses,
+            occurrence_ports=[],
         )
         d = resp.model_dump()
         # Inherited from NodeResult
@@ -411,21 +418,26 @@ class TestPreviewNodeResponseInheritance:
         assert d["memory_bytes"] == 1024
         assert d["error"] is None
         # Own fields
-        assert d["node_id"] == "n1"
         assert d["node_statuses"] == {"n1": "ok", "n2": "ok"}
+        assert d["node_addresses"] == {
+            "n1": {"occurrence": None, "node_id": "n1", "label": "N1"},
+            "n2": {"occurrence": None, "node_id": "n2", "label": "N2"},
+        }
+        assert d["occurrence_ports"] == []
 
     def test_deserialization_from_dict(self) -> None:
         from haute.schemas import PreviewNodeResponse
 
         data = {
-            "node_id": "n2",
+            "node_addresses": {"n2": {"occurrence": None, "node_id": "n2", "label": "N2"}},
+            "occurrence_ports": [],
             "status": "error",
             "error": "bad column",
             "error_line": 5,
             "row_count": 0,
         }
         resp = PreviewNodeResponse.model_validate(data)
-        assert resp.node_id == "n2"
+        assert resp.node_addresses["n2"].label == "N2"
         assert resp.status == "error"
         assert resp.error == "bad column"
         assert resp.error_line == 5
@@ -435,7 +447,7 @@ class TestPreviewNodeResponseInheritance:
         """Fields with defaults in NodeResult should have same defaults."""
         from haute.schemas import PreviewNodeResponse
 
-        resp = PreviewNodeResponse(node_id="n1", status="ok")
+        resp = PreviewNodeResponse(status="ok", node_addresses={}, occurrence_ports=[])
         assert resp.row_count == 0
         assert resp.column_count == 0
         assert resp.columns == []

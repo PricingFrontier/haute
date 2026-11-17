@@ -99,20 +99,10 @@ function SubmodelNode({
       >
         <Package size={16} style={{ color: accent }} className="shrink-0" />
         <span
-          className="shrink-0 text-[10px] font-bold uppercase tracking-[0.1em]"
-          style={{ color: accent }}
-        >
-          SUBMODEL
-        </span>
-        <span
-          data-testid="submodel-name-badge"
+          data-testid="submodel-title"
           title={nodeData.label}
-          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 text-[13px] font-semibold leading-tight"
-          style={{
-            background: `${accent}18`,
-            border: `1px solid ${accent}30`,
-            color: "var(--text-primary)",
-          }}
+          className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-tight"
+          style={{ color: "var(--text-primary)" }}
         >
           {nodeData.label}
         </span>

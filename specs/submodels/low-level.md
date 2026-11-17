@@ -4,10 +4,10 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion, schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening, carrying runtime-only shared input bindings for schema warnings. A boundary rename rewrites the config fields the type's specification names as its input selectors (`src/haute/_node_specs.py::NodeSpec`) and, where `_NAMES_INPUTS_IN_OUTPUT_MAPPING` says so, its `output_mapping` ports. |
+| `src/haute/_submodel_instances.py` | Canonical reusable-instance resolver and validator, qualified-id expansion (recording each occurrence's children and port endpoints on the flat graph as its `SubmodelExpansion`), schema-led reference rewriting, public-port binding, create-instance alias allocation, and targeted occurrence flattening, carrying runtime-only shared input bindings for schema warnings. A boundary rename rewrites the config fields the type's specification names as its input selectors (`src/haute/_node_specs.py::NodeSpec`) and, where `_NAMES_INPUTS_IN_OUTPUT_MAPPING` says so, its `output_mapping` ports. |
 | `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base; `submodel_source_key` is the resolved-file identity by which the parser and recovery group registrations; `definition_pipeline_dir` turns a definition file's path into its `pipeline_dir` and `is_pipeline_dir` validates one. `SUBMODEL_PACKAGE` (`"modules"`) is the package beside a pipeline that holds its definition modules: `submodel_module_file` is the file `from modules import <name>` imports, `modules/<name>.py`, and `submodel_module_name` the name a definition file imports as, raising `MalformedSubmodelPathError` for a file that is not directly in `modules/` or whose name is not a canonical identifier as a node's is (ASCII letters, digits and underscores, not starting with a digit), is a keyword, starts with two underscores or is a Python built-in. |
 | `src/haute/_pipeline_revision.py` | Build deterministic canonical-graph revisions and the separate raw-artifact editor-document revision used by recovery-aware compare-and-swap. |
-| `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, then gives the flattened graph's workbench nodes their tables from the form folder of the configured project root (the current project's, `haute._project_context.current_project`), or from the form a preview request carries (`haute._workbench_nodes.with_form_tables`, [workbench](../workbench/low-level.md)); `flatten_with_form_tables` does the same for a graph read from disk or planned in process, which the assistant resolves and runs. Internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names, and gives nothing. |
+| `src/haute/_flatten.py` | Public flatten/dissolve entry point: validates and expands canonical occurrences through `_submodel_instances.py`. `flatten_executable_graph` is the entry every route running a browser graph uses: it refuses a graph with an executable-name violation (codegen naming rule) before flattening, then gives the flattened graph's workbench nodes their tables from the form folder of the configured project root (the current project's, `haute._project_context.current_project`), its sample replaced by the one an editor request carries (its `sample`), or from the form a preview request carries (`haute._workbench_nodes.with_form_tables`, [workbench](../workbench/low-level.md)); `flatten_with_form_tables` does the same for a graph read from disk or planned in process, which the assistant resolves and runs. Internal flattening (a staged dissolve, save) uses `flatten_graph`, since a partly dissolved graph repeats a shared definition's child names, and gives nothing. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transforms: extract selected nodes out of a `PipelineGraph` into a new submodel, and, for a plain node's Create Instance, wrap one node in place in a one-node definition and place an unbound instance beside it; each produces the updated parent graph and submodel metadata. `_REFUSES_NODE_INSTANCE` names the types a node instance cannot wrap besides a singleton. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): transform-only `POST /create`, `POST /instance` and `POST /dissolve`, plus read-only persisted `GET /{definition_id}`. It validates the current parent revision and maps failures without writing files. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | Owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). `chooseInstanceInput` applies the instance binding rule; `retargetSubmodelInput` moves or removes an occurrence binding without changing its definition. Boundary transforms preserve the shared public interface. |
@@ -152,7 +152,10 @@ Expansion is a pure transform per instance:
    conflicting name, including when any of them is renamed.
 3. Build one schema-declared reference map per occurrence from local node ids
    to qualified runtime ids and from each bound public input port id to its
-   upstream parent identity. Rewrite cloned child configs through that map.
+   upstream parent identity. The expansion keeps them, with each declared output
+   port's producing endpoint, as its record (`SubmodelExpansion` on the flat
+   graph), which resolves request addresses and labels answers
+   ([server API](../server-api/low-level.md), "Node addresses"). Rewrite cloned child configs through that map.
    Also rewrite remaining parent consumers from the selected occurrence's
    output names (see Output names below) to the qualified runtime output source,
    and a renamed clone's siblings from its definition name to its clone name. When
@@ -187,16 +190,14 @@ Removing one listed frame deletes its `SubmodelInputPort`, every synthetic child
 every `in__<name>` parent binding targeting an occurrence of the definition
 in one history transaction. This operation is intentionally distinct from
 ordinary boundary-edge deletion, which retains the shared in-use guard.
-Input boundary history projections retain that definition-wide parent-binding
-slice, and the parent edge order it was projected from, so Undo and Redo
-restore the interface, its parent connections, and their original positions
-together. Parent edge order is persisted state — the dirty fingerprint
+A boundary edit is one history step of the whole document (the pipeline and
+every definition), so Undo and Redo restore the interface, its parent
+connections, and their original positions together. Parent edge order is persisted state — the dirty fingerprint
 compares it and codegen emits `connect` calls in it — so a restored binding
 returns to its own position rather than to the end of the parent edge list.
-Output boundary history projections retain the occurrence output identities,
-outgoing edge names, and affected parent consumer configs. After prospective
-identities and consumer mappings are reconciled, the same commit replaces that
-projection, so Undo and Redo restore output-count names and Quote Response
+An output-interface edit reconciles the occurrence output identities,
+outgoing edge names, and affected parent consumer configs before it commits,
+in the same step, so Undo and Redo restore output-count names and Quote Response
 source mappings together without changing unrelated parent state. When an edge
 connects two occurrences of that definition, restore its binding before its
 output name: the input projection must not overwrite the resolved output identity.
@@ -883,7 +884,12 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `frontend/src/__tests__/editors/SubmodelEditor.test.tsx` — every declared input
   in the live occurrence panel, moving a connection onto a bound input, Undo and Redo;
   missing columns grouped by input, unavailable schema errors, and clearing the
-  warning section when a later preview reports no warnings.
+  warning section when a later preview reports no warnings; an owner's outputs moved
+  by Alt+arrows and by dragging (`moveSubmodelOutput` in
+  `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts`) in one undoable definition
+  edit, and an instance's listed in the same order without moving them.
+  `tests/test_submodel_instances.py::test_a_definition_keeps_its_output_order_through_a_save`
+  holds that order through the definition file's `output_ports`.
 - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — authoritative instance output labels,
   including an occurrence committed by Create Instance after identity resolution,
   with one or several declared outputs and no outgoing connections.

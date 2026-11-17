@@ -1,9 +1,9 @@
 /**
  * A schema column's row under Keys, Inputs or Outputs: its type and name, its
  * summary to their right, dragged or moved within its block or into the other, removed and opened
- * for its details (specs/workbench).
+ * for its details or where it is used (specs/workbench).
  */
-import { SlidersHorizontal, X } from "lucide-react"
+import { Eye, SlidersHorizontal, X } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
@@ -17,6 +17,7 @@ import useStoreCompareStore from "../../stores/useStoreCompareStore"
 import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import {
   buttonUses,
+  keptUses,
   changeSchemaColumnType,
   conditionUses,
   fieldUses,
@@ -31,9 +32,10 @@ import {
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { ColumnDatabaseDetails, ColumnDatabaseStatus } from "../ColumnDatabaseDetails"
 import { ColumnDetails } from "./ColumnDetails"
+import { ColumnUses } from "./ColumnUses"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
+import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, keptBy, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
 
 /** The types the index can be given: Integer and Text alone. */
 const INDEX_TYPE_OPTIONS = COLUMN_TYPE_OPTIONS.filter((option) => INDEX_TYPES.has(option.value))
@@ -73,12 +75,15 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, d
   const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.name, column.name).length
   const tested = conditionUses(form, table.name, column.name).length
-  const used = buttonUses(form, table.name, column.name).length
+  // An Export of cells keeps it, as a problem, so it is counted apart.
+  const kept = keptUses(form, table.name, column.name).length
+  const used = buttonUses(form, table.name, column.name).length - kept
   const uses = shown + tested + used
   // A column a sheet shows, a condition tests or an Import or an Export uses is removed once the question is answered yes.
   const remove = async () => {
-    const text = `${usedBy(shown, tested, used).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
-    if (uses > 0 && !(await confirmed({ title: `Remove column ${column.name}?`, text, confirm: "Remove", danger: true }))) return
+    const taken = uses > 0 ? [`${usedBy(shown, tested, used).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`] : []
+    const text = [...taken, ...(kept > 0 ? [keptBy(kept, "it")] : [])].join(" ")
+    if (uses + kept > 0 && !(await confirmed({ title: `Remove column ${column.name}?`, text, confirm: "Remove", danger: true }))) return
     change((f) => removeSchemaColumn(f, table.name, column.name))
   }
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
@@ -179,6 +184,15 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, d
             style={{ color: details === "config" ? "var(--text-primary)" : "var(--text-muted)" }}
           />
         )}
+        <IconButton
+          icon={Eye}
+          onClick={() => onToggleDetails("uses")}
+          aria-expanded={details === "uses"}
+          aria-label={`Where ${column.name} is used`}
+          title="Where it's used"
+          className="self-center"
+          style={{ color: details === "uses" ? "var(--text-primary)" : "var(--text-muted)" }}
+        />
         {fixed || column.index ? (
           // The index has no remove: the operations give it and take it away.
           <span className="size-5 shrink-0" aria-hidden="true" />
@@ -205,6 +219,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, d
       </div>
       {details === "database" && <ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} />}
       {details === "config" && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
+      {details === "uses" && <ColumnUses form={form} table={table} column={column} />}
     </div>
   )
 }

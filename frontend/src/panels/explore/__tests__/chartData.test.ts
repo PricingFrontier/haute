@@ -165,7 +165,6 @@ function result(
   ]
   return {
     version: 1,
-    node_id: "explore_1",
     pivot_id: sourcePivot.id,
     source: "pricing",
     data_version: "dataframe-current",

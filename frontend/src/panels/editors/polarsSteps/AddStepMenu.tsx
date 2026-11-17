@@ -45,6 +45,7 @@ const CALCULATION_DESCRIPTIONS: Partial<Record<CalculationId, string>> = {
   formula: "Compute a new or replaced column from a formula",
   if_then: "Each row takes the value of the first condition it meets",
   window: "A group's value on every row",
+  coalesce: "Each row takes the first of several values that isn't missing",
   sum_across: "Add values across columns, skipping missing ones",
   join_text: "Join text from several values with a separator",
   value: "A column, a number or a constant as it is",
@@ -54,6 +55,7 @@ const CALCULATION_METHODS: Partial<Record<CalculationId, string>> = {
   formula: "with_columns",
   if_then: "when/then/otherwise",
   window: "over",
+  coalesce: "coalesce",
   sum_across: "sum_horizontal",
   join_text: "concat_str",
   value: "lit",
@@ -77,7 +79,7 @@ function calculationMenuEntry(id: CalculationId, extra: Partial<Entry> = {}): En
   }
 }
 
-const CHIP_CALCULATIONS: CalculationId[] = ["formula", "if_then", "window"]
+const CHIP_CALCULATIONS: CalculationId[] = ["formula", "if_then", "window", "coalesce"]
 
 function windowEntry(agg: WindowAggregation, label: string): Entry {
   const expr: Expr = COLUMNLESS_AGGREGATIONS.has(agg)

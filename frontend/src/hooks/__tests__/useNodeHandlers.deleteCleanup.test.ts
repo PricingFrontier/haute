@@ -7,8 +7,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useNodeHandlers from "../useNodeHandlers"
+import useGraphStore, { resetGraphStoreForTests } from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useUIStore from "../../stores/useUIStore"
+import useOutputWriteStore, { resetOutputWriteStoreForTests } from "../../stores/useOutputWriteStore"
 import { makeNode, makeSolveResult } from "../../test-utils/factories"
 
 vi.mock("../../utils/layout", () => ({
@@ -17,9 +19,8 @@ vi.mock("../../utils/layout", () => ({
 
 function makeParams() {
   return {
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     nodeIdCounter: { current: 10 },
-    lastSelectedNodeRef: { current: null as Node | null },
+    lastSelectedKeyRef: { current: null as string | null },
     setNodes: vi.fn(),
     setNodesAndEdges: vi.fn(),
     setSelectedNode: vi.fn(),
@@ -30,9 +31,15 @@ function makeParams() {
   }
 }
 
+/** The canvas the handlers read, as the graph store holds it. */
+function showGraph(nodes: Node[], edges: Edge[] = []) {
+  useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels: {} })
+}
+
 describe("useNodeHandlers - cache cleanup on delete", () => {
   beforeEach(() => {
     vi.useRealTimers()
+    resetGraphStoreForTests()
     useNodeResultsStore.setState({
       previews: {},
       columnCache: {},
@@ -55,7 +62,7 @@ describe("useNodeHandlers - cache cleanup on delete", () => {
     // cache is cleared only after it.
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
 
     // Seed the store with an active solve job + result for n1
     useNodeResultsStore.setState({
@@ -113,7 +120,7 @@ describe("useNodeHandlers - cache cleanup on delete", () => {
   it("clears the deleted node's cache in the same task as its removal", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
-    params.graphRef.current = { nodes: [n1], edges: [] }
+    showGraph([n1])
     useNodeResultsStore.getState().setPreview("n1", {
       nodeId: "n1",
       nodeLabel: "Node 1",
@@ -134,9 +141,25 @@ describe("useNodeHandlers - cache cleanup on delete", () => {
     expect(useNodeResultsStore.getState().getPreview("n1")).toBeNull()
   })
 
+  it("forgets a deleted Data Output's write, even one still writing", () => {
+    resetOutputWriteStoreForTests()
+    const params = makeParams()
+    showGraph([makeNode("n1"), makeNode("n2")])
+    useOutputWriteStore.getState().begin("n1", "write-a")
+    useOutputWriteStore.getState().begin("n2", "write-b")
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode("n1")
+    })
+
+    expect(useOutputWriteStore.getState().writes.n1).toBeUndefined()
+    expect(useOutputWriteStore.getState().writes.n2?.phase).toBe("writing")
+  })
+
   it("multiple rapid deletes each clear their own cache (no missed nodes)", () => {
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1"), makeNode("n2"), makeNode("n3")], edges: [] }
+    showGraph([makeNode("n1"), makeNode("n2"), makeNode("n3")])
     const { setPreview } = useNodeResultsStore.getState()
     const mkData = (id: string) => ({
       nodeId: id, nodeLabel: `Node ${id}`,

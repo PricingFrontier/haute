@@ -6,6 +6,7 @@ from typing import Any
 
 import polars as pl
 import pytest
+import structlog.testing
 
 from haute._polars_utils import streaming_collect
 from haute._rating import (
@@ -21,6 +22,7 @@ from haute._rating import (
     normalise_rating_key,
 )
 from haute.errors import (
+    ConfigSettingError,
     RatingExtremaUndefinedError,
     RatingFactorMissingError,
     SchemaMismatchError,
@@ -101,15 +103,11 @@ class TestNormaliseBandingFactors:
 
 class TestApplyRatingTable:
     def test_single_factor_lookup(self) -> None:
-        # PIN REVISION (3a.3): a lookup miss without a default is now a
-        # RatingTableMissError by default (tests/test_rating_miss_fail_loud.py);
-        # the miss -> null shape this test pins requires the explicit
-        # on_missing="neutral" opt-in.
+        # A miss without a default stays null (tests/test_rating_misses.py).
         lf = pl.DataFrame({"region": ["North", "South", "East"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
             "output_column": "region_factor",
-            "on_missing": "neutral",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": "South", "value": 0.9},
@@ -170,16 +168,11 @@ class TestApplyRatingTable:
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, 1.0]
 
-    def test_no_default_with_neutral_opt_in_leaves_null(self) -> None:
-        # PIN REVISION (3a.3): formerly `test_no_default_leaves_null`, which
-        # pinned the silent miss -> null path. Null is now reachable only via
-        # the explicit on_missing="neutral" opt-in; the default is fail-loud
-        # (tests/test_rating_miss_fail_loud.py).
+    def test_no_default_leaves_null(self) -> None:
         lf = pl.DataFrame({"region": ["North", "Missing"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
             "output_column": "factor",
-            "on_missing": "neutral",
             "entries": [{"region": "North", "value": 1.5}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -209,13 +202,10 @@ class TestApplyRatingTable:
 
     def test_numeric_factor_cast_to_string(self) -> None:
         """Integer factor columns should be cast to Utf8 for the join."""
-        # PIN REVISION (3a.3): the miss on code 3 needs the explicit
-        # on_missing="neutral" opt-in; without it the miss is loud.
         lf = pl.DataFrame({"code": [1, 2, 3]}).lazy()
         table: dict[str, Any] = {
             "factors": ["code"],
             "output_column": "val",
-            "on_missing": "neutral",
             "entries": [
                 {"code": 1, "value": 10.0},
                 {"code": 2, "value": 20.0},
@@ -399,24 +389,19 @@ class TestRatingFactorInputSchema:
 
 
 class TestApplyRatingTableNonNumericDefault:
-    """B13 + 3a.3: an unusable default_value must not crash and must not
-    fill garbage — and a miss with an unusable default is now LOUD.
+    """A default_value is a finite number every miss takes, or blank for none.
 
-    PIN REVISION (3a.3): this class previously pinned "unmatched rows get
-    null" — exactly the silence CODE_REVIEW.md flags (null -> neutral fill
-    in combined outputs presented base-rate pricing as success).  The B13
-    half (no crash, no garbage fill) is kept; the silent-null half is now
-    RatingTableMissError naming the ignored default, and null is reachable
-    only via the explicit on_missing="neutral" opt-in.
+    One that is set but is not a finite number is refused when the table is
+    applied, naming it: ignoring it would leave the table's misses empty
+    unseen, and filling them with it would put garbage in the price.
     """
 
-    def _make_table(self, default_value: Any, **extra: Any) -> dict[str, Any]:
+    def _make_table(self, default_value: Any) -> dict[str, Any]:
         return {
             "factors": ["region"],
             "output_column": "factor",
             "entries": [{"region": "North", "value": 1.2}],
             "default_value": default_value,
-            **extra,
         }
 
     @pytest.mark.parametrize(
@@ -424,36 +409,21 @@ class TestApplyRatingTableNonNumericDefault:
         ["N/A", "abc", float("inf"), float("-inf"), float("nan"), "inf", "nan"],
         ids=["na", "abc", "inf", "neg_inf", "nan", "inf_str", "nan_str"],
     )
-    def test_unusable_default_miss_raises_and_names_default(self, junk_default: Any) -> None:
-        """The default is ignored (B13) and the resulting miss is loud,
-        with the ignored default named so the config bug is visible."""
-        from haute._rating import RatingTableMissError
-
+    def test_unusable_default_is_refused_and_named(self, junk_default: Any) -> None:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
-        with pytest.raises(RatingTableMissError) as excinfo:
-            streaming_collect(_apply_rating_table(lf, self._make_table(junk_default)))
-        message = str(excinfo.value)
-        assert "Unknown" in message
-        assert repr(junk_default) in message
+        with pytest.raises(ConfigSettingError) as excinfo:
+            _apply_rating_table(lf, self._make_table(junk_default))
+        assert repr(junk_default) in str(excinfo.value)
+        assert "'factor'" in str(excinfo.value)
 
     @pytest.mark.parametrize(
         "empty_default",
         [None, "", "   "],
         ids=["none", "empty", "whitespace"],
     )
-    def test_empty_default_miss_raises_plain(self, empty_default: Any) -> None:
-        """No default configured at all: the miss error has no default note."""
-        from haute._rating import RatingTableMissError
-
+    def test_empty_default_leaves_the_miss_null(self, empty_default: Any) -> None:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
-        with pytest.raises(RatingTableMissError) as excinfo:
-            streaming_collect(_apply_rating_table(lf, self._make_table(empty_default)))
-        assert "Note:" not in str(excinfo.value)
-
-    def test_unusable_default_with_neutral_opt_in_leaves_null(self) -> None:
-        """B13's no-garbage-fill guarantee, under the explicit opt-in."""
-        lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
-        result = _apply_rating_table(lf, self._make_table("N/A", on_missing="neutral")).collect()
+        result = streaming_collect(_apply_rating_table(lf, self._make_table(empty_default)))
         assert result["factor"].to_list() == [1.2, None]
 
     def test_valid_numeric_string_still_works(self) -> None:
@@ -513,12 +483,10 @@ class TestApplyRatingTableDuplicateEntries:
 
     def test_no_duplicates_unchanged(self) -> None:
         """When no duplicates exist, behaviour is unchanged."""
-        # PIN REVISION (3a.3): the miss on "c" needs on_missing="neutral".
         lf = pl.DataFrame({"k": ["a", "b", "c"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
             "output_column": "val",
-            "on_missing": "neutral",
             "entries": [
                 {"k": "a", "value": 1.0},
                 {"k": "b", "value": 2.0},
@@ -889,8 +857,6 @@ class TestAllNullRatingTable:
         passed through unrated while the step still combined its output
         column, so the run failed later on a column that was never written.
         """
-        from haute.errors import ConfigSettingError
-
         entries: list[dict[str, Any]] = [{"k": f"level_{index}"} for index in range(100)]
         entries.append({"k": "a", "value": 2.0})
         table: dict[str, Any] = {"factors": ["k"], "output_column": "out", "entries": entries}
@@ -1130,8 +1096,7 @@ class TestSequentialRatingTables:
 
     def test_three_tables_sequential_with_nulls(self) -> None:
         """Three tables in sequence, some with nulls — nulls propagate correctly."""
-        # PIN REVISION (3a.3): each table has a deliberate miss, which now
-        # requires the explicit on_missing="neutral" opt-in.
+        # Each table has a deliberate miss, left null.
         lf = pl.DataFrame({"k": ["a", "b", "c"]}).lazy()
         for i, entries in enumerate(
             [
@@ -1143,7 +1108,6 @@ class TestSequentialRatingTables:
             table: dict[str, Any] = {
                 "factors": ["k"],
                 "output_column": f"t{i}",
-                "on_missing": "neutral",
                 "entries": entries,
             }
             lf = _apply_rating_table(lf, table)
@@ -1280,13 +1244,11 @@ class TestExtremeFloatValues:
     def test_combine_with_null_uses_identity(self) -> None:
         """Null factor folds in as the multiplicative identity (1.0).
 
-        PIN REVISION (3a.3): this test previously documented the silent
-        miss -> neutral default.  In the rating-step path nulls now reach
-        combine only through the explicit ``on_missing: "neutral"`` opt-in
-        (misses are otherwise RatingTableMissError, and every opted-in
-        miss is counted and logged — tests/test_rating_miss_fail_loud.py).
-        This test pins the combine arithmetic itself: an allowed null
-        contributes the neutral element (1.0 multiply / 0.0 add).
+        In the rating-step path a null reaches combine from a table without
+        a default, whose misses are counted and logged
+        (tests/test_rating_misses.py). This test pins the combine arithmetic
+        itself: a null contributes the neutral element (1.0 multiply / 0.0
+        add).
         """
         lf = pl.DataFrame({"a": [2.0, None], "b": [3.0, 5.0]}).lazy()
         result = _combine_rating_columns(lf, ["a", "b"], "multiply", "out").collect()
@@ -1530,13 +1492,11 @@ class TestApplyRatingTableEdgeCases:
         assert "factor" not in result.columns
 
     def test_null_factor_values_in_entries(self) -> None:
-        # PIN REVISION (3a.3): "South" has no entry (the null-keyed entry
-        # never matches), so the miss needs on_missing="neutral".
+        # "South" has no entry (the null-keyed entry never matches): a miss, left null.
         lf = pl.DataFrame({"region": ["North", "South"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
             "output_column": "factor",
-            "on_missing": "neutral",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": None, "value": 0.5},
@@ -1775,12 +1735,10 @@ class TestRatingTableEmptyStringFactorValue:
 
 class TestRatingTableIntColumnStringEntries:
     def test_utf8_cast_handles_int_vs_string(self) -> None:
-        # PIN REVISION (3a.3): the miss on code 3 needs on_missing="neutral".
         lf = pl.DataFrame({"code": [1, 2, 3]}).lazy()
         table: dict[str, Any] = {
             "factors": ["code"],
             "output_column": "val",
-            "on_missing": "neutral",
             "entries": [
                 {"code": "1", "value": 10.0},
                 {"code": "2", "value": 20.0},
@@ -2013,6 +1971,10 @@ class TestWs11RatingHardening:
                 "factor",
             )
 
+    @staticmethod
+    def _miss_reports(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+
     def test_miss_guard_survives_projection_pushdown(self) -> None:
         lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
         table = {
@@ -2023,14 +1985,12 @@ class TestWs11RatingHardening:
 
         projected = _apply_rating_table(lf, table).select("region")
 
-        from haute._rating import RatingTableMissError
-
-        with pytest.raises(RatingTableMissError):
+        with structlog.testing.capture_logs() as logs:
             streaming_collect(projected)
+        [report] = self._miss_reports(logs)
+        assert report["missing_keys"] == [{"region": "missing"}]
 
     def test_miss_guard_survives_a_filter_that_excludes_the_missing_row(self) -> None:
-        from haute._rating import RatingTableMissError
-
         lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
         table = {
             "factors": ["region"],
@@ -2040,8 +2000,10 @@ class TestWs11RatingHardening:
 
         filtered = _apply_rating_table(lf, table).filter(pl.col("region") != "missing")
 
-        with pytest.raises(RatingTableMissError):
+        with structlog.testing.capture_logs() as logs:
             streaming_collect(filtered)
+        [report] = self._miss_reports(logs)
+        assert report["missing_keys"] == [{"region": "missing"}]
 
     def test_miss_guard_validates_only_the_rows_a_limit_reads(self) -> None:
         lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
@@ -2051,9 +2013,11 @@ class TestWs11RatingHardening:
             "entries": [{"region": "north", "value": 2.0}],
         }
 
-        limited = streaming_collect(_apply_rating_table(lf, table).head(1))
+        with structlog.testing.capture_logs() as logs:
+            limited = streaming_collect(_apply_rating_table(lf, table).head(1))
 
         assert limited.to_dicts() == [{"region": "north", "factor": 2.0}]
+        assert self._miss_reports(logs) == []
 
     @pytest.mark.parametrize(
         "dtype",

@@ -10,7 +10,7 @@ import type { PreviewNodeResponse } from "../../api/types"
 import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -23,7 +23,7 @@ import { pendingSavesSettled } from "../../stores/pendingSaves"
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
   loadPipelineDocument: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -45,7 +45,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -85,15 +85,11 @@ async function advanceTimers(ms: number) {
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -256,10 +252,10 @@ describe("usePipelineAPI - preview and save requests", () => {
       })
 
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
 
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [] })
 
       // Fire two saves without awaiting the first
       await act(async () => {
@@ -277,9 +273,9 @@ describe("usePipelineAPI - preview and save requests", () => {
       let answer!: (response: Awaited<ReturnType<typeof savePipeline>>) => void
       mockSave.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [] })
       const sourceFile = useDocumentStatusStore.getState().sourceFile
       expect(pendingSavesSettled(sourceFile)).toBeNull()
 
@@ -395,12 +391,11 @@ describe("usePipelineAPI - preview and save requests", () => {
       })
 
       const params = makeParams()
-      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
-      // markSaved captures from useGraphStore, keep the two in sync.
-      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
 
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+      // The canvas the saves send, after the load sets the empty graph it loaded.
+      useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
 
       await act(async () => {
         result.current.handleSave()
@@ -415,9 +410,10 @@ describe("usePipelineAPI - preview and save requests", () => {
         expect(toasts.some((t) => t.type === "error")).toBe(true)
       })
 
-      // After the first success, lastSavedSnapshot should be non-null.
-      // The failing second save's catch block must NOT touch it.
+      // After the first success, lastSavedSnapshot is the graph that save sent,
+      // not the loaded one. The failing second save's catch block must NOT touch it.
       expect(useGraphStore.getState().lastSavedSnapshot).not.toBeNull()
+      expect(useGraphStore.getState().lastSavedSnapshot!.nodes.map((node) => node.id)).toEqual(["n1"])
     })
   })
 
@@ -489,7 +485,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("honours a custom preview debounce before starting the API request", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -524,7 +519,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("waits 200 ms by default before starting the API request", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -607,7 +601,6 @@ describe("usePipelineAPI - preview and save requests", () => {
       })
       useGraphStore.setState({ structuralVersion: 4 })
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [{ name: "b", dtype: "i64" }],
         preview: [{ b: 2 }],
@@ -636,7 +629,6 @@ describe("usePipelineAPI - preview and save requests", () => {
       // modifies a node's config.
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [{ name: "b", dtype: "i64" }],
         preview: [{ b: 2 }],
@@ -694,7 +686,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("refetches when cached preview source differs from active source", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -746,7 +737,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("refetches when cached preview row limit differs from current row limit", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
@@ -824,7 +814,6 @@ describe("usePipelineAPI - preview and save requests", () => {
 
       await act(async () => {
         resolvePreview(makePreviewResponse({
-          node_id: "n1",
           status: "ok",
           columns: [{ name: "stale", dtype: "i64" }],
           preview: [{ stale: 1 }],
@@ -850,7 +839,6 @@ describe("usePipelineAPI - preview and save requests", () => {
     it("cancelPreview clears a pending debounced preview before the API request starts", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
       mockPreview.mockResolvedValue(makePreviewResponse({
-        node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],

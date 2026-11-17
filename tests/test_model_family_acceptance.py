@@ -529,6 +529,7 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
     native fit: a cancelled or failed run publishes nothing, the last completed
     run's model still loads and scores (its result restores as it was), and a
     newer success publishes its own model."""
+    from haute._node_addresses import resolved_request
     from haute.modelling._algorithms import ALGORITHM_REGISTRY
     from haute.routes._job_store import JobStore
     from haute.routes._training_lifecycle import TrainService
@@ -584,7 +585,10 @@ def test_native_training_lifecycle_keeps_the_last_good_model(
             "edges": [make_edge("source", "quoted").model_dump()],
         }
     )
-    body = TrainRequest(graph=graph, node_id="quoted")
+    # Resolved over its own graph, as the route resolves it over the flattened document.
+    body = resolved_request(
+        TrainRequest(graph=graph, target={"occurrence": None, "node_id": "quoted"}), graph
+    )
 
     def execute_and_sink(_body, _preamble_ns, _row_limit, job_id, **kwargs):
         prepared = tmp_path / f"prep_{job_id}.parquet"

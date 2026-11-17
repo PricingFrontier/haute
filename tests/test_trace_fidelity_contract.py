@@ -175,6 +175,7 @@ def test_parent_collision_provenance_is_symmetric_and_order_independent() -> Non
         order=["left", "right", "child"],
         source_ids={"left", "right"},
         node_map=node_map,
+        name_of=lambda key: node_map[key].data.label,
         parents_of={"child": ["left", "right"]},
         cached_rows=cached_rows,
     )[-1]
@@ -182,6 +183,7 @@ def test_parent_collision_provenance_is_symmetric_and_order_independent() -> Non
         order=["left", "right", "child"],
         source_ids={"left", "right"},
         node_map=node_map,
+        name_of=lambda key: node_map[key].data.label,
         parents_of={"child": ["right", "left"]},
         cached_rows=cached_rows,
     )[-1]

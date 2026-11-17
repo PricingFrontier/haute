@@ -46,7 +46,7 @@ const okHistogram: NonNullable<ExploreColumnStat["histogram"]> = {
 
 function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   return {
-    producer_node_id: "prep_1",
+    producer_label: "prep_1",
     source: "pricing",
     data_version: "data-v1",
     row_count: 1234,

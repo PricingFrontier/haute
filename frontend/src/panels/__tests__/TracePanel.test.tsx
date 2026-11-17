@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { makeTraceDiagnostic } from "../../test-utils/factories"
+import { makeTraceDiagnostic, makeTraceOmission, runtimeKey } from "../../test-utils/factories"
 import { makeTraceResult } from "../../test-utils/factories"
-import { makeTraceStep } from "../../test-utils/factories"
+import { makeTraceStep, type TraceResultFixture, type TraceStepFixture } from "../../test-utils/factories"
 import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
@@ -16,7 +16,7 @@ vi.mock("../editors/shared/tableClipboard", () => ({
   downloadTextFile: vi.fn(() => true),
 }))
 
-function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
+function makeStep(overrides: TraceStepFixture = {}): TraceStep {
   return makeTraceStep({
     node_id: "n1",
     node_name: "Transform 1",
@@ -36,7 +36,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
   })
 }
 
-function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
+function makeTrace(overrides: TraceResultFixture = {}): TraceResult {
   return makeTraceResult({
     target_node_id: "n2",
     row_index: 0,
@@ -128,14 +128,14 @@ describe("TracePanel", () => {
         trace={makeTrace({
           column: null,
           steps: [makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 })],
-          omissions: [{
+          omissions: [makeTraceOmission({
             node_id: "api",
             node_name: "API",
             node_type: "apiInput",
             topological_rank: 0,
             reason: "ambiguous_source_frame",
             diagnostic_index: 0,
-          }],
+          })],
           correlation_diagnostics: [makeTraceDiagnostic({
             code: "ambiguous_source_frame",
             severity: "warning",
@@ -229,7 +229,7 @@ describe("TracePanel", () => {
       <TracePanel
         trace={makeTrace({
           correlation_diagnostics: [
-            {
+            makeTraceDiagnostic({
               code: "ambiguous_row_match",
               severity: "warning",
               reason: "relaxed_match_ambiguous",
@@ -243,7 +243,7 @@ describe("TracePanel", () => {
               matched_row_count: 2,
               matched_row_indices: [0, 1],
               seed_node_ids: [],
-            },
+            }),
           ],
         })}
         onClose={vi.fn()}
@@ -298,14 +298,14 @@ describe("TracePanel", () => {
             makeStep({ node_id: "source", node_name: "Source", topological_rank: 0 }),
             makeStep({ node_id: "target", node_name: "Target", topological_rank: 2 }),
           ],
-          omissions: [{
+          omissions: [makeTraceOmission({
             node_id: "lookup",
             node_name: "Lookup",
             node_type: "polars",
             topological_rank: 1,
             reason: "duplicate_exact_match",
             diagnostic_index: 0,
-          }],
+          })],
           correlation_diagnostics: [makeTraceDiagnostic({
             code: "ambiguous_row_match",
             severity: "warning",
@@ -367,14 +367,14 @@ describe("TracePanel", () => {
         trace={makeTrace({
           column: null,
           steps: [makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 })],
-          omissions: [{
+          omissions: [makeTraceOmission({
             node_id: "upstream",
             node_name: "upstream",
             node_type: "dataInput",
             topological_rank: 0,
             reason,
             diagnostic_index: 0,
-          }],
+          })],
           correlation_diagnostics: [makeTraceDiagnostic({
             code: reason,
             severity: "info",
@@ -816,7 +816,7 @@ describe("TracePanel", () => {
       result_source: null,
       reads: reads.map(([readColumn, nodeId, sourceColumn]) => ({
         column: readColumn,
-        sources: [{ node_id: nodeId, column: sourceColumn, before_code: false }],
+        sources: [{ node_id: runtimeKey(nodeId), column: sourceColumn, before_code: false }],
       })),
       error: null,
       error_type: null,
@@ -870,7 +870,7 @@ describe("TracePanel", () => {
               contributed_columns: ["optimal_premium"],
               derivations: [{
                 ...loaded("optimal_premium", 1.5),
-                reads: [{ column: "profit", sources: [{ node_id: "scenarios", column: "profit", before_code: false }] }],
+                reads: [{ column: "profit", sources: [{ node_id: runtimeKey("scenarios"), column: "profit", before_code: false }] }],
               }],
               node_detail: {
                 detail_type: "optimiser_apply",
@@ -966,7 +966,7 @@ describe("TracePanel", () => {
               derivations: [{
                 column: "y", expression_text: "x * 2", substituted_text: "1 * 2", result_value: 2,
                 not_computable_reason: null, result_source: null, error: null, error_type: null,
-                reads: [{ column: "x", sources: [{ node_id: "carrier", column: "x", before_code: false }] }],
+                reads: [{ column: "x", sources: [{ node_id: runtimeKey("carrier"), column: "x", before_code: false }] }],
               }],
               node_detail: {
                 detail_type: "optimiser_apply", mode: "online", output_column: "y", output_value: 2,
@@ -1064,7 +1064,7 @@ describe("TracePanel", () => {
             derivations: [{
               column: "y", expression_text: "x * 2", substituted_text: "1 * 2", result_value: 2,
               not_computable_reason: null, result_source: null, error: null, error_type: null,
-              reads: [{ column: "x", sources: [{ node_id: "src", column: "x", before_code: false }] }],
+              reads: [{ column: "x", sources: [{ node_id: runtimeKey("src"), column: "x", before_code: false }] }],
             }],
             node_detail: {
               detail_type: "optimiser_apply", mode: "online", output_column: "y", output_value: 2,
@@ -1153,7 +1153,7 @@ describe("TracePanel", () => {
       result_value: 180,
       not_computable_reason: null,
       result_source: null,
-      reads: [{ column: "premium", sources: [{ node_id: "quotes", column: "premium", before_code: false }] }],
+      reads: [{ column: "premium", sources: [{ node_id: runtimeKey("quotes"), column: "premium", before_code: false }] }],
       error: null,
       error_type: null,
     }
@@ -1224,7 +1224,7 @@ describe("TracePanel", () => {
       result_value: value,
       not_computable_reason: null,
       result_source: null,
-      reads: reads.map((read) => ({ column: read, sources: [{ node_id: "premiums", column: read, before_code: false }] })),
+      reads: reads.map((read) => ({ column: read, sources: [{ node_id: runtimeKey("premiums"), column: read, before_code: false }] })),
       error: null,
       error_type: null,
     })

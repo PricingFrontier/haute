@@ -23,7 +23,7 @@ import { mlflowLogAvailability } from "../../utils/mlflowDestinations"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { downloadTextFile } from "../editors/shared/tableClipboard"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "../editors/_shared"
-import { useGraph } from "../useGraph"
+import { useGraph, useResultKey } from "../useGraph"
 import { formatScenarioValue } from "./adjustments"
 import { optimiserResultSavePath } from "./optimiserHelpers"
 import { factorTablesCsv, hasFactorTables } from "./ratebookFactorTables"
@@ -85,11 +85,14 @@ export default function OptimiserPublishSection({
   onUpdateNodeConfig,
 }: OptimiserPublishSectionProps) {
   const { allNodes } = useGraph()
-  const cached = useNodeResultsStore((s) => s.solveResults[nodeId])
+  // The node's solve, its selection and its publishing are kept under its result key;
+  // its id still names it on the canvas, in labels and in the default file path.
+  const resultKey = useResultKey(nodeId)
+  const cached = useNodeResultsStore((s) => s.solveResults[resultKey])
   const selectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
   const recordPointSummary = useNodeResultsStore((s) => s.recordFrontierPointSummary)
   const jobId = cached && !cached.failedAttempt ? cached.jobId : null
-  const publish = usePublishState(nodeId, jobId)
+  const publish = usePublishState(resultKey, jobId)
   const save = useOptimiserPublishStore((s) => s.save)
   const log = useOptimiserPublishStore((s) => s.log)
   const dismissOverwrite = useOptimiserPublishStore((s) => s.dismissOverwrite)
@@ -108,7 +111,7 @@ export default function OptimiserPublishSection({
     && cached.originalResult.mode === "ratebook"
     && cached.selectedPointIndex !== null
     && !hasFactorTables(cached.result.factor_tables)
-    ? { key: `${jobId}:${cached.selectedPointIndex}`, jobId, pointIndex: cached.selectedPointIndex }
+    ? { key: `${jobId}:${cached.selectedPointIndex}`, resultKey, jobId, pointIndex: cached.selectedPointIndex }
     : null
   const tablesLoad = useLatestRequest(
     tablesPoint !== null && tablesPoint.key === tablesWanted ? tablesPoint : null,
@@ -117,7 +120,7 @@ export default function OptimiserPublishSection({
       { signal },
     ),
     (wanted, response) => {
-      recordPointSummary(nodeId, wanted.jobId, wanted.pointIndex, response)
+      recordPointSummary(wanted.resultKey, wanted.jobId, wanted.pointIndex, response)
       if (!hasFactorTables(response.factor_tables)) {
         throw new Error(`No factor tables were returned for frontier point ${wanted.pointIndex + 1}.`)
       }
@@ -167,7 +170,7 @@ export default function OptimiserPublishSection({
     const targetLabel = (pointIndex: number | null) => (pointIndex === null ? "the solved result" : `frontier point ${pointIndex + 1}`)
 
     const runSave = () => save({
-      nodeId,
+      resultKey,
       jobId,
       pointIndex: target,
       outputPath: outputPath || defaultPath,
@@ -185,7 +188,7 @@ export default function OptimiserPublishSection({
       ? publish.overwritePrompt
       : null
     const runLog = () => log({
-      nodeId,
+      resultKey,
       jobId,
       pointIndex: target,
       destination: mlflowDestination,
@@ -208,7 +211,7 @@ export default function OptimiserPublishSection({
           <select
             id={`${nodeId}-publish-target`}
             value={target === null ? "" : String(target)}
-            onChange={(event) => selectPoint(nodeId, event.target.value === "" ? null : Number(event.target.value))}
+            onChange={(event) => selectPoint(resultKey, event.target.value === "" ? null : Number(event.target.value))}
             disabled={busy}
             className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs"
             style={INPUT_STYLE}
@@ -340,7 +343,7 @@ export default function OptimiserPublishSection({
               <button type="button" onClick={() => void save({ ...overwritePrompt.request, overwrite: true })} className="px-2 py-0.5 rounded font-medium" style={{ background: "var(--warning-soft-emphasis)", color: "var(--warning-strong)" }}>
                 Replace existing file
               </button>
-              <button type="button" onClick={() => dismissOverwrite(nodeId, jobId)} className="px-2 py-0.5 rounded" style={{ color: "var(--text-muted)" }}>
+              <button type="button" onClick={() => dismissOverwrite(resultKey, jobId)} className="px-2 py-0.5 rounded" style={{ color: "var(--text-muted)" }}>
                 Cancel
               </button>
             </div>

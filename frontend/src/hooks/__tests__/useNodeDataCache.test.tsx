@@ -8,7 +8,11 @@ import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
 import useNodeWorkStore, { stopNodeWork } from "../../stores/useNodeWorkStore"
 import useGraphStore from "../../stores/useGraphStore"
-import useNodeDataCache, { deriveAvailability, refreshNodeDataCache } from "../useNodeDataCache"
+import useNodeDataCache, {
+  deriveAvailability,
+  nodeDataProblemText,
+  refreshNodeDataCache,
+} from "../useNodeDataCache"
 
 vi.mock("../../api/client", () => ({
   getNodeDataPoint: vi.fn(),
@@ -17,10 +21,6 @@ vi.mock("../../api/client", () => ({
   cancelNodeData: vi.fn(),
   clearNodeData: vi.fn(),
   clearInputCache: vi.fn(),
-}))
-
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 const ensureInputSnapshots = vi.fn(async (_nodes: unknown[], _options?: unknown) => {})
@@ -37,7 +37,14 @@ import {
   getNodeDataPoint,
   runNodeData,
 } from "../../api/client"
-import { makeNodeDataStatus } from "../../test-utils/factories"
+import {
+  makeIdentifiedNode,
+  makeNodeDataPoint,
+  makeNodeDataStatus,
+  type NodeDataPointFixture,
+} from "../../test-utils/factories"
+import { resultKey } from "../../utils/requestGateway"
+import { COPY, OWNER, childKey, loadTwoOccurrences, openOccurrence } from "../../testSupport/twoOccurrencesFixture"
 
 const mockGetPoint = vi.mocked(getNodeDataPoint)
 const mockRun = vi.mocked(runNodeData)
@@ -58,12 +65,22 @@ const edges = [
   { id: "e3", source: "join", target: "banding" },
 ] as never as Parameters<typeof useNodeDataCache>[0]["edges"]
 
+/** Loads `documentNodes` into the graph store: the document every request runs. */
+function loadDocument(documentNodes: typeof nodes, documentEdges: typeof edges = edges) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: documentNodes as never,
+    edges: documentEdges as never,
+    preamble: "",
+    submodels: {},
+  })
+}
+
 function nodeById(id: string) {
   return (nodes as unknown as { id: string }[]).find((node) => node.id === id) as never
 }
 
-function point(overrides: Partial<NodeDataPointResponse> = {}): NodeDataPointResponse {
-  return {
+function point(overrides: NodeDataPointFixture = {}): NodeDataPointResponse {
+  return makeNodeDataPoint({
     consumer_node_id: "explore",
     point: { producer_node_id: "join", port_label: null },
     slot_key: "join||live",
@@ -89,6 +106,15 @@ function point(overrides: Partial<NodeDataPointResponse> = {}): NodeDataPointRes
     build_endpoint: null,
     clear_endpoint: null,
     ...overrides,
+  })
+}
+
+/** A point's consumer: the Explore child of `occurrence`, as the server names and addresses it. */
+function childConsumer(occurrence: string) {
+  const key = `submodel_runtime/${occurrence}/explore`
+  return {
+    consumer_node_id: key,
+    node_addresses: { [key]: { occurrence, node_id: "explore", label: "explore" } },
   }
 }
 
@@ -118,9 +144,13 @@ describe("useNodeDataCache", () => {
     mockClearInputCache.mockReset()
     ensureInputSnapshots.mockReset()
     ensureInputSnapshots.mockResolvedValue(undefined)
+    loadDocument(nodes)
   })
 
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
 
   it("reports the point the backend resolved for this consumer", async () => {
     mockGetPoint.mockResolvedValue(point())
@@ -134,26 +164,196 @@ describe("useNodeDataCache", () => {
     expect(result.current.canBuild).toBe(true)
   })
 
+  it("keeps an open submodel's consumer's point under its occurrence's key, as its readers look it up", async () => {
+    useGraphStore.setState({
+      nodes: nodes as never,
+      edges: edges as never,
+      focus: { instanceId: "pricing", definitionId: "definition_pricing", readOnly: false, rootNodes: [], rootEdges: [] },
+    })
+    mockGetPoint.mockResolvedValue(point(childConsumer("pricing")))
+
+    renderCache("explore")
+
+    await waitFor(() => expect(Object.keys(useNodeDataStore.getState().consumerSlots)).toContain(resultKey("explore")))
+    expect(mockGetPoint.mock.calls.at(-1)?.[0].target).toEqual({ occurrence: "pricing", node_id: "explore" })
+    // Neither the id the answer names nor the bare local id: another occurrence's child shares it.
+    expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("explore")
+    expect(useNodeDataStore.getState().consumerSlots).not.toHaveProperty("submodel_runtime/pricing/explore")
+  })
+
+  it("answers the Refresh and Stop of its own occurrence only", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    mockGetPoint.mockResolvedValue(point({ ...childConsumer("pricing"), state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-owner",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: canvas.find((node) => node.id === "explore") ?? null, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    // The copy's Refresh asks nothing of the owner's consumer; the owner's builds its data.
+    act(() => refreshNodeDataCache(childKey(COPY, "explore")))
+    expect(mockRun).not.toHaveBeenCalled()
+    act(() => refreshNodeDataCache(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledOnce())
+    expect(mockRun.mock.calls[0][0].target).toEqual({ occurrence: "pricing", node_id: "explore" })
+    await waitFor(() => expect(Object.values(useNodeWorkStore.getState().running)).toEqual([childKey(OWNER, "explore")]))
+
+    // Likewise its Stop.
+    await act(async () => stopNodeWork(childKey(COPY, "explore")))
+    expect(mockCancel).not.toHaveBeenCalled()
+    await act(async () => stopNodeWork(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-owner"))
+  })
+
+  it("asks for the copy's point when the view moves to the copy under it, never showing the owner's", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    const explore = canvas.find((node) => node.id === "explore") ?? null
+    mockGetPoint.mockResolvedValueOnce(point({ ...childConsumer("pricing"), data_version: "owner-gen" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: explore, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.dataVersion).toBe("owner-gen"))
+
+    // The copy's canvas shows the same child, so its identity hashes the same: only its key differs.
+    let answerCopy!: (answer: NodeDataPointResponse) => void
+    mockGetPoint.mockReturnValueOnce(new Promise<NodeDataPointResponse>((resolve) => { answerCopy = resolve }))
+    act(() => openOccurrence(COPY))
+
+    expect(result.current.point).toBeNull()
+    await waitFor(() => expect(mockGetPoint).toHaveBeenCalledTimes(2))
+    expect(mockGetPoint.mock.calls[1][0].target).toEqual({ occurrence: "pricing_2", node_id: "explore" })
+    await act(async () => answerCopy(point({ ...childConsumer("pricing_2"), data_version: "copy-gen" })))
+    expect(result.current.dataVersion).toBe("copy-gen")
+  })
+
+  it("keeps a build waiting for its job id with its own occurrence when the view moves to the copy", async () => {
+    loadTwoOccurrences([makeIdentifiedNode("explore", "explore")])
+    act(() => openOccurrence(OWNER))
+    const canvas = useGraphStore.getState().nodes as never as typeof nodes
+    const explore = canvas.find((node) => node.id === "explore") ?? null
+    // Each occurrence's child reads its own slot, missing for both.
+    mockGetPoint.mockImplementation(async (request) => {
+      const consumer = childConsumer(request.target.occurrence ?? "")
+      return point({
+        ...consumer, slot_key: `${consumer.consumer_node_id}||live`, state: "missing", generation: null, data_version: null,
+      })
+    })
+    let answerOwner!: (response: Awaited<ReturnType<typeof runNodeData>>) => void
+    mockRun.mockReturnValueOnce(new Promise((resolve) => { answerOwner = resolve }))
+    mockRun.mockResolvedValueOnce({
+      status: "started", job_id: "job-copy", cached: false, message: "Caching started",
+      point: point({ ...childConsumer("pricing_2"), slot_key: "submodel_runtime/pricing_2/explore||live", state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: explore, allNodes: canvas, edges: [], preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+    act(() => refreshNodeDataCache(childKey(OWNER, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledOnce())
+
+    act(() => openOccurrence(COPY))
+    await waitFor(() => expect(result.current.point?.consumer_node_id).toBe("submodel_runtime/pricing_2/explore"))
+    // The copy's Stop has nothing of its own to stop, and its Refresh is not held up by the owner's build.
+    await act(async () => stopNodeWork(childKey(COPY, "explore")))
+    act(() => refreshNodeDataCache(childKey(COPY, "explore")))
+    await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(2))
+    expect(mockRun.mock.calls[1][0].target).toEqual({ occurrence: "pricing_2", node_id: "explore" })
+
+    await act(async () => answerOwner({
+      status: "started", job_id: "job-owner", cached: false, message: "Caching started",
+      point: point({ ...childConsumer("pricing"), slot_key: "submodel_runtime/pricing/explore||live", state: "building", generation: null, data_version: null }),
+    }))
+    expect(mockCancel).not.toHaveBeenCalledWith("job-owner")
+  })
+
   it("holds a refused point as the node's state, not a toast", async () => {
     const message = "Node 'Explore' must have exactly one incoming connection to read its data (found 0)."
     mockGetPoint.mockRejectedValue(Object.assign(new Error(message), { status: 400, detail: message }))
     const { result } = renderCache("explore")
 
-    await waitFor(() => expect(result.current.unreadable).toBe(message))
+    await waitFor(() => expect(result.current.problem).toEqual({ kind: "refused", reason: message }))
     expect(result.current.point).toBeNull()
     expect(useToastStore.getState().toasts).toEqual([])
+    expect(nodeDataProblemText(result.current.problem!)).toBe(message)
   })
 
-  it("raises a failed point lookup as a toast", async () => {
-    mockGetPoint.mockRejectedValue(Object.assign(new Error("server down"), { status: 500, detail: "server down" }))
+  it.each([
+    ["a conflict", 409, "The workbench is off"],
+    ["a server error", 500, "server down"],
+  ])("holds a point lookup failing with %s as the node's state, not a toast", async (_name, status, detail) => {
+    mockGetPoint.mockRejectedValue(Object.assign(new Error(detail), { status, detail }))
     const { result } = renderCache("explore")
 
-    await waitFor(() =>
-      expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([
-        "Data cache inspection failed: server down",
-      ]),
+    await waitFor(() => expect(result.current.problem).toEqual({ kind: "failed", reason: detail }))
+    expect(result.current.availability).toBe("checking")
+    expect(useToastStore.getState().toasts).toEqual([])
+    expect(nodeDataProblemText(result.current.problem!)).toBe(`Couldn't read the data: ${detail}`)
+  })
+
+  it("asks for the point again when the node's Refresh is pressed after a failed lookup", async () => {
+    mockGetPoint.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.problem?.kind).toBe("failed"))
+    mockGetPoint.mockResolvedValue(point())
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(result.current.availability).toBe("current"))
+    expect(mockGetPoint).toHaveBeenCalledTimes(2)
+    expect(result.current.problem).toBeNull()
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  it("asks for the point again on Refresh when a recheck of current data failed", async () => {
+    mockGetPoint.mockResolvedValueOnce(point())
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("current"))
+    mockGetPoint.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+
+    await act(async () => {
+      useNodeDataStore.getState().bumpEpoch()
+    })
+    await waitFor(() => expect(result.current.problem?.kind).toBe("failed"))
+    expect(result.current.availability).toBe("current")
+    mockGetPoint.mockResolvedValue(point())
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(result.current.problem).toBeNull())
+    expect(mockGetPoint).toHaveBeenCalledTimes(3)
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  it("keeps stale data and the failed refresh as two facts", async () => {
+    mockGetPoint.mockResolvedValue(
+      point({ state: "stale", generation: { ...point().generation!, fresh: false } }),
     )
-    expect(result.current.unreadable).toBeNull()
+    mockRun.mockRejectedValue(Object.assign(new Error("disk full"), { status: 500, detail: "disk full" }))
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("stale"))
+
+    await act(async () => {
+      await result.current.refresh()
+    })
+
+    expect(result.current.availability).toBe("stale")
+    expect(result.current.problem).toEqual({ kind: "failed", reason: "disk full" })
   })
 
   it("gives two consumers of one point their own availability from one slot entry", async () => {
@@ -168,7 +368,7 @@ describe("useNodeDataCache", () => {
       created_at: 1,
     }
     mockGetPoint.mockImplementation(async (args) =>
-      args.node_id === "banding"
+      args.target.node_id === "banding"
         ? point({ consumer_node_id: "banding", demand: ["premium"], generation: narrow, state: "current" })
         : point({ consumer_node_id: "explore", demand: "all", generation: narrow, state: "partial" }),
     )
@@ -199,7 +399,7 @@ describe("useNodeDataCache", () => {
       await explore.result.current.run()
     })
 
-    expect(mockRun).toHaveBeenCalledWith(expect.objectContaining({ node_id: "explore", refresh: false }))
+    expect(mockRun).toHaveBeenCalledWith(expect.objectContaining({ target: { occurrence: null, node_id: "explore" }, refresh: false }))
     await waitFor(() => expect(banding.result.current.jobId).toBe("job-1"))
     expect(banding.result.current.availability).toBe("building")
 
@@ -220,7 +420,7 @@ describe("useNodeDataCache", () => {
 
     mockGetPoint.mockResolvedValue(point())
     act(() => {
-      useNodeDataStore.getState().observePoint(point(), "live", "identity-1")
+      useNodeDataStore.getState().observePoint(point(), "live", "identity-1", "explore")
     })
 
     await waitFor(() => expect(result.current.availability).toBe("current"))
@@ -272,7 +472,7 @@ describe("useNodeDataCache", () => {
     await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(1))
     // Nothing is cached, so there is nothing to replace: it builds rather
     // than forcing a recompute.
-    expect(mockRun.mock.calls[0][0]).toMatchObject({ node_id: "explore", refresh: false })
+    expect(mockRun.mock.calls[0][0]).toMatchObject({ target: { occurrence: null, node_id: "explore" }, refresh: false })
   })
 
   it("re-caches on a refresh request when what is cached is out of date", async () => {
@@ -296,7 +496,7 @@ describe("useNodeDataCache", () => {
     })
 
     await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(1))
-    expect(mockRun.mock.calls[0][0]).toMatchObject({ node_id: "explore", refresh: true })
+    expect(mockRun.mock.calls[0][0]).toMatchObject({ target: { occurrence: null, node_id: "explore" }, refresh: true })
   })
 
   it("leaves current data alone on a refresh request", async () => {
@@ -511,7 +711,7 @@ describe("useNodeDataCache", () => {
       await result.current.clear()
     })
 
-    expect(mockClear).toHaveBeenCalledWith(expect.objectContaining({ node_id: "explore" }))
+    expect(mockClear).toHaveBeenCalledWith(expect.objectContaining({ target: { occurrence: null, node_id: "explore" } }))
     expect(mockClearInputCache).not.toHaveBeenCalled()
     await waitFor(() => expect(result.current.availability).toBe("missing"))
     expect(result.current.rowCount).toBeNull()
@@ -730,6 +930,7 @@ describe("useNodeDataCache", () => {
     mockGetPoint.mockResolvedValue(delegated)
     mockClear.mockResolvedValue({ status: "delegated", point: delegated })
     mockClearInputCache.mockResolvedValue({} as never)
+    loadDocument(quoteNodes)
     const { result } = renderHook(() =>
       useNodeDataCache({ node: nodeById("banding"), allNodes: quoteNodes, edges, preamble: "" }),
     )
@@ -767,6 +968,7 @@ describe("useNodeDataCache", () => {
     })
     mockGetPoint.mockResolvedValue(direct)
     mockClear.mockResolvedValue({ status: "delegated", point: direct })
+    loadDocument(workbenchNodes)
     const { result } = renderHook(() =>
       useNodeDataCache({ node: nodeById("banding"), allNodes: workbenchNodes, edges, preamble: "" }),
     )
@@ -886,7 +1088,7 @@ describe("useNodeDataCache", () => {
 
   it("lets another consumer of the point stop a build this tab started", async () => {
     mockGetPoint.mockImplementation(async (args) =>
-      point({ consumer_node_id: args.node_id, state: "missing", generation: null, data_version: null }),
+      point({ consumer_node_id: args.target.node_id, state: "missing", generation: null, data_version: null }),
     )
     mockRun.mockResolvedValue({
       status: "started",

@@ -5,12 +5,14 @@
  * form store, a lazy chunk, for the editor's navigation guards), and the Workbench
  * Input's tables and sample quote and the Workbench Output's tables from the newest fetch
  * of GET /api/workbench/tables, which are the nodes' ports and which the project's save
- * waits for, with the columns the quote store keeps in each table that the form does not.
+ * waits for, with the columns the quote store keeps in each table that the form does not,
+ * and the sample the view holds, which the pipeline editor's reads send (Live sample).
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchStoreColumn } from "../api/types"
 import { fetchWorkbenchStatus, fetchWorkbenchTables } from "../api/workbench"
+import { setWorkbenchSample, type WorkbenchSample } from "../api/workbenchSample"
 import { canonicalJson } from "../utils/canonicalJson"
 import type { WorkbenchTables } from "../utils/workbenchTables"
 import useGraphStore from "./useGraphStore"
@@ -40,6 +42,21 @@ interface WorkbenchState {
    * the form store is loaded.
    */
   formDirty: boolean
+  /**
+   * The form store's sample, given whenever it changes (null once it has no form), published
+   * for the pipeline editor's reads of the pipeline's data (`setWorkbenchSample`), which send
+   * it in place of the saved sample. While the pipeline's view shows, a sample other than the
+   * one those reads last took raises the node-data epoch, so the preview on screen runs again;
+   * while the workbench's shows, nothing runs until the pipeline's shows again (`showView`).
+   * The first sample noted is the folder's, which the reads already took, and raises nothing.
+   */
+  noteSample: (sample: WorkbenchSample | null) => void
+  /**
+   * The sample the view holds and the one the pipeline editor's reads last took, each as
+   * `canonicalJson`; null until the first sample is noted. `noteSample`'s and `showView`'s.
+   */
+  sampleHeld: string | null
+  sampleRead: string | null
   /**
    * How many times the form's file may have changed on disk: each change the server
    * announces (an edit by hand, a pull or a merge outside Haute, a save from another
@@ -101,8 +118,17 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   showView: (view) => {
     if (view === "workbench" && !get().enabled) throw new Error("The workbench is not enabled")
     set({ activeView: view })
+    if (view === "pipeline") readHeldSample()
   },
   formDirty: false,
+  noteSample: (sample) => {
+    setWorkbenchSample(sample)
+    const held = canonicalJson(sample)
+    set((state) => ({ sampleHeld: held, sampleRead: state.sampleHeld === null ? held : state.sampleRead }))
+    if (get().activeView === "pipeline") readHeldSample()
+  },
+  sampleHeld: null,
+  sampleRead: null,
   formChanges: 0,
   tables: null,
   storeColumns: {},
@@ -139,5 +165,17 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   },
   awaitTables: () => settling,
 }))
+
+/**
+ * The pipeline editor's reads take the sample the view holds from now on: when it is not the
+ * one they last took, the node-data epoch rises, and every reader of node data asks again.
+ * The structural version stays: the sample is no part of the pipeline, and no job reads it.
+ */
+function readHeldSample(): void {
+  const { sampleHeld, sampleRead } = useWorkbenchStore.getState()
+  if (sampleHeld === sampleRead) return
+  useWorkbenchStore.setState({ sampleRead: sampleHeld })
+  useNodeDataStore.getState().bumpEpoch()
+}
 
 export default useWorkbenchStore

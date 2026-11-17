@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,7 +17,7 @@ from haute._workbench_nodes import with_form_tables
 from haute.errors import ParseError
 
 if TYPE_CHECKING:
-    from haute._workbench_form import FormSpec
+    from haute._workbench_form import Cell, FormSpec
 
 
 def flatten_graph(
@@ -39,7 +40,10 @@ def flatten_graph(
 
 
 def flatten_executable_graph(
-    graph: PipelineGraph, *, form: FormSpec | None = None
+    graph: PipelineGraph,
+    *,
+    form: FormSpec | None = None,
+    sample: Mapping[str, list[dict[str, Cell]]] | None = None,
 ) -> PipelineGraph:
     """Refuse a browser graph with an executable-name violation, flatten it, and give its
     workbench nodes their tables.
@@ -47,8 +51,10 @@ def flatten_executable_graph(
     Every route that runs a graph the browser sent prepares it here, so the
     canvas never runs a pipeline its own saved file could not run, and a
     workbench node runs on the tables the project's form folder defines now,
-    read anew for each request, or on *form*'s, the form the workbench view
-    holds, for Preview's pricing (:func:`haute._workbench_nodes.with_form_tables`).
+    read anew for each request, its sample replaced by *sample*, the one the
+    workbench view holds, for the editor's reads of the pipeline's data, or on
+    *form*'s, the form the workbench view holds, for Preview's pricing
+    (:func:`haute._workbench_nodes.with_form_tables`).
     Internal flattening (a staged dissolve, save's structural checks) uses
     :func:`flatten_graph`, since a partly dissolved graph legitimately repeats
     a shared definition's child names.
@@ -56,7 +62,9 @@ def flatten_executable_graph(
     violations = executable_name_violations(graph)
     if violations:
         raise ParseError(format_name_violations(violations))
-    return with_form_tables(flatten_graph(graph), project_root=current_project().root, form=form)
+    return with_form_tables(
+        flatten_graph(graph), project_root=current_project().root, form=form, sample=sample
+    )
 
 
 def flatten_with_form_tables(graph: PipelineGraph, *, project_root: Path) -> PipelineGraph:

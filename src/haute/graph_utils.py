@@ -57,7 +57,6 @@ from haute._node_config_models import OPTIMISER_CONFIG_KEYS as OPTIMISER_CONFIG_
 from haute._node_config_models import SCENARIO_EXPANDER_CONFIG_KEYS as SCENARIO_EXPANDER_CONFIG_KEYS
 from haute._optimiser_io import load_mlflow_optimiser_artifact as load_mlflow_optimiser_artifact
 from haute._optimiser_io import load_optimiser_artifact as load_optimiser_artifact
-from haute._rating import RatingTableMissError as RatingTableMissError
 from haute._rating import apply_banding_from_config as apply_banding_from_config
 from haute._rating import apply_rating_step_from_config as apply_rating_step_from_config
 from haute._topo import CycleError as CycleError

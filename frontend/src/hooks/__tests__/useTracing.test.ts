@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { makeTraceDiagnostic, makeTraceResult, makeTraceStep } from "../../test-utils/factories"
+import {
+  makeTraceDiagnostic,
+  makeTraceOmission,
+  makeTraceResult,
+  makeTraceStep,
+  nodeTarget,
+  type TraceResultFixture,
+} from "../../test-utils/factories"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useTracing, {
@@ -14,6 +21,7 @@ import useNodeDataStore from "../../stores/useNodeDataStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
+import { childAddress, nodeFrame, rootAddress } from "../../utils/nodeAddress"
 import type { NodeStatus } from "../../types/node"
 import type { TraceResult } from "../../types/trace"
 
@@ -27,7 +35,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 import { traceCell } from "../../api/client"
@@ -77,25 +85,21 @@ function makeInstrumentedEdge(
 }
 
 function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
+  const selectedNode = overrides.selectedNode === undefined ? makeNode("n2") : overrides.selectedNode
   return {
     nodes: [makeNode("n1"), makeNode("n2")] as Node[],
     edges: [makeEdge("n1", "n2")] as Edge[],
-    selectedNode: makeNode("n2"),
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
+    selectedNode,
     activeSubmodelIdentity: null,
-    submodels: {},
-    submodelsRef: { current: {} },
-    preambleRef: { current: "" },
     nodeStatuses: {} as Record<string, NodeStatus>,
     hoveredNodeId: null,
+    // The preview shown for the selected node read its one output.
+    previewTarget: selectedNode ? nodeFrame(rootAddress(selectedNode.id)) : undefined,
     ...overrides,
   }
 }
 
-type TraceFixture = Partial<TraceResult>
-
-function completeTrace(trace: TraceFixture): TraceResult {
+function completeTrace(trace: TraceResultFixture): TraceResult {
   return makeTraceResult({
     ...trace,
     omissions: [],
@@ -106,8 +110,10 @@ function completeTrace(trace: TraceFixture): TraceResult {
   })
 }
 
-function makeTrace(nodeIds: string[]): TraceResult {
+/** A trace through `nodeIds`, each a pipeline node unless `nodeAddresses` addresses it. */
+function makeTrace(nodeIds: string[], nodeAddresses: TraceResult["node_addresses"] = {}): TraceResult {
   return completeTrace({
+    node_addresses: nodeAddresses,
     steps: nodeIds.map((nodeId, topologicalRank) => (makeTraceStep({
       node_id: nodeId,
       node_name: nodeId,
@@ -132,33 +138,40 @@ function makeTrace(nodeIds: string[]): TraceResult {
 }
 
 describe("useTracing", () => {
-  it.each(["prices", "checks"])("traces an occurrence output's qualified child and %s frame", async (frame) => {
-    const child = makeNode("child")
+  it.each(["premium", "audit"])("traces an occurrence's %s output and shows its qualified child on that occurrence", async (port) => {
     const owner = makeNode("owner", "submodel", { data: {
       label: "owner", nodeType: "submodel", config: { definition_id: "rating", alias: "owner" },
     } })
     const occurrence = makeNode("again", "submodel", { data: {
       label: "again", nodeType: "submodel", config: { definition_id: "rating", alias: "again", instance_of: "owner" },
-      _sourceHandleInputNames: { out__premium: "again_premium", out__audit: "again_audit" },
     } })
-    const submodels = { rating: {
-      definitionId: "rating", file: "modules/rating.py", graph: { nodes: [child], edges: [] }, inputPorts: [],
-      outputPorts: [
-        { name: "premium", source: { nodeId: "child", handleId: "prices" } },
-        { name: "audit", source: { nodeId: "child", handleId: "checks" } },
-      ],
-    } }
-    mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["submodel_runtime/again/child"]) })
+    // The server resolves the output to the child that produces it, and names that child
+    // by a key addressed in the occurrence the output belongs to.
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: makeTrace(["submodel_runtime/again/child"], {
+        "submodel_runtime/again/child": { occurrence: "again", node_id: "child", label: "child" },
+      }),
+    })
     const { result } = renderHook(() => useTracing(makeParams({
-      nodes: [owner, occurrence], edges: [], selectedNode: occurrence, submodels,
-      submodelsRef: { current: submodels }, previewFrame: frame === "prices" ? "again_premium" : "again_audit",
-      previewOutputHandle: frame === "prices" ? "out__premium" : "out__audit",
+      nodes: [owner, occurrence], edges: [], selectedNode: occurrence,
+      previewTarget: { kind: "occurrenceOutput", occurrence: "again", port },
     })))
     await act(async () => result.current.handleCellClick(0, "price", { price: 42 }))
     expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
-      target_node_id: "submodel_runtime/again/child", port_label: frame, row_values: { price: 42 },
+      target: { kind: "occurrence_output", occurrence: "again", port }, row_values: { price: 42 },
     }))
     expect(result.current.traceResult).not.toBeNull()
+    expect(result.current.resolveTraceNodeId("submodel_runtime/again/child")).toBe("again")
+    const active = result.current.nodesWithStatus.filter((node) => node.data._traceActive).map((node) => node.id)
+    expect(active).toEqual(["again"])
+  })
+
+  it("starts no trace when the preview shown names no frame", async () => {
+    const { result } = renderHook(() => useTracing(makeParams({ previewTarget: undefined })))
+    await act(async () => result.current.handleCellClick(0, "price"))
+    expect(mockTraceCell).not.toHaveBeenCalled()
+    expect(result.current.traceState).toEqual({ status: "idle" })
   })
 
   beforeEach(() => {
@@ -173,6 +186,7 @@ describe("useTracing", () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    useGraphStore.setState({ submodels: {}, focus: null, nodes: [], edges: [] })
   })
 
   it("returns null traceResult initially", () => {
@@ -199,7 +213,7 @@ describe("useTracing", () => {
   })
 
   it("handleCellClick does nothing without selectedNode", () => {
-    const params = makeParams({ selectedNode: null })
+    const params = makeParams({ selectedNode: null, previewTarget: nodeFrame(rootAddress("n2")) })
     const { result } = renderHook(() => useTracing(params))
     act(() => {
       result.current.handleCellClick(0, "price")
@@ -336,12 +350,12 @@ describe("useTracing", () => {
   it("sends the displayed preview's table, and hides the trace when another table shows", async () => {
     mockTraceCell.mockResolvedValue({ status: "ok", trace: makeTrace(["n1", "n2"]) })
     const { result, rerender } = renderHook(
-      ({ frame }) => useTracing(makeParams({ previewFrame: frame })),
+      ({ frame }) => useTracing(makeParams({ previewTarget: nodeFrame(rootAddress("n2"), frame) })),
       { initialProps: { frame: "pricing" } },
     )
     await act(async () => { result.current.handleCellClick(0, "price") })
     await waitFor(() => expect(result.current.traceState.status).toBe("ready"))
-    expect(mockTraceCell.mock.calls[0][0].port_label).toBe("pricing")
+    expect(mockTraceCell.mock.calls[0][0].target).toEqual(nodeTarget("n2", { portLabel: "pricing" }))
 
     rerender({ frame: "layers" })
     expect(result.current.traceState.status).toBe("idle")
@@ -595,20 +609,38 @@ describe("useTracing", () => {
         outputPorts: [],
       },
     }
+    const viewEdges = [
+      makeEdge(inputBoundary.id, child.id),
+      makeEdge(child.id, outputBoundary.id),
+    ]
+    // Occurrence `pricing` is open in the store, as it is while its child's preview shows.
+    useGraphStore.setState({
+      submodels,
+      focus: {
+        instanceId: "pricing",
+        definitionId: "definition_pricing",
+        readOnly: false,
+        rootNodes: [makeNode("pricing", NODE_TYPES.SUBMODEL, { data: {
+          label: "pricing", nodeType: NODE_TYPES.SUBMODEL, config: { definition_id: "definition_pricing" },
+        } })],
+        rootEdges: [],
+      },
+      nodes: [inputBoundary, child, outputBoundary],
+      edges: viewEdges,
+    })
     const params = makeParams({
       activeSubmodelIdentity: { instanceId: "pricing", definitionId: "definition_pricing" },
       nodes: [inputBoundary, child, outputBoundary],
-      submodels,
-      submodelsRef: { current: submodels },
-      edges: [
-        makeEdge(inputBoundary.id, child.id),
-        makeEdge(child.id, outputBoundary.id),
-      ],
+      edges: viewEdges,
       selectedNode: child,
+      previewTarget: nodeFrame(childAddress("pricing", "child")),
     })
+    // The pipeline's nodes are addressed as such; the child by its occurrence.
     mockTraceCell.mockResolvedValue({
       status: "ok",
-      trace: makeTrace(["external-source-b", "submodel_runtime/pricing/child", "external-target"]),
+      trace: makeTrace(["external-source-b", "submodel_runtime/pricing/child", "external-target"], {
+        "submodel_runtime/pricing/child": { occurrence: "pricing", node_id: "child", label: "child" },
+      }),
     })
 
     const { result, rerender } = renderHook(
@@ -620,10 +652,10 @@ describe("useTracing", () => {
     })
     await waitFor(() => expect(result.current.traceResult).not.toBeNull())
     expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
-      target_node_id: "submodel_runtime/pricing/child",
+      target: nodeTarget("child", { occurrence: "pricing" }),
     }))
 
-    // A trace card points at runtime ids: the ring lands on the visible node for each.
+    // A trace card points at runtime keys: the ring lands on the visible node for each.
     const focusedIds = () => result.current.nodesWithStatus.filter((node) => node.data._traceFocused).map((node) => node.id)
     rerender("submodel_runtime/pricing/child")
     expect(focusedIds()).toEqual(["child"])
@@ -664,20 +696,6 @@ describe("useTracing", () => {
     expect(result.current.nodesWithStatus.map((node) => node.id)).toEqual(["Inputs", "consumer"])
     expect(result.current.edgesWithTrace.map((edge) => edge.id)).toEqual(["e_Inputs_consumer"])
     expect(mockTraceCell).not.toHaveBeenCalled()
-  })
-
-  it.each(["ready", undefined] as const)("still rejects a %s submodel with a missing definition", (availability) => {
-    const inputs = makeNode("Inputs", NODE_TYPES.SUBMODEL, {
-      data: {
-        label: "Inputs",
-        nodeType: NODE_TYPES.SUBMODEL,
-        config: { definition_id: "Inputs", alias: "Inputs" },
-        ...(availability === undefined ? {} : { _loadAvailability: availability }),
-      },
-    })
-    expect(() => renderHook(() => useTracing(makeParams({ nodes: [inputs] })))).toThrow(
-      "Submodel instance Inputs references missing or malformed definition Inputs",
-    )
   })
 
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
@@ -1243,17 +1261,17 @@ describe("useTracing validity across shared snapshots", () => {
     }))
     mockTraceCell.mockResolvedValue({
       status: "ok",
-      trace: {
+      trace: makeTraceResult({
         ...makeTrace(["n2"]),
         omissions: [
-          { node_id: "n1", node_name: "n1", node_type: "polars", topological_rank: 0, reason: "seed_row_not_reproduced", diagnostic_index: 0 },
-          { node_id: "n0", node_name: "n0", node_type: "polars", topological_rank: 0, reason: "ambiguous_match", diagnostic_index: 1 },
+          makeTraceOmission({ node_id: "n1", node_name: "n1", node_type: "polars", topological_rank: 0, reason: "seed_row_not_reproduced", diagnostic_index: 0 }),
+          makeTraceOmission({ node_id: "n0", node_name: "n0", node_type: "polars", topological_rank: 0, reason: "ambiguous_match", diagnostic_index: 1 }),
         ],
         correlation_diagnostics: [
           diagnostic("n1", "seed_row_not_reproduced", ["n2"]),
           diagnostic("n0", "ambiguous_match", []),
         ],
-      },
+      }),
     })
     const nodes = [makeNode("n0"), makeNode("n1"), makeNode("n2")] as Node[]
     const edges = [makeEdge("n0", "n2"), makeEdge("n1", "n2")] as Edge[]
@@ -1317,7 +1335,10 @@ describe("useTracing validity across shared snapshots", () => {
     const refreshPreview = vi.fn()
     const { result, rerender } = renderHook(
       ({ plan, selectedNode, frame }) => useTracing(makeParams({
-        refreshPreview, previewSeedPlan: plan, selectedNode, previewFrame: frame,
+        refreshPreview,
+        previewSeedPlan: plan,
+        selectedNode,
+        previewTarget: frame === undefined ? undefined : nodeFrame(rootAddress(selectedNode.id), frame),
       })),
       {
         initialProps: {
@@ -1334,7 +1355,7 @@ describe("useTracing validity across shared snapshots", () => {
     expect(result.current.tracedCell).toBeNull()
 
     // The refresh replaces the preview — first with a loading one that lists
-    // no generations and no table — and its own captures raise the epoch.
+    // no generations and no frame — and its own captures raise the epoch.
     const selectedNode = makeNode("n2")
     rerender({ plan: undefined, selectedNode, frame: undefined })
     act(() => useNodeDataStore.getState().bumpEpoch())

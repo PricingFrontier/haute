@@ -25,7 +25,7 @@ from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute._workbench_tables import WorkbenchTables, workbench_tables
 
 if TYPE_CHECKING:
-    from haute._workbench_form import FormDocument, FormSpec
+    from haute._workbench_form import Cell, FormDocument, FormSpec
 
 
 def read_project_form(project_root: Path, *, owner: str) -> FormDocument:
@@ -47,11 +47,20 @@ def read_project_form(project_root: Path, *, owner: str) -> FormDocument:
     return read_form_document(config)
 
 
-def project_form_tables(project_root: Path, *, owner: str) -> WorkbenchTables:
+def project_form_tables(
+    project_root: Path, *, owner: str, sample: Mapping[str, list[dict[str, Cell]]] | None = None
+) -> WorkbenchTables:
     """The tables, sample and response tables *project_root*'s form folder defines now, the
     tables refused naming the table when the pipeline cannot take them
-    (:func:`haute._workbench_tables.check_tables`)."""
-    return workbench_tables(read_project_form(project_root, owner=owner).spec)
+    (:func:`haute._workbench_tables.check_tables`).
+
+    Given *sample*, the sample the workbench view holds, the saved form is read with it in
+    place of its own sample: its schema, sheets and Shown when rules decide what is typed, so
+    a table or column the saved schema does not have reads as nothing typed."""
+    spec = read_project_form(project_root, owner=owner).spec
+    if sample is not None:
+        spec = spec.model_copy(update={"sample": dict(sample)})
+    return workbench_tables(spec)
 
 
 def _given_input(config: Mapping[str, Any], tables: WorkbenchTables) -> dict[str, Any]:
@@ -154,16 +163,23 @@ def with_tables(graph: PipelineGraph, tables: WorkbenchTables) -> PipelineGraph:
 
 
 def with_form_tables(
-    graph: PipelineGraph, *, project_root: Path, form: FormSpec | None = None
+    graph: PipelineGraph,
+    *,
+    project_root: Path,
+    form: FormSpec | None = None,
+    sample: Mapping[str, list[dict[str, Cell]]] | None = None,
 ) -> PipelineGraph:
     """*graph* with its workbench nodes given their tables from the form folder of
-    *project_root*, or from *form* when given (Preview's pricing of the form the view holds);
-    *graph* itself, nothing read, when it has none."""
+    *project_root*, its sample replaced by *sample* when given (the pipeline editor's reads
+    of the sample the view holds), or from *form* when given (Preview's pricing of the form
+    the view holds); *graph* itself, nothing read, when it has none."""
+    if form is not None and sample is not None:
+        raise TypeError("with_form_tables takes a form or a sample, not both.")
     owner = form_owner(graph)
     if owner is None:
         return graph
     if form is None:
-        return with_tables(graph, project_form_tables(project_root, owner=owner))
+        return with_tables(graph, project_form_tables(project_root, owner=owner, sample=sample))
     return with_tables(graph, workbench_tables(form))
 
 

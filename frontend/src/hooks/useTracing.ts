@@ -3,21 +3,14 @@ import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
 import type { PreviewSeedPlanEntry } from "../api/types"
+import type { RuntimeNodeKey } from "../generated/api-contracts.generated"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import {
-  isSubmodelDefinition,
-  isSubmodelInstanceConfig,
-  nodeData,
-  type NodeStatus,
-} from "../types/node"
+import { nodeData, type NodeStatus } from "../types/node"
 import { traceCell } from "../api/client"
-import { resolveGraphFromRefs } from "../utils/buildGraph"
-import {
-  qualifiedRuntimeNodeId,
-  runtimeNodeIdForVisibleNode,
-  submodelOutputPreview,
-  type DrilledOccurrenceIdentity,
-} from "../utils/submodelRuntimeTarget"
+import { documentRequestScope, frameTargetPayload, preparePipelineRequest } from "../utils/requestGateway"
+import { frameKey, type FrameTarget } from "../utils/nodeAddress"
+import { keyText, placeAddress, type BoundaryCard } from "../utils/answerAddresses"
+import type { DrilledOccurrenceIdentity } from "../utils/submodelRuntimeTarget"
 import {
   GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT,
   shouldUseLiteGraphEffects,
@@ -38,13 +31,8 @@ export const TRACE_PROGRESS_DELAY_MS = 500
 interface TracingParams {
   nodes: Node[]
   edges: Edge[]
-  submodels: Record<string, unknown>
   selectedNode: Node | null
-  graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
-  parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
   activeSubmodelIdentity: DrilledOccurrenceIdentity | null
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
-  preambleRef: React.MutableRefObject<string>
   nodeStatuses: Record<string, NodeStatus>
   hoveredNodeId: string | null
   /** The node a trace card or derivation row points at, ringed while a trace shows. */
@@ -54,10 +42,8 @@ interface TracingParams {
   refreshPreview?: (node: Node) => void
   /** The `seed_plan` of the preview shown for the selected node. */
   previewSeedPlan?: PreviewSeedPlanEntry[]
-  /** The table of the preview shown for the selected node, when it has several frames. */
-  previewFrame?: string
-  /** Stable public handle of the occurrence output represented by the displayed rows. */
-  previewOutputHandle?: string
+  /** The frame the preview shown for the selected node read its rows from, by address. */
+  previewTarget?: FrameTarget
 }
 
 export type TraceRequestState =
@@ -76,8 +62,11 @@ export interface TracingReturn {
   retryTrace: () => void
   nodesWithStatus: Node[]
   edgesWithTrace: Edge[]
-  /** The canvas node showing a trace step: a submodel's card, a boundary, or the node itself. */
-  resolveTraceNodeId: (id: string) => string
+  /**
+   * The canvas node showing the node a trace names under `key`: the node itself, a
+   * submodel's card, or a boundary card; null when the canvas shown does not hold it.
+   */
+  resolveTraceNodeId: (key: string) => string | null
 }
 
 export interface EdgeAdjacency {
@@ -229,18 +218,32 @@ function technicalDetail(err: unknown): string {
 
 const IDLE_TRACE_STATE: TraceRequestState = { status: "idle" }
 
+/** The open occurrence's boundary cards, with the pipeline's nodes each reaches. */
+function boundaryCards(nodes: readonly Node[]): BoundaryCard[] {
+  const cards: BoundaryCard[] = []
+  for (const node of nodes) {
+    const data = nodeData(node)
+    if (data.nodeType !== NODE_TYPES.SUBMODEL_PORT) continue
+    const direction = data.portDirection
+    if (direction !== "input" && direction !== "output") continue
+    const externalNodeIds = Array.isArray(data.externalNodeIds)
+      ? data.externalNodeIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : []
+    cards.push({ id: node.id, direction, externalNodeIds })
+  }
+  return cards
+}
+
 export default function useTracing({
-  nodes, edges, submodels, selectedNode,
-  graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
-  preambleRef,
+  nodes, edges, selectedNode,
+  activeSubmodelIdentity,
   nodeStatuses,
   hoveredNodeId,
   traceFocusNodeId = null,
   changeFocusNodeIds = null,
   refreshPreview,
   previewSeedPlan,
-  previewFrame,
-  previewOutputHandle,
+  previewTarget,
 }: TracingParams): TracingReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const activeSource = useSettingsStore((s) => s.activeSource)
@@ -306,8 +309,8 @@ export default function useTracing({
   )
   const semanticContext = canonicalJson({
     recoveryContext,
-    // The table the explained preview shows; a refresh replaces it, as it does the seed plan.
-    frame: previewOutputHandle ?? previewFrame ?? null,
+    // The frame the explained preview read; a refresh replaces it, as it does the seed plan.
+    frame: previewTarget ? frameKey(previewTarget) : null,
     // The generations the explained preview read, and the node-data epoch:
     // a snapshot published, refreshed, or cleared invalidates the evidence.
     seedPlan: (previewSeedPlan ?? []).map(
@@ -371,11 +374,10 @@ export default function useTracing({
         current.graphSynchronized &&
         current.capabilities?.can_execute === true
     }
-    const output = nodeData(selectedNode).nodeType === NODE_TYPES.SUBMODEL
-      ? submodelOutputPreview(selectedNode, submodelsRef.current, previewOutputHandle)
-      : undefined
-    if (output === null) return
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    // The row is traced from the frame its preview read, so the trace reads what the
+    // seed plan describes.
+    if (!previewTarget) return
+    const graph = preparePipelineRequest(documentRequestScope).graph
     const requestId = traceRequestSeq.current + 1
     traceRequestSeq.current = requestId
     traceAbort.current?.abort()
@@ -407,16 +409,11 @@ export default function useTracing({
     traceCell({
       graph,
       row_index: rowIndex,
-      target_node_id: output?.nodeId ?? runtimeNodeIdForVisibleNode(
-        nodesRef.current,
-        selectedNode.id,
-        activeSubmodelIdentity,
-      ),
+      target: frameTargetPayload(previewTarget),
       column,
       row_limit: rowLimit,
       source: activeSource,
       row_values: rowValues,
-      port_label: output ? output.portLabel : previewFrame,
       seed_plan: (previewSeedPlan ?? []).map((entry) => ({
         node_id: entry.node_id,
         port_label: null,
@@ -485,7 +482,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewFrame, previewOutputHandle])
+  }, [selectedNode, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewTarget])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace
@@ -496,109 +493,34 @@ export default function useTracing({
     }
   }, [semanticContextToken, startTrace])
 
-  // Runtime child IDs are qualified by the explicit occurrence identity.
-  // Collapse them onto the occurrence in the parent view, or onto the actual
-  // child node while drilled into that occurrence.
-  const childToSubmodelId = useMemo(() => {
-    const map = new Map<string, string>()
-    const visibleChildNodes: Node[] = []
-    const drilledIdentity = activeSubmodelIdentity
-
-    for (const node of nodes) {
-      const data = nodeData(node)
-      if (data.nodeType === NODE_TYPES.SUBMODEL_PORT) continue
-
-      visibleChildNodes.push(node)
-      if (data.nodeType !== NODE_TYPES.SUBMODEL) continue
-      if (data._loadAvailability === "unavailable") continue
-      if (!isSubmodelInstanceConfig(data.config)) {
-        throw new Error(
-          "Submodel instance " + node.id + " has malformed canonical identity config",
-        )
-      }
-      const definition = submodels[data.config.definition_id]
-      if (!isSubmodelDefinition(definition, data.config.definition_id)) {
-        throw new Error(
-          "Submodel instance " + node.id + " references missing or malformed definition "
-          + data.config.definition_id,
-        )
-      }
-      for (const child of definition.graph.nodes) {
-        map.set(qualifiedRuntimeNodeId(node.id, child.id), node.id)
-      }
-    }
-
-    if (drilledIdentity) {
-      const definition = submodels[drilledIdentity.definitionId]
-      if (!isSubmodelDefinition(definition, drilledIdentity.definitionId)) {
-        throw new Error(
-          "Drilled submodel instance " + drilledIdentity.instanceId
-          + " references missing or malformed definition "
-          + drilledIdentity.definitionId,
-        )
-      }
-      for (const child of visibleChildNodes) {
-        map.set(
-          runtimeNodeIdForVisibleNode(nodes, child.id, drilledIdentity),
-          child.id,
-        )
-      }
-    }
-
-    return map
-  }, [nodes, submodels, activeSubmodelIdentity])
-  // Map external parent node IDs to the composite boundary card that represents
-  // them, keeping Input and Output separate to avoid collisions.
-  const parentToBoundaryId = useMemo(() => {
-    const inputMap = new Map<string, string>()
-    const outputMap = new Map<string, string>()
-    for (const node of nodes) {
-      const data = nodeData(node)
-      if (data.nodeType !== NODE_TYPES.SUBMODEL_PORT) continue
-      const externalNodeIds = data.externalNodeIds
-      if (!Array.isArray(externalNodeIds)) continue
-      const targetMap =
-        data.portDirection === "input"
-          ? inputMap
-          : data.portDirection === "output"
-            ? outputMap
-            : null
-      if (!targetMap) continue
-      for (const externalNodeId of externalNodeIds) {
-        if (
-          typeof externalNodeId === "string" &&
-          externalNodeId.length > 0 &&
-          !targetMap.has(externalNodeId)
-        ) {
-          targetMap.set(externalNodeId, node.id)
-        }
-      }
-    }
-    return { inputMap, outputMap }
-  }, [nodes])
-
+  // A trace names its nodes by key and gives each its address: each is placed on the
+  // canvas shown by address, and inside a submodel a node outside it on the boundary card
+  // that reaches it.
+  const openOccurrence = activeSubmodelIdentity?.instanceId ?? null
+  const boundaries = useMemo(() => boundaryCards(nodes), [nodes])
   const resolveTraceId = useCallback(
-    (id: string) =>
-      childToSubmodelId.get(id) ||
-      parentToBoundaryId.inputMap.get(id) ||
-      parentToBoundaryId.outputMap.get(id) ||
-      id,
-    [childToSubmodelId, parentToBoundaryId],
+    (key: string): string | null => {
+      const address = traceResult?.node_addresses[key]
+      return address ? placeAddress(address, openOccurrence, boundaries)?.id ?? null : null
+    },
+    [traceResult, openOccurrence, boundaries],
   )
 
   const allTraceNodeIds = useMemo(() => {
     if (!traceResult) return new Set<string>()
     const ids = new Set<string>()
-    for (const s of traceResult.steps) {
-      ids.add(resolveTraceId(s.node_id))
+    const add = (key: RuntimeNodeKey) => {
+      const id = resolveTraceId(keyText(key))
+      if (id !== null) ids.add(id)
     }
+    for (const s of traceResult.steps) add(s.node_id)
     // A node the trace could not follow above a shared snapshot (its
     // diagnostic names the seeds) is still on the value's path — its data
     // reached the target through that snapshot — so it is not dimmed as
     // unrelated, though it carries no traced value.
     for (const omission of traceResult.omissions) {
       const diagnostic = traceResult.correlation_diagnostics[omission.diagnostic_index]
-      if (diagnostic?.seed_node_ids.length) ids.add(resolveTraceId(omission.node_id))
+      if (diagnostic?.seed_node_ids.length) add(omission.node_id)
     }
     return ids
   }, [traceResult, resolveTraceId])
@@ -609,7 +531,8 @@ export default function useTracing({
     const relIds = new Set<string>()
     for (const s of traceResult.steps) {
       if (!s.column_relevant) continue
-      const visibleId = resolveTraceId(s.node_id)
+      const visibleId = resolveTraceId(keyText(s.node_id))
+      if (visibleId === null) continue
       relIds.add(visibleId)
       // A column trace shows the traced value, else what the step computed
       // for it; a step that only carries the value's inputs shows none.

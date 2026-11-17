@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, NotRequired, cast
 
 import numpy as np
 
+from haute._node_addresses import address_entry
 from haute._project_context import context_thread, graph_pipeline_dir
 from haute.errors import (
     ConflictError,
@@ -255,7 +256,7 @@ class _OptimiserSolveRunningJob(RunningJobFields):
     config: dict[str, Any]
     node_label: str
     # Absent on the worker process's private setup job, which never publishes.
-    input_provenance: NotRequired[dict[str, str | None]]
+    input_provenance: NotRequired[dict[str, Any]]
     start_time: float
     timeout: int | None
 
@@ -265,15 +266,16 @@ def _solve_input_provenance(
     node_id: str,
     *,
     graph_fingerprint: str,
-) -> dict[str, str | None]:
+) -> dict[str, Any]:
     """Cheap provenance for a solve's published artifacts, recorded at job creation.
 
-    Every value is already at hand when the solve starts; nothing is hashed or read.
+    Every value is already at hand when the solve starts; nothing is hashed or read. The
+    node is its address and authored label, never the key it runs under.
     """
     from haute.executor import _resolve_batch_scenario
 
     return {
-        "node_id": node_id,
+        "node": address_entry(graph, node_id).model_dump(mode="json"),
         "data_source": _resolve_batch_scenario(graph) or "batch",
         "source_file": graph.source_file,
         "graph_fingerprint": graph_fingerprint,
