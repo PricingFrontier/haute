@@ -187,7 +187,9 @@ from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
     contract_error_payload,
+    is_pipeline_error,
     pipeline_error_message,
+    raise_memory_behind,
 )
 from haute.routes._helpers import (
     connection_owner,
@@ -2349,6 +2351,7 @@ def _prepare_data_output_worker(
             payload=exc.to_payload(),
         )
     except PIPELINE_ERROR_TYPES as exc:
+        raise_memory_behind(exc)
         return _OutputWriteWorkerOutcome(
             failure_kind="contract", detail=pipeline_error_message(exc)
         )
@@ -2614,7 +2617,11 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         )
         raise HTTPException(status_code=500, detail=str(e)) from None
     except PIPELINE_ERROR_TYPES as e:
-        # The parent's planning or input preparation met the pipeline's own error.
+        # The parent's planning or input preparation met the pipeline's own error. A graph
+        # the shape check refuses answers 400 through the application handler, as on every
+        # route.
+        if isinstance(e, ParseError) or not is_pipeline_error(e):
+            raise
         logger.warning("sink_pipeline_error", error=str(e))
         raise HTTPException(status_code=422, detail=pipeline_error_message(e)) from None
     finally:

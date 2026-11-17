@@ -1041,6 +1041,23 @@ def test_a_build_failing_in_its_worker_process_names_the_pipelines_error(
     assert final["message"] == 'Column "missing" does not exist.'
 
 
+def test_a_pipeline_error_out_of_memory_in_the_worker_is_a_memory_outcome(
+    client: TestClient, project: Path
+) -> None:
+    """Running out of memory behind the pipeline's own error is the memory limit, never
+    the user's to fix."""
+    graph = _graph(
+        project,
+        join_code="raise pl.exceptions.ComputeError('allocation failed') from MemoryError()",
+    )
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"], timeout=120)
+
+    assert final["status"] == "memory_limited", final
+    assert "allocation failed" not in final["message"]
+
+
 def test_cancelling_during_input_preparation_ends_the_job_cancelled(
     client: TestClient,
     project: Path,

@@ -181,6 +181,38 @@ describe("useWorkbenchConnections", () => {
     expect(edgeIds()).toEqual(["e_account", "e_boundary"])
   })
 
+  it("holds the pipeline's own connections behind an open submodel for a save, which sends them", () => {
+    const occurrence = makeNode("pricing", "submodel", {
+      data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
+    })
+    act(() => {
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [input, priced, occurrence],
+        edges: [policy, account],
+        preamble: "",
+        submodels: {
+          definition_pricing: {
+            definitionId: "definition_pricing",
+            file: "modules/pricing.py",
+            graph: { nodes: [makeNode("rate")], edges: [] },
+            inputPorts: [],
+            outputPorts: [],
+          },
+        },
+      })
+      useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+    })
+    const hook = render()
+    publish(1, ["account"])
+
+    act(() => {
+      expect(hook.result.current.holdConnections()).toBe(true)
+    })
+
+    expect(useGraphStore.getState().focus?.rootEdges.map((each) => each.id)).toEqual(["e_account"])
+    expect(addToast).toHaveBeenCalledWith("warning", expect.stringContaining("wb_in"))
+  })
+
   it("never changes a Quote Input's connections", () => {
     const quote = makeNode("quote", "apiInput", { data: { label: "quote", nodeType: "apiInput", config: {} } })
     show([quote, priced], [edge("e_quote", "quote", "policy", "priced")])

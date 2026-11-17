@@ -302,6 +302,23 @@ describe("useGraphStore with a submodel open", () => {
     expect(() => store().enterSubmodelView(OPEN)).not.toThrow()
   })
 
+  it("writes the pipeline's own edges behind the open submodel without a step, and the canvas's at the root", () => {
+    store().enterSubmodelView(OPEN)
+    const generation = store().semanticGeneration
+
+    store().setRootEdgesRaw((edges) => edges.filter((each) => each.id !== "consume"))
+
+    expect(store().focus?.rootEdges.map((each) => each.id)).toEqual(["feed"])
+    expect(store().nodes.some((node) => node.id === "prepare")).toBe(true)
+    expect(store().dirty).toBe(true)
+    expect(store().semanticGeneration).toBe(generation + 1)
+    expect(store().canUndo()).toBe(false)
+
+    store().exitSubmodelView()
+    store().setRootEdgesRaw([])
+    expect(store().edges).toEqual([])
+  })
+
   it("keeps the open submodel on a reload whose document still holds it, showing its new contents", () => {
     store().enterSubmodelView(COPY)
     store().setNodesRaw((nodes) => nodes.map((node) => (node.id === "score" ? { ...node, data: { ...node.data, _columns: [] } } : node)))

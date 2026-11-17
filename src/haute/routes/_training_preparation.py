@@ -71,11 +71,11 @@ from haute.modelling._train_config import (
     string_list_config,
 )
 from haute.routes._contract_errors import (
-    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
     contract_error_refusal,
     contract_error_terminal_reason,
+    is_pipeline_error,
     memory_limit_refusal,
     pipeline_error_message,
 )
@@ -983,7 +983,7 @@ def preparation_failure_outcome(
             job_id=job_id,
             terminal_reason="contract_error",
         )
-    elif isinstance(exc, PIPELINE_ERROR_TYPES):
+    elif is_pipeline_error(exc):
         # The pipeline's own code, contracts or data, as a preview of the node shows it.
         logger.warning("pipeline_exec_pipeline_error", error=str(exc), node_id=request.node_id)
         failure = _preparation_failure_from_refusal(

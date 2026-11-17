@@ -94,6 +94,23 @@ PIPELINE_ERROR_TYPES: tuple[type[Exception], ...] = (
 )
 
 
+def is_pipeline_error(exc: BaseException) -> bool:
+    """Whether *exc* is one of the ``PIPELINE_ERROR_TYPES`` with no ``MemoryError`` behind it:
+    running out of memory under any translation is a memory outcome, never the user's error."""
+    from haute._memory_errors import memory_error_in
+
+    return isinstance(exc, PIPELINE_ERROR_TYPES) and memory_error_in(exc) is None
+
+
+def raise_memory_behind(exc: BaseException) -> None:
+    """Raise the ``MemoryError`` behind *exc*, if any, so a worker reports it as memory."""
+    from haute._memory_errors import memory_error_in
+
+    memory = memory_error_in(exc)
+    if memory is not None:
+        raise memory
+
+
 def pipeline_error_message(exc: Exception) -> str:
     """What a job or a write says of one of the ``PIPELINE_ERROR_TYPES``: its message, a
     Polars error's as a preview records it for the node (without the plan Polars appends,

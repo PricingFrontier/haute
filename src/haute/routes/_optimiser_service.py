@@ -100,6 +100,7 @@ from haute.routes._contract_errors import (
     contract_error_job_fields,
     contract_error_refusal,
     contract_error_terminal_reason,
+    is_pipeline_error,
     pipeline_error_message,
 )
 from haute.routes._job_lifecycle import (
@@ -3147,7 +3148,10 @@ class OptimiserSolveService:
             )
             raise contract_error_refusal(exc) from None
         except PIPELINE_ERROR_TYPES as exc:
-            # The pipeline's own code, contracts or data, as a preview of the node shows it.
+            # The pipeline's own code, contracts or data, as a preview of the node shows it;
+            # out of memory behind one goes on as a memory failure does.
+            if not is_pipeline_error(exc):
+                raise
             error_msg = f"Pipeline execution failed: {pipeline_error_message(exc)}"
             logger.warning(
                 "pipeline_contract_mismatch",

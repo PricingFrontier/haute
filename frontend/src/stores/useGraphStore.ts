@@ -237,6 +237,8 @@ export interface GraphStore {
   commitSubmodelBoundaryEdit: (edit: SubmodelBoundaryEdit) => void
   /** Replace the pipeline's own nodes (behind an open submodel, or on the canvas), without an undo entry (preview columns). */
   setRootNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
+  /** Replace the pipeline's own edges (behind an open submodel, or on the canvas), without an undo entry. */
+  setRootEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
 
   /**
    * Replace the complete persisted document and make it the clean saved
@@ -1281,6 +1283,25 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       }
       const nextFocus: SubmodelFocus = { ...focus, rootNodes: applyUpdater(focus.rootNodes, updater) }
       set({ focus: nextFocus, ...derivedPatch(state, { ...state, focus: nextFocus }, false) })
+    },
+
+    setRootEdgesRaw: (updater) => {
+      const state = get()
+      const focus = state.focus
+      // With no submodel open the pipeline's own edges are the canvas.
+      if (focus === null) {
+        get().setEdgesRaw(updater)
+        return
+      }
+      const nextFocus: SubmodelFocus = { ...focus, rootEdges: applyUpdater(focus.rootEdges, updater) }
+      const patch = derivedPatch(state, { ...state, focus: nextFocus })
+      set({
+        focus: nextFocus,
+        ...patch,
+        ...(patch.persistedFingerprint !== state.persistedFingerprint
+          ? { semanticGeneration: state.semanticGeneration + 1 }
+          : {}),
+      })
     },
 
     // ── Explicit history operations ─────────────────────────────────────

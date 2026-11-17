@@ -89,7 +89,9 @@ from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
     contract_error_terminal_reason,
+    is_pipeline_error,
     pipeline_error_message,
+    raise_memory_behind,
 )
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import (
@@ -263,6 +265,7 @@ def _run_node_snapshot_worker(
             worker_evidence=evidence(),
         )
     except _BUILD_CONTRACT_FAILURES as exc:
+        raise_memory_behind(exc)
         return _NodeSnapshotWorkerOutcome(
             failure_kind="contract", detail=pipeline_error_message(exc), worker_evidence=evidence()
         )
@@ -440,6 +443,7 @@ def _run_profile_worker(
     except (CacheRequiredError, PointDataChangedError) as exc:
         return _ProfileWorkerOutcome(failure_kind="changed", detail=str(exc))
     except _PROFILE_CONTRACT_FAILURES as exc:
+        raise_memory_behind(exc)
         return _ProfileWorkerOutcome(failure_kind="contract", detail=pipeline_error_message(exc))
 
 
@@ -1330,7 +1334,7 @@ class NodeDataService:
                 fields={"error": str(exc), "error_code": exc.error_code},
                 elapsed_seconds=elapsed,
             )
-        elif isinstance(exc, PIPELINE_ERROR_TYPES):
+        elif is_pipeline_error(exc):
             # The parent's planning or input preparation met the pipeline's own error, as
             # the worker's build would have.
             message = pipeline_error_message(exc)
