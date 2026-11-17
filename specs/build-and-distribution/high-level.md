@@ -68,7 +68,8 @@ Out of scope:
   manifest; it uses stable vendor chunks. The build hook records the exact
   production-input proof beside that output. Vite reads the package version
   from `pyproject.toml` and defines `__APP_VERSION__` for browser surfaces that
-  render it. A missing package version fails the build instead of substituting
+  render it, with `__APP_BUILD__`: when the build was made and the commit it
+  was made from, which the toolbar's version details show. A missing package version fails the build instead of substituting
   a stale or synthetic value.
 - The source distribution intentionally excludes frontend source, documentation,
   tests and local/project artefacts, while the wheel includes the package and

@@ -21,7 +21,7 @@
 | `frontend/app.html` | Vite HTML entry document for the underwriter app's page ([workbench](../workbench/low-level.md)). |
 | `frontend/public/favicon.svg` | Public favicon copied through the Vite build. |
 | `frontend/public/vite.svg` | Checked-in Vite public asset copied through the Vite build. |
-| `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__`, and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, a Rollup manifest, and output to `src/haute/static/`. |
+| `frontend/vite.config.ts` | Reads the package version from `pyproject.toml`, defines `__APP_VERSION__` and `__APP_BUILD__` (the build time, or `SOURCE_DATE_EPOCH` when set, plus the commit hash and commit date, both null without a git repository), and configures React/Tailwind plugins, a strict `127.0.0.1:5173` development listener, API/WebSocket proxies, chunking, a Rollup manifest, and output to `src/haute/static/`. |
 | `frontend/vite.app.config.ts` | The underwriter app's build: `frontend/vite.config.ts` merged with the app's entry (`app.html`), its own Rollup manifest and output to `src/haute/static/app/`, which it clears, and a development listener on 5174 proxying `/api` to `haute app serve` (`HAUTE_APP_URL`, `127.0.0.1:8001` by default). |
 | `docs/overrides/home.html` | Supplies the public documentation landing-page override and is a documentation-build input. |
 | `docs/stylesheets/extra.css` | Supplies public documentation styling and is a documentation-build input. |
@@ -74,6 +74,10 @@ package input validated by `hatch_build.py`, not hand-edited source.
 - **Browser package version** is the required `project.version` value read from
   root `pyproject.toml` by Vite and exposed as the compile-time
   `__APP_VERSION__` string.
+- **Browser build details** are the compile-time `__APP_BUILD__` object:
+  `builtAt`, the ISO time Vite ran, or `SOURCE_DATE_EPOCH` when that is set;
+  and `commit` and `commitDate`, the hash and ISO commit date of `HEAD`, both
+  null when Vite runs outside a git repository.
 - **Python dependency boundary:** MLflow is a core dependency because model
   scoring, registry browsing, and modelling export are first-class palette
   features. MLflow brings `databricks-sdk` transitively; the `databricks`

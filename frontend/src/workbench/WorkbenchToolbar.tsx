@@ -63,7 +63,7 @@ export default function WorkbenchToolbar({
 
   return (
     <header role="toolbar" aria-label="Workbench toolbar" className="toolbar flex-wrap gap-y-2 [&>div]:shrink-0">
-      <ToolbarBrand name="haute" version={__APP_VERSION__} />
+      <ToolbarBrand name="haute" version={__APP_VERSION__} build={__APP_BUILD__} />
       <SourcePipelineControls wsStatus={wsStatus} editingDisabled={editingDisabled} sourceSelectionTrusted={sourceSelectionTrusted} />
       <div className="ml-2.5 flex flex-wrap items-center gap-2.5" data-testid="workbench-toolbar-actions">
         <UndoRedo canUndo={ready && canUndo} canRedo={ready && canRedo} onUndo={undo} onRedo={redo} />

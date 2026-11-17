@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process"
 import { readFileSync } from "fs"
 import path from "path"
 import { defineConfig } from 'vite'
@@ -17,6 +18,28 @@ if (!versionMatch) {
 }
 const appVersion = versionMatch[1]
 
+/** One line of `git` output, or null where there is no repository (a source archive). */
+function git(...args: string[]): string | null {
+  try {
+    const out = execFileSync("git", args, { cwd: __dirname, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] })
+    return out.trim() || null
+  } catch {
+    return null
+  }
+}
+
+// When this build was made and from which commit, for the toolbar's version details.
+// SOURCE_DATE_EPOCH (seconds) pins the build time for a reproducible build.
+const sourceDateEpoch = Number(process.env.SOURCE_DATE_EPOCH)
+const appBuild = {
+  builtAt: (Number.isFinite(sourceDateEpoch) && process.env.SOURCE_DATE_EPOCH
+    ? new Date(sourceDateEpoch * 1000)
+    : new Date()
+  ).toISOString(),
+  commit: git("rev-parse", "HEAD"),
+  commitDate: git("log", "-1", "--format=%cI"),
+}
+
 const backendUrl = new URL(
   process.env.HAUTE_BACKEND_URL ?? "http://127.0.0.1:8000",
 )
@@ -27,6 +50,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),
+    __APP_BUILD__: JSON.stringify(appBuild),
   },
   resolve: {
     alias: {

@@ -10,4 +10,5 @@ export { PaletteColumn, PaletteHeader, PaletteItem, PaletteItems, PaletteRevealS
 export { SidePanel, SidePanelClose, SidePanelHeader } from "./SidePanel"
 export { halfWindowWidth } from "./sidePanelWidth"
 export type { SidePanelProps } from "./SidePanel"
+export type { BuildInfo } from "./ToolbarControls"
 export { SaveCommit, ToolbarBrand, ToolbarButton, ToolbarColumn, UndoRedo, ZoomInOut } from "./ToolbarControls"

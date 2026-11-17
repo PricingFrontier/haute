@@ -42,6 +42,15 @@ Object.defineProperty(globalThis, "__APP_VERSION__", {
   value: "999.0.0-test",
 })
 
+Object.defineProperty(globalThis, "__APP_BUILD__", {
+  configurable: true,
+  value: {
+    builtAt: "2026-11-12T09:30:00.000Z",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    commitDate: "2026-11-10T14:05:00+00:00",
+  },
+})
+
 // jsdom polyfill for React Flow's transform measurement.
 // `useUpdateNodeInternals` (added in Bundle 3c for apiInput emit-frame
 // re-attachment) triggers an internal re-measure that constructs
