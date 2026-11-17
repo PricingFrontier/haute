@@ -71,7 +71,7 @@ function fromRowMenu(cell: HTMLElement, ...entries: string[]) {
   for (const entry of entries) fireEvent.click(screen.getByRole("menuitem", { name: entry }))
 }
 
-/** A right-click on a cell of a grid whose rows are fixed: the browser's own menu, not the grid's. */
+/** A right-click on a cell of a grid whose rows are fixed: no menu of the grid's, and the grid leaves the event to the page. */
 function expectNoRowMenu(cell: HTMLElement) {
   expect(fireEvent.contextMenu(cell)).toBe(true)
   expect(screen.queryByRole("menu")).not.toBeInTheDocument()
