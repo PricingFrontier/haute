@@ -715,6 +715,7 @@ def _readers() -> set[str]:
     }
 
 
+@pytest.mark.meta
 def test_every_reader_is_driven_or_exempted() -> None:
     readers = _readers()
     undriven = sorted(readers - set(_DRIVEN) - set(_NOT_DRIVEN))

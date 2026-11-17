@@ -656,11 +656,19 @@ def rendered_column_kind(rendered: str) -> ColumnKind:
 
 
 def base_type_kind(name: str) -> ColumnKind:
-    """The kind of the Polars type named *name*, as ``str(dtype.base_type())`` renders it."""
-    kind = polars_type_kinds().get(name)
-    if kind is None:
+    """The kind of the Polars type named *name*, as ``str(dtype.base_type())`` renders it.
+
+    Only the named class is classified, so a type a later Polars adds without a kind is
+    refused where a column of it is read, not wherever any type is named.
+    """
+    candidate = getattr(pl, name, None)
+    if (
+        not isinstance(candidate, type)
+        or not issubclass(candidate, pl.DataType)
+        or candidate in _NOT_COLUMN_TYPES
+    ):
         raise SchemaMismatchError(f"{name!r} is not a Polars column type.", dtype=name)
-    return kind
+    return column_kind(candidate)
 
 
 def integer_range(dtype: pl.DataType | type[pl.DataType]) -> tuple[int, int]:
