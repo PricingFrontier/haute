@@ -382,6 +382,19 @@ def _align_loaded_utility(
         _loaded_utility_generation = generation
 
 
+def _forget_loaded_utility() -> None:
+    """Put aside every loaded ``utility`` module when the project has no ``utility`` (or no
+    project) any more: a removed package's code must not run under an identity that signs
+    no ``utility``, so the next import fails as it would in a fresh process."""
+    global _loaded_utility_generation
+    if _loaded_utility_generation is None:
+        return
+    with _preamble_lock:
+        if _loaded_utility_generation is not None:
+            evict_utility_modules()
+            _loaded_utility_generation = None
+
+
 def _compile_preamble_into_cell(
     preamble: str,
     project_root: str,
@@ -452,6 +465,7 @@ def _compile_preamble(
     if execution_fingerprint is None or (not preamble.strip() and installed_project() is None):
         if preamble.strip():
             raise RuntimeError("non-empty preamble did not produce an execution fingerprint")
+        _forget_loaded_utility()
         return {}
 
     # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``

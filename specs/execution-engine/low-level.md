@@ -2035,7 +2035,7 @@ present a structural or schema result as execution evidence.
   beside the modules of its own generation. A pipeline with a blank
   preamble and a project `utility` compiles too (to an empty namespace), so a node's own
   `import utility` finds this project's package and follows its edits; with neither, the
-  call returns an empty namespace and binds nothing. The finder's loader compiles each
+  call returns an empty namespace, binds nothing, and puts aside any `utility` module still loaded, so a package that was removed no longer runs from a node's import. The finder's loader compiles each
   `utility` module from its source and never reads or writes bytecode, so a same-size,
   same-mtime edit, which changes the fingerprint, reaches the next compile. `sys.path` is never edited: a helper that imports `utility` while
   Polars collects resolves it through the finder, bound to the project of the last

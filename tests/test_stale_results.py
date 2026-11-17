@@ -386,6 +386,33 @@ def test_an_undone_utility_edit_runs_the_restored_code_not_the_edit(project: Pat
     assert _preview(graph, "rated", "rated", row_limit=11) == 100 * 1 * 10 * 2
 
 
+def test_a_removed_utility_package_no_longer_runs_from_a_node_import(project: Path) -> None:
+    """With the package gone the identity signs no ``utility``, so the modules loaded from it
+    are put aside and the import fails as it would in a fresh process."""
+    import shutil
+
+    from haute.executor import execute_graph
+
+    graph = _graph(project, preamble="")
+    graph = graph.model_copy(
+        update={
+            "nodes": [
+                node.with_config({"code": "from utility.top import TOP\n" + _RATED_CODE})
+                if node.id == "rated"
+                else node
+                for node in graph.nodes
+            ]
+        }
+    )
+    assert _preview(graph, "rated", "rated") == 100 * 1 * 10 * 2
+
+    shutil.rmtree(project / "utility")
+    results = execute_graph(graph, target_node_id="rated", row_limit=11, target_preview_only=True)
+
+    assert results["rated"].status == "error"
+    assert "utility" in (results["rated"].error or "")
+
+
 def test_a_node_import_of_utility_runs_and_follows_edits_with_a_blank_preamble(
     project: Path,
 ) -> None:
