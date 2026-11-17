@@ -5,6 +5,7 @@ occurrence's ("Banding 1 in pricing"), never by the key the flat graph runs it u
 from __future__ import annotations
 
 import pickle
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,9 +20,10 @@ from haute._execution_context import (
 )
 from haute._flatten import flatten_graph
 from haute._node_addresses import node_display_name, node_reference
+from haute._project_context import current_project
 from haute._ram_estimate import MaterialisationEstimate
 from haute._submodel_instances import qualified_runtime_node_id
-from haute._types import NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
     ConfigError,
     GroupByExecutionUnsupportedError,
@@ -535,5 +537,88 @@ def test_no_failing_answer_over_a_copy_names_a_key_or_a_flat_name(
     # Each fails: a preview with its error, or a refusal (a public contract error).
     for name, answer in answers.items():
         assert answer.get("status") == "error" or "detail" in answer, (name, answer)
+    leaks = {name: _leaked_keys(answer) for name, answer in answers.items()}
+    assert leaks == {name: [] for name in answers}
+
+
+def _jobs_graph(**scale: Any) -> dict[str, Any]:
+    """The reuse pipeline feeding a model and a Data Output, ``scale`` configured so."""
+    graph = _copy_with(**scale)
+    graph.node_map["consumer"].data.config["code"] = (
+        "df = pl.concat([premium, rating_ie, rating_fr]).with_columns(f=pl.lit('a'))"
+    )
+    model = {
+        "algorithm": "catboost",
+        "task": "regression",
+        "target": "x",
+        "feature_columns": ["f"],
+        "loss_function": "RMSE",
+        "params": {"iterations": 1, "depth": 1},
+        "evaluation": {
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 42,
+            "validation": {"method": "single", "size": 0.2},
+        },
+    }
+    output = {
+        "output_type": "file",
+        "format": "parquet",
+        "path": str(current_project().root / "out" / "result.parquet"),
+    }
+    for node_id, node_type, config in [
+        ("model", NodeType.MODELLING, model),
+        ("out", NodeType.DATA_OUTPUT, output),
+    ]:
+        graph.nodes.append(
+            GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config))
+        )
+        graph.edges.append(GraphEdge(id=f"to_{node_id}", source="consumer", target=node_id))
+    return graph.model_dump(mode="json", by_alias=True)
+
+
+def _job_status(client: Any, path: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 120
+    status: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        status = client.get(path).json()
+        if status.get("status") not in {"pending", "running", "queued", "preparing"}:
+            break
+        time.sleep(0.05)
+    return status
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [{"contract": {"outputs": ["promised"]}}, {"keyword_parameters": "not a list"}],
+    ids=["malformed-contract", "builder-refusal"],
+)
+def test_no_job_over_a_copy_names_a_key_or_a_flat_name(scale: dict[str, Any]) -> None:
+    """A training run, a node-data build and a Data Output write plan before they walk:
+    what planning raises names the copy's child too."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(project_app(), raise_server_exceptions=False)
+    graph = _jobs_graph(**scale)
+    answers: dict[str, Any] = {}
+    jobs = {
+        "node data": (
+            "/api/node-data/run",
+            {"target": {"occurrence": "rating_ie", "node_id": "finish"}, "refresh": True},
+        ),
+        "training": ("/api/modelling/train", {"target": {"occurrence": None, "node_id": "model"}}),
+    }
+    status_paths = {"node data": "/api/node-data/status", "training": "/api/modelling/train/status"}
+    for name, (path, body) in jobs.items():
+        started = client.post(path, json={"graph": graph, **body})
+        assert started.status_code == 200, started.text
+        answers[name] = _job_status(client, f"{status_paths[name]}/{started.json()['job_id']}")
+    answers["Data Output write"] = client.post(
+        "/api/pipeline/write-output",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "out"}, "overwrite": True},
+    ).json()
+
+    # Each fails before it runs anything, and names no node by its key or flat name.
+    assert answers["training"]["status"] == "contract_error", answers["training"]
     leaks = {name: _leaked_keys(answer) for name, answer in answers.items()}
     assert leaks == {name: [] for name in answers}

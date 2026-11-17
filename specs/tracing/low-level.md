@@ -14,7 +14,9 @@
 ## Key types and data structures
 
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
-  `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
+  `node_name` (the node's label, a submodel child's with its occurrence's:
+  `haute._node_addresses.node_display_name`, as for an omission and an input source),
+  `node_type`, `schema_diff: SchemaDiff`, `input_values` /
   `output_values` (column → value dicts), `topological_rank`,
   `column_relevant: bool` (default `True`; in a column trace, whether the step is on
   the traced value's lineage), `contributed_columns: list[str]` (in a column trace,

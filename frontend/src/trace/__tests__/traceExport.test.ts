@@ -243,14 +243,15 @@ describe("trace export projection", () => {
     expect(markdown).toContain("| omission | 1 |  | lookup | Lookup \\| branch | reason | duplicate_exact_match |")
   })
 
-  it("exports a submodel occurrence's step under its occurrence and its own node id", () => {
+  it("exports a submodel occurrence's step under its occurrence, its own node id and its label", () => {
     const childKey = "submodel_runtime/pricing/child"
     const trace = makeTraceResult({
       ...traceFixture(),
-      steps: [makeTraceStep({ node_id: childKey, node_name: "Child rate", node_type: "polars", topological_rank: 1 })],
+      // A step names a child with its occurrence; the export has a column for that.
+      steps: [makeTraceStep({ node_id: childKey, node_name: "Child rate in pricing", node_type: "polars", topological_rank: 1 })],
       omissions: [],
       correlation_diagnostics: [],
-      node_addresses: { [childKey]: { occurrence: "pricing", node_id: "child", label: "pricing / Child rate" } },
+      node_addresses: { [childKey]: { occurrence: "pricing", node_id: "child", label: "Child rate" } },
     })
     const stepRows = buildTraceExportRows(trace).filter((row) => row.section === "step")
 
@@ -264,7 +265,7 @@ describe("trace export projection", () => {
     // The key appears only where the export says which node it names.
     const naming = buildTraceExportRows(trace).filter((row) => row.value.includes(childKey))
     expect(naming.map((row) => row.field)).toEqual(["node_addresses"])
-    expect(JSON.parse(naming[0].value)[childKey]).toEqual({ label: "pricing / Child rate", node_id: "child", occurrence: "pricing" })
+    expect(JSON.parse(naming[0].value)[childKey]).toEqual({ label: "Child rate", node_id: "child", occurrence: "pricing" })
   })
 
   it("prints each node row's submodel beside the node", () => {
@@ -277,7 +278,7 @@ describe("trace export projection", () => {
     const childKey = "submodel_runtime/pricing/child"
     const trace = makeTraceResult({
       ...traceFixture(),
-      steps: [makeTraceStep({ node_id: childKey, node_name: "Child rate", node_type: "polars", topological_rank: 1 })],
+      steps: [makeTraceStep({ node_id: childKey, node_name: "Child rate in pricing", node_type: "polars", topological_rank: 1 })],
       omissions: [],
       correlation_diagnostics: [],
       node_addresses: { [childKey]: { occurrence: "pricing", node_id: "child", label: "Child rate" } },

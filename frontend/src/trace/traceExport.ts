@@ -13,6 +13,7 @@ interface ExportNode {
   occurrence: string
   /** The node's id where it is authored: in the pipeline, or in the occurrence's definition. */
   nodeId: string
+  /** Its name; a submodel child's authored label, since the occurrence has a column of its own. */
   nodeName: string
 }
 
@@ -27,7 +28,11 @@ const NO_NODE: ExportNode = { occurrence: "", nodeId: "", nodeName: "" }
 
 function exportNode(trace: TraceResult, key: RuntimeNodeKey, nodeName: string): ExportNode {
   const address = trace.node_addresses[keyText(key)]
-  return { occurrence: address?.occurrence ?? "", nodeId: address?.node_id ?? "", nodeName }
+  return {
+    occurrence: address?.occurrence ?? "",
+    nodeId: address?.node_id ?? "",
+    nodeName: address?.occurrence ? address.label : nodeName,
+  }
 }
 
 /** The label of the node the trace explains. */

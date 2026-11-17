@@ -42,7 +42,7 @@ from haute._api_input_schema import is_json_api_input_path
 from haute._builders import pass_through_selected_edge
 from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
 from haute._data_points import DataPoint, DataPointResolver, point_kind
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_context import ExecutionContext, ExecutionProfile, naming_nodes_from
 from haute._logging import get_logger
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
@@ -1026,11 +1026,14 @@ def resolve_seed_plan(request: SeedPlanRequest, *, store: NodeSnapshotStore) -> 
 
     Reads store metadata only: nothing is leased, built, or executed. A corrupt
     generation met on the way propagates as the store's error. With caching off
-    in the store's project settings the plan seeds and captures nothing.
+    in the store's project settings the plan seeds and captures nothing. Every
+    operation plans its seeds before it walks: what planning raises names nodes from
+    the graph planned.
     """
-    if not read_pipeline_settings(store.root).caching_enabled:
-        return _UncachedResolver(request, store).resolve()
-    return _Resolver(request, store).resolve()
+    with naming_nodes_from(request.graph):
+        if not read_pipeline_settings(store.root).caching_enabled:
+            return _UncachedResolver(request, store).resolve()
+        return _Resolver(request, store).resolve()
 
 
 # ---------------------------------------------------------------------------
