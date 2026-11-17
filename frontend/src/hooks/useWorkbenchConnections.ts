@@ -4,6 +4,7 @@ import type { Edge } from "@xyflow/react"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import type { PipelineEdge } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { workbenchDisconnections } from "../utils/workbenchTables"
 
@@ -75,10 +76,21 @@ export default function useWorkbenchConnections({
       return false
     }
     const held = workbenchDisconnections(canvasGraph(), tables)
-    if (held === null) return true
-    commitEdges(held.edges)
-    for (const { node, edges: removed } of held.removed) {
-      addToast("warning", tablesGoneWarning(String(node.data.label ?? node.id), node.data.nodeType, removed.length))
+    if (held !== null) {
+      commitEdges(held.edges)
+      for (const { node, edges: removed } of held.removed) {
+        addToast("warning", tablesGoneWarning(String(node.data.label ?? node.id), node.data.nodeType, removed.length))
+      }
+    }
+    // Behind an open submodel the pipeline's own workbench nodes are held too: a save
+    // there sends the whole pipeline.
+    const focus = useGraphStore.getState().focus
+    const behind = focus === null ? null : workbenchDisconnections({ nodes: focus.rootNodes, edges: focus.rootEdges }, tables)
+    if (behind !== null) {
+      useGraphStore.getState().setRootEdgesRaw(behind.edges as PipelineEdge[])
+      for (const { node, edges: removed } of behind.removed) {
+        addToast("warning", tablesGoneWarning(String(node.data.label ?? node.id), node.data.nodeType, removed.length))
+      }
     }
     return true
   }, [addToast, commitEdges])

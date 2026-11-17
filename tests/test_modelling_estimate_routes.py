@@ -244,6 +244,21 @@ class TestEstimateEndpoint:
         # target; the declared output the run reads ('y') is the one it did not create.
         assert "'prep' did not create the column 'y'" in detail
 
+    def test_estimate_maps_out_of_memory_behind_a_polars_error_to_507(self, client, training_data):
+        """Out of memory behind the pipeline's own error is the memory limit, not a 422."""
+        graph = _make_modelling_graph(training_data)
+        source = next(n for n in graph["nodes"] if n["id"] == "source")
+        source["data"]["config"]["code"] = (
+            "raise pl.exceptions.ComputeError('allocation failed') from MemoryError()"
+        )
+
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
+
+        assert resp.status_code == 507, resp.text
+        assert resp.json()["detail"]["error_code"] == "memory_limit"
+
     def test_estimate_maps_polars_missing_column_to_422(self, client, training_data):
         """Post-load code naming a column the source lacks is a 422, never a 500."""
         graph = _make_modelling_graph(training_data)

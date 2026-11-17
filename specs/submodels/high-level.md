@@ -113,7 +113,8 @@ by one shared **definition** and any number of parent-graph **instances**:
   Accepted consequence: preview caches, trace snapshots and drilled targets
   keyed on the old runtime id are invalidated by the rename, and a drilled
   view whose occurrence no longer exists after a reload returns to the root
-  view.
+  view with a notice; one whose occurrence still exists stays open and shows
+  the reloaded contents. Saving inside a submodel saves the whole pipeline.
   There is no second top-level instances map. Internal definition positions are
   occurrence-local: grouping subtracts the first occurrence's origin and each
   expansion adds the selected occurrence's position, so copies never inherit
@@ -131,8 +132,10 @@ by one shared **definition** and any number of parent-graph **instances**:
   `name` and exactly one internal source `{nodeId, handleId}`. A definition module's
   `haute.Submodel(...)` writes an endpoint in snake_case, `{"node_id": ...}`, and its
   handle only when it has one (READ-45); a module that writes `nodeId` or `handleId` is
-  refused, naming each key's snake_case name. The graph the server and the browser
-  exchange keeps `{nodeId, handleId}`.
+  refused, naming each key's snake_case name. An endpoint names its child as the module's
+  function for it, as the module's connections do, so a child renamed in the editor (which
+  keeps its id until Save, as any renamed node does) is written under its new name in the
+  ports too. The graph the server and the browser exchange keeps `{nodeId, handleId}`.
   Parent edges may address only `in__<name>` and `out__<name>` handles;
   internal child ids are never a parent-graph interface. After backend
   sanitisation, the public input port name is the child-side frame name.

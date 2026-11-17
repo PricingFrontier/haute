@@ -302,10 +302,11 @@ class TestWatcherLongSaveRace:
             writer_commits.append(Path(self_obj._path))
             return original_exit(self_obj, *a, **kw)
 
-        # Patch codegen to return a realistic 2-file dict
+        # Patch codegen to return a realistic 2-file dict. Its main.py differs from the one
+        # on disk: a save leaves a file that already holds its bytes unwritten.
         def _multi(*a, **kw):
             return {
-                "main.py": 'import haute\npipeline = haute.Pipeline("main")\n',
+                "main.py": 'import haute\npipeline = haute.Pipeline("main")\n# saved\n',
                 "modules/sm1.py": "# submodel\n",
             }
 

@@ -240,7 +240,9 @@ reconciliation rather than dropping them or committing a second mutation.
   fingerprints to that snapshot, clears both history stacks of graph snapshots (keeping
   VC entries, API inverses a switch's own document load must not erase), recomputes the
   structural and panel-context fingerprints, and increments both versions
-  exactly once in one Zustand transition.
+  exactly once in one Zustand transition. A load shows the main pipeline, except that
+  `loadGraphSnapshot(snapshot, { keepOpenSubmodel: true })` (live sync's reload) keeps an
+  open submodel the new document still holds (item 9).
   Test seam: `resetGraphStoreForTests()` restores the full initial state and throws
   while a VC undo/redo is in flight (`vcBusy`) — that entry's completion handlers
   `set()` unconditionally and would overwrite the fresh reset with stale VC state.
@@ -555,6 +557,13 @@ reconciliation rather than dropping them or committing a second mutation.
    `structuralVersion`/`panelContextVersion` once regardless of fingerprint
    equality. Versions are never reset: a document switch that changes only
    submodels must still receive a fresh preview/result-cache identity.
+   A load shows the main pipeline. With `{ keepOpenSubmodel: true }` it keeps the open
+   submodel, in the same transition, when the new document still holds that occurrence of
+   that definition (the check Undo and Redo make, shared with `restore`): the canvas is the
+   occurrence's projection of the new document (`projectSubmodelFocus`, with no previous
+   annotations, which the load drops), and `readOnly` is read again. When the occurrence is
+   gone, or its instance id now names another definition, the load shows the main pipeline
+   and toasts "The submodel that was open is gone, so the main pipeline is shown."
    `markSaved(snapshot?)` captures `lastSavedSnapshot` (defaults to the
    current state) and `savedPersistedFingerprint`, then recomputes `dirty`.
    Loads use the atomic load action directly; `markSaved` remains the
@@ -915,10 +924,14 @@ reconciliation rather than dropping them or committing a second mutation.
     the condition the removed cascade fired on. `refreshPreview`'s
     stale-upstream gap-fill is the one place a preview request fans out
     into several, bounded by `PREVIEW_FANOUT_CONCURRENCY_LIMIT` (4).
-18. **Save (`usePipelineAPI.handleSave`).** Refuses to run while drilled
-    into a submodel. Runs `validateConfigRefs` (warns, does not block) and
-    `findFirstInvalidEdgeJoin` (blocks with an error toast if invalid).
-    Captures an exact live graph/preamble/submodel snapshot for the successful
+18. **Save (`usePipelineAPI.handleSave`).** Saves the document whatever the view
+    shows: the pipeline's own nodes and edges (`documentGraph()`, also while a submodel is
+    open), every definition, the preamble and the constants, to the pipeline's file (the
+    document status's `sourceFile`, never the open definition's), so a save inside a
+    submodel saves the whole pipeline and leaves the view as it is. Runs
+    `validateConfigRefs` (warns, does not block) and `findFirstInvalidEdgeJoin` (blocks with
+    an error toast if invalid) over the pipeline's own nodes and edges, as from the main
+    pipeline. Captures an exact live document snapshot for the successful
     saved baseline, then projects a separate immutable canonical request graph.
     That request recursively strips React Flow presentation and every
     underscore-prefixed node/edge field; the live snapshot keeps its authoritative
@@ -997,10 +1010,16 @@ reconciliation rather than dropping them or committing a second mutation.
     strictly equals its alias (`node.authored_id === config.alias`; a duplicate
     name is the one case where the recovery id carries a line suffix), throwing
     `${PARSER}: submodel node <recovery_id> id must equal its alias` if violated.
-    If a clean external document replacement arrives while drilled,
-    `useSubmodelNavigation.handleDocumentReload` returns to root view, clears
-    `activeSubmodelIdentity`, resets the view stack to the pipeline level, and
-    shows the parent graph without throwing.
+    A clean external document replacement arrives through
+    `loadGraphSnapshot(snapshot, { keepOpenSubmodel: true })`. While drilled it keeps the
+    open submodel when the new document still holds that occurrence of that definition: the
+    canvas and the open panel show the definition's new contents, and
+    `useSubmodelNavigation.handleDocumentReload` refreshes the breadcrumb's label and file
+    from the new document. Otherwise the store shows the main pipeline with its notice, and
+    `handleDocumentReload` resets the view stack to the pipeline level, clears the selection
+    and the preview, and leaves the store's canvas, the pipeline's, as the load installed it.
+    A change to another file leaves the open submodel as it is. A dirty document still
+    blocks the replacement behind the sync banner.
     The hook returns a `WsStatus`: `idle` while sync is not enabled (the
     pipeline is loading or failed to load), `connecting` from enabling until
     the first attempt opens or fails, `connected` while a socket is open,
@@ -1595,7 +1614,10 @@ again through the editor and save paths.
     refused drag end puts the canvas back; a gesture that changed nothing records no later
     step; the semantic generation advances with every change but a move, a selection or a
     preview's columns, and with every Undo, Redo, view change and load; saving and undoing
-    inside a submodel keep the dirty state right; a load closes the view.
+    inside a submodel keep the dirty state right; a load closes the view; a live reload
+    keeps the view when the new document holds the occurrence, showing the definition's
+    new contents, and shows the main pipeline with a notice when the occurrence is gone or
+    its instance id names another definition.
   - `frontend/src/stores/__tests__/useGraphStore.undoAtomicity.test.ts` — single- and multi-node delete
     (mixing connected/unconnected nodes), pure-edge delete, and paste are
     each exactly one undo entry regardless of selection size; redo replays
@@ -1818,8 +1840,9 @@ again through the editor and save paths.
     load-failure toast); save (success toast, dirty-during-in-flight-save
     survives, stale-response never overwrites a newer saved baseline,
     canonical Save request projection without loss of live root/nested
-    identities; blocked while drilled into a submodel; error toast including
-    `ApiError` detail); sources loading; preview fetch/status/schema
+    identities; a save inside a submodel sending the whole pipeline to the pipeline's
+    file and leaving the view open and clean, an edit made there while it is in flight
+    staying dirty; error toast including `ApiError` detail); sources loading; preview fetch/status/schema
     propagation into nodes via the raw setter; requested-preview-column
     capping for wide cached schemas; client-side preview timeout surfaced
     in panel and toast; `nodeIdCounter` seeded from max numeric suffix
@@ -1930,8 +1953,9 @@ again through the editor and save paths.
     create/dissolve responses; canonical request stripping; shared-definition
     messaging; projection/layout failure;
     breadcrumb restore; one history across views, Undo and Redo moving the
-    breadcrumbs and source file to the view a step was made in; and graph/ref
-    error no-ops.
+    breadcrumbs and source file to the view a step was made in; a live reload keeping
+    the open submodel and refreshing its breadcrumb, or returning to the main pipeline
+    when the occurrence is gone; and graph/ref error no-ops.
   - `frontend/src/utils/__tests__/submodelDocument.property.test.ts` — over 40 seeded random
     definitions and sequences of the canvas's writes inside the open submodel (config
     edits, added and deleted children, connections, disconnections, drags, selections and

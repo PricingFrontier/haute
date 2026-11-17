@@ -66,6 +66,7 @@ from haute._types import (
     GraphNode,
     PipelineGraph,
     SubmodelDefinition,
+    SubmodelEndpoint,
 )
 from haute.errors import ConfigError, HauteError, ParseError
 
@@ -1182,6 +1183,12 @@ def _graph_to_code_multi_instances(
             )
             for edge in child_edges
         ]
+
+        # A port endpoint names its child as the module's function, as its connections do:
+        # a child renamed in the editor keeps its id until the reparse keys it by that name.
+        def _as_written(endpoint: SubmodelEndpoint) -> SubmodelEndpoint:
+            return endpoint.model_copy(update={"node_id": child_id_to_func[endpoint.node_id]})
+
         # A module writes its port endpoints in snake_case, a handle only when it has one
         # (READ-45); the graph the browser exchanges keeps its own names.
         constructor_keywords: list[tuple[str, object]] = [
@@ -1189,14 +1196,18 @@ def _graph_to_code_multi_instances(
             (
                 "input_ports",
                 [
-                    port.model_dump(mode="json", by_alias=False, exclude_none=True)
+                    port.model_copy(
+                        update={"targets": [_as_written(target) for target in port.targets]}
+                    ).model_dump(mode="json", by_alias=False, exclude_none=True)
                     for port in definition.input_ports
                 ],
             ),
             (
                 "output_ports",
                 [
-                    port.model_dump(mode="json", by_alias=False, exclude_none=True)
+                    port.model_copy(update={"source": _as_written(port.source)}).model_dump(
+                        mode="json", by_alias=False, exclude_none=True
+                    )
                     for port in definition.output_ports
                 ],
             ),

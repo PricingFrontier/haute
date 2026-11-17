@@ -2324,9 +2324,13 @@ def prepare_data_output(
                 # A data-dependent failure (a cast, say) surfaces only when the
                 # write collects the plan, after every node has been built, so
                 # no node was running: the write names the node it was writing.
+                from haute._execute_lazy import node_failure_message
+                from haute.errors import DataOutputRowsError
+
                 label = node_display_name(graph, output_node_id)
-                failure = ExecutionError(
-                    f"Writing Data Output {label!r} failed while computing its rows: {exc}",
+                failure = DataOutputRowsError(
+                    f"Writing Data Output {label!r} failed while computing its rows: "
+                    f"{node_failure_message(exc)}",
                     node_id=output_node_id,
                 )
                 mark_failing_node(failure, output_node_id)

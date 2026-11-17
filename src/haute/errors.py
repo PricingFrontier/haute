@@ -273,6 +273,13 @@ class ExecutionError(HauteError):
     """Runtime execution failure."""
 
 
+class DataOutputRowsError(ExecutionError):
+    """A Data Output's rows failed to compute: the pipeline's own data met an operation it
+    could not take (a strict cast meeting a bad value), found only when the write collected
+    the plan. The message names the Data Output and gives the Polars error as a preview
+    records a node's, without the plan Polars appends."""
+
+
 class ModelNotInDiskCacheError(ExecutionError):
     """A model load restricted to the local disk model cache found no cached model.
 

@@ -999,6 +999,39 @@ def test_a_job_failing_after_its_parent_prepared_an_input_addresses_its_metrics(
     }
 
 
+def test_a_preparation_failing_on_the_pipelines_own_error_names_it(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Polars error in the pipeline's code, as a preview of the node shows it: the job is
+    the user's to fix, with the cause, never "Check the server logs". The cast plans, and
+    fails only on the rows."""
+    graph = _chain(project, b_code="df = A.with_columns(pl.lit('x').cast(pl.Int64).alias('k1'))")
+
+    # The memory estimate is stubbed, so the child's run is what fails.
+    run = _train(monkeypatch, graph, row_limit=_ROWS)
+
+    assert run.job["status"] == "contract_error", run.job
+    assert "conversion from `str` to `i64` failed" in run.job["message"]
+    assert "server logs" not in run.job["message"]
+
+
+def test_a_preparation_out_of_memory_behind_a_pipeline_error_is_memory_limited(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running out of memory behind the pipeline's own error is the memory limit, never
+    the user's to fix nor an internal failure."""
+    graph = _chain(
+        project,
+        b_code="raise pl.exceptions.ComputeError('allocation failed') from MemoryError()",
+    )
+
+    run = _train(monkeypatch, graph, row_limit=_ROWS)
+
+    assert run.job["status"] == "memory_limited", run.job
+    assert run.job["error_code"] == "memory_limit", run.job
+    assert "allocation failed" not in run.job["message"]
+
+
 def _train_to_completion(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
     response = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
     assert response.status_code == 200, response.text

@@ -1008,6 +1008,56 @@ def test_a_source_replaced_after_its_rows_were_read_is_never_published(
     assert list(project.glob(".haute_cache/inputs/*/generations/*")) == []
 
 
+def test_a_build_refused_while_its_parent_plans_names_the_pipelines_error(
+    client: TestClient, project: Path, in_process_worker: None
+) -> None:
+    """A malformed contract, which a preview of the node shows: the build reports it as the
+    user's to fix, never "Check the server logs"."""
+    graph = _graph(project)
+    next(node for node in graph["nodes"] if node["id"] == "join")["data"]["config"] = {
+        "code": "df = source.with_columns((pl.col('premium') * 2).alias('double'))",
+        "contract": {"outputs": ["double"]},
+    }
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"])
+
+    assert final["status"] == "contract_error", final
+    assert "Node contract annotation is malformed" in final["message"]
+    assert "server logs" not in final["message"]
+
+
+def test_a_build_failing_in_its_worker_process_names_the_pipelines_error(
+    client: TestClient, project: Path
+) -> None:
+    """A Polars error in the pipeline's code, out of the worker process: the worker reports
+    it as the user's to fix, with the message a preview records for the node."""
+    graph = _graph(project, join_code="df = source.with_columns(pl.col('missing'))")
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"], timeout=120)
+
+    assert final["status"] == "contract_error", final
+    assert final["message"] == 'Column "missing" does not exist.'
+
+
+def test_a_pipeline_error_out_of_memory_in_the_worker_is_a_memory_outcome(
+    client: TestClient, project: Path
+) -> None:
+    """Running out of memory behind the pipeline's own error is the memory limit, never
+    the user's to fix."""
+    graph = _graph(
+        project,
+        join_code="raise pl.exceptions.ComputeError('allocation failed') from MemoryError()",
+    )
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"], timeout=120)
+
+    assert final["status"] == "memory_limited", final
+    assert "allocation failed" not in final["message"]
+
+
 def test_cancelling_during_input_preparation_ends_the_job_cancelled(
     client: TestClient,
     project: Path,

@@ -16,7 +16,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useUIStore from "../../stores/useUIStore"
 import useBackgroundJobs from "../useBackgroundJobs"
-import type { PipelineEdge } from "../../types/node"
+import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
 import type {
   InputCacheJobStatusResponse,
   InputCacheSnapshotResponse,
@@ -27,6 +27,7 @@ import { setSyncConnectionId } from "../../api/syncConnection"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { LOADED_DOCUMENT_FINGERPRINT, makeLoadedPipeline, makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
+import { COPY, DEFINITION_ID, OWNER, loadTwoOccurrences, openOccurrence } from "../../testSupport/twoOccurrencesFixture"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
@@ -1290,25 +1291,54 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
   })
 
-  it("handleSave is blocked while drilled into a submodel", async () => {
-    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
+  it("saves the whole pipeline from inside a submodel and leaves the view open and clean", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_file: "pricing.py", source_revision: "revision-load" }))
+    let resolveSave!: (value: SavePipelineResponse) => void
+    const savePromise = new Promise<SavePipelineResponse>((resolve) => { resolveSave = resolve })
+    mockSave.mockReturnValue(savePromise)
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    openPricing([makeNode("parent")])
-    useGraphStore.setState({ nodes: [makeNode("child")], edges: [] })
+    act(() => {
+      loadTwoOccurrences([makeNode("rate", "polars", { data: { label: "Rate" } })])
+      openOccurrence(OWNER)
+      // Navigation names the open definition's file; the save goes to the pipeline's.
+      params.sourceFileRef.current = "modules/pricing.py"
+      // An edit inside the submodel, which reaches the document through its definition.
+      useGraphStore.getState().setNodes((nodes) => nodes.map((node) => node.id === "rate"
+        ? { ...node, data: { ...node.data, label: "Rate (edited)" } }
+        : node))
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
 
     await act(async () => {
       result.current.handleSave()
     })
 
-    expect(mockSave).not.toHaveBeenCalled()
-    const toasts = useToastStore.getState().toasts
-    expect(toasts.some((t) =>
-      t.type === "error" &&
-      t.text.includes("Return to the main pipeline before saving"),
-    )).toBe(true)
+    expect(mockSave).toHaveBeenCalledOnce()
+    const request = mockSave.mock.calls[0][0]
+    expect(request.source_file).toBe("pricing.py")
+    expect(request.graph.nodes.map((node: { id: string }) => node.id)).toEqual([OWNER.instanceId, COPY.instanceId])
+    const saved = request.graph.submodels?.[DEFINITION_ID] as SubmodelDefinition
+    expect(saved.graph.nodes.map((node) => node.data.label)).toEqual(["Rate (edited)"])
+
+    // An edit accepted while the save is in flight is not what was saved.
+    act(() => {
+      useGraphStore.getState().setNodes((nodes) => nodes.map((node) => node.id === "rate"
+        ? { ...node, data: { ...node.data, label: "Rate (after the save)" } }
+        : node))
+    })
+    await act(async () => {
+      resolveSave(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
+      await savePromise
+    })
+    expect(useGraphStore.getState().focus).toMatchObject(OWNER)
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    // Undoing that edit takes the document back to what was saved: clean again.
+    act(() => useGraphStore.getState().undo())
+    expect(useGraphStore.getState().focus).toMatchObject(OWNER)
+    expect(useGraphStore.getState().isDirty()).toBe(false)
   })
 
   it("handleSave shows error toast on failure", async () => {

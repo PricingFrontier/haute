@@ -237,13 +237,18 @@ export interface GraphStore {
   commitSubmodelBoundaryEdit: (edit: SubmodelBoundaryEdit) => void
   /** Replace the pipeline's own nodes (behind an open submodel, or on the canvas), without an undo entry (preview columns). */
   setRootNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
+  /** Replace the pipeline's own edges (behind an open submodel, or on the canvas), without an undo entry. */
+  setRootEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
 
   /**
    * Replace the complete persisted document and make it the clean saved
    * baseline. Whole-document loads are cache-identity boundaries, so both
    * derived versions advance monotonically even when fingerprints match.
+   * A load shows the main pipeline; `keepOpenSubmodel` (live sync's reload) keeps an
+   * open submodel the new document still holds, and otherwise shows the main pipeline
+   * with a notice.
    */
-  loadGraphSnapshot: (snapshot: GraphSnapshot) => void
+  loadGraphSnapshot: (snapshot: GraphSnapshot, options?: { keepOpenSubmodel?: boolean }) => void
 
   // Explicit history operations
   pushSnapshot: () => void
@@ -315,6 +320,48 @@ function focusIdentity(focus: SubmodelFocus | null): SubmodelFocusIdentity | nul
 
 function focusKey(focus: SubmodelFocusIdentity | null | undefined): string {
   return focus ? JSON.stringify([focus.instanceId, focus.definitionId]) : ""
+}
+
+/**
+ * The open submodel `wanted` shown in `document`: its focus, `readOnly` read from the
+ * occurrence, and the canvas drawn from the document, or null when the document no longer
+ * holds that occurrence of that definition.
+ */
+function submodelViewIn(
+  document: { nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> },
+  wanted: SubmodelFocusIdentity,
+  annotations: Record<string, Record<string, unknown>> | undefined,
+  previous: { nodes: Node[]; edges: PipelineEdge[] } | undefined,
+): { focus: SubmodelFocus; nodes: Node[]; edges: PipelineEdge[] } | null {
+  const occurrence = document.nodes.find((node) => node.id === wanted.instanceId)
+  const config = occurrence?.data.config
+  if (
+    !occurrence
+    || !isSubmodelInstanceConfig(config)
+    || config.definition_id !== wanted.definitionId
+    || !isSubmodelDefinition(document.submodels[wanted.definitionId], wanted.definitionId)
+  ) {
+    return null
+  }
+  const canvas = projectSubmodelFocus({
+    rootNodes: document.nodes,
+    rootEdges: document.edges,
+    submodels: document.submodels,
+    focus: wanted,
+    annotations,
+    previous,
+  })
+  return {
+    focus: {
+      instanceId: wanted.instanceId,
+      definitionId: wanted.definitionId,
+      readOnly: config.instance_of !== undefined,
+      rootNodes: document.nodes,
+      rootEdges: document.edges,
+    },
+    nodes: canvas.nodes,
+    edges: canvas.edges,
+  }
 }
 
 /**
@@ -952,29 +999,16 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     let canvas = { nodes: document.nodes, edges: document.edges }
     let notice: string | null = null
     if (wanted) {
-      const occurrence = document.nodes.find((node) => node.id === wanted.instanceId)
-      const config = occurrence?.data.config
-      if (
-        occurrence
-        && isSubmodelInstanceConfig(config)
-        && config.definition_id === wanted.definitionId
-        && isSubmodelDefinition(document.submodels[wanted.definitionId], wanted.definitionId)
-      ) {
-        const sameView = focusKey(focusIdentity(state.focus)) === focusKey(wanted)
-        canvas = projectSubmodelFocus({
-          rootNodes: document.nodes,
-          rootEdges: document.edges,
-          submodels: document.submodels,
-          focus: wanted,
-          annotations: state.submodelAnnotations[wanted.instanceId],
-          previous: sameView ? { nodes: state.nodes, edges: state.edges } : undefined,
-        })
-        focus = {
-          ...wanted,
-          readOnly: config.instance_of !== undefined,
-          rootNodes: document.nodes,
-          rootEdges: document.edges,
-        }
+      const sameView = focusKey(focusIdentity(state.focus)) === focusKey(wanted)
+      const view = submodelViewIn(
+        document,
+        wanted,
+        state.submodelAnnotations[wanted.instanceId],
+        sameView ? { nodes: state.nodes, edges: state.edges } : undefined,
+      )
+      if (view) {
+        canvas = { nodes: view.nodes, edges: view.edges }
+        focus = view.focus
       } else {
         notice = "The submodel that step was made in is gone, so the main pipeline is shown."
       }
@@ -1251,10 +1285,49 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       set({ focus: nextFocus, ...derivedPatch(state, { ...state, focus: nextFocus }, false) })
     },
 
+    setRootEdgesRaw: (updater) => {
+      const state = get()
+      const focus = state.focus
+      // With no submodel open the pipeline's own edges are the canvas.
+      if (focus === null) {
+        get().setEdgesRaw(updater)
+        return
+      }
+      // The open view's cards carry the pipeline's bindings into it, so the view is drawn
+      // again from the new edges, keeping its canvas state, as Undo and Redo draw it.
+      const view = submodelViewIn(
+        { nodes: focus.rootNodes, edges: applyUpdater(focus.rootEdges, updater), submodels: state.submodels },
+        focusIdentity(focus)!,
+        state.submodelAnnotations[focus.instanceId],
+        { nodes: state.nodes, edges: state.edges },
+      )
+      if (view === null) {
+        throw new Error(`Submodel occurrence ${focus.instanceId} is not in the document`)
+      }
+      // The view is drawn from the authored forms, which hold no selection: what was selected
+      // on the canvas stays selected.
+      const selectedNodes = new Set(state.nodes.filter((node) => node.selected).map((node) => node.id))
+      const selectedEdges = new Set(state.edges.filter((each) => each.selected).map((each) => each.id))
+      const nodes = view.nodes.map((node) => (selectedNodes.has(node.id) ? { ...node, selected: true } : node))
+      const edges = view.edges.map((each) => (selectedEdges.has(each.id) ? { ...each, selected: true } : each))
+      const fields: GraphFields = { ...state, nodes, edges, focus: view.focus }
+      const patch = derivedPatch(state, fields)
+      set({
+        nodes,
+        edges,
+        focus: view.focus,
+        ...patch,
+        ...(patch.persistedFingerprint !== state.persistedFingerprint
+          ? { semanticGeneration: state.semanticGeneration + 1 }
+          : {}),
+      })
+    },
+
     // ── Explicit history operations ─────────────────────────────────────
 
-    loadGraphSnapshot: (snapshot) => {
+    loadGraphSnapshot: (snapshot, options) => {
       endGesture()
+      let notice: string | null = null
       set((state) => {
         // Keep live state and the saved baseline independently cloned. Some
         // React Flow/editor paths mutate node objects in place; sharing
@@ -1265,14 +1338,22 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         // that strips transient fields.
         const loaded = structuredClone(snapshot)
         const lastSavedSnapshot = captureGraphSnapshot(loaded)
+        // A reload keeps the open submodel while the new document holds it; its view's
+        // annotations belong to the old document and go with it.
+        const open = options?.keepOpenSubmodel ? focusIdentity(state.focus) : null
+        const view = open ? submodelViewIn(loaded, open, undefined, undefined) : null
+        if (open && view === null) {
+          notice = "The submodel that was open is gone, so the main pipeline is shown."
+        }
         const fields: GraphFields = {
-          nodes: loaded.nodes,
-          edges: loaded.edges,
+          nodes: view ? view.nodes : loaded.nodes,
+          edges: view ? view.edges : loaded.edges,
           preamble: loaded.preamble,
           submodels: loaded.submodels,
           globalConstants: loaded.globalConstants ?? [],
-          focus: null,
+          focus: view ? view.focus : null,
         }
+        const viewChanged = focusKey(focusIdentity(state.focus)) !== focusKey(focusIdentity(fields.focus))
         const persistedFingerprint = persistedFingerprintOf(fields)
         return {
           ...fields,
@@ -1280,22 +1361,22 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           lastSavedSnapshot,
           // Graph snapshots from before the load would bring back the old
           // document; a version-control entry is an API inverse, still valid
-          // (a switch's own document arrives through this load). A load is
-          // always the main pipeline, so an open submodel closes here.
+          // (a switch's own document arrives through this load).
           undoStack: state.undoStack.filter(isVcEntry),
           redoStack: state.redoStack.filter(isVcEntry),
           submodelAnnotations: {},
-          navigationSerial: state.navigationSerial + (state.focus ? 1 : 0),
+          navigationSerial: state.navigationSerial + (viewChanged ? 1 : 0),
           semanticGeneration: state.semanticGeneration + 1,
           structuralFingerprint: structuralFingerprintOf(fields),
           structuralVersion: state.structuralVersion + 1,
-          panelContextFingerprint: computePanelContextFingerprint(loaded.nodes, loaded.edges),
+          panelContextFingerprint: computePanelContextFingerprint(fields.nodes, fields.edges),
           panelContextVersion: state.panelContextVersion + 1,
           persistedFingerprint,
           savedPersistedFingerprint: persistedFingerprint,
           dirty: false,
         }
       })
+      if (notice) useToastStore.getState().addToast("info", notice)
     },
 
     pushSnapshot: () => {
@@ -1453,6 +1534,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
   }
 })
+
+/** The document's own nodes and edges: the pipeline's, also while a submodel is open. */
+export function documentGraph(): { nodes: Node[]; edges: PipelineEdge[] } {
+  const state = useGraphStore.getState()
+  return { nodes: documentNodes(state), edges: documentEdges(state) }
+}
 
 let canvasSeen: { nodes: Node[]; edges: PipelineEdge[] } | null = null
 

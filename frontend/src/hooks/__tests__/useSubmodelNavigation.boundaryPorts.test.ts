@@ -58,8 +58,6 @@ function occurrence() {
 
 function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[0]> = {}) {
   return {
-    setNodesRaw: vi.fn(),
-    setEdgesRaw: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     cancelPreview: vi.fn(),

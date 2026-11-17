@@ -2549,8 +2549,8 @@ class RowScopeResolver:
                             "row_scope_unproven" if single else "source_frame_row_not_correlated"
                         ),
                         "message": (
-                            f"Row correlation for node {parent_id!r} could not identify the "
-                            f"row that fed child {child_id!r}."
+                            f"Row correlation for node {self.node_name(parent_id)!r} could not "
+                            f"identify the row that fed child {self.node_name(child_id)!r}."
                         ),
                         "node_id": parent_id,
                         "child_node_id": child_id,
@@ -2579,8 +2579,10 @@ class RowScopeResolver:
                         "severity": "warning",
                         "reason": "multiple_source_frames_matched",
                         "message": (
-                            f"Row correlation for multi-frame node {parent_id!r} for child "
-                            f"{child_id!r} matched several frames; no frame was selected."
+                            f"Row correlation for multi-frame node "
+                            f"{self.node_name(parent_id)!r} for child "
+                            f"{self.node_name(child_id)!r} matched several frames; no frame "
+                            "was selected."
                         ),
                         "node_id": parent_id,
                         "child_node_id": child_id,
