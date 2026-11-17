@@ -712,21 +712,22 @@ def _finalise_action_plan(
     )
 
 
-def _function_body(path: Path, name: str) -> str | None:
-    """The body of the top-level function *name* in the Python file *path*, as the parser
-    extracts it (``_function_body_source``)."""
+def _holds_unfinished_placeholder(path: Path, name: str) -> bool:
+    """Whether the body of the top-level function *name* in the Python file *path*, as the
+    parser extracts it (``_function_body_source``), is the placeholder an unfinished step
+    list is saved with: the parse's own test (``steps_placeholder``)."""
     from haute._ast_helpers import _function_body_source
+    from haute._code_extraction import holds_incomplete_steps_placeholder
     from haute._source_layout import python_lines
 
     raw = path.read_bytes()
     _prefix, source, _body = _decode_utf8_artifact(raw, artifact="Repair source")
-    for statement in _parse(raw).body:
-        if (
-            isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and statement.name == name
-        ):
-            return _function_body_source(python_lines(source), statement)
-    return None
+    lines = python_lines(source)
+    return any(
+        holds_incomplete_steps_placeholder(_function_body_source(lines, statement))
+        for statement in _parse(raw).body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name
+    )
 
 
 def _scoped_config_to_write(
@@ -740,15 +741,13 @@ def _scoped_config_to_write(
     is the placeholder an unfinished step list is saved with and the node carries the
     code that list loads as, the list the file's ``.haute.json`` records: the parse's own
     rule (``steps_placeholder``), so a record a hand edit left behind is never read."""
-    from haute._code_extraction import holds_incomplete_steps_placeholder
     from haute._sidecar import read_sidecar_state
     from haute._step_authority import with_recorded_unfinished_steps, without_unread_steps
 
     if target.node_type not in STEPS_FROM_CODE:
         return config
     recorded = None
-    body = _function_body(path, target.authored_id)
-    if body is not None and holds_incomplete_steps_placeholder(body):
+    if _holds_unfinished_placeholder(path, target.authored_id):
         held = read_sidecar_state(path)
         recorded = held.data.unfinished_steps.get(target.authored_id) if held.data else None
     from_record = with_recorded_unfinished_steps(

@@ -600,17 +600,25 @@ class SavePipelineService:
         *,
         commit_message: str | None,
     ) -> SavePipelineResponse:
-        py_path = self._resolve_source_file(body.source_file)
-        on_disk = self._read_on_disk(py_path, body.base_revision)
-        edited = {(ref.submodel, ref.node_id) for ref in body.edited_steps}
-        graph = self._with_recorded_unfinished_steps(body.graph, on_disk.graph, edited)
+        graph = body.graph
 
         # Global constants: the file on disk, never the request, says whether
         # the declared constants file loads. Validation and codegen read it.
-        self._adopt_disk_global_constants_state(graph, py_path)
+        self._adopt_disk_global_constants_state(graph, self._resolve_source_file(body.source_file))
         self._refuse_preamble_global_constants_binding(body.preamble, label="The preamble")
         warnings = self.validate_graph(graph, source_file=body.source_file)
         warnings.extend(self._global_constant_source_warnings(graph, body.sources))
+        py_path = self._resolve_source_file(body.source_file)
+        on_disk = self._read_on_disk(py_path, body.base_revision)
+        edited = {(ref.submodel, ref.node_id) for ref in body.edited_steps}
+        recorded = self._with_recorded_unfinished_steps(graph, on_disk.graph, edited)
+        if recorded is not graph:
+            # A node written from its record of unfinished steps warns as an unfinished
+            # list does; validation saw the code it carried.
+            unfinished: list[str] = []
+            self._validate_transforms_are_runnable(recorded, unfinished)
+            warnings.extend(warning for warning in unfinished if warning not in warnings)
+            graph = recorded
         derived_new_files, derived_delete_files = self._derive_definition_file_lifecycle(
             parent_path=py_path,
             graph=graph,

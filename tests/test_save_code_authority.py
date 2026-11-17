@@ -25,6 +25,7 @@ from haute.routes._helpers import parse_pipeline_to_graph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests._project import use_project
+from tests._source_files import source_files
 from tests.conftest import current_source_revision
 
 REPO = Path(__file__).resolve().parents[1]
@@ -99,8 +100,8 @@ def _files(root: Path) -> dict[str, bytes]:
     """The project's files, without git's and Haute's own state."""
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and not {".git", ".haute"} & set(path.relative_to(root).parts)
+        for path in source_files(root, suffix=None)
+        if not {".git", ".haute"} & set(path.relative_to(root).parts)
     }
 
 
@@ -367,6 +368,53 @@ def test_a_name_that_holds_no_step_list_is_refused() -> None:
         graph_without_unread_steps(graph, [(None, "missing")])
 
 
+@pytest.mark.parametrize(
+    "graph",
+    [
+        pytest.param("not a graph", id="graph"),
+        pytest.param({"nodes": "not a list"}, id="nodes"),
+        pytest.param({"nodes": ["not a node"]}, id="node"),
+        pytest.param({"nodes": [{"id": "t", "data": "not data"}]}, id="data"),
+        pytest.param({"nodes": [], "submodels": {"s": {"graph": "not a graph"}}}, id="definition"),
+    ],
+)
+def test_a_malformed_graph_is_refused_by_the_requests_own_validation(graph: Any) -> None:
+    """The steps are taken off before the request's shape is checked: what is not a graph
+    is left for that check to refuse, never an error of the step rule's own."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SavePipelineRequest.model_validate({"graph": graph, "base_revision": None})
+    with pytest.raises(ValidationError):
+        SavePipelineRequest.model_validate(["not a request"])
+
+
+@pytest.mark.parametrize(
+    "name", [pytest.param("t", id="not-an-object"), pytest.param({"submodel": 3}, id="scope")]
+)
+def test_a_malformed_name_is_refused_by_the_requests_own_validation(name: Any) -> None:
+    from pydantic import ValidationError
+
+    payload = {"graph": {"nodes": []}, "base_revision": None, "edited_steps": [name]}
+    with pytest.raises(ValidationError, match="edited_steps"):
+        SavePipelineRequest.model_validate(payload)
+
+
+def test_a_record_that_does_not_render_is_read_for_a_node_that_carries_no_code() -> None:
+    """A recorded list that does not render at all loads with no code, so only a node that
+    carries none is written from it."""
+    from haute._step_authority import with_recorded_unfinished_steps
+
+    record = [{"id": "filter-1", "kind": "filter", "match": "all", "conditions": []}]
+
+    assert with_recorded_unfinished_steps("polars", {"code": ""}, record, edited=False) == {
+        "steps": record
+    }
+    assert (
+        with_recorded_unfinished_steps("polars", {"code": "df = x"}, record, edited=False) is None
+    )
+
+
 def test_a_server_side_writer_names_the_steps_it_changed(tmp_path: Path) -> None:
     root = _project(tmp_path)
     before = parse_pipeline_to_graph(root / "main.py", project_root=root)
@@ -571,7 +619,7 @@ _GENERATORS = {"graph_to_code", "graph_to_code_multi", "_node_to_code"}
 def _writers() -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     package = REPO / "src" / "haute"
-    for path in sorted(package.rglob("*.py")):
+    for path in source_files(package):
         rel = path.relative_to(package).as_posix()
         if rel in {"codegen.py", "_codegen_builders.py"}:
             continue
