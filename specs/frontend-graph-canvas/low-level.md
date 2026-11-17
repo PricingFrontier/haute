@@ -1119,11 +1119,13 @@ reconciliation rather than dropping them or committing a second mutation.
     gesture on it) merges the layout three ways (`withCurrentLayout`): a node
     moved since the candidate was prepared takes the position it has then, so
     a move made meanwhile is not reverted, and every other node keeps the
-    candidate's position, so a deletion batch's own moves land. A child counts
-    as moved when the definition moved it (a drag that ended, placed there on
-    the canvas too) or only the canvas did (a drag under way), so a drag under
-    way as the candidate was prepared that ends before it commits leaves the
-    canvas and the definition together. The view nodes' `selected`,
+    candidate's position, so a deletion batch's own moves land. A child is
+    placed once, on the canvas and in the definition alike: where the
+    definition has it then when the definition moved it (a drag that ended),
+    else where the candidate put it. Only a drag still under way (`dragging`)
+    shows the canvas's position, its end reaching the definition as its own
+    step; a drag released where it started leaves the document as it was, so
+    the candidate's place stands. The view nodes' `selected`,
     `dragging`, `measured`, `width` and `height` are taken from the canvas
     then, by id. A shared-node deletion whose
     commit went asynchronous reports `"pending"` and settles its caller through

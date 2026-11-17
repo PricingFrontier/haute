@@ -94,22 +94,28 @@ function placedAs(nodes: Node[], now: Positions, moved: (id: string) => boolean)
  *
  * A pending candidate is kept across selection and position changes made while
  * parent identities resolve; committing it must not revert those, so the
- * presentation-only fields are taken from the current view by node id, and so
- * is the position of each node `moved`.
+ * presentation-only fields are taken from the current view by node id. A child
+ * is placed where `children` has it, unless a drag of it is under way, shown
+ * where it is; a card `moved` is placed where it is.
  */
 function mergeViewPresentation<T extends { viewNodes: Node[] }>(
   result: T,
   currentNodes: Node[],
+  children: Positions,
   moved: (id: string) => boolean,
 ): T {
   const byId = new Map(currentNodes.map((node) => [node.id, node]))
   return {
     ...result,
-    viewNodes: placedAs(result.viewNodes, positionsOf(currentNodes), moved).map((node) => {
+    viewNodes: result.viewNodes.map((node) => {
       const live = byId.get(node.id)
       if (!live) return node
+      const position = live.dragging || (!children.has(node.id) && moved(node.id))
+        ? live.position
+        : children.get(node.id) ?? node.position
       return {
         ...node,
+        position,
         selected: live.selected,
         dragging: live.dragging,
         measured: live.measured,
@@ -157,34 +163,26 @@ function focusedOccurrence() {
  * `result`, prepared when the document was laid out as `base`, with the moves made
  * since (while it waited for server names, or built on such a candidate), which win;
  * every other node keeps its place in `result`, which holds the edit's own moves (a
- * deletion batch's). A child is moved when the definition moved it (a drag that
- * ended, which the canvas shows there too) or only the canvas did (a drag under
- * way). Judging the canvas and the definition apart would part them when a drag
- * under way as the edit was prepared ends before it commits.
+ * deletion batch's). A child is placed once, on the canvas and in the definition
+ * alike: where the definition has it now when the definition moved it (a drag that
+ * ended), else where `result` put it. Only a drag still under way shows the canvas's
+ * position, its end reaching the definition as its own step; a drag released where
+ * it started leaves the document as it was, so `result`'s place stands.
  */
 function withCurrentLayout(result: SubmodelBoundaryEditResult, base: DocumentLayout): SubmodelBoundaryEditResult {
   const { nodes } = useGraphStore.getState()
   const now = documentLayout(result.definitionId)
-  const authoredMove = (id: string) => movedSince(id, base.definition, now.definition)
-  const merged = mergeViewPresentation(
-    result,
-    nodes,
-    (id) => authoredMove(id) || movedSince(id, base.view, now.view),
-  )
-  const definition = merged.submodels[merged.definitionId]
-  const placedSubmodels = isSubmodelDefinition(definition, merged.definitionId)
-    ? {
-        ...merged.submodels,
-        [merged.definitionId]: {
-          ...definition,
-          graph: { ...definition.graph, nodes: placedAs(definition.graph.nodes, now.definition, authoredMove) },
-        },
-      }
-    : merged.submodels
+  const definition = result.submodels[result.definitionId]
+  const owned = isSubmodelDefinition(definition, result.definitionId) ? definition : null
+  const children = owned
+    ? placedAs(owned.graph.nodes, now.definition, (id) => movedSince(id, base.definition, now.definition))
+    : []
   return {
-    ...merged,
-    parentNodes: placedAs(merged.parentNodes, now.parent, (id) => movedSince(id, base.parent, now.parent)),
-    submodels: placedSubmodels,
+    ...mergeViewPresentation(result, nodes, positionsOf(children), (id) => movedSince(id, base.view, now.view)),
+    parentNodes: placedAs(result.parentNodes, now.parent, (id) => movedSince(id, base.parent, now.parent)),
+    submodels: owned
+      ? { ...result.submodels, [result.definitionId]: { ...owned, graph: { ...owned.graph, nodes: children } } }
+      : result.submodels,
   }
 }
 

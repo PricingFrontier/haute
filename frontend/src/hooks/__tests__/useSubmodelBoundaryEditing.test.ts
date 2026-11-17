@@ -615,6 +615,9 @@ describe("useSubmodelBoundaryEditing", () => {
       await identityResolution
     })
     await vi.waitFor(() => expect(storedDefinition().outputPorts.map((port) => port.name)).toEqual(["child_a_input"]))
+    // The drag still under way stays where it is on the canvas, and not yet in the definition.
+    expect(store().nodes.find((node) => node.id === "child_b")?.position).toEqual({ x: 500, y: 640 })
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position).toEqual(startedAt)
     // Released where the last frame left it, after the edit landed.
     act(() => moveTo(500, false))
 
@@ -1088,11 +1091,9 @@ describe("useSubmodelBoundaryEditing", () => {
         )).toBe("pending")
       })
 
-      useGraphStore.setState({
-        nodes: store().nodes.map((node) => node.id === "child_b"
-          ? { ...node, selected: true, position: { x: 111, y: 222 } }
-          : node),
-      })
+      act(() => store().setNodesRaw((nodes) => nodes.map((node) => node.id === "child_b"
+        ? { ...node, selected: true, position: { x: 111, y: 222 } }
+        : node)))
       const request = resolveGraphIdentities.mock.calls[0]![0]
       await act(async () => resolutions[0]!.resolve({
         nodes: [...request.nodes], edges: [...request.edges] as PipelineEdge[],
@@ -1144,20 +1145,26 @@ describe("useSubmodelBoundaryEditing", () => {
       expect(definitionPosition()).toEqual({ x: 42, y: 24 })
     })
 
-    it("keeps the canvas and the definition together when a drag under way ends while the deletion waits", async () => {
+    it.each([
+      // Released elsewhere: the drag's end is the later move, and wins.
+      [{ x: 10, y: 20 }, { x: 10, y: 20 }],
+      // Released where it started: the document is as it was, so the batch's move stands.
+      [{ x: 0, y: 0 }, { x: 42, y: 24 }],
+    ])("keeps the canvas and the definition together when a drag under way ends at %o while the deletion waits", async (release, placed) => {
       const fixture = makeUnresolvedFixture()
       const { resolutions, resolveGraphIdentities } = deferredResolver()
       openInStore(fixture)
       const { result } = renderHook(() => useSubmodelBoundaryEditing({
         ...hookParams(fixture), resolveGraphIdentities,
       }))
-      const moveTo = (x: number, dragging: boolean) => store().setNodesRaw((nodes) =>
-        nodes.map((node) => (node.id === "child_b" ? { ...node, position: { x, y: 20 }, dragging } : node)))
+      const moveTo = (position: { x: number; y: number }, dragging: boolean) => store().setNodesRaw((nodes) =>
+        nodes.map((node) => (node.id === "child_b" ? { ...node, position, dragging } : node)))
       const canvasPosition = () => store().nodes.find((node) => node.id === "child_b")!.position
       const definitionPosition = () => storedDefinition().graph.nodes.find((node) => node.id === "child_b")!.position
+      expect(definitionPosition()).toEqual({ x: 0, y: 0 })
       act(() => {
         store().pushSnapshot()
-        moveTo(10, true)
+        moveTo({ x: 10, y: 20 }, true)
       })
 
       act(() => {
@@ -1166,22 +1173,22 @@ describe("useSubmodelBoundaryEditing", () => {
           { type: "position", id: "child_b", position: { x: 42, y: 24 }, dragging: false },
         ])).toBe("pending")
       })
-      // The drag is released where its last frame left it, before the names arrive.
-      act(() => moveTo(10, false))
-      expect(definitionPosition()).toEqual({ x: 10, y: 20 })
+      // The drag is released before the names arrive.
+      act(() => moveTo(release, false))
+      expect(definitionPosition()).toEqual(release)
       const request = resolveGraphIdentities.mock.calls[0]![0]
       await act(async () => resolutions[0]!.resolve({
         nodes: [...request.nodes], edges: [...request.edges] as PipelineEdge[],
       }))
 
       expect(store().nodes.map((node) => node.id)).not.toContain("child_a")
-      expect(canvasPosition()).toEqual({ x: 10, y: 20 })
-      expect(definitionPosition()).toEqual({ x: 10, y: 20 })
+      expect(canvasPosition()).toEqual(placed)
+      expect(definitionPosition()).toEqual(placed)
       act(() => store().undo())
       expect(canvasPosition()).toEqual(definitionPosition())
       act(() => store().redo())
-      expect(canvasPosition()).toEqual({ x: 10, y: 20 })
-      expect(definitionPosition()).toEqual({ x: 10, y: 20 })
+      expect(canvasPosition()).toEqual(placed)
+      expect(definitionPosition()).toEqual(placed)
     })
 
     it("voids the gesture when the document is edited while identities resolve", async () => {
