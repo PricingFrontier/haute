@@ -1,4 +1,4 @@
-import type { Connection, Edge, Node } from "@xyflow/react"
+import type { Connection, Edge, Node, XYPosition } from "@xyflow/react"
 import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
@@ -443,10 +443,15 @@ export function applyCanonicalSubmodelBoundaryConnection(
   return null
 }
 
-/** What a removal takes away: children, and edges (boundary or internal) by id. */
+/**
+ * What a removal takes away: children, and edges (boundary or internal) by id. `moves` are
+ * the positions the same gesture gave surviving children (a React Flow batch can carry
+ * them), written to the definition as part of the step.
+ */
 export interface CanonicalSubmodelRemoval {
   nodeIds?: ReadonlySet<string>
   edgeIds?: ReadonlySet<string>
+  moves?: ReadonlyMap<string, XYPosition>
 }
 
 /**
@@ -459,7 +464,7 @@ export interface CanonicalSubmodelRemoval {
  */
 export function removeCanonicalSubmodelElements(
   state: CanonicalSubmodelBoundaryEditState,
-  { nodeIds = new Set(), edgeIds = new Set() }: CanonicalSubmodelRemoval,
+  { nodeIds = new Set(), edgeIds = new Set(), moves = new Map() }: CanonicalSubmodelRemoval,
   canvas?: { nodes: Node[]; edges: Edge[] },
 ): SubmodelBoundaryEditResult {
   const definition = definitionFor(state)
@@ -494,7 +499,11 @@ export function removeCanonicalSubmodelElements(
     ...definition,
     graph: {
       ...definition.graph,
-      nodes: definition.graph.nodes.filter((node) => !nodeIds.has(node.id)),
+      nodes: definition.graph.nodes.flatMap((node) => {
+        if (nodeIds.has(node.id)) return []
+        const position = moves.get(node.id)
+        return [position ? { ...node, position } : node]
+      }),
       edges: (definition.graph.edges ?? []).filter((edge) => (
         !removedInternal.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)
       )),

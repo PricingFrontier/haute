@@ -402,9 +402,15 @@ export default function useSubmodelBoundaryEditing({
       if (!current) return "not-applicable"
       const viewNodeIds = new Set(current.viewNodes.map((node) => node.id))
       if (![...nodeIds].some((id) => viewNodeIds.has(id))) return "not-applicable"
+      // The batch's own moves are part of the step; a drag still under way elsewhere is not.
+      const moves = new Map((nodeChanges ?? []).flatMap((change) => (
+        change.type === "position" && change.position && !nodeIds.has(change.id)
+          ? [[change.id, change.position] as const]
+          : []
+      )))
       const removed = removeSubmodelElements(
         current,
-        { nodeIds, edgeIds: selectedEdgeIds },
+        { nodeIds, edgeIds: selectedEdgeIds, moves },
         {
           nodes: nodeChanges ? applyNodeChanges(nodeChanges, current.viewNodes) : current.viewNodes,
           edges: current.viewEdges,

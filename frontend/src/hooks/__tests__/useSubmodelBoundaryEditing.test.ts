@@ -939,7 +939,7 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
 
-  it("applies a mixed React Flow deletion batch in the same reconciled commit", () => {
+  it("applies a mixed React Flow deletion batch as one command, its moves in the document", () => {
     const fixture = makeFixture()
     openInStore(fixture)
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
@@ -965,6 +965,10 @@ describe("useSubmodelBoundaryEditing", () => {
       x: 42,
       y: 24,
     })
+    // The batch's move is part of the step: the definition holds it, so a save writes it.
+    expect(storedDefinition().graph.nodes.find((node) => node.id === "child_b")?.position)
+      .toEqual({ x: 42, y: 24 })
+    expect(storedDefinition().graph.nodes.map((node) => node.id)).toEqual(["child_b"])
   })
   describe("asynchronous shared-node deletion", () => {
     function makeUnresolvedFixture() {
