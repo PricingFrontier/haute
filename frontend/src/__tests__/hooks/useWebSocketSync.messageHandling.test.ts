@@ -136,8 +136,6 @@ const SOURCE_FILE = "rating/main.py"
 
 function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    submodelsRef: { current: {} },
-    preambleRef: { current: "" },
     sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
@@ -320,9 +318,9 @@ describe("useWebSocketSync - message handling", () => {
         }))
       })
 
-      expect(params.preambleRef.current).toBe("")
       expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenLastCalledWith(
         expect.objectContaining({ preamble: "" }),
+        { keepOpenSubmodel: true },
       )
     })
   })

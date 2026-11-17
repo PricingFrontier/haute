@@ -113,7 +113,8 @@ by one shared **definition** and any number of parent-graph **instances**:
   Accepted consequence: preview caches, trace snapshots and drilled targets
   keyed on the old runtime id are invalidated by the rename, and a drilled
   view whose occurrence no longer exists after a reload returns to the root
-  view.
+  view with a notice; one whose occurrence still exists stays open and shows
+  the reloaded contents. Saving inside a submodel saves the whole pipeline.
   There is no second top-level instances map. Internal definition positions are
   occurrence-local: grouping subtracts the first occurrence's origin and each
   expansion adds the selected occurrence's position, so copies never inherit
@@ -131,8 +132,10 @@ by one shared **definition** and any number of parent-graph **instances**:
   `name` and exactly one internal source `{nodeId, handleId}`. A definition module's
   `haute.Submodel(...)` writes an endpoint in snake_case, `{"node_id": ...}`, and its
   handle only when it has one (READ-45); a module that writes `nodeId` or `handleId` is
-  refused, naming each key's snake_case name. The graph the server and the browser
-  exchange keeps `{nodeId, handleId}`.
+  refused, naming each key's snake_case name. An endpoint names its child as the module's
+  function for it, as the module's connections do, so a child renamed in the editor (which
+  keeps its id until Save, as any renamed node does) is written under its new name in the
+  ports too. The graph the server and the browser exchange keeps `{nodeId, handleId}`.
   Parent edges may address only `in__<name>` and `out__<name>` handles;
   internal child ids are never a parent-graph interface. After backend
   sanitisation, the public input port name is the child-side frame name.
@@ -159,8 +162,9 @@ removed or dissolved); blocked attempts say so visibly. The owner cannot be
 dissolved while instances still reference it. Renaming the owner changes
 presentation only; an instance's outputs are named after it, so renaming an
 instance renames those frames for its consumers (see Reuse). Drilling into the owner opens the shared definition editor and states
-that edits affect every instance; drilling into an instance opens the same
-definition as an explicitly read-only view. All mutation surfaces are disabled
+that edits affect every instance, and every edit there changes the shared
+definition at once; drilling into an instance opens the same definition as an
+explicitly read-only view, whose edits the editor's document itself refuses. All mutation surfaces are disabled
 there, including config fields, labels, node/edge edits, boundary edits,
 paste/delete/undo/redo, palette drops, imports, and auto-layout. Preview, trace,
 selection, copy, pan, and zoom remain available. In v1, an ordinary owner edit
@@ -225,14 +229,23 @@ migrated with that edge identity, including selector fields, live-switch maps,
 config rewrites are one atomic transform, so no consumer retains a stale
 identity.
 
-When the editor is drilled into one occurrence, preview and trace requests use
-the parent hierarchical graph and qualify the clicked child from the explicit
-occurrence identity before crossing the execution API boundary. Local editor
-ids remain the identity used for selection, result caching, and rendering;
-qualified runtime ids do not leak back into the visible definition graph.
+When the editor is drilled into one occurrence, every request that runs the
+graph sends the whole hierarchical pipeline and names its target by address:
+the occurrence and the child's local id, or the occurrence and one of its
+public ports for the Input and Output cards. The server resolves the address
+through the expansion's own record and labels every node its answer names
+with its address ([server API](../server-api/low-level.md), "Node addresses").
+Local editor ids remain the identity used for selection, result caching, and
+rendering; runtime ids never reach the browser as anything but opaque keys.
+A preview's schema maps are recorded on the children their keys' addresses
+name, and the Input card carries each port's columns from the endpoint its
+frame provenance names, so an editor inside the occurrence lists its input's
+columns as it does on the root canvas. The parents' columns are
+kept on the root graph too, so the card starts with them when the occurrence
+is drilled into again.
 The occurrence identity is authoritative navigation state, not inferred from
 rendered boundary-port cards: definitions with no public ports (including a
-group made entirely from disconnected source nodes) must use the same qualified
+group made entirely from disconnected source nodes) use the same addressed
 preview and trace targets.
 
 Code generation emits each definition module once, one `from modules import ...`
@@ -262,7 +275,7 @@ instances.
 
 Acceptance also requires grouping existing config-backed source nodes, saving,
 reloading, drilling into the occurrence, and previewing each child. The request
-must target that occurrence's qualified runtime node, strict source config must
+must name that occurrence's child by address, strict source config must
 remain unpolluted by composition metadata, and generated standalone execution
 must resolve the original pipeline-owned sidecars.
 

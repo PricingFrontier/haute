@@ -124,8 +124,6 @@ const SOURCE_FILE = "rating/main.py"
 
 function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    preambleRef: { current: "" },
-    submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
@@ -207,7 +205,7 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       edges: [],
       preamble: "",
       submodels: {},
-    }))
+    }), { keepOpenSubmodel: true })
     expect(graphStore.undoStack).toEqual([])
     expect(graphStore.redoStack).toEqual([])
   })
@@ -230,6 +228,7 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
 
     expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ nodes: [expect.objectContaining({ id: "transform_1" })] }),
+      { keepOpenSubmodel: true },
     )
   })
 
@@ -510,6 +509,7 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: otherWriter })) })
       expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({ nodes: [expect.objectContaining({ id: "n1" })] }),
+        { keepOpenSubmodel: true },
       )
       expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-saved")
     })
@@ -545,6 +545,7 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
     await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
     expect(graphStore.loadGraphSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ nodes: [expect.objectContaining({ id: "destination" })] }),
+      { keepOpenSubmodel: true },
     )
   })
 

@@ -92,7 +92,7 @@ The **RELATIONSHIPS** pane answers two questions over the whole dataset:
 - **Which features move a target?** Choose a numeric (or true/false) **Target**, an optional **Weight** and up to 50 **Features**. Haute ranks the features by how much of the target's variance their levels explain; expand a feature to see each level's rows, weight and target mean.
 - **Do these columns identify a row?** Choose up to 8 **Key columns**. Haute reports whether they are unique, and if not, how many duplicate rows and rows with a missing key value there are.
 
-The pane reads the node's cached data, so cache the data first if it asks you to. These choices are not saved with the node.
+The pane reads the node's cached data, so cache the data first if it asks you to. If reading the data failed it says so, with the reason; refresh the node to try again. These choices are not saved with the node.
 
 ## Example
 

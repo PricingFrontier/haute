@@ -7,14 +7,15 @@
  * (GET /api/workbench/form), saved against that revision and captured on the save ledger
  * (PUT /api/workbench/form); a params file's header and a column's values, what allowed
  * values are read from (GET /api/workbench/params); and the SQL that brings each hosted
- * environment's tables to a form (POST /api/workbench/store-sql); and the test quotes
+ * environment's tables to a form (POST /api/workbench/store-sql); the workbook an Export
+ * writes from Preview's last pricing (POST /api/workbench/export); and the test quotes
  * (specs/workbench, Test quotes): listed, saved, opened, run, accepted and deleted
  * under /api/workbench/test-quotes, none of them with a deadline of the panel's own,
  * so a write is never reported failed while it is under way.
  */
 
 import { expectGeneratedContract } from "../types/generatedContractValidation"
-import { request } from "./client"
+import { postRawStream, request } from "./client"
 import type {
   FormSpec,
   WorkbenchFormResponse,
@@ -126,6 +127,39 @@ export async function fetchWorkbenchFormTables(form: FormSpec): Promise<Workbenc
     (await workbenchValidators()).validateWorkbenchTablesResponse,
     data,
   )
+}
+
+/** A file an Export wrote: its name and its bytes. */
+export interface ExportedFile {
+  fileName: string
+  blob: Blob
+}
+
+/** What a pricing of the sample gave, which an Export in Preview writes: the sample as the server typed it, and the priced rows of each table. */
+export interface ExportedPrice {
+  sample: Readonly<Record<string, unknown>>
+  tables: Record<string, Record<string, unknown>[]>
+}
+
+/** A `Content-Disposition`'s file name: its `filename*` decoded, else its `filename`; null when it names none. */
+export function attachmentName(disposition: string | null): string | null {
+  if (disposition === null) return null
+  const encoded = /filename\*=UTF-8''([^;\s]+)/i.exec(disposition)
+  if (encoded !== null) return decodeURIComponent(encoded[1])
+  const plain = /filename="([^"]*)"/i.exec(disposition)
+  return plain === null ? null : plain[1]
+}
+
+/**
+ * The workbook the Export `componentId` of `form`, as the view holds it, writes from
+ * `price`, Preview's last pricing (POST /api/workbench/export), in one attempt: a refusal
+ * throws with the server's reason.
+ */
+export async function exportWorkbenchFile(form: FormSpec, componentId: string, price: ExportedPrice): Promise<ExportedFile> {
+  const response = await postRawStream("/api/workbench/export", { form, component: componentId, sample: price.sample, tables: price.tables })
+  const fileName = attachmentName(response.headers.get("Content-Disposition"))
+  if (fileName === null) throw new Error("The export's answer names no file")
+  return { fileName, blob: await response.blob() }
 }
 
 export async function fetchWorkbenchForm(): Promise<WorkbenchFormResponse> {

@@ -15,6 +15,7 @@ import pytest
 from haute.routes._supersession import SupersessionCoordinator
 from haute.schemas import NodeResult
 from haute.trace import TraceResult
+from tests._preview_targets import node_target
 from tests._process_state import SupersessionStateSnapshot, supersession_snapshot
 from tests._project import project_app
 from tests.conftest import make_graph, make_transform_node
@@ -185,7 +186,11 @@ async def test_preview_supersedes_obsolete_same_key_requests(
         async def post() -> httpx.Response:
             return await ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": "live",
+                },
             )
 
         responses = await _post_many_same_key(
@@ -248,14 +253,22 @@ async def test_preview_supersession_cancels_active_execution_context(
         first = asyncio.create_task(
             ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": "live",
+                },
             )
         )
         await _wait_for_thread_event(first_started, "first preview worker")
         second = asyncio.create_task(
             ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": "live",
+                },
             )
         )
 
@@ -281,7 +294,7 @@ async def test_preview_returns_404_when_executor_omits_target_node(
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
         response = await ac.post(
             "/api/pipeline/preview",
-            json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+            json={"graph": _single_node_graph(), "target": node_target("target"), "source": "live"},
         )
 
     assert response.status_code == 404
@@ -344,14 +357,22 @@ async def test_preview_admission_failure_still_cancels_active_same_key_worker(
         first = asyncio.create_task(
             ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": "live",
+                },
             )
         )
         await _wait_for_thread_event(first_started, "first preview worker")
         second = asyncio.create_task(
             ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": "live",
+                },
             )
         )
 
@@ -416,7 +437,11 @@ async def test_preview_limits_blocking_workers_across_distinct_keys(
         async def post(source: str) -> httpx.Response:
             return await ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": source},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": source,
+                },
             )
 
         tasks = [asyncio.create_task(post(f"live-{idx}")) for idx in range(3)]
@@ -483,13 +508,21 @@ async def test_preview_targets_use_distinct_supersession_keys(
         async def post_a() -> httpx.Response:
             return await ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _two_node_graph(), "node_id": "target_a", "source": "live"},
+                json={
+                    "graph": _two_node_graph(),
+                    "target": node_target("target_a"),
+                    "source": "live",
+                },
             )
 
         async def post_b() -> httpx.Response:
             return await ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _two_node_graph(), "node_id": "target_b", "source": "live"},
+                json={
+                    "graph": _two_node_graph(),
+                    "target": node_target("target_b"),
+                    "source": "live",
+                },
             )
 
         first = asyncio.create_task(post_a())
@@ -551,7 +584,7 @@ async def test_preview_requested_columns_use_distinct_supersession_keys(
                 "/api/pipeline/preview",
                 json={
                     "graph": _single_node_graph(),
-                    "node_id": "target",
+                    "target": node_target("target"),
                     "source": "live",
                     "requested_preview_columns": columns,
                 },
@@ -608,7 +641,11 @@ async def test_preview_supersession_wins_over_obsolete_worker_error(
         async def post() -> httpx.Response:
             return await ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": "live",
+                },
             )
 
         first = asyncio.create_task(post())
@@ -667,7 +704,11 @@ async def test_preview_worker_limit_serializes_different_keys(
         async def post(source: str) -> httpx.Response:
             return await ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": source},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": source,
+                },
             )
 
         responses = await asyncio.gather(post("live"), post("batch"))
@@ -722,7 +763,11 @@ async def test_preview_supersedes_request_waiting_for_worker_slot(
         async def post(source: str) -> httpx.Response:
             return await ac.post(
                 "/api/pipeline/preview",
-                json={"graph": _single_node_graph(), "node_id": "target", "source": source},
+                json={
+                    "graph": _single_node_graph(),
+                    "target": node_target("target"),
+                    "source": source,
+                },
             )
 
         holder = asyncio.create_task(post("holder"))
@@ -806,7 +851,11 @@ async def test_repeated_aborted_preview_requests_do_not_start_worker_storm(
             async def post(source: str) -> httpx.Response:
                 return await ac.post(
                     "/api/pipeline/preview",
-                    json={"graph": _single_node_graph(), "node_id": "target", "source": source},
+                    json={
+                        "graph": _single_node_graph(),
+                        "target": node_target("target"),
+                        "source": source,
+                    },
                 )
 
             first = asyncio.create_task(post("first"))
@@ -922,7 +971,11 @@ async def test_timed_out_preview_requests_hold_slot_until_worker_finishes(
             async def post(source: str) -> httpx.Response:
                 return await ac.post(
                     "/api/pipeline/preview",
-                    json={"graph": _single_node_graph(), "node_id": "target", "source": source},
+                    json={
+                        "graph": _single_node_graph(),
+                        "target": node_target("target"),
+                        "source": source,
+                    },
                 )
 
             first = asyncio.create_task(post("first"))
@@ -1028,7 +1081,11 @@ async def test_timed_out_same_key_preview_stays_active_until_worker_finishes(
             async def post() -> httpx.Response:
                 return await ac.post(
                     "/api/pipeline/preview",
-                    json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                    json={
+                        "graph": _single_node_graph(),
+                        "target": node_target("target"),
+                        "source": "live",
+                    },
                 )
 
             first = asyncio.create_task(post())
@@ -1137,7 +1194,11 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
             async def post() -> httpx.Response:
                 return await ac.post(
                     "/api/pipeline/preview",
-                    json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
+                    json={
+                        "graph": _single_node_graph(),
+                        "target": node_target("target"),
+                        "source": "live",
+                    },
                 )
 
             first = asyncio.create_task(post())
@@ -1243,7 +1304,7 @@ async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.M
                 json={
                     "seed_plan": [],
                     "graph": _single_node_graph(),
-                    "target_node_id": "target",
+                    "target": node_target("target"),
                     "row_index": 0,
                     "source": "live",
                 },
@@ -1316,7 +1377,7 @@ async def test_trace_targets_use_distinct_supersession_keys(
                 json={
                     "seed_plan": [],
                     "graph": _two_node_graph(),
-                    "target_node_id": target,
+                    "target": node_target(target),
                     "row_index": 0,
                     "source": "live",
                 },
@@ -1388,7 +1449,7 @@ async def test_trace_limits_blocking_workers_across_distinct_keys(
                 json={
                     "seed_plan": [],
                     "graph": _single_node_graph(),
-                    "target_node_id": "target",
+                    "target": node_target("target"),
                     "row_index": 0,
                     "source": source,
                 },
@@ -1468,7 +1529,7 @@ async def test_aborted_trace_request_holds_limiter_until_worker_finishes(
                     json={
                         "seed_plan": [],
                         "graph": _single_node_graph(),
-                        "target_node_id": "target",
+                        "target": node_target("target"),
                         "row_index": 0,
                         "source": source,
                     },
@@ -1608,7 +1669,7 @@ async def test_trace_worker_limit_serializes_different_keys(
                 json={
                     "seed_plan": [],
                     "graph": _single_node_graph(),
-                    "target_node_id": "target",
+                    "target": node_target("target"),
                     "row_index": 0,
                     "source": source,
                 },

@@ -2948,7 +2948,10 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
     monkeypatch.setattr(pipeline_route, "_output_write_transaction", _fail)
     response = client.post(
         "/api/pipeline/write-output",
-        json={"graph": _sink_route_graph().model_dump(), "node_id": "sink"},
+        json={
+            "graph": _sink_route_graph().model_dump(),
+            "target": {"occurrence": None, "node_id": "sink"},
+        },
     )
 
     assert response.status_code == expected_status

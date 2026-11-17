@@ -6,8 +6,7 @@
     "tables[].factors": "One to three input column names the table is keyed on, usually band columns from a Banding node.",
     "tables[].output_column": "The relativity column the table adds; unique across the node.",
     "tables[].entries": "One row per key combination: each factor column name with its value, written as the input column shows it (\"17-24\", \"North\"), plus a numeric \"value\". The factor values and their relativities are material pricing choices: take them from the analyst, never invent them, and ask with NEEDS_INPUT: unless the analyst supplied or delegated them.",
-    "tables[].default_value": "The value for a row whose key has no entry. Without it the node fails naming the missing key, unless on_missing is \"neutral\". What a missing factor gets is a material pricing choice like the entries: take it from the analyst or ask, unless the analyst delegated it.",
-    "tables[].on_missing": "Optional: \"error\" (default) fails on a missing key with no default; \"neutral\" leaves it null and a combined output skips it.",
+    "tables[].default_value": "Optional: the finite number a row whose key has no entry takes. Without it such a row's relativity is left null, a combined output skips it, and the miss is logged; a miss never fails the node. What a missing factor gets is a material pricing choice like the entries: take it from the analyst or ask, unless the analyst delegated it.",
     "combined_outputs": "Optional combined columns over every table's output: {output_column, operation, base_value}, operation \"multiply\", \"add\", \"min\" or \"max\", base_value a finite number such as the base rate.",
     "steps": "Optional post-rating step cards; df is already the rated frame, so there is no source step. Keep [] with nothing to do."
   },

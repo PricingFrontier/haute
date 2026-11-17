@@ -48,6 +48,14 @@ from haute._execution_schemas import (
     _validate_diagnostic_collection,
 )
 from haute._graph_utils import is_frame_label
+from haute._node_address_schemas import (
+    FrameTargetPayload,
+    NodeAddressEntry,
+    NodeFrameTargetPayload,
+    NodeTargetRequest,
+    OccurrencePortProvenance,
+    RuntimeNodeKey,
+)
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, STRUCTURAL_NODE_TYPES, node_spec
 from haute._pipeline_settings import (
     MAX_SIZE_GB,
@@ -229,6 +237,20 @@ class WorkbenchTablesResponse(BaseModel):
     response_tables: list[WorkbenchTable] = Field(default_factory=list)
     #: The columns the quote store keeps in each table that the form does not, by table name.
     store_columns: dict[str, list[WorkbenchStoreColumn]] = Field(default_factory=dict)
+
+
+class WorkbenchExportRequest(BaseModel):
+    """An Export of a form the Workbench view holds, saved or not, run on what Preview's last
+    pricing gave: the Export by its id (``component``), the sample as the server typed it for
+    that pricing (``WorkbenchTablesResponse.sample``) and the priced rows of each table, by
+    its name (``tables``)."""
+
+    form: FormSpec
+    component: BoundedName
+    sample: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
+    tables: dict[
+        BoundedName, Annotated[list[RequestEntry], Field(max_length=MAX_REQUEST_ITEMS)]
+    ] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
 class WorkbenchStoreSqlRequest(BaseModel):
@@ -1990,21 +2012,21 @@ PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
 
 
 class PreviewNodeRequest(EditorSampleRequest):
+    # A field the request does not define (a node id or port beside the target) is refused,
+    # never silently dropped.
+    model_config = ConfigDict(extra="forbid")
+
     graph: Graph
-    node_id: BoundedName
+    # The frame previewed, by address (specs/server-api/low-level.md, "Node addresses"). A
+    # node target's ``port_label`` picks one frame of a multi-frame node and is part of
+    # the preview cache identity; its ``port_labels`` previews several frames from one run
+    # into ``port_previews`` (the workbench's Preview, a Workbench Output's tables), part of
+    # the supersession identity, not the cache's: every frame of the target is computed and
+    # kept whichever are previewed.
+    target: FrameTargetPayload
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: BoundedName = "live"
     requested_preview_columns: list[BoundedName] | None = Field(
-        default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
-    )
-    # Frame label selected for a multi-frame target. Single-frame targets
-    # ignore it. It is part of the preview cache identity.
-    port_label: BoundedName | None = None
-    # Several frames of a multi-frame target, each previewed from one run into
-    # ``port_previews`` (the workbench's Preview, a Workbench Output's tables). Not with
-    # ``port_label``. Part of the supersession identity, not the cache's: every frame of
-    # the target is computed and kept whichever are previewed.
-    port_labels: list[BoundedName] | None = Field(
         default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
     )
     # Chosen by the client so it can poll this request's step progress. Not part
@@ -2015,12 +2037,6 @@ class PreviewNodeRequest(EditorSampleRequest):
     # Preview pricing its sample). In the cache identity through the nodes' configs. Not
     # with ``workbench_sample``.
     workbench_form: FormSpec | None = None
-
-    @model_validator(mode="after")
-    def _one_frame_or_several(self) -> PreviewNodeRequest:
-        if self.port_label is not None and self.port_labels is not None:
-            raise ValueError("Give port_label for one frame or port_labels for several, not both.")
-        return self
 
     @model_validator(mode="after")
     def _one_form_or_a_sample(self) -> PreviewNodeRequest:
@@ -2064,13 +2080,13 @@ class RecoveryPreviewRequest(BaseModel):
 
 
 class NodeTimingInfo(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     label: str
     timing_ms: float
 
 
 class NodeMemoryInfo(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     label: str
     memory_bytes: int
 
@@ -2107,24 +2123,31 @@ class PreviewNodeResponse(NodeResult):
     """Full preview response — extends ``NodeResult`` with graph-wide metadata.
 
     Inherits all per-node fields (status, row_count, columns, preview, etc.)
-    and adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for
-    the full graph context.
+    and adds ``timings``, ``memory``, and ``node_statuses`` for the full graph
+    context. It names nodes by runtime key, each addressed in ``node_addresses``
+    (specs/server-api/low-level.md, "Node addresses"); it belongs to its request's
+    target, so it does not name that again.
     """
 
-    node_id: str
     timings: list[NodeTimingInfo] = Field(default_factory=list)
     memory: list[NodeMemoryInfo] = Field(default_factory=list)
-    node_statuses: dict[str, NodeExecutionStatus] = Field(default_factory=dict)
-    node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
-    node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_statuses: dict[RuntimeNodeKey, NodeExecutionStatus] = Field(default_factory=dict)
+    node_columns: dict[RuntimeNodeKey, list[ColumnInfo]] = Field(default_factory=dict)
+    node_available_columns: dict[RuntimeNodeKey, list[ColumnInfo]] = Field(default_factory=dict)
     # Per-frame column schemas for multi-frame producers, keyed
-    # node_id → port_label → columns. Only nodes that emit 2+ frames
-    # (a multi-table apiInput today; submodels / external callouts
-    # later) appear here; single-frame nodes are absent and the
-    # consumer falls back to ``node_columns``. Sibling to
-    # ``node_columns`` — additive, never replaces it.
-    node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
-    node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
+    # node key → port_label → columns. Only nodes that emit 2+ frames
+    # (a multi-table apiInput, a collapsed occurrence's output ports
+    # keyed by their ``out__<port>`` handles) appear here; single-frame
+    # nodes are absent and the consumer falls back to ``node_columns``.
+    node_frame_columns: dict[RuntimeNodeKey, dict[str, list[ColumnInfo]]] = Field(
+        default_factory=dict
+    )
+    node_schema_warnings: dict[RuntimeNodeKey, list[SchemaWarning]] = Field(default_factory=dict)
+    # The address and label of every key above.
+    node_addresses: dict[str, NodeAddressEntry]
+    # Every declared port of every occurrence in the executed graph, with the endpoint it
+    # resolves to (frame provenance): an Input card's columns are read through it.
+    occurrence_ports: list[OccurrencePortProvenance]
     execution_metrics: ExecutionMetricsPayload | None = None
     # Every snapshot generation the collected rows were computed from, in
     # topological order; empty when the preview read no snapshot.
@@ -2134,19 +2157,22 @@ class PreviewNodeResponse(NodeResult):
 class PreviewInputsRequest(EditorSampleRequest):
     """Which inputs a preview would read, so the browser prepares only those."""
 
+    model_config = ConfigDict(extra="forbid")
+
     graph: Graph
-    node_id: BoundedName
+    target: FrameTargetPayload
     source: BoundedName = "live"
     requested_preview_columns: list[BoundedName] | None = Field(
         default=None, min_length=1, max_length=MAX_REQUEST_ITEMS
     )
-    port_label: BoundedName | None = None
 
 
 class PreviewInputsResponse(BaseModel):
-    """Snapshot-backed Data Inputs and structured API Inputs, in execution order."""
+    """Snapshot-backed Data Inputs and structured API Inputs, in execution order, each
+    addressed in ``node_addresses``."""
 
-    input_node_ids: list[str]
+    input_node_ids: list[RuntimeNodeKey]
+    node_addresses: dict[str, NodeAddressEntry]
 
 
 # ---------------------------------------------------------------------------
@@ -2164,19 +2190,31 @@ class TraceSeedPlanEntry(BaseModel):
 
 
 class TraceRequest(EditorSampleRequest):
+    # A field the request does not define (a node id or port beside the target) is refused,
+    # never silently dropped.
+    model_config = ConfigDict(extra="forbid")
+
     graph: Graph
+    # The frame the traced row is from, by address (specs/server-api/low-level.md, "Node
+    # addresses"): the target of the preview the row was shown in. A node target's
+    # ``port_label`` is one frame of a multi-frame node, or a Workbench Output's table (the
+    # cell is traced from the node connected to it); a trace reads one frame, so never
+    # ``port_labels``.
+    target: FrameTargetPayload
     row_index: int = Field(default=0, ge=0)
-    target_node_id: BoundedName | None = None
     column: BoundedName | None = None
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: BoundedName = "live"
     row_values: dict[BoundedName, Any] | None = Field(default=None, max_length=MAX_REQUEST_ITEMS)
-    # The table of a Workbench Output target the row is from: the cell is traced
-    # from the node connected to it. Ignored for any other target.
-    port_label: BoundedName | None = None
     # The ``seed_plan`` of the preview this trace explains: the trace reads
     # exactly those generations and nothing else, even if snapshots now exist.
     seed_plan: list[TraceSeedPlanEntry] = Field(max_length=MAX_REQUEST_ITEMS)
+
+    @model_validator(mode="after")
+    def _one_frame(self) -> TraceRequest:
+        if isinstance(self.target, NodeFrameTargetPayload) and self.target.port_labels is not None:
+            raise ValueError("A trace reads one frame: name it with port_label, not port_labels.")
+        return self
 
 
 class SchemaDiffResponse(BaseModel):
@@ -2187,7 +2225,7 @@ class SchemaDiffResponse(BaseModel):
 
 
 class TraceColumnSourceResponse(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     column: str
     # The value a node's rule generated before its code rewrote the column.
     before_code: bool
@@ -2217,7 +2255,7 @@ class TraceColumnDerivationResponse(BaseModel):
 
 
 class TraceStepResponse(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     node_name: str
     node_type: str
     schema_diff: SchemaDiffResponse
@@ -2243,7 +2281,7 @@ class TraceStepResponse(BaseModel):
 
 
 class TraceOmissionResponse(BaseModel):
-    node_id: str
+    node_id: RuntimeNodeKey
     node_name: str
     node_type: str
     topological_rank: int = Field(ge=0)
@@ -2258,15 +2296,15 @@ class TraceCorrelationDiagnosticResponse(BaseModel):
     severity: str
     reason: str
     message: str
-    node_id: str | None = None
-    child_node_id: str | None = None
+    node_id: RuntimeNodeKey | None = None
+    child_node_id: RuntimeNodeKey | None = None
     match_strategy: str | None = None
     match_columns: list[str] = Field(default_factory=list)
     ignored_columns: list[str] = Field(default_factory=list)
     matched_row_count: int | None = None
     matched_row_indices: list[int] = Field(default_factory=list)
     # For a node not traced above a snapshot: the seeded node it lies above.
-    seed_node_ids: list[str] = Field(default_factory=list)
+    seed_node_ids: list[RuntimeNodeKey] = Field(default_factory=list)
 
 
 class TraceWaterfallEntryResponse(BaseModel):
@@ -2284,7 +2322,10 @@ class TraceWaterfallErrorResponse(BaseModel):
 
 
 class TraceResultResponse(BaseModel):
-    target_node_id: str
+    """A traced row. It names nodes by runtime key, each addressed in ``node_addresses``
+    (specs/server-api/low-level.md, "Node addresses")."""
+
+    target_node_id: RuntimeNodeKey
     row_index: int
     column: str | None = None
     output_value: Any = None
@@ -2300,6 +2341,7 @@ class TraceResultResponse(BaseModel):
     generated_at: str
     pipeline_source: str | None = None
     execution_origin: Literal["fresh_execution", "trace_cache"]
+    node_addresses: dict[str, NodeAddressEntry]
 
     @field_validator("generated_at")
     @classmethod
@@ -2384,9 +2426,8 @@ class PipelineSettingsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class OutputDestinationRequest(BaseModel):
+class OutputDestinationRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
 
 
 class OutputDestinationResponse(BaseModel):
@@ -2395,9 +2436,8 @@ class OutputDestinationResponse(BaseModel):
     suffix_mismatch: bool
 
 
-class WriteOutputRequest(BaseModel):
+class WriteOutputRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
     overwrite: StrictBool = False
 
@@ -2411,9 +2451,8 @@ class WriteOutputResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class OutputAssembleDryRunRequest(EditorSampleRequest):
+class OutputAssembleDryRunRequest(EditorSampleRequest, NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     #: The in-progress (volatile, unsaved) output_mapping to preview.
     output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
     #: Cap upstream source rows so the preview stays cheap.
@@ -2659,11 +2698,10 @@ NodeDataPointState = Literal["current", "stale", "partial", "missing", "building
 NodeDataColumns = list[str] | Literal["all"]
 
 
-class NodeDataRequest(EditorSampleRequest):
-    """Name a consumer node; the service resolves the data point it reads."""
+class NodeDataRequest(EditorSampleRequest, NodeTargetRequest):
+    """Name a consumer node by address; the service resolves the data point it reads."""
 
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -2672,7 +2710,7 @@ class NodeDataRunRequest(NodeDataRequest):
 
 
 class NodeDataPointRef(BaseModel):
-    producer_node_id: str
+    producer_node_id: RuntimeNodeKey
     port_label: str | None = None
 
 
@@ -2696,7 +2734,11 @@ class NodeDataJob(BaseModel):
 
 
 class NodeDataPointResponse(BaseModel):
-    consumer_node_id: str
+    """A consumer's data point. It names its consumer and producer by runtime key, each
+    addressed in ``node_addresses`` (specs/server-api/low-level.md, "Node addresses"), so
+    every answer carrying a point addresses them."""
+
+    consumer_node_id: RuntimeNodeKey
     point: NodeDataPointRef
     slot_key: str
     kind: NodeDataPointKind
@@ -2711,6 +2753,7 @@ class NodeDataPointResponse(BaseModel):
     reads_directly: bool = False
     build_endpoint: str | None = None
     clear_endpoint: str | None = None
+    node_addresses: dict[str, NodeAddressEntry]
 
 
 class NodeDataRunResponse(BaseModel):
@@ -2784,19 +2827,19 @@ class CacheNodeEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node_id: NonBlankStr
+    node_id: RuntimeNodeKey
     kind: NodeDataPointKind | None = None
     state: NodeDataPointState | None = None
     reads_directly: bool = False
     # The node this one reads from, when that is another node. Its cache is
     # reported on *its* row, so this node's size stays empty rather than
     # repeating a figure that would then sum to more than the store holds.
-    reads_from: str | None = None
+    reads_from: RuntimeNodeKey | None = None
     # Other nodes resolving to the same input snapshot — two Data Inputs with
     # one configuration, or one submodel instantiated twice. Every sharer names
     # the others, and exactly one of them carries the bytes: the one with a
     # size. One identity, one set of bytes, whichever row you read first.
-    shares_snapshot_with: list[NonBlankStr] = Field(default_factory=list)
+    shares_snapshot_with: list[RuntimeNodeKey] = Field(default_factory=list)
     row_count: int | None = None
     generations: int = Field(default=0, ge=0)
     size_bytes: int = Field(default=0, ge=0)
@@ -2813,19 +2856,37 @@ class CacheNodeEntry(BaseModel):
     unavailable_reason: str | None = None
 
 
+class CacheSnapshotOwner(BaseModel):
+    """The node a cached snapshot was written for, as it recorded it then: its address, its
+    authored label and its occurrence's label. Never resolved against today's graph."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence: str | None
+    occurrence_label: str | None
+    node_id: str
+    label: str
+
+
 class CacheOwnerEntry(BaseModel):
     """Cached data not attributed to any node of the graph as it stands.
 
-    A node that was deleted or renamed, a node's data for another source, or
-    an input snapshot whose Data Input no longer reads it. Each still occupies
-    the budget, so each is named.
+    A node that was deleted or renamed, a node's data for another source or
+    another pipeline, or an input snapshot whose Data Input no longer reads it.
+    Each still occupies the budget, so each is named: a node's data by the
+    owner it recorded (``owner``) and its pipeline, an input snapshot by its
+    path or table.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     bucket: Literal["node_output", "input"]
+    #: The owner's recorded label; the source's path or table for an input snapshot,
+    #: and the slot's key for node data published before owners were recorded.
     label: NonBlankStr
-    node_id: str | None = None
+    #: The pipeline file the node belonged to, relative to the project when it is in it.
+    pipeline: str | None
+    owner: CacheSnapshotOwner | None
     source: str | None = None
     generations: int = Field(ge=0)
     row_count: int | None = None
@@ -2874,7 +2935,9 @@ class CacheUsageResponse(BaseModel):
 
 
 class CacheNodesResponse(BaseModel):
-    """Every node of the graph, and everything else the store holds."""
+    """Every node of the graph, and everything else the store holds. Its rows name the
+    graph's nodes by runtime key, each addressed in ``node_addresses``; what the graph no
+    longer holds is described by what it recorded (``other``)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2888,6 +2951,7 @@ class CacheNodesResponse(BaseModel):
     # each to BOTH budgets, so this is what explains a usage report that
     # exceeds the sum of the entries above.
     unmarked_identities: int = Field(ge=0)
+    node_addresses: dict[str, NodeAddressEntry]
 
 
 ExplorePivotMemberKind = Literal[
@@ -2944,8 +3008,10 @@ class ExplorePivotCell(BaseModel):
 
 
 class ExplorePivotResult(BaseModel):
+    """A pivot's matrix. It is keyed by the data point it read, which several Explore nodes
+    can share, so it names no node; the browser keeps it by the request's result key."""
+
     version: Literal[1] = 1
-    node_id: str
     pivot_id: str
     source: str = "live"
     data_version: str
@@ -2961,9 +3027,8 @@ class ExplorePivotResult(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class ExplorePivotRunRequest(EditorSampleRequest):
+class ExplorePivotRunRequest(EditorSampleRequest, NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     pivot: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
     source: BoundedName = "live"
 
@@ -2992,7 +3057,7 @@ class ExplorePivotStatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class BandingStatsRequest(EditorSampleRequest):
+class BandingStatsRequest(EditorSampleRequest, NodeTargetRequest):
     """Statistics for one banding factor over the whole dataset its node reads.
 
     The factor is the one in the editor rather than the one in the saved graph,
@@ -3001,7 +3066,6 @@ class BandingStatsRequest(EditorSampleRequest):
     """
 
     graph: Graph
-    node_id: BoundedName
     factor: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
     source: BoundedName = "live"
     histogram_bins: int = Field(default=40, ge=1, le=200)
@@ -3050,7 +3114,7 @@ class BandingStatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RatingLevelsRequest(EditorSampleRequest):
+class RatingLevelsRequest(EditorSampleRequest, NodeTargetRequest):
     """The levels of raw rating factor columns over the whole dataset.
 
     The node says which data point to read; the columns are the ones the editor
@@ -3059,7 +3123,6 @@ class RatingLevelsRequest(EditorSampleRequest):
     """
 
     graph: Graph
-    node_id: BoundedName
     # Each column is one pass over the data, so the request is bounded; the
     # editor asks for the factors in use, which is far fewer than this.
     columns: list[BoundedName] = Field(min_length=1, max_length=100)
@@ -3102,9 +3165,10 @@ EXPLORE_KEY_COLUMN_LIMIT = 8
 
 
 class ExploreRelationshipsRequest(NodeDataRequest):
-    """Target relationships and a key check over the data point an Explore node reads."""
+    """Target relationships and a key check over the data point an Explore node reads. The
+    node is ``target``; the column the features are related to is ``target_column``."""
 
-    target: BoundedName | None = None
+    target_column: BoundedName | None = None
     weight: BoundedName | None = None
     features: list[BoundedName] = Field(
         default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT
@@ -3152,9 +3216,8 @@ class ExploreRelationshipsResponse(BaseModel):
     key_check: ExploreKeyCheck | None = None
 
 
-class ExplorePivotMembersRequest(EditorSampleRequest):
+class ExplorePivotMembersRequest(EditorSampleRequest, NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     field: BoundedName
     source: BoundedName = "live"
     search: BoundedName | None = None
@@ -3518,9 +3581,8 @@ class SubmodelGraphResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TrainRequest(BaseModel):
+class TrainRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -4160,9 +4222,8 @@ class TrainStatusResponse(BaseModel):
         return self
 
 
-class TrainEstimateRequest(BaseModel):
+class TrainEstimateRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -4284,7 +4345,7 @@ class TrainEstimateUnavailable(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: Literal["row_count_unprovable", "schema_unresolvable"]
-    blocking_node_id: str | None
+    blocking_node_id: RuntimeNodeKey | None
 
     @model_validator(mode="after")
     def _blocking_node_matches_reason(self) -> TrainEstimateUnavailable:
@@ -4297,6 +4358,9 @@ class TrainEstimateUnavailable(BaseModel):
 
 
 class TrainEstimateResponse(BaseModel):
+    """A training estimate. It names nodes by runtime key (the node that blocks the row count,
+    joins without a key contract), each addressed in ``node_addresses``."""
+
     total_rows: int | None
     safe_row_limit: int | None = None
     estimated_mb: float | None
@@ -4313,7 +4377,7 @@ class TrainEstimateResponse(BaseModel):
     gpu_warning: str | None = None
     unavailable: TrainEstimateUnavailable | None
     """Set, with the memory figures null, when the estimate cannot size its input."""
-    unbounded_join_node_ids: list[str]
+    unbounded_join_node_ids: list[RuntimeNodeKey]
     """Joins without a key contract that make ``total_rows`` a worst case, in graph order."""
     fit_mode: Literal["in_memory", "out_of_core"] = "in_memory"
     """``out_of_core`` when a GLM will train on every row in chunks instead of downsampling."""
@@ -4353,8 +4417,10 @@ class TrainEstimateResponse(BaseModel):
             raise ValueError("only a row_count_unprovable estimate lacks a row total")
         return self
 
+    node_addresses: dict[str, NodeAddressEntry]
 
-class DispersionEstimateRequest(BaseModel):
+
+class DispersionEstimateRequest(NodeTargetRequest):
     """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
 
     The estimate is an explicit user action in the config panel: the resolved
@@ -4363,7 +4429,6 @@ class DispersionEstimateRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
     param: Literal["theta", "var_power"]
 
@@ -4387,8 +4452,7 @@ class DispersionEstimateStatusResponse(BaseModel):
     worker_remote_traceback: str | None = None
 
 
-class ExportScriptRequest(BaseModel):
-    node_id: BoundedName
+class ExportScriptRequest(NodeTargetRequest):
     graph: Graph
     data_path: BoundedPath = ""
 
@@ -4583,9 +4647,8 @@ class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
 # ---------------------------------------------------------------------------
 
 
-class OptimiserSolveRequest(BaseModel):
+class OptimiserSolveRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -4594,7 +4657,7 @@ class OptimiserSolveResponse(BaseModel):
     error: str | None = None
 
 
-class OptimiserEstimateRequest(BaseModel):
+class OptimiserEstimateRequest(NodeTargetRequest):
     """Body for the optimiser-cost estimate.
 
     Used by the frontend to preview the solver input volume before kicking
@@ -4606,7 +4669,6 @@ class OptimiserEstimateRequest(BaseModel):
     """
 
     graph: Graph
-    node_id: BoundedName
     source: BoundedName = "live"
 
 
@@ -4633,9 +4695,8 @@ class OptimiserEstimateResponse(BaseModel):
     session's native cap enforces; 0 when the machine has none to give."""
 
 
-class OptimiserFrontierAutoRangeRequest(BaseModel):
+class OptimiserFrontierAutoRangeRequest(NodeTargetRequest):
     graph: Graph
-    node_id: BoundedName
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -4847,7 +4908,8 @@ class OptimiserInputSummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node_id: str
+    node: NodeAddressEntry
+    """The optimiser node the solve ran, by address and authored label."""
     data_source: str
     """The batch scenario the pipeline executed against."""
     source_file: str | None

@@ -73,7 +73,7 @@
  * The suite combines structural scanning with behavioural assertions.
  */
 import { makeTraceResult } from "../../test-utils/factories"
-import { makeTraceStep } from "../../test-utils/factories"
+import { makeTraceStep, type TraceResultFixture, type TraceStepFixture } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { readFileSync, existsSync } from "node:fs"
@@ -90,6 +90,7 @@ import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import type { TraceResult, TraceStep } from "../../types/trace"
 import useUIStore from "../../stores/useUIStore"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ═════════════════════════════════════════════════════════════════════
 //  Mock the NodePanel editor collection — we only care about the
@@ -357,7 +358,7 @@ function renderNodePanel(
 ) {
   const { edges = [], allNodes = [], ...panelOverrides } = overrides
   return render(
-    <GraphProvider allNodes={allNodes} edges={edges}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={allNodes} edges={edges}>
       <NodePanel
         node={makeNode()}
         onClose={vi.fn()}
@@ -477,7 +478,7 @@ describe("NodePanel standalone hover/focus sites", () => {
 //  hover state is its own responsibility.
 // ─────────────────────────────────────────────────────────────────────
 
-function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
+function makeStep(overrides: TraceStepFixture = {}): TraceStep {
   return makeTraceStep({
     node_id: "n1",
     node_name: "Step",
@@ -497,7 +498,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
   })
 }
 
-function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
+function makeTrace(overrides: TraceResultFixture = {}): TraceResult {
   return makeTraceResult({
     target_node_id: "n3",
     row_index: 0,

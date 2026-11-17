@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import { nodeTarget, preparedGraph } from "../../test-utils/factories"
 import { ApiResponseValidationError } from "../responseValidation"
 import type { FormSpec, OptimiserApplyQuery, WorkbenchCatalogueTable, WorkbenchStoreCompareResponse, WorkbenchStoreRename } from "../types"
 import { fetchStoreCatalogue, fetchStoreCompare } from "../workbench"
@@ -90,10 +91,10 @@ function jsonResponse(body: unknown, status = 200) {
   })
 }
 
-const dummyGraph = {
+const dummyGraph = preparedGraph({
   nodes: [{ id: "n1", type: "custom", position: { x: 0, y: 0 }, data: {} }],
   edges: [],
-}
+})
 
 /** A Quotes page's default query: every field is sent. */
 const APPLY_QUERY: OptimiserApplyQuery = {
@@ -170,18 +171,18 @@ describe("client runtime contracts", () => {
   it("previewNode rejects malformed preview payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({
       ...(loadUiContractFixture("preview_node") as Record<string, unknown>),
-      node_id: 42,
+      node_addresses: 42,
     }))
 
-    await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow(
-      "PreviewNodeResponse: invalid contract at /node_id: type",
+    await expect(previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })).rejects.toThrow(
+      "PreviewNodeResponse: invalid contract at /node_addresses: type",
     )
   })
 
   it("writeOutput rejects malformed output payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ message: "done" }))
 
-    await expect(writeOutput({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(
+    await expect(writeOutput({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } })).rejects.toThrow(
       "WriteOutputResponse: invalid contract at /status: required",
     )
   })
@@ -191,7 +192,7 @@ describe("client runtime contracts", () => {
       jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet", execution_metrics: null }),
     )
 
-    const result = await writeOutput({ graph: dummyGraph, nodeId: "sink1" })
+    const result = await writeOutput({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } })
     expect(result.status).toBe("ok")
     expect(result.row_count).toBe(3)
     expect(result.path).toBe("out.parquet")
@@ -207,7 +208,7 @@ describe("client runtime contracts", () => {
     )
 
     await expect(
-      resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
+      resolveOutputDestination({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } }),
     ).rejects.toThrow("OutputDestinationResponse: invalid contract at /suffix_mismatch: type")
   })
 
@@ -221,7 +222,7 @@ describe("client runtime contracts", () => {
     )
 
     await expect(
-      resolveOutputDestination({ graph: dummyGraph, nodeId: "sink1" }),
+      resolveOutputDestination({ graph: dummyGraph, target: { occurrence: null, node_id: "sink1" } }),
     ).resolves.toEqual({
       path: "outputs/report.csv",
       format: "csv",
@@ -484,37 +485,39 @@ describe("client runtime contracts", () => {
     )
   })
 
-  it("previewInputs asks which inputs a preview reads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ input_node_ids: ["policies"] }))
+  it("previewInputs asks which inputs a preview of a target reads", async () => {
+    const answer = {
+      input_node_ids: ["policies"],
+      node_addresses: { policies: { occurrence: null, node_id: "policies", label: "Policies" } },
+    }
+    mockFetch.mockReturnValue(jsonResponse(answer))
 
     const result = await previewInputs({
       graph: dummyGraph,
-      nodeId: "n1",
+      target: nodeTarget("n1", { occurrence: "pricing", portLabel: "drivers" }),
       source: "batch",
       requestedPreviewColumns: ["premium"],
-      portLabel: "drivers",
     })
 
     const [url, init] = mockFetch.mock.calls[0]
     expect(String(url)).toContain("/api/pipeline/preview/inputs")
     expect(JSON.parse(String(init?.body))).toEqual({
       graph: dummyGraph,
-      node_id: "n1",
+      target: { kind: "node", occurrence: "pricing", node_id: "n1", port_label: "drivers", port_labels: null },
       source: "batch",
       requested_preview_columns: ["premium"],
-      port_label: "drivers",
     })
-    expect(result).toEqual({ input_node_ids: ["policies"] })
+    expect(result).toEqual(answer)
   })
 
-  it("previewInputs defaults the source and omits unset columns and port", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ input_node_ids: [] }))
+  it("previewInputs defaults the source and omits unset columns", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ input_node_ids: [], node_addresses: {} }))
 
-    await previewInputs({ graph: dummyGraph, nodeId: "n1" })
+    await previewInputs({ graph: dummyGraph, target: { kind: "occurrence_input", occurrence: "pricing", port: "policy" } })
 
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
       graph: dummyGraph,
-      node_id: "n1",
+      target: { kind: "occurrence_input", occurrence: "pricing", port: "policy" },
       source: "live",
     })
   })
@@ -524,7 +527,7 @@ describe("client runtime contracts", () => {
 
     await previewNode({
       graph: dummyGraph,
-      nodeId: "n1",
+      target: nodeTarget("n1"),
       rowLimit: 10,
       source: "live",
       requestedPreviewColumns: ["premium", "segment"],
@@ -536,32 +539,41 @@ describe("client runtime contracts", () => {
     })
   })
 
-  it("previewNode sends port_label when provided, omits it otherwise", async () => {
+  it("previewNode sends its target by address, a node's port within it, and no node id", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
-    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, portLabel: "drivers" })
-    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
-      port_label: "drivers",
+    await previewNode({ graph: dummyGraph, target: nodeTarget("n1", { portLabel: "drivers" }), rowLimit: 10 })
+    const sent = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
+    expect(sent.target).toEqual({ kind: "node", occurrence: null, node_id: "n1", port_label: "drivers", port_labels: null })
+    for (const key of ["node_id", "port_label", "port_labels"]) expect(sent).not.toHaveProperty(key)
+
+    mockFetch.mockClear()
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body)).target).toEqual({
+      kind: "node", occurrence: null, node_id: "n1", port_label: null, port_labels: null,
     })
 
     mockFetch.mockClear()
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
-    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
-    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("port_label")
+    await previewNode({ graph: dummyGraph, target: { kind: "occurrence_output", occurrence: "pricing", port: "premium" }, rowLimit: 10 })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body)).target).toEqual({
+      kind: "occurrence_output", occurrence: "pricing", port: "premium",
+    })
   })
 
   it("previewNode sends workbench_form when given a form, omits it otherwise", async () => {
     const form = { name: "Commercial property" } as unknown as FormSpec
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
-    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, portLabels: ["pricing_output"], workbenchForm: form })
+    await previewNode({ graph: dummyGraph, target: nodeTarget("n1", { portLabels: ["pricing_output"] }), rowLimit: 10, workbenchForm: form })
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
       graph: dummyGraph,
-      port_labels: ["pricing_output"],
+      target: { kind: "node", occurrence: null, node_id: "n1", port_label: null, port_labels: ["pricing_output"] },
       workbench_form: form,
     })
 
     mockFetch.mockClear()
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
-    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("workbench_form")
   })
 
@@ -571,19 +583,19 @@ describe("client runtime contracts", () => {
 
     it("goes with a preview while one is held, and never beside the form Preview prices", async () => {
       mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
-      await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+      await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
       expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("workbench_sample")
 
       setWorkbenchSample(sample)
       mockFetch.mockClear()
       mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
-      await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+      await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
       expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({ workbench_sample: sample })
 
       const form = { name: "Commercial property" } as unknown as FormSpec
       mockFetch.mockClear()
       mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
-      await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, workbenchForm: form })
+      await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10, workbenchForm: form })
       const priced = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
       expect(priced).toMatchObject({ workbench_form: form })
       expect(priced).not.toHaveProperty("workbench_sample")
@@ -592,15 +604,15 @@ describe("client runtime contracts", () => {
     it("goes with a trace and with the Rating Step's levels", async () => {
       setWorkbenchSample(sample)
       mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
-      await getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] })
+      await getRatingLevels({ graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region"] })
       expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({ workbench_sample: sample })
 
       // The trace's answer does not matter here, only what was asked.
       mockFetch.mockClear()
       mockFetch.mockReturnValue(jsonResponse({ status: "ok", trace: { row_index: 0 } }))
-      await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] }).catch(() => undefined)
+      await traceCell({ graph: dummyGraph, row_index: 0, target: nodeTarget("n1"), seed_plan: [] }).catch(() => undefined)
       expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
-        target_node_id: "n1",
+        target: nodeTarget("n1"),
         workbench_sample: sample,
       })
     })
@@ -612,7 +624,7 @@ describe("client runtime contracts", () => {
 
     await previewNode({
       graph: dummyGraph,
-      nodeId: "n1",
+      target: nodeTarget("n1"),
       rowLimit: 10,
       timeout: 5_000,
     })
@@ -626,7 +638,7 @@ describe("client runtime contracts", () => {
     // Exercises the default path of the `timeout = null` default argument.
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
-    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
 
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty(
       "streaming_chunk_size",
@@ -639,7 +651,7 @@ describe("client runtime contracts", () => {
       { input: "rates", column: null, status: "unavailable", detail: "Rates schema could not be resolved" },
     ]
     mockFetch.mockReturnValue(jsonResponse({ ...(loadUiContractFixture("preview_node") as Record<string, unknown>), node_schema_warnings: { copy: warnings } }))
-    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    const result = await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
     expect(result.node_schema_warnings?.copy).toEqual(warnings)
   })
 
@@ -648,13 +660,13 @@ describe("client runtime contracts", () => {
     { input: "rates", column: null, status: "unavailable" },
   ])("previewNode refuses invalid schema warnings: %j", async (warning) => {
     mockFetch.mockReturnValue(jsonResponse({ ...(loadUiContractFixture("preview_node") as Record<string, unknown>), node_schema_warnings: { copy: [warning] } }))
-    await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow()
+    await expect(previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })).rejects.toThrow()
   })
 
   it("previewNode preserves per-node schema maps from preview responses", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
-    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    const result = await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
 
     expect(result.node_columns?.source?.map((column) => column.name)).toEqual([
       "premium",
@@ -672,7 +684,7 @@ describe("client runtime contracts", () => {
   it("previewNode preserves per-frame column maps (frame_columns + node_frame_columns)", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
-    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    const result = await previewNode({ graph: dummyGraph, target: nodeTarget("n1"), rowLimit: 10 })
 
     // The previewed node's own per-frame schema.
     expect(Object.keys(result.frame_columns ?? {})).toEqual(["policies", "drivers"])
@@ -701,7 +713,7 @@ describe("client runtime contracts", () => {
 
     const result = await outputAssembleDryRun({
       graph: dummyGraph,
-      nodeId: "out1",
+      target: { occurrence: null, node_id: "out1" },
       outputMapping: [{ field: "premium" }],
       rowLimit: 25,
       source: "cache",
@@ -710,7 +722,7 @@ describe("client runtime contracts", () => {
 
     const sent = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
     expect(sent).toMatchObject({
-      node_id: "out1",
+      target: { occurrence: null, node_id: "out1" },
       output_mapping: [{ field: "premium" }],
       row_limit: 25,
       source: "cache",
@@ -728,13 +740,13 @@ describe("client runtime contracts", () => {
 
     await outputAssembleDryRun({
       graph: dummyGraph,
-      nodeId: "out1",
+      target: { occurrence: null, node_id: "out1" },
       outputMapping: [{ field: "premium" }],
     })
 
     const body = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
     expect(body).toMatchObject({
-      node_id: "out1",
+      target: { occurrence: null, node_id: "out1" },
       source: "live",
     })
     expect(body).not.toHaveProperty("row_limit")
@@ -744,7 +756,7 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok", trace: { row_index: 0 } }))
 
     await expect(
-      traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] }),
+      traceCell({ graph: dummyGraph, row_index: 0, target: nodeTarget("n1"), seed_plan: [] }),
     ).rejects.toThrow("TraceResponse: invalid contract")
   })
 
@@ -757,7 +769,7 @@ describe("client runtime contracts", () => {
   it("trainModel accepts the tightened train contract", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("train_started_response")))
 
-    const result = await trainModel({ graph: dummyGraph, node_id: "model1" })
+    const result = await trainModel({ graph: dummyGraph, target: { occurrence: null, node_id: "model1" } })
 
     expect(result.status).toBe("started")
     expect(result.job_id).toBe("job-1")
@@ -766,11 +778,11 @@ describe("client runtime contracts", () => {
   it("getNodeDataProfile posts the consumer node and parses the profile", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_profile_response")))
 
-    const result = await getNodeDataProfile({ graph: dummyGraph, node_id: "explore" })
+    const result = await getNodeDataProfile({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/profile")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "explore", source: "live",
+      graph: dummyGraph, target: { occurrence: null, node_id: "explore" }, source: "live",
     })
     expect(result.status).toBe("completed")
     expect(result.result?.row_count).toBe(150)
@@ -779,11 +791,11 @@ describe("client runtime contracts", () => {
   it("getNodeDataPoint posts the consumer node and parses its point", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_point_response")))
 
-    const result = await getNodeDataPoint({ graph: dummyGraph, node_id: "explore" })
+    const result = await getNodeDataPoint({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/point")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "explore", source: "live",
+      graph: dummyGraph, target: { occurrence: null, node_id: "explore" }, source: "live",
     })
     expect(result.slot_key).toBe("join||live")
     expect(result.state).toBe("partial")
@@ -811,23 +823,23 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(stats))
     const factor = { column: "age" }
 
-    const result = await getBandingStats({ graph: dummyGraph, node_id: "banding", factor })
+    const result = await getBandingStats({ graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, factor })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/banding/stats")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "banding", source: "live", factor,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, source: "live", factor,
     })
     expect(result.total_rows).toBe(10)
     expect(result.bins).toEqual([{ lower: 0, upper: 5, count: 9 }])
 
     mockFetch.mockReturnValue(jsonResponse(stats))
     await getBandingStats({
-      graph: dummyGraph, node_id: "banding", source: "batch", factor, histogramBins: 20, valueLimit: 50,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, source: "batch", factor, histogramBins: 20, valueLimit: 50,
     })
 
     expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toEqual({
       graph: dummyGraph,
-      node_id: "banding",
+      target: { occurrence: null, node_id: "banding" },
       source: "batch",
       factor,
       histogram_bins: 20,
@@ -836,7 +848,7 @@ describe("client runtime contracts", () => {
 
     mockFetch.mockReturnValue(jsonResponse({ ...stats, bins: [{ lower: 0, upper: 5, count: "many" }] }))
     await expect(
-      getBandingStats({ graph: dummyGraph, node_id: "banding", factor }),
+      getBandingStats({ graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, factor }),
     ).rejects.toThrow("BandingStatsResponse: invalid contract at /bins/0/count: type")
   })
 
@@ -844,13 +856,13 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
 
     const result = await getRatingLevels({
-      graph: dummyGraph, node_id: "rating", columns: ["region", "cover"],
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region", "cover"],
     })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/rating/levels")
     // No limit asked for is no limit sent: the server owns the default.
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "rating", source: "live", columns: ["region", "cover"],
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, source: "live", columns: ["region", "cover"],
     })
     expect(result.status).toBe("ok")
     expect(result.total_rows).toBe(1000)
@@ -864,11 +876,11 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("rating_levels_response")))
 
     await getRatingLevels({
-      graph: dummyGraph, node_id: "rating", columns: ["region"], valueLimit: 25, source: "staging",
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region"], valueLimit: 25, source: "staging",
     })
 
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "rating", source: "staging", columns: ["region"], value_limit: 25,
+      graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, source: "staging", columns: ["region"], value_limit: 25,
     })
   })
 
@@ -884,7 +896,7 @@ describe("client runtime contracts", () => {
     )
 
     await expect(
-      getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] }),
+      getRatingLevels({ graph: dummyGraph, target: { occurrence: null, node_id: "rating" }, columns: ["region"] }),
     ).rejects.toThrow("RatingLevelsResponse: invalid contract at /columns/0/values/0/count: type")
   })
 
@@ -892,12 +904,12 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_run_response")))
 
     const result = await runNodeData({
-      graph: dummyGraph, node_id: "banding", refresh: true,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, refresh: true,
     })
 
     expect(mockFetch.mock.calls[0][0]).toBe("/api/node-data/run")
     expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
-      graph: dummyGraph, node_id: "banding", source: "live", refresh: true,
+      graph: dummyGraph, target: { occurrence: null, node_id: "banding" }, source: "live", refresh: true,
     })
     expect(result.status).toBe("started")
     expect(result.job_id).toBe("node-data-7f2c")
@@ -909,7 +921,7 @@ describe("client runtime contracts", () => {
     const status = await getNodeDataStatus("node-data-7f2c")
     const cancelled = await cancelNodeData("node-data-7f2c")
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("node_data_clear_response")))
-    const cleared = await clearNodeData({ graph: dummyGraph, node_id: "explore" })
+    const cleared = await clearNodeData({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } })
 
     expect(status.outcome).toBe("published")
     expect(status.generation_id).toBe("b41f0a2c9d5e4f7a")
@@ -1028,7 +1040,7 @@ describe("client runtime contracts", () => {
 
     const startedRange = await startOptimiserFrontierAutoRange({
       graph: dummyGraph,
-      node_id: "opt1",
+      target: { occurrence: null, node_id: "opt1" },
     })
 
     expect(startedRange.job_id).toBe("range-job-1")
@@ -1195,13 +1207,13 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "getNodeDataPoint",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_point_response"), state: "warm" },
-      call: () => getNodeDataPoint({ graph: dummyGraph, node_id: "explore" }),
+      call: () => getNodeDataPoint({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } }),
       error: "NodeDataPointResponse: invalid contract at /state",
     },
     {
       name: "runNodeData",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_run_response"), status: "queued" },
-      call: () => runNodeData({ graph: dummyGraph, node_id: "banding" }),
+      call: () => runNodeData({ graph: dummyGraph, target: { occurrence: null, node_id: "banding" } }),
       error: "NodeDataRunResponse: invalid contract at /status",
     },
     {
@@ -1213,7 +1225,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "clearNodeData",
       response: { ...loadUiContractFixture<Record<string, unknown>>("node_data_clear_response"), status: "gone" },
-      call: () => clearNodeData({ graph: dummyGraph, node_id: "explore" }),
+      call: () => clearNodeData({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" } }),
       error: "NodeDataClearResponse: invalid contract at /status",
     },
     {
@@ -1276,7 +1288,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "estimateTrainingRam",
       response: { ...loadUiContractFixture<Record<string, unknown>>("train_estimate_response"), estimated_mb: "bad" },
-      call: () => estimateTrainingRam({ graph: dummyGraph, node_id: "model1" }),
+      call: () => estimateTrainingRam({ graph: dummyGraph, target: { occurrence: null, node_id: "model1" } }),
       error: "TrainEstimateResponse: invalid contract at /estimated_mb: type",
     },
     {
@@ -1300,13 +1312,13 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "solveOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("solve_optimiser_response"), job_id: 42 },
-      call: () => solveOptimiser({ graph: dummyGraph, node_id: "opt1" }),
+      call: () => solveOptimiser({ graph: dummyGraph, target: { occurrence: null, node_id: "opt1" } }),
       error: "OptimiserSolveResponse: invalid contract at /job_id: type",
     },
     {
       name: "estimateOptimiserSolve",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_estimate_response"), total_rows: "bad" },
-      call: () => estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" }),
+      call: () => estimateOptimiserSolve({ graph: dummyGraph, target: { occurrence: null, node_id: "opt1" } }),
       error: "OptimiserEstimateResponse: invalid contract at /total_rows: type",
     },
     {
@@ -1330,7 +1342,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "startOptimiserFrontierAutoRange",
       response: { status: "started", job_id: 42, error: null },
-      call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
+      call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, target: { occurrence: null, node_id: "opt1" } }),
       error: "OptimiserFrontierAutoRangeStartResponse: invalid contract at /job_id: type",
     },
     {
@@ -1451,7 +1463,7 @@ describe("shared client trust-boundary endpoints", () => {
     /** The exact failure, when a generated validator checks the response. */
     malformedError?: string
   }> = [
-    { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
+    { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, target: { occurrence: null, node_id: "out" }, outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
     { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }], malformedError: "MlflowExperimentList: invalid contract at /0/name: required" },
     { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: {}, params: {}, artifacts: [1] }], malformedError: "MlflowRunList: invalid contract at /0/artifacts/0: type" },
@@ -1490,7 +1502,7 @@ describe("pivot client contracts", () => {
     await expect(
       runExplorePivot({
         graph: dummyGraph,
-        node_id: "explore",
+        target: { occurrence: null, node_id: "explore" },
         pivot: { rows: ["region"] },
         source: "pricing",
       }),
@@ -1504,7 +1516,7 @@ describe("pivot client contracts", () => {
     await expect(
       fetchExplorePivotMembers({
         graph: dummyGraph,
-        node_id: "explore",
+        target: { occurrence: null, node_id: "explore" },
         field: "region",
         search: "Nor",
       }),
@@ -1518,14 +1530,14 @@ describe("pivot client contracts", () => {
     ])
     expect(JSON.parse(String(mockFetch.mock.calls[0]?.[1]?.body))).toMatchObject({
       graph: dummyGraph,
-      node_id: "explore",
+      target: { occurrence: null, node_id: "explore" },
       pivot: { rows: ["region"] },
       source: "pricing",
     })
     expect(JSON.parse(String(mockFetch.mock.calls[2]?.[1]?.body))).toEqual({})
     expect(JSON.parse(String(mockFetch.mock.calls[3]?.[1]?.body))).toMatchObject({
       graph: dummyGraph,
-      node_id: "explore",
+      target: { occurrence: null, node_id: "explore" },
       field: "region",
       search: "Nor",
       source: "live",
@@ -1537,7 +1549,7 @@ describe("pivot client contracts", () => {
       jsonResponse({ status: "ok", field: "region", members: [], failure: null }),
     )
     await expect(
-      runExplorePivot({ graph: dummyGraph, node_id: "explore", pivot: {} }),
+      runExplorePivot({ graph: dummyGraph, target: { occurrence: null, node_id: "explore" }, pivot: {} }),
     ).rejects.toThrow("ExplorePivotRunResponse: invalid contract at /job_id: required")
   })
 })

@@ -64,7 +64,7 @@ describe("useBackgroundJobs - shared node-data builds", () => {
   })
 
   function startBuild() {
-    useNodeDataStore.getState().observePoint(point(), "live", "identity-1")
+    useNodeDataStore.getState().observePoint(point(), "live", "identity-1", "explore")
     useNodeDataStore
       .getState()
       .startJob("join||live", { jobId: "job-1", message: "Caching data", startedByLabel: "Explore" })

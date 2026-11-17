@@ -17,7 +17,6 @@ function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): Tra
     ramEstimate: null,
     ramEstimateLoading: false,
     rowLimit: null,
-    nodeLabel: (nodeId: string) => `label of ${nodeId}`,
     onTrain: vi.fn(),
     onCancel: vi.fn(),
     ...overrides,
@@ -27,11 +26,13 @@ function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): Tra
 describe("TrainingActionsAndResults", () => {
   it("presents a join's row product as an unproven bound, never a verdict (MDL-01)", () => {
     const open = vi.fn()
-    const nodeOpener = vi.fn((nodeId: string) => (nodeId === "competitor_join" ? open : null))
+    // A join inside occurrence `pricing`: the estimate names it by key and addresses it.
+    const key = "submodel_runtime/pricing/competitor_join"
+    const nodeOpener = vi.fn((address: { occurrence: string | null; node_id: string }) =>
+      (address.occurrence === "pricing" && address.node_id === "competitor_join" ? open : null))
     render(
       <TrainingActionsAndResults
         {...makeProps({
-          nodeLabel: (nodeId: string) => nodeId,
           nodeOpener,
           ramEstimate: makeTrainEstimate({
             total_rows: 10_000_000_000,
@@ -40,7 +41,8 @@ describe("TrainingActionsAndResults", () => {
             available_mb: 71_065,
             was_downsampled: false,
             warning: null,
-            unbounded_join_node_ids: ["competitor_join"],
+            unbounded_join_node_ids: [key],
+            node_addresses: { [key]: { occurrence: "pricing", node_id: "competitor_join", label: "competitor_join" } },
           }),
         })}
       />,
@@ -338,7 +340,6 @@ describe("TrainingActionsAndResults", () => {
 
   it("adds the chunked fit to an unproven row bound", () => {
     render(<TrainingActionsAndResults {...makeProps({
-      nodeLabel: (nodeId: string) => nodeId,
       ramEstimate: makeTrainEstimate({
         total_rows: 10_000_000_000,
         safe_row_limit: null,
@@ -374,6 +375,8 @@ describe("TrainingActionsAndResults", () => {
         bytes_per_row: null,
         available_mb: 8192,
         unavailable: { reason: "row_count_unprovable", blocking_node_id: "explode_items" },
+        // The estimate gives the node it names its label.
+        node_addresses: { explode_items: { occurrence: null, node_id: "explode_items", label: "label of explode_items" } },
       }),
     })} />)
     const card = screen.getByRole("status")

@@ -1,3 +1,4 @@
+import { useRequestScope } from "../panels/useGraph"
 /**
  * Pipeline settings pane (ModalShell-based), per
  * `specs/frontend-shared/low-level.md` ("Pipeline settings"): the calculation
@@ -5,7 +6,7 @@
  * caching, cache size, preview memory, kept-free memory and the time limits,
  * kept in `.haute/pipeline-settings.json`), then the cached-data inventory.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from "lucide-react"
 
 import CacheStoreSize from "./CacheStoreSize"
@@ -15,11 +16,11 @@ import ToggleButtonGroup from "./ToggleButtonGroup"
 import { clearCacheIdentities, fetchCacheNodes } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { CacheNodeEntry, CacheNodesResponse } from "../api/types"
+import type { CacheOwnerEntry, RuntimeNodeKey } from "../generated/api-contracts.generated"
+import { keyText } from "../utils/answerAddresses"
 import { formatByteSize } from "../utils/formatBytes"
 import { formatDuration } from "../utils/formatValue"
-import { buildGraph } from "../utils/buildGraph"
-import usePanelGraphContext, { toSimpleEdge, toSimpleNode } from "../hooks/usePanelGraphContext"
-import useGraphStore from "../stores/useGraphStore"
+import { preparePipelineRequest } from "../utils/requestGateway"
 import useSettingsStore, {
   MAX_CHUNK_ROWS,
   MIN_CHUNK_ROWS,
@@ -44,8 +45,16 @@ function stateColor(state: CacheNodeEntry["state"]): string {
   return "var(--text-muted)"
 }
 
-function displayNodeName(name: string): string {
-  return name.replace(/^submodel_runtime\//, "")
+/** A node's label, with its occurrence's when it is a child of one: "Banding 1 in pricing". */
+function withOccurrence(label: string, occurrenceLabel: string | null): string {
+  return occurrenceLabel === null ? label : `${label} in ${occurrenceLabel}`
+}
+
+/** A stored owner the pipeline no longer holds, by what its data recorded. */
+function recordedOwnerName(owner: CacheOwnerEntry): string {
+  const recorded = owner.owner
+  if (!recorded) return owner.label
+  return withOccurrence(recorded.label, recorded.occurrence === null ? null : recorded.occurrence_label ?? recorded.occurrence)
 }
 
 /** When it was cached, short enough for a column: "19 Sep 23:10". */
@@ -505,7 +514,10 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 }
 
 export default function PipelineSettingsModal({ onClose }: { onClose: () => void }) {
+  const requestScope = useRequestScope()
   const [nodes, setNodes] = useState<CacheNodesResponse | null>(null)
+  // The labels of the occurrences in the pipeline the inventory was read for, by instance id.
+  const [occurrenceLabels, setOccurrenceLabels] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   // The row being cleared, so its own control shows the work and no other row
@@ -513,7 +525,6 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
   const [clearing, setClearing] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  const { allNodes } = usePanelGraphContext()
   const activeSource = useSettingsStore((s) => s.activeSource)
   const loadPipelineSettings = useSettingsStore((s) => s.loadPipelineSettings)
   const settingsError = useSettingsStore((s) => s.pipelineSettingsError)
@@ -524,32 +535,38 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
     void loadPipelineSettings()
   }, [loadPipelineSettings])
 
-  // The node report is keyed by node id; the label is the canvas's business,
-  // and a node the store holds but the canvas no longer has keeps its id.
-  const labels = useMemo(
-    () => new Map(allNodes.map((node) => [node.id, String(node.data.label || node.id)])),
-    [allNodes],
-  )
-  const nodeName = (id: string) => displayNodeName(labels.get(id) ?? id)
+  // The report names its rows by key, each addressed in the answer: a child of an
+  // occurrence by its label and its occurrence's.
+  const nodeName = (key: RuntimeNodeKey) => {
+    const address = nodes?.node_addresses[keyText(key)]
+    if (!address) return ""
+    return withOccurrence(
+      address.label,
+      address.occurrence === null ? null : occurrenceLabels.get(address.occurrence) ?? address.occurrence,
+    )
+  }
 
   const request = useCallback(
     (controller: AbortController) => {
-      // Read the graph from the store at the moment of the request rather than
-      // subscribing to it. Subscribing would make any edit, websocket resync or
-      // load re-issue the request while the pane is open.
-      const { nodes: storeNodes, edges, submodels } = useGraphStore.getState()
-      const graph = buildGraph(storeNodes.map(toSimpleNode), edges.map(toSimpleEdge), submodels)
+      // Prepared at the moment of the request rather than subscribed to: a
+      // subscription would make any edit, websocket resync or load re-issue the
+      // request while the pane is open. The whole pipeline goes, also from inside
+      // an open submodel, so every cached node is listed.
+      const { graph } = preparePipelineRequest(requestScope)
+      const labels = new Map(graph.nodes.map((node) => [node.id, String(node.data.label || node.id)]))
       return fetchCacheNodes({ graph, source: activeSource }, { signal: controller.signal })
+        .then((answer) => ({ answer, labels }))
     },
-    [activeSource],
+    [activeSource, requestScope],
   )
 
   const read = useCallback(
     (controller: AbortController) => {
       request(controller)
-        .then((nodesResponse) => {
+        .then(({ answer, labels }) => {
           if (controller.signal.aborted) return
-          setNodes(nodesResponse)
+          setNodes(answer)
+          setOccurrenceLabels(labels)
           setLoading(false)
         })
         .catch((cause: unknown) => {
@@ -724,8 +741,8 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
             )}
             {nodes.nodes.map((node) => (
               <CacheRow
-                key={node.node_id}
-                testId={`cache-node-${node.node_id}`}
+                key={keyText(node.node_id)}
+                testId={`cache-node-${keyText(node.node_id)}`}
                 name={nodeName(node.node_id)}
                 detail={
                   node.unavailable_reason
@@ -753,10 +770,10 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
                 buildSeconds={node.build_seconds}
                 onClear={
                   node.identity_digests.length > 0
-                    ? () => clearRow(node.node_id, node.identity_digests)
+                    ? () => clearRow(keyText(node.node_id), node.identity_digests)
                     : undefined
                 }
-                clearing={clearing === node.node_id}
+                clearing={clearing === keyText(node.node_id)}
               />
             ))}
 
@@ -765,10 +782,14 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
                 <SectionRow>Not in this pipeline</SectionRow>
                 {nodes.other.map((owner, index) => (
                   <CacheRow
-                    key={`${owner.bucket}:${owner.label}:${owner.source ?? ""}:${index}`}
+                    key={`${owner.bucket}:${owner.pipeline ?? ""}:${owner.label}:${owner.source ?? ""}:${index}`}
                     testId={`cache-other-${owner.label}`}
-                    name={owner.bucket === "node_output" ? displayNodeName(owner.label) : owner.label}
-                    detail={owner.source ?? "input snapshot"}
+                    name={recordedOwnerName(owner)}
+                    detail={
+                      owner.bucket === "node_output"
+                        ? [owner.pipeline, owner.source].filter(Boolean).join(" · ")
+                        : owner.source ?? "input snapshot"
+                    }
                     status="Stored"
                     statusColor="var(--text-muted)"
                     rows={owner.row_count}

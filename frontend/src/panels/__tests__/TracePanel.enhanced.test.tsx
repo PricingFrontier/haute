@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { makeTraceResult, makeTraceStep } from "../../test-utils/factories"
+import { makeTraceResult, makeTraceStep, type TraceResultFixture, type TraceStepFixture } from "../../test-utils/factories"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import TracePanel from "../TracePanel"
 import type { TraceResult, TraceStep } from "../../types/trace"
@@ -20,7 +20,7 @@ interface EnhancedExpression {
 // Factories
 // ---------------------------------------------------------------------------
 
-function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
+function makeStep(overrides: TraceStepFixture = {}): TraceStep {
   return makeTraceStep({
     node_id: "n1",
     node_name: "Transform 1",
@@ -40,7 +40,7 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
   })
 }
 
-function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
+function makeTrace(overrides: TraceResultFixture = {}): TraceResult {
   return makeTraceResult({
     target_node_id: "n2",
     row_index: 0,

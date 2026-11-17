@@ -4,11 +4,12 @@ import { renderHook, render, screen, cleanup, act, waitFor } from "@testing-libr
 import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
 import useGraphCanvasState from "../useGraphCanvasState"
-import useGraphStore, { resetGraphStoreForTests } from "../../stores/useGraphStore"
+import useGraphStore, { canvasGraph, resetGraphStoreForTests } from "../../stores/useGraphStore"
 import { appEdge } from "../../utils/flowElements"
 import ModalShell from "../../components/ModalShell"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
+import useOutputWriteStore, { resetOutputWriteStoreForTests } from "../../stores/useOutputWriteStore"
 import { makeNode } from "../../test-utils/factories"
 import type { NodeTypeValue } from "../../utils/nodeTypes"
 
@@ -36,7 +37,7 @@ function resolvedIdentityGraph(
 /** The graph a paste committed: its updaters applied to the live graph. */
 function committedPaste(params: ReturnType<typeof makeParams>): [Node[], Edge[]] {
   const [nodes, edges] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
-  const graph = params.graphRef.current
+  const graph = canvasGraph()
   return [
     typeof nodes === "function" ? nodes(graph.nodes) : nodes,
     typeof edges === "function" ? edges(graph.edges) : edges,
@@ -53,10 +54,10 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     undo: vi.fn(),
     redo: vi.fn(),
     fitView: vi.fn(),
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     clipboard: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     nodeIdCounter: { current: 0 },
     setSelectedNode: vi.fn(),
+    lastSelectedKeyRef: { current: null as string | null },
     setPreviewData: vi.fn(),
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
@@ -69,6 +70,17 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     ): Promise<{ nodes: Node[]; edges: Edge[] }> => resolvedIdentityGraph(nodes, edges)),
     ...overrides,
   }
+}
+
+/** Show nodes or edges on the canvas the shortcuts act on, as the graph store holds it. */
+function showCanvas(graph: { nodes?: Node[]; edges?: Edge[] }) {
+  const { nodes, edges } = useGraphStore.getState()
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: graph.nodes ?? nodes,
+    edges: graph.edges ?? edges,
+    preamble: "",
+    submodels: {},
+  })
 }
 
 function fireKey(key: string, opts: Partial<KeyboardEventInit> = {}) {
@@ -94,6 +106,7 @@ describe("useKeyboardShortcuts", () => {
 
   beforeEach(() => {
     // Reset store state between tests
+    resetGraphStoreForTests()
     useUIStore.setState({
       shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false,
     })
@@ -167,8 +180,8 @@ describe("useKeyboardShortcuts", () => {
 
   it("uses a committed shared deletion without raw graph mutation but cleans selection", () => {
     cleanup()
+    showCanvas({ nodes: [{ ...makeNode("n1"), selected: true }] })
     params = makeParams({
-      graphRef: { current: { nodes: [{ ...makeNode("n1"), selected: true }], edges: [] } },
       commitSharedNodeDeletion: vi.fn(() => "committed" as const),
     })
     renderHook(() => useKeyboardShortcuts(params))
@@ -201,9 +214,8 @@ describe("useKeyboardShortcuts", () => {
       },
     })
     const ordinary = { ...makeNode("plain", "polars"), selected: true }
-    params = makeParams({
-      graphRef: { current: { nodes: [owner, copy, ordinary], edges: [] } },
-    })
+    showCanvas({ nodes: [owner, copy, ordinary] })
+    params = makeParams()
     renderHook(() => useKeyboardShortcuts(params))
     fireKey("Delete")
 
@@ -224,9 +236,8 @@ describe("useKeyboardShortcuts", () => {
         config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
-    params = makeParams({
-      graphRef: { current: { nodes: [owner], edges: [] } },
-    })
+    showCanvas({ nodes: [owner] })
+    params = makeParams()
     renderHook(() => useKeyboardShortcuts(params))
     fireKey("Delete")
 
@@ -237,8 +248,8 @@ describe("useKeyboardShortcuts", () => {
 
   it("leaves cleanup untouched when shared deletion is blocked", () => {
     cleanup()
+    showCanvas({ nodes: [{ ...makeNode("n1"), selected: true }] })
     params = makeParams({
-      graphRef: { current: { nodes: [{ ...makeNode("n1"), selected: true }], edges: [] } },
       commitSharedNodeDeletion: vi.fn(() => "blocked" as const),
     })
     renderHook(() => useKeyboardShortcuts(params))
@@ -310,7 +321,7 @@ describe("useKeyboardShortcuts", () => {
     const selected: Node[] = [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
     ]
-    params.graphRef.current.nodes = selected
+    showCanvas({ nodes: selected })
     fireKey("c", { ctrlKey: true })
     expect(params.clipboard.current.nodes).toHaveLength(1)
     const toasts = useToastStore.getState().toasts
@@ -342,10 +353,9 @@ describe("useKeyboardShortcuts", () => {
     expect(candidate.data).toMatchObject({ config: { code: "x" } })
 
     // Selecting a node replaces the graph object without changing its structure.
-    params.graphRef.current = {
-      nodes: params.graphRef.current.nodes.map((node) => ({ ...node, selected: true })),
-      edges: params.graphRef.current.edges,
-    }
+    useGraphStore.setState({
+      nodes: useGraphStore.getState().nodes.map((node) => ({ ...node, selected: true })),
+    })
     await act(async () => { finish() })
 
     await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
@@ -418,9 +428,9 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Ctrl+V filters out singleton nodes that already exist in the graph", async () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node,
-    ]
+    ] })
     params.clipboard.current = {
       nodes: [
         { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
@@ -456,9 +466,9 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Ctrl+V does nothing when all copied nodes are existing singletons", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node,
-    ]
+    ] })
     params.clipboard.current = {
       nodes: [
         { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
@@ -486,7 +496,7 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Ctrl+V allows pasting singleton when it does not exist in graph", async () => {
-    params.graphRef.current.nodes = []
+    showCanvas({ nodes: [] })
     params.clipboard.current = {
       nodes: [
         { id: "api1", position: { x: 0, y: 0 }, data: { label: "quote_input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
@@ -560,7 +570,7 @@ describe("useKeyboardShortcuts", () => {
     fireKey("v", { ctrlKey: true })
     await waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
     const [candidateNodes, candidateEdges] = vi.mocked(params.resolveGraphIdentities).mock.calls[0]
-    params.graphRef.current = { nodes: [makeNode("intervening")], edges: [] }
+    useGraphStore.setState({ nodes: [makeNode("intervening")], edges: [] })
     await act(async () => {
       pending.resolve(resolvedIdentityGraph(candidateNodes, candidateEdges))
       await pending.promise
@@ -614,10 +624,9 @@ describe("useKeyboardShortcuts", () => {
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: { label: "B" }, selected: false } as Node,
     ]
-    params.graphRef.current.nodes = nodes
-    params.graphRef.current.edges = [
+    showCanvas({ nodes, edges: [
       { id: "e1", source: "n1", target: "n2" } as Edge,
-    ]
+    ] })
     fireKey("Delete")
     // Undo-atomicity: node + its edges removed in ONE combined call — never
     // separate setNodes + setEdges (two undo snapshots).
@@ -628,11 +637,27 @@ describe("useKeyboardShortcuts", () => {
     expect(params.setPreviewData).toHaveBeenCalledWith(null)
   })
 
+  it("Delete forgets the open node, so opening it again after Undo asks for its preview, and what its key holds", () => {
+    resetOutputWriteStoreForTests()
+    showCanvas({ nodes: [
+      { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: { label: "B" }, selected: false } as Node,
+    ] })
+    params.lastSelectedKeyRef.current = "n1"
+    useOutputWriteStore.getState().begin("n1", "write-a")
+    useOutputWriteStore.getState().begin("n2", "write-b")
+
+    fireKey("Delete")
+
+    expect(params.lastSelectedKeyRef.current).toBeNull()
+    expect(useOutputWriteStore.getState().writes.n1).toBeUndefined()
+    expect(useOutputWriteStore.getState().writes.n2?.phase).toBe("writing")
+  })
+
   it("Delete with no selection does nothing", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: false } as Node,
-    ]
-    params.graphRef.current.edges = []
+    ], edges: [] })
     fireKey("Delete")
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -640,28 +665,28 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Ctrl+G with 2+ selected opens submodel dialog", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
+    ] })
     fireKey("g", { ctrlKey: true })
     expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["n1", "n2"] })
   })
 
   it("Ctrl+G with <2 selected toasts info", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
+    ] })
     fireKey("g", { ctrlKey: true })
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: expect.stringContaining("2 nodes") })
   })
 
   it("ignores Ctrl+G while target is TEXTAREA", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
+    ] })
     const textarea = document.createElement("textarea")
     document.body.appendChild(textarea)
 
@@ -673,10 +698,10 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("ignores Ctrl+G while target is INPUT or inside .cm-editor", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
+    ] })
     const input = document.createElement("input")
     const cmEditor = document.createElement("div")
     cmEditor.className = "cm-editor"
@@ -777,9 +802,9 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("ignores Ctrl+C when target is INPUT", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
-    ]
+    ] })
     const input = document.createElement("input")
     document.body.appendChild(input)
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }))
@@ -788,9 +813,9 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("ignores Ctrl+C when target is TEXTAREA", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
-    ]
+    ] })
     const textarea = document.createElement("textarea")
     document.body.appendChild(textarea)
     textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }))
@@ -799,9 +824,9 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("ignores Ctrl+C when target is inside .cm-editor", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
-    ]
+    ] })
     const cmEditor = document.createElement("div")
     cmEditor.className = "cm-editor"
     const inner = document.createElement("div")
@@ -822,17 +847,16 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Ctrl+C with no selected nodes is a no-op", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: false } as Node,
-    ]
+    ] })
     fireKey("c", { ctrlKey: true })
     expect(params.clipboard.current.nodes).toHaveLength(0)
     expect(useToastStore.getState().toasts).toHaveLength(0)
   })
 
-  it("Delete with empty graphRef is a no-op", () => {
-    params.graphRef.current.nodes = []
-    params.graphRef.current.edges = []
+  it("Delete on an empty canvas is a no-op", () => {
+    showCanvas({ nodes: [], edges: [] })
     fireKey("Delete")
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -840,9 +864,9 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Ctrl+G with 0 selected nodes shows warning toast", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: false } as Node,
-    ]
+    ] })
     fireKey("g", { ctrlKey: true })
     const toasts = useToastStore.getState().toasts
     expect(toasts).toHaveLength(1)
@@ -851,10 +875,9 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("ignores Delete when target is INPUT", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
-    ]
-    params.graphRef.current.edges = []
+    ], edges: [] })
     const input = document.createElement("input")
     document.body.appendChild(input)
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }))
@@ -882,10 +905,10 @@ describe("useKeyboardShortcuts", () => {
   it("Ctrl+G inside submodel shows nesting warning instead of dialog", () => {
     cleanup()
     const submodelParams = makeParams({ isInsideSubmodel: true })
-    submodelParams.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
+    ] })
     renderHook(() => useKeyboardShortcuts(submodelParams))
     fireKey("g", { ctrlKey: true })
     expect(useUIStore.getState().submodelDialog).toBeNull()
@@ -899,15 +922,14 @@ describe("useKeyboardShortcuts", () => {
   it("blocks mutation shortcuts in a read-only submodel instance", () => {
     cleanup()
     const readOnlyParams = makeParams({ readOnly: true, isInsideSubmodel: true })
-    readOnlyParams.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
-    readOnlyParams.graphRef.current.edges = [
+    ], edges: [
       { id: "e1", source: "n1", target: "n2", selected: true } as Edge,
-    ]
+    ] })
     readOnlyParams.clipboard.current = {
-      nodes: [readOnlyParams.graphRef.current.nodes[0]],
+      nodes: [useGraphStore.getState().nodes[0]],
       edges: [],
     }
     renderHook(() => useKeyboardShortcuts(readOnlyParams))
@@ -927,10 +949,10 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Cmd+G (Mac) with 2+ selected opens submodel dialog", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
+    ] })
     fireKey("g", { metaKey: true })
     expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["n1", "n2"] })
   })
@@ -938,10 +960,10 @@ describe("useKeyboardShortcuts", () => {
   it("Cmd+G (Mac) inside submodel shows nesting warning", () => {
     cleanup()
     const submodelParams = makeParams({ isInsideSubmodel: true })
-    submodelParams.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
-    ]
+    ] })
     renderHook(() => useKeyboardShortcuts(submodelParams))
     fireKey("g", { metaKey: true })
     expect(useUIStore.getState().submodelDialog).toBeNull()
@@ -953,13 +975,12 @@ describe("useKeyboardShortcuts", () => {
   })
 
   it("Backspace removes selected nodes", () => {
-    params.graphRef.current.nodes = [
+    showCanvas({ nodes: [
       { id: "n1", position: { x: 0, y: 0 }, data: { label: "A" }, selected: true } as Node,
       { id: "n2", position: { x: 0, y: 0 }, data: { label: "B" }, selected: false } as Node,
-    ]
-    params.graphRef.current.edges = [
+    ], edges: [
       { id: "e1", source: "n1", target: "n2" } as Edge,
-    ]
+    ] })
     fireKey("Backspace")
     expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
     expect(params.setNodes).not.toHaveBeenCalled()
@@ -986,25 +1007,11 @@ describe("useKeyboardShortcuts", () => {
     })
 
     const storeParams = makeParams({
-      graphRef: {
-        current: {
-          nodes: useGraphStore.getState().nodes,
-          edges: useGraphStore.getState().edges,
-        },
-      },
       setNodesAndEdges: vi.fn((nextNodes, nextEdges) => {
         useGraphStore.getState().setNodesAndEdges(nextNodes, nextEdges)
-        storeParams.graphRef.current = {
-          nodes: useGraphStore.getState().nodes,
-          edges: useGraphStore.getState().edges,
-        }
       }),
       setEdges: vi.fn((nextEdges) => {
         useGraphStore.getState().setEdges(nextEdges)
-        storeParams.graphRef.current = {
-          nodes: useGraphStore.getState().nodes,
-          edges: useGraphStore.getState().edges,
-        }
       }),
     })
     renderHook(() => useKeyboardShortcuts(storeParams))
@@ -1054,10 +1061,10 @@ describe("useKeyboardShortcuts", () => {
     const copyIncident: Edge = { id: "e_copy_b", source: "copy", target: "b", selected: false }
     const selectedUnrelated: Edge = { id: "e_b_c", source: "b", target: "c", selected: true }
 
-    params.graphRef.current = {
+    showCanvas({
       nodes: [owner, copy, nodeB, nodeC],
       edges: [ownerIncident, copyIncident, selectedUnrelated],
-    }
+    })
 
     fireKey("Delete")
 
@@ -1100,17 +1107,7 @@ describe("useKeyboardShortcuts paste on the graph store", () => {
         appEdge({ source: "quote", target: "price", sourceHandle: "risks" }),
       ])
     })
-    // The live graph, one object per store state, as the canvas hands it over.
-    let graph = { nodes: [] as Node[], edges: [] as Edge[] }
-    const graphRef = {
-      get current() {
-        const { nodes, edges } = useGraphStore.getState()
-        if (graph.nodes !== nodes || graph.edges !== edges) graph = { nodes, edges }
-        return graph
-      },
-    }
     const params = makeParams({
-      graphRef: graphRef as unknown as ReturnType<typeof makeParams>["graphRef"],
       setNodesAndEdges: canvas.current.setNodesAndEdges,
     })
     renderHook(() => useKeyboardShortcuts(params))

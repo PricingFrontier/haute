@@ -4,8 +4,11 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, CollectionWidget, Condition, ExportWidget, FieldRef, FormSchema, FormSpec, ImportWidget, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen, SqlImport } from "../../api/types"
+import type { ChartWidget, CollectionWidget, Condition, ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSchema, FormSpec, ImportWidget, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen, SqlImport } from "../../api/types"
 import {
+  addBlockColumn,
+  addExportBlock,
+  addExportCell,
   addPage,
   addSchemaColumn,
   addSchemaTable,
@@ -14,6 +17,8 @@ import {
   addWidget,
   bindParameter,
   buttonUses,
+  cellAddress,
+  cellColumns,
   BLANK_THEME,
   changeSchemaColumnType,
   CHART_OPTIONS,
@@ -24,6 +29,11 @@ import {
   componentNameProblem,
   conditionUses,
   copyName,
+  keptUses,
+  moveBlockColumn,
+  removeBlockColumn,
+  removeExportBlock,
+  updateExportBlock,
   createIndexColumn,
   createPage,
   createSchemaColumn,
@@ -31,11 +41,14 @@ import {
   createSection,
   createWidget,
   duplicateWidget,
+  excelLayout,
+  exportFormatShown,
   fieldColumn,
   fieldUses,
   fileNameTokens,
   findSection,
   findWidget,
+  FIRST_CELL_SHEET,
   fitSection,
   hasOwnLook,
   HEADING_OPTIONS,
@@ -44,6 +57,8 @@ import {
   isNewQuoteSample,
   keptInside,
   labelColumns,
+  LAST_CELL_COLUMN,
+  LAST_CELL_ROW,
   linedUpOutputs,
   answeredOutputs,
   moveInOrder,
@@ -54,6 +69,7 @@ import {
   moveWidget,
   nextWidgetName,
   newQuoteSample,
+  nextCellAddress,
   orderItems,
   pageProblems,
   parameterColumns,
@@ -66,6 +82,7 @@ import {
   queryParameters,
   readableName,
   removePage,
+  removeExportCell,
   removeSchemaColumn,
   removeSchemaTable,
   removeSection,
@@ -81,6 +98,8 @@ import {
   sectionProblems,
   setColumnLook,
   setColumnName,
+  setExcelLayout,
+  setExportCellColumn,
   setExportFormat,
   setImportFormat,
   setImportMode,
@@ -96,6 +115,8 @@ import {
   setTableName,
   setTableRows,
   setThemeColour,
+  SHEET_NAME_LIMIT,
+  sheetNameProblem,
   shownFields,
   showsFields,
   showWhenText,
@@ -106,6 +127,7 @@ import {
   toggleField,
   uniqueName,
   updateSchemaColumn,
+  updateExportCell,
   updateExportTarget,
   updateImportSource,
   updateSchemaTable,
@@ -201,7 +223,16 @@ describe("names", () => {
   it("makes a name unique by numbering it, and a column readable from its name", () => {
     expect(uniqueName("table", ["table", "table_2"])).toBe("table_3")
     expect(uniqueName("policy", ["table"])).toBe("policy")
-    expect(readableName("sum_insured")).toBe("Sum insured")
+    // The same cases as the server's `column_label` (tests/test_workbench_export.py).
+    for (const [name, readable] of [
+      ["sum_insured", "Sum insured"],
+      ["a__b", "A b"],
+      ["_x_", "X"],
+      ["sum_Insured", "Sum Insured"],
+      ["premium", "Premium"],
+    ] as const) {
+      expect(readableName(name)).toBe(readable)
+    }
   })
 
   it("names new tables and columns uniquely, each table leading with the quote's identity, and is no problem", () => {
@@ -2807,5 +2838,255 @@ describe("Imports and Exports", () => {
     const spec = updateWidget(buttons(), "w_out", { label: "Send to rating" })
     expect(widgetName(exported(spec))).toBe('Export "Send to rating"')
     expect(widgetName(imported(updateWidget(spec, "w_in", { label: "" })))).toBe("An Import")
+  })
+
+  describe("an Excel workbook of cells", () => {
+    const cellsOf = (spec: FormSpec) => (exported(spec).target as ExcelCellsExport).cells
+    const blocksOf = (spec: FormSpec) => (exported(spec).target as ExcelCellsExport).blocks
+    const named = (spec: FormSpec) => problems(spec, "w_out").map((message) => message.replace(/^Export "Export" /, ""))
+    const insured = { table: QUOTE_DETAILS_NAME, column: "insured" }
+    const total = { table: "premiums", column: "total" }
+    /** The Export to Excel laid out as cells, the insured's name and the total premium in its first two. */
+    const cells = (): FormSpec => {
+      let spec = setExcelLayout(setExportFormat(toggleExportTable(buttons(), "w_out", "layers"), "w_out", "excel"), "w_out", "cells")
+      spec = addExportCell(spec, "w_out", insured)
+      return addExportCell(spec, "w_out", total)
+    }
+
+    it("lays Excel out as cells and back, the file name kept, the other layout's settings started afresh and the tables gone", () => {
+      let spec = updateExportTarget(setExportFormat(toggleExportTable(buttons(), "w_out", "layers"), "w_out", "excel"), "w_out", { file_name: "{insured}", headers: "labels" })
+
+      spec = setExcelLayout(spec, "w_out", "cells")
+      expect(exported(spec)).toMatchObject({ tables: [], target: { format: "excel_cells", file_name: "{insured}", cells: [], blocks: [] } })
+      expect(excelLayout(exported(spec).target as ExcelCellsExport)).toBe("cells")
+      expect(setExcelLayout(spec, "w_out", "cells")).toBe(spec)
+      // The Format still shows Excel, and choosing it changes nothing.
+      expect(exportFormatShown(exported(spec).target.format)).toBe("excel")
+      expect(setExportFormat(spec, "w_out", "excel")).toBe(spec)
+
+      spec = setExcelLayout(spec, "w_out", "tables")
+      expect(exported(spec).target).toEqual({ file_name: "{insured}", headers: "names", values: "raw", format: "excel" })
+      expect(() => setExcelLayout(setExportFormat(spec, "w_out", "csv"), "w_out", "cells")).toThrow("not Excel")
+    })
+
+    it("keeps the file name of a workbook of cells to a CSV, starting its headers and values afresh", () => {
+      const spec = updateExportTarget(cells(), "w_out", { file_name: "{insured}" })
+
+      expect(exported(setExportFormat(spec, "w_out", "csv")).target).toEqual({ file_name: "{insured}", headers: "names", values: "raw", format: "csv", delimiter: "comma" })
+      expect(() => updateExportTarget(spec, "w_out", { headers: "labels" })).toThrow("An Export to excel_cells has no headers")
+    })
+
+    it("adds a cell under the last on its sheet, its label under the last's label, the first on Sheet1 at A1 with no label", () => {
+      let spec = cells()
+      expect(cellsOf(spec)).toEqual([
+        { ...insured, sheet: FIRST_CELL_SHEET, cell: "A1", label_cell: "" },
+        { ...total, sheet: FIRST_CELL_SHEET, cell: "A2", label_cell: "" },
+      ])
+
+      spec = updateExportCell(spec, "w_out", 1, { sheet: "Slip", cell: "AB99" })
+      spec = addExportCell(spec, "w_out", insured)
+      expect(cellsOf(spec)[2]).toEqual({ ...insured, sheet: "Slip", cell: "AB100", label_cell: "" })
+      const labelled = updateExportCell(spec, "w_out", 2, { label_cell: "AA100" })
+      expect(cellsOf(addExportCell(labelled, "w_out", total))[3]).toEqual({ ...total, sheet: "Slip", cell: "AB101", label_cell: "AA101" })
+      // Under a label's address that is no cell, or on the last row: no label.
+      for (const label_cell of ["Insured", `A${LAST_CELL_ROW}`]) {
+        expect(cellsOf(addExportCell(updateExportCell(spec, "w_out", 2, { label_cell }), "w_out", total))[3].label_cell).toBe("")
+      }
+      // Under a last cell that is no cell, or on the last row: A1.
+      spec = updateExportCell(spec, "w_out", 2, { cell: "B03" })
+      expect(cellsOf(addExportCell(spec, "w_out", total))[3].cell).toBe("A1")
+      spec = updateExportCell(spec, "w_out", 2, { cell: `C${LAST_CELL_ROW}` })
+      expect(cellsOf(addExportCell(spec, "w_out", total))[3].cell).toBe("A1")
+      expect(nextCellAddress("Z9")).toBe("Z10")
+    })
+
+    it("changes a cell's column, sheet, address or label's address and takes a cell away, each the form as given while nothing changes", () => {
+      let spec = cells()
+
+      expect(updateExportCell(spec, "w_out", 0, { sheet: FIRST_CELL_SHEET })).toBe(spec)
+      expect(updateExportCell(spec, "w_out", 0, { label_cell: "" })).toBe(spec)
+      expect(setExportCellColumn(spec, "w_out", 0, insured)).toBe(spec)
+      spec = setExportCellColumn(spec, "w_out", 0, { table: QUOTE_DETAILS_NAME, column: "quote_reference" })
+      spec = updateExportCell(spec, "w_out", 0, { sheet: "Slip", cell: "B3", label_cell: "A3" })
+      expect(cellsOf(spec)[0]).toEqual({ table: QUOTE_DETAILS_NAME, column: "quote_reference", sheet: "Slip", cell: "B3", label_cell: "A3" })
+      expect(updateExportCell(spec, "w_out", 0, { cell: "B3", label_cell: "A3" })).toBe(spec)
+      spec = removeExportCell(spec, "w_out", 0)
+      expect(cellsOf(spec)).toEqual([{ ...total, sheet: FIRST_CELL_SHEET, cell: "A2", label_cell: "" }])
+      expect(() => removeExportCell(spec, "w_out", 3)).toThrow("has no cell 3")
+      expect(() => addExportCell(buttons(), "w_out", insured)).toThrow("which writes no cells")
+    })
+
+    it("offers a cell the columns a sheet shows of the one-row tables", () => {
+      const spec = cells()
+      const offered = spec.schema.tables.flatMap((held) => cellColumns(held).map((shown) => `${held.name}.${shown.name}`))
+
+      expect(offered).toContain(`${QUOTE_DETAILS_NAME}.insured`)
+      expect(offered).toContain("premiums.total")
+      expect(offered.filter((name) => name.startsWith("layers."))).toEqual([])
+      // Another table's identity is not its own.
+      expect(offered).not.toContain("premiums.quote_reference")
+    })
+
+    it("counts an Export as using the columns its cells and blocks write, which a rename renames and a removal keeps, named as a problem", () => {
+      let spec = addBlockColumn(addExportBlock(cells(), "w_out", "layers"), "w_out", 0, "limit")
+
+      expect(buttonUses(spec, "premiums").map((w) => w.id)).toEqual(["w_out"])
+      expect(buttonUses(spec, "premiums", "total").map((w) => w.id)).toEqual(["w_out"])
+      expect(buttonUses(spec, QUOTE_DETAILS_NAME, "stage")).toEqual([])
+      expect(buttonUses(spec, "layers").map((w) => w.id)).toEqual(["w_out"])
+      expect(buttonUses(spec, "layers", "limit").map((w) => w.id)).toEqual(["w_out"])
+      expect(buttonUses(spec, "layers", "excess")).toEqual([])
+      // An Export of cells keeps what it writes, so it is counted apart; an Export of tables is not.
+      expect(keptUses(spec, "layers", "limit").map((w) => w.id)).toEqual(["w_out"])
+      expect(keptUses(spec, "premiums").map((w) => w.id)).toEqual(["w_out"])
+      expect(keptUses(setExportFormat(spec, "w_out", "csv"), "premiums")).toEqual([])
+
+      spec = updateSchemaColumn(spec, "premiums", "total", { name: "gross" })
+      expect(cellsOf(spec)[1]).toMatchObject({ table: "premiums", column: "gross" })
+      spec = updateSchemaTable(spec, "premiums", { name: "price" })
+      expect(cellsOf(spec)[1]).toMatchObject({ table: "price", column: "gross" })
+      spec = updateSchemaTable(updateSchemaColumn(spec, "layers", "limit", { name: "cover" }), "layers", { name: "tiers" })
+      expect(blocksOf(spec)).toEqual([{ table: "tiers", columns: ["cover"], sheet: "layers", cell: "A1", header: "labels" }])
+      expect(named(spec)).toEqual([])
+
+      // Removed, a column or a table stays where it was written, each a problem until changed.
+      const noInsured = removeSchemaColumn(spec, QUOTE_DETAILS_NAME, "insured")
+      expect(cellsOf(noInsured)).toEqual(cellsOf(spec))
+      expect(named(noInsured)).toEqual([`writes ${QUOTE_DETAILS_NAME}.insured, which is no longer in the schema`])
+      const noPrice = removeSchemaTable(spec, "price")
+      expect(cellsOf(noPrice)).toEqual(cellsOf(spec))
+      expect(named(noPrice)).toEqual(["writes price.gross, which is no longer in the schema"])
+      const noCover = removeSchemaColumn(spec, "tiers", "cover")
+      expect(blocksOf(noCover)).toEqual(blocksOf(spec))
+      expect(named(noCover)).toEqual(["writes tiers.cover, which is no longer in the schema"])
+      const noTiers = removeSchemaTable(spec, "tiers")
+      expect(blocksOf(noTiers)).toEqual(blocksOf(spec))
+      expect(named(noTiers)).toEqual(["writes the table tiers, which is no longer in the schema"])
+      // A copy pasted once its tables are gone keeps them too.
+      const pasted = pasteWidget(removeSchemaTable(noTiers, "price"), exported(spec), "s")
+      expect((findWidget(pasted.spec, pasted.id)!.widget as ExportWidget).target).toMatchObject({ cells: cellsOf(spec), blocks: blocksOf(spec) })
+    })
+
+    it("adds a block of a table with no columns, headed by labels, at A1 of a sheet named by it, and changes and takes it away, each the form as given while nothing changes", () => {
+      let spec = addExportBlock(cells(), "w_out", "layers")
+      expect(blocksOf(spec)).toEqual([{ table: "layers", columns: [], sheet: "layers", cell: "A1", header: "labels" }])
+      expect(cellsOf(spec)).toEqual(cellsOf(cells()))
+
+      expect(updateExportBlock(spec, "w_out", 0, { sheet: "layers", header: "labels" })).toBe(spec)
+      spec = updateExportBlock(spec, "w_out", 0, { sheet: "Slip", cell: "A12", header: "names" })
+      expect(blocksOf(spec)[0]).toMatchObject({ sheet: "Slip", cell: "A12", header: "names" })
+      for (const column of ["limit", "layer_premium", "table_index"]) spec = addBlockColumn(spec, "w_out", 0, column)
+      expect(blocksOf(spec)[0].columns).toEqual(["limit", "layer_premium", "table_index"])
+      expect(addBlockColumn(spec, "w_out", 0, "limit")).toBe(spec)
+
+      expect(moveBlockColumn(spec, "w_out", 0, 1, 1)).toBe(spec)
+      expect(blocksOf(moveBlockColumn(spec, "w_out", 0, 2, 0))[0].columns).toEqual(["table_index", "limit", "layer_premium"])
+      expect(blocksOf(moveBlockColumn(spec, "w_out", 0, 0, 2))[0].columns).toEqual(["layer_premium", "table_index", "limit"])
+      expect(blocksOf(removeBlockColumn(spec, "w_out", 0, 1))[0].columns).toEqual(["limit", "table_index"])
+      expect(() => moveBlockColumn(spec, "w_out", 0, 5, 0)).toThrow("has no column 5")
+      expect(() => removeBlockColumn(spec, "w_out", 0, 5)).toThrow("has no column 5")
+
+      expect(blocksOf(removeExportBlock(spec, "w_out", 0))).toEqual([])
+      expect(() => removeExportBlock(spec, "w_out", 1)).toThrow("has no block 1")
+      expect(() => addExportBlock(buttons(), "w_out", "layers")).toThrow("which writes no cells")
+    })
+
+    it("names each problem of a block as the server does, after the cells', each against all before it", () => {
+      const withBlocks = (spec: FormSpec, ...blocks: ExportBlock[]): FormSpec => {
+        const next = structuredClone(spec)
+        ;(exported(next).target as ExcelCellsExport).blocks = blocks
+        return next
+      }
+      const block = (table: string, columns: string[], sheet: string, cell: string): ExportBlock => ({ table, columns, sheet, cell, header: "labels" })
+      const layersA12 = block("layers", ["limit", "excess"], "Slip", "A12")
+      // The insured's name at Slip!B3, the total at Sheet1!A2.
+      const slip = updateExportCell(cells(), "w_out", 0, { sheet: "Slip", cell: "B3" })
+
+      expect(named(withBlocks(slip, layersA12))).toEqual([])
+      expect(named(withBlocks(slip, block("nowhere", ["limit"], "Slip", "A12")))).toEqual(["writes the table nowhere, which is no longer in the schema"])
+      expect(named(withBlocks(slip, block("layers", [], "Slip", "A12")))).toEqual(["writes the table layers with no columns"])
+      expect(named(withBlocks(slip, block("layers", ["limit", "nope"], "Slip", "A12")))).toEqual(["writes layers.nope, which is no longer in the schema"])
+      expect(named(withBlocks(slip, block("layers", ["excess", "limit", "excess"], "Slip", "A12")))).toEqual(["writes layers.excess more than once in its table"])
+      expect(named(withBlocks(slip, block("layers", ["limit"], " ", "A12")))).toEqual(["writes to a sheet with no name"])
+      expect(named(withBlocks(slip, block("layers", ["limit"], "History", "A12")))).toEqual(['writes to the sheet "History", which is a name Excel keeps for itself'])
+      expect(named(withBlocks(slip, block("layers", ["limit"], "slip", "A12")))).toEqual(['names the sheets "Slip" and "slip", which Excel holds as one'])
+      expect(named(withBlocks(slip, block("layers", ["limit"], "Slip", "a12")))).toEqual(['writes the table layers to "a12" on "Slip", which is not a cell like B3'])
+      expect(named(withBlocks(slip, block("layers", ["limit", "excess"], "Slip", "XFD1")))).toEqual(['writes the table layers from XFD1 on "Slip" past XFD, the last column'])
+      expect(named(withBlocks(slip, block("layers", ["limit", "excess"], "Slip", "XFC1")))).toEqual([])
+      // A block takes its columns from its top row down: a value or a label there, or
+      // another block's columns, is under it; above it, beside it or on another sheet is not.
+      expect(named(withBlocks(slip, block("layers", ["limit", "excess"], "Slip", "A1")))).toEqual(['writes the table layers from A1 on "Slip" over B3, which is written already'])
+      expect(named(withBlocks(slip, block("layers", ["limit", "excess"], "Slip", "B3")))).toEqual(['writes the table layers from B3 on "Slip" over B3, which is written already'])
+      expect(named(withBlocks(updateExportCell(slip, "w_out", 0, { label_cell: "A900" }), layersA12))).toEqual(['writes the table layers from A12 on "Slip" over A900, which is written already'])
+      expect(named(withBlocks(updateExportCell(slip, "w_out", 0, { cell: "C900", label_cell: "C12" }), layersA12))).toEqual([])
+      // Blocks on a sheet holding no cell, as the cells come first.
+      expect(named(withBlocks(cells(), layersA12, block("premiums", ["total"], "Slip", "B2")))).toEqual(['writes the table premiums from B2 on "Slip" over the table layers from A12'])
+      expect(named(withBlocks(cells(), layersA12, block("layers", ["excess"], "Slip", "A900")))).toEqual(['writes the table layers from A900 on "Slip" over the table layers from A12'])
+      expect(named(withBlocks(slip, layersA12, block("premiums", ["total"], "Slip", "C12")))).toEqual([])
+      expect(named(withBlocks(slip, layersA12, block("layers", ["limit", "excess"], "Summary", "A12")))).toEqual([])
+      // A block alone, with no cell, writes something.
+      expect(named(withBlocks(setExcelLayout(setExportFormat(buttons(), "w_out", "excel"), "w_out", "cells"), layersA12))).toEqual([])
+      // In the order the server names them (tests/test_workbench_export.py).
+      const all = withBlocks(setExportCellColumn(cells(), "w_out", 1, { table: "policy", column: "nope" }), block("layers", ["nope", "excess", "excess"], "History", "A0"))
+      expect(named(all)).toEqual([
+        "writes policy.nope, which is no longer in the schema",
+        "writes layers.nope, which is no longer in the schema",
+        "writes layers.excess more than once in its table",
+        'writes to the sheet "History", which is a name Excel keeps for itself',
+        'writes the table layers to "A0" on "History", which is not a cell like B3',
+      ])
+    })
+
+    it("names each of its problems as the server does, once each", () => {
+      const at = (spec: FormSpec, index: number, patch: Parameters<typeof updateExportCell>[3]) => updateExportCell(spec, "w_out", index, patch)
+
+      expect(named(cells())).toEqual([])
+      expect(named(setExcelLayout(setExportFormat(buttons(), "w_out", "excel"), "w_out", "cells"))).toEqual(["writes no cells or tables"])
+      expect(named(at(cells(), 1, { sheet: " " }))).toEqual(["writes to a sheet with no name"])
+      expect(named(at(cells(), 1, { sheet: "A".repeat(32) }))).toEqual([`writes to the sheet "${"A".repeat(32)}", which is longer than ${SHEET_NAME_LIMIT} characters`])
+      expect(named(at(cells(), 1, { sheet: "History" }))).toEqual(['writes to the sheet "History", which is a name Excel keeps for itself'])
+      expect(named(at(cells(), 1, { sheet: "sheet1" }))).toEqual(['names the sheets "Sheet1" and "sheet1", which Excel holds as one'])
+      expect(named(at(cells(), 1, { cell: "A1" }))).toEqual(['writes more than once to A1 on "Sheet1"'])
+      // A label's address is a cell too, typed in capitals, never the label's text; blank is no label.
+      expect(named(at(cells(), 1, { label_cell: "a3" }))).toEqual(['writes the label of premiums.total to "a3" on "Sheet1", which is not a cell like B3'])
+      expect(named(at(cells(), 1, { label_cell: "Total" }))).toEqual(['writes the label of premiums.total to "Total" on "Sheet1", which is not a cell like B3'])
+      expect(named(at(cells(), 1, { label_cell: " " }))).toEqual([])
+      expect(named(at(cells(), 1, { label_cell: "B2" }))).toEqual([])
+      // A label takes its cell as a value does: on its own value, an earlier value or label,
+      // or a later value on it.
+      expect(named(at(cells(), 1, { label_cell: "A2" }))).toEqual(['writes more than once to A2 on "Sheet1"'])
+      expect(named(at(cells(), 1, { label_cell: "A1" }))).toEqual(['writes more than once to A1 on "Sheet1"'])
+      expect(named(at(at(cells(), 0, { label_cell: "B2" }), 1, { label_cell: "B2" }))).toEqual(['writes more than once to B2 on "Sheet1"'])
+      expect(named(at(at(cells(), 0, { label_cell: "B2" }), 1, { cell: "B2" }))).toEqual(['writes more than once to B2 on "Sheet1"'])
+      // Labels of one address on two sheets are two cells.
+      expect(named(at(at(cells(), 0, { label_cell: "B2" }), 1, { sheet: "Slip", label_cell: "B2" }))).toEqual([])
+      // A cell's problems in the server's order (tests/test_workbench_export.py).
+      const all = at(setExportCellColumn(cells(), "w_out", 1, { table: "policy", column: "nope" }), 1, { sheet: "History", cell: "B03", label_cell: "x" })
+      expect(named(all)).toEqual([
+        "writes policy.nope, which is no longer in the schema",
+        'writes to the sheet "History", which is a name Excel keeps for itself',
+        'writes to "B03" on "History", which is not a cell like B3',
+        'writes the label of policy.nope to "x" on "History", which is not a cell like B3',
+      ])
+      expect(named(at(cells(), 1, { cell: "XFE1" }))).toEqual(['writes to "XFE1" on "Sheet1", which is not a cell like B3'])
+      expect(named(updateExportTarget(cells(), "w_out", { file_name: " " }))).toEqual(["has no file name"])
+      expect(named(updateExportTarget(cells(), "w_out", { file_name: "{agent}" }))).toEqual(["names its file by {agent}, which is not a column of quote_details"])
+      expect(named(setExportCellColumn(cells(), "w_out", 1, { table: "layers", column: "limit" }))).toEqual(["writes layers.limit, a column of a many-row table"])
+      expect(named(setExportCellColumn(cells(), "w_out", 1, { table: "premiums", column: "gone" }))).toEqual(["writes premiums.gone, which is no longer in the schema"])
+      // Two cells with one problem name it once.
+      const twice = addExportCell(setExportCellColumn(cells(), "w_out", 1, { table: "premiums", column: "gone" }), "w_out", { table: "premiums", column: "gone" })
+      expect(named(twice)).toEqual(["writes premiums.gone, which is no longer in the schema"])
+    })
+
+    it("reads an address and a sheet's name as the server does", () => {
+      expect(cellAddress("B3")).toEqual({ column: 2, row: 3 })
+      expect(cellAddress("XFD1048576")).toEqual({ column: LAST_CELL_COLUMN, row: LAST_CELL_ROW })
+      for (const notACell of ["XFE1", "A1048577", "A0", "B03", "b3", "$B$3", "B", "3", ""]) expect(cellAddress(notACell)).toBeNull()
+      expect(sheetNameProblem("S".repeat(SHEET_NAME_LIMIT))).toBeNull()
+      expect(sheetNameProblem("Slip: final")).toBe("holds :")
+      expect(sheetNameProblem("a\\b")).toBe("holds \\")
+      expect(sheetNameProblem("'Slip")).toBe("starts or ends with '")
+      expect(sheetNameProblem("Histories")).toBeNull()
+    })
   })
 })

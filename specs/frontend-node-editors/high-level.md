@@ -66,9 +66,17 @@ backend API modules own validation and persistence.
 - Constant lists its named values. A name another row also uses marks both rows inline, and
   typing one into a row is refused without being applied, the typed name kept; Add value offers
   the first `constant_<n>` no row uses.
-- Banding's Output Column field refuses, inline and without applying it, a name another active
-  factor writes while the factor being edited is active (it has its input column and rules);
-  a draft factor may share a name, since it writes nothing.
+- Neither Banding nor Rating Step has an Output Column field: an item's output column is its
+  name in the list, renamed there. Banding has no Input Column field either: each row shows
+  the factor's input column, a dropdown with a search box over the input's columns, never a
+  text box (with none known yet it says so), then an arrow to its name, so a row reads
+  input → output. Using a row's
+  dropdown selects that row first, since a change of type clears the rules on screen, and
+  only the selected row's dropdown is in the tab order. Banding's rename refuses, inline and without applying it, a
+  name another active factor writes while the factor being edited is active (it has its input
+  column and rules); a draft factor may share a name, since it writes nothing. What is wrong
+  with the selected factor's name (none, or a collision) is said above its settings, and a
+  Rating table's problems, its name's among them, above its factors.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
   context. The Numeric type is disabled, with the reason as its tooltip, while the selected
   input column's dtype is known and neither numeric nor a date: numeric bands compare the column
@@ -76,11 +84,18 @@ backend API modules own validation and persistence.
   factors the way Rating Step lists its tables, with the same shared list: a search over each
   factor's output and input column names, an All/Issues filter (an issue is a factor without
   its input column, output column or rules, or an active factor whose output column another
-  active factor also writes, which marks both, as execution refuses them), an Add button, and a scrollable box of rows with
-  a health dot, the output name, a rule-count badge and, when there is more than one factor, a
-  remove control. Banding's rows can also be dragged, or moved with Alt+Up/Down, to reorder
-  the factors; list order is the order execution applies them in, so a factor that bands
-  another's output must stay after it. A new node, or one whose only factor is still empty,
+  active factor also writes, which marks both, as execution refuses them), a scrollable box of rows with
+  a health dot, for Banding the input column and an arrow, the output name, a rule-count badge and, when there is more than one factor, a
+  remove control, and under the box a button as wide as it, Add banding or Add table. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
+  them, and both show the grip and keep the remove control's place even with a single row, so
+  a node with one item looks like a node with several. A row's output column can be renamed
+  in the row (a click in the selected row's name box, a double-click or F2; the name shows in
+  a box like the one it opens into): Banding refuses a name another active factor writes,
+  Rating takes it and marks both. Banding's list order is the order
+  execution applies the factors in, so a factor that bands another's output must stay after it;
+  Rating Step's is the order its tables' output columns come out in. A Rating Step's node panel
+  calls its config tab Tables (the input, levels line and tables) and adds a Combined tab after
+  it (the combined outputs); both show the one editor, which stays mounted across them. A new node, or one whose only factor is still empty,
   shows the list with a placeholder "Column 1" row and the Type row as any other factor, so
   choosing the first column does not move the layout. A new factor is Numeric; choosing an
   input column whose dtype is not numeric switches it to Categorical. Numeric and Categorical
@@ -129,11 +144,16 @@ backend API modules own validation and persistence.
   tables rate on, so a level absent from the preview can still be given a rate. Without a
   current point — or with one the node has moved on from — Rating says so and falls back to the
   preview sample rather than presenting a sample's answer as the data's, and a failure is shown
-  in place of its label, carrying the server's own message. Banding never shows a number from
+  in place of its label, carrying the server's own message. Every whole-data editor (Banding,
+  Rating, Explore's Relationships) words the state of the data the same way, from one status:
+  "Caching the data…", "Not cached · Refresh this node to read all rows", "Cached data is out of
+  date · Refresh this node to read all rows" (or "· Refreshing it failed: …" when a refresh
+  failed), the server's reason when it finds nothing for the node to read, and "Couldn't read
+  the data: …" when reading it failed — never "Counting…" for data that could not be read.
+  Banding never shows a number from
   the preview: its per-rule counts, its "x of N rows" and its histogram come only from the whole
-  dataset. Until that answer is there, its label says why — "Counting…", "Caching the data…",
-  "Not cached · Refresh this node to count all rows", "Cached data is out of date · Refresh this
-  node to count all rows", or the failure in the server's words — the counts show as pending
+  dataset. Until that answer is there, its label says why — "Counting…" or one of those
+  states — the counts show as pending
   while they are being counted and are absent otherwise, and there is no histogram or "x of N
   rows". A server answer that the data needs caching, which can come for a point that looked
   current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts,
@@ -585,7 +605,8 @@ pointing at or focusing a card tints that step's line range (every line of a ste
 spans several), pointing at a line highlights its card, and clicking a line opens that
 card (a line of the start step focuses the start selector). The code fades, with a
 "rendering…" note, only when a render is still pending after 400 ms, so typing does not
-flicker it. A step being built is not an error yet: while no run has failed on the node, a
+flicker it. Until a node's first render has answered, the code is a blank line, never "No
+code yet.", which is said only when there is no code to show and none is pending. A step being built is not an error yet: while no run has failed on the node, a
 render problem is shown as a neutral note, never in the error colour, and the switch to
 code stays disabled. While the latest render fails, the panel keeps the last good code
 dimmed and labelled out of date; a failure that names a step reads "Step 3 isn't finished:

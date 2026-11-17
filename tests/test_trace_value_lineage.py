@@ -811,7 +811,9 @@ def test_a_read_several_nodes_may_have_supplied_names_no_source():
     node_map = {"left": _node("left", NodeType.DATA_INPUT, {})}
 
     # "left" was not correlated, so its entry carries only its name.
-    _attach_input_sources([calc], [calc], "y", lineage, node_map, None)
+    _attach_input_sources(
+        [calc], [calc], "y", lineage, node_map, None, name_of=lambda key: node_map[key].data.label
+    )
 
     assert calc.calculation["input_sources"] == {"m": {"node_id": "left", "node_name": "left"}}
 

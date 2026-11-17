@@ -1,7 +1,8 @@
 import { useState } from "react"
-import { Plus } from "lucide-react"
+import { ArrowRight, Plus } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
-import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
+import { CommittedTextField } from "../../components/form"
+import { ColumnSelector } from "../modelling/ColumnSelector"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
 import type { CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -24,14 +25,17 @@ import { BandingRulesGrid } from "./banding/BandingRulesGrid"
 import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
 import useBandingStats from "./banding/useBandingStats"
+import { wholeDataStatusText } from "./shared/useWholeDataAnswer"
 import { useGraph } from "../useGraph"
 import useUIStore from "../../stores/useUIStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
 import { ImportParamValues } from "./banding/ImportParamValues"
 import { withAlpha } from "../../utils/color"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import SearchableItemList from "./shared/SearchableItemList"
+import { indexAfterMove, isListMove, moveListItem } from "./shared/moveListItem"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 
 const EMPTY_CATEGORICAL: CategoricalRule = { value: "", assignment: "" }
@@ -84,10 +88,13 @@ export default function BandingEditor({
   const colMap = Object.fromEntries(upstreamColumns.map(c => [c.name, c.dtype]))
 
   // The whole dataset this node reads, when it is cached: the counts, values
-  // and distribution below are execution's rather than a sample's.
+  // and distribution below are execution's rather than a sample's. A workbench
+  // project bands the quote being priced, so there is no dataset to count: the
+  // editor asks nothing and shows no counts.
   const graph = useGraph()
-  const node = nodeId ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
-  const { cache, stats, current: statsCurrent, cacheRequired, error: statsError } = useBandingStats({
+  const workbench = useWorkbenchStore((state) => state.enabled)
+  const node = nodeId && !workbench ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
+  const { stats, current: statsCurrent, status } = useBandingStats({
     node,
     allNodes: graph.allNodes,
     edges: graph.edges,
@@ -149,31 +156,65 @@ export default function BandingEditor({
   // List order is the order execution applies the factors in: a row dragged
   // onto another, or moved with Alt+Up/Down, takes its place.
   const moveFactor = (from: number, to: number) => {
-    if (from === to || to < 0 || to >= factors.length) return
-    const next = [...factors]
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
+    if (!isListMove(factors.length, from, to)) return
     if (nodeId) forgetBandingRuleStash(nodeId)
-    commitFactors(next)
-    const current = safeIdx
-    setActiveIdx(
-      current === from ? to
-        : from < current && current <= to ? current - 1
-          : to <= current && current < from ? current + 1
-            : current,
-    )
+    commitFactors(moveListItem(factors, from, to))
+    setActiveIdx(indexAfterMove(safeIdx, from, to))
   }
 
   // Execution refuses two active factors writing one column, so both are issues.
   const outputCollisions = bandingOutputCollisions(factors)
+  // Why a factor cannot take an output column: renaming it in the list
+  // refuses such a name, saying why under the box.
+  const outputColumnError = (idx: number, candidate: string): string | null => {
+    const next = factors.map((f, i) => (i === idx ? { ...f, output_column: candidate } : f))
+    const others = bandingOutputCollisions(next).get(idx)
+    return others ? bandingOutputCollisionMessage(others, candidate) : null
+  }
+  // What is wrong with a factor's output column: none, or a name another
+  // active factor also writes.
+  const nameIssues = (f: BandingFactor, i: number): { missing: string[]; collision: string[] } => {
+    const collidesWith = outputCollisions.get(i)
+    return {
+      missing: f.output_column ? [] : ["No output column"],
+      collision: collidesWith ? [bandingOutputCollisionMessage(collidesWith, f.output_column)] : [],
+    }
+  }
+  // A factor's input column, in its row of the list before the arrow to its
+  // name: a dropdown with a search box over the input's columns, never typed
+  // free (until the input has been previewed, it says no columns are known).
+  // Using it selects the row first: choosing a column of another type clears
+  // the factor's rules, which must be the rules on screen. Only the selected
+  // row's dropdown is in the tab order, so Tab reaches the list once.
+  const renderInputColumn = (idx: number, selected: boolean) => {
+    const f = factors[idx]
+    if (!f) return null
+    return (
+      <ColumnSelector
+        compact
+        label={`${factorItems[idx]?.name ?? `Column ${idx + 1}`} input column`}
+        value={f.column || ""}
+        columns={upstreamColumns}
+        placeholder="Select column..."
+        tabIndex={selected ? 0 : -1}
+        onFocus={() => { if (!selected) setActiveIdx(idx) }}
+        onChange={(column) => {
+          setActiveIdx(idx)
+          setColumnWithAutoDetect(idx, column)
+        }}
+      />
+    )
+  }
+  const activeNames = factors[safeIdx] ? nameIssues(factors[safeIdx], safeIdx) : null
+  const activeNameIssues = activeNames ? [...activeNames.missing, ...activeNames.collision] : []
   const factorItems: SearchableListItem[] = factors.map((f, i) => {
     const ruleCount = (f.rules || []).length
-    const collidesWith = outputCollisions.get(i)
+    const names = nameIssues(f, i)
     const issues = [
       ...(f.column ? [] : ["No input column"]),
-      ...(f.output_column ? [] : ["No output column"]),
+      ...names.missing,
       ...(ruleCount > 0 ? [] : ["No rules yet"]),
-      ...(collidesWith ? [bandingOutputCollisionMessage(collidesWith, f.output_column)] : []),
+      ...names.collision,
     ]
     return {
       index: i,
@@ -221,15 +262,11 @@ export default function BandingEditor({
   // While the answer to a rule edit is on its way, the last answer still
   // describes the column, so it stays: categorical counts follow the edit from
   // the data's value counts, and a count not yet known is pending (null).
-  const availability = cache.availability
   // The whole dataset's answer is on its way (rather than needing a Refresh,
-  // which the server can say even of a point that looked current).
+  // which the server can say even of a point that looked current, or never
+  // coming, when the data cannot be read).
   const counting =
-    node !== null &&
-    !stats &&
-    !statsError &&
-    !cacheRequired &&
-    (availability === "checking" || availability === "current" || availability === "building")
+    node !== null && !stats && (status.kind === "counting" || status.kind === "building")
   const wholeDataCounts = (() => {
     const rules = factor.rules || []
     if (!stats || !rules.length) return undefined
@@ -372,19 +409,14 @@ export default function BandingEditor({
   )
 
 
-  // Whose rows the numbers describe, or why there are none yet.
-  const REFRESH = "Refresh this node to count all rows"
-  const statusLabel = statsError
-    ? `Counting the whole dataset failed: ${statsError}`
-    : stats
-      ? `All rows · ${totalRows.toLocaleString()}`
-      : availability === "building"
-        ? "Caching the data…"
-        : availability === "stale"
-          ? `Cached data is out of date · ${REFRESH}`
-          : counting
-            ? "Counting…"
-            : `Not cached · ${REFRESH}`
+  // Whose rows the numbers describe, or why there are none yet. A failure is
+  // said even while the last answer stays on screen.
+  const statusText = wholeDataStatusText(status)
+  const failed = status.kind === "failed" || (status.kind === "stale" && status.failure !== null)
+  const statusLabel =
+    status.kind === "failed" || status.kind === "refused" || !stats
+      ? statusText ?? "Counting…"
+      : `All rows · ${totalRows.toLocaleString()}`
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
@@ -394,8 +426,8 @@ export default function BandingEditor({
         <div className="flex items-center justify-between gap-2" data-testid="banding-data-basis">
           <span
             className="text-[11px]"
-            style={{ color: statsError ? "var(--danger)" : "var(--text-muted)" }}
-            title={statsError ?? undefined}
+            style={{ color: failed ? "var(--danger)" : "var(--text-muted)" }}
+            title={failed ? statusLabel : undefined}
           >
             {statusLabel}
           </span>
@@ -410,10 +442,21 @@ export default function BandingEditor({
         onAdd={addFactor}
         onRemove={factors.length > 1 ? removeFactor : undefined}
         onMove={moveFactor}
+        rename={{
+          value: (idx) => factors[idx]?.output_column ?? "",
+          validate: outputColumnError,
+          commit: (idx, name) => updateFactor(idx, { output_column: name }),
+        }}
+        rowLead={(idx, selected) => (
+          <>
+            {renderInputColumn(idx, selected)}
+            <ArrowRight size={11} aria-hidden="true" className="shrink-0" style={{ color: 'var(--text-muted)' }} />
+          </>
+        )}
         labels={{
           list: "Banding columns",
           search: "Search banding columns",
-          add: "Add column",
+          add: "Add banding",
           remove: (name) => `Remove ${name} column`,
           status: (healthy) => (healthy ? "complete" : "incomplete"),
           empty: "No matching columns",
@@ -427,6 +470,25 @@ export default function BandingEditor({
         </div>
       ) : (
         <>
+      {/* What is wrong with the selected factor's output column: its name is
+          set in the list, which has no room to say. The rest of a factor's
+          issues show where they are fixed (its input column, its rules). */}
+      {activeNameIssues.length > 0 && (
+        <div
+          data-testid="banding-factor-name-issues"
+          className="space-y-1 rounded-lg px-2.5 py-2 text-[10px] font-medium"
+          style={{
+            background: 'var(--warning-soft-strong)',
+            border: '1px solid var(--warning-border-emphasis)',
+            color: 'var(--warning-strong)',
+          }}
+        >
+          {activeNameIssues.map(issue => (
+            <div key={issue}>{issue}</div>
+          ))}
+        </div>
+      )}
+
       {/* Active factor config */}
       <div>
         <div className="flex items-center gap-1.5">
@@ -447,55 +509,6 @@ export default function BandingEditor({
             ]}
             accentColor={accentColor}
           />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label htmlFor={`banding-input-col-${safeIdx}`} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Input Column</label>
-          {upstreamColumns.length > 0 ? (
-            <select
-              id={`banding-input-col-${safeIdx}`}
-              key={`col-${safeIdx}`}
-              value={factor.column}
-              onChange={(e) => setColumnWithAutoDetect(safeIdx, e.target.value)}
-              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-              style={INPUT_STYLE}
-            >
-              <option value="">Select column...</option>
-              <SavedValueOption value={factor.column} options={upstreamColumns.map(c => c.name)} />
-              {upstreamColumns.map(c => (
-                <option key={c.name} value={c.name}>
-                  {c.name} ({c.dtype})
-                </option>
-              ))}
-            </select>
-          ) : (
-            <CommittedTextField
-              id={`banding-input-col-${safeIdx}`}
-              key={`col-${safeIdx}`}
-              type="text" value={factor.column || ""}
-              onCommit={(v) => updateFactor(safeIdx, { column: v })}
-              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-              style={INPUT_STYLE} />
-          )}
-        </div>
-        <div>
-          <label htmlFor={`banding-output-col-${safeIdx}`} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Output Column</label>
-          <ValidatedTextField
-            id={`banding-output-col-${safeIdx}`}
-            key={`out-${safeIdx}`}
-            dataTestId="banding-output-column"
-            value={factor.output_column || ""}
-            validate={(candidate) => {
-              const next = factors.map((f, i) => (i === safeIdx ? { ...f, output_column: candidate } : f))
-              const others = bandingOutputCollisions(next).get(safeIdx)
-              return others ? bandingOutputCollisionMessage(others, candidate) : null
-            }}
-            onCommit={(v) => updateFactor(safeIdx, { output_column: v })}
-            containerClassName=""
-            className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={INPUT_STYLE} />
         </div>
       </div>
 

@@ -20,7 +20,7 @@ non-composite name, duplicate/empty components, missing frame columns) raise
 loud ``ValueError``s naming the table.
 
 Miss semantics (3b.5): the blanket ``default_value: "1.0"`` is gone.  The
-apply path opts in to the W3a ``on_missing: "neutral"`` machinery explicitly —
+apply path's tables have no default, so a miss leaves its factor empty —
 unseen levels still rate 1.0 (an optimiser relativity is a multiplicative
 adjustment on an already-rated price, so "no adjustment" is the safe
 degradation for apply-to-broader-population deploy scoring; failing the whole

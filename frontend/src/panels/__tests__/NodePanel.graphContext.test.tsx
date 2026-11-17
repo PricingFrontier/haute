@@ -8,6 +8,7 @@ import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors/_shared"
 import useUIStore from "../../stores/useUIStore"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ─── Editor mocks ─────────────────────────────────────────────────
 // We only care that the right editor renders and that it does *not*
@@ -103,7 +104,7 @@ function renderWithGraph(opts: {
     onDeleteEdge = vi.fn(),
   } = opts
   return render(
-    <GraphProvider
+    <GraphProvider requestScope={documentRequestScope}
       allNodes={allNodes}
       edges={edges}
       submodels={submodels}

@@ -8,6 +8,8 @@
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
 `workbench.form.changed`, forwarded as `workbench_form_changed`), and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
+| `src/haute/_node_addresses.py` | Node addresses (see "Node addresses"): `resolve_target` and `resolve_node` resolve a request's address target in its flattened document through the expansion's record, refusing by name; `address_entry`/`node_addresses` label the keys an answer names, `occurrence_ports` builds frame provenance, and `labelled` builds an answer with `node_addresses` for every key at a node-key position of its schema. |
+| `src/haute/_node_address_schemas.py` | The wire shapes of node addresses: `RuntimeNodeKey` (a string marked `x-haute-node-key`, branded in the generated TypeScript), `NodeAddressPayload`, the `FrameTargetPayload` union (a node, an occurrence's input port, an occurrence's output port), `NodeAddressEntry`, `RuntimeEndpointPayload` and `OccurrencePortProvenance`; apart from `schemas.py` so the execution-metrics payloads can name nodes by key. |
 | `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics. The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. `RequestRefusedError` is a service's refusal of a request, with the `status_code` and `detail` its caller hears; its subclasses name the reason (`InvalidRequestError`, `ForbiddenError`, `NotFoundError`, `ConflictError`, `GoneError`, `UnprocessableError`, `ServiceFailedError`, `InsufficientMemoryError`). |
 | `src/haute/_validation_error.py` | `HauteValidationError` — the ValueError-derived marker for haute-authored validation messages (re-exported by `errors.py`); the modelling worker boundary keys its curated-message promotion on it. |
@@ -42,7 +44,7 @@
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview, trace and the free-code column resolution. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `"output_mapping"`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_worker_failure_http.py` | `worker_failure_http_exception`, the one HTTP answer for a worker failure, used by preview, trace, the OUTPUT dry run, free-code columns, the Data Output write and the optimiser estimate: a memory outcome 507 with the closed memory-limit payload, a deadline 504 with the route's detail, a stop 409, a worker that could not start 503, a child's exact-identity memory error, unavailable native cap or curated public contract error its own 507 or 422 (or 410 for an expired seed plan), a route's own remote exceptions through its `RemoteAnswer`, and anything else a logged 500. |
-| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
+| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `PIPELINE_ERROR_TYPES`, the pipeline's own failures a job or a write reports as the user's to fix, and `pipeline_error_message`, the message it gives them. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
 | `src/haute/routes/_validation_errors.py` | `request_validation_error_handler`: FastAPI's 422 for a request its models refuse, the list of errors as FastAPI gives them, `loc`, `msg` and `type` each, without the `input` refused or its `ctx`, so a refused form is never repeated in the answer; the editor's server and the underwriter app both install it. |
 | `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: a request its models refuse → `request_validation_error_handler`, public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`, `PathOutsideProjectError` / `InvalidPathError` → 403 / 400 with the bare message. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
@@ -261,8 +263,12 @@ latest (otherwise raises `SupersededRequestError` without ever running the worke
 the worker exclusively for that key.
 
 **`SavePipelineService._TouchedFile`** (`routes/_save_pipeline.py`) is a `NamedTuple` of
-`(target: Path, previous_bytes: bytes | None)` — `None` means the file did not exist before
-this save (rollback deletes it); otherwise rollback restores the snapshotted bytes.
+`(target: Path, previous_bytes: bytes | None, written_digest, deleted, unchanged)` — `None`
+means the file did not exist before this save (rollback deletes it); otherwise rollback
+restores the snapshotted bytes. `unchanged` marks a file that already held the bytes the save
+commits: `_stage_artifact_write_bytes` (and `save_sidecar` for a position sidecar) does not
+write it, and rollback skips it, so an unchanged file keeps its modification time; the save,
+a workbench form's save and a repair all write through it.
 
 **HTTP endpoint contracts owned here** (FastAPI adds its standard 422 validation envelope
 when a path/query/body fails model validation):
@@ -279,14 +285,14 @@ when a path/query/body fails model validation):
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/polars-steps/render` | `PolarsStepsRenderRequest {steps:[object], input_names:[str], start:"input"|"frame"}` (`start` is required: `input` renders a transform's list, `frame` a surface whose `df` is already bound) | `PolarsStepsRenderResponse {ok, code, step_lines:[[start,end]], step_index, message}`; a step validation failure is `ok: false` with HTTP 200, an empty frame-mode list is `ok: true` with empty code, and the call touches no project state and executes no authored code |
 | `POST /api/pipeline/polars-steps/free-code-columns` | `PolarsFreeCodeColumnsRequest {node_id, steps:[object], input_names:[str], start:"input"|"frame", input_columns:{name:[ColumnInfo]}, frame_columns:[ColumnInfo]}` (all required; `node_id` keys supersession, `input_columns` holds the columns the editor knows for each input and names only `input_names`, `frame_columns` those of a frame-mode surface's `df` and must be empty in `input` mode) | `PolarsFreeCodeColumnsResponse {free_code_columns:[{step_index, columns:[ColumnInfo] or null, message}]}`: one entry per `free_code` step, in step order (none, without running anything, for a list with no `free_code` step); a list that does not render is 422 with the step's message. Each entry is the schema of `df` after that step, resolved by `_polars_steps.resolve_free_code_columns`, which executes the rendered lines up to the end of the step through `_exec_user_code` (no preamble) over empty `LazyFrame`s built from the supplied columns (each dtype rebuilt from its `str(dtype)` rendering by `_polars_dtypes.parse_rendered_dtype`) and reads `collect_schema()`. An entry whose code names an input with no supplied columns, whose frame-mode `df` has none, whose supplied dtype cannot be rebuilt, or whose execution or schema resolution raises has `columns: null` and a one-line `message`; a resolved entry has an empty `message`. The route admits a `PREVIEW_EAGER` context (operation `polars_free_code_columns`) and, in process mode, runs the resolution in the interactive worker pool under that budget (affinity and `_free_code_supersession` key `("polars_free_code_columns", node_id)`) with `timeout_seconds=FREE_CODE_COLUMNS_TIMEOUT_SECONDS` (5.0, read per call); a newer request for the same node stops the running one through `stop_reason` and a disconnected client does through `await_until_disconnected`, both answering 409 / 499. A worker timeout, memory limit, crash, remote or start failure, or an admission refusal is not an error: every `free_code` entry gets `columns: null` and one parent-authored message (`"The code did not finish within 5 seconds."` for a timeout). Thread mode runs it through `run_blocking_with_response_timeout` with the same deadline and returns the same timeout entries; the thread runs on, holding its admission until it ends |
-| `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), port_label=null, port_labels=null (non-empty when present; not with `port_label`, 422), workbench_form=null, workbench_sample=null (not both, 422)}`; `workbench_form` is a whole form the workbench nodes take in place of the form folder's (the workbench's Preview pricing its sample), and `workbench_sample` the sample the workbench view holds, laid over the saved form ([workbench](../workbench/low-level.md) Control flow 7, which lists every request carrying it: the preview's, its inputs', the trace's, node data's, the cache report's, Explore's, Banding's, the Rating Step's and the output assembly's); `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child; `port_labels` asks for several frames of a multi-frame target at once, answered from one run in `port_previews`, and enters the supersession key (`_preview_supersession_key`, in its order) though not the cache key | `PreviewNodeResponse`, extending `NodeResult` (its `port_previews`, each frame asked for by label as a `PortPreview {row_count, columns, preview, preview_truncated}`, the rows made JSON-safe) with `node_id`, timings/memory, per-node schemas/statuses, optional execution metrics, and `seed_plan`: one `PreviewSeedPlanEntry {node_id, port_label=null, node_label, identity_digest, generation_id, columns (null = all), created_at (ISO-8601 UTC), kind: seeded|captured}` per shared-snapshot generation the rows were computed from, in topological order. `seeded` means the plan leased that generation and the response was computed from it; `captured` means this request computed the node and published it. A response served from the preview response cache reports every generation it lists as `seeded`, because the hit leases and verifies each one before serving it and publishes none of them. A request its cached entry does not satisfy executes as a miss, replacing the entry, and reports the kinds of the plan it ran under. The route executes with `shared_snapshots=True`, which plans the preview only while caching is on in the pipeline settings, and admits it with the one preview budget (`preview_memory_gb`, or its automatic figure) whatever it captures; it bounds the whole request by the pipeline time limit. In process mode it passes the worker a staging token and discards any capture staging left under it once the worker returns, fails, times out, or is superseded. A client that disconnects (the frame's Stop) cancels the preview's own token through `await_until_disconnected`: a running worker is told to stop through its `stop_reason`, a thread-mode execution stops at its next checkpoint, a request still queued for a work slot is cancelled without running, and the route answers 499 once the work has stopped. `POST /api/pipeline/recovery-preview` shares this path. |
+| `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, target, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), workbench_form=null, workbench_sample=null (not both, 422)}`; `target` is a frame target ("Node addresses"): a node target's `port_label` picks one frame of a multi-frame node and its `port_labels` (non-empty when present; not with `port_label`, 422) several; a field the request does not define (a node id or port beside the target) is a 422, never dropped, as it is for `PreviewInputsRequest`; `workbench_form` is a whole form the workbench nodes take in place of the form folder's (the workbench's Preview pricing its sample), and `workbench_sample` the sample the workbench view holds, laid over the saved form ([workbench](../workbench/low-level.md) Control flow 7, which lists every request carrying it: the preview's, its inputs', the trace's, node data's, the cache report's, Explore's, Banding's, the Rating Step's and the output assembly's); the target is resolved by `resolve_target` once the graph is flattened, and an unknown or unbound one is the 404 that names it; `port_labels` asks for several frames of a multi-frame target at once, answered from one run in `port_previews`, and enters the supersession key (`_preview_supersession_key`, in its order, with the resolved key and port) though not the cache key | `PreviewNodeResponse`, extending `NodeResult` (its `port_previews`, each frame asked for by label as a `PortPreview {row_count, columns, preview, preview_truncated}`, the rows made JSON-safe) with timings/memory, per-node schemas/statuses keyed by runtime key (a collapsed occurrence's output ports' columns and its schema warnings under its instance id), `node_addresses` for every key it names, `occurrence_ports` (frame provenance), optional execution metrics, and `seed_plan`: one `PreviewSeedPlanEntry {node_id, port_label=null, node_label, identity_digest, generation_id, columns (null = all), created_at (ISO-8601 UTC), kind: seeded|captured}` per shared-snapshot generation the rows were computed from, in topological order. `seeded` means the plan leased that generation and the response was computed from it; `captured` means this request computed the node and published it. A response served from the preview response cache reports every generation it lists as `seeded`, because the hit leases and verifies each one before serving it and publishes none of them. A request its cached entry does not satisfy executes as a miss, replacing the entry, and reports the kinds of the plan it ran under. The route executes with `shared_snapshots=True`, which plans the preview only while caching is on in the pipeline settings, and admits it with the one preview budget (`preview_memory_gb`, or its automatic figure) whatever it captures; it bounds the whole request by the pipeline time limit. In process mode it passes the worker a staging token and discards any capture staging left under it once the worker returns, fails, times out, or is superseded. A client that disconnects (the frame's Stop) cancels the preview's own token through `await_until_disconnected`: a running worker is told to stop through its `stop_reason`, a thread-mode execution stops at its next checkpoint, a request still queued for a work slot is cancelled without running, and the route answers 499 once the work has stopped. `POST /api/pipeline/recovery-preview` shares this path. |
 | `GET /api/pipeline/preview/progress/{request_id}` | Request id the client sent as `PreviewNodeRequest.request_id` (`^[A-Za-z0-9-]{1,64}$`) | `PreviewProgressResponse {request_id, phase: preparing\|running, done, total, label}` while that preview runs; 404 when the id is unknown or its preview has settled, which the client treats as nothing to show. `routes/_preview_progress.py` opens the entry when the request starts (`preparing`), records the walk's step reports (`running`), and closes it when the request settles; a closed id is remembered for five minutes so a late report cannot recreate it. Progress reaches only the client that polls its own id; `/ws/sync` frames are unchanged. |
-| `POST /api/pipeline/preview/inputs` | `PreviewInputsRequest {graph, node_id, source="live", requested_preview_columns=null (non-empty when present), port_label=null, workbench_sample=null}` | `PreviewInputsResponse {input_node_ids}` — `preview_input_node_ids`: the snapshot-backed Data Inputs and structured API Inputs the preview's first resolution executes, read without preparing or leasing; for a lineage that is not admitted, every one the target reads. Advisory: the preview prepares whatever its own plan then reads. A graph the preview cannot run as authored (a shape, config, or contract error, flattening included) answers an empty list, and the preview reports that error at the node. |
-| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, port_label=null, seed_plan, workbench_sample=null}`; a non-null `target_node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child. `port_label` names the table of a Workbench Output target the clicked row is from (its preview's `selected_frame`), is ignored for other targets, and joins the supersession key. `seed_plan` is required and may be empty: the explained preview's entries as `TraceSeedPlanEntry {node_id, port_label=null, identity_digest, generation_id}`; it joins the supersession key, and an expired plan answers 409 `preview_seed_plan_expired` in thread and process mode alike | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
-| `POST /api/pipeline/write-output` | `WriteOutputRequest {graph, node_id, source="live", overwrite=false}` | `WriteOutputResponse` with status, row count, destination path/table, format, publication outcome, and execution metrics |
+| `POST /api/pipeline/preview/inputs` | `PreviewInputsRequest {graph, target, source="live", requested_preview_columns=null (non-empty when present), workbench_sample=null}`, `target` the preview's frame target | `PreviewInputsResponse {input_node_ids, node_addresses}` — `preview_input_node_ids`, by runtime key, each addressed: the snapshot-backed Data Inputs and structured API Inputs the preview's first resolution executes, read without preparing or leasing; for a lineage that is not admitted, every one the target reads. Advisory: the preview prepares whatever its own plan then reads. A graph the preview cannot run as authored (a shape, config, or contract error, flattening included) answers an empty list, and the preview reports that error at the node. |
+| `POST /api/pipeline/trace` | `TraceRequest {graph, target, row_index=0 (>=0), column=null, row_limit=100 (1..10000), source="live", row_values=null, seed_plan, workbench_sample=null}`, and no other field (a node id or port beside the target is a 422). `target` is a required frame target ("Node addresses"): the target of the preview the clicked row is from, resolved in the flattened graph or refused by name (404). A node target's `port_label` names the frame read (a multi-frame node's, or the table of a Workbench Output, whose cell is traced from the node connected to it) and joins the supersession key with the resolved runtime key; its `port_labels` is a 422, since a trace reads one frame. `seed_plan` is required and may be empty: the explained preview's entries as `TraceSeedPlanEntry {node_id, port_label=null, identity_digest, generation_id}`; it joins the supersession key, and an expired plan answers 409 `preview_seed_plan_expired` in thread and process mode alike | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, `execution_origin: fresh_execution|trace_cache`, and `node_addresses` addressing every key it names (its target, steps, column sources, omissions and diagnostics); the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
+| `POST /api/pipeline/write-output` | `WriteOutputRequest {graph, target, source="live", overwrite=false}`, a `NodeTargetRequest` ("Node addresses"): an unknown target is a 404 naming it, and a node that is no Data Output a 400 naming it by label | `WriteOutputResponse` with status, row count, destination path/table, format, publication outcome, and execution metrics |
 | `GET /api/pipeline-settings` | No body | `PipelineSettingsResponse {settings, automatic, path}`: `settings` is a `PipelineSettingsValues` with every key of the project's `.haute/pipeline-settings.json` (execution engine, "Pipeline settings"), `null` where it is automatic; `automatic` is a `PipelineSettingsAutomatic` with each key's current automatic figure (`optimisation_time_limit_minutes` `null`: no limit); `path` is the file's project-relative path. An invalid file answers 409 with its message |
 | `PATCH /api/pipeline-settings` | `PipelineSettingsValues`: only the keys present change, and `null` restores automatic. Each key is validated as the file is (`chunk_rows` 1..10000000, `caching` a boolean, `cache_size_gb`/`preview_memory_gb` > 0, `kept_free_gb` >= 0, time limits > 0 and <= 10080, no bools for numbers, no unknown keys), so an invalid body answers 422 and writes nothing | The `PipelineSettingsResponse` after the update is written. The server applies the written `chunk_rows` at once, so server-thread executions and workers started afterwards, and the next task on each warm interactive worker, run with them; every other key is read when each execution starts. An invalid existing file answers 409 and is left as it is |
-| `POST /api/pipeline/output-destination` | `OutputDestinationRequest {graph, node_id}` | Safe destination display path, format, and suffix-mismatch flag; performs no graph execution or filesystem write |
+| `POST /api/pipeline/output-destination` | `OutputDestinationRequest {graph, target}`, resolved and refused as write-output's | Safe destination display path, format, and suffix-mismatch flag; performs no graph execution or filesystem write |
 | `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null`; `dir` and each `path` are POSIX (`as_posix()`) |
 | `GET /api/project-files` | Query `place` (`pipeline` or `local`), `path=""` (a folder relative to the place) | `ProjectFolderResponse {place, path, root, writable, entries:[{name, path, kind: file\|folder, size, modified, revision, status: new\|changed\|ignored\|null}]}`: `root` is the place's folder relative to the project root (`rating/files`, or `""` for local); folders come first, then files, ignoring case. The pipeline place's root also lists `data` and `models`, and the local root exactly `data` and `outputs`, each even before it exists. In the pipeline place `status` is `new` for a file with no committed version (untracked, or staged but never committed), `changed` for one edited since it was committed, and `ignored` for one `.gitignore` ignores; a file with no status is in version history as it is, and a folder `.gitignore` ignores is not `writable`. Dot-names, `__pycache__`, links and junctions are never listed. 400 `invalid_path`, 404 `folder_missing`, 409 `no_pipeline_folder` |
 | `PUT /api/project-files/content` | Query `place`, `path` (the file, relative to the place), optional `replace_revision`; raw `application/octet-stream` body with `Content-Length` | `ProjectFileWriteResponse {path, size, revision, replaced, status, git_sha, identity_required, warnings, uncaptured}`. Without `replace_revision` an existing file is 409 `file_exists`; with it, a file whose revision differs (or that is gone) is 412 `file_changed`. Also 411 without a length, 413 `too_large_for_history` over 100 MiB in the pipeline place, 403 `read_only` outside a writable folder, 403 `hosted_local_files` for the local place in a hosted app, 409 `ignored` naming the `.gitignore` rule, 409 `branch_changed`, 409 `file_in_use`, 409 `staging_unavailable` when `.haute/uploads/` is reached through a link, 400 `length_mismatch`, 400 `invalid_path`, 507 `disk_full` |
@@ -304,7 +310,7 @@ when a path/query/body fails model validation):
 | `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, content, revision, git_sha, identity_required, warnings, uncaptured}`, `content` and `revision` read after the ledger capture, whose git hooks may rewrite the file; 409 `file_exists` for a file that appeared since the name check |
 | `PUT /api/utility/{module}` | `UtilityWriteRequest {content, revision}` | `UtilityWriteResponse`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing written) |
 | `DELETE /api/utility/{module}` | Module path, query `revision` | `UtilityDeleteResponse {status="ok", module, git_sha, identity_required, warnings, uncaptured}`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing deleted) |
-| `POST /api/output-assemble/dry-run` | `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], row_limit=100 (1..10000), source="live", workbench_sample=null}`; a graph without `source_file` takes the pipeline `haute.toml` names (`_ensure_source_file`) before its input paths are checked | `OutputAssembleDryRunResponse {status: "ok"|"error", document=[], row_count=0, error=null}` |
+| `POST /api/output-assemble/dry-run` | `OutputAssembleDryRunRequest {graph, target, output_mapping=[], row_limit=100 (1..10000), source="live", workbench_sample=null}`, a `NodeTargetRequest` (an unknown target is a 404 naming it, and a node that is no OUTPUT a 400 naming it by label); a graph without `source_file` takes the pipeline `haute.toml` names (`_ensure_source_file`) before its input paths are checked | `OutputAssembleDryRunResponse {status: "ok"|"error", document=[], row_count=0, error=null}` |
 
 `TraceResultResponse` requires `omissions`, `correlation_diagnostics`, `generated_at`, and
 `execution_origin`; these are not compatibility defaults. Each successful step requires a
@@ -345,6 +351,149 @@ editor document itself cannot be loaded or resynced and carries a fixed safe mes
 authored pipeline errors are never parse errors — they arrive as degraded or source-only
 documents. The frame builder rejects an event payload that already contains reserved key
 `type`.
+
+## Node addresses (normative)
+
+A request that runs the graph names what it runs by address, and the server resolves the
+address; an answer names nodes by runtime key and labels every key it names with its address.
+The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>/<child>`,
+`haute._submodel_instances.qualified_runtime_node_id`), which stays the server's execution name.
+
+1. **Addresses.** `NodeAddressPayload {occurrence: str | null, node_id: str}`, both required: a
+   node of the pipeline with `occurrence: null` (an occurrence is itself the pipeline's node
+   `{null, <instance id>}`), or a child of occurrence `occurrence` named by its id in the
+   occurrence's definition. Submodels nest one level, so one occurrence names a child.
+2. **Targets.** An operation on a node takes `target: NodeAddressPayload`: training and its
+   estimates (memory and dispersion), the export script, a solve with its estimate and auto
+   range, a Data Output's destination, write and assembly dry run, a consumer's data point, run,
+   profile and clear, an Explore pivot and its members, relationships, banding statistics and
+   rating levels. A read of a frame takes `target: FrameTargetPayload`, one of:
+   - `{kind: "node", occurrence, node_id, port_label, port_labels}`: a node's output, one of its
+     ports, or several port labels of one node read in one execution (the Workbench's tables;
+     `port_label` and `port_labels` are not both given);
+   - `{kind: "occurrence_input", occurrence, port}`: the frame feeding a public input port of an
+     occurrence (the Input card's);
+   - `{kind: "occurrence_output", occurrence, port}`: the frame a public output port of an
+     occurrence produces (the Output card's, or an edge out of a collapsed occurrence).
+
+   The preview, its inputs and the trace take a frame target. Every field is required and none
+   defaults; the trace's target is required too. A recovery preview keeps its recovery id (a node
+   of the pipeline, refused inside a submodel), and the free-code columns request keeps its
+   `node_id`, a supersession key that runs nothing.
+3. **Resolution.** Every such request is flattened (`flatten_executable_graph`), and one function,
+   `haute._node_addresses.resolve_target`, resolves its target against the expansion's own
+   record, which `expand_submodel_instances` attaches to the flat graph (`SubmodelExpansion`): for
+   each occurrence its children (local id to runtime key), the endpoint feeding each bound input
+   port, and the endpoint producing each declared output port. It returns the runtime key and the
+   port label or labels. An operation on a node is a `NodeTargetRequest`
+   (`haute._node_address_schemas`): it refuses a field it does not define, so a `node_id` beside
+   the target is a 422; its route resolves it once with `resolved_request`, and the services
+   read the resolved runtime key as the request's `node_id`, which no request sends. A card target
+   translates its handle with its node: an input port reads its feeding endpoint's node and
+   handle, an output port its producing child's. Supersession keys and worker arguments use the
+   runtime key and port. Refusals are 404s that name the target by label: an occurrence the
+   document does not hold; a child its definition does not hold; an occurrence named as a node
+   target, which runs only through its ports; a pipeline address naming a child's runtime key,
+   which addresses no node of the pipeline; a port its definition does not declare; and an
+   input port nothing feeds.
+4. **Answers.** Every answer field that names a node is a `RuntimeNodeKey`, an opaque string the
+   generated TypeScript brands, and an answer that names one carries
+   `node_addresses: {<key>: {occurrence, node_id, label}}` with an entry for every key it names,
+   built from the expansion's record and never by parsing a key. `label` is the authored label: a
+   copy's child keeps its definition's label, not its flat name. A collapsed occurrence's entries
+   (its output ports' columns and its schema warnings) are keyed by its instance id, addressed
+   `{null, <instance id>}`. A data point (`NodeDataPointResponse`) addresses its consumer and
+   producer itself, so every answer carrying one (a run, a profile, a clear, banding statistics,
+   rating levels, relationships) does; a pivot's result names no node, since it is keyed by the
+   data point several Explore nodes can share. A string that embeds a key (a data point's `slot_key`, a seed plan's
+   entries) is echoed exactly and never read for a node.
+5. **Jobs and execution metrics.** The execution metrics (`ExecutionMetricsPayload`) name
+   nodes by key in every node field and in `node_elapsed_ms`, and carry their own
+   `node_addresses`, so every answer carrying them (a preview, a write, and every job's status:
+   training, a solve, an auto range, a node-data build, a pivot) addresses them; an answer's own
+   `node_addresses` covers only the keys outside such a part. The graph walk records the address
+   of every node of the graph it walks on the execution's context
+   (`ExecutionProvenance.record_node_addresses`), and `metrics_payload` addresses the keys the
+   payload names from that table, so a job's status read after the view changed, or after a
+   reload, labels them without the graph. A worker's table travels to its parent with its
+   evidence, and a merged payload is addressed again. Addressing never raises (the metrics are
+   reported on failure paths too): a key the execution did not walk is left out, which
+   `tests/test_node_address_contracts.py` and `tests/test_node_instance_proof.py` check never
+   happens for a real preview (a cached one too), training run or solve, nor for a training
+   run that fails after its parent prepared an input. Opening a seed plan (`open_seed_plan`,
+   through which training, a Data Output write, the optimiser's setup and a preview plan)
+   records the table before it prepares inputs, as a node-data build does before it prepares
+   its own, and the executor before it serves a preview, so the metrics of a run that fails
+   before its walk, those a running job publishes during preparation, and those of a preview
+   served from the cache still address what they name. The metrics also
+   address each named child's occurrence, so a reader without the graph names a child with its
+   occurrence's label.
+   A deployed scorer's metrics, which no browser reads, carry an empty table.
+6. **Frame provenance.** A preview answer carries `occurrence_ports: [{occurrence, direction:
+   "input"|"output", port, endpoint: {key, handle} | null}]` for every declared port of every
+   occurrence in the executed graph, by instance id: the runtime endpoint the port resolves to (an
+   input's feeding endpoint, an output's producing child and handle), or `null` for an input
+   nothing feeds. An expansion run in stages records what one pass does: an input fed by an
+   occurrence a later stage expands resolves to that occurrence's producing endpoint. Ports
+   that resolve to one endpoint each keep their entry. Building it never fails or invents an
+   endpoint; only a request whose target is an unbound port is refused. An Input card reads its
+   ports' columns from it, a bound port whose columns are missing shown as missing data.
+7. **Errors and labels** name a node by its label, and a submodel child by its label and its
+   occurrence's ("Banding 1 in pricing"), not by its key or a copy's flat name. One function
+   formats the name (`haute._node_addresses.display_name`). Code that holds the flat graph names
+   a node through `node_display_name`; code that does not (a builder, the strategy planner over a
+   prepared graph) names it through `haute._execution_context.execution_node_name`, which reads
+   the graph the running walk or its planning names nodes from (`naming_nodes_from`, set by a
+   walk, a trace, a preview's planning and the resolution of a seed plan, which every operation
+   plans before it walks), else the current execution's address table, and else gives the
+   node's flat label.
+
+   So named are a walk's upstream failure ("Upstream node(s) failed: <name>: ..."), a refusal of
+   the wrong node type ("'<name>' is not a modelling node"), a Data Output's or an OUTPUT node's,
+   a trace's node failure and its refusals, a node that returns no frame or lacks a promised
+   column, a builder's refusal of a node's settings, a stale column selection, a wide integer,
+   an unconnected input, a node with no input data, a walk's progress label ("Computing
+   <name>"), an unreadable snapshot, a data point's refusals, the memory strategy's and
+   projection's suggested actions, a trace's correlation diagnostics, the graph's shape
+   refusals (a node with the wrong number of edges, its `node_label` and the nodes it lists
+   included), the labels a preview gives its timings, memory and seed plan, and the
+   `node_name` of a trace's steps, omissions and input sources. A `HauteError` raised inside a walk, its planning or an execution names the nodes
+   its context holds by key (`NODE_KEY_CONTEXT_FIELDS`) by name in its text, `(node=<name>)`,
+   when it is raised, so the text survives a worker's pickle; `context` keeps the keys. A public
+   contract error about a node keeps its key in `node_id` and, where the route holds the graph
+   (a trace's node failure), carries the node as `node: {key, occurrence, node_id, label}`
+   (`node_reference`). Keys stay in machine codes and `assumptions` and in the job `node_label`
+   fields the browser does not read. Two exceptions still name a node by its flat label or key:
+   the deployed scorer, whose graph carries no expansion record and whose messages no browser
+   reads, and internal invariant errors.
+
+   `tests/test_node_display_names.py` checks a copy's child in each message above that a copy
+   can produce: a capture's unreadable snapshot at its publication and at its lease (a seed
+   carries its node's name, which the error's text uses outside a naming scope too), and the
+   Data Output messages through the executor, since a route refuses a Data Output a reused
+   definition holds. A copy cannot produce the trace's Workbench Output refusals or a data
+   point's API Input and Workbench Input table refusals: a definition holding one of those
+   nodes cannot be reused. A copy's flat name and its children's keys appear in none. It also
+   checks that no key or flat name shows outside a key position in a failing preview or trace
+   over a copy (seven kinds of failure), a trace that succeeds, or a training run, node-data
+   build, solve, auto range or Data Output write over a copy whose child is refused in its
+   planning (a malformed contract, a builder's refusal) or fails in its walk (a Polars
+   error), each ending as the user's to fix with no plan Polars appends to a failure.
+
+**Every family is on addresses.** The preview, its inputs, the trace, the node-data family
+(a consumer's data point, run, profile and clear, an Explore pivot and its members,
+relationships, banding statistics and rating levels), modelling (training, its memory and
+dispersion estimates, the export script), the optimiser (a solve, its estimate and auto
+range), Data Output (a destination, a write, an assembly dry run), the cached-data list (its
+rows addressed, its other owners described by what they recorded) and the execution metrics
+send their targets by address and address every key their answers name. The browser builds no
+runtime key. `tests/test_node_address_contracts.py` lists every answer field that names a node,
+each a `RuntimeNodeKey`, and fails on a node key it does not list.
+
+`tests/test_node_addresses.py` covers resolution (a root node, the children of an owner and of a
+copy, both card kinds, several port labels, every refusal) and frame provenance (bound, unbound,
+aliased ports); `tests/test_node_address_contracts.py` checks every node-naming answer field is a
+`RuntimeNodeKey` and that real answers from a submodel fixture address every key they name.
 
 ## Control flow
 
@@ -888,7 +1037,14 @@ with different arguments is a different identity with the same path.
 
 The route tracks the identities its rows carry and lists every other owner in `other`, so the
 two halves are exhaustive by construction — a node no longer in the graph, the same node's
-data under another source, an input snapshot nothing reads. `unattributed_*` is what no
+data under another source or another pipeline, an input snapshot nothing reads. The rows name
+the graph's nodes by runtime key (`node_id`, `reads_from`, `shares_snapshot_with`), each
+addressed in the answer's `node_addresses`. An `other` entry names no key: a node's data is
+described by what its newest generation recorded (`owner`: the address, authored label and
+occurrence label it had when it was written, `NodeSnapshotOwner`), its `pipeline` (the file,
+relative to the project when it is inside it) and its `label`; owners stay keyed by pipeline,
+node key and source, so two pipelines with the same node ids list distinct owners. Data
+published before owners were recorded is labelled by its slot's key, with no `owner`. `unattributed_*` is what no
 metadata could name. Every row and owner also carries `newest_created_at` and `build_seconds`
 from its newest generation's metadata, so the report says when a thing was cached and how long
 that took; a generation published before durations were recorded reports `null`, which the
@@ -1170,6 +1326,7 @@ later write and cleanup checks still compare against the captured identities.
 | `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`, `WorkerCrashedError` (memory-classified), remote `builtins.MemoryError`, remote `NativeMemoryLimitUnsupportedError`, a remote exception the child found to be a memory error | every route that waits on a worker (`worker_failure_http_exception`) | 507 | Parent-authored data-free detail with `error_code="memory_limit"`, the operation, and a closed reason, with the RSS and limit for a watchdog breach and the cap a hard-capped worker ran under; a non-memory worker crash stays a redacted 500. |
 | `WorkerStartError`, `WorkerHostError` | every route that waits on a worker | 503 | No worker could run the request: the host, not the request, is at fault, and the next request starts one again. The detail is the error's message. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
+| Pipeline errors (`PIPELINE_ERROR_TYPES`: `ContractMismatchError`, `SchemaMismatchError`, `ConfigError`, `ParseError`, `DataOutputRowsError`, a Polars error) | output write; node-data builds and profiles; training preparation and its evaluation preview; the optimiser's setup | 422 / 400 (optimiser setup) / `contract_error` job | The pipeline's own code, contracts, settings or data failed, as a preview of the node shows it. Raised in the parent (its planning, its input preparation) or in the worker, which reports it as its own `contract` failure rather than letting it cross as a remote error, the write answers 422 (a `ParseError` in its parent still answers 400 through the application handler), the optimiser's setup 400, and a job ends `contract_error`, with `pipeline_error_message`: the message, a Polars error's as a node records it (`node_failure_message`: without the plan Polars appends, whose scans print the cache's paths), training's prefixed "Pipeline execution failed: ". Never `_INTERNAL_ERROR_DETAIL`. One with a `MemoryError` behind it is a memory outcome, not the user's error (`is_pipeline_error`; a worker raises the `MemoryError` itself, `raise_memory_behind`, so its parent reports the memory limit; training preparation ends `memory_limited` and its evaluation preview answers 507, through `memory_error_refusal`). Checked after the public contract errors, one of which (`NodeConfigError`) is also a `ConfigError`, and after a route's narrower clauses. `tests/test_data_output_seeding.py`, `tests/test_node_data_routes.py` and `tests/test_training_seeding.py` cover a malformed contract refused while the parent plans and a Polars error in a worker process. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace, free-code columns | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. Preview and trace answer it through `_interactive_failures` with the structured detail `{"error_code": "request_superseded", "message": ...}` (the code is `SupersededRequestError.error_code`), so the browser recognises a superseded request by its code whatever the message says; free-code columns answers the message alone. A worker stopped for another reason (`WorkerStoppedError`) is a 409 without that code. |
 | `WorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, input-snapshot and API Input table builds, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |

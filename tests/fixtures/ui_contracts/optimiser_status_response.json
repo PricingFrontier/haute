@@ -214,7 +214,11 @@
     "frontier_error": null,
     "selected_frontier_point": null,
     "input_summary": {
-      "node_id": "optimiser_1",
+      "node": {
+        "occurrence": null,
+        "node_id": "optimiser_1",
+        "label": "Optimiser"
+      },
       "data_source": "batch",
       "source_file": "main.py",
       "graph_fingerprint": "3f9a1c",

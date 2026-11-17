@@ -55,6 +55,18 @@ logger = get_logger(component="trace_correlation")
 _TRACE_REL_TOL = 1e-9
 _TRACE_ABS_TOL = 1e-12
 
+NodeNamer = Callable[[str], str]
+"""How a correlation diagnostic's message names a node it reports by key."""
+
+
+def by_key(node_id: str) -> str:
+    """Name a node by its key, for a caller with no graph to name it from."""
+    return node_id
+
+
+def _named(node_name: NodeNamer, node_id: str | None) -> str | None:
+    return None if node_id is None else node_name(node_id)
+
 
 @dataclass
 class SchemaDiff:
@@ -684,10 +696,13 @@ def _record_ambiguous_row_match(
     matched_row_indices: list[int],
     candidate_count: int | None = None,
     candidate_indices_state: _CandidateIndicesState = _CandidateIndicesState.AVAILABLE,
+    node_name: NodeNamer = by_key,
 ) -> None:
     """Surface an ambiguous correlation match instead of selecting row zero."""
-    node_label = "parent row" if node_id is None else f"node {node_id!r}"
-    child_label = f" for child node {child_node_id!r}" if child_node_id is not None else ""
+    node_label = "parent row" if node_id is None else f"node {node_name(node_id)!r}"
+    child_label = (
+        f" for child node {node_name(child_node_id)!r}" if child_node_id is not None else ""
+    )
     column_label = ", ".join(match_columns) if match_columns else "(none)"
     exact_count = len(matched_row_indices) if candidate_count is None else candidate_count
     message = (
@@ -787,10 +802,13 @@ def _record_identical_row_match(
     child_node_id: str | None,
     match_columns: list[str],
     candidate_count: int,
+    node_name: NodeNamer = by_key,
 ) -> None:
     """Report a tie among identical rows: the step shows their shared values."""
-    node_label = "parent row" if node_id is None else f"node {node_id!r}"
-    child_label = f" for child node {child_node_id!r}" if child_node_id is not None else ""
+    node_label = "parent row" if node_id is None else f"node {node_name(node_id)!r}"
+    child_label = (
+        f" for child node {node_name(child_node_id)!r}" if child_node_id is not None else ""
+    )
     if diagnostics is not None:
         diagnostics.append(
             {
@@ -825,6 +843,7 @@ def _find_matching_row(
     work: CorrelationWork | None = None,
     identical_candidates: Callable[[], int | None] | None = None,
     casts: Mapping[str, pl.DataType] | None = None,
+    node_name: NodeNamer = by_key,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -850,6 +869,7 @@ def _find_matching_row(
     otherwise they are counted in *df*. *casts* compares each named column
     cast to its dtype.
     """
+    named = _named(node_name, node_id)
     shared = [column for column in child_row if column in df.columns]
     match = _match_rows_vectorized(
         df,
@@ -870,7 +890,7 @@ def _find_matching_row(
                     "severity": "warning",
                     "reason": match.relaxation_reason,
                     "message": (
-                        f"Row correlation for node {node_id!r} used a relaxed "
+                        f"Row correlation for node {named!r} used a relaxed "
                         f"match on columns {effective}; omitted columns {omitted}."
                     ),
                     "node_id": node_id,
@@ -911,6 +931,7 @@ def _find_matching_row(
                     child_node_id=child_node_id,
                     match_columns=list(match.effective_key_columns),
                     candidate_count=identical_count,
+                    node_name=node_name,
                 )
                 return candidate, -1
         _record_ambiguous_row_match(
@@ -924,6 +945,7 @@ def _find_matching_row(
             matched_row_indices=list(match.candidate_indices),
             candidate_count=match.candidate_count,
             candidate_indices_state=match.candidate_indices_state,
+            node_name=node_name,
         )
         return None, -1
 
@@ -936,7 +958,7 @@ def _find_matching_row(
                     "severity": "warning",
                     "reason": match.reason_code,
                     "message": (
-                        f"Row correlation for node {node_id!r} could not compare "
+                        f"Row correlation for node {named!r} could not compare "
                         f"the selected key columns {key_columns}."
                     ),
                     "node_id": node_id,
@@ -970,7 +992,7 @@ def _find_matching_row(
                 "severity": "warning",
                 "reason": "no_matching_row",
                 "message": (
-                    f"Row correlation for node {node_id!r} found no matching "
+                    f"Row correlation for node {named!r} found no matching "
                     f"parent row on columns {shared}."
                 ),
                 "node_id": node_id,
@@ -1272,6 +1294,7 @@ def _match_parent_row(
     diagnostics: list[dict[str, Any]] | None,
     work: CorrelationWork | None = None,
     proven: bool = False,
+    node_name: NodeNamer = by_key,
 ) -> tuple[dict[str, Any] | None, int, int]:
     """Correlate one parent FRAME against the resolved child row.
 
@@ -1351,6 +1374,7 @@ def _match_parent_row(
         child_node_id=child_id,
         allow_relaxed=not proven and _allows_relaxed_parent_match(child_node, target_role),
         work=work,
+        node_name=node_name,
     )
     return row_dict, idx, len(match_row)
 
@@ -1366,6 +1390,7 @@ def _ensure_unresolved_diagnostic(
     diagnostic_start: int,
     node_id: str,
     child_node_id: str,
+    node_name: NodeNamer = by_key,
 ) -> int:
     """Return the diagnostic linked to a failed correlation attempt.
 
@@ -1385,8 +1410,8 @@ def _ensure_unresolved_diagnostic(
             "severity": "warning",
             "reason": "row_correlation_failed",
             "message": (
-                f"Row correlation for node {node_id!r} could not establish "
-                f"the parent row for child {child_node_id!r}."
+                f"Row correlation for node {node_name(node_id)!r} could not establish "
+                f"the parent row for child {node_name(child_node_id)!r}."
             ),
             "node_id": node_id,
             "child_node_id": child_node_id,
@@ -1506,6 +1531,7 @@ def _correlate_rows_posthoc(
                 diagnostic_start=diagnostic_start,
                 node_id=nid,
                 child_node_id=scoped_child_id,
+                node_name=row_scope.node_name,
             )
             diagnostic = diagnostics[diagnostic_index] if diagnostics is not None else {}
             unresolved[nid] = (
@@ -1548,7 +1574,7 @@ _JOIN_SIDE_OPTIONAL_STRATEGIES = frozenset({"left", "full", "anti"})
 
 
 def _join_no_match_diagnostic(
-    parent_id: str, child_id: str, keys: Mapping[str, Any]
+    parent_id: str, child_id: str, keys: Mapping[str, Any], node_name: NodeNamer = by_key
 ) -> dict[str, Any]:
     """Report that no row of an Edge Join's join side matched the traced row."""
     return {
@@ -1556,7 +1582,8 @@ def _join_no_match_diagnostic(
         "severity": "info",
         "reason": "join_no_match",
         "message": (
-            f"No row of node {parent_id!r} joined the traced row of {child_id!r}: "
+            f"No row of node {node_name(parent_id)!r} joined the traced row of "
+            f"{node_name(child_id)!r}: "
             f"the join found no match on {sorted(keys)}."
         ),
         "node_id": parent_id,
@@ -1570,7 +1597,11 @@ def _join_no_match_diagnostic(
 
 
 def _aggregated_rows_diagnostic(
-    parent_id: str, child_id: str, keys: Mapping[str, Any], count: int
+    parent_id: str,
+    child_id: str,
+    keys: Mapping[str, Any],
+    count: int,
+    node_name: NodeNamer = by_key,
 ) -> dict[str, Any]:
     """Report that the traced row aggregates the parent rows sharing its group keys."""
     columns = sorted(keys)
@@ -1579,7 +1610,8 @@ def _aggregated_rows_diagnostic(
         "severity": "info",
         "reason": "aggregated_rows",
         "message": (
-            f"The row of {child_id!r} aggregates rows of node {parent_id!r} grouped by "
+            f"The row of {node_name(child_id)!r} aggregates rows of node "
+            f"{node_name(parent_id)!r} grouped by "
             f"{columns}: {count} of its rows share these key values."
         ),
         "node_id": parent_id,
@@ -1852,6 +1884,9 @@ class RowScopeResolver:
     child_input_aliases: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     row_frames: dict[str, str] = field(default_factory=dict)
     """The frame each resolved multi-frame node's row came from."""
+    node_name: NodeNamer = by_key
+    """How a diagnostic names a node: by its label, a submodel child's with its
+    occurrence's (``haute._node_addresses.node_display_name`` over the traced graph)."""
     _join_key_columns: frozenset[str] | None = field(default=None, init=False, repr=False)
     _schemas: dict[tuple[str, str | None], pl.Schema] = field(
         default_factory=dict, init=False, repr=False
@@ -2393,6 +2428,7 @@ class RowScopeResolver:
                     diagnostics=port_diagnostics,
                     work=work,
                     proven=proven,
+                    node_name=self.node_name,
                 )
                 if row is not None:
                     matches.append(
@@ -2451,7 +2487,9 @@ class RowScopeResolver:
             if unmatched_keys is not None:
                 if port_diagnostics is not None:
                     port_diagnostics.append(
-                        _join_no_match_diagnostic(parent_id, child_id, unmatched_keys)
+                        _join_no_match_diagnostic(
+                            parent_id, child_id, unmatched_keys, self.node_name
+                        )
                     )
                 continue
             match_diagnostics: list[dict[str, Any]] | None = (
@@ -2475,6 +2513,7 @@ class RowScopeResolver:
                     carried.casts,
                 ),
                 casts=carried.casts,
+                node_name=self.node_name,
             )
             if row is None and carried.aggregated and lookup.height > 1:
                 # A group's row has several source rows by design: say so rather
@@ -2482,7 +2521,9 @@ class RowScopeResolver:
                 count = self.count_rows(parent_id, source_handle, carried.values)
                 if count is not None:
                     match_diagnostics = [
-                        _aggregated_rows_diagnostic(parent_id, child_id, carried.values, count)
+                        _aggregated_rows_diagnostic(
+                            parent_id, child_id, carried.values, count, self.node_name
+                        )
                     ]
             if port_diagnostics is not None and match_diagnostics:
                 port_diagnostics.extend(match_diagnostics)
@@ -2508,8 +2549,8 @@ class RowScopeResolver:
                             "row_scope_unproven" if single else "source_frame_row_not_correlated"
                         ),
                         "message": (
-                            f"Row correlation for node {parent_id!r} could not identify the "
-                            f"row that fed child {child_id!r}."
+                            f"Row correlation for node {self.node_name(parent_id)!r} could not "
+                            f"identify the row that fed child {self.node_name(child_id)!r}."
                         ),
                         "node_id": parent_id,
                         "child_node_id": child_id,
@@ -2538,8 +2579,10 @@ class RowScopeResolver:
                         "severity": "warning",
                         "reason": "multiple_source_frames_matched",
                         "message": (
-                            f"Row correlation for multi-frame node {parent_id!r} for child "
-                            f"{child_id!r} matched several frames; no frame was selected."
+                            f"Row correlation for multi-frame node "
+                            f"{self.node_name(parent_id)!r} for child "
+                            f"{self.node_name(child_id)!r} matched several frames; no frame "
+                            "was selected."
                         ),
                         "node_id": parent_id,
                         "child_node_id": child_id,

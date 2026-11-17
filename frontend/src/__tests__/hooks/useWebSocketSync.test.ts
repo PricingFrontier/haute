@@ -159,8 +159,6 @@ function makeHookParams(sourceFile = "") {
     setEdgesRaw: vi.fn(),
     setSubmodelsRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
-    submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
@@ -575,6 +573,38 @@ describe("useWebSocketSync", () => {
       )
     })
 
+    it("shortens a long unresolved edge's detail in the warning, and counts the edges it leaves out", async () => {
+      const params = makeHookParams("rating/main.py")
+      const targetNode: Node = {
+        ...readyNode,
+        id: "target",
+        data: { label: "Target", nodeType: "polars", config: {} },
+      }
+      const longId = `edge_${"x".repeat(150)}`
+      const unresolved = (id: string) => ({ id, source: "disk", target: "target", sourceHandle: "missing-output" })
+      const document = makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "r2",
+        nodes: [readyNode, targetNode],
+        edges: [unresolved(longId), unresolved("e2"), unresolved("e3"), unresolved("e4")],
+      })
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify(pipelineDocumentFrame(document)),
+        }))
+      })
+
+      const warning = vi.mocked(useToastStore.getState().addToast).mock.calls
+        .find(([kind, text]) => kind === "warning" && String(text).includes("unresolved synced edges"))?.[1]
+      expect(warning).toBeDefined()
+      const firstDetail = String(warning).split(" to prevent data loss. ")[1].split(", ")[0]
+      expect(firstDetail).toHaveLength(120)
+      expect(firstDetail.endsWith("...")).toBe(true)
+      expect(String(warning)).toContain("; 1 more omitted")
+    })
+
     it("accepts synced submodel output handles from the canonical definition registry", async () => {
       const params = makeHookParams("rating/main.py")
       const sourceNode: Node = {
@@ -630,11 +660,12 @@ describe("useWebSocketSync", () => {
       )
     })
 
-    it("rolls request mirrors back when the graph snapshot cannot be applied", async () => {
+    it("keeps the store as it was and rolls the preserved blocks back when the graph snapshot cannot be applied", async () => {
       const params = makeHookParams("rating/main.py")
       params.preservedBlocksRef.current = ["old block"]
-      params.preambleRef.current = "old preamble"
-      params.submodelsRef.current = { old: { definitionId: "old" } }
+      const graphStore = useGraphStore.getState() as unknown as { preamble: string; submodels: Record<string, unknown> }
+      graphStore.preamble = "old preamble"
+      graphStore.submodels = { old: { definitionId: "old" } }
       vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockImplementationOnce(() => {
         throw new Error("snapshot store failed")
       })
@@ -654,8 +685,8 @@ describe("useWebSocketSync", () => {
       })
 
       expect(params.preservedBlocksRef.current).toEqual(["old block"])
-      expect(params.preambleRef.current).toBe("old preamble")
-      expect(params.submodelsRef.current).toEqual({ old: { definitionId: "old" } })
+      expect(graphStore.preamble).toBe("old preamble")
+      expect(graphStore.submodels).toEqual({ old: { definitionId: "old" } })
       expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
         "error",
         expect.stringContaining("snapshot store failed"),
@@ -1211,6 +1242,7 @@ describe("useWebSocketSync", () => {
         expect.objectContaining({
           nodes: [expect.objectContaining({ id: "disk" })],
         }),
+        { keepOpenSubmodel: true },
       )
     })
 
@@ -1233,6 +1265,7 @@ describe("useWebSocketSync", () => {
         expect.objectContaining({
           nodes: [expect.objectContaining({ id: "disk" })],
         }),
+        { keepOpenSubmodel: true },
       )
     })
 

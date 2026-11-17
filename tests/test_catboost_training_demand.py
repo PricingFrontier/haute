@@ -37,7 +37,7 @@ def _training_request(config: dict[str, Any]) -> TrainRequest:
             "edges": [],
         }
     )
-    return TrainRequest(graph=graph, node_id="train")
+    return TrainRequest(graph=graph, target={"occurrence": None, "node_id": "train"})
 
 
 def test_modelling_config_schema_declares_explicit_feature_columns() -> None:

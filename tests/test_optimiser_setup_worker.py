@@ -47,6 +47,7 @@ from haute.routes._optimiser_worker import (
 from haute.schemas import OptimiserFrontierAutoRangeRequest
 from tests._project import use_project
 from tests.conftest import make_edge, make_graph
+from tests.optimiser_fixtures import optimiser_request
 from tests.test_optimiser_seeding import parallel_edge_graph, scored_graph
 
 _TERMINAL = {
@@ -309,7 +310,10 @@ def _removed(path: str | Path, timeout: float = 30.0) -> bool:
 
 
 def _solve(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
-    response = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+    response = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert response.status_code == 200, response.text
     return _poll(client, response.json()["job_id"])
 
@@ -405,7 +409,7 @@ class TestRealWorker:
     ) -> None:
         path = _scored_parquet(project)
         graph = _scenario_chain_graph(path) if shape == "scenario_chain" else _online_graph(path)
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         service = OptimiserSolveService(JobStore())
         _node, prepared = service._prepare_frontier_auto_range(body)
 
@@ -464,7 +468,7 @@ class TestRealWorker:
         # One source feeds the optimiser through two edges: both jobs execute the
         # optimiser and read the data table from its resolved frame.
         graph = parallel_edge_graph(project, pl.read_parquet(_scored_parquet(project)))
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         service = OptimiserSolveService(JobStore())
         _node, prepared = service._prepare_frontier_auto_range(body)
 
@@ -510,9 +514,7 @@ class TestRealWorker:
                 "volume": pl.Series([3.0, 2.0, 1.0] * quotes, dtype=pl.Float32),
             }
         ).write_parquet(big)
-        body = OptimiserFrontierAutoRangeRequest.model_validate(
-            {"graph": _online_graph(big), "node_id": "opt"}
-        )
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, _online_graph(big))
         set_streaming_chunk_size(500)
         service = OptimiserSolveService(JobStore())
         _node, prepared = service._prepare_frontier_auto_range(body)
@@ -557,7 +559,7 @@ class TestWorkerOutcomes:
         _process_mode(monkeypatch)
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
         graph = _online_graph(_scored_parquet(project, null_quote=null_quote))
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         service = OptimiserSolveService(JobStore())
         _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -573,7 +575,7 @@ class TestWorkerOutcomes:
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         graph = _online_graph(_scored_parquet(project, null_quote=True))
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         thread_service = OptimiserSolveService(JobStore())
         _node, prepared = thread_service._prepare_frontier_auto_range(body)
         thread_job = thread_service._store.create_job(
@@ -817,7 +819,7 @@ class TestWorkerOutcomes:
 
         _process_mode(monkeypatch)
         graph, predicted = scored_graph(project, monkeypatch, data=_scored_parquet(project).name)
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         service = OptimiserSolveService(JobStore())
         _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -879,7 +881,7 @@ class TestWorkerOutcomes:
         worker = _InlineWorker()
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
         graph = _online_graph(_scored_parquet(project))
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         service = OptimiserSolveService(JobStore())
         _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1104,7 +1106,7 @@ class TestPrivateRecords:
         _process_mode(monkeypatch)
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", _InlineWorker())
         graph = _online_graph(_scored_parquet(project, null_quote=fails))
-        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         service = OptimiserSolveService(JobStore())
         _node, prepared = service._prepare_frontier_auto_range(body)
         job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1137,7 +1139,7 @@ def test_a_self_admitted_auto_range_job_returns_its_admission_when_it_fails(
     from haute import _execution_admission
 
     graph = _online_graph(_scored_parquet(project, null_quote=True))
-    body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+    body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
     service = OptimiserSolveService(JobStore())
     _node, prepared = service._prepare_frontier_auto_range(body)
     job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1173,7 +1175,7 @@ class TestEstimateWorker:
         from haute.schemas import OptimiserEstimateRequest
 
         graph = _online_graph(_scored_parquet(project, null_quote=null_quote))
-        body = OptimiserEstimateRequest.model_validate({"graph": graph, "node_id": "opt"})
+        body = optimiser_request(OptimiserEstimateRequest, graph)
         context = create_admitted_execution_context(
             operation="optimiser_estimate",
             profile=ExecutionProfile.OPTIMISER_SETUP,
@@ -1216,9 +1218,7 @@ class TestEstimateWorker:
 
         _process_mode(monkeypatch)
         monkeypatch.setattr(optimiser_routes, "interactive_worker_pool", _MemoryKilledPool)
-        body = OptimiserEstimateRequest.model_validate(
-            {"graph": _online_graph(_scored_parquet(project)), "node_id": "opt"}
-        )
+        body = optimiser_request(OptimiserEstimateRequest, _online_graph(_scored_parquet(project)))
 
         with pytest.raises(HTTPException) as raised:
             optimiser_routes._optimiser_input_metrics(body)
@@ -1252,7 +1252,7 @@ def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(
 
     monkeypatch.setattr(_optimiser_service, "execute_lazy_graph", out_of_memory)
     graph = _online_graph(_scored_parquet(project))
-    body = OptimiserEstimateRequest.model_validate({"graph": graph, "node_id": "opt"})
+    body = optimiser_request(OptimiserEstimateRequest, graph)
     context = create_admitted_execution_context(
         operation="optimiser_estimate",
         profile=ExecutionProfile.OPTIMISER_SETUP,

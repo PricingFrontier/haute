@@ -35,6 +35,7 @@ from tests._projection_helpers import pair_value
 from tests.conftest import make_edge, make_graph
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import (
+    optimiser_request,
     setup_grid_stub,
 )
 
@@ -276,7 +277,7 @@ class TestEstimateRoute:
         with patch.object(_store, "create_job", wraps=_store.create_job) as create_job:
             resp = client.post(
                 "/api/optimiser/estimate",
-                json={"graph": graph, "node_id": "opt"},
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
             )
 
         assert resp.status_code == 200
@@ -305,7 +306,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 200
@@ -354,7 +355,10 @@ class TestEstimateRoute:
         df.write_parquet(path)
         graph = _make_optimiser_graph(str(path))
 
-        resp = client.post("/api/optimiser/estimate", json={"graph": graph, "node_id": "opt"})
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
 
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -398,7 +402,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 200, resp.text
@@ -426,7 +430,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 400
@@ -479,7 +483,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         # ── User-visible contract ────────────────────────────────────
@@ -571,7 +575,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 200, resp.text
@@ -594,7 +598,7 @@ class TestEstimateRoute:
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph, "node_id": "nonexistent"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "nonexistent"}},
         )
         assert resp.status_code == 404
 
@@ -614,7 +618,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 400
@@ -638,7 +642,7 @@ class TestEstimateRoute:
         with patch("haute.routes.optimiser._optimiser_input_metrics", side_effect=error):
             resp = client.post(
                 "/api/optimiser/estimate",
-                json={"graph": graph, "node_id": "opt"},
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
             )
 
         assert resp.status_code == 422
@@ -681,7 +685,10 @@ class TestEstimateRoute:
         monkeypatch.setattr("haute.routes.optimiser.interactive_worker_pool", _FailingPool)
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": _make_optimiser_graph(scored_data), "node_id": "opt"},
+            json={
+                "graph": _make_optimiser_graph(scored_data),
+                "target": {"occurrence": None, "node_id": "opt"},
+            },
         )
 
         assert resp.status_code == status, resp.text
@@ -709,7 +716,7 @@ class TestEstimateRoute:
         with patch("haute.routes.optimiser._optimiser_input_metrics", side_effect=error):
             resp = client.post(
                 "/api/optimiser/estimate",
-                json={"graph": graph, "node_id": "opt"},
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
             )
 
         assert resp.status_code == 507
@@ -739,7 +746,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/estimate",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 200
@@ -779,7 +786,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -811,7 +818,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -833,7 +840,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         volume = [float(i) for i in range(10)]
         volume[2] = float("nan")
         volume[8] = float("nan")
@@ -898,7 +905,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         source_lf = pl.LazyFrame(
             {
                 "quote_id": ["q1", None],
@@ -957,7 +964,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         source_df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q1"],
@@ -1009,7 +1016,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         source_df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q1"],
@@ -1062,7 +1069,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -1103,7 +1110,7 @@ class TestEstimateRoute:
             .alias("unrelated_poison")
         )
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1203,7 +1210,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph.model_dump(), "node_id": "opt"},
+            json={"graph": graph.model_dump(), "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200, start_resp.text
@@ -1225,7 +1232,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -1309,9 +1316,8 @@ class TestEstimateRoute:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        body = OptimiserFrontierAutoRangeRequest(
-            graph=_make_optimiser_graph(scored_data),
-            node_id="opt",
+        body = optimiser_request(
+            OptimiserFrontierAutoRangeRequest, _make_optimiser_graph(scored_data)
         )
 
         with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
@@ -1336,9 +1342,8 @@ class TestEstimateRoute:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        body = OptimiserFrontierAutoRangeRequest(
-            graph=_make_optimiser_graph(scored_data),
-            node_id="opt",
+        body = optimiser_request(
+            OptimiserFrontierAutoRangeRequest, _make_optimiser_graph(scored_data)
         )
 
         with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
@@ -1365,9 +1370,8 @@ class TestEstimateRoute:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        body = OptimiserFrontierAutoRangeRequest(
-            graph=_make_optimiser_graph(scored_data),
-            node_id="opt",
+        body = optimiser_request(
+            OptimiserFrontierAutoRangeRequest, _make_optimiser_graph(scored_data)
         )
 
         with (
@@ -1395,8 +1399,8 @@ class TestEstimateRoute:
         graph = _make_optimiser_graph(scored_data)
         store = JobStore()
         service = OptimiserSolveService(store)
-        auto_body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
-        solve_body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        auto_body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
+        solve_body = optimiser_request(OptimiserSolveRequest, graph)
 
         with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
             auto_started = service.start_frontier_auto_range(auto_body)
@@ -1419,8 +1423,8 @@ class TestEstimateRoute:
         graph = _make_optimiser_graph(scored_data)
         store = JobStore()
         service = OptimiserSolveService(store)
-        solve_body = OptimiserSolveRequest(graph=graph, node_id="opt")
-        auto_body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        solve_body = optimiser_request(OptimiserSolveRequest, graph)
+        auto_body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         lazy_outputs = {
             "source": pl.LazyFrame(
                 {
@@ -1491,7 +1495,7 @@ class TestEstimateRoute:
         try:
             with patch.object(service, "_launch_frontier_auto_range_background", launch):
                 auto_started = service.start_frontier_auto_range(
-                    OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+                    optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
                 )
             assert finished.wait(5)
             assert store.require_job(auto_started.job_id)["status"] == "completed"
@@ -1499,7 +1503,7 @@ class TestEstimateRoute:
             threading.Timer(0.2, exit_now.set).start()
             began = time.monotonic()
             with patch.object(service, "_launch_setup_background", return_value=None):
-                solve_started = service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+                solve_started = service.start(optimiser_request(OptimiserSolveRequest, graph))
             waited = time.monotonic() - began
         finally:
             exit_now.set()
@@ -1524,12 +1528,12 @@ class TestEstimateRoute:
         try:
             with patch.object(service, "_launch_frontier_auto_range_background", launch):
                 service.start_frontier_auto_range(
-                    OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+                    optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
                 )
             assert finished.wait(5)
 
             with pytest.raises(RequestRefusedError) as exc_info:
-                service.start(OptimiserSolveRequest(graph=graph, node_id="opt"))
+                service.start(optimiser_request(OptimiserSolveRequest, graph))
         finally:
             exit_now.set()
 
@@ -1553,9 +1557,8 @@ class TestEstimateRoute:
         )
         store = JobStore()
         service = OptimiserSolveService(store)
-        body = OptimiserFrontierAutoRangeRequest(
-            graph=_make_optimiser_graph(scored_data),
-            node_id="opt",
+        body = optimiser_request(
+            OptimiserFrontierAutoRangeRequest, _make_optimiser_graph(scored_data)
         )
 
         with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
@@ -1613,8 +1616,8 @@ class TestEstimateRoute:
         monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
         store = JobStore()
         service = OptimiserSolveService(store)
-        body = OptimiserFrontierAutoRangeRequest(
-            graph=_make_optimiser_graph(scored_data), node_id="opt"
+        body = optimiser_request(
+            OptimiserFrontierAutoRangeRequest, _make_optimiser_graph(scored_data)
         )
 
         with (
@@ -1742,7 +1745,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1810,7 +1813,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1852,7 +1855,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1897,7 +1900,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -1936,7 +1939,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -2102,7 +2105,7 @@ class TestEstimateRoute:
                 ],
             }
         )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -2144,7 +2147,7 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         node, prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 
         assert node.id == "opt"
@@ -2175,7 +2178,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -2210,7 +2213,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -2260,7 +2263,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -2297,7 +2300,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -2358,7 +2361,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -2455,7 +2458,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -2603,7 +2606,7 @@ class TestEstimateRoute:
 
         start_resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert start_resp.status_code == 200
@@ -2640,7 +2643,7 @@ class TestEstimateRoute:
 
         resp = client.post(
             "/api/optimiser/frontier/auto-range/start",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
         assert resp.status_code == 400

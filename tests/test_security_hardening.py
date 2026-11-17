@@ -919,7 +919,7 @@ class TestW8bLocalSessionProtection:
 
         resp = client.post(
             "/api/pipeline/write-output",
-            json={"graph": graph, "node_id": "sink"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
             headers={
                 "host": self.LOCAL_HOST,
                 "origin": self.LOCAL_ORIGIN,
@@ -967,7 +967,7 @@ class TestW8bLocalSessionProtection:
         ):
             resp = client.post(
                 "/api/pipeline/write-output",
-                json={"graph": graph, "node_id": "sink"},
+                json={"graph": graph, "target": {"occurrence": None, "node_id": "sink"}},
                 headers={
                     "host": self.LOCAL_HOST,
                     "origin": self.LOCAL_ORIGIN,

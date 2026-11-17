@@ -179,7 +179,6 @@ _RATING_STEP = {
         {
             "factors": ["band"],
             "output_column": "factor",
-            "on_missing": "neutral",
             "entries": [{"band": "north", "value": 2.0}, {"band": "south", "value": 0.5}],
         }
     ],

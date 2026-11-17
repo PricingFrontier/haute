@@ -769,8 +769,8 @@ tests = [
   "tests/test_rating_key_agreement.py::TestEngineKeyNormalisation::test_int_like_float_column_matches_string_keys",
   "tests/test_rating_key_agreement.py::TestTemporalFactorColumns::test_date_and_datetime_factor_columns_match",
   "tests/test_rating_key_agreement.py::TestDecimalFactorScale::test_decimal_matches_entry_authored_at_declared_scale",
-  "tests/test_rating_miss_fail_loud.py::TestOptInNeutral::test_neutral_fills_multiply_and_warns_with_count",
-  "tests/test_rating_miss_fail_loud.py::TestMissFailsLoudByDefault::test_renamed_band_label_raises_through_config_path",
+  "tests/test_rating_misses.py::TestMissLeftEmpty::test_renamed_band_label_prices_at_neutral_and_warns",
+  "tests/test_rating_misses.py::TestMissLeftEmpty::test_through_the_executor_builder",
   "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_duplicate_entries_are_refused",
   "tests/test_rating_step.py::TestRatingStepExecutor::test_combine_operations",
   "tests/test_rating_step.py::test_duplicate_table_output_columns_are_rejected_with_both_indices",
@@ -785,9 +785,9 @@ tests = [
 invariant = "A rating step previewed and traced through the real executor reproduces hand-calculated premiums (band thresholds at the boundary, a null falling to the default, a table miss resolved as neutral, a multiplicative combine over a base value); every banding and table rule has its documented outcome at exact thresholds, ties, nulls, missing factors, mixed key dtypes and rounding; invalid expressions become opaque, and a formula one row cannot determine is reported not computable rather than guessed."
 
 [scenarios.evidence]
-commit = "f8af18c67"
-command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -n 4'
-result = "851 passed in 19.78s"
+commit = "56b333cfc"
+command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step.py tests/test_rating_key_agreement.py tests/test_rating_misses.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -n 4'
+result = "1205 passed in 25.21s"
 
 [[scenarios]]
 id = "W08-S01"

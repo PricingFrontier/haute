@@ -34,6 +34,7 @@ from tests.conftest import make_edge, make_graph
 from tests.optimiser_fixtures import (
     SOLVE_PROVENANCE,
     SOLVE_SCENARIO_GRID,
+    optimiser_request,
     setup_grid_stub,
 )
 
@@ -413,7 +414,7 @@ class TestExecutePipelineArgs:
                 ],
             }
         )
-        body = OptimiserSolveRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph)
         service = OptimiserSolveService(JobStore())
         captured: dict = {}
 
@@ -444,7 +445,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
         scored_lf = pl.scan_parquet(scored_data)
 
         store = JobStore()
@@ -486,7 +487,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
         scored_lf = pl.scan_parquet(scored_data)
         error = BoundedMemoryUnsupportedError(
             "Bounded streaming collect failed",
@@ -520,7 +521,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserEstimateRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserEstimateRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserEstimateRequest, graph_dict)
         scored_lf = pl.scan_parquet(scored_data)
 
         with patch.object(
@@ -556,7 +557,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -611,7 +612,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -725,7 +726,7 @@ class TestExecutePipelineArgs:
                 ],
             }
         ).model_dump()
-        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph)
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
@@ -745,7 +746,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -789,7 +790,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserFrontierAutoRangeRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph_dict)
         scored_lf = pl.scan_parquet(scored_data)
 
         store = JobStore()
@@ -823,7 +824,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -861,7 +862,7 @@ class TestExecutePipelineArgs:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -983,7 +984,7 @@ class TestExecutePipelineCleanup:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -1025,7 +1026,7 @@ class TestExecutePipelineCleanup:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -1066,7 +1067,7 @@ class TestExecutePipelineCleanup:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -1111,7 +1112,7 @@ class TestExecutePipelineExtended:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -1153,7 +1154,7 @@ class TestExecutePipelineExtended:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -1196,7 +1197,7 @@ class TestExecutePipelineExtended:
             scored_data,
             config={"data_input": "source"},
         )
-        body = OptimiserFrontierAutoRangeRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserFrontierAutoRangeRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -1284,7 +1285,7 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph.model_dump())
 
         try:
             job_id_1 = store.create_job(
@@ -1396,7 +1397,7 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph.model_dump())
 
         _compile_preamble.cache_clear()
         initial_hits = _compile_preamble.cache_info().hits
@@ -2052,7 +2053,7 @@ class TestExecutePipelineRefusalPassthrough:
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = OptimiserSolveRequest(graph=graph_dict, node_id="opt")
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
 
         store = JobStore()
         service = OptimiserSolveService(store)

@@ -22,8 +22,8 @@ import { CommittedTextField, SavedValueOption } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
-import { buildGraph } from "../utils/buildGraph"
-import { useGraph } from "./useGraph"
+import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
+import { useGraph, useRequestScope, useResultKey } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
@@ -72,10 +72,12 @@ export default function OptimiserConfig({
   onPaneIssuesChange,
   onUpdateNodeConfig,
 }: OptimiserConfigProps) {
+  const requestScope = useRequestScope()
   const { allNodes, edges, submodels } = useGraph()
-  // ── Store-backed state (survives panel unmount) ──
-  const solveJob = useNodeResultsStore((s) => s.solveJobs[nodeId])
-  const cachedResult = useNodeResultsStore((s) => s.solveResults[nodeId])
+  // ── Store-backed state (survives panel unmount), under the node's result key ──
+  const resultKey = useResultKey(nodeId)
+  const solveJob = useNodeResultsStore((s) => s.solveJobs[resultKey])
+  const cachedResult = useNodeResultsStore((s) => s.solveResults[resultKey])
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
@@ -152,17 +154,20 @@ export default function OptimiserConfig({
     effectiveBandingNode,
   } = resolvedInputs
 
-  // buildGraph reads the preamble and constants from the store; listing them
+  // The graph reads the preamble and constants from the store; listing them
   // renews the callback, so an edit made after mount reaches the next request.
   const globalConstants = useGraphStore((s) => s.globalConstants)
   const preamble = useGraphStore((s) => s.preamble)
-  const buildGraphCb = useCallback(
+  const requestTarget = useCallback(
     () => {
+      void allNodes
+      void edges
+      void submodels
       void globalConstants
       void preamble
-      return buildGraph(allNodes, edges, submodels)
+      return prepareNodeRequest(requestScope, canvasTarget(nodeId))
     },
-    [allNodes, edges, submodels, globalConstants, preamble],
+    [requestScope, allNodes, edges, submodels, nodeId, globalConstants, preamble],
   )
   // The estimate reads the graph upstream of this node, so edits to the node
   // itself (which move the global structural version) must not re-request it.
@@ -209,14 +214,16 @@ export default function OptimiserConfig({
   // user knows what volume of scored data the solver will process.
   // The hook owns the abort / toast / loading lifecycle.
   const solveEstimateEndpoint = useCallback(
-    (_payload: void, { signal }: { signal: AbortSignal }) =>
-      estimateOptimiserSolve({
-        graph: buildGraphCb(),
-        node_id: nodeId,
+    async (_payload: void, { signal }: { signal: AbortSignal }) => {
+      const target = requestTarget()
+      return estimateOptimiserSolve({
+        graph: target.graph,
+        target: target.node,
         source: activeSource,
         signal,
-      }),
-    [buildGraphCb, nodeId, activeSource],
+      })
+    },
+    [requestTarget, activeSource],
   )
   const {
     isStale,
@@ -229,7 +236,8 @@ export default function OptimiserConfig({
     { source: activeSource, structuralVersion },
     {
       toastLabel: "Solve estimate failed",
-      enabled: !deferColumnFetch,
+      // A saved version (the comparison view) runs nothing, so it is not estimated.
+      enabled: !deferColumnFetch && requestScope !== null,
       estimateInputs,
       estimateStructureKey,
     },
@@ -267,22 +275,22 @@ export default function OptimiserConfig({
   const handleSolve = useCallback(async () => {
     setSubmitting(true)
     try {
-      await startOptimiserSolve({ nodeId, config, allNodes, edges, submodels })
+      await startOptimiserSolve({ nodeId, config, allNodes, requestScope })
     } finally {
       setSubmitting(false)
     }
-  }, [allNodes, config, edges, nodeId, submodels])
+  }, [requestScope, allNodes, config, nodeId])
 
   const handleStop = useCallback(async () => {
     setStopping(true)
     try {
-      await stopOptimiserSolve(nodeId)
+      await stopOptimiserSolve(resultKey)
     } catch (error) {
       useToastStore.getState().addToast("error", `Could not stop the optimisation: ${apiErrorMessage(error)}`)
     } finally {
       setStopping(false)
     }
-  }, [nodeId])
+  }, [resultKey])
 
   const effectiveBandingSource = effectiveBandingNode?.name ?? ""
 
@@ -613,7 +621,7 @@ export default function OptimiserConfig({
           canAutoRange={canAutoRange}
           accentColor={accentColor}
           labelClassName={SECTION_LABEL_CLASS}
-          buildGraph={buildGraphCb}
+          requestTarget={requestTarget}
           nodeId={nodeId}
           onUpdate={onUpdate}
           onRemoveConstraint={handleRemoveConstraint}

@@ -42,6 +42,7 @@ import NodePanel from "../../panels/NodePanel"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import useUIStore from "../../stores/useUIStore"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 // ---------------------------------------------------------------------------
 // Mocks for NodePanel-based tests (banner & dismissal behaviour)
@@ -83,7 +84,7 @@ function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
 
 function renderPanel(node: SimpleNode, onRefreshPreview = vi.fn()) {
   return render(
-    <GraphProvider allNodes={[node]} edges={[] as SimpleEdge[]}>
+    <GraphProvider requestScope={documentRequestScope} allNodes={[node]} edges={[] as SimpleEdge[]}>
       <NodePanel
         node={node}
         onClose={vi.fn()}
@@ -244,7 +245,7 @@ describe("Bundle 3b - Banner re-appears when warning content changes", () => {
       },
     })
     rerender(
-      <GraphProvider allNodes={[node2]} edges={[] as SimpleEdge[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[node2]} edges={[] as SimpleEdge[]}>
         <NodePanel
           node={node2}
           onClose={vi.fn()}
@@ -275,7 +276,7 @@ describe("Bundle 3b - Banner re-appears when warning content changes", () => {
 
     // Same node, identical warnings — banner stays gone.
     rerender(
-      <GraphProvider allNodes={[node]} edges={[] as SimpleEdge[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[node]} edges={[] as SimpleEdge[]}>
         <NodePanel
           node={node}
           onClose={vi.fn()}
@@ -316,7 +317,7 @@ describe("Bundle 3b - Banner re-appears when warning content changes", () => {
       },
     })
     rerender(
-      <GraphProvider allNodes={[node2]} edges={[] as SimpleEdge[]}>
+      <GraphProvider requestScope={documentRequestScope} allNodes={[node2]} edges={[] as SimpleEdge[]}>
         <NodePanel
           node={node2}
           onClose={vi.fn()}

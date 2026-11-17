@@ -32,6 +32,7 @@ from haute._trace_correlation import _correlate_rows_posthoc
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.trace import execute_trace
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots, head_frame_resolver, make_graph
 from tests.test_output_nested_roundtrip import _FIXTURE, _api_input_config, _output_mapping
@@ -299,7 +300,7 @@ def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
             "seed_plan": [],
             "graph": graph,
             "row_index": 0,
-            "target_node_id": "t",
+            "target": node_target("t"),
             "column": "pid2",
         },
     )
@@ -312,7 +313,7 @@ def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
             "seed_plan": [],
             "graph": graph,
             "row_index": 0,
-            "target_node_id": "api",
+            "target": node_target("api"),
             "column": "policy_id",
         },
     )

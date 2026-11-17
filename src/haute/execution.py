@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -31,11 +32,16 @@ from haute._cache import (
     selected_live_switch_path,
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_context import (
+    ExecutionContext,
+    ExecutionProfile,
+    execution_node_name,
+)
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._native_memory_limit import current_native_memory_backend
+from haute._node_addresses import node_display_name
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_type_table
 from haute._path_resolution import resolve_node_input_path
 from haute._polars_selectors import preamble_selector_aliases
@@ -362,6 +368,7 @@ def plan_execution_strategy(
         execution_context=execution_context,
         materialisation_estimate=resolved_estimate,
         required_columns_by_node=required_columns_by_node,
+        node_name=partial(node_display_name, request.graph),
     )
     if execution_context is not None:
         execution_context.projection_plan = result
@@ -500,6 +507,8 @@ def plan_prepared_execution_strategy(
         materialisation_estimate=materialisation_estimate,
         required_columns_by_node=required_columns_by_node,
         schema_only=schema_only,
+        # A prepared graph comes without its expansion record: the execution names it.
+        node_name=partial(execution_node_name, context=execution_context),
     )
     if execution_context is not None:
         execution_context.projection_plan = result
@@ -544,6 +553,12 @@ _MANY_TO_MANY_JOIN_REMEDIATION = (
 )
 
 
+def _named_detail(detail: str, node_name: Callable[[str], str]) -> str:
+    """An estimator's *detail* as a message says it: each node key it names (``<key>:<reason>``,
+    a reason naming its blocking node too) read as the node's name."""
+    return ":".join(node_name(part) for part in detail.split(":"))
+
+
 def _with_many_to_many_join_remediation(remediation: str, detail: str | None) -> str:
     """Append the validate= contract advice when the gap is an unbounded join."""
 
@@ -560,6 +575,7 @@ def _materialisation_rejection(
     reason_code: str,
     estimated_peak_bytes: int | None,
     headroom_bytes: int | None,
+    node_name: Callable[[str], str],
     estimate_detail: str | None = None,
 ) -> GroupByExecutionUnsupportedError:
     remediation = {
@@ -580,7 +596,9 @@ def _materialisation_rejection(
         # The estimator already knows which node it could not measure and why.
         # Discarding that left the analyst with "provide readable metadata" and
         # no way to tell an unreadable file from an unsummarisable source shape.
-        remediation = f"{remediation} Estimator reported: {estimate_detail}."
+        remediation = (
+            f"{remediation} Estimator reported: {_named_detail(estimate_detail, node_name)}."
+        )
     if reason_code == "materialisation_estimate_unavailable":
         # Without a hard cap there is no bounded envelope to run inside.
         remediation = (
@@ -620,6 +638,7 @@ def _plan_unproven_materialisation(
     materialising_operators: Mapping[str, str],
     detail: str,
     headroom_bytes: int,
+    node_name: Callable[[str], str],
 ) -> _UnprovenMaterialisation:
     """Run conservatively under a hard cap, or reject when there is no cap.
 
@@ -636,6 +655,7 @@ def _plan_unproven_materialisation(
             reason_code="materialisation_estimate_unavailable",
             estimated_peak_bytes=None,
             headroom_bytes=headroom_bytes,
+            node_name=node_name,
             estimate_detail=detail,
         )
     # A hard worker cap bounds the process, so the run continues under
@@ -643,8 +663,9 @@ def _plan_unproven_materialisation(
     remediation = (
         "The run continued under its full reserved memory envelope of "
         f"{headroom_bytes} bytes because the materialisation estimate was "
-        f"unavailable ({detail}). Provide readable source metadata or rewrite "
-        f"'{operator}' at '{node_id}' so Haute can prove the estimate; the run "
+        f"unavailable ({_named_detail(detail, node_name)}). Provide readable source "
+        f"metadata or rewrite '{operator}' at '{node_name(node_id)}' so Haute can prove the "
+        "estimate; the run "
         "may use more memory and time than an estimated boundary."
     )
     return _UnprovenMaterialisation(
@@ -678,8 +699,10 @@ def _finalise_execution_strategy(
     execution_context: ExecutionContext | None,
     materialisation_estimate: MaterialisationEstimate | None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
+    node_name: Callable[[str], str],
     schema_only: bool = False,
 ) -> ExecutionStrategyResult:
+    """The strategy and its diagnostic; *node_name* names a node in its remediation."""
     strategy: ExecutionStrategy | None = None
     reason_code: str | None = None
     remediation: str | None = None
@@ -710,6 +733,7 @@ def _finalise_execution_strategy(
                 reason_code="execution_admission_unavailable",
                 estimated_peak_bytes=None,
                 headroom_bytes=None,
+                node_name=node_name,
             )
         headroom_bytes = min(admission.memory_limit_bytes, admission.headroom_bytes)
         if (
@@ -731,6 +755,7 @@ def _finalise_execution_strategy(
                 materialising_operators=materialising_operators,
                 detail=detail,
                 headroom_bytes=headroom_bytes,
+                node_name=node_name,
             )
             projection_plan = unproven.projection_plan
             strategy = unproven.strategy
@@ -760,6 +785,7 @@ def _finalise_execution_strategy(
                     materialising_operators=materialising_operators,
                     detail=f"{node_id}:{MANY_TO_MANY_JOIN_DETAIL}",
                     headroom_bytes=headroom_bytes,
+                    node_name=node_name,
                 )
                 projection_plan = unproven.projection_plan
                 strategy = unproven.strategy
@@ -779,6 +805,7 @@ def _finalise_execution_strategy(
                     reason_code="materialisation_exceeds_headroom",
                     estimated_peak_bytes=estimated_peak_bytes,
                     headroom_bytes=headroom_bytes,
+                    node_name=node_name,
                 )
             else:
                 projection_plan = with_materialisation_boundaries(
@@ -788,7 +815,7 @@ def _finalise_execution_strategy(
                 strategy = ExecutionStrategy.MATERIALISATION_BOUNDARY
                 reason_code = "materialisation_admitted"
                 remediation = (
-                    f"Keep the admitted '{operator}' boundary at '{node_id}' within "
+                    f"Keep the admitted '{operator}' boundary at '{node_name(node_id)}' within "
                     "its reported memory headroom."
                 )
                 assumptions = (
@@ -820,6 +847,7 @@ def _finalise_execution_strategy(
         estimate_admission_basis=estimate_admission_basis,
         headroom_bytes=headroom_bytes,
         assumptions=assumptions,
+        node_name=node_name,
     )
 
 

@@ -22,10 +22,10 @@
  *   - node deleted mid-flight → handleDeleteNode already cleared the panel;
  *     the late response must not resurrect it or re-create cache entries.
  */
-import { makePreviewResponse } from "../../test-utils/factories"
+import { makePreviewResponse, nodeTarget } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI, { MAX_PREVIEW_PREPARATION_RESTARTS } from "../usePipelineAPI"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -33,7 +33,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -51,7 +51,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 vi.mock("../ensureInputSnapshots", () => ({
@@ -77,7 +77,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewInputs, previewNode } from "../../api/client"
-import { resolveGraphFromRefs } from "../../utils/buildGraph"
+import { documentGraphPayload } from "../../utils/buildGraph"
 import { ensureInputSnapshots } from "../ensureInputSnapshots"
 import { makeNode } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
@@ -89,15 +89,11 @@ type PreviewEnvelope = Awaited<ReturnType<typeof previewNode>>
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -109,7 +105,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 }
 
 const okEnvelope: PreviewEnvelope = makePreviewResponse({
-  node_id: "browser_apply",
   status: "ok",
   columns: [
     { name: "optimal_scenario_value", dtype: "f64" },
@@ -141,8 +136,8 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     mockLoad.mockReset()
     mockPreview.mockReset()
     vi.mocked(ensureInputSnapshots).mockReset().mockResolvedValue(undefined)
-    vi.mocked(resolveGraphFromRefs).mockReset().mockReturnValue(
-      { nodes: [], edges: [], preamble: "" } as unknown as ReturnType<typeof resolveGraphFromRefs>,
+    vi.mocked(documentGraphPayload).mockReset().mockReturnValue(
+      { nodes: [], edges: [], preamble: "" } as unknown as ReturnType<typeof documentGraphPayload>,
     )
     vi.mocked(previewInputs).mockClear()
   })
@@ -163,14 +158,14 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [node], edges: [] }
+    useGraphStore.setState({ nodes: [node], edges: [] })
 
     act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
     await waitFor(() => expect(ensureInputSnapshots).toHaveBeenCalledTimes(1))
     expect(result.current.previewData?.status).toBe("loading")
     act(() => {
       useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 }))
-      params.graphRef.current = { nodes: [], edges: [] }
+      useGraphStore.setState({ nodes: [], edges: [] })
       result.current.setPreviewData(null)
     })
     await act(async () => finishPreparation())
@@ -194,15 +189,14 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
       .mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve }))
     const node = makeNode("browser_apply", "optimiserApply")
     const params = makeParams()
-    // The graph each request sends is the one the editor holds when it is resolved.
-    vi.mocked(resolveGraphFromRefs).mockImplementation((graphRef) => ({
-      nodes: graphRef.current.nodes,
-      edges: graphRef.current.edges,
-      preamble: "",
-    }) as unknown as ReturnType<typeof resolveGraphFromRefs>)
+    // The graph each request sends is the one the store holds when it is resolved.
+    vi.mocked(documentGraphPayload).mockImplementation(() => {
+      const { nodes, edges, preamble } = useGraphStore.getState()
+      return { nodes, edges, preamble } as unknown as ReturnType<typeof documentGraphPayload>
+    })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [node], edges: [] }
+    useGraphStore.setState({ nodes: [node], edges: [] })
 
     act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
     await waitFor(() => expect(ensureInputSnapshots).toHaveBeenCalledTimes(1))
@@ -210,7 +204,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
       data: { config: { optimiser_mode: "online" } },
     })
     act(() => {
-      params.graphRef.current = { nodes: [mirrored], edges: [] }
+      useGraphStore.setState({ nodes: [mirrored], edges: [] })
       useGraphStore.setState((state) => ({ structuralVersion: state.structuralVersion + 1 }))
     })
     const changedVersion = useGraphStore.getState().structuralVersion
@@ -247,7 +241,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [node], edges: [] }
+    useGraphStore.setState({ nodes: [node], edges: [] })
 
     act(() => result.current.fetchPreview(node, { debounceMs: 0 }))
 
@@ -279,7 +273,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
+    useGraphStore.setState({ nodes: [applyNode], edges: [] })
     const requestStructuralVersion = useGraphStore.getState().structuralVersion
 
     act(() => { result.current.fetchPreview(applyNode, { debounceMs: 0 }) })
@@ -330,7 +324,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
+    useGraphStore.setState({ nodes: [applyNode], edges: [] })
 
     act(() => {
       result.current.previewNodeFrame(applyNode.id, "optimised")
@@ -338,8 +332,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
     expect(mockPreview).toHaveBeenCalledWith(expect.objectContaining({
-      nodeId: applyNode.id,
-      portLabel: "optimised",
+      target: nodeTarget(applyNode.id, { portLabel: "optimised" }),
     }))
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
     expect(result.current.previewData).toMatchObject({
@@ -363,7 +356,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
+    useGraphStore.setState({ nodes: [applyNode], edges: [] })
 
     act(() => { result.current.fetchPreview(applyNode, { debounceMs: 0 }) })
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
@@ -402,7 +395,7 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [scoringNode], edges: [] }
+    useGraphStore.setState({ nodes: [scoringNode], edges: [] })
 
     act(() => { result.current.fetchPreview(scoringNode, { debounceMs: 0 }) })
 
@@ -429,14 +422,14 @@ describe("usePipelineAPI - preview lifecycle terminal states (W0)", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = { nodes: [applyNode], edges: [] }
+    useGraphStore.setState({ nodes: [applyNode], edges: [] })
 
     act(() => { result.current.fetchPreview(applyNode, { debounceMs: 0 }) })
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
 
     // Delete the node mid-flight: panel cleared, node removed from the
     // live graph, structuralVersion bumped.
-    params.graphRef.current = { nodes: [], edges: [] }
+    useGraphStore.setState({ nodes: [], edges: [] })
     act(() => {
       result.current.setPreviewData(null)
       useGraphStore.setState((state) => ({

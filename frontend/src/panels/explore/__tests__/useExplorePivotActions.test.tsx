@@ -67,7 +67,6 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
 
 const result: ExplorePivotResult = {
   version: 1,
-  node_id: node.id,
   pivot_id: "claims",
   source: "pricing",
   data_version: "explore:current",
@@ -144,7 +143,7 @@ describe("useExplorePivotActions", () => {
     for (let consumer = 0; consumer < consumers; consumer += 1) {
       renderHook(() => {
         const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
-        useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+        useAutoUpdateExplorePivots({ nodeKey: actions.resultKey, pivots, report, ...actions })
         return actions
       })
     }
@@ -175,7 +174,7 @@ describe("useExplorePivotActions", () => {
     })
     renderHook(() => {
       const actions = useExplorePivotActions({ node, allNodes: [node], edges: [] })
-      useAutoUpdateExplorePivots({ nodeId: node.id, pivots, report, ...actions })
+      useAutoUpdateExplorePivots({ nodeKey: actions.resultKey, pivots, report, ...actions })
       return actions
     })
     expect(mockRunExplorePivot).not.toHaveBeenCalled()

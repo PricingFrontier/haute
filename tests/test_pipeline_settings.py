@@ -31,6 +31,7 @@ from haute._pipeline_settings import (
     update_pipeline_settings,
 )
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
+from tests._preview_targets import node_target
 from tests._project import use_project
 
 GIB = 1024**3
@@ -579,7 +580,9 @@ def test_an_invalid_file_stops_a_preview_with_its_message(project: Path, client)
         "source_file": str(project / "main.py"),
     }
 
-    response = client.post("/api/pipeline/preview", json={"graph": graph, "node_id": "src"})
+    response = client.post(
+        "/api/pipeline/preview", json={"graph": graph, "target": node_target("src")}
+    )
 
     assert response.status_code == 409
     assert response.json()["detail"].startswith(SETTINGS_PATH)

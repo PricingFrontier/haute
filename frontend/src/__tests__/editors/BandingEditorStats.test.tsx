@@ -17,7 +17,14 @@ import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
+import useGraphStore from "../../stores/useGraphStore"
 import type { BandingStatsResponse, NodeDataPointResponse } from "../../api/types"
+import type { Node } from "@xyflow/react"
+import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
+import { toSimpleNode } from "../../hooks/usePanelGraphContext"
+import { makeIdentifiedNode, makeNodeDataPoint } from "../../test-utils/factories"
+import { documentRequestScope } from "../../utils/requestGateway"
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
   BandingHistogram: (props: Record<string, unknown>) => {
@@ -92,7 +99,7 @@ function point(
   state: NodeDataPointResponse["state"],
   dataVersion: string | null,
 ): NodeDataPointResponse {
-  return {
+  return makeNodeDataPoint({
     consumer_node_id: "banding_1",
     point: { producer_node_id: "source_1", port_label: null },
     slot_key: SLOT_KEY,
@@ -110,7 +117,7 @@ function point(
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
-  }
+  })
 }
 
 function stats(overrides: Partial<BandingStatsResponse> = {}): BandingStatsResponse {
@@ -151,25 +158,43 @@ const CONFIG = {
 /** Preview rows, so the sample fallback has something to work from. */
 const PREVIEW_ROWS = [{ premium: 10 }, { premium: 60 }, { premium: 90 }]
 
-let rerenderEditor: ((nodes: unknown[]) => void) | null = null
+let rerenderEditor: ((nodes: (typeof sourceNode)[]) => void) | null = null
 
+/** The canvas nodes as the graph store holds them. */
+function storeNodes(nodes: (typeof sourceNode)[]): Node[] {
+  return nodes.map((node) => ({ ...node, position: { x: 0, y: 0 } }))
+}
+
+/**
+ * Render the editor over the pipeline the graph store holds, as App does: a
+ * request reads its document from the store, and the panel's provider is handed
+ * the same nodes.
+ */
 function renderEditor(ui: ReactElement) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: storeNodes([sourceNode, bandingNode]),
+    edges: edges as PipelineEdge[],
+    preamble: "",
+    submodels: {},
+  })
   const result = render(
-    <GraphProvider allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
+    <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
       {ui}
     </GraphProvider>,
   )
-  rerenderEditor = (nodes: unknown[]) =>
+  rerenderEditor = (nodes) => {
+    useGraphStore.getState().setNodes(() => storeNodes(nodes))
     result.rerender(
-      <GraphProvider allNodes={nodes as never} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={nodes} edges={edges} submodels={{}} preamble="">
         {ui}
       </GraphProvider>,
     )
+  }
   return result
 }
 
-/** Re-render the same editor over a changed graph. */
-function rerenderWith(nodes: unknown[]) {
+/** An edit reaching the document, and the same editor re-rendered over it. */
+function rerenderWith(nodes: (typeof sourceNode)[]) {
   rerenderEditor?.(nodes)
 }
 
@@ -190,6 +215,7 @@ function editor(props: Record<string, unknown> = {}) {
 describe("BandingEditor statistics", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
+    useGraphStore.getState().resetForTests()
     useNodeDataStore.getState().reset()
     useSettingsStore.setState({ activeSource: "live" })
     mockGetBandingStats.mockReset()
@@ -202,6 +228,7 @@ describe("BandingEditor statistics", () => {
   afterEach(() => {
     vi.useRealTimers()
     cleanup()
+    useWorkbenchStore.setState({ enabled: false })
   })
 
   it("counts the whole dataset once the point it reads is cached", async () => {
@@ -213,7 +240,12 @@ describe("BandingEditor statistics", () => {
 
     await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
     expect(mockGetBandingStats.mock.calls[0][0]).toMatchObject({
-      node_id: "banding_1",
+      // The pipeline the editor holds.
+      graph: {
+        nodes: [{ id: "source_1" }, { id: "banding_1" }],
+        edges: [{ id: "e1", source: "source_1", target: "banding_1" }],
+      },
+      target: { occurrence: null, node_id: "banding_1" },
       source: "live",
       factor: { column: "premium", banding: "breakpoints" },
     })
@@ -325,7 +357,7 @@ describe("BandingEditor statistics", () => {
         ],
       }
       rerender(
-        <GraphProvider allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
+        <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
           {editor({ config: next })}
         </GraphProvider>,
       )
@@ -349,7 +381,7 @@ describe("BandingEditor statistics", () => {
       vi.advanceTimersByTime(300)
     })
 
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     expect(screen.queryByText(/^Sample/)).toBeNull()
     expect(screen.queryByTestId("banding-histogram")).toBeNull()
     const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
@@ -367,7 +399,7 @@ describe("BandingEditor statistics", () => {
     })
 
     await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     expect(screen.queryByText("Counting…")).toBeNull()
     const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
     expect(cells.filter((text) => /^\d+$/.test(text) || text === "…")).toEqual([])
@@ -388,13 +420,13 @@ describe("BandingEditor statistics", () => {
     await act(async () => {
       vi.advanceTimersByTime(300)
     })
-    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
     await waitFor(() => expect(mockGetNodeDataPoint.mock.calls.length).toBeGreaterThan(1))
 
     await act(async () => {
       refreshNodeDataCache("banding_1")
     })
-    expect(runNodeData).toHaveBeenCalledWith(expect.objectContaining({ node_id: "banding_1", refresh: false }))
+    expect(runNodeData).toHaveBeenCalledWith(expect.objectContaining({ target: { occurrence: null, node_id: "banding_1" }, refresh: false }))
     await act(async () => {
       vi.advanceTimersByTime(300)
     })
@@ -410,7 +442,7 @@ describe("BandingEditor statistics", () => {
     })
 
     expect(
-      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+      await screen.findByText("Cached data is out of date · Refresh this node to read all rows"),
     ).toBeInTheDocument()
     expect(mockGetBandingStats).not.toHaveBeenCalled()
   })
@@ -515,7 +547,7 @@ describe("BandingEditor statistics", () => {
       ],
     }
     rerender(
-      <GraphProvider allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
         {editor({ config: next })}
       </GraphProvider>,
     )
@@ -557,7 +589,7 @@ describe("BandingEditor statistics", () => {
     // back to the three-row sample.
     mockGetBandingStats.mockImplementation(() => new Promise(() => {}))
     rerender(
-      <GraphProvider allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
         {editor({
           config: categorical([
             { value: "north", assignment: "N" },
@@ -593,7 +625,7 @@ describe("BandingEditor statistics", () => {
     }
     const first = withRules("50")
     const { rerender } = render(
-      <GraphProvider allNodes={[sourceNode, first.node]} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, first.node]} edges={edges} submodels={{}} preamble="">
         {editor({ config: first.config })}
       </GraphProvider>,
     )
@@ -606,7 +638,7 @@ describe("BandingEditor statistics", () => {
     const edited = withRules("40")
     mockGetBandingStats.mockImplementation(() => new Promise(() => {}))
     rerender(
-      <GraphProvider allNodes={[sourceNode, edited.node]} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, edited.node]} edges={edges} submodels={{}} preamble="">
         {editor({ config: edited.config })}
       </GraphProvider>,
     )
@@ -632,7 +664,7 @@ describe("BandingEditor statistics", () => {
       ],
     }
     rerender(
-      <GraphProvider allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
         {editor({ config: moved })}
       </GraphProvider>,
     )
@@ -671,8 +703,107 @@ describe("BandingEditor statistics", () => {
     })
 
     expect(
-      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+      await screen.findByText("Cached data is out of date · Refresh this node to read all rows"),
     ).toBeInTheDocument()
     expect(screen.queryByText("All rows · 1,000")).toBeNull()
+    // The point it asks about now is the edited pipeline's.
+    expect(mockGetNodeDataPoint.mock.lastCall?.[0].graph.nodes[0]).toMatchObject({
+      id: "source_1",
+      data: { config: { path: "other.parquet" } },
+    })
+  })
+
+  it("asks nothing and shows no counts in a workbench project, which bands the quote being priced", async () => {
+    useWorkbenchStore.setState({ enabled: true })
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(mockGetNodeDataPoint).not.toHaveBeenCalled()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("banding-data-basis")).toBeNull()
+    expect(screen.queryByRole("columnheader", { name: "Matches" })).toBeNull()
+    expect(screen.queryByText(/of \d+ rows/)).toBeNull()
+    expect(screen.queryByTestId("banding-histogram")).toBeNull()
+    // The rules are still there to edit.
+    expect(screen.getByRole("textbox", { name: "Breakpoint 1 label" })).toHaveValue("low")
+  })
+
+  it("says why there is nothing to count when the server finds no data for the node to read", async () => {
+    const message = "Node 'Banding' must have exactly one incoming connection to read its data (found 0)."
+    mockGetNodeDataPoint.mockRejectedValue(Object.assign(new ApiError(message, 400), { detail: message }))
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("says reading the data failed, never Counting…, when its data point cannot be read", async () => {
+    mockGetNodeDataPoint.mockRejectedValue(
+      Object.assign(new ApiError("HTTP 409", 409), { detail: "The workbench is off" }),
+    )
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(await screen.findByText("Couldn't read the data: The workbench is off")).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("asks about a node of an open submodel with the whole pipeline and the node's runtime id", async () => {
+    // The drilled view beside its own definition names each node twice, which
+    // the server refuses; Preview sends the whole pipeline instead, and so does this.
+    const definition: SubmodelDefinition = {
+      definitionId: "br_rating",
+      file: "modules/br_rating.py",
+      graph: {
+        nodes: [makeIdentifiedNode("banding_1", "banding", { data: { label: "Banding", nodeType: "banding", config: CONFIG } })],
+        edges: [],
+      },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "banding_1", handleId: null }] }],
+      outputPorts: [],
+    }
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [
+        makeIdentifiedNode("source_1", "dataInput"),
+        makeIdentifiedNode("br_rating", "submodel", {
+          data: { label: "br_rating", nodeType: "submodel", config: { definition_id: "br_rating", alias: "br_rating" } },
+        }),
+      ],
+      edges: [{ id: "feed", source: "source_1", target: "br_rating", targetHandle: "in__policy" }],
+      preamble: "",
+      submodels: { br_rating: definition },
+    })
+    useGraphStore.getState().enterSubmodelView({ instanceId: "br_rating", definitionId: "br_rating" })
+    // The canvas App hands the panel: the open submodel's view.
+    const view = useGraphStore.getState().nodes.map(toSimpleNode)
+    render(
+      <GraphProvider requestScope={documentRequestScope} allNodes={view} edges={useGraphStore.getState().edges} submodels={{}} preamble="">
+        {editor()}
+      </GraphProvider>,
+    )
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
+    // The pipeline's own nodes and edges, not the view's, with the definition.
+    const whole = {
+      nodes: [{ id: "source_1" }, { id: "br_rating" }],
+      edges: [{ id: "feed", target: "br_rating" }],
+      submodels: { br_rating: { graph: { nodes: [{ id: "banding_1" }] } } },
+    }
+    expect(mockGetNodeDataPoint.mock.calls[0][0].graph).toMatchObject(whole)
+    expect(mockGetNodeDataPoint.mock.calls[0][0].target).toEqual({ occurrence: "br_rating", node_id: "banding_1" })
+    expect(mockGetBandingStats.mock.calls[0][0].graph).toMatchObject(whole)
+    expect(mockGetBandingStats.mock.calls[0][0].target).toEqual({ occurrence: "br_rating", node_id: "banding_1" })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
   })
 })

@@ -31,6 +31,22 @@ describe("OneWayEditor", () => {
     expect(screen.getByText("age_band")).toBeInTheDocument()
   })
 
+  it("shows each level's rate as a plain number, with no bar or colour that follows the value", () => {
+    const { container } = render(
+      <OneWayEditor
+        table={makeTable()}
+        bandingLevels={{ age_band: ["young", "mid", "old"] }}
+        onUpdateEntries={vi.fn()}
+      />,
+    )
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["age_band", "Relativity"])
+    for (const row of screen.getAllByRole("row").slice(1)) {
+      expect(row.querySelectorAll("td")).toHaveLength(1)
+    }
+    // The value-coloured bars were red above 1 and blue below it.
+    expect(container.innerHTML).not.toMatch(/--danger-rgb|--chart-below-rgb/)
+  })
+
   it("renders all banding levels as rows", () => {
     render(
       <OneWayEditor
@@ -148,7 +164,8 @@ describe("OneWayEditor", () => {
     const editableCell = screen.getByRole("textbox", { name: "Relativity for age_band young" }).closest("td")
     expect(editableCell).toHaveClass("rating-editor-value-cell")
     expect(editableCell?.getAttribute("style")).toContain("border-bottom: 1px solid var(--border)")
-    expect(editableCell?.getAttribute("style")).toContain("border-right: 1px solid var(--border)")
+    // The last column: the grid's own outline is its right edge.
+    expect(editableCell?.getAttribute("style")).not.toContain("border-right")
     const rowLabel = screen.getByRole("rowheader", { name: "young" })
     expect(rowLabel.getAttribute("style")).toContain("border-right: 1px solid var(--border)")
     expect(rowLabel).toHaveStyle({

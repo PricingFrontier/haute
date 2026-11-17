@@ -17,6 +17,7 @@ from haute._file_lock import FileLock
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
+    NodeSnapshotOwner,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -24,6 +25,8 @@ from haute._project_context import context_thread
 from haute._source_cache import SourceCacheGenerationMissingError, SourceCacheIdentity
 
 _TIMEOUT = 60.0
+#: Every slot here is the pipeline node ``join``.
+_JOIN = NodeSnapshotOwner(occurrence=None, occurrence_label=None, node_id="join", label="join")
 
 
 def _slot(root: str, node_id: str) -> NodeSnapshotSlot:
@@ -49,6 +52,7 @@ def _publish(store: NodeSnapshotStore, identity: SourceCacheIdentity, values: li
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=_JOIN,
     )
 
 
@@ -66,6 +70,7 @@ def _publishing_worker(root: str, value: int, ready: Any, go: Any, results: Any)
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=_JOIN,
     ) as publication:
         results.put((value, publication.outcome, publication.lazy_frame.collect()["a"].to_list()))
 
@@ -85,6 +90,7 @@ def _columns_worker(root: str, columns: list[str], ready: Any, go: Any, results:
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=_JOIN,
     ) as publication:
         results.put((tuple(columns), publication.outcome, publication.lazy_frame.collect().columns))
 
@@ -296,6 +302,7 @@ def test_a_writer_missing_a_concurrently_widened_generations_columns_keeps_its_a
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=_JOIN,
     ):
         pass
     wide = ctx.Process(

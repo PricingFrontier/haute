@@ -17,13 +17,15 @@ const graphOf = (): Graph => ({
   edges: [{ id: "e-quotes-price", source: "quotes", target: "price" }],
 })
 
+/** Put a graph on the canvas without an edit: a selection, a drag, a reload's new objects. */
+const showGraph = (graph: Graph) => useGraphStore.setState({ nodes: graph.nodes, edges: graph.edges })
+
 /** A creation whose identities resolve when the test says so. */
-function pendingCreation(graphRef: { current: Graph }, dependsOnNodeIds?: string[]) {
+function pendingCreation(dependsOnNodeIds?: string[]) {
   let answer!: (id: string) => void
   const apply = vi.fn()
   const addToast = vi.fn()
   const done = createAfterIdentity({
-    graphRef,
     serialRef: { current: 0 },
     dependsOnNodeIds,
     resolve: () => new Promise<string>((resolve) => { answer = resolve }),
@@ -40,14 +42,15 @@ const refusal = ["error", "Node creation was not applied because the graph chang
 describe("createAfterIdentity", () => {
   beforeEach(() => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "rating/main.py" }))
-    useGraphStore.setState({ submodelView: null })
+    useGraphStore.getState().resetForTests()
+    showGraph(graphOf())
   })
 
   it("applies onto the live graph after a selection or a drag", async () => {
-    const graphRef = { current: graphOf() }
-    const creation = pendingCreation(graphRef, ["price"])
-    const moved = { ...graphRef.current, nodes: graphRef.current.nodes.map((node) => ({ ...node, selected: true, position: { x: 99, y: 99 } })) }
-    graphRef.current = moved
+    const creation = pendingCreation(["price"])
+    const shown = useGraphStore.getState()
+    const moved = { nodes: shown.nodes.map((node) => ({ ...node, selected: true, position: { x: 99, y: 99 } })), edges: shown.edges }
+    showGraph(moved)
 
     await creation.finish()
 
@@ -56,9 +59,8 @@ describe("createAfterIdentity", () => {
   })
 
   it("is refused when the document is reloaded with the same structure", async () => {
-    const graphRef = { current: graphOf() }
-    const creation = pendingCreation(graphRef)
-    graphRef.current = graphOf()
+    const creation = pendingCreation()
+    showGraph(graphOf())
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "rating/main.py" }))
 
     await creation.finish()
@@ -67,11 +69,10 @@ describe("createAfterIdentity", () => {
     expect(creation.addToast).toHaveBeenCalledWith(...refusal)
   })
 
-  it("is refused when the canvas moves into a submodel view", async () => {
-    const graphRef = { current: graphOf() }
-    const creation = pendingCreation(graphRef)
-    useGraphStore.getState().enterSubmodelView(graphOf())
-    graphRef.current = graphOf()
+  it("is refused when the canvas changes view, as opening a submodel does", async () => {
+    const creation = pendingCreation()
+    useGraphStore.setState((state) => ({ navigationSerial: state.navigationSerial + 1 }))
+    showGraph(graphOf())
 
     await creation.finish()
 
@@ -80,12 +81,12 @@ describe("createAfterIdentity", () => {
   })
 
   it("is refused when a node is renamed, which may take the name it was given or leave an edge's input name stale", async () => {
-    const graphRef = { current: graphOf() }
-    const creation = pendingCreation(graphRef, ["price"])
-    graphRef.current = {
-      ...graphRef.current,
-      nodes: graphRef.current.nodes.map((node) => node.id === "quotes" ? { ...node, data: { ...node.data, label: "polars_3" } } : node),
-    }
+    const creation = pendingCreation(["price"])
+    const shown = useGraphStore.getState()
+    showGraph({
+      nodes: shown.nodes.map((node) => node.id === "quotes" ? { ...node, data: { ...node.data, label: "polars_3" } } : node),
+      edges: shown.edges,
+    })
 
     await creation.finish()
 

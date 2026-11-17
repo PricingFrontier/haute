@@ -15,6 +15,9 @@ from typing import Any
 
 import polars as pl
 
+from haute._flatten import flatten_executable_graph
+from haute._node_address_schemas import NodeAddressPayload
+from haute._node_addresses import resolved_request
 from haute._project_context import ProjectContext, project_scope
 from haute.routes._helpers import parse_pipeline_to_graph
 from haute.routes._job_store import JobStore
@@ -416,7 +419,14 @@ def run_once(
         graph = parse_pipeline_to_graph(pipeline)
     override_batch_limit(graph, limit)
 
-    body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id=node_id)
+    # The route resolves the node's address in the flattened graph; the service reads the
+    # resolved key as node_id.
+    body = resolved_request(
+        OptimiserFrontierAutoRangeRequest(
+            graph=graph, target=NodeAddressPayload(occurrence=None, node_id=node_id)
+        ),
+        flatten_executable_graph(graph),
+    )
     node = _find_optimiser_node(body.graph, body.node_id)
     config = node.data.config
 

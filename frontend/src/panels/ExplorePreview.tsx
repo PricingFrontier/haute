@@ -1,8 +1,9 @@
 import { RefreshCw } from "lucide-react"
+import { keyText } from "../utils/answerAddresses"
 import { Suspense, lazy, useCallback, useMemo, type ReactNode } from "react"
 
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
-import useNodeDataCache from "../hooks/useNodeDataCache"
+import useNodeDataCache, { nodeDataProblemText } from "../hooks/useNodeDataCache"
 import useNodeDataProfile from "../hooks/useNodeDataProfile"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore, { type ExplorePreviewPane } from "../stores/useUIStore"
@@ -88,7 +89,7 @@ export default function ExplorePreview({
       exploreDataView(
         profile,
         cache.point?.data_version,
-        cache.point?.point.producer_node_id,
+        cache.point ? cache.point.node_addresses[keyText(cache.point.point.producer_node_id)]?.label : undefined,
         activeSource,
       ),
     [activeSource, cache.point, profile],
@@ -146,7 +147,7 @@ export default function ExplorePreview({
     ? profileMessage || "Profiling data"
     : profileError
       ? `Profiling failed: ${profileError}`
-      : cache.unreadable
+      : cache.problem && nodeDataProblemText(cache.problem)
 
   return (
     <PreviewRunContext.Provider value={run}>

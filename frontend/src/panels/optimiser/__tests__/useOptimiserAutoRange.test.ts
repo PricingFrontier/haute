@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useGraphStore from "../../../stores/useGraphStore"
 import { useOptimiserAutoRange } from "../useOptimiserAutoRange"
+import { preparedGraph } from "../../../test-utils/factories"
 
 const api = vi.hoisted(() => ({
   start: vi.fn(),
@@ -28,7 +29,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function renderAutoRange(onUpdate = vi.fn(() => ({ ok: true as const }))) {
   const hook = renderHook(() => useOptimiserAutoRange({
     nodeId: "optimiser-1",
-    buildGraph: () => ({ nodes: [], edges: [] }),
+    requestTarget: () => ({ graph: preparedGraph({ nodes: [], edges: [] }), node: { occurrence: null, node_id: "optimiser-1" } }),
     writeRanges: onUpdate,
   }))
   return { ...hook, onUpdate }

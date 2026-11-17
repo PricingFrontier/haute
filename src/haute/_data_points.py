@@ -30,6 +30,7 @@ import polars as pl
 
 from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
 from haute._execution_context import ExecutionContext
+from haute._node_addresses import node_display_name
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
@@ -133,7 +134,8 @@ def _single_input_point(graph: PipelineGraph, node: GraphNode) -> DataPoint:
     edges = _incoming_edges(graph, node.id)
     if len(edges) != 1:
         raise NodeDataPointInvalidError(
-            f"Node {node.data.label!r} must have exactly one incoming connection to read its "
+            f"Node {node_display_name(graph, node.id)!r} must have exactly one incoming "
+            "connection to read its "
             f"data (found {len(edges)})."
         )
     edge = edges[0]
@@ -290,7 +292,7 @@ def point_kind(graph: PipelineGraph, point: DataPoint) -> PointKind:
         return "api_input_table"
     if point.port_label is not None:
         raise NodeDataPointInvalidError(
-            f"Node {node.data.label!r} has no output port {point.port_label!r}."
+            f"Node {node_display_name(graph, node.id)!r} has no output port {point.port_label!r}."
         )
     if (
         _POINT_KIND[node_type] == "data_input"
@@ -500,7 +502,8 @@ class DataPointResolver:
         )
         if point.port_label not in labels:
             raise NodeDataPointInvalidError(
-                f"API Input {node.data.label!r} has no table {point.port_label!r}."
+                f"API Input {node_display_name(self.graph, node.id)!r} has no table "
+                f"{point.port_label!r}."
             )
         data_path = _anchored_required_path(config, _pipeline_base_dir(self.graph))
         source = api_input_snapshot_source(config, data_path)
@@ -509,7 +512,8 @@ class DataPointResolver:
             identity = source.table(point.port_label).identity
         except KeyError:
             raise NodeDataPointInvalidError(
-                f"API Input {node.data.label!r} does not emit table {point.port_label!r}."
+                f"API Input {node_display_name(self.graph, node.id)!r} does not emit table "
+                f"{point.port_label!r}."
             ) from None
         status = self.store.status(
             identity,
@@ -533,7 +537,8 @@ class DataPointResolver:
         config = dict(node.data.config)
         if point.port_label not in workbench_table_labels(config):
             raise NodeDataPointInvalidError(
-                f"Workbench Input {node.data.label!r} does not emit table {point.port_label!r}."
+                f"Workbench Input {node_display_name(self.graph, node.id)!r} does not emit "
+                f"table {point.port_label!r}."
             )
         return PointResolution(
             point=point,

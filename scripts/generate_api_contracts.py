@@ -24,6 +24,12 @@ from pydantic_core import core_schema
 
 from haute._execution_schemas import ExecutionMetricsPayload, ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
+from haute._node_address_schemas import (
+    NodeAddressPayload,
+    NodeFrameTargetPayload,
+    OccurrenceInputTargetPayload,
+    OccurrenceOutputTargetPayload,
+)
 from haute._types import PipelineGraph
 from haute.schemas import (
     AssistantSessionListResponse,
@@ -198,6 +204,13 @@ SHARED_RESPONSE_GROUPS_KEYWORD = "x-haute-shared-response-groups"
 # by the model that reads it. The frontend generator emits one validator module per group,
 # which only the tests load.
 REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
+    # The targets a request that runs the graph names by address.
+    "address-requests": (
+        NodeAddressPayload,
+        NodeFrameTargetPayload,
+        OccurrenceInputTargetPayload,
+        OccurrenceOutputTargetPayload,
+    ),
     "editor-requests": (EditorIdentityRequestNode, TraceSeedPlanEntry),
     "input-cache-requests": (InputCacheSourceRequest, InputCacheBuildRequest),
     "mlflow-requests": (MlflowSettingsUpdateRequest, MlflowTestConnectionRequest),

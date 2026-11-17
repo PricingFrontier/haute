@@ -46,9 +46,12 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
+from haute._node_address_schemas import NodeAddressEntry
+from haute._node_addresses import node_addresses
 from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotMultiFrameUnsupportedError,
+    NodeSnapshotOwner,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -72,11 +75,9 @@ from haute._worker_failures import WorkerError, WorkerMemoryLimitError, WorkerRe
 from haute._worker_isolation import run_isolated_worker, worker_config_for_memory_policy
 from haute.errors import (
     BoundedMemoryUnsupportedError,
-    ContractMismatchError,
     InvalidRequestError,
     NotFoundError,
     RequestRefusedError,
-    SchemaMismatchError,
 )
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -84,9 +85,13 @@ from haute.routes._background_jobs import (
     start_job_thread,
 )
 from haute.routes._contract_errors import (
+    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
     contract_error_terminal_reason,
+    is_pipeline_error,
+    pipeline_error_message,
+    raise_memory_behind,
 )
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import (
@@ -201,6 +206,22 @@ def _slot_key(resolution: PointResolution, source: str) -> str:
     return f"{point.producer_node_id}|{point.port_label or ''}|{source}"
 
 
+#: What a build or a profile reports as the user's to fix ("contract"), with its message:
+#: the pipeline's own failures and the node-data refusals.
+_BUILD_CONTRACT_FAILURES: tuple[type[Exception], ...] = (
+    BoundedMemoryUnsupportedError,
+    NodeSnapshotMultiFrameUnsupportedError,
+    NodeSnapshotInputsChangedError,
+    NodeDataPointInvalidError,
+    *PIPELINE_ERROR_TYPES,
+)
+_PROFILE_CONTRACT_FAILURES: tuple[type[Exception], ...] = (
+    BoundedMemoryUnsupportedError,
+    PointColumnsMissingError,
+    *PIPELINE_ERROR_TYPES,
+)
+
+
 def _columns_payload(columns: NodeSnapshotColumns) -> list[str] | Literal["all"]:
     return "all" if columns.names is None else sorted(columns.names)
 
@@ -243,16 +264,10 @@ def _run_node_snapshot_worker(
             payload=exc.to_payload(),
             worker_evidence=evidence(),
         )
-    except (
-        ContractMismatchError,
-        SchemaMismatchError,
-        BoundedMemoryUnsupportedError,
-        NodeSnapshotMultiFrameUnsupportedError,
-        NodeSnapshotInputsChangedError,
-        NodeDataPointInvalidError,
-    ) as exc:
+    except _BUILD_CONTRACT_FAILURES as exc:
+        raise_memory_behind(exc)
         return _NodeSnapshotWorkerOutcome(
-            failure_kind="contract", detail=str(exc), worker_evidence=evidence()
+            failure_kind="contract", detail=pipeline_error_message(exc), worker_evidence=evidence()
         )
 
 
@@ -346,6 +361,7 @@ def _build_node_snapshot(
                 ),
                 full_term=execution_context.provenance.full_term_facts(request.node_id),
                 refresh=request.refresh,
+                owner=NodeSnapshotOwner.of(request.graph, request.node_id),
             )
         except BaseException:
             artifact.close()
@@ -426,13 +442,9 @@ def _run_profile_worker(
         )
     except (CacheRequiredError, PointDataChangedError) as exc:
         return _ProfileWorkerOutcome(failure_kind="changed", detail=str(exc))
-    except (
-        ContractMismatchError,
-        SchemaMismatchError,
-        BoundedMemoryUnsupportedError,
-        PointColumnsMissingError,
-    ) as exc:
-        return _ProfileWorkerOutcome(failure_kind="contract", detail=str(exc))
+    except _PROFILE_CONTRACT_FAILURES as exc:
+        raise_memory_behind(exc)
+        return _ProfileWorkerOutcome(failure_kind="contract", detail=pipeline_error_message(exc))
 
 
 def _profile_point(
@@ -557,6 +569,15 @@ def _adopting_worker_failure_evidence(
         if exc.worker_evidence is not None:
             execution_context.adopt_worker_evidence(exc.worker_evidence)
         raise
+
+
+def _point_addresses(
+    consumer: ConsumerPoint, resolver: DataPointResolver
+) -> dict[str, NodeAddressEntry]:
+    """The addresses of the consumer and producer a point names, from the graph it runs."""
+    return node_addresses(
+        resolver.graph, (consumer.consumer_node_id, consumer.point.producer_node_id)
+    )
 
 
 class NodeDataService:
@@ -745,6 +766,7 @@ class NodeDataService:
             kind=point_kind(resolver.graph, consumer.point),
             state="corrupt",
             demand=_columns_payload(consumer.demand),
+            node_addresses=_point_addresses(consumer, resolver),
         )
 
     def _api_input_row(
@@ -805,6 +827,7 @@ class NodeDataService:
             state=resolution.state,
             demand=_columns_payload(consumer.demand),
             data_version=resolution.data_version,
+            node_addresses=_point_addresses(consumer, resolver),
         )
         if resolution.kind == "node_output":
             return self._node_output_details(response, resolution)
@@ -1311,6 +1334,17 @@ class NodeDataService:
                 fields={"error": str(exc), "error_code": exc.error_code},
                 elapsed_seconds=elapsed,
             )
+        elif is_pipeline_error(exc):
+            # The parent's planning or input preparation met the pipeline's own error, as
+            # the worker's build would have.
+            message = pipeline_error_message(exc)
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=message,
+                fields={"error": message},
+                elapsed_seconds=elapsed,
+            )
         elif isinstance(exc, PipelineSettingsError):
             # Admission refused: the settings file's message names what to fix.
             self._lifecycle.transition(
@@ -1347,6 +1381,9 @@ class NodeDataService:
         from haute.execution import prepare_graph
 
         store = NodeSnapshotStore(current_project().root)
+        # Preparation names inputs in the metrics, which a running job publishes, before
+        # the plan this build opens afterwards records the graph's addresses.
+        execution_context.provenance.record_node_addresses(request.graph)
         graph = DataPointResolver(request.graph, source=request.source, store=store).graph
         prepared = prepare_graph(graph, request.node_id, source=request.source)
         prepare_input_snapshots(

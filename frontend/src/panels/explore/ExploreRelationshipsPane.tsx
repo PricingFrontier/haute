@@ -21,7 +21,7 @@ import type { ExploreColumnStat } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import type { SimpleEdge, SimpleNode } from "../editors/_shared"
-import useWholeDataAnswer from "../editors/shared/useWholeDataAnswer"
+import useWholeDataAnswer, { wholeDataStatusText } from "../editors/shared/useWholeDataAnswer"
 import type { ExploreDataView } from "./exploreDataView"
 import ExploreTableHead from "./ExploreTableHead"
 import { CELL_CLASS, LABEL_CLASS, MUTED_STYLE, PRIMARY_STYLE, SECONDARY_STYLE } from "./exploreTableStyles"
@@ -233,21 +233,30 @@ export default function ExploreRelationshipsPane({
         })
       : null
 
-  const { cache, answer, cacheRequired, loading, error } = useWholeDataAnswer<ExploreRelationshipsResponse>({
+  const { cache, answer, loading, status } = useWholeDataAnswer<ExploreRelationshipsResponse>({
     node,
     allNodes,
     edges,
     submodels,
     preamble,
     askedFor,
-    ask: ({ asked, graph, nodeId, source, signal }) => {
+    ask: ({ asked, graph, target, source, signal }) => {
       const question = JSON.parse(asked) as {
         target: string | null
         weight: string | null
         features: string[]
         key_columns: string[]
       }
-      return getExploreRelationships({ graph, node_id: nodeId, source, ...question, signal })
+      return getExploreRelationships({
+        graph,
+        target,
+        source,
+        target_column: question.target,
+        weight: question.weight,
+        features: question.features,
+        key_columns: question.key_columns,
+        signal,
+      })
     },
     failureMessage: "the relationships could not be read",
   })
@@ -328,15 +337,11 @@ export default function ExploreRelationshipsPane({
         <p className="text-[11px]" style={MUTED_STYLE}>
           Choose features to relate to a target, or key columns to check for uniqueness.
         </p>
-      ) : cache.availability !== "current" ? (
-        <p className="text-[11px]" style={MUTED_STYLE}>
-          Relationships read the cached data; cache it to analyse the whole dataset.
-        </p>
-      ) : error ? (
+      ) : status.kind === "failed" ? (
         <p role="alert" className="text-[11px]" style={{ color: "var(--danger-text)" }}>
-          {error}
+          {wholeDataStatusText(status)}
         </p>
-      ) : cacheRequired ? (
+      ) : status.kind === "cacheRequired" ? (
         <div className="flex items-center gap-2 text-[11px]" style={MUTED_STYLE}>
           <span>The server has no cached data for these columns; cache it again to analyse them.</span>
           <button
@@ -348,6 +353,10 @@ export default function ExploreRelationshipsPane({
             Cache data
           </button>
         </div>
+      ) : status.kind !== "ready" && status.kind !== "counting" ? (
+        <p className="text-[11px]" style={MUTED_STYLE}>
+          {wholeDataStatusText(status)}
+        </p>
       ) : !answer ? (
         <p role="status" className="text-[11px]" style={MUTED_STYLE}>
           {loading ? "Analysing the whole dataset…" : "Waiting to analyse…"}

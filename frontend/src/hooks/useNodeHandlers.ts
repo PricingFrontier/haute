@@ -5,11 +5,12 @@
  * auto-layout operations so the main component stays focused on
  * orchestration and rendering.
  */
+import { canvasGraph } from "../stores/useGraphStore"
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react"
 import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
-import useNodeResultsStore from "../stores/useNodeResultsStore"
+import { forgetDeletedNodes } from "../stores/forgetDeletedNodes"
 import useUIStore from "../stores/useUIStore"
 import {
   isProtectedSubmodelNodeData,
@@ -29,11 +30,12 @@ import type { PreviewData } from "../panels/DataPreview"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import type { SubmodelCreateResult } from "./useSubmodelNavigation"
 import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
+import { resultKeysOf } from "../utils/requestGateway"
 
 type UseNodeHandlersParams = {
-  graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   nodeIdCounter: MutableRefObject<number>
-  lastSelectedNodeRef: MutableRefObject<Node | null>
+  /** The result key of the node whose panel is open (`resultKey`). */
+  lastSelectedKeyRef: MutableRefObject<string | null>
   setNodes: (updater: (nds: Node[]) => Node[]) => void
   setNodesAndEdges: (
     nodes: (nds: Node[]) => Node[],
@@ -103,9 +105,9 @@ function nextSubmodelAlias(alias: string, aliases: Set<string>): string {
 }
 
 export default function useNodeHandlers({
-  graphRef,
+  
   nodeIdCounter: nodeIdCounterRef,
-  lastSelectedNodeRef,
+  lastSelectedKeyRef,
   setNodes,
   setNodesAndEdges,
   setSelectedNode,
@@ -135,28 +137,30 @@ export default function useNodeHandlers({
   }, [activeSubmodelIdentity])
   const [isAutoLayouting, setIsAutoLayouting] = useState(false)
   const addToast = useToastStore((s) => s.addToast)
-  const clearNode = useNodeResultsStore((s) => s.clearNode)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
 
   const handleDeleteNode = useCallback((id: string) => {
-    const target = graphRef.current.nodes.find((node) => node.id === id)
+    const target = canvasGraph().nodes.find((node) => node.id === id)
     if (target && isProtectedSubmodelNodeData(nodeData(target))) {
       addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
       return
     }
     // Selection, preview and cached-result cleanup only runs once the node has
     // actually left the graph; a shared-boundary deletion may still be
-    // resolving parent identities and can yet fail.
+    // resolving parent identities and can yet fail. Its results' keys are
+    // taken while it is still there.
+    const removedKeys = resultKeysOf(id)
     const cleanupAfterRemoval = () => {
       setSelectedNode((prev) => (prev?.id === id ? null : prev))
       setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
       // The node has left the graph by now, and React renders both store
       // updates of this task together, so no render shows the node without
       // its cached result — the same order the keyboard delete uses.
-      clearNode(id)
-      if (lastSelectedNodeRef.current?.id === id) {
-        lastSelectedNodeRef.current = null
+      forgetDeletedNodes(removedKeys)
+      // The open panel goes with the node, or with a child of a removed occurrence.
+      if (lastSelectedKeyRef.current !== null && removedKeys.includes(lastSelectedKeyRef.current)) {
+        lastSelectedKeyRef.current = null
         setLastSelectedId?.(null)
       }
 
@@ -191,10 +195,10 @@ export default function useNodeHandlers({
       )
     }
     if (!cleanedUp) cleanupAfterRemoval()
-  }, [graphRef, setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
+  }, [setNodesAndEdges, lastSelectedKeyRef, setSelectedNode, setLastSelectedId, setPreviewData, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
 
   const handleDuplicateNode = useCallback(async (id: string): Promise<void> => {
-    const { nodes: n } = graphRef.current
+    const { nodes: n } = canvasGraph()
     const original = n.find((node) => node.id === id)
     if (!original) return
     if (nodeData(original).nodeType === NODE_TYPES.SUBMODEL) {
@@ -213,7 +217,7 @@ export default function useNodeHandlers({
       data: { ...authoredNodeData(original.data), label: `${original.data.label} copy` },
     }
     await createAfterIdentity({
-      graphRef,
+      
       serialRef: creationRequestSerialRef,
       resolve: () => resolveSingleNode(newNode),
       apply: (resolvedNode) => {
@@ -225,10 +229,10 @@ export default function useNodeHandlers({
       action: "Node creation",
       failure: "Create node failed",
     })
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveSingleNode])
+  }, [nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast, resolveSingleNode])
 
   const handleCreateInstance = useCallback(async (id: string): Promise<void> => {
-    const { nodes: n } = graphRef.current
+    const { nodes: n } = canvasGraph()
     const original = n.find((node) => node.id === id)
     if (!original) return
     const origData = nodeData(original)
@@ -337,7 +341,7 @@ export default function useNodeHandlers({
       },
     }
     await createAfterIdentity({
-      graphRef,
+      
       serialRef: creationRequestSerialRef,
       resolve: () => resolveSingleNode(newNode),
       apply: (resolvedNode) => {
@@ -350,18 +354,18 @@ export default function useNodeHandlers({
       action: "Node creation",
       failure: "Create node failed",
     })
-  }, [graphRef, setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveSingleNode, createWrappedNodeInstance])
+  }, [setNodes, setSelectedNode, setLastSelectedId, addToast, submodels, resolveSingleNode, createWrappedNodeInstance])
 
   const handleRenameNode = useCallback((id: string) => {
-    const { nodes: n } = graphRef.current
+    const { nodes: n } = canvasGraph()
     const node = n.find((nd) => nd.id === id)
     if (!node) return
     setRenameDialog({ nodeId: id, currentLabel: nodeData(node).label })
-  }, [graphRef, setRenameDialog])
+  }, [setRenameDialog])
 
   const handleAutoLayout = useCallback(async () => {
     if (layoutInFlightRef.current) return
-    const { nodes: n, edges: e } = graphRef.current
+    const { nodes: n, edges: e } = canvasGraph()
     if (n.length === 0) return
     const capturedDocumentKey = layoutDocumentKey(activeSubmodelIdentityRef.current)
     const capturedTopologyKey = layoutTopologyKey(n, e)
@@ -383,7 +387,7 @@ export default function useNodeHandlers({
           })
         }
       }
-      const current = graphRef.current
+      const current = canvasGraph()
       const sameDocument =
         layoutDocumentKey(activeSubmodelIdentityRef.current) === capturedDocumentKey
       const sameTopology =
@@ -410,7 +414,7 @@ export default function useNodeHandlers({
       layoutInFlightRef.current = false
       setIsAutoLayouting(false)
     }
-  }, [graphRef, setNodes, fitView, getInternalNode, addToast])
+  }, [setNodes, fitView, getInternalNode, addToast])
 
   return {
     handleDeleteNode,

@@ -14,7 +14,6 @@ import type { BandingFactor, BandingMode } from "../types/banding"
 /** The rules a Banding factor had under each type, set aside when its type was switched. */
 export type BandingRuleStash = Partial<Record<BandingMode, BandingFactor["rules"]>>
 
-export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
 export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts" | "relationships"
 export type ModellingPane = "target" | "features" | "params" | "split" | "train" | "export"
@@ -105,9 +104,7 @@ interface UIState {
   optimiserPreviewHeight: number
   setOptimiserPreviewHeight: (height: number) => void
 
-  // Rating step editor section (remembered across node panel remounts)
-  ratingStepEditorSections: Record<string, RatingStepEditorSection>
-  setRatingStepEditorSection: (nodeId: string, section: RatingStepEditorSection) => void
+  // Per-node editor panes (remembered across node panel remounts)
   explorePanes: Record<string, ExplorePane>
   setExplorePane: (nodeId: string, pane: ExplorePane) => void
   explorePreviewPanes: Record<string, ExplorePreviewPane>
@@ -256,10 +253,6 @@ const useUIStore = create<UIState>()((set, get) => ({
   setOptimiserPreviewHeight: (height) => set({ optimiserPreviewHeight: height }),
 
   // Per-node UI selections (remembered across node panel remounts)
-  ratingStepEditorSections: {},
-  setRatingStepEditorSection: (nodeId, section) => set((state) => ({
-    ratingStepEditorSections: setNodeIdEntry(state.ratingStepEditorSections, nodeId, section),
-  })),
   explorePanes: {},
   setExplorePane: (nodeId, pane) => set((state) => ({
     explorePanes: setNodeIdEntry(state.explorePanes, nodeId, pane),

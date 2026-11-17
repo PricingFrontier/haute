@@ -167,8 +167,35 @@ def _normalise_entry_rows(
     ]
 
 
+def rating_default_value(raw: object, *, where: str) -> float | None:
+    """The finite number every miss of a table takes, or ``None`` for a blank default.
+
+    A default that is set but not a finite number is refused rather than
+    ignored: ignoring it would leave the table's misses empty unseen. The
+    config codec refuses one when a config is saved or read, and the engine
+    when it builds a table's lookup; *where* names the table.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    value = math.nan
+    if isinstance(raw, (str, int, float)) and not isinstance(raw, bool):
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+    if not math.isfinite(value):
+        raise ConfigSettingError(
+            f"{where} has default_value {raw!r}, which is not a finite number",
+            setting="tables",
+            fix="Type a number as the table's Default, or set On miss to Leave empty.",
+            values=(raw,),
+        )
+    return value
+
+
 def _normalise_entries_for_table(table: dict[str, Any], table_index: int) -> dict[str, Any]:
     result = deepcopy(table)
+    rating_default_value(result.get("default_value"), where=_table_context(table_index))
     if "entries" not in result:
         if "factors" in result or "factor_dtypes" in result:
             factors = _validate_factors(result, table_index)

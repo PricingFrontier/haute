@@ -19,6 +19,7 @@ from haute._data_points import DataPoint, DataPointResolver
 from haute._hashing import content_hash
 from haute._node_snapshots import (
     NodeSnapshotColumns,
+    NodeSnapshotOwner,
     NodeSnapshotStore,
 )
 from haute._polars_utils import (
@@ -383,7 +384,12 @@ def _poll(client: TestClient, job_id: str, timeout: float = 30.0) -> dict[str, A
 
 
 def _body(graph: dict[str, Any], node_id: str, **extra: Any) -> dict[str, Any]:
-    return {"graph": graph, "node_id": node_id, "source": "live", **extra}
+    return {
+        "graph": graph,
+        "target": {"occurrence": None, "node_id": node_id},
+        "source": "live",
+        **extra,
+    }
 
 
 def test_point_reports_a_missing_node_output_for_banding(client: TestClient, project: Path) -> None:
@@ -541,6 +547,7 @@ def test_a_partial_point_becomes_current_and_pinned_after_a_run(
         dependencies={},
         explicit=False,
         profile="training_prep",
+        owner=NodeSnapshotOwner.of(resolver.graph, "join"),
     ):
         pass
 
@@ -1001,6 +1008,56 @@ def test_a_source_replaced_after_its_rows_were_read_is_never_published(
     assert list(project.glob(".haute_cache/inputs/*/generations/*")) == []
 
 
+def test_a_build_refused_while_its_parent_plans_names_the_pipelines_error(
+    client: TestClient, project: Path, in_process_worker: None
+) -> None:
+    """A malformed contract, which a preview of the node shows: the build reports it as the
+    user's to fix, never "Check the server logs"."""
+    graph = _graph(project)
+    next(node for node in graph["nodes"] if node["id"] == "join")["data"]["config"] = {
+        "code": "df = source.with_columns((pl.col('premium') * 2).alias('double'))",
+        "contract": {"outputs": ["double"]},
+    }
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"])
+
+    assert final["status"] == "contract_error", final
+    assert "Node contract annotation is malformed" in final["message"]
+    assert "server logs" not in final["message"]
+
+
+def test_a_build_failing_in_its_worker_process_names_the_pipelines_error(
+    client: TestClient, project: Path
+) -> None:
+    """A Polars error in the pipeline's code, out of the worker process: the worker reports
+    it as the user's to fix, with the message a preview records for the node."""
+    graph = _graph(project, join_code="df = source.with_columns(pl.col('missing'))")
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"], timeout=120)
+
+    assert final["status"] == "contract_error", final
+    assert final["message"] == 'Column "missing" does not exist.'
+
+
+def test_a_pipeline_error_out_of_memory_in_the_worker_is_a_memory_outcome(
+    client: TestClient, project: Path
+) -> None:
+    """Running out of memory behind the pipeline's own error is the memory limit, never
+    the user's to fix."""
+    graph = _graph(
+        project,
+        join_code="raise pl.exceptions.ComputeError('allocation failed') from MemoryError()",
+    )
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"], timeout=120)
+
+    assert final["status"] == "memory_limited", final
+    assert "allocation failed" not in final["message"]
+
+
 def test_cancelling_during_input_preparation_ends_the_job_cancelled(
     client: TestClient,
     project: Path,
@@ -1037,6 +1094,58 @@ def test_cancelling_during_input_preparation_ends_the_job_cancelled(
 
     assert (final["status"], final["terminal_reason"]) == ("cancelled", "cancelled")
     del real_prepare
+
+
+def test_a_builds_metrics_address_the_inputs_it_prepared_before_its_plan(
+    client: TestClient,
+    project: Path,
+    in_process_worker: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A running build publishes its metrics when memory pressure fires, during
+    preparation too: what preparation names there is addressed before any walk."""
+    from haute._execution_schemas import ExecutionMetricsPayload
+    from haute._node_addresses import named_keys
+
+    csv_path = project / "quotes.csv"
+    pl.DataFrame({"policy_id": [1, 2], "premium": [1.0, 2.0]}).write_csv(csv_path)
+    graph = _graph(
+        project,
+        source_config={
+            "input_type": "file",
+            "format": "csv",
+            "mode": "scan",
+            "path": str(csv_path),
+            "arguments": {},
+        },
+    )
+    contexts: list[Any] = []
+    before_plan: list[dict[str, Any]] = []
+    bind = service_mod.bind_running_execution_metrics_publisher
+    open_plan = service_mod.open_resolved_seed_plan
+
+    def binding(store: Any, job_id: str, context: Any) -> None:
+        contexts.append(context)
+        bind(store, job_id, context)
+
+    def opening(*args: Any, **kwargs: Any) -> Any:
+        before_plan.append(contexts[-1].metrics_payload())
+        return open_plan(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "bind_running_execution_metrics_publisher", binding)
+    monkeypatch.setattr(service_mod, "open_resolved_seed_plan", opening)
+
+    started = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    assert _poll(client, started["job_id"], timeout=120)["status"] == "completed"
+
+    [metrics] = before_plan
+    assert [record["node_id"] for record in metrics["input_preparation"]] == ["source"]
+    assert set(metrics["node_addresses"]) == named_keys(ExecutionMetricsPayload, metrics)
+    assert metrics["node_addresses"]["source"] == {
+        "occurrence": None,
+        "node_id": "source",
+        "label": "source",
+    }
 
 
 def test_a_build_after_input_preparation_is_found_by_point_and_joined(
@@ -1416,6 +1525,7 @@ def test_a_build_whose_seed_is_replaced_before_it_publishes_is_not_reported_cach
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
             refresh=True,
+            owner=NodeSnapshotOwner.of(resolver.graph, "A"),
         ).close()
 
     monkeypatch.setattr(node_snapshots, "_fault_point", refresh_a_before_b_publishes)

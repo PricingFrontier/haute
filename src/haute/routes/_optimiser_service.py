@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, NotRequired, cast
 
 import numpy as np
 
+from haute._node_addresses import address_entry
 from haute._project_context import context_thread, graph_pipeline_dir
 from haute.errors import (
     ConflictError,
@@ -80,8 +81,6 @@ from haute._worker_isolation import run_isolated_worker, worker_config_for_memor
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
-    ContractMismatchError,
-    SchemaMismatchError,
 )
 from haute.execution import (
     execute_lazy_graph,
@@ -96,10 +95,13 @@ from haute.routes._background_jobs import (
     start_job_thread,
 )
 from haute.routes._contract_errors import (
+    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
     contract_error_refusal,
     contract_error_terminal_reason,
+    is_pipeline_error,
+    pipeline_error_message,
 )
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
@@ -255,7 +257,7 @@ class _OptimiserSolveRunningJob(RunningJobFields):
     config: dict[str, Any]
     node_label: str
     # Absent on the worker process's private setup job, which never publishes.
-    input_provenance: NotRequired[dict[str, str | None]]
+    input_provenance: NotRequired[dict[str, Any]]
     start_time: float
     timeout: int | None
 
@@ -265,15 +267,16 @@ def _solve_input_provenance(
     node_id: str,
     *,
     graph_fingerprint: str,
-) -> dict[str, str | None]:
+) -> dict[str, Any]:
     """Cheap provenance for a solve's published artifacts, recorded at job creation.
 
-    Every value is already at hand when the solve starts; nothing is hashed or read.
+    Every value is already at hand when the solve starts; nothing is hashed or read. The
+    node is its address and authored label, never the key it runs under.
     """
     from haute.executor import _resolve_batch_scenario
 
     return {
-        "node_id": node_id,
+        "node": address_entry(graph, node_id).model_dump(mode="json"),
         "data_source": _resolve_batch_scenario(graph) or "batch",
         "source_file": graph.source_file,
         "graph_fingerprint": graph_fingerprint,
@@ -3144,8 +3147,12 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise contract_error_refusal(exc) from None
-        except (ContractMismatchError, SchemaMismatchError) as exc:
-            error_msg = f"Pipeline execution failed: {exc}"
+        except PIPELINE_ERROR_TYPES as exc:
+            # The pipeline's own code, contracts or data, as a preview of the node shows it;
+            # out of memory behind one goes on as a memory failure does.
+            if not is_pipeline_error(exc):
+                raise
+            error_msg = f"Pipeline execution failed: {pipeline_error_message(exc)}"
             logger.warning(
                 "pipeline_contract_mismatch",
                 error=str(exc),
@@ -3176,7 +3183,9 @@ class OptimiserSolveService:
             )
             raise UnprocessableError(error_msg) from exc
         except Exception as exc:
-            error_msg = f"Pipeline execution failed: {exc}"
+            # Anything else is a fault the user cannot act on: the job says what the
+            # answer says, and the log keeps the exception.
+            error_msg = "Pipeline execution failed. Check the server logs for details."
             logger.error(
                 "pipeline_exec_failed",
                 error=str(exc),
@@ -3189,9 +3198,7 @@ class OptimiserSolveService:
                 message=error_msg,
                 execution_context=execution_context,
             )
-            raise ServiceFailedError(
-                "Pipeline execution failed. Check the server logs for details."
-            ) from exc
+            raise ServiceFailedError(error_msg) from exc
         finally:
             if execution_context is not None:
                 self._record_execution_metrics(job_id, execution_context)

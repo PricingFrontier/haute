@@ -8,7 +8,7 @@
 | `frontend/src/panels/TraceStatePanel.tsx` | The request's loading/error surface, eager so a request's progress and errors never wait for the panel's chunk. |
 | `frontend/src/panels/trace/traceGrouping.ts`, `frontend/src/panels/trace/traceStoryView.ts` | Target selection, pass-through collapsing and dependency/default-expansion sets. |
 | `frontend/src/hooks/useTracing.ts` | Semantic-context-bound trace request state (`idle/loading/ready/error`), delayed progress, cancellation/recovery, and canvas trace/hover projection. |
-| `frontend/src/trace/traceExport.ts` | Lazily loaded deterministic projection of a validated `TraceResult` into Markdown and CSV, reused by download, clipboard, and print without adding export-only code to the initial application bundle. |
+| `frontend/src/trace/traceExport.ts` | Lazily loaded deterministic projection of a validated `TraceResult` into Markdown and CSV, reused by download, clipboard, and print without adding export-only code to the initial application bundle. A row names its node by address (its `occurrence`, empty for a pipeline node, and its own `node_id`) with the step's `node_name`, or a submodel child's authored label from its address since the occurrence has a column of its own, never by the key the trace runs it under, and the print shows the occurrence beside the node; the evidence keeps the keys it names nodes by (a derivation's sources, a diagnostic's nodes), and a provenance row `node_addresses` gives each its address and label. The target, the title and the filename use the target's label. |
 | `frontend/src/trace/StepCard.tsx` | Expandable trace-step presentation and primary-detail selection. |
 | `frontend/src/trace/CalculationHero.tsx`, `frontend/src/trace/ExpressionChain.tsx`, `frontend/src/trace/InputSourceTree.tsx` | Calculation/result hero, expression-chain rows and input-source hierarchy. |
 | `frontend/src/trace/WaterfallChart.tsx`, `frontend/src/trace/WaterfallErrorAlert.tsx` | Contribution waterfall and explicit backend waterfall-error alert. |
@@ -37,9 +37,10 @@
 ## Control flow
 
 1. `frontend/src/hooks/useTracing.ts` captures graph `structuralVersion`, active
-   source, row limit, target, the explained preview's table (`selected_frame`,
-   sent as `port_label`, so a Workbench Output's cell is traced from the node
-   connected to that table), the explained preview's
+   source, row limit, the explained preview's target (`PreviewData.target`, the frame
+   its rows were read from by address, sent as the trace's `target`: a node's frame, a
+   Workbench Output's table, whose cell is traced from the node connected to it, or an
+   occurrence's output port; no trace starts for a preview without one), the explained preview's
    `seed_plan` (node, identity digest, and generation of each entry), the
    node-data epoch, row, column, and clicked values with each request, and
    sends that `seed_plan` so the trace reads the generations the preview did.
@@ -51,9 +52,10 @@
    and the epoch, so it outlives the refresh it started — which replaces the
    table and the seed plan and may raise the epoch — and is hidden only by a
    change of node, graph, source, or row limit. `useTracing` also takes `traceFocusNodeId` from `useUIStore`:
-   while a trace shows, the canvas node showing that step (resolved from the runtime id
-   through the hook's `resolveTraceNodeId`, as for trace activity: a submodel's card or a
-   boundary) is projected with `_traceFocused` and drawn with an accent ring. `TracePanel` sets it while a card or derivation row is pointed at (and
+   while a trace shows, the canvas node showing that step (resolved from the step's key by
+   its address in the trace's `node_addresses` through the hook's `resolveTraceNodeId`, as for
+   trace activity: the node, a submodel's card or a boundary card, and none when the canvas
+   shown does not hold it) is projected with `_traceFocused` and drawn with an accent ring. `TracePanel` sets it while a card or derivation row is pointed at (and
    clears it on unmount), except for a second after a link's click, while the scroll to the
    card moves content under a still pointer; a derivation row's step link calls `focusStep`, which shows the
    full trace when the focused one hides the step, opens and scrolls to its card and

@@ -476,8 +476,8 @@ otherwise the single node with no outgoing edge; otherwise raise, naming every c
 A lazy output is collected by `_collect_standalone_output` through Haute's
 `execution_collect` inside the call's scenario context, so `run()` and `score()` always return a
 `pl.DataFrame`, a node reading the scenario context during collection observes the run's
-source (`run(source=...)`) or `live` (`score()`), and typed Haute errors raised while collecting (such as `RatingTableMissError` from a
-rating step's miss guard) keep their types; the scenario context is reset whether collection
+source (`run(source=...)`) or `live` (`score()`), and typed Haute errors raised while collecting (such as `RatingExtremaUndefinedError` from a
+rating combination's min/max guard) keep their types; the scenario context is reset whether collection
 succeeds or fails. An eager output is returned unchanged.
 `Pipeline.to_graph()` converts the same live objects into a React-Flow-shaped plain `dict`,
 taking each node's display type from `config["_node_type"]` (defaulting to `POLARS` when absent).
@@ -716,7 +716,7 @@ to `{relative_path: json_string}` through `node_config_json`: the config record'
 sorted, a setting at the default its loader reads for an absent key left out
 (its `_SIDECAR_CODECS` row's `defaults`: a Rating Step's empty `combined_outputs`, a Data
 Input's or Data Output's empty `arguments`), a rating table's keys in their order (`name`, `factors`,
-`factor_dtypes`, `output_column`, `on_missing`, `default_value`, `entries`, then any other as
+`factor_dtypes`, `output_column`, `default_value`, `entries`, then any other as
 given) and each entry's factors in the table's order then `value`, each entry on one line,
 written by the one printer every committed JSON file goes through
 (`src/haute/_json_files.py::render_json`, high-level **JSON files Haute writes**).

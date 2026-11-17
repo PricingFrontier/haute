@@ -17,13 +17,14 @@ from polars.testing import assert_frame_equal
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
-from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 
 ALL = NodeSnapshotColumns.all()
@@ -43,10 +44,13 @@ def test_preview_inputs_invalid_flattening_is_advisory(
     monkeypatch.setattr(pipeline, "flatten_executable_graph", invalid_graph)
     response = api.post(
         "/api/pipeline/preview/inputs",
-        json={"graph": _join_graph(project).model_dump(mode="json"), "node_id": "banding"},
+        json={
+            "graph": _join_graph(project).model_dump(mode="json"),
+            "target": node_target("banding"),
+        },
     )
     assert response.status_code == 200
-    assert response.json() == {"input_node_ids": []}
+    assert response.json() == {"input_node_ids": [], "node_addresses": {}}
 
 
 @pytest.mark.parametrize(("empty", "status"), [(True, 400), (False, 404)])
@@ -58,7 +62,7 @@ def test_preview_inputs_rejects_absent_target(
         graph = graph.model_copy(update={"nodes": [], "edges": []})
     response = api.post(
         "/api/pipeline/preview/inputs",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "absent"},
+        json={"graph": graph.model_dump(mode="json"), "target": node_target("absent")},
     )
     assert response.status_code == status
     assert response.json()["detail"] == ("Empty graph" if empty else "Node 'absent' not found")
@@ -89,7 +93,10 @@ def test_preview_inputs_preserves_error_contracts(
     monkeypatch.setattr(pipeline, "run_blocking_with_response_timeout", fail_resolution)
     response = api.post(
         "/api/pipeline/preview/inputs",
-        json={"graph": _join_graph(project).model_dump(mode="json"), "node_id": "banding"},
+        json={
+            "graph": _join_graph(project).model_dump(mode="json"),
+            "target": node_target("banding"),
+        },
     )
     expected_status = {
         "projection": 400,
@@ -101,7 +108,7 @@ def test_preview_inputs_preserves_error_contracts(
     }[kind]
     assert response.status_code == expected_status
     if kind == "parse":
-        assert response.json() == {"input_node_ids": []}
+        assert response.json() == {"input_node_ids": [], "node_addresses": {}}
     elif kind == "projection":
         assert response.json()["detail"] == "unknown requested column"
     elif kind == "http":
@@ -360,6 +367,7 @@ def _publish(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, node_id),
     ) as publication:
         assert publication.generation is not None
         return publication.generation.generation_id
@@ -819,6 +827,7 @@ def test_a_capture_writes_the_columns_its_generation_keeps(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, "join"),
     ).close()
     required = {"banding": ["band"]}
     from haute._project_context import graph_pipeline_dir
@@ -873,6 +882,7 @@ def _publish_narrow(
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(graph, node_id),
     ).close()
     return identity
 
@@ -1019,12 +1029,19 @@ def builds(monkeypatch: pytest.MonkeyPatch) -> Counter[str]:
     return built
 
 
-def _post_preview(api: Any, graph: PipelineGraph, node_id: str, **fields: Any) -> dict[str, Any]:
+def _post_preview(
+    api: Any,
+    graph: PipelineGraph,
+    node_id: str,
+    *,
+    port_label: str | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
     response = api.post(
         "/api/pipeline/preview",
         json={
             "graph": graph.model_dump(mode="json"),
-            "node_id": node_id,
+            "target": node_target(node_id, port_label=port_label),
             "row_limit": 200,
             **fields,
         },
@@ -1162,6 +1179,7 @@ def test_refreshed_join_misses_preview_cache(
         explicit=True,
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=True,
+        owner=NodeSnapshotOwner.of(graph, "join"),
     ) as publication:
         assert publication.generation is not None
         refreshed = publication.generation.generation_id
@@ -1366,7 +1384,11 @@ def test_input_change_after_capture_stops_the_preview(
 
     response = api.post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "banded", "row_limit": 200},
+        json={
+            "graph": graph.model_dump(mode="json"),
+            "target": node_target("banded"),
+            "row_limit": 200,
+        },
     )
 
     # Its inputs moved while it ran, so what it had computed would have read a
@@ -1462,6 +1484,7 @@ def test_post_capture_plan_naming_an_unread_generation_stores_nothing(
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
             refresh=True,
+            owner=NodeSnapshotOwner.of(graph, "join"),
         ).close()
         return resolve(*args, **kwargs)
 
@@ -1581,7 +1604,11 @@ def test_killed_preview_worker_leaves_no_staging(
 
     response = api.post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "banding", "row_limit": 5},
+        json={
+            "graph": graph.model_dump(mode="json"),
+            "target": node_target("banding"),
+            "row_limit": 5,
+        },
     )
 
     assert response.status_code >= 500
@@ -1613,7 +1640,7 @@ def test_preview_inputs_lists_only_inputs_the_seeded_execution_reads(
     def inputs() -> list[str]:
         response = api.post(
             "/api/pipeline/preview/inputs",
-            json={"graph": graph.model_dump(mode="json"), "node_id": "banding"},
+            json={"graph": graph.model_dump(mode="json"), "target": node_target("banding")},
         )
         assert response.status_code == 200, response.text
         return response.json()["input_node_ids"]
@@ -1635,14 +1662,18 @@ def test_an_authored_graph_error_prepares_nothing_and_the_preview_reports_it(
 
     inputs = api.post(
         "/api/pipeline/preview/inputs",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "lonely"},
+        json={"graph": graph.model_dump(mode="json"), "target": node_target("lonely")},
     )
     assert inputs.status_code == 200, inputs.text
-    assert inputs.json() == {"input_node_ids": []}
+    assert inputs.json() == {"input_node_ids": [], "node_addresses": {}}
 
     preview = api.post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "lonely", "row_limit": 5},
+        json={
+            "graph": graph.model_dump(mode="json"),
+            "target": node_target("lonely"),
+            "row_limit": 5,
+        },
     )
     assert preview.status_code == 200, preview.text
     assert preview.json()["status"] == "error"
@@ -1671,7 +1702,7 @@ def test_unused_unavailable_input_is_neither_listed_nor_fails_the_preview(
 
     response = api.post(
         "/api/pipeline/preview/inputs",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "banding"},
+        json={"graph": graph.model_dump(mode="json"), "target": node_target("banding")},
     )
     assert response.status_code == 200, response.text
     assert response.json()["input_node_ids"] == []
@@ -1778,6 +1809,7 @@ def test_preview_entry_rejects_identity_changes_and_refreshed_or_cleared_leases(
             explicit=True,
             profile=ExecutionProfile.NODE_SNAPSHOT,
             refresh=True,
+            owner=NodeSnapshotOwner.of(graph, "join"),
         ) as publication:
             assert publication.generation is not None
             latest = publication.generation.generation_id
@@ -1950,7 +1982,7 @@ def test_a_requested_column_the_node_no_longer_produces_is_refused_as_without_a_
             "graph": _renamed_edge_join(project, ["_id", "premium", "segment"]).model_dump(
                 mode="json"
             ),
-            "node_id": "subject",
+            "target": node_target("subject"),
             "row_limit": 200,
             "requested_preview_columns": shown,
         },
@@ -2184,6 +2216,7 @@ def test_preview_cache_hit_refresh_race_evicts_stale_generation_and_reexecutes(
                 explicit=True,
                 profile=ExecutionProfile.NODE_SNAPSHOT,
                 refresh=True,
+                owner=NodeSnapshotOwner.of(graph, "join"),
             ) as publication:
                 assert publication.generation is not None
                 assert publication.generation.generation_id != old_generation
@@ -2532,7 +2565,11 @@ def test_a_sibling_contract_change_stops_the_old_capture(project: Path, api: Any
     write_contract("exposure")
     response = api.post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json"), "node_id": "banding", "row_limit": 200},
+        json={
+            "graph": graph.model_dump(mode="json"),
+            "target": node_target("banding"),
+            "row_limit": 200,
+        },
     )
 
     body = response.json()

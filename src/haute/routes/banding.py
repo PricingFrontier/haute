@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from haute._flatten import flatten_executable_graph
+from haute._node_addresses import resolved_request
 from haute.routes._banding_stats import BandingStatsService
 from haute.routes._synchronous_analysis import run_until_disconnected
 from haute.routes.node_data import _node_data_service
@@ -27,7 +28,7 @@ async def banding_stats(body: BandingStatsRequest, request: Request) -> BandingS
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
-    prepared = body.model_copy(update={"graph": graph})
+    prepared = resolved_request(body, graph)
     return await run_until_disconnected(
         request, lambda token: _banding_stats_service.stats(prepared, cancellation_token=token)
     )

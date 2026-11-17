@@ -5,29 +5,39 @@ import type { ExploreColumnStat } from "../../../api/types"
 import type { ExploreDataView } from "../exploreDataView"
 import ExploreRelationshipsPane from "../ExploreRelationshipsPane"
 import { WHOLE_DATA_DEBOUNCE_MS } from "../../editors/shared/useWholeDataAnswer"
-import { makeExploreColumnStat } from "../../../test-utils/factories"
+import { makeExploreColumnStat, makeNode } from "../../../test-utils/factories"
+import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
+import useGraphStore from "../../../stores/useGraphStore"
+import useSettingsStore from "../../../stores/useSettingsStore"
 
 const mocks = vi.hoisted(() => ({
   relationships: vi.fn(),
   run: vi.fn(),
-  availability: "current" as "current" | "stale" | "missing",
+  availability: "current" as "current" | "stale" | "missing" | "checking",
+  problem: null as { kind: "refused" | "failed"; reason: string } | null,
 }))
 
 vi.mock("../../../api/exploreRelationships", () => ({
   getExploreRelationships: mocks.relationships,
 }))
-vi.mock("../../../hooks/useNodeDataCache", () => ({
-  default: () => ({ availability: mocks.availability, dataVersion: "v1", run: mocks.run }),
+vi.mock("../../../hooks/useNodeDataCache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../hooks/useNodeDataCache")>()),
+  default: () => ({ availability: mocks.availability, problem: mocks.problem, dataVersion: "v1", run: mocks.run }),
 }))
-vi.mock("../../../stores/useDocumentStatusStore", () => ({
-  captureDocumentExecutionFence: () => ({}),
-  isDocumentExecutionFenceCurrent: () => true,
-}))
-vi.mock("../../../stores/useSettingsStore", () => ({
-  default: (selector: (value: { activeSource: string }) => unknown) => selector({ activeSource: "live" }),
-}))
-
 const node = { id: "explore", data: { label: "explore", description: "", nodeType: "explore", config: {} } }
+
+/** The pipeline the editor holds: the Explore node behind its source. */
+function loadDocument() {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: [
+      makeNode("source", "dataInput", { data: { label: "source", nodeType: "dataInput", config: { path: "claims.parquet" } } }),
+      makeNode("explore", "explore", { data: { ...node.data } }),
+    ],
+    edges: [{ id: "e1", source: "source", target: "explore" }],
+    preamble: "",
+    submodels: {},
+  })
+}
 
 function column(name: string, kind: ExploreColumnStat["kind"]): ExploreColumnStat {
   return makeExploreColumnStat({
@@ -47,7 +57,7 @@ function column(name: string, kind: ExploreColumnStat["kind"]): ExploreColumnSta
 }
 
 const report = {
-  producer_node_id: "source",
+  producer_label: "source",
   source: "live",
   data_version: "v1",
   row_count: 100,
@@ -109,8 +119,13 @@ async function settle() {
 describe("ExploreRelationshipsPane", () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    useGraphStore.getState().resetForTests()
+    useDocumentStatusStore.getState().reset()
+    useSettingsStore.setState({ activeSource: "live" })
+    loadDocument()
     mocks.relationships.mockReset()
     mocks.availability = "current"
+    mocks.problem = null
   })
   afterEach(() => {
     cleanup()
@@ -142,9 +157,17 @@ describe("ExploreRelationshipsPane", () => {
     expect(mocks.relationships).toHaveBeenCalledTimes(1)
     expect(mocks.relationships).toHaveBeenCalledWith(
       expect.objectContaining({
-        node_id: "explore",
+        // The pipeline the editor holds, read from the graph store.
+        graph: expect.objectContaining({
+          nodes: [
+            expect.objectContaining({ id: "source", data: expect.objectContaining({ config: { path: "claims.parquet" } }) }),
+            expect.objectContaining({ id: "explore" }),
+          ],
+          edges: [expect.objectContaining({ id: "e1", source: "source", target: "explore" })],
+        }),
+        target: { occurrence: null, node_id: "explore" },
         source: "live",
-        target: "claims",
+        target_column: "claims",
         weight: null,
         features: ["region", "age"],
         key_columns: [],
@@ -206,7 +229,7 @@ describe("ExploreRelationshipsPane", () => {
     await settle()
 
     expect(mocks.relationships).toHaveBeenLastCalledWith(
-      expect.objectContaining({ target: null, features: [], key_columns: ["region", "age"] }),
+      expect.objectContaining({ target_column: null, features: [], key_columns: ["region", "age"] }),
     )
     expect(screen.getByTestId("explore-key-check")).toHaveTextContent(
       "region + age is not unique: 3 duplicate rows, 1 rows with a missing key value (97 distinct of 100 rows).",
@@ -221,7 +244,29 @@ describe("ExploreRelationshipsPane", () => {
     await settle()
 
     expect(mocks.relationships).not.toHaveBeenCalled()
-    expect(screen.getByText(/cache it to analyse the whole dataset/)).toBeInTheDocument()
+    expect(screen.getByText("Not cached · Refresh this node to read all rows")).toBeInTheDocument()
+  })
+
+  it("says why there is nothing to analyse when the server refuses the node's data point", async () => {
+    mocks.availability = "checking"
+    mocks.problem = { kind: "refused", reason: "Node 'explore' must have exactly one incoming connection." }
+    renderPane()
+    fireEvent.click(within(screen.getByRole("group", { name: /Key columns/ })).getByLabelText("region"))
+    await settle()
+
+    expect(mocks.relationships).not.toHaveBeenCalled()
+    expect(screen.getByText("Node 'explore' must have exactly one incoming connection.")).toBeInTheDocument()
+  })
+
+  it("says reading the data failed, never that it is waiting, when its data point cannot be read", async () => {
+    mocks.availability = "checking"
+    mocks.problem = { kind: "failed", reason: "server down" }
+    renderPane()
+    fireEvent.click(within(screen.getByRole("group", { name: /Key columns/ })).getByLabelText("region"))
+    await settle()
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the data: server down")
+    expect(screen.queryByText("Waiting to analyse…")).toBeNull()
   })
 
   it("offers to cache again when the server has no cached data for the question", async () => {

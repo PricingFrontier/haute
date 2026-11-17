@@ -25,6 +25,7 @@ from haute._execution_admission import (
 from haute._execution_context import ExecutionContext
 from haute._flatten import flatten_executable_graph
 from haute._logging import get_logger
+from haute._node_addresses import node_display_name, resolved_request
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
 from haute._pipeline_settings import project_pipeline_settings
 from haute.errors import ConfigError, ContractMismatchError
@@ -35,6 +36,7 @@ from haute.routes._contract_errors import (
     contract_error_http_exception,
 )
 from haute.routes.pipeline import (
+    _ensure_printable_target,
     _ensure_source_file,
     _interactive_affinity_key,
     _interactive_failures,
@@ -114,16 +116,17 @@ async def output_assemble_dry_run(
     except OutputMappingSchemaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    _ensure_printable_target(body.target)
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
-    node = graph.node_map.get(body.node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail=f"Node '{body.node_id}' not found")
+    # The address resolves through the expansion's record, or is refused by name.
+    body = resolved_request(body, graph)
+    node = graph.node_map[body.node_id]
     if node.data.nodeType != NodeType.OUTPUT:
         raise HTTPException(
             status_code=400,
-            detail=f"Node '{body.node_id}' is not an OUTPUT node",
+            detail=f"'{node_display_name(graph, body.node_id)}' is not an OUTPUT node",
         )
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)

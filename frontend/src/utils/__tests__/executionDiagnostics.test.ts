@@ -7,10 +7,17 @@ import {
   buildMemoryPressureDiagnostic,
   executionErrorDetailMessage,
   executionJobStatusFromReason,
-  executionWarningNodeIds,
+  executionStrategyLocation,
+  executionWarnings,
   executionTerminalReasonFromError,
+  metricsNodeName,
   shouldShowMemoryPressureDiagnostic,
 } from "../executionDiagnostics"
+import { runtimeKey } from "../../test-utils/factories"
+
+/** A submodel child under a key that is neither its id nor its label. */
+const CHILD_KEY = "submodel_runtime/pricing/aggregate"
+const CHILD = { occurrence: "pricing", node_id: "aggregate", label: "Claims by region" }
 
 function warnedMetrics(overrides: Parameters<typeof makeExecutionMetricsFixture>[0]) {
   return makeExecutionMetricsFixture({
@@ -108,6 +115,60 @@ describe("executionDiagnostics", () => {
     expect(diagnostic?.kind).toBe("strategy")
   })
 
+  it("names the blocking node by its label, and a submodel child with its occurrence", () => {
+    const relabelled = warnedMetrics({
+      memory_pressure_events: [],
+      node_addresses: { aggregate: { occurrence: null, node_id: "aggregate", label: "Claims totals" } },
+    })
+    const relabelledDiagnostic = buildExecutionStrategyDiagnostic(relabelled)
+    expect(relabelledDiagnostic?.message).toBe("Execution ran without a memory estimate at 'Claims totals' (group_by)")
+    expect(relabelledDiagnostic?.details).toContain("Blocking node Claims totals")
+
+    const child = warnedMetrics({ memory_pressure_events: [], node_addresses: { [CHILD_KEY]: CHILD } })
+    if (!child.execution_strategy) throw new Error("the warned fixture has a strategy")
+    child.execution_strategy.blocking_node_id = runtimeKey(CHILD_KEY)
+    const childDiagnostic = buildExecutionStrategyDiagnostic(child)
+    expect(childDiagnostic?.message).toBe("Execution ran without a memory estimate at 'Claims by region in pricing' (group_by)")
+    expect(childDiagnostic?.details).toContain("Blocking node Claims by region in pricing")
+    expect([childDiagnostic?.message, ...(childDiagnostic?.details ?? [])].join(" ")).not.toContain(CHILD_KEY)
+  })
+
+  it("names a node by its address in the metrics, never by its key", () => {
+    const metrics = makeExecutionMetricsFixture({
+      node_addresses: {
+        join: { occurrence: null, node_id: "join", label: "Join claims" },
+        [CHILD_KEY]: CHILD,
+      },
+    })
+
+    expect(metricsNodeName(metrics, runtimeKey("join"))).toBe("Join claims")
+    expect(metricsNodeName(metrics, runtimeKey(CHILD_KEY))).toBe("Claims by region in pricing")
+    expect(metricsNodeName(metrics, runtimeKey("unaddressed"))).toBe("a node")
+  })
+
+  it("names a child with its occurrence's label from the occurrence's own address", () => {
+    const key = "submodel_runtime/instance-17/aggregate"
+    const metrics = makeExecutionMetricsFixture({
+      node_addresses: {
+        [key]: { occurrence: "instance-17", node_id: "aggregate", label: "Claims totals" },
+        "instance-17": { occurrence: null, node_id: "instance-17", label: "Renewal pricing" },
+      },
+    })
+
+    expect(metricsNodeName(metrics, runtimeKey(key))).toBe("Claims totals in Renewal pricing")
+  })
+
+  it("places a strategy's location at the blocking node's name, leaving out what it omits", () => {
+    const metrics = warnedMetrics({ node_addresses: { [CHILD_KEY]: CHILD } })
+    const strategy = metrics.execution_strategy
+    if (!strategy) throw new Error("the warned fixture has a strategy")
+
+    expect(executionStrategyLocation(strategy, metrics)).toBe(" at 'aggregate' (group_by)")
+    expect(executionStrategyLocation({ ...strategy, blocking_node_id: runtimeKey(CHILD_KEY), blocking_operator: null }, metrics))
+      .toBe(" at 'Claims by region in pricing'")
+    expect(executionStrategyLocation({ ...strategy, blocking_node_id: null }, metrics)).toBe("")
+  })
+
   it("lets memory pressure and terminal memory limits outrank a warned strategy", () => {
     const withoutPressure = warnedMetrics({ memory_pressure_events: [] })
     const withPressure = warnedMetrics({})
@@ -135,8 +196,26 @@ describe("executionDiagnostics", () => {
 
   it("marks the requested and blocking nodes as warned for a warned strategy", () => {
     expect(
-      executionWarningNodeIds(warnedMetrics({ memory_pressure_events: [] }), "requested"),
-    ).toEqual(["requested", "aggregate"])
+      executionWarnings(warnedMetrics({ memory_pressure_events: [] })),
+    ).toEqual({ requested: true, keys: ["aggregate"] })
+  })
+
+  it("marks the requested node and the pressured nodes as warned for memory pressure", () => {
+    expect(executionWarnings(makeExecutionMetricsFixture())).toEqual({ requested: true, keys: ["score"] })
+  })
+
+  it("marks nothing as warned when no diagnostic implicates a node", () => {
+    expect(executionWarnings(makeExecutionMetricsFixture({ memory_pressure_events: [] })))
+      .toEqual({ requested: false, keys: [] })
+    expect(executionWarnings(null)).toEqual({ requested: false, keys: [] })
+  })
+
+  it("implicates a relabelled submodel child by its key, not its label", () => {
+    const metrics = warnedMetrics({ memory_pressure_events: [], node_addresses: { [CHILD_KEY]: CHILD } })
+    if (!metrics.execution_strategy) throw new Error("the warned fixture has a strategy")
+    metrics.execution_strategy.blocking_node_id = runtimeKey(CHILD_KEY)
+
+    expect(executionWarnings(metrics)).toEqual({ requested: true, keys: [CHILD_KEY] })
   })
 
   it("marks the node that kept part of the pipeline full-width with the boundaries", () => {
@@ -177,10 +256,22 @@ describe("executionDiagnostics", () => {
       },
     })
 
-    expect(executionWarningNodeIds(metrics, "requested")).toEqual(["requested", "SaleJoin", "fill_na"])
+    expect(executionWarnings(metrics)).toEqual({ requested: true, keys: ["SaleJoin", "fill_na"] })
     expect(buildExecutionStrategyDiagnostic(metrics)?.details).toContain(
       "Projection cause fill_na (polars) from SaleJoin: polars_lineage_unsupported in with_columns; 1 total",
     )
+
+    const relabelled = makeExecutionMetricsFixture({
+      ...metrics,
+      node_addresses: {
+        SaleJoin: { occurrence: null, node_id: "SaleJoin", label: "Sale join" },
+        fill_na: { occurrence: "pricing", node_id: "fill_na", label: "Fill gaps" },
+      },
+    })
+    expect(buildExecutionStrategyDiagnostic(relabelled)?.details).toContain(
+      "Projection cause Fill gaps in pricing (polars) from Sale join: polars_lineage_unsupported in with_columns; 1 total",
+    )
+    expect(executionWarnings(relabelled)).toEqual({ requested: true, keys: ["SaleJoin", "fill_na"] })
   })
 
   it.each(["contract_error", "timed_out", "cancelled", "superseded"] as const)(

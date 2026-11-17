@@ -24,8 +24,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
-import type { Node, Edge } from "@xyflow/react"
-import type { MutableRefObject } from "react"
+import type { Node } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
 
 // A preview crosses a mocked request and several effects, which a whole
@@ -39,7 +38,7 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
+  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
   savePipeline: vi.fn(),
@@ -56,28 +55,15 @@ vi.mock("../../api/client", () => ({
   },
 }))
 
+// The request payload as `documentGraphPayload` builds it from the graph store,
+// without canonicalising: the pipeline's own graph, also with a submodel open.
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(
-    (
-      graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
-      parentGraphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>,
-      submodelsRef: MutableRefObject<Record<string, unknown>>,
-      preambleRef: MutableRefObject<string>,
-    ) =>
-      parentGraphRef.current
-        ? {
-          nodes: parentGraphRef.current.nodes,
-          edges: parentGraphRef.current.edges,
-          submodels: parentGraphRef.current.submodels,
-          preamble: preambleRef.current,
-        }
-        : {
-          nodes: graphRef.current.nodes,
-          edges: graphRef.current.edges,
-          submodels: submodelsRef.current,
-          preamble: preambleRef.current,
-        },
-  ),
+  documentGraphPayload: vi.fn(() => {
+    const { nodes, edges, focus, submodels, preamble } = useGraphStore.getState()
+    return focus
+      ? { nodes: focus.rootNodes, edges: focus.rootEdges, submodels, preamble }
+      : { nodes, edges, submodels, preamble }
+  }),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -99,7 +85,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { loadPipeline, previewNode } from "../../api/client"
-import { makeNode, makeEdge } from "../../test-utils/factories"
+import { makeNode, makeEdge, makePreviewResponse, targetNodeId } from "../../test-utils/factories"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -107,15 +93,11 @@ const mockPreview = vi.mocked(previewNode)
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
     selectedNode: null as Node | null,
-    graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
-    parentGraphRef: { current: null },
     activeSubmodelIdentity: null,
-    submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
-    preambleRef: { current: "" },
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
@@ -130,7 +112,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 function makeControllablePreview() {
   const callOrder: string[] = []
   const deferreds = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
-  mockPreview.mockImplementation(({ nodeId }: { nodeId: string }) => {
+  mockPreview.mockImplementation(({ target }) => {
+    const nodeId = targetNodeId(target)
     callOrder.push(nodeId)
     return new Promise((resolve, reject) => {
       deferreds.set(nodeId, { resolve: resolve as (v: unknown) => void, reject })
@@ -139,15 +122,14 @@ function makeControllablePreview() {
   return { callOrder, deferreds }
 }
 
-function okResult(nodeId: string, columnName: string) {
-  return {
-    node_id: nodeId,
+function okResult(columnName: string) {
+  return makePreviewResponse({
     status: "ok",
     row_count: 1,
     column_count: 1,
     columns: [{ name: columnName, dtype: "f64" }],
     preview: [{ [columnName]: 1 }],
-  }
+  })
 }
 
 /**
@@ -162,7 +144,7 @@ async function settlePreview(
   columnName: string,
 ) {
   act(() => {
-    deferreds.get(nodeId)!.resolve(okResult(nodeId, columnName))
+    deferreds.get(nodeId)!.resolve(okResult(columnName))
   })
   await waitFor(() => expect(result.current.previewBusy).toBe(false), {
     timeout: PREVIEW_TIMEOUT_MS,
@@ -207,12 +189,12 @@ describe("usePipelineAPI - a preview never runs downstream nodes", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [makeNode("A"), makeNode("B"), makeNode("C")],
       edges: [makeEdge("A", "B"), makeEdge("A", "C")],
-    }
+    })
 
-    act(() => { result.current.fetchPreview(params.graphRef.current.nodes[0]) })
+    act(() => { result.current.fetchPreview(useGraphStore.getState().nodes[0]) })
     await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: PREVIEW_TIMEOUT_MS })
 
     await settlePreview(result, deferreds, "A", "a_col")
@@ -233,10 +215,10 @@ describe("usePipelineAPI - a preview never runs downstream nodes", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [A, makeNode("B")],
       edges: [makeEdge("A", "B")],
-    }
+    })
 
     act(() => { result.current.fetchPreview(A) })
     await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: PREVIEW_TIMEOUT_MS })
@@ -254,12 +236,12 @@ describe("usePipelineAPI - a preview never runs downstream nodes", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
-    params.graphRef.current = {
+    useGraphStore.setState({
       nodes: [makeNode("A"), makeNode("B"), makeNode("C")],
       edges: [makeEdge("A", "B"), makeEdge("B", "C")],
-    }
+    })
 
-    act(() => { result.current.fetchPreview(params.graphRef.current.nodes[0]) })
+    act(() => { result.current.fetchPreview(useGraphStore.getState().nodes[0]) })
     await waitFor(() => expect(callOrder).toEqual(["A"]), { timeout: PREVIEW_TIMEOUT_MS })
 
     await settlePreview(result, deferreds, "A", "a_col")

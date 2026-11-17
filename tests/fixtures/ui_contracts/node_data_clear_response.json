@@ -15,6 +15,10 @@
     "job": null,
     "reads_directly": false,
     "build_endpoint": null,
-    "clear_endpoint": null
+    "clear_endpoint": null,
+    "node_addresses": {
+      "explore": {"occurrence": null, "node_id": "explore", "label": "Explore"},
+      "join": {"occurrence": null, "node_id": "join", "label": "Join"}
+    }
   }
 }

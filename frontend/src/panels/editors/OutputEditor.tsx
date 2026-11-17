@@ -8,8 +8,8 @@ import {
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel, ValidatedTextField } from "../../components/form"
-import { useGraph } from "../useGraph"
-import { buildGraph } from "../../utils/buildGraph"
+import { useGraph, useRequestScope } from "../useGraph"
+import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
@@ -241,6 +241,7 @@ export default function OutputEditor({
   onUpdate: OnUpdateConfig
   nodeId: string
 }) {
+  const requestScope = useRequestScope()
   const { allNodes, edges, submodels, preamble } = useGraph()
   // A Workbench Input's frames are the tables the workbench store fetched (specs/workbench).
   const workbench = useWorkbenchStore((state) => state.tables)
@@ -370,15 +371,18 @@ export default function OutputEditor({
   const outputStale = assembled !== null && currentAssembled === null
 
   const runOutputPreview = useCallback(() => {
-    // buildGraph reads the preamble from the store; listing it renews this callback.
+    // The graph reads the preamble from the store; listing it renews this callback.
+    void allNodes
+    void edges
+    void submodels
     void preamble
     const reqId = ++outputReqSeq.current
     const key = previewKey
     setAssembled({ key, status: "loading" })
-    const graph = buildGraph(allNodes, edges, submodels)
+    const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
     outputAssembleDryRun({
-      graph,
-      nodeId,
+      graph: target.graph,
+      target: target.node,
       // The live working copy's mapping — the editor's CURRENT (unsaved) state.
       outputMapping: persistedMapping,
       rowLimit: PREVIEW_ROW_LIMIT,
@@ -401,7 +405,7 @@ export default function OutputEditor({
         // detail message (ApiError carries it) rather than a bare status.
         setAssembled({ key, status: "error", error: apiErrorMessage(err, "Output preview failed") })
       })
-  }, [allNodes, edges, submodels, preamble, nodeId, persistedMapping, activeSource, previewKey])
+  }, [requestScope, allNodes, edges, submodels, preamble, nodeId, persistedMapping, activeSource, previewKey])
 
   // Expanding the preview with no document of the current mapping (none yet,
   // or one of an earlier mapping) kicks off a run; while it is open, the
@@ -433,21 +437,24 @@ export default function OutputEditor({
       edge: SimpleEdge,
       columns: string[],
     ): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
-      // buildGraph reads the preamble from the store; listing it renews this callback.
+      // The graph reads the preamble from the store; listing it renews this callback.
+      void allNodes
+      void edges
+      void submodels
       void preamble
       const sourceNode = nodeById[edge.source]
       if (!sourceNode) throw new ApiError("Frame source node not found", 404)
-      const graph = buildGraph(allNodes, edges, submodels)
+      // The frame by address, its handle with it: a node's frame, an occurrence's output
+      // port on the main pipeline, or the open submodel's Input card at its port.
+      const target = prepareNodeRequest(requestScope, canvasTarget(edge.source, edge.sourceHandle))
       const res = await previewNode({
-        graph,
-        nodeId: edge.source,
+        graph: target.graph,
+        target: target.wireTarget,
         rowLimit: PREVIEW_ROW_LIMIT,
         source: useSettingsStore.getState().activeSource,
         // Project to this frame's columns where known, so the preview shows the
         // frame's fields (best-effort; the backend tolerates a superset).
         requestedPreviewColumns: columns.length > 0 ? columns : undefined,
-        // Select this frame from a multi-frame source via its handle.
-        portLabel: edge.sourceHandle ?? undefined,
       })
       if (res.status !== "ok") {
         throw new ApiError(res.error || "Frame preview failed", 422, res.error ?? undefined)
@@ -459,7 +466,7 @@ export default function OutputEditor({
           : (res.preview ?? []).length
       return { rows, total }
     },
-    [allNodes, edges, submodels, preamble, nodeById],
+    [requestScope, allNodes, edges, submodels, preamble, nodeById],
   )
 
   // Rows for a given frame, with their absolute index into v2.output_mapping so

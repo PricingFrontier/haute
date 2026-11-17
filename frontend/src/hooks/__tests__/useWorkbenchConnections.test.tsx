@@ -3,7 +3,6 @@
  * workbench store fetched (specs/workbench): which fetches they are held to, when, in which
  * graph, outside the undo history, and what never removes one.
  */
-import { useLayoutEffect } from "react"
 import { act, cleanup, renderHook } from "@testing-library/react"
 import type { Edge, Node } from "@xyflow/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -31,7 +30,6 @@ const filled = edge("e_filled", "priced", null, "wb_out", "pricing_output")
 
 describe("useWorkbenchConnections", () => {
   let fetches: number
-  const graphRef: { current: { nodes: Node[]; edges: Edge[] } } = { current: { nodes: [], edges: [] } }
   const addToast = vi.fn()
   const commitEdges = (edges: Edge[]) => useGraphStore.getState().setEdgesRaw(edges)
   const edgeIds = () => useGraphStore.getState().edges.map((each) => each.id)
@@ -45,16 +43,12 @@ describe("useWorkbenchConnections", () => {
   const adopt = (generation: number) => act(() => useDocumentStatusStore.setState({ executionGeneration: generation }))
   const show = (nodes: Node[], edges: Edge[]) =>
     act(() => useGraphStore.getState().loadGraphSnapshot({ nodes, edges, preamble: "", submodels: {} }))
-  /** The hook as the editor mounts it, its graph ref following the graph the store shows. */
+  /** The hook as the editor mounts it: it reads the graph the store shows. */
   const render = (editable = true) =>
-    renderHook(({ editable: canEdit }) => {
-      const nodes = useGraphStore((state) => state.nodes)
-      const edges = useGraphStore((state) => state.edges)
-      useLayoutEffect(() => {
-        graphRef.current = { nodes, edges }
-      }, [nodes, edges])
-      return useWorkbenchConnections({ graphRef, commitEdges, editable: canEdit, addToast })
-    }, { initialProps: { editable } })
+    renderHook(
+      ({ editable: canEdit }) => useWorkbenchConnections({ commitEdges, editable: canEdit, addToast }),
+      { initialProps: { editable } },
+    )
 
   beforeEach(() => {
     fetches = 0
@@ -164,7 +158,6 @@ describe("useWorkbenchConnections", () => {
         tables: { tables: [inputSide("account")], sample: {}, responseTables: [outputSide("pricing")], fetch },
       })
       expect(hook.result.current.holdConnections()).toBe(true)
-      expect(graphRef.current.edges.map((each) => each.id)).toEqual(["e_account", "e_filled"])
       expect(edgeIds()).toEqual(["e_account", "e_filled"])
     })
 
@@ -186,6 +179,48 @@ describe("useWorkbenchConnections", () => {
     publish(1, ["account"])
 
     expect(edgeIds()).toEqual(["e_account", "e_boundary"])
+  })
+
+  it("holds the pipeline's own connections behind an open submodel for a save, which sends them", () => {
+    const occurrence = makeNode("pricing", "submodel", {
+      data: { label: "pricing", nodeType: "submodel", config: { definition_id: "definition_pricing", alias: "pricing" } },
+    })
+    // The removed table also fed the open occurrence, whose Input card carries that binding.
+    const intoPricing = edge("e_into_pricing", "wb_in", "policy_input", "pricing", "in__policy")
+    act(() => {
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [input, priced, occurrence],
+        edges: [policy, account, intoPricing],
+        preamble: "",
+        submodels: {
+          definition_pricing: {
+            definitionId: "definition_pricing",
+            file: "modules/pricing.py",
+            graph: { nodes: [makeNode("rate")], edges: [] },
+            inputPorts: [{ name: "policy", targets: [{ nodeId: "rate", handleId: null }] }],
+            outputPorts: [],
+          },
+        },
+      })
+      useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "definition_pricing" })
+      // A child selected on the canvas, which the redrawn view keeps selected.
+      useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => (node.id === "rate" ? { ...node, selected: true } : node)))
+    })
+    const hook = render()
+    publish(1, ["account"])
+
+    act(() => {
+      expect(hook.result.current.holdConnections()).toBe(true)
+    })
+
+    expect(useGraphStore.getState().focus?.rootEdges.map((each) => each.id)).toEqual(["e_account"])
+    expect(addToast).toHaveBeenCalledWith("warning", expect.stringContaining("wb_in"))
+    // The open view is drawn from the pipeline's edges as they now are: no card holds the
+    // removed binding, which a later boundary edit would otherwise bring back.
+    const cards = useGraphStore.getState().nodes.filter((node) => node.data.nodeType === "submodelPort")
+    expect(cards.length).toBeGreaterThan(0)
+    expect(JSON.stringify(cards)).not.toContain("e_into_pricing")
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "rate")?.selected).toBe(true)
   })
 
   it("never changes a Quote Input's connections", () => {

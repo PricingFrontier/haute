@@ -18,6 +18,10 @@
     "job": {"job_id": "node-data-7f2c", "progress": 0.0, "message": "Caching data"},
     "reads_directly": false,
     "build_endpoint": null,
-    "clear_endpoint": null
+    "clear_endpoint": null,
+    "node_addresses": {
+      "banding": {"occurrence": null, "node_id": "banding", "label": "Banding"},
+      "join": {"occurrence": null, "node_id": "join", "label": "Join"}
+    }
   }
 }

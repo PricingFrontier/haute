@@ -315,7 +315,7 @@ class TestBuildArtifactPayload:
                 "base_result": {"n_quotes": 12, "n_steps": 3},
                 "result": {"n_quotes": 99},
                 "input_provenance": {
-                    "node_id": "opt",
+                    "node": {"occurrence": None, "node_id": "opt", "label": "rb"},
                     "data_source": "batch",
                     "source_file": "main.py",
                     "graph_fingerprint": "abc123",
@@ -347,7 +347,7 @@ class TestBuildArtifactPayload:
         assert payload["input_summary"] == {
             "n_quotes": 12,
             "n_steps": 3,
-            "node_id": "opt",
+            "node": {"occurrence": None, "node_id": "opt", "label": "rb"},
             "data_source": "batch",
             "source_file": "main.py",
             "graph_fingerprint": "abc123",
@@ -509,7 +509,7 @@ class TestOptimiserMlflowLog:
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
-            json={"graph": graph, "node_id": "opt"},
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
         job_id = resp.json()["job_id"]
         status = _poll_until_done(client, job_id)
@@ -1795,13 +1795,20 @@ class TestPublishWithoutHeavyState:
         import json as json_mod
 
         graph = _make_optimiser_graph(scored_data)
-        started = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        started = client.post(
+            "/api/optimiser/solve",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+        )
         job_id = started.json()["job_id"]
         assert _poll_until_done(client, job_id)["status"] == "completed"
         job = clean_job_store.require_job(job_id)
         summary = job["publish_summary"]
         assert summary["metrics"]["total_objective"] == job["result"]["total_objective"]
-        assert job["input_provenance"]["node_id"] == "opt"
+        assert job["input_provenance"]["node"] == {
+            "occurrence": None,
+            "node_id": "opt",
+            "label": "optimiser",
+        }
         assert job["input_provenance"]["data_source"] == "batch"
         store = use_local_mlflow_store(tmp_path, monkeypatch)
 

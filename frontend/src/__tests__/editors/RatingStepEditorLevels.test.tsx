@@ -16,8 +16,9 @@ import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
-import useUIStore from "../../stores/useUIStore"
 import type { NodeDataPointResponse, RatingLevelsResponse } from "../../api/types"
+import { documentRequestScope } from "../../utils/requestGateway"
+import { makeNodeDataPoint } from "../../test-utils/factories"
 
 const mockGetRatingLevels = vi.fn()
 const mockGetNodeDataPoint = vi.fn()
@@ -71,7 +72,7 @@ function point(
   state: NodeDataPointResponse["state"],
   dataVersion: string | null,
 ): NodeDataPointResponse {
-  return {
+  return makeNodeDataPoint({
     consumer_node_id: "rating_1",
     point: { producer_node_id: "source_1", port_label: null },
     slot_key: SLOT_KEY,
@@ -89,7 +90,7 @@ function point(
     reads_directly: false,
     build_endpoint: null,
     clear_endpoint: null,
-  }
+  })
 }
 
 function levels(overrides: Partial<RatingLevelsResponse> = {}): RatingLevelsResponse {
@@ -132,13 +133,13 @@ let rerenderEditor: ((nodes: unknown[]) => void) | null = null
 
 function renderEditor(ui: ReactElement, nodes: unknown[] = [sourceNode, ratingNode]) {
   const result = render(
-    <GraphProvider allNodes={nodes as never} edges={edges} submodels={{}} preamble="">
+    <GraphProvider requestScope={documentRequestScope} allNodes={nodes as never} edges={edges} submodels={{}} preamble="">
       {ui}
     </GraphProvider>,
   )
   rerenderEditor = (next: unknown[]) =>
     result.rerender(
-      <GraphProvider allNodes={next as never} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={next as never} edges={edges} submodels={{}} preamble="">
         {ui}
       </GraphProvider>,
     )
@@ -148,6 +149,7 @@ function renderEditor(ui: ReactElement, nodes: unknown[] = [sourceNode, ratingNo
 function editor(props: Record<string, unknown> = {}) {
   return (
     <RatingStepEditor
+      section="tables"
       config={CONFIG}
       onUpdate={vi.fn()}
       inputSources={[]}
@@ -165,7 +167,6 @@ describe("RatingStepEditor levels", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     useNodeDataStore.getState().reset()
     useSettingsStore.setState({ activeSource: "live" })
-    useUIStore.setState({ ratingStepEditorSections: {} })
     mockGetRatingLevels.mockReset()
     mockGetNodeDataPoint.mockReset()
     mockGetNodeDataPoint.mockResolvedValue(point("current", DATA_VERSION))
@@ -190,7 +191,7 @@ describe("RatingStepEditor levels", () => {
 
     await waitFor(() => expect(mockGetRatingLevels).toHaveBeenCalled())
     expect(mockGetRatingLevels.mock.calls[0][0]).toMatchObject({
-      node_id: "rating_1",
+      target: { occurrence: null, node_id: "rating_1" },
       source: "live",
       columns: ["region"],
     })
@@ -448,7 +449,11 @@ describe("RatingStepEditor levels", () => {
     onUpdate.mockClear()
 
     await act(async () => {
-      fireEvent.change(screen.getByLabelText("Add factor"), { target: { value: "cover" } })
+      fireEvent.click(screen.getByRole("button", { name: "Add factor" }))
+    })
+    await act(async () => {
+      // An option reads its name, then its count of levels.
+      fireEvent.click(screen.getAllByRole("option").find(option => option.firstElementChild?.textContent === "cover")!)
     })
 
     expect(onUpdate).not.toHaveBeenCalled()
@@ -511,7 +516,7 @@ describe("RatingStepEditor levels", () => {
     // A rate saved in that slice puts Orkney among the levels the table knows,
     // which is ahead of South — still only in the data.
     rerender(
-      <GraphProvider allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
         {editor({
           config: table([{ size: "S", age: "Y", region: "Orkney", value: 2.5 }]),
           previewRows,
@@ -592,6 +597,35 @@ describe("RatingStepEditor levels", () => {
     expect(basis).not.toHaveTextContent("HTTP 422")
   })
 
+  it("says why there is nothing to read when the server refuses the node's data point", async () => {
+    const message = "Node 'Rating' must have exactly one incoming connection to read its data (found 0)."
+    mockGetNodeDataPoint.mockRejectedValue(Object.assign(new ApiError(message, 400), { detail: message }))
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    const basis = await screen.findByTestId("rating-levels-basis")
+    await waitFor(() => expect(basis).toHaveTextContent(message))
+    expect(mockGetRatingLevels).not.toHaveBeenCalled()
+  })
+
+  it("says reading the data failed when its data point cannot be read", async () => {
+    mockGetNodeDataPoint.mockRejectedValue(
+      Object.assign(new ApiError("HTTP 500", 500), { detail: "server down" }),
+    )
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    const basis = await screen.findByTestId("rating-levels-basis")
+    await waitFor(() => expect(basis).toHaveTextContent("Couldn't read the data: server down"))
+    expect(mockGetRatingLevels).not.toHaveBeenCalled()
+  })
+
   it("abandons a request the editor has already superseded", async () => {
     const signals: AbortSignal[] = []
     mockGetRatingLevels.mockImplementation((args: { signal?: AbortSignal }) => {
@@ -607,7 +641,7 @@ describe("RatingStepEditor levels", () => {
     await waitFor(() => expect(signals).toHaveLength(1))
 
     rerender(
-      <GraphProvider allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
+      <GraphProvider requestScope={documentRequestScope} allNodes={[sourceNode, ratingNode] as never} edges={edges} submodels={{}} preamble="">
         {editor({
           config: {
             tables: [

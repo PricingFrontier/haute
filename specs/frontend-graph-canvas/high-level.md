@@ -233,9 +233,9 @@ candidate, with the error toast.
   marker ellipse.
 - **Submodel nodes** use the same opaque card, full-width coloured header,
   and frame-row presentation as a full-detail API-input node. The header
-  retains the package icon and `SUBMODEL` identity and shows the occurrence
-  alias in its right-hand badge. The body does not expose the backing file or
-  repeat the name. A canonical occurrence resolves `config.definition_id`
+  keeps the package icon and is titled with the occurrence alias in
+  primary-foreground text, with no type label or badge. The body does not
+  expose the backing file or repeat the name. A canonical occurrence resolves `config.definition_id`
   against the typed definition registry, derives its accessible child count
   from the definition graph, renders one generic left-side `inputs` socket, and
   renders every public output row with its `out__<name>` handle and
@@ -271,9 +271,9 @@ candidate, with the error toast.
   interface retirement. Both composite nodes remain visible when empty and
   keep their current canvas positions while structured endpoints change.
   Reconciliation is definition-based and atomic: stale or malformed port
-  bindings fail visibly instead of becoming draft child-id edges. When history
-  restores a non-drilled snapshot while a drilled view is active, reconciliation
-  is a no-op and the parent refs keep their last synchronized state. Each
+  bindings fail visibly instead of becoming draft child-id edges. A boundary
+  edit is one step of the document, so Undo and Redo restore the definition
+  and the parent pipeline together, whichever view is open. Each
   composite records the external parent node ids it represents, so flat-graph trace
   steps still highlight the corresponding Input or Output card after the
   per-parent markers are collapsed. Input-to-child and child-to-Output edges
@@ -573,23 +573,25 @@ candidate, with the error toast.
   together with its revision, for the snapshot it saved; edits made since stay
   dirty.
 - **Submodel navigation.** Drilling resolves a canonical occurrence from its
-  node type and `{definition_id, alias}` config, loads the shared definition by
-  definition id, verifies any returned identity, and builds boundary nodes from
-  that definition's structured ports and the selected occurrence's parent
-  bindings. Pending drill-in is bound to the initiating document, source file
-  and revision, navigation stack, occurrence identity, and graph/submodel
-  snapshot; it is invalidated by a document reload, another navigation or
-  transform request, any parent graph or submodel change, or loss of submodel
-  management capability, and rechecked after identity resolution and again
-  immediately before committing the child nodes/edges, source path, parent
-  snapshot, and view stack together. If the request has been superseded, it
-  returns without mutating the current graph, source path, or navigation stack.
+  node type and `{definition_id, alias}` config and projects the view from the
+  document the editor holds: the shared definition's children and edges, and
+  boundary cards built from that definition's structured ports and the selected
+  occurrence's parent bindings. Opening a submodel asks the server nothing, so it
+  commits at once. Every node of the view is named as a loaded document names
+  it: the children carry the identities the document gave them, and a boundary
+  card's identity follows from its direction and its declared ports alone (its
+  label is its name, and each port, already a canonical identifier, names its own
+  frame), which the shared fixture
+  `tests/fixtures/ui_contracts/submodel_port_identities.json` holds the server's
+  resolver to. Opening is refused while the document cannot manage submodels,
+  and opening supersedes a create or dissolve still waiting on the server.
   The view keeps the definition's authored child positions; only the two
   boundary cards are placed, the Input card left of the children and the Output
   card right of them, so a visit that edits nothing changes nothing in the
-  document. Projection and identity resolution must both finish before the view
-  stack, graph, source-file refs, or selection mutate; any failure leaves the
-  parent view byte-for-byte unchanged and reports one error toast. A successful
+  document. The projection finishes before the view stack, graph, source-file
+  refs, or selection mutate; a failure (such as a child with no identity to name
+  its frame by) leaves the parent view byte-for-byte unchanged and reports one
+  error toast. A successful
   frame records both `instanceId` and `definitionId`, so two occurrences of one
   definition navigate and return independently, and announces when edits affect
   more than one occurrence. Drilling into any occurrence, original or read-only
@@ -600,18 +602,30 @@ candidate, with the error toast.
   display label. Submodels do not nest: the graph store refuses a second view
   while one is open, so every breadcrumb below the active one is the main
   pipeline.
-- **A submodel view has its own Undo/Redo history.** The graph store swaps the
-  canvas for the child view in one transition that sets the root's undo and redo
-  stacks aside and starts the view with empty ones, so Undo in the view never
-  reaches a root edit. The view is clean exactly when it is unchanged and the root
-  it came from was saved: a save begun at the root that lands while drilled makes
-  the view clean only if it saved the root that was entered. Returning by
-  breadcrumb restores the reconciled parent graph and submodels held for the
-  view, rather than re-fetching them, together with the root's stacks; when the
-  visit changed the document, the root as it was on entry becomes one undo entry
-  (and the redo stack is cleared), so one Undo at the root reverts the whole visit
-  and never puts `submodel_port` cards on the root canvas. A whole-document load
-  ends an open view, keeping only version-control entries from both levels.
+- **An open submodel is a view of the one document.** The graph store holds the
+  authored document at all times: the pipeline's nodes and edges, every submodel
+  definition, the preamble and the global constants. Opening a submodel records
+  which occurrence the canvas shows (its focus), and the canvas is drawn from the
+  document: the definition's children and edges, and Input and Output cards built
+  from its ports and the occurrence's bindings. An edit made inside the submodel
+  changes the document in the same update that changes the canvas: moving,
+  configuring, adding, deleting or connecting a child changes the shared
+  definition, and a boundary edit changes its ports and the bindings of every
+  occurrence that uses them. An edit the document refuses (a public port another
+  occurrence binds, an edit addressed to a read-only copy) changes neither the
+  document nor the canvas, and says why. A request, a save and leaving the
+  submodel all read the document as it stands, with no rebuilt copy to wait for or
+  to lose an edit from. Execution annotations (a preview's columns, statuses)
+  shown on a child belong to that occurrence, not to the shared definition.
+- **One history, one step per edit.** Undo and Redo work as on the main canvas,
+  wherever the edit was made: every edit is one step on one history of the
+  document, and each step records the view it was made in. Undoing or redoing a
+  step made in another view first shows that view; when the submodel it was made
+  in no longer exists, the main pipeline is shown with a notice. Opening and
+  leaving a submodel are navigation, not steps, and leaving shows the main
+  pipeline of the same document. The document is clean exactly when it equals
+  the last saved document. A whole-document load shows the main pipeline and
+  keeps only version-control entries in the history.
 - **Submodel creation is a toolbar action or a keyboard shortcut, not a
   context-menu item.** Selecting two or more nodes and either pressing Ctrl+G
   or clicking the toolbar's Submodel button opens `SubmodelDialog` for the

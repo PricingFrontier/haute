@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CONSTANTS_FILENAME,
   GENERATED_TYPES_FILENAME,
+  brandedNodeKeys,
+  compactNullableSchemas,
   extractContractSchema,
   extractModuleContractSchema,
   run,
@@ -229,6 +231,40 @@ test("a shared group's root is compiled once, and every other module checks only
 
   const unshared = { ...schema, "x-haute-shared-response-groups": ["utility"] };
   assert.throws(() => validatorModules(unshared), /holds exactly one model: utility/);
+});
+
+test("a node key is declared as the branded RuntimeNodeKey, and a mapping by node keys keeps a string index", () => {
+  const answer = {
+    type: "object",
+    properties: {
+      target: { type: "string", "x-haute-node-key": true },
+      listed: { type: "array", items: { type: "string", "x-haute-node-key": true } },
+      by_key: { type: "object", propertyNames: { "x-haute-node-key": true }, additionalProperties: { type: "integer" } },
+      label: { type: "string" },
+    },
+  };
+
+  assert.deepEqual(brandedNodeKeys(answer), {
+    type: "object",
+    properties: {
+      target: { type: "string", tsType: "RuntimeNodeKey" },
+      listed: { type: "array", items: { type: "string", tsType: "RuntimeNodeKey" } },
+      by_key: { type: "object", additionalProperties: { type: "integer" } },
+      label: { type: "string" },
+    },
+  });
+});
+
+test("an optional node key stays a union with null", () => {
+  const optional = { anyOf: [{ type: "string", "x-haute-node-key": true }, { type: "null" }], default: null };
+
+  assert.deepEqual(compactNullableSchemas(brandedNodeKeys(optional)), {
+    anyOf: [{ type: "string", tsType: "RuntimeNodeKey" }, { type: "null" }],
+    default: null,
+  });
+  assert.deepEqual(compactNullableSchemas({ anyOf: [{ type: "string" }, { type: "null" }] }), {
+    type: ["string", "null"],
+  });
 });
 
 test("a schema that says nothing of its type is declared unknown, never an object", () => {

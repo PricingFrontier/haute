@@ -14,6 +14,8 @@ Reviews use a Codex model, because a review from another model family catches fa
 - Plan, design, or spec review: the same command with the plan-review prompt.
 - Second opinion on a judgment call: the same command, advisory and never gating.
 
+A bug fix removes the root cause, not the reported instance (AGENTS.md "Engineering priorities" and step 2 of "Fix and tweak workflow"). The Codex review judges the solution first, whether it is the right design and removes the cause, and the implementation second; the review prompt states the root cause, the design chosen and the alternatives set aside.
+
 Run the Codex commands in the background and keep their state in the session scratchpad.
 
 Do not delegate review to Claude subagents and do not run Claude-vs-Claude review workflows. The main session still inspects every subagent diff itself (that is verification, not review) and owns the completion decision after Codex findings are resolved or rebutted.

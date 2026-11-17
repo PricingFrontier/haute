@@ -645,8 +645,8 @@ checkout or a direct URL refuses to deploy with a `DeployError`, because the con
 reinstalls from the package index by version and would not run the same solver code. A third-party package that the pipeline's own code imports, and that is
 neither in the runtime nor detected from an artefact, is not installed. haute's own
 requirements the image leaves out are a reviewed list (`HAUTE_SCORING_OMISSIONS`: the
-editor, assistant, training, tuning, workbench-store and registry stacks, and the engines no
-artefact needs); `pip check` would report exactly those, so the image checks itself
+editor, assistant, training, tuning, workbench-store, workbench-export (`openpyxl`) and
+registry stacks, and the engines no artefact needs); `pip check` would report exactly those, so the image checks itself
 instead (below). A test serves the container smoke example in process with every other
 `haute` dependency made unimportable, and the weekly container-smoke lane builds and serves
 the real image.

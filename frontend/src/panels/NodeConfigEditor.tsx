@@ -31,6 +31,7 @@ import {
   WorkbenchOutputEditor,
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
+import type { RatingStepSection } from "./editors/RatingStepEditor"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "./editors/_shared"
 
 type Column = { name: string; dtype: string }
@@ -68,6 +69,8 @@ export type NodeConfigEditorProps = {
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
   activeOptimiserPane: OptimiserPane
+  /** A Rating Step's part on show: its panel's Tables or Combined tab, or both in the comparison view. */
+  ratingSection: RatingStepSection
   onOptimiserPaneIssuesChange?: (nodeId: string, panes: readonly OptimiserPane[]) => void
   onUpdateNodeConfig?: (nodeId: string, patch: Record<string, unknown>) => OnUpdateConfigResult
   onModellingPaneIssuesChange?: (nodeId: string, panes: readonly ModellingPane[]) => void
@@ -120,6 +123,7 @@ export function NodeConfigEditor({
   activeExplorePane,
   activeModellingPane,
   activeOptimiserPane,
+  ratingSection,
   onOptimiserPaneIssuesChange,
   onUpdateNodeConfig,
   onModellingPaneIssuesChange,
@@ -158,10 +162,7 @@ export function NodeConfigEditor({
 
     case NODE_TYPES.WORKBENCH_INPUT:
       return (
-        <WorkbenchInputEditor
-          accentColor={accentColor}
-          reservedFrameLabels={reservedApiInputFrameLabels}
-        />
+        <WorkbenchInputEditor reservedFrameLabels={reservedApiInputFrameLabels} />
       )
 
     case NODE_TYPES.WORKBENCH_OUTPUT:
@@ -210,7 +211,7 @@ export function NodeConfigEditor({
       return <ScenarioExpanderEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} />
 
     case NODE_TYPES.RATING_STEP:
-      return <RatingStepEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} previewRows={previewRows} accentColor={accentColor} nodeId={node.id} />
+      return <RatingStepEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} upstreamColumns={upstreamColumns} previewRows={previewRows} accentColor={accentColor} nodeId={node.id} section={ratingSection} />
 
     case NODE_TYPES.MODEL_SCORE:
       return <ModelScoreEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />

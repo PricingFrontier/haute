@@ -191,7 +191,10 @@ def _poll(client: Any, job_id: str, timeout: float = 120.0) -> dict[str, Any]:
 
 
 def _start(client: Any, graph: dict[str, Any]) -> str:
-    response = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+    response = client.post(
+        "/api/optimiser/solve",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
+    )
     assert response.status_code == 200, response.text
     return str(response.json()["job_id"])
 

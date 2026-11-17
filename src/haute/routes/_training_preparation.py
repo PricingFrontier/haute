@@ -31,6 +31,7 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._logging import get_logger
+from haute._memory_errors import memory_error_in
 from haute._polars_dtypes import wide_integer_column, wide_integer_message
 from haute._ram_estimate import RamEstimate
 from haute._seed_plans import (
@@ -75,7 +76,10 @@ from haute.routes._contract_errors import (
     contract_error_job_fields,
     contract_error_refusal,
     contract_error_terminal_reason,
+    is_pipeline_error,
+    memory_error_refusal,
     memory_limit_refusal,
+    pipeline_error_message,
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._synchronous_analysis import CLIENT_CLOSED_REQUEST_STATUS
@@ -944,6 +948,14 @@ def preparation_failure_outcome(
             job_id=job_id,
             terminal_reason="memory_limited",
         )
+    elif memory_error_in(exc) is not None:
+        # Out of memory behind any translation (a Polars error over a failed allocation).
+        logger.warning("pipeline_exec_memory_limited", error=str(exc), node_id=request.node_id)
+        failure = _preparation_failure_from_refusal(
+            memory_error_refusal(exc, operation="training_preparation"),
+            job_id=job_id,
+            terminal_reason="memory_limited",
+        )
     elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
         refusal = contract_error_refusal(exc)
         failure = TrainingPreparationFailure(
@@ -978,6 +990,14 @@ def preparation_failure_outcome(
         )
         failure = _preparation_failure_from_refusal(
             UnprocessableError(f"Pipeline cannot run in bounded streaming mode: {exc}"),
+            job_id=job_id,
+            terminal_reason="contract_error",
+        )
+    elif is_pipeline_error(exc):
+        # The pipeline's own code, contracts or data, as a preview of the node shows it.
+        logger.warning("pipeline_exec_pipeline_error", error=str(exc), node_id=request.node_id)
+        failure = _preparation_failure_from_refusal(
+            UnprocessableError(f"Pipeline execution failed: {pipeline_error_message(exc)}"),
             job_id=job_id,
             terminal_reason="contract_error",
         )

@@ -1,0 +1,199 @@
+import { beforeEach, describe, expect, it } from "vitest"
+import type { Node } from "@xyflow/react"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useGraphStore from "../../stores/useGraphStore"
+import useSettingsStore from "../../stores/useSettingsStore"
+import { makeIdentifiedNode, makeNode } from "../../test-utils/factories"
+import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
+import type { GraphPayload, PreparedGraph } from "../../api/types"
+import { addressKey, childAddress, nodeFrame, rootAddress } from "../nodeAddress"
+import {
+  RequestScopeError,
+  canvasTarget,
+  documentRequestScope,
+  prepareCanvasRequest,
+  prepareNodeRequest,
+  preparePipelineRequest,
+  resultKey,
+  resultKeysOf,
+} from "../requestGateway"
+
+// Occurrence "br rating" has a space, so its runtime id is encoded.
+const OCCURRENCE = "br rating"
+const DEFINITION_ID = "br_rating"
+
+function load() {
+  const definition: SubmodelDefinition = {
+    definitionId: DEFINITION_ID,
+    file: "modules/br_rating.py",
+    graph: {
+      nodes: [makeIdentifiedNode("bands", "banding"), makeIdentifiedNode("tables", "ratingStep")],
+      edges: [{ id: "e1", source: "bands", target: "tables", data: { _inputName: "bands" } }],
+    },
+    inputPorts: [{ name: "policy", targets: [{ nodeId: "bands", handleId: null }] }],
+    outputPorts: [{ name: "premium", source: { nodeId: "tables", handleId: "rated" } }],
+  }
+  const occurrence: Node = makeNode(OCCURRENCE, "submodel", {
+    data: { label: OCCURRENCE, nodeType: "submodel", config: { definition_id: DEFINITION_ID, alias: "br_rating" } },
+  })
+  const edges: PipelineEdge[] = [
+    { id: "feed", source: "workbench_input", sourceHandle: "policy_frame", target: OCCURRENCE, targetHandle: "in__policy" },
+  ]
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: [makeIdentifiedNode("workbench_input", "workbenchInput"), occurrence],
+    edges,
+    preamble: "import polars as pl",
+    submodels: { [DEFINITION_ID]: definition },
+  })
+}
+
+const open = () => useGraphStore.getState().enterSubmodelView({ instanceId: OCCURRENCE, definitionId: DEFINITION_ID })
+const card = (direction: "input" | "output") =>
+  useGraphStore.getState().nodes.find((node) => node.type === "submodelPort" && node.data.portDirection === direction)!
+
+describe("the request gateway", () => {
+  beforeEach(() => {
+    useGraphStore.getState().resetForTests()
+    useSettingsStore.setState({ activeSource: "live" })
+    load()
+  })
+
+  it("prepares a request about a node of the pipeline: the whole document, the node's address, the source and generations", () => {
+    useDocumentStatusStore.setState({ sourceFile: "rating/main.py", executionGeneration: 7 })
+    const generation = useGraphStore.getState().semanticGeneration
+
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget("workbench_input"))
+
+    expect(request.graph.nodes.map((node) => node.id)).toEqual(["workbench_input", OCCURRENCE])
+    expect(Object.keys(request.graph.submodels ?? {})).toEqual([DEFINITION_ID])
+    expect(request.graph.preamble).toBe("import polars as pl")
+    expect(request.target).toEqual(nodeFrame(rootAddress("workbench_input")))
+    // A preview sends the target by address, every field present.
+    expect(request.wireTarget).toEqual({ kind: "node", occurrence: null, node_id: "workbench_input", port_label: null, port_labels: null })
+    expect(request.source).toBe("live")
+    expect(request.document).toEqual({ sourceFile: "rating/main.py", executionGeneration: 7 })
+    expect(request.semanticGeneration).toBe(generation)
+  })
+
+  it("sends the whole pipeline and a child's address from inside an open submodel", () => {
+    open()
+
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget("bands"))
+
+    expect(request.graph.nodes.map((node) => node.id)).toEqual(["workbench_input", OCCURRENCE])
+    expect(request.target).toEqual(nodeFrame(childAddress(OCCURRENCE, "bands")))
+    // A preview sends the child by its occurrence and local id, never a runtime id.
+    expect(request.wireTarget).toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: "bands", port_label: null, port_labels: null })
+  })
+
+  it("reads the Input card's port as the occurrence's input", () => {
+    open()
+    const input = card("input")
+
+    const target = canvasTarget(input.id, "policy")
+    const request = prepareNodeRequest(documentRequestScope, target)
+
+    expect(target).toEqual({ kind: "occurrenceInput", occurrence: OCCURRENCE, port: "policy" })
+    expect(request.wireTarget).toEqual({ kind: "occurrence_input", occurrence: OCCURRENCE, port: "policy" })
+    // A card with one port reads it without a handle.
+    expect(canvasTarget(input.id)).toEqual(target)
+  })
+
+  it("reads the Output card's port as the occurrence's output", () => {
+    // On the main pipeline, the collapsed occurrence's output handle is the same port.
+    expect(canvasTarget(OCCURRENCE, "out__premium")).toEqual({ kind: "occurrenceOutput", occurrence: OCCURRENCE, port: "premium" })
+    open()
+
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget(card("output").id, "premium"))
+
+    expect(request.wireTarget).toEqual({ kind: "occurrence_output", occurrence: OCCURRENCE, port: "premium" })
+  })
+
+  it("lets no caller send a graph it built itself", () => {
+    const built: GraphPayload = { nodes: [], edges: [] }
+    // @ts-expect-error a graph a caller built is not one the gateway prepared
+    const sent: PreparedGraph = built
+
+    expect(sent).toBe(built)
+  })
+
+  it("reads a card as itself when its port is not named", () => {
+    open()
+    const input = card("input")
+
+    expect(canvasTarget(input.id, "not_a_port")).toEqual(nodeFrame(childAddress(OCCURRENCE, input.id), "not_a_port"))
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "not_a_port")).wireTarget)
+      .toEqual({ kind: "node", occurrence: OCCURRENCE, node_id: input.id, port_label: "not_a_port", port_labels: null })
+  })
+
+  it("sends an Input card's port nothing feeds as that port, for the server to refuse by name", () => {
+    useGraphStore.getState().setEdges([])
+    open()
+    const input = card("input")
+
+    const request = prepareNodeRequest(documentRequestScope, canvasTarget(input.id, "policy"))
+
+    expect(request.wireTarget).toEqual({ kind: "occurrence_input", occurrence: OCCURRENCE, port: "policy" })
+  })
+
+  it("sends an operation on a node its address, and refuses to read a card's port as a node", () => {
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget("workbench_input")).node)
+      .toEqual({ occurrence: null, node_id: "workbench_input" })
+    open()
+    expect(prepareNodeRequest(documentRequestScope, canvasTarget("bands")).node)
+      .toEqual({ occurrence: OCCURRENCE, node_id: "bands" })
+    const port = prepareNodeRequest(documentRequestScope, canvasTarget(card("output").id, "premium"))
+    expect(() => port.node).toThrow("A submodel output is not a node.")
+  })
+
+  it("finds an answer's node by address: the pipeline's own, the open occurrence's, and another occurrence's in its definition", () => {
+    const atRoot = prepareNodeRequest(documentRequestScope, canvasTarget("workbench_input"))
+    // At the root no occurrence is open: its children are found in the definition.
+    expect(atRoot.nodeAt({ occurrence: OCCURRENCE, node_id: "tables" })?.data.nodeType).toBe("ratingStep")
+    expect(atRoot.nodeAt({ occurrence: null, node_id: "workbench_input" })?.id).toBe("workbench_input")
+    expect(atRoot.nodeAt({ occurrence: "no such occurrence", node_id: "tables" })).toBeNull()
+
+    open()
+    const inside = prepareNodeRequest(documentRequestScope, canvasTarget("bands"))
+    useGraphStore.getState().exitSubmodelView()
+    expect(inside.nodeAt({ occurrence: OCCURRENCE, node_id: "bands" })?.id).toBe("bands")
+    expect(inside.nodeAt({ occurrence: null, node_id: "workbench_input" })?.id).toBe("workbench_input")
+  })
+
+  it("keys results by occurrence, and gives every key a deleted node's results live under", () => {
+    // A second occurrence of the same definition.
+    useGraphStore.getState().setNodes((nodes) => [...nodes, makeNode("copy", "submodel", {
+      data: { label: "copy", nodeType: "submodel", config: { definition_id: DEFINITION_ID, alias: "copy", instance_of: OCCURRENCE } },
+    })])
+    expect(resultKey("workbench_input")).toBe("workbench_input")
+    // An occurrence takes its children's results with it.
+    expect(resultKeysOf(OCCURRENCE)).toEqual([
+      OCCURRENCE,
+      addressKey(childAddress(OCCURRENCE, "bands")),
+      addressKey(childAddress(OCCURRENCE, "tables")),
+    ])
+
+    open()
+    expect(resultKey("bands")).toBe(addressKey(childAddress(OCCURRENCE, "bands")))
+    expect(prepareCanvasRequest(documentRequestScope, "bands").resultKey).toBe(resultKey("bands"))
+    // A definition's child leaves every occurrence.
+    expect(resultKeysOf("bands")).toEqual([
+      addressKey(childAddress(OCCURRENCE, "bands")),
+      addressKey(childAddress("copy", "bands")),
+    ])
+  })
+
+  it("refuses a request where there is no document to run, sending nothing", () => {
+    expect(() => prepareNodeRequest(null, canvasTarget("workbench_input"))).toThrow(RequestScopeError)
+    expect(() => preparePipelineRequest(null)).toThrow(RequestScopeError)
+  })
+
+  it("prepares a request about the whole pipeline, also from inside a submodel", () => {
+    open()
+
+    const request = preparePipelineRequest(documentRequestScope)
+
+    expect(request.graph.nodes.map((node) => node.id)).toEqual(["workbench_input", OCCURRENCE])
+    expect(request.source).toBe("live")
+  })
+})

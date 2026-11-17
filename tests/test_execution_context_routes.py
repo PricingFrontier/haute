@@ -28,11 +28,13 @@ from haute.errors import (
     TraceTargetNotFoundError,
 )
 from haute.graph_utils import NodeType
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import (
     make_file_output_config,
     make_graph,
 )
+from tests.optimiser_fixtures import optimiser_request
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -80,7 +82,9 @@ async def test_write_output_route_rejects_unconfigured_data_output(
     ):
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
-                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+                WriteOutputRequest(
+                    graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+                )
             )
 
     assert exc_info.value.status_code == 400
@@ -283,7 +287,7 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
 
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_value_error)
 
-    request = TraceRequest(seed_plan=[], graph=graph, row_index=0, target_node_id="source")
+    request = TraceRequest(seed_plan=[], graph=graph, row_index=0, target=node_target("source"))
     response = _app_client().post("/api/pipeline/trace", json=request.model_dump(mode="json"))
 
     assert response.status_code == expected_status
@@ -320,7 +324,9 @@ async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> No
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_contract_mismatch)
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.trace_row(TraceRequest(seed_plan=[], graph=graph, row_index=0))
+        await pipeline_route.trace_row(
+            TraceRequest(seed_plan=[], graph=graph, row_index=0, target=node_target("source"))
+        )
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "bad contract (node_id=source)"
@@ -395,7 +401,7 @@ async def test_preview_route_creates_admitted_preview_execution_context(
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
         )
 
     assert response.status == "ok"
@@ -456,7 +462,7 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
         )
 
     assert response.status == "ok"
@@ -493,7 +499,7 @@ async def test_preview_route_maps_admission_failure_to_http_507(
         }
     )
 
-    request = PreviewNodeRequest(graph=graph, node_id="source")
+    request = PreviewNodeRequest(graph=graph, target=node_target("source"))
     response = _app_client().post("/api/pipeline/preview", json=request.model_dump(mode="json"))
 
     assert response.status_code == 507
@@ -553,7 +559,7 @@ async def test_preview_route_cancels_execution_context_on_timeout(
     with patch.object(pipeline_route, "execute_graph", side_effect=slow_execute_graph):
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.preview_node(
-                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+                PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
             )
 
     assert exc_info.value.status_code == 504
@@ -625,7 +631,7 @@ async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_t
     try:
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.preview_node(
-                PreviewNodeRequest(graph=graph, node_id="source"),
+                PreviewNodeRequest(graph=graph, target=node_target("source")),
                 cast(Request, _LeavingClient()),
             )
         assert exc_info.value.status_code == 504
@@ -714,7 +720,7 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
     try:
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.preview_node(
-                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+                PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
             )
 
         assert exc_info.value.status_code == 504
@@ -793,7 +799,7 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
         )
 
     assert exc_info.value.status_code == 504
@@ -840,7 +846,7 @@ async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
         )
 
     assert exc_info.value.status_code == 504
@@ -875,10 +881,9 @@ async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, er
     monkeypatch.setattr(pipeline_route, "execute_graph", raise_mismatch)
 
     response = await pipeline_route.preview_node(
-        PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+        PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
     )
 
-    assert response.node_id == "source"
     assert response.status == "error"
     assert response.error == "bad preview contract (node_id=source)"
 
@@ -911,7 +916,9 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
         }
     )
 
-    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    request = WriteOutputRequest(
+        graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+    )
     response = _app_client().post(
         "/api/pipeline/write-output", json=request.model_dump(mode="json")
     )
@@ -962,7 +969,9 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
 
     monkeypatch.setattr(pipeline_route, "_output_write_transaction", raise_memory_budget)
 
-    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    request = WriteOutputRequest(
+        graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+    )
     response = _app_client().post(
         "/api/pipeline/write-output", json=request.model_dump(mode="json")
     )
@@ -1018,7 +1027,9 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     ):
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
-                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+                WriteOutputRequest(
+                    graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+                )
             )
 
     assert exc_info.value.status_code == 422
@@ -1061,7 +1072,7 @@ async def test_preview_route_maps_execution_memory_budget_failure_to_http_507(
 
     monkeypatch.setattr(pipeline_route, "execute_graph", raise_memory_budget)
 
-    request = PreviewNodeRequest(graph=graph, node_id="source")
+    request = PreviewNodeRequest(graph=graph, target=node_target("source"))
     response = _app_client().post("/api/pipeline/preview", json=request.model_dump(mode="json"))
 
     assert response.status_code == 507
@@ -1105,7 +1116,9 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            WriteOutputRequest(
+                graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+            )
         )
 
     assert exc_info.value.status_code == 504
@@ -1182,7 +1195,9 @@ async def test_sink_route_releases_admission_before_isolated_timeout_returns(
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            WriteOutputRequest(
+                graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+            )
         )
 
     assert exc_info.value.status_code == 504
@@ -1260,7 +1275,9 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
 
     with pytest.raises(HTTPException) as exc_info:
         await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+            WriteOutputRequest(
+                graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+            )
         )
 
     assert exc_info.value.status_code == 409
@@ -1309,7 +1326,9 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(
     with patch.object(pipeline_route, "_output_write_transaction") as transaction:
         with pytest.raises(HTTPException) as exc_info:
             await pipeline_route.write_output_node(
-                WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+                WriteOutputRequest(
+                    graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
+                )
             )
 
     assert exc_info.value.status_code == 504
@@ -1339,7 +1358,7 @@ def test_optimiser_execute_pipeline_forwards_execution_context() -> None:
             "edges": [],
         }
     )
-    body = OptimiserSolveRequest(graph=graph, node_id="opt")
+    body = optimiser_request(OptimiserSolveRequest, graph)
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})

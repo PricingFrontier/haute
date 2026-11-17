@@ -445,9 +445,9 @@ def test_a_consumer_of_a_deselected_column_fails_at_its_own_input(
         walk_graph(graph, _build_node_fn, policy=policy, enforce_contracts=True)
 
     assert str(raised.value) == (
-        "'uses_adj' needs the column 'price_adjustment', which is not in its input. "
-        "(node_id=uses_adj)"
+        "'uses_adj' needs the column 'price_adjustment', which is not in its input."
     )
+    assert raised.value.context["node_id"] == "uses_adj"
 
 
 @_DISPLAY_AND_LAZY_WALKS
@@ -472,7 +472,7 @@ def test_a_shaping_node_that_does_not_create_a_promised_column_still_fails(
         walk_graph(graph, _build_node_fn, policy=policy, enforce_contracts=True)
 
     assert str(raised.value) == (
-        "'t' did not create the column 'new_col', which its contract says it outputs. (node_id=t)"
+        "'t' did not create the column 'new_col', which its contract says it outputs."
     )
 
 
@@ -586,7 +586,7 @@ def test_a_display_walk_refuses_a_result_that_is_not_a_frame(record_failures: bo
 
     walked = walk_graph(_two_node_graph(), _builder(7), policy=policy, enforce_contracts=False)
 
-    assert walked.errors["src"] == "Node 'src' returned int; expected a Polars frame."
+    assert walked.errors["src"] == "'src' returned int; expected a Polars frame."
     assert walked.errors["child"].startswith("Upstream node(s) failed: src: ")
 
 

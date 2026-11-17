@@ -32,6 +32,7 @@ from haute._execution_context import (
 from haute._graph_utils import _sanitize_func_name
 from haute._logging import get_logger
 from haute._native_memory_limit import model_thread_address_space_allowance
+from haute._node_addresses import node_display_name
 from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import context_thread, current_project
 from haute._seed_plans import open_seed_plan
@@ -54,14 +55,12 @@ from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
     ConflictError,
-    ContractMismatchError,
     HauteValidationError,
     InsufficientMemoryError,
     InvalidRequestError,
     NotFoundError,
     ParseError,
     RequestRefusedError,
-    SchemaMismatchError,
     ServiceFailedError,
     UnprocessableError,
 )
@@ -93,8 +92,12 @@ from haute.routes._background_jobs import (
     start_job_thread,
 )
 from haute.routes._contract_errors import (
+    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_refusal,
+    is_pipeline_error,
+    memory_error_refusal,
+    pipeline_error_message,
 )
 from haute.routes._job_lifecycle import (
     JobLifecycle,
@@ -251,10 +254,7 @@ def _downsampling_warning(
         return None
     if not estimate.unbounded_join_node_ids:
         return estimate.warning
-    joins = [
-        f"'{graph.node_map[join].data.label}'" if join in graph.node_map else f"'{join}'"
-        for join in estimate.unbounded_join_node_ids
-    ]
+    joins = [f"'{node_display_name(graph, join)}'" for join in estimate.unbounded_join_node_ids]
     subject = joins[0] if len(joins) == 1 else f"{', '.join(joins[:-1])} and {joins[-1]}"
     verb = "has" if len(joins) == 1 else "have"
     return (
@@ -548,20 +548,19 @@ class TrainService:
             raise _evaluation_preview_refusal(
                 f"Evaluation preview cannot run in bounded mode: {exc}"
             ) from exc
-        except (
-            ContractMismatchError,
-            SchemaMismatchError,
-            ParseError,
-            ConfigError,
-            pl.exceptions.PolarsError,
-        ) as exc:
+        except PIPELINE_ERROR_TYPES as exc:
+            if not is_pipeline_error(exc):
+                # Out of memory behind it: the memory limit, never the user's to fix.
+                raise memory_error_refusal(exc, operation="training_evaluation_preview") from exc
             # Graph-shape and schema failures raised while the bounded
             # projection executes are the user's to fix, exactly like the
             # data-dependent validation failures above: name the cause. A
             # Polars failure here comes from planning or collecting the
             # pipeline's own code and data — the preview shows the same
             # failure as a node error — so it is reported, never a 500.
-            raise _evaluation_preview_refusal(f"Evaluation preview failed: {exc}") from exc
+            raise _evaluation_preview_refusal(
+                f"Evaluation preview failed: {pipeline_error_message(exc)}"
+            ) from exc
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)
@@ -848,11 +847,10 @@ class TrainService:
                 wait_seconds=_EVALUATION_PREVIEW_WAIT_SECONDS,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
+            # The training request for the same node, its target already resolved.
             train_body = TrainRequest(
-                graph=body.graph,
-                node_id=body.node_id,
-                source=body.source,
-            )
+                graph=body.graph, target=body.target, source=body.source
+            ).with_node_key(body.node_id)
             tmp_parquet = self._execute_and_sink(
                 train_body,
                 preamble_ns,

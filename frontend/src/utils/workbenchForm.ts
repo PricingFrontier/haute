@@ -10,8 +10,11 @@ import type {
   ColumnLook,
   CsvExport,
   CsvImport,
+  ExcelCellsExport,
   ExcelExport,
   ExcelImport,
+  ExportBlock,
+  ExportCell,
   ExportWidget,
   FieldRef,
   FormSchema,
@@ -430,7 +433,7 @@ const settleBlocks = (draft: FormSpec, tableId: string): void => {
 /**
  * Each use of the table `from` made a use of `to`, its new name (READ-23): its columns shown,
  * labelling a Chart's rows and given a look, the conditions on it, what Imports and Exports
- * use of it, and its sample rows.
+ * use of it, an Export's cells among them, and its sample rows.
  */
 function renameTableUses(draft: FormSpec, from: string, to: string): void {
   const renamed = (name: string): string => (name === from ? to : name)
@@ -447,6 +450,10 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
     } else if (widget.type === "export") {
       widget.tables = widget.tables.map(renamed)
       if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.map((named) => ({ ...named, table: renamed(named.table) }))
+      if (widget.target.format === "excel_cells") {
+        widget.target.cells = widget.target.cells.map((cell) => ({ ...cell, table: renamed(cell.table) }))
+        widget.target.blocks = widget.target.blocks.map((block) => ({ ...block, table: renamed(block.table) }))
+      }
     }
   }
   dropConditions(draft, (condition): SingleCondition =>
@@ -463,7 +470,8 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
 /**
  * Each use of the column `from` of the table `tableName` made a use of `to`, its new name
  * (READ-23): where it is shown, labels a Chart's rows or has a look, what the conditions
- * test of it, what Imports read of it or give a parameter, and its sample values.
+ * test of it, what Imports read of it or give a parameter, the Exports' cells it is
+ * written into, and its sample values.
  */
 function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: string): void {
   const own = (name: string): string => (name === from ? to : name)
@@ -475,6 +483,10 @@ function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: 
     if (widget.type === "import") {
       if (widget.table === tableName) widget.column_names = widget.column_names.map((named) => ({ ...named, column: own(named.column) }))
       if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map(field)
+    }
+    if (widget.type === "export" && widget.target.format === "excel_cells") {
+      widget.target.cells = widget.target.cells.map(field)
+      widget.target.blocks = widget.target.blocks.map((block) => (block.table === tableName ? { ...block, columns: block.columns.map(own) } : block))
     }
   }
   dropConditions(draft, (condition): SingleCondition => {
@@ -536,7 +548,8 @@ const dropFields = (draft: FormSpec, drop: (field: FieldRef) => boolean): void =
  * Take what an Import or an Export uses of the tables `table` matches and the columns
  * `column` matches out of it: an Import filling such a table fills none, its column names
  * going with it; a column's name and the parameters given such a column go; and an Export
- * stops exporting such a table, with the name it was written to.
+ * stops exporting such a table, with the name it was written to, and writing such a column
+ * or a column of such a table into a cell.
  */
 const dropButtonUses = (widget: Widget, table: (id: string) => boolean, column: (field: FieldRef) => boolean): void => {
   if (widget.type === "import") {
@@ -551,6 +564,7 @@ const dropButtonUses = (widget: Widget, table: (id: string) => boolean, column: 
   } else if (widget.type === "export") {
     widget.tables = widget.tables.filter((id) => !table(id))
     if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.filter((named) => !table(named.table))
+    // An Export of cells keeps them, each named as a problem (`cellsProblems`).
   }
 }
 
@@ -831,7 +845,12 @@ const importRead = (spec: FormSpec, tableId: string): ReadonlySet<string> => {
  * another, giving a parameter it or exporting it with its table.
  */
 const buttonUsesColumn = (widget: ButtonWidget, tableId: string, columnId: string | undefined, read: ReadonlySet<string>): boolean => {
-  if (widget.type === "export") return widget.tables.includes(tableId)
+  if (widget.type === "export") {
+    return widget.target.format === "excel_cells"
+      ? widget.target.cells.some((cell) => cell.table === tableId && (columnId === undefined || cell.column === columnId)) ||
+          widget.target.blocks.some((block) => block.table === tableId && (columnId === undefined || block.columns.includes(columnId)))
+      : widget.tables.includes(tableId)
+  }
   const reads =
     widget.table === tableId && (columnId === undefined || read.has(columnId) || widget.column_names.some((named) => named.column === columnId))
   const gives =
@@ -846,6 +865,13 @@ export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): 
     .filter(isButton)
     .filter((widget) => buttonUsesColumn(widget, tableId, columnId, read))
 }
+
+/**
+ * The Exports to a workbook of cells writing a schema table's columns, or one of them, in a
+ * cell or a block: removing it leaves it in them, each naming it as a problem.
+ */
+export const keptUses = (spec: FormSpec, tableId: string, columnId?: string): ButtonWidget[] =>
+  buttonUses(spec, tableId, columnId).filter((widget) => widget.type === "export" && widget.target.format === "excel_cells")
 
 /** Whether a sheet's, a section's or a widget's conditions, or its fields', are on a schema table, or test just one of its columns. */
 const testsColumn = (holder: Page | Section | Widget, tableId: string, columnId: string | undefined): boolean => {
@@ -1766,8 +1792,13 @@ export const removeSpacer = (spec: FormSpec, widgetId: string, at: number): Form
 
 /** Where an Import reads from: a CSV, an Excel workbook or a database. */
 export type ImportFormat = ImportWidget["source"]["format"]
-/** Where an Export writes to: a CSV, an Excel workbook or a database. */
+/** Where an Export writes to: a CSV, an Excel workbook of a sheet per table or of cells, or a database. */
 export type ExportFormat = ExportWidget["target"]["format"]
+/** How an Export's Excel workbook is laid out: a sheet per table, or chosen fields in cells. */
+export type ExcelLayout = "tables" | "cells"
+
+/** The format an Export's Format shows for its target: either Excel workbook is Excel. */
+export const exportFormatShown = (format: ExportFormat): ImportFormat => (format === "excel_cells" ? "excel" : format)
 
 /**
  * The furthest down a workbook's sheet an Import's header row can be, as the server's form
@@ -1785,12 +1816,16 @@ export const IMPORT_SOURCES: { readonly [F in ImportFormat]: Readonly<Extract<Im
   sql: { format: "sql", connection: "", query: "", parameters: [] },
 }
 
-/** Each format's settings as a new Export starts them, in the file's order: a file named by the quote's reference and option, headed by names, its values raw, a CSV's split by commas; no connection. */
+/** Each format's settings as a new Export starts them, in the file's order: a file named by the quote's reference and option, headed by names, its values raw, a CSV's split by commas; a workbook of cells holding none; no connection. */
 export const EXPORT_TARGETS: { readonly [F in ExportFormat]: Readonly<Extract<ExportWidget["target"], { format: F }>> } = {
   csv: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "csv", delimiter: "comma" },
   excel: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "excel" },
+  excel_cells: { format: "excel_cells", file_name: EXPORT_FILE_NAME, cells: [], blocks: [] },
   sql: { format: "sql", connection: "", table_names: [] },
 }
+
+/** The sheet a workbook's first cell is written to, as Excel names a new workbook's first sheet. */
+export const FIRST_CELL_SHEET = "Sheet1"
 
 function importOf(spec: FormSpec, id: string): ImportWidget {
   const widget = widgetOf(spec, id)
@@ -1909,26 +1944,54 @@ export const importColumns = (table: SchemaTable): SchemaColumn[] =>
 /** The columns a query's parameter can be given: a one-row table's inputs. */
 export const parameterColumns = (table: SchemaTable): SchemaColumn[] => (table.rows === "one" ? typedInputs(table) : [])
 
-/** Whether an Export writes a file: a CSV or an Excel workbook. */
-const isFile = (target: ExportWidget["target"]): target is CsvExport | ExcelExport => target.format !== "sql"
+/** Whether an Export writes a file: a CSV or an Excel workbook, of either layout. */
+const isFile = (target: ExportWidget["target"]): target is CsvExport | ExcelExport | ExcelCellsExport => target.format !== "sql"
 
-/** An Export writing another format, its settings for it as a new Export's (`EXPORT_TARGETS`), its file name, headers and values kept between a CSV and a workbook. */
-export function setExportFormat(spec: FormSpec, id: string, format: ExportFormat): FormSpec {
+/** Whether an Export's file heads its tables' columns and fills them: a CSV or a workbook of a sheet per table. */
+const headsColumns = (target: ExportWidget["target"]): target is CsvExport | ExcelExport => target.format === "csv" || target.format === "excel"
+
+/**
+ * An Export writing another format, its settings for it as a new Export's (`EXPORT_TARGETS`),
+ * Excel starting a workbook of a sheet per table: its file name kept between files, and its
+ * headers and values between a CSV and a workbook of a sheet per table. Choosing Excel for a
+ * workbook of cells changes nothing.
+ */
+export function setExportFormat(spec: FormSpec, id: string, format: ImportFormat): FormSpec {
   const { target } = exportOf(spec, id)
-  if (target.format === format) return spec
+  if (exportFormatShown(target.format) === format) return spec
   return edit(spec, (draft) => {
     const next = structuredClone(EXPORT_TARGETS[format])
-    if (isFile(next) && isFile(target)) Object.assign(next, { file_name: target.file_name, headers: target.headers, values: target.values })
+    if (isFile(next) && isFile(target)) next.file_name = target.file_name
+    if (headsColumns(next) && headsColumns(target)) Object.assign(next, { headers: target.headers, values: target.values })
     exportOf(draft, id).target = next
   })
 }
 
-/** The settings a format of an Export has of its own, beside the names of the tables it writes to. */
+/** How an Export's Excel workbook is laid out. */
+export const excelLayout = (target: ExcelExport | ExcelCellsExport): ExcelLayout => (target.format === "excel_cells" ? "cells" : "tables")
+
+/**
+ * An Export's Excel workbook laid out the other way, its file name kept and the other
+ * layout's settings started afresh; a workbook of cells exports no tables, so they go.
+ */
+export function setExcelLayout(spec: FormSpec, id: string, layout: ExcelLayout): FormSpec {
+  const { target } = exportOf(spec, id)
+  if (target.format !== "excel" && target.format !== "excel_cells") throw new Error(`Component ${id} exports to ${target.format}, not Excel`)
+  if (excelLayout(target) === layout) return spec
+  return edit(spec, (draft) => {
+    const widget = exportOf(draft, id)
+    widget.target = { ...structuredClone(EXPORT_TARGETS[layout === "cells" ? "excel_cells" : "excel"]), file_name: target.file_name }
+    if (layout === "cells") widget.tables = []
+  })
+}
+
+/** The settings a format of an Export has of its own, beside the names of the tables it writes to and the cells it writes. */
 export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" | "values" | "delimiter"> & Pick<SqlExport, "connection">>
 
 const TARGET_KEYS: Record<ExportFormat, readonly string[]> = {
   csv: ["file_name", "headers", "values", "delimiter"],
   excel: ["file_name", "headers", "values"],
+  excel_cells: ["file_name"],
   sql: ["connection"],
 }
 
@@ -1978,6 +2041,162 @@ export function setTableName(spec: FormSpec, id: string, table: string, name: st
 
 /** The `{name}`s a file name holds, in order. */
 export const fileNameTokens = (fileName: string): string[] => Array.from(fileName.matchAll(/\{([^{}]*)\}/g), (found) => found[1])
+
+function cellsExportOf(spec: FormSpec, id: string): ExcelCellsExport {
+  const { target } = exportOf(spec, id)
+  if (target.format !== "excel_cells") throw new Error(`Component ${id} exports to ${target.format}, which writes no cells`)
+  return target
+}
+
+/** The columns an Export's cell can be given: a one-row table's, as a sheet shows them (as a Collection's fields are offered). */
+export const cellColumns = (table: SchemaTable): SchemaColumn[] => (table.rows === "one" ? sheetColumns(table) : [])
+
+/** The last column of a sheet, XFD, by number, and its last row, as the server's `cell_address` holds them. */
+export const LAST_CELL_COLUMN = 16_384
+export const LAST_CELL_ROW = 1_048_576
+/** An address as Excel writes one: a column's letters in capitals, then a row without leading zeros. */
+const CELL_ADDRESS = /^([A-Z]{1,3})([1-9][0-9]{0,6})$/
+
+/** An address's column, by number from 1, and its row; null for one that is not a cell of a sheet (the server's `cell_address`). */
+export function cellAddress(address: string): { column: number; row: number } | null {
+  const found = CELL_ADDRESS.exec(address)
+  if (found === null) return null
+  const column = [...found[1]].reduce((number, letter) => number * 26 + letter.charCodeAt(0) - 64, 0)
+  const row = Number(found[2])
+  return column <= LAST_CELL_COLUMN && row <= LAST_CELL_ROW ? { column, row } : null
+}
+
+/** The address of the cell under `address`; null when `address` is not a cell or is on the last row. */
+export function nextCellAddress(address: string): string | null {
+  const found = cellAddress(address)
+  if (found === null || found.row === LAST_CELL_ROW) return null
+  return `${address.replace(/[0-9]+$/, "")}${found.row + 1}`
+}
+
+/** The longest name Excel gives a sheet, and the characters it refuses in one, as the server's `sheet_name_problem` holds them. */
+export const SHEET_NAME_LIMIT = 31
+const SHEET_NAME_REFUSED = "[]:*?/\\"
+
+/** Why Excel refuses `name` for a sheet, said of it, or null for a name it takes (the server's `sheet_name_problem`); a blank name is a problem of its own. */
+export function sheetNameProblem(name: string): string | null {
+  // Counted as the server counts it, by code point.
+  if ([...name].length > SHEET_NAME_LIMIT) return `is longer than ${SHEET_NAME_LIMIT} characters`
+  const refused = [...name].find((char) => SHEET_NAME_REFUSED.includes(char))
+  if (refused !== undefined) return `holds ${refused}`
+  if (name.startsWith("'") || name.endsWith("'")) return "starts or ends with '"
+  if (name.toLowerCase() === "history") return "is a name Excel keeps for itself"
+  return null
+}
+
+/**
+ * Add a cell writing a column to an Export's workbook of cells: on the last cell's sheet, in
+ * the cell under the last cell's (`A1` while that is no cell, or on the last row), its label
+ * under the last cell's label (none while that cell has none, or its label's address is no
+ * cell or on the last row), or the first on `Sheet1` at `A1` with no label.
+ */
+export function addExportCell(spec: FormSpec, id: string, field: FieldRef): FormSpec {
+  const last = cellsExportOf(spec, id).cells.at(-1)
+  const sheet = last?.sheet ?? FIRST_CELL_SHEET
+  const cell = (last === undefined ? null : nextCellAddress(last.cell)) ?? "A1"
+  const label_cell = (last === undefined ? null : nextCellAddress(last.label_cell)) ?? ""
+  return edit(spec, (draft) => {
+    cellsExportOf(draft, id).cells.push({ table: field.table, column: field.column, sheet, cell, label_cell })
+  })
+}
+
+function cellAt(target: ExcelCellsExport, id: string, index: number): ExportCell {
+  const cell = target.cells[index]
+  if (cell === undefined) throw new Error(`Component ${id} has no cell ${index}`)
+  return cell
+}
+
+/** The column an Export's cell writes. */
+export function setExportCellColumn(spec: FormSpec, id: string, index: number, field: FieldRef): FormSpec {
+  const cell = cellAt(cellsExportOf(spec, id), id, index)
+  if (cell.table === field.table && cell.column === field.column) return spec
+  return edit(spec, (draft) => {
+    Object.assign(cellAt(cellsExportOf(draft, id), id, index), { table: field.table, column: field.column })
+  })
+}
+
+/** The sheet an Export's cell is on, its address or its label's address, as typed. */
+export function updateExportCell(spec: FormSpec, id: string, index: number, patch: Partial<Pick<ExportCell, "sheet" | "cell" | "label_cell">>): FormSpec {
+  const cell = cellAt(cellsExportOf(spec, id), id, index)
+  const keys = Object.keys(patch) as Array<keyof typeof patch>
+  if (keys.every((key) => patch[key] === undefined || patch[key] === cell[key])) return spec
+  return edit(spec, (draft) => {
+    Object.assign(cellAt(cellsExportOf(draft, id), id, index), patch)
+  })
+}
+
+/** Take a cell out of an Export's workbook of cells. */
+export function removeExportCell(spec: FormSpec, id: string, index: number): FormSpec {
+  cellAt(cellsExportOf(spec, id), id, index)
+  return edit(spec, (draft) => {
+    cellsExportOf(draft, id).cells.splice(index, 1)
+  })
+}
+
+/** What heads a block's columns: their labels, their names, or nothing, its rows starting at its top-left cell. */
+export type ExportHeader = ExportBlock["header"]
+
+/** Add a block of a table to an Export's workbook of cells: no columns yet, headed by their labels, at `A1` of a sheet named by the table. */
+export const addExportBlock = (spec: FormSpec, id: string, table: string): FormSpec =>
+  edit(spec, (draft) => {
+    cellsExportOf(draft, id).blocks.push({ table, columns: [], sheet: table, cell: "A1", header: "labels" })
+  })
+
+function blockAt(target: ExcelCellsExport, id: string, index: number): ExportBlock {
+  const block = target.blocks[index]
+  if (block === undefined) throw new Error(`Component ${id} has no block ${index}`)
+  return block
+}
+
+/** The sheet an Export's block is on, the address of its top-left cell as typed, or its header. */
+export function updateExportBlock(spec: FormSpec, id: string, index: number, patch: Partial<Pick<ExportBlock, "sheet" | "cell" | "header">>): FormSpec {
+  const block = blockAt(cellsExportOf(spec, id), id, index)
+  const keys = Object.keys(patch) as Array<keyof typeof patch>
+  if (keys.every((key) => patch[key] === undefined || patch[key] === block[key])) return spec
+  return edit(spec, (draft) => {
+    Object.assign(blockAt(cellsExportOf(draft, id), id, index), patch)
+  })
+}
+
+/** Take a block out of an Export's workbook of cells. */
+export function removeExportBlock(spec: FormSpec, id: string, index: number): FormSpec {
+  blockAt(cellsExportOf(spec, id), id, index)
+  return edit(spec, (draft) => {
+    cellsExportOf(draft, id).blocks.splice(index, 1)
+  })
+}
+
+/** Add a column of its table to a block, after its last; the form as given while it holds it. */
+export function addBlockColumn(spec: FormSpec, id: string, index: number, column: string): FormSpec {
+  if (blockAt(cellsExportOf(spec, id), id, index).columns.includes(column)) return spec
+  return edit(spec, (draft) => {
+    blockAt(cellsExportOf(draft, id), id, index).columns.push(column)
+  })
+}
+
+/** Move a block's column from one place in its order to another. */
+export function moveBlockColumn(spec: FormSpec, id: string, index: number, from: number, to: number): FormSpec {
+  const { columns } = blockAt(cellsExportOf(spec, id), id, index)
+  if (columns[from] === undefined) throw new Error(`Block ${index} of ${id} has no column ${from}`)
+  if (from === to) return spec
+  return edit(spec, (draft) => {
+    const held = blockAt(cellsExportOf(draft, id), id, index).columns
+    const [column] = held.splice(from, 1)
+    held.splice(to, 0, column)
+  })
+}
+
+/** Take the column at `place` out of a block. */
+export function removeBlockColumn(spec: FormSpec, id: string, index: number, place: number): FormSpec {
+  if (blockAt(cellsExportOf(spec, id), id, index).columns[place] === undefined) throw new Error(`Block ${index} of ${id} has no column ${place}`)
+  return edit(spec, (draft) => {
+    blockAt(cellsExportOf(draft, id), id, index).columns.splice(place, 1)
+  })
+}
 
 // ─── The sample ──────────────────────────────────────────────────────────
 
@@ -2304,14 +2523,119 @@ function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
   return problems
 }
 
+/** What stops a file's name being made: none, or a `{name}` that is not a column of quote_details. */
+function fileNameProblems(spec: FormSpec, fileName: string): string[] {
+  const problems = fileName.trim() === "" ? ["has no file name"] : []
+  const details = spec.schema.tables.find((table) => table.name === QUOTE_DETAILS_NAME)
+  for (const token of new Set(fileNameTokens(fileName))) {
+    if (details === undefined || !tableColumns(details).some((column) => column.name === token)) problems.push(`names its file by {${token}}, which is not a column of quote_details`)
+  }
+  return problems
+}
+
+/** The table and column an Export's cell names, among the columns a sheet shows; null for none. */
+function cellColumn(spec: FormSpec, cell: ExportCell): { table: SchemaTable; column: SchemaColumn } | null {
+  const table = spec.schema.tables.find((held) => held.name === cell.table)
+  const column = table === undefined ? undefined : sheetColumns(table).find((held) => held.name === cell.column)
+  return table === undefined || column === undefined ? null : { table, column }
+}
+
+/** What Excel refuses of the sheet named `sheet`, given `sheets`, each name given before by its spelling in lower case, which it joins (the server's `_sheet_problems`). */
+function sheetProblems(sheet: string, sheets: Map<string, string>): string[] {
+  if (sheet.trim() === "") return ["writes to a sheet with no name"]
+  const reason = sheetNameProblem(sheet)
+  if (reason !== null) return [`writes to the sheet "${sheet}", which ${reason}`]
+  const spelled = sheets.get(sheet.toLowerCase()) ?? sheet
+  sheets.set(sheet.toLowerCase(), spelled)
+  return spelled === sheet ? [] : [`names the sheets "${spelled}" and "${sheet}", which Excel holds as one`]
+}
+
+/** What stops a block's table and columns being written: the table or a column no longer in the schema, no columns, or a column twice (the server's `_block_column_problems`). */
+function blockColumnProblems(spec: FormSpec, block: ExportBlock): string[] {
+  const table = spec.schema.tables.find((held) => held.name === block.table)
+  if (table === undefined) return [`writes the table ${block.table}, which is no longer in the schema`]
+  if (block.columns.length === 0) return [`writes the table ${block.table} with no columns`]
+  const shown = new Set(sheetColumns(table).map((column) => column.name))
+  const seen = new Set<string>()
+  return block.columns.flatMap((name) => {
+    const field = `${block.table}.${name}`
+    const problem = !shown.has(name) ? `writes ${field}, which is no longer in the schema` : seen.has(name) ? `writes ${field} more than once in its table` : null
+    seen.add(name)
+    return problem === null ? [] : [problem]
+  })
+}
+
+/**
+ * What stops an Excel workbook of cells being written, worded as the server's
+ * `cells_problems` words it, each once in its order: the file name's problems, no cells or
+ * blocks, and each cell's: a column no longer in the schema or of a many-row table, a sheet
+ * with no name, one Excel refuses or one named as another in another case, an address that
+ * is not a cell, and a cell already written; then its label's, while its label's address is
+ * not blank: one that is not a cell, and a cell already written. A cell already written is
+ * one any value or label before it on its sheet took. Then each block's: its table's and its
+ * columns' (`blockColumnProblems`), its sheet's, an address that is not a cell, its columns
+ * past XFD, and the first value or label, else the first block, it lies over, a block
+ * taking its columns from its top-left cell's row to the sheet's last.
+ */
+export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[] {
+  const problems = fileNameProblems(spec, target.file_name)
+  if (target.cells.length === 0 && target.blocks.length === 0) problems.push("writes no cells or tables")
+  // The addresses taken, in the order taken, each by its sheet in lower case.
+  const taken = new Map<string, { sheet: string; address: string }>()
+  const take = (sheet: string, address: string) => taken.set(`${sheet.toLowerCase()}!${address}`, { sheet: sheet.toLowerCase(), address })
+  const sheets = new Map<string, string>()
+  for (const cell of target.cells) {
+    const found = cellColumn(spec, cell)
+    const field = `${cell.table}.${cell.column}`
+    if (found === null) problems.push(`writes ${field}, which is no longer in the schema`)
+    else if (found.table.rows === "many") problems.push(`writes ${field}, a column of a many-row table`)
+    problems.push(...sheetProblems(cell.sheet, sheets))
+    if (cellAddress(cell.cell) === null) problems.push(`writes to "${cell.cell}" on "${cell.sheet}", which is not a cell like B3`)
+    else if (taken.has(`${cell.sheet.toLowerCase()}!${cell.cell}`)) problems.push(`writes more than once to ${cell.cell} on "${cell.sheet}"`)
+    else take(cell.sheet, cell.cell)
+    if (cell.label_cell.trim() === "") continue
+    if (cellAddress(cell.label_cell) === null) problems.push(`writes the label of ${field} to "${cell.label_cell}" on "${cell.sheet}", which is not a cell like B3`)
+    else if (taken.has(`${cell.sheet.toLowerCase()}!${cell.label_cell}`)) problems.push(`writes more than once to ${cell.label_cell} on "${cell.sheet}"`)
+    else take(cell.sheet, cell.label_cell)
+  }
+  // The blocks placed, each by its sheet in lower case, its first and last column.
+  const placed: { sheet: string; first: number; last: number; block: ExportBlock }[] = []
+  for (const block of target.blocks) {
+    problems.push(...blockColumnProblems(spec, block), ...sheetProblems(block.sheet, sheets))
+    const address = cellAddress(block.cell)
+    if (address === null) {
+      problems.push(`writes the table ${block.table} to "${block.cell}" on "${block.sheet}", which is not a cell like B3`)
+      continue
+    }
+    const { column: first, row: top } = address
+    const last = first + block.columns.length - 1
+    if (last > LAST_CELL_COLUMN) {
+      problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" past XFD, the last column`)
+      continue
+    }
+    if (block.columns.length === 0) continue
+    const sheet = block.sheet.toLowerCase()
+    const under = [...taken.values()].find((written) => {
+      const spot = written.sheet === sheet ? cellAddress(written.address) : null
+      return spot !== null && first <= spot.column && spot.column <= last && spot.row >= top
+    })
+    const over = placed.find((other) => other.sheet === sheet && other.first <= last && first <= other.last)
+    if (under !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over ${under.address}, which is written already`)
+    else if (over !== undefined) problems.push(`writes the table ${block.table} from ${block.cell} on "${block.sheet}" over the table ${over.block.table} from ${over.block.cell}`)
+    placed.push({ sheet, first, last, block })
+  }
+  return [...new Set(problems)]
+}
+
 /**
  * What stops an Export doing what its settings say: no tables, one gone, more than one to
- * a CSV, a file with no name or naming a column quote_details does not have, and, to a
- * database, no connection.
+ * a CSV, a file with no name or naming a column quote_details does not have, to a database
+ * no connection, and to a workbook of cells its own (`cellsProblems`).
  */
 function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
-  const problems: string[] = []
   const { target, tables } = widget
+  if (target.format === "excel_cells") return cellsProblems(spec, target)
+  const problems: string[] = []
   if (tables.length === 0) problems.push("exports no tables")
   if (tables.some((id) => !spec.schema.tables.some((table) => table.name === id))) problems.push("exports a table that is no longer in the schema")
   if (target.format === "sql") {
@@ -2319,12 +2643,7 @@ function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
     return problems
   }
   if (target.format === "csv" && tables.length > 1) problems.push("exports more than one table to a CSV, which holds one")
-  if (target.file_name.trim() === "") problems.push("has no file name")
-  const details = spec.schema.tables.find((table) => table.name === QUOTE_DETAILS_NAME)
-  for (const token of new Set(fileNameTokens(target.file_name))) {
-    if (details === undefined || !tableColumns(details).some((column) => column.name === token)) problems.push(`names its file by {${token}}, which is not a column of quote_details`)
-  }
-  return problems
+  return [...problems, ...fileNameProblems(spec, target.file_name)]
 }
 
 /** What stops a sheet's conditions doing what they say, by the sheet it is about. */

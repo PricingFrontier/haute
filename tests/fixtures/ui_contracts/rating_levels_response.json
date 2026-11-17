@@ -15,7 +15,11 @@
     "job": null,
     "reads_directly": false,
     "build_endpoint": null,
-    "clear_endpoint": null
+    "clear_endpoint": null,
+    "node_addresses": {
+      "join": {"occurrence": null, "node_id": "join", "label": "Join"},
+      "rating": {"occurrence": null, "node_id": "rating", "label": "Rating"}
+    }
   },
   "data_version": "b41f0a2c9d5e4f7a",
   "total_rows": 1000,

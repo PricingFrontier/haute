@@ -141,7 +141,12 @@ def _write(monkeypatch: pytest.MonkeyPatch, graph: dict[str, Any], **extra: Any)
     calls = _counting_builds(monkeypatch)
     response = TestClient(app, raise_server_exceptions=False).post(
         "/api/pipeline/write-output",
-        json={"graph": graph, "node_id": "out", "overwrite": True, **extra},
+        json={
+            "graph": graph,
+            "target": {"occurrence": None, "node_id": "out"},
+            "overwrite": True,
+            **extra,
+        },
     )
     return _Write(response.status_code, response.json(), Counter(calls))
 
@@ -580,6 +585,47 @@ def test_parent_plan_failure_starts_no_worker(
     assert handoffs == []
     assert not (project / "out" / "result.parquet").exists()
     assert not list(project.glob("out/.result.haute-stage-*"))
+
+
+@pytest.mark.parametrize(
+    ("config", "named", "worker"),
+    [
+        pytest.param(
+            {"code": "df = J.with_columns(e=pl.col('a'))", "contract": {"outputs": ["e"]}},
+            "Node contract annotation is malformed",
+            "inline",
+            id="a malformed contract, refused while the parent plans",
+        ),
+        pytest.param(
+            {"code": "df = J.with_columns(pl.col('missing'))"},
+            'Column "missing" does not exist.',
+            "process",
+            id="a Polars error in the worker process's run",
+        ),
+    ],
+)
+def test_a_pipeline_error_refuses_the_write_naming_it(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, Any],
+    named: str,
+    worker: str,
+) -> None:
+    """The pipeline's own code, contract or data failed, as a preview of the node shows: the
+    write is refused with the cause, not answered as an internal failure. Out of a worker
+    process the cause crosses as the worker's own report, so the worker names it too."""
+    graph = _graph(project)
+    next(node for node in graph["nodes"] if node["id"] == "B")["data"]["config"] = config
+    if worker == "inline":
+        _inline_worker(monkeypatch)
+
+    write = _write(monkeypatch, graph)
+
+    assert write.status_code == 422, write.body
+    assert named in write.body["detail"]
+    # The message a preview records: no plan with the cache's paths.
+    assert "Resolved plan" not in write.body["detail"]
+    assert not (project / "out" / "result.parquet").exists()
 
 
 def test_cancelling_the_request_stops_parent_preparation(

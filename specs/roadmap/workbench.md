@@ -18,9 +18,42 @@ that fill the sheets from databases and APIs.
 
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
-`WB-38` comes from the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md): what the review found in the Workbench view's
-Allowed field.
+`WB-38` comes from the 25 October 2026 codebase review (finding FWB-7): what it found
+in the Workbench view's Allowed field. `WB-41` comes from the 31 October 2026 codebase
+review, which found its three defects by source inspection.
+
+`WB-46` to `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
+it was confirmed by running the code or read from the source; none was run against a
+hosted app or a server database.
+
+`WB-51` to `WB-53` were reproduced on 10 November 2026 through the editor's and the app's
+routes. All three come from leads the October reviews left unverified; `WB-53` is a decision.
+
+`WB-54` and `WB-55` come from the review plan's third sweep of failed writes on 11 November
+2026. Both were reproduced on a SQLite quote store with a second process holding the file,
+as a database browser or a backup does; no server database was used.
+
+`WB-56` to `WB-58` come from the review plan's phase 4, which ran the underwriter app on
+SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the containers CI
+uses. The main session ran each again on the three databases. `WB-59` comes from the same
+phase's carrying of projects made on Windows to Linux, and was run again on Windows.
+
+`WB-60` to `WB-62` come from the plan's phase 5, a reader from a second model family (Codex)
+over the code changed since the 31 October audit. A worker ran each in a browser, and the
+main session ran each journey again on 13 November 2026.
+
+`WB-63` to `WB-69` come from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker built each run and the main session ran each again on 14 November
+2026.
+
+`WB-70` to `WB-74` come from the review plan's phase 4, the quote store
+on PostgreSQL 16 and SQL Server 2022 under repeated requests, lost
+connections and hand-made schemas. A worker built each run and the main
+session ran each again on 16 November 2026.
+
+A cause several packages here share has its own file and is taken first:
+[the quote store check](root-cause-store-check.md).
 
 ## Priorities
 
@@ -34,7 +67,36 @@ Allowed field.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
+| WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` previews a `WORKBENCH_OUTPUT` inside a submodel by its address, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
+| WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
+| WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
+| WB-48 | Planned | P3 | A typed number with a comma out of place is kept as typed and flagged, on the sheet and on the server alike. |
+| WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
+| WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
+| WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
+| WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
+| WB-53 | Decision | P2 | A pricing failure in the underwriter app gives the underwriter a fixed message and an id, and keeps the exception's text for the log. |
+| WB-54 | Planned | P2 | A write the quote store refuses is answered in words, with a code and an id, not with a bare "Internal Server Error". |
+| WB-55 | Planned | P3 | A SQLite quote store that is busy, damaged or missing is reported as that, not as unreachable "just now" or as a journal mode. |
+| WB-56 | Planned | P3 | On SQL Server a quote address with a trailing space names no quote, as on the other databases; no row is stored under a padded reference. |
+| WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
+| WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
+| WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
+| WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
+| WB-61 | Planned | P3 | Text being typed in the designer's Preview is kept when a test quote's Open answers late. |
+| WB-62 | Planned | P3 | A whole number of more than 15 digits is shown digit for digit in a column with a Number format. |
+| WB-63 | Planned | P1 | An underwriter app opened before a column was added keeps that column's values when it saves a quote. |
+| WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
+| WB-65 | Planned | P3 | A single-precision column for a Decimal field is named as a difference, not left to round values. |
+| WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
+| WB-67 | Planned | P2 | A changed params file changes the form's revision, so a test quote typed against the old values is refused as stale. |
+| WB-68 | Planned | P3 | A number in a params file is read as the same text typed in a cell, thousands separators included. |
+| WB-69 | Planned | P2 | Accept is refused when a data file the helper code reads changed after the run. |
+| WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
+| WB-71 | Planned | P2 | A store connection lost in the middle of a write answers 503 in words, not a bare 500. |
+| WB-72 | Planned | P3 | The store check reports a foreign key that refers to other columns or another schema. |
+| WB-73 | Planned | P2 | The store check reports a missing unique constraint on the operation key, so one alternative sent twice cannot make two options. |
+| WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
 
 ## Planned improvements
 
@@ -206,14 +268,30 @@ exports a quote; the sheets show it and Preview's results stay in the browser. T
 Export, a button on the sheets, holds what an export would be, kept in the form: the
 tables, a CSV of one or a workbook of a sheet each under a file name made of the quote's
 details, headed by names or labels, its values raw or formatted, or a database's named
-connection and the tables each is written to; it is drawn disabled in Preview and the
-app, since nothing runs it.
+connection and the tables each is written to; it is drawn disabled in the app, and in
+Preview but for an Excel workbook of cells (below).
+
+**Decided (12 November 2026):** the first format is an Excel workbook of cells: chosen
+fields of the one-row tables, each written into a cell of a sheet, `Slip!B3` say, of a
+workbook Haute makes, its values typed and formatted as their columns' formats show them,
+each cell naming another for its field's label if it wants one, `Slip!A3` say, the label
+the schema gives the field; and tables written as blocks, each a table's columns chosen
+and ordered, its rows under a header of their labels, their names or none from the
+block's top-left cell, `Slip!A12` say, nothing written under a block in its columns,
+whatever rows a quote gives it. A column or a table the schema loses stays in the
+export as a problem rather than dropping out of it.
+Its first run is Preview's: pressing the Export downloads the workbook of the sample as
+it was last priced. Still to come, each its own slice: the app's run of it (below); a
+template, the analyst's own workbook filled in place of one Haute makes; a cell for each
+row of a table with a row for each value; and cells named in a template in place of an
+address.
 
 **Plan:** Decision first, recorded here before the first slice: which formats the first
 release needs (the quote's tables as CSV or a spreadsheet, an import file for another
 system, a document from a template), whether the Export on the sheets is how the app
 exports or the quote's bar offers exports beside it, and whether a quote exported again
-later reproduces the template it was first exported with or uses the current one. Then exports of a final
+later reproduces the template it was first exported with or uses the current one; the
+first format is decided above. Then exports of a final
 quote, which the store's stages gate them behind, never of a draft, so every export is of a quote
 that does not change while it is final and names the release that priced it; run on the
 app's server for the signed-in underwriter and recorded in the quote's activity log. The
@@ -233,6 +311,8 @@ the workflow, and the template's output for the test quotes is checked in CI.
 
 **Evidence:** `src/haute/_workbench_form.py::ExportWidget` (the Export's settings, read
 strictly); `frontend/src/workbench/panel/ExportSettings.tsx` (where they are chosen);
+`src/haute/_workbench_export.py` (an Excel workbook of cells written, and Preview's
+route to it, `POST /api/workbench/export`);
 `frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
 show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);
 `src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
@@ -413,8 +493,7 @@ them" (`TYPED_IN`), a shape the builder can no longer produce and `schemaProblem
 as a problem, while the server's `FormSpec` still accepts `options` with
 `options_source` null. Under the canonical-only policy historical input gets no special
 status: either the server refuses the shape and the branch goes, or the shape is
-canonical and should not be called "older". From the [25 October 2026 codebase
-review](codebase-review-2026-10-25.md) (FWB-7).
+canonical and should not be called "older".
 
 **Plan:** Decide. Either `FormSpec` refuses `options` without `options_source` for input
 columns, and `TYPED_IN`, its test and the problem text are removed; or both stay and the
@@ -427,7 +506,7 @@ specification and the field stop calling the shape older.
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
 
-### WB-41 — Fence `loadingMore` in `useQuoteListStore`, resolve submodel `WORKBENCH_OUTPUT` runtime targets in `priceSample`, and remove stale blank-form rationale
+### WB-41 — Fence `loadingMore` in `useQuoteListStore`, preview a submodel `WORKBENCH_OUTPUT` by address in `priceSample`, and remove stale blank-form rationale
 **Why:** Three defects affect the underwriter app's quote list pagination store, live
 sample pricing in the Workbench view, and the workbench high-level specification:
 1. In `useQuoteListStore` (`frontend/src/app/useQuoteListStore.ts`), `load` does not
@@ -451,20 +530,845 @@ sample pricing in the Workbench view, and the workbench high-level specification
 **Plan:** Reset `loadingMore: false` in `useQuoteListStore.load` and guard
 `set({ loadingMore: false })` in `more()` with `if (listAsked.is(attempt))`; search
 both `graph.nodes` and `graph.submodels` for `NODE_TYPES.WORKBENCH_OUTPUT` in
-`priceSample` and resolve a submodel child output's qualified runtime node ID through
-`qualifiedRuntimeNodeId` before calling `previewNode`; and remove the stale
+`priceSample` and send a submodel child output as the preview's target by its address
+(`childAddress(occurrence, node)`) when calling `previewNode`; and remove the stale
 `The blank form is a form` bullet from `specs/workbench/high-level.md`.
+
+The regression for the first defect holds an old list's `more()`, loads another list,
+and asks for its next page both before and after the old request settles; the defect
+shows as the new list's pagination blocked, or the old completion clearing the new
+list's `loadingMore`. The 28 October 2026 review recorded this sequence as a candidate
+it did not run.
 
 **Acceptance:** Switching quote lists while `more()` is in flight resets `loadingMore`
 immediately and the stale `more()` completion cannot clear a newer list's `loadingMore`
 state; `priceSample` prices a workbench pipeline whose `Workbench Output` is inside a
-submodel by sending the qualified runtime node ID to `/api/pipeline/preview` and
-returning its priced tables; and `specs/workbench/high-level.md` states one consistent
+submodel by sending the child's address to `/api/pipeline/preview` and returning its
+priced tables; and `specs/workbench/high-level.md` states one consistent
 missing-folder rule.
 
 **Dependencies:** None.
 
 **Evidence:** `frontend/src/app/useQuoteListStore.ts::useQuoteListStore`;
 `frontend/src/workbench/priceSample.ts::priceSample`;
-`frontend/src/utils/submodelRuntimeTarget.ts::qualifiedRuntimeNodeId`;
+`frontend/src/utils/nodeAddress.ts::childAddress`;
 `specs/workbench/high-level.md`.
+
+### WB-46 — The quote store's connections and the gate have deadlines
+**Why:** Read from the source. The server-database engine is created with a
+pre-ping only: no connect timeout, no statement timeout and the default pool,
+and the URL builder adds none. A sweep of the quote store, the workbench
+modules and the database IO for a connect, login, statement or pool timeout
+found none. The driver's default is to wait as long as the operating system
+does, which is minutes for a host that drops packets. The store's gate runs
+its opener (connect, catalogue read, privilege probe) while holding its lock,
+and every quote route, the price route and the release route take that lock
+on a worker thread. So when the database stops answering, each request parks
+a worker thread behind the gate, or on a statement with no deadline, instead
+of getting the 503 "cannot reach its quote store" the module promises; after
+the refusal's ten seconds the next request blocks them all again. An
+exhausted pool surfaces as SQLAlchemy's timeout, which the quote routes
+answer as a 500.
+
+**Plan:** Give each provider an explicit connect timeout and statement
+timeout, and the pool a bounded wait that is answered as the 503. Have the
+gate hand waiters the check already in flight instead of the lock, so one
+slow open delays one answer.
+
+**Acceptance:** With the database made to accept connections and never
+answer, a quote read is answered 503 within the configured deadline, twenty
+concurrent requests are all answered within it, and no worker thread is left
+waiting. A statement that outlives its deadline is cancelled and reported as
+the store being unreachable.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_providers.py::make_server_engine`;
+`src/haute/_quote_store/_providers.py::server_url`;
+`src/haute/_workbench_app_store.py::StoreGate`;
+`src/haute/_workbench_app_quotes.py::_call`.
+
+### WB-47 — A release with a Workbench Output column nothing fills
+**Why:** Read from the source. While an analyst edits, a declared output
+column the connected frame lacks, or holds with a type that does not fit, is
+filled with nulls, and a table nothing is connected to likewise; the
+specification says none of these stops a run and the panel flags each. No
+check looks on the way to a release: the deploy's form validation tests
+identity clashes, key collisions and unresolved references only, and the
+functions that judge whether a frame's column fits are used by trace alone.
+Building a release treats a test quote whose answer moved, a price that
+became null included, as a change to report, not a failure, and a project
+need not hold a test quote that covers the column. So a rename or a type
+change upstream ships an app that answers a blank price; only a column
+marked required stops such a quote, and only at Mark final.
+
+**Plan:** Decide whether a release may be built in that state. The
+recommended rule: refuse a release whose Workbench Output declares a column
+no connected frame fills with a fitting type, naming the table, the column
+and the node, unless the form marks the column as allowed to be empty. The
+deploy's dry run already holds the schemas the check needs.
+
+**Acceptance:** With an output column renamed upstream, building a release
+stops and names the table, the column and the Workbench Output; restoring
+the name, or marking the column as allowed to be empty, lets it build. The
+editor's behaviour while editing is unchanged.
+
+**Dependencies:** The decision above; it changes what a release accepts.
+
+**Evidence:** `src/haute/_workbench_output.py::_filled`;
+`src/haute/_workbench_output.py::_unconnected`;
+`src/haute/deploy/_validators.py::_workbench_form_errors`;
+`src/haute/_workbench_app.py::build_release`;
+`src/haute/_quote_store/_book.py::_missing`; `specs/workbench/high-level.md`.
+
+### WB-48 — A comma out of place is not dropped from a typed number
+**Why:** Confirmed on both sides by reading and by calling the two parsers.
+A typed number is read after every currency sign, space and comma is
+removed, wherever the comma sits. `1,234.50` reads as intended, but `1,5`
+reads as 15, `1,00` as 100 and `1 000,50` as 100050. The sheet and the server
+share the rule deliberately, so they agree with each other, and both are
+wrong for a decimal comma or a slip of the key. A column shown in the general
+format keeps the text as typed on the sheet, so the underwriter sees `1,5`
+while the pipeline prices 15.
+
+At the edge of what counts as a space the two halves are not one rule at
+all, reproduced on 10 November 2026 by running both on the same texts:
+JavaScript and Python strip different characters. A typed 5 with a
+byte-order mark before it (U+FEFF, which text copied out of a file can
+carry) shows on the sheet as the number 5, unmarked, while the server keeps
+the text as typed; a cell holding only that character counts as filled on
+the server and as empty on the sheet. The separator controls U+001C to
+U+001F, and U+0085, go the other way: the sheet marks a 1 and a 2 with one
+of them between as "Not a number", and the server reads 12. The server's
+comment gives the reason for the shared rule as "a cell the view marks is
+one the server would keep as typed"; for these seven texts it is not.
+
+**Plan:** Accept a comma only as a thousands separator in its place: groups
+of three digits after the first group, before any decimal point. Text with a
+comma anywhere else is not a number: the sheet marks the cell and the server
+keeps the text as typed, as both already do for other text in a number
+column. Change the two parsers and their shared cases together. Name the
+characters both sides strip in one list beside those cases, in place of
+each language's own notion of whitespace.
+
+**Acceptance:** `1,234`, `1,234.5` and `£12,000` read as numbers; `1,5`,
+`1,00`, `12,34,567` and `1 000,50` are marked on the sheet and kept as text
+by the server. A 5 behind U+FEFF, and a 1 and a 2 around U+001C, read the
+same on both sides. The cases live in the fixture both test suites read.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_tables.py::_typed`;
+`frontend/src/utils/sheetValues.ts::parseTypedNumber`;
+`frontend/src/utils/sheetValues.ts::parseTypedWhole`.
+
+### WB-49 — The hosted check retries its probes
+**Why:** Read from the source. After a rollout, the hosted check polls the
+app's health with retries, then sends two more requests once each: one
+forging a signed-in principal, which the app must refuse, and one signed in,
+which must be answered. A request that gets no answer, or a 5xx, counts as
+"not refused", so a single dropped request raises "The app answered a
+request that forged a signed-in principal (no answer: ...)" and the rollout
+puts the previous release back. Failing closed is right; the wording is
+wrong for a request that was never answered, and one dropped packet undoes a
+good release.
+
+**Plan:** Retry a probe that got no answer or a 5xx within the health
+check's deadline. Word a probe that never got an answer as that, separately
+from one the app answered wrongly.
+
+**Acceptance:** With the first forged-principal request dropped and the
+second refused, the rollout completes. With every attempt unanswered, the
+rollout rolls back and says the app did not answer, not that it accepted a
+forged principal.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_rollout.py::hosted_check`;
+`src/haute/_workbench_rollout.py::_refused`;
+`src/haute/_workbench_rollout.py::rollout`.
+
+### WB-50 — A save that cannot land is refused before pricing
+**Why:** Read from the source. Saving a quote reads the quote, prices the
+values (up to the price timeout, in one of four pricing places) and only
+then calls the store, whose compare-and-swap refuses a save over a version
+that moved on, a final quote or an archived one. The quote just read already
+holds its version, its stage and whether it is archived, so the refusal is
+known before the pricing starts. An underwriter saving over a quote a
+colleague just changed waits for a price that is then thrown away, and holds
+a pricing place while they wait.
+
+**Plan:** Check the version, the stage and the archive flag from the quote
+just read and refuse before pricing. Keep the store's own check, which still
+decides a race between the read and the write.
+
+**Acceptance:** A save over a stale version is refused without a pricing
+call, asserted by a counter on the pricing function; a save that races a
+concurrent change after the read is still refused by the store.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py::save_quote`;
+`src/haute/_quote_store/_book.py::QuoteBook`.
+
+### WB-51 — A form whose column name is not text is refused, not answered 500
+**Why:** Reproduced. `PUT /api/workbench/form` with a `quote_details` table
+whose column carries a list or an object as its `name` answers HTTP 500,
+"Operation failed. Check the server logs for details."; the log holds
+`TypeError: unhashable type: 'list'`. The form brings an earlier Haute's
+`quote_details` columns up to date before the model checks anything: it
+looks each name up in a set of retired names and builds a set of the names,
+and neither works on a value that cannot be hashed. A `TypeError` raised
+there is not turned into a validation answer. The same body with an unknown
+key on the column is answered 422 naming it, and the same column in the form
+file on disk is refused when the form loads, with a 409 naming the file and
+the column. Every route whose body carries a form runs the same step; only
+the save was called. The editor never builds such a body, so this reaches a
+hand-made or damaged request. The 28 October audit recorded the lead for a
+column's `id`, which the model now refuses by name.
+
+**Plan:** Leave a table whose column names are not all text for the model's
+own check, as the step already leaves a column that is not an object.
+
+**Acceptance:** The two bodies are answered 422 naming the column's name,
+and nothing is written. A test sends each JSON type as a column's name to
+each route whose body carries a form and expects no 500.
+
+**Dependencies:** None. Haute has no users, so the step that upgrades an
+earlier form could instead be removed without a migration.
+
+**Evidence:** `src/haute/_workbench_form.py::FormSpec._brings_quote_details_up_to_date`;
+`src/haute/routes/workbench.py::put_workbench_form`.
+
+### WB-52 — The form's save refuses a column name the pipeline cannot use
+**Why:** Reproduced. Saving a form with a column named `class` or `None`
+succeeds: `PUT /api/workbench/form` answers 200 and writes the form. The
+tables route then refuses the form that was just saved:
+`GET /api/workbench/tables` answers 422, "The Workbench Input's table
+'policy' has a column 'class', which cannot name a frame's column: a column's
+name is letters, digits and underscores, not starting with a digit and not a
+Python keyword." The save holds a column's name to the identifier pattern
+alone. The tables route and the editor's own check also refuse a Python
+keyword. So the server accepts and stores a form its own pipeline cannot
+read, and the refusal comes later from another route. `class`, `in`, `is`,
+`as` and `or` are all names a form's author might choose. The 25 October
+audit recorded the difference without running it.
+
+**Plan:** Hold a column's name to the one rule, `is_frame_label`, when the
+form is saved, with the tables route's wording.
+
+**Acceptance:** A save with a column named `class` is refused naming the
+table, the column and the rule, and the form on disk is unchanged. A test
+runs one list of names through the save, the tables route and the editor's
+`columnNameProblem` and expects one verdict from all three.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_folder.py::folder_name_problems`;
+`src/haute/_workbench_tables.py::check_tables`;
+`src/haute/_graph_utils.py::is_frame_label`;
+`frontend/src/utils/workbenchForm.ts::columnNameProblem`.
+
+### WB-53 — What a failed pricing tells the underwriter (a decision)
+**Why:** Reproduced. When the pipeline fails on a quote, the underwriter app
+answers HTTP 500 with the exception's own text after "The pipeline failed on
+this quote:". A node that raised "connection failed: password=hunter2
+token=sk-live-123 at C:/Users/analyst/secrets/db.ini" was answered with all of
+it; a missing file with its absolute path; a missing column with Polars' message
+and its resolved plan; a `KeyError` with the bare key. The workbench
+specification prescribes this answer and says it is how the deployed pricing API
+answers one. It no longer is: the deploy specification says a 500 "never carries
+the exception's text, which can hold file paths and internal names", and the
+deployed API answers a fixed message with a request id that the log carries. The
+app's own test asserts the exception's text. The app's readers are underwriters,
+a wider audience than the API's clients, and the app has no sign-in yet
+(`WB-25`). `haute app impact` reads the same answer to name why each quote
+failed, so the reason has one reader who needs it: the analyst. The 28 October
+audit recorded the lead without a payload.
+
+**Plan:** Decide what an underwriter is shown, and where the analyst then reads
+the reason. The review's proposal: answer as the deployed API does, with a fixed
+sentence that says the pipeline failed on this quote and asks the underwriter to
+pass on the id shown; put that id and the exception's text in the log; and give
+the impact command the reason by a way an underwriter's browser does not have.
+Keep the 422 answers as they are: they name what the underwriter can correct.
+Then make the two specifications say the same.
+
+**Acceptance:** Each of the five failures above is answered 500 with the fixed
+sentence and an id, and with none of the exception's text, path or key; the log
+holds the exception under that id. A quote a contract error refuses is still
+answered 422 with its message. `haute app impact` still names why a quote
+failed. The app's test and the impact command's test are changed to match.
+
+**Dependencies:** The decision. `WB-25` settles who can reach the app at all.
+
+**Evidence:** `src/haute/_workbench_app.py::create_app` builds the answer in its
+`price_values`; `tests/test_workbench_app.py::test_a_pipeline_failing_on_the_quote_answers_why`;
+`tests/test_workbench_impact.py::test_each_quote_outcome_is_named_and_a_staging_failure_fails_the_run`;
+`src/haute/deploy/_container.py` generates the deployed API's `_internal_error`,
+the answer to match;
+`specs/workbench/low-level.md`; `specs/deploy/high-level.md`.
+
+### WB-54 — The underwriter app says why its store refused a write
+**Why:** Reproduced on 11 November 2026 on a SQLite quote store, with
+nothing patched. While a second program holds a write transaction on the
+store's file, as a database browser with an unsaved edit does, a write the
+app makes answers 500 with the plain text "Internal Server Error": no JSON,
+no message, no id. The main session archived a quote and added a note; the
+review plan's sweep ran create, save, final, amend, archive, restore, assign
+and note, each with the same answer after about six seconds. The same answer
+comes from a store file that is read-only when the app starts, while
+`GET /api/app/release` reports the quotes open. The sweep saw it too for a
+folder that refuses new files and for an administrator's trigger, whose own
+message is lost. Nothing is lost: the same request succeeds once the cause
+is gone.
+
+The specification says a statement the database refuses "fails as it would
+have" when the store's check finds its tables in order. What it fails as is
+an unhandled error: the app has no handler of its own, where the editor
+answers a structured 500 with an id. The case is not SQLite's alone, since a
+server database refuses statements too: a lock wait, a permission, a
+trigger. One was run on 12 November 2026: PostgreSQL refuses a text that
+holds a NUL character, which SQLite and SQL Server store, and a save, a
+note and a list search carrying one each answer the same bare 500 there.
+
+**Plan:** Answer a refused statement as the app answers its other store
+failures: JSON with an error code and a sentence saying that the store
+refused the change and that the quote's values are kept, with the
+database's own message in the log under an id. For SQLite, name the two
+cases an owner can act on: the file is held by another program, and the
+file is read-only. Have the release route report a store it cannot write
+to.
+
+**Acceptance:** With the SQLite store held in a write transaction by a
+second process, and with the file read-only, a save answers JSON naming the
+cause. With the file read-only the release route does not report the quotes
+open. A refusal raised by a trigger answers JSON with an id, and the log
+holds the trigger's message under it.
+
+**Dependencies:** None. `WB-53` decides how much of an exception's text the
+app shows.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py`;
+`src/haute/_workbench_app.py::create_app`;
+`src/haute/_workbench_app_store.py`; `specs/workbench/high-level.md`.
+
+### WB-55 — A busy or damaged SQLite store is called what it is
+**Why:** Reproduced on 11 November 2026, with nothing patched. While a
+second program holds a read transaction on the store's file, as a backup or
+a report does, a save's commit is refused and the app answers 503 "The app
+cannot reach its quote store just now." It then closes every quote for ten
+seconds, reads included, though the file is readable throughout. A store
+file cut to half its length gets the same sentence at every start: nothing
+says that the file is damaged, and "just now" suggests waiting. While a
+second program holds the file exclusively, the app answers after 14
+seconds: "The quote store's database is in 'database is locked' mode and
+could not be put back to a rollback journal: close whatever else has it
+open and try again." The lock's error text sits where a journal mode's name
+belongs. The sweep saw a store file deleted between runs come back empty
+and be refused as a mismatch, with nothing saying that the file was gone.
+
+The specification keeps "cannot reach" for "a server database the app
+cannot reach or that refuses its sign-in".
+
+**Plan:** Tell the SQLite cases apart before answering. Busy: another
+program holds the file; say so, and do not close the quotes for a commit
+that was only refused. Not a database: name the file as damaged. Missing:
+say that the file is gone before making an empty one.
+
+**Acceptance:** With a reader's transaction open on the file, a save answers
+that another program holds the store, and reads carry on. With the file cut
+short the app says at start that the store's file is damaged, and names it.
+With an exclusive lock held, the answer names the lock, not a journal mode.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_store.py`;
+`src/haute/_workbench_app_quotes.py`; `src/haute/_workbench_app_store.py`.
+
+### WB-56 — A quote's address with a trailing space names no quote on SQL Server
+**Why:** Reproduced on 12 November 2026 on SQLite, SQL Server 2022 and
+PostgreSQL 16, in the containers CI uses. With quotes `ABC-1` and `Ré-1` in
+the store, the address of `ABC-1` with a space after the reference
+(`/api/app/quotes/ABC-1%20/1`) answers 404 on SQLite and on PostgreSQL. On
+SQL Server it opens `ABC-1`, its archive route archives `ABC-1`, and its
+activity route lists that quote's changes. A priced save sent to `Ré-1`
+with the space answers 200 for `Ré-1` and stores the sheet's row in
+`policy_details` under the reference with the space.
+
+SQL Server's `=` ignores trailing spaces, also under the binary collation
+the store gives a reference, and the routes hand the address's reference to
+the store as it came. The specification keeps a reference trimmed and says
+that "two are one reference only when they are the same". An underwriter
+does not type such an address; a link pasted with a space, or a program
+that calls the app, sends one. The row under the padded reference is what a
+report that reads the store outside SQL Server would then fail to match.
+
+**Plan:** Read a reference from an address as the store keeps one: a
+reference that is not in its kept form names no quote, on every database,
+before any statement compares it.
+
+**Acceptance:** On each of the three databases the address with the space
+answers 404 from every route that takes a reference (open, save, final,
+amend, archive, restore, assign, note, activity), and no row is stored
+under a padded reference. The store's server tests run it.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py`;
+`src/haute/_quote_store/_book.py`; `src/haute/_quote_store/_schema.py`;
+`specs/workbench/high-level.md`; `tests/_store_servers.py`.
+
+### WB-57 — The quote list finds the same quotes on every database
+**Why:** Reproduced on 12 November 2026 on the three databases. The
+specification has a list match "every word searched for against the
+reference, quote name, insured or broker whatever their case". With one
+quote whose insured is "ZÜRICH RE", a search for `zürich` or for `ZÜRICH`
+finds it on SQL Server and on PostgreSQL and finds nothing on SQLite, where
+`re` does find it. SQLite's `lower()` folds the 26 unaccented letters only,
+and the searched word is lowered in Python before it is compared with the
+column lowered by the database. The same two-sided rule means `İzmir`
+finds "İzmir Sigorta" on no database, and `ΟΔΟΣ` finds "ΟΔΟΣ Ltd" on SQL
+Server alone.
+
+On SQL Server a searched word that holds `[` is read as a pattern: `[x]`
+also finds "x co", and `[` alone finds nothing, where the other two
+databases find "[x] co" for both. The escape applied to a searched word
+covers `\`, `%` and `_` and leaves `[` out.
+
+SQLite is the store `haute app serve` uses on an analyst's machine, so a
+search tried there on an accented name fails where the hosted app answers.
+
+**Plan:** Fold the case of the word and of the column by one rule on every
+database, either both in the database or with a folded column the store
+writes, and escape `[` in a searched word on SQL Server.
+
+**Acceptance:** A search for each of `zürich`, `ZÜRICH`, `İzmir`, `ΟΔΟΣ`,
+`[x]` and `[` returns the same quotes on SQLite, SQL Server and PostgreSQL,
+and a quote is found by any word of its insured in any case. The store's
+server tests run these searches.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_book.py`;
+`specs/workbench/high-level.md`; `tests/_store_servers.py`.
+
+### WB-58 — The quote list is in one order on every database
+**Why:** Reproduced on 12 November 2026 on the three databases. The
+specification orders a list "by reference from A to Z with its options in
+order, or by insured". Eight quotes `b-1`, `B-2`, `a-3`, `A-4`, `é-5`,
+`Z-6`, `10-7` and `2-8`, listed by reference, come back from SQLite and SQL
+Server as `10-7`, `2-8`, `A-4`, `B-2`, `Z-6`, `a-3`, `b-1`, `é-5`, every
+capital before every small letter, and from PostgreSQL as `10-7`, `2-8`,
+`a-3`, `A-4`, `b-1`, `B-2`, `é-5`, `Z-6`. Nine insureds listed by insured
+come back in three orders, one for each database: `_x` is first on SQLite
+and SQL Server and after `É` on PostgreSQL, and `Z` is before `É` on SQLite
+and after it on the two servers.
+
+The reference column has the store's exact collation on SQL Server alone;
+PostgreSQL orders it by the database's own collation. The insured is
+ordered by its lower case under each database's default collation, and
+SQLite lowers unaccented letters only. Within one database the pages are
+sound: with quotes added and archived between pages, none is repeated or
+skipped.
+
+**Plan:** State the order in the specification, where the plain reading of
+"A to Z" is PostgreSQL's, and have each database produce it, by a named
+collation on the two ordered columns or by a sort key the store writes.
+
+**Acceptance:** The eight references and the nine insureds above come back
+in one order on the three databases, the order the specification states,
+and the store's server tests check it.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_book.py`;
+`src/haute/_quote_store/_schema.py`; `specs/workbench/high-level.md`.
+
+### WB-59 — A release has one id whatever line endings its checkout has
+**Why:** Reproduced on 13 November 2026 with the real executable. For one
+workbench project at one commit, `haute app build` gives the release the id
+`d69d65737100` when the helper files under `rating/utility` are checked out
+with LF line endings and `54482649bc3f` when they are checked out with
+CRLF. The plan's sweep saw the same two ids for a Windows clone and a
+Linux clone of that commit. The id's own description promises that "the
+same project builds the same id wherever it is checked out". It is a hash
+that takes the bytes of each utility file and of each artifact as they lie
+on disk.
+
+Git for Windows turns LF into CRLF on checkout by default, wherever no
+`.gitattributes` says otherwise. `haute init` writes a `.gitattributes`
+that keeps `*.py` and `*.json` at LF, and in the sweep's run with it the
+ids agree. A project without that file differs: one made before the file
+was written, one that lost it, a shipped example. The id is what tells one
+release from another, "a retrained model, an edited helper"; here it tells
+an analyst's build from the CI's build of the same commit. The automated
+deploy records digests of the same files in its bundle's manifest, and the
+sweep saw them differ the same way.
+
+**Plan:** Hash the text files that go into the id, and into the bundle's
+digests, with their line endings normalised. Keep the bytes as they are
+for binary artifacts.
+
+**Acceptance:** `haute app build` gives one id for one commit from a
+checkout with LF and from one with CRLF, on Windows and on Linux, and a
+changed helper still changes the id. The bundle's digests of text files
+agree the same way.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_app.py::_release_id`;
+`src/haute/_workbench_app.py::_utility_hashes`;
+`src/haute/deploy/_request_rows.py::record_digests`;
+`src/haute/_hashing.py::content_hash`;
+`src/haute/_scaffold_files.py`.
+
+### WB-60 — Hidden values stay on their own rows through a save
+**Why:** Reproduced on 13 November 2026 in a browser, in the underwriter
+app. A form has a table `equipment` of many rows, indexed by a text the
+underwriter types, `item`, with a `units` column and a `limit` column that
+shows only while `show_limits` is ticked. In a new quote with the box
+ticked, the underwriter enters item B with a limit of 200 and then item A
+with a limit of 100. The premium shown is 2,100. The box is unticked, the
+quote is saved, and the box is ticked again. The sheet now shows A with
+200 and B with 100, the next pricing request sends those limits, and the
+premium shown is 1,200. Nothing says a value moved.
+
+The save answers the table's rows in the order of their index, A then B.
+The app puts the hidden cells it kept back onto the answered rows by
+position, so each row is given the hidden value of whichever row was typed
+in its place. The specification keeps hidden values so that "hiding a
+section and showing it again loses nothing: in the sample, and in the
+app's quote while it stays open, saved or not". Rows typed out of their
+index's order are ordinary typing.
+
+**Plan:** Put a kept hidden cell back on the answered row that has the
+same index values, not the same position.
+
+**Acceptance:** In the run above A shows 100 and B shows 200 after the box
+is ticked again, and the premium is 2,100. A test types rows out of order
+into a table with a typed index of each type, hides a column, saves and
+shows it again.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/app/quoteValues.ts`;
+`frontend/src/app/useOpenQuoteStore.ts`; `specs/workbench/high-level.md`.
+
+### WB-61 — Text being typed when a test quote opens is kept
+**Why:** Reproduced on 13 November 2026 in a browser, in the designer's
+Preview. A test quote `tq1` is saved with "kept in quote" in a notes
+field. Open is pressed for it, and before its answer arrives (the run held
+it) the designer clicks into the notes field and types "typed during
+open" without leaving the field. When the answer arrives the field shows
+"kept in quote" again, with the cursor still in it, and nothing is said.
+The specification has an Open's values dropped when the form changed
+meanwhile, "so typing during an Open" wins.
+
+The check that drops a late Open compares the form as last committed. Text
+still being typed in a field is not committed until the field is left, so
+the check does not see it.
+
+**Plan:** Count a field that is being typed in as a change when a late
+Open is weighed, or commit the text before the Open's values are applied.
+
+**Acceptance:** In the run above the field keeps "typed during open" after
+the Open answers, and the Open's values are dropped.
+
+**Dependencies:** None.
+
+**Evidence:** `frontend/src/stores/useWorkbenchTestQuotesStore.ts`;
+`frontend/src/components/form/CommittedTextField.tsx`;
+`specs/workbench/low-level.md`.
+
+### WB-62 — A whole number of more than 15 digits is shown as typed in a formatted column
+**Why:** Reproduced on 13 November 2026 in a browser, in the underwriter
+app. An Integer column with a Number format, no decimal places and
+grouping shows `123456789012345678`, once the cell is left, as
+123,456,789,012,345,680, and `9007199254740993` as
+9,007,199,254,740,992. An Integer output in the same format shows the
+priced value the same way. Only the display is wrong: the pricing request
+sends the digits typed, the answer returns them, and the store holds them.
+The specification sends integers above JavaScript's safe range to the
+browser as "exact decimal strings"; the formatter reads the text through a
+JavaScript number before it groups the digits.
+
+**Plan:** Format a whole number's digits from its text, as the pivot
+formatter the same code calls already does for a text it is given.
+
+**Acceptance:** Both numbers above are shown with every digit as typed,
+grouped, in an input cell and in an output.
+
+**Dependencies:** `WB-48` is about typed numbers with a comma out of place.
+
+**Evidence:** `frontend/src/utils/sheetValues.ts`;
+`specs/workbench/low-level.md`.
+
+### WB-63 — An app opened before a column was added keeps that column's values
+**Why:** Reproduced on 14 November 2026 on SQLite, PostgreSQL 16 and SQL
+Server 2022. An app on the old release has the store open. The owner runs
+Haute's migration SQL, which adds a nullable column `sum_insured`. An app
+on the new release saves 5,000,000 there. The old app then opens that
+quote, changes another field and saves: the answer is 200 and
+`sum_insured` is null. An old app opened after the migration keeps the
+value. The specification has a database column the form does not know
+keep its values through a save. The store reads which columns to keep
+once, when it opens, and the gate reuses the open store.
+
+**Plan:** Read the columns to keep when a save is made, or when the
+database's tables are seen to have changed, not once at opening.
+
+**Acceptance:** In the run above the old app's save leaves 5,000,000 in
+place on all three databases.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_store.py`;
+`src/haute/_workbench_app_store.py`; `specs/workbench/high-level.md`.
+
+### WB-64 — The migration SQL for SQL Server leaves a column's NOT NULL as it says it does
+**Why:** Reproduced on 14 November 2026. A column of the store was made
+`BIGINT NOT NULL` by its owner, and the form declares it Decimal. The
+migration SQL Haute writes says "Not changed here: policy_details.exposure
+takes no null, unlike the store's." and then, on SQL Server, runs
+`ALTER COLUMN exposure FLOAT(53) NULL`. After it the column takes nulls.
+On PostgreSQL the statement changes the type only and the column still
+refuses them.
+
+**Plan:** Write the column's present nullability into the SQL Server
+statement that changes its type.
+
+**Acceptance:** After the SQL above the column on SQL Server is a float
+that takes no null.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_migrate.py`;
+`specs/workbench/high-level.md`.
+
+### WB-65 — A single-precision column is named as a difference for a Decimal field
+**Why:** Reproduced on 14 November 2026 on SQL Server 2022 and
+PostgreSQL 16. A Decimal field's column was made `REAL` by hand. The
+comparison of the form with the database reports no difference and the app
+opens. A quote saved with 16,777,217 there opens as 16,777,216, with
+nothing said. The specification makes a Decimal a double. The comparison
+reads `REAL` and a double as one kind.
+
+**Plan:** Tell single from double precision when the database's columns
+are read, and report a single-precision column for a Decimal field as a
+difference the migration SQL widens.
+
+**Acceptance:** The comparison above names the column, and after the SQL
+is run the value is kept.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_catalogue.py`;
+`specs/workbench/high-level.md`.
+
+### WB-66 — A test quote's rows are opened by their values after a list of codes is reordered
+**Why:** Reproduced on 14 November 2026 through the designer's routes. A
+table's index takes its allowed values from a params file holding `01`
+and `02`. A test quote is saved with 100 against the first code and 200
+against the second. The file is reordered to `02`, `01` and the quote is
+opened: the sheet shows `02` with 100 and `01` with 200. Both codes are
+listed as not opened, yet their amounts are kept, paired by position. The
+specification has "preset rows placed by their values". With the
+file unchanged the codes are still listed as not opened, and so is a
+limit of 1000 whose allowed value is written `1000.00`: the saved number
+is compared as text with the file's spelling.
+
+**Plan:** Compare a saved value with an allowed value as the column's
+type, and place the saved rows by the index value. Leave a row out whole
+when its index value is no longer allowed.
+
+**Acceptance:** With the file unchanged nothing is listed as not opened.
+After the reorder `01` shows 100 and `02` shows 200.
+
+**Dependencies:** `WB-60` is the app's side of pairing by position.
+
+**Evidence:** `src/haute/_workbench_test_quotes.py`;
+`src/haute/_workbench_tables.py`; `specs/workbench/high-level.md`.
+
+### WB-67 — A change to a params file changes the form's revision
+**Why:** Reproduced on 14 November 2026 through the designer's routes. A
+table's index takes its values, `A` and `B`, from a params file outside
+the form's folder. Preview is open with 100 against `A` and 200 against
+`B`. The file is changed to `A`, `C`, as a colleague's pull would. A test
+quote saved from Preview is answered 200 and holds `A` with 100 and `C`
+with nothing: the 200 is lost and nothing is said. The specification has
+the quote saved be the one typed, or the save refused as stale. The
+revision that guards the save is made from the form's folder only, and
+was the same before and after.
+
+**Plan:** Put the params files the form reads into its revision.
+
+**Acceptance:** The save above is refused as stale, and Preview shows the
+new codes after it reloads.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_workbench_folder.py`;
+`specs/workbench/high-level.md`.
+
+### WB-68 — A number in a params file is read as the same number typed in a cell
+**Why:** Reproduced on 14 November 2026. A field takes its allowed values
+from a params file. With `1,000` for an Integer field, `1,000.00` for a
+Decimal one, or `1.0` for an Integer one, the form does not load: 409,
+"limits.csv gives policy.limit the value '1,000', which a int column does
+not hold." The same text typed into a cell of the same type is read as
+1000, 1000.0 and 1. A file saved from a spreadsheet with thousands
+separators is such a file. The message also names the type by its code
+name, "a int", "a float".
+
+**Plan:** Read a params value with the function that reads a typed cell,
+and name the type in the message as the form does.
+
+**Acceptance:** The three files above load with the values the cell
+gives. A value that is not a number is refused with the type's own name.
+
+**Dependencies:** `WB-48` is about typed numbers with a comma out of place.
+
+**Evidence:** `src/haute/_workbench_params.py`;
+`src/haute/_workbench_tables.py`.
+
+### WB-69 — Accept is refused when a data file the helper code reads has changed
+**Why:** Reproduced on 14 November 2026 through the designer's routes. A
+project's `utility` code reads a factor from `utility/rates.json`. A test
+quote expects a premium of 100. The factor is changed to 2 and the test
+is run: it shows the premium moving from 100 to 200. The factor is then
+changed to 3, and Accept is pressed. The answer is 200 and the test's
+expected premium becomes 300, a number the analyst was never shown. With
+the change made in `utility/__init__.py` instead, Accept is refused:
+"What the run priced on changed since". The check hashes the `.py` files
+of `utility` only.
+
+**Plan:** Hash every file under `utility`, as `CCH-05` asks of the
+preview's cache.
+
+**Acceptance:** The Accept above is refused with the sentence the code
+change gets.
+
+**Dependencies:** `CCH-05`.
+
+**Evidence:** `src/haute/_workbench_test_quotes.py`;
+`specs/workbench/high-level.md`.
+
+### WB-70 — A creation repeated under its key is answered with the quote it made
+**Why:** Reproduced on 16 November 2026 with two instances of the
+underwriter app on one quote store. Both were sent the same creation, with
+the same operation key and reference, a few milliseconds apart, as a page
+or a proxy does when the first answer is slow. In 100 rounds the second
+was answered 409 "K-000004/1 already holds the reference K-000004: open
+it, or create an alternative of it" 37 times on SQL Server with read
+committed snapshot off and 5 times on PostgreSQL; never on SQLite, and
+not in this run on SQL Server with it on, where a worker saw 5% to 9%.
+One quote is stored each time. The specification says a request repeated
+under its key answers what the first did. The replay check runs before
+the insert; when the first copy commits in between, the insert finds the
+reference taken, and that refusal is not the one whose handler checks the
+key again. The underwriter is told their own new quote is someone else's.
+
+**Plan:** Check the operation key again before answering that a
+reference is taken, and answer with the quote the key made.
+
+**Acceptance:** 100 rounds of the pair above answer 200 twice with the
+one quote on PostgreSQL and on SQL Server with either setting.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_book.py`;
+`specs/workbench/high-level.md`.
+
+### WB-71 — A store connection lost in the middle of a write is answered in words
+**Why:** Reproduced on 16 November 2026 on PostgreSQL 16 and SQL Server
+2022. The app's own session was ended from a second connection part-way
+through a save, as a failover, a server restart or a dropped idle link
+does. The save answers 500 with the plain text "Internal Server Error".
+Nothing is half-written and the retry lands once. The app answers 503
+with a message only when the store could not be reached before any
+statement ran; a connection lost after the first statement is raised as
+it is. A worker's sweep saw the same for a create and an amendment, at
+every statement before the commit.
+
+**Plan:** Answer a connection lost during a write as the unreachable
+store is answered: 503, naming the store and saying the request can be
+sent again.
+
+**Acceptance:** The save above answers 503 in words on both servers, and
+the retry still lands once.
+
+**Dependencies:** `WB-54`, which gives the same remedy for a write the
+store refuses.
+
+**Evidence:** `src/haute/_workbench_app_quotes.py`;
+`src/haute/_quote_store/_store.py`.
+
+### WB-72 — The store check reads what a foreign key refers to
+**Why:** Reproduced on 16 November 2026 on SQLite, PostgreSQL 16 and SQL
+Server 2022. Two stores were made whose input table's foreign key does
+not refer to the quote as the store keys it: one refers to two other
+columns of `quote_details`, the other to a copy of `quote_details` moved
+aside into another schema, as happens when the table is moved and made
+again. The comparison reports no difference and the app opens the store.
+The first creation answers 500 "Internal Server Error" with the
+database's foreign key violation inside; nothing is stored. The check
+reads the table a foreign key refers to and the columns it constrains,
+never the columns or the schema it refers to.
+
+**Plan:** Compare the referred columns and schema of each foreign key
+too, and name the constraint in the difference.
+
+**Acceptance:** Both stores above are reported as different, naming the
+foreign key, and the app refuses them when it opens.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_catalogue.py`;
+`specs/workbench/high-level.md`.
+
+### WB-73 — The store check requires the unique operation key
+**Why:** Reproduced on 16 November 2026. A store was made from Haute's
+own SQL with one line left out: the unique constraint on the activity
+table's operation key. The comparison reports no difference and the app
+opens the store. Two instances were then sent the same alternative
+creation under one key at once, 30 rounds. On PostgreSQL and on SQL
+Server, with read committed snapshot on and off, every round made two
+options: 61 options for 31 keys. With the constraint present every
+backend made 31. Creation relies on that constraint to settle the race,
+and the check reads columns, primary keys and foreign keys, never unique
+constraints.
+
+**Plan:** Read unique constraints in the store check and report a
+missing one as a difference.
+
+**Acceptance:** The store above is reported as different, naming the
+constraint, and the app refuses it when it opens.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_catalogue.py`;
+`src/haute/_quote_store/_book.py`.
+
+### WB-74 — A password corrected in `.env` is used without restarting the editor
+**Why:** Reproduced on 16 November 2026 with the editor's real server
+and a PostgreSQL quote store whose password comes only from the project's
+`.env`. With a mistyped value, Refresh of the database schema answers 409
+"could not be reached, or it refused the sign-in". After `.env` was
+corrected, Refresh in the same editor answers the same 409; an editor
+started after the fix answers 200. The specification says the variables
+are read afresh from `.env` under the process's own environment. They
+are, but the editor copied `.env` into its own environment when it
+started, so the old value wins every time.
+
+**Plan:** Keep the values the editor itself loaded from `.env` apart
+from the environment it was started with, so a re-read file replaces
+them.
+
+**Acceptance:** In the journey above Refresh answers 200 after the fix,
+with no restart. A variable set outside `.env` still wins.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/server.py`; `src/haute/_connections.py`;
+`specs/workbench/low-level.md`.

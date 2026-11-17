@@ -9,6 +9,8 @@
  */
 
 import { workbenchSampleField } from "./workbenchSample"
+import type { NodeAddressPayload } from "../generated/api-contracts.generated"
+import type { FrameTargetPayload } from "../utils/requestGateway"
 import type { GlobalConstant } from "../utils/globalConstants"
 import { REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type {
@@ -61,6 +63,7 @@ import type {
   GitSetWorkingBranchResponse,
   GitWorkingBranchResponse,
   GraphPayload,
+  PreparedGraph,
   IoCapabilitiesResponse,
   JsonCacheInferResponse,
   ModellingGpuStatusResponse,
@@ -837,18 +840,15 @@ export function saveNodeScoped(
 }
 
 export interface PreviewNodeArgs {
-  graph: GraphPayload
-  nodeId: string
+  graph: PreparedGraph
+  /** The frame previewed, by address (`frameTargetPayload`): a node's output, one of its
+   * frames (a multi-frame producer's `port_label`, part of the backend preview cache key) or
+   * several of them (`port_labels`, each previewed from one run into `port_previews`), or an
+   * occurrence's input or output port. */
+  target: FrameTargetPayload
   rowLimit: number
   source?: string
   requestedPreviewColumns?: string[]
-  /** Frame/emit-table label to preview for a multi-frame producer (a
-   * multi-table apiInput). Sent as `port_label`; part of the backend preview
-   * cache key, so each frame is a distinct cache entry. */
-  portLabel?: string
-  /** Several frames of a multi-frame producer, each previewed from one run into the
-   * answer's `port_previews`. Sent as `port_labels`; not with `portLabel`. */
-  portLabels?: string[]
   /** A workbench form, saved or not, whose tables and sample every Workbench Input and
    * Workbench Output of the request takes in place of the form folder's. Sent as
    * `workbench_form`. */
@@ -862,12 +862,10 @@ export interface PreviewNodeArgs {
 export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse> {
   const {
     graph,
-    nodeId,
+    target,
     rowLimit,
     source,
     requestedPreviewColumns,
-    portLabel,
-    portLabels,
     workbenchForm,
     requestId,
     signal,
@@ -877,12 +875,10 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     "/api/pipeline/preview",
     {
       graph,
-      node_id: nodeId,
+      target,
       row_limit: rowLimit,
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
-      ...(portLabel !== undefined ? { port_label: portLabel } : {}),
-      ...(portLabels !== undefined ? { port_labels: portLabels } : {}),
       // The form Preview prices, or else the sample the workbench view holds (specs/workbench).
       ...(workbenchForm !== undefined ? { workbench_form: workbenchForm } : workbenchSampleField()),
       ...(requestId !== undefined ? { request_id: requestId } : {}),
@@ -920,16 +916,16 @@ export async function getPreviewProgress(
 }
 
 export interface PreviewInputsArgs {
-  graph: GraphPayload
-  nodeId: string
+  graph: PreparedGraph
+  /** The frame the preview reads, as `previewNode` names it. */
+  target: FrameTargetPayload
   source?: string
   requestedPreviewColumns?: string[]
-  portLabel?: string
   signal?: AbortSignal
 }
 
 /**
- * The inputs a preview of `nodeId` would read — snapshot-backed Data Inputs
+ * The inputs a preview of `target` would read — snapshot-backed Data Inputs
  * and structured API Inputs — so only those are prepared before it. A preview
  * seeded from shared snapshots reads nothing above its seeds.
  */
@@ -938,12 +934,11 @@ export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsRes
     "/api/pipeline/preview/inputs",
     {
       graph: args.graph,
-      node_id: args.nodeId,
+      target: args.target,
       source: args.source ?? "live",
       ...(args.requestedPreviewColumns
         ? { requested_preview_columns: args.requestedPreviewColumns }
         : {}),
-      ...(args.portLabel !== undefined ? { port_label: args.portLabel } : {}),
       ...workbenchSampleField(),
     },
     // Bounded by the server's pipeline time limit, which answers 504.
@@ -1084,8 +1079,9 @@ export function savePipeline(
 }
 
 export interface OutputAssembleDryRunArgs {
-  graph: GraphPayload
-  nodeId: string
+  graph: PreparedGraph
+  /** The OUTPUT node, by address. */
+  target: NodeAddressPayload
   /** The in-progress (volatile, unsaved) outputMapping to preview. The route
    * swaps this into the OUTPUT node's config, overriding whatever is on disk —
    * so the preview reflects the editor's CURRENT mapping, not the saved file. */
@@ -1112,7 +1108,7 @@ export function outputAssembleDryRun(
 ): Promise<OutputAssembleDryRunResponse> {
   const {
     graph,
-    nodeId,
+    target,
     outputMapping,
     rowLimit,
     source,
@@ -1123,7 +1119,7 @@ export function outputAssembleDryRun(
     "/api/output-assemble/dry-run",
     {
       graph,
-      node_id: nodeId,
+      target,
       output_mapping: outputMapping,
       ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
       source: source ?? "live",
@@ -1138,16 +1134,14 @@ export function outputAssembleDryRun(
 }
 
 export interface TraceCellArgs {
-  graph: GraphPayload
+  graph: PreparedGraph
   row_index: number
-  target_node_id: string
+  /** The frame the row is from, by address: the target of the preview it was shown in. */
+  target: FrameTargetPayload
   column?: string | null
   row_limit?: number
   source?: string
   row_values?: Record<string, unknown>
-  /** The table of the preview being traced: a Workbench Output's cell is
-   * traced from the node connected to that table. */
-  port_label?: string
   /** The `seed_plan` of the preview being traced: the trace reads exactly
    * those generations, and none when it is empty. */
   seed_plan: TraceSeedPlanEntry[]
@@ -1162,8 +1156,9 @@ export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
 }
 
 export interface WriteOutputArgs {
-  graph: GraphPayload
-  nodeId: string
+  graph: PreparedGraph
+  /** The Data Output node, by address. */
+  target: NodeAddressPayload
   source?: string
   overwrite?: boolean
   signal?: AbortSignal
@@ -1171,8 +1166,9 @@ export interface WriteOutputArgs {
 }
 
 export interface ResolveOutputDestinationArgs {
-  graph: GraphPayload
-  nodeId: string
+  graph: PreparedGraph
+  /** The Data Output node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }
@@ -1180,12 +1176,12 @@ export interface ResolveOutputDestinationArgs {
 export function resolveOutputDestination(
   args: ResolveOutputDestinationArgs,
 ): Promise<OutputDestinationResponse> {
-  const { graph, nodeId, signal, timeout = 30_000 } = args
+  const { graph, target, signal, timeout = 30_000 } = args
   return post<unknown>(
     "/api/pipeline/output-destination",
     {
       graph,
-      node_id: nodeId,
+      target,
     },
     { signal, timeout },
   ).then(async (data) => expectGeneratedContract(
@@ -1198,7 +1194,7 @@ export function resolveOutputDestination(
 export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse> {
   const {
     graph,
-    nodeId,
+    target,
     source,
     overwrite,
     signal,
@@ -1208,7 +1204,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     "/api/pipeline/write-output",
     {
       graph,
-      node_id: nodeId,
+      target,
       source: source ?? "live",
       overwrite: overwrite ?? false,
     },
@@ -1361,7 +1357,7 @@ export function fetchCacheUsage(
 }
 
 export function fetchCacheNodes(
-  payload: { graph: unknown; source: string },
+  payload: { graph: PreparedGraph; source: string },
   options?: { signal?: AbortSignal },
 ): Promise<CacheNodesResponse> {
   return post<unknown>("/api/cache/nodes", { ...payload, ...workbenchSampleField() }, options).then(async (data) =>
@@ -1423,8 +1419,9 @@ export function clearInputCache(
 // ---------------------------------------------------------------------------
 
 export interface NodeDataArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
 }
@@ -1524,8 +1521,9 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
 }
 
 export interface RatingLevelsArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The node, by address. */
+  target: NodeAddressPayload
   source?: string
   columns: string[]
   valueLimit?: number
@@ -1564,18 +1562,10 @@ export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse
 // Explore endpoints
 // ---------------------------------------------------------------------------
 
-export interface RunExploreArgs {
-  graph: GraphPayload
-  node_id: string
-  source?: string
-  refresh?: boolean
-  signal?: AbortSignal
-  timeout?: number
-}
-
 export interface RunExplorePivotArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The Explore node, by address. */
+  target: NodeAddressPayload
   pivot: Record<string, unknown>
   source?: string
   signal?: AbortSignal
@@ -1621,8 +1611,9 @@ export function cancelExplorePivot(
 }
 
 export interface FetchExplorePivotMembersArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The Explore node, by address. */
+  target: NodeAddressPayload
   field: string
   source?: string
   search?: string | null
@@ -1683,8 +1674,9 @@ export function cancelTrain(
 }
 
 export interface TrainModelArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The modelling node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
   timeout?: number
@@ -1704,7 +1696,7 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
 }
 
 export function estimateTrainingRam(
-  payload: { graph: GraphPayload; node_id: string; source?: string },
+  payload: { graph: PreparedGraph; target: NodeAddressPayload; source?: string },
   options?: { signal?: AbortSignal },
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })
@@ -1749,8 +1741,9 @@ export function saveTrainedModel(
 // ---------------------------------------------------------------------------
 
 export interface SolveOptimiserArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }
@@ -1762,8 +1755,9 @@ export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolve
 }
 
 export interface EstimateOptimiserSolveArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   source?: string
   signal?: AbortSignal
   timeout?: number | null
@@ -1837,8 +1831,9 @@ export function logOptimiserToMlflow(
 }
 
 export interface StartOptimiserFrontierAutoRangeArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The optimiser node, by address. */
+  target: NodeAddressPayload
   signal?: AbortSignal
   timeout?: number
 }

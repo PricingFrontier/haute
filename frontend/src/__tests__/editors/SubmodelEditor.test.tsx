@@ -21,7 +21,7 @@ describe("SubmodelEditor", () => {
     ]
     useGraphStore.setState({ edges: [], nodes: applyPreviewResultColumnsToNodes(nodes, "submodel_runtime/copy/score", makePreviewResponse({
       status: "ok", node_schema_warnings: { copy: warnings },
-    }), "live", 0), submodels: { definition_pricing: definition } })
+    }), "live", 0, null, null), submodels: { definition_pricing: definition } })
     const view = render(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     const section = screen.getByRole("region", { name: "Missing columns" })
     expect(within(section).getByText("policy")).toBeVisible()
@@ -34,7 +34,7 @@ describe("SubmodelEditor", () => {
     view.rerender(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     const refreshed = applyPreviewResultColumnsToNodes(useGraphStore.getState().nodes, "submodel_runtime/copy/score", makePreviewResponse({
       status: "ok", node_schema_warnings: { copy: [] },
-    }), "live", 0)
+    }), "live", 0, null, null)
     useGraphStore.setState({ nodes: refreshed })
     view.rerender(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     expect(screen.queryByRole("region", { name: "Missing columns" })).toBeNull()

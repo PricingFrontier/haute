@@ -67,7 +67,10 @@ def _poll_until_done(client: TestClient, job_id: str, timeout: float = 60) -> di
 
 
 def _start_training(client: TestClient, graph: dict, node_id: str = "train") -> dict:
-    resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": node_id})
+    resp = client.post(
+        "/api/modelling/train",
+        json={"graph": graph, "target": {"occurrence": None, "node_id": node_id}},
+    )
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["status"] == "started"

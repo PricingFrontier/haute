@@ -27,6 +27,8 @@ import type {
   PipelineSettingsValues,
 } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
+import { rootAddresses, runtimeKey } from "../../test-utils/factories"
+import { keyText } from "../../utils/answerAddresses"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import useUIStore from "../../stores/useUIStore"
@@ -79,14 +81,24 @@ function serveSettings(settings: Partial<PipelineSettingsValues> = {}) {
   })
 }
 
-function nodeEntry(overrides: Partial<CacheNodesResponse["nodes"][number]> = {}) {
+type NodeRow = CacheNodesResponse["nodes"][number]
+
+/** A row's fields, the nodes it names given as text. */
+type NodeRowFixture = Omit<Partial<NodeRow>, "node_id" | "reads_from" | "shares_snapshot_with"> & {
+  node_id?: string
+  reads_from?: string | null
+  shares_snapshot_with?: string[]
+}
+
+function nodeEntry(overrides: NodeRowFixture = {}): NodeRow {
+  const { node_id = "join", reads_from = null, shares_snapshot_with = [], ...rest } = overrides
   return {
-    node_id: "join",
+    node_id: runtimeKey(node_id),
     kind: "node_output" as const,
     state: "current" as const,
     reads_directly: false,
-    reads_from: null,
-    shares_snapshot_with: [] as string[],
+    reads_from: reads_from === null ? null : runtimeKey(reads_from),
+    shares_snapshot_with: shares_snapshot_with.map(runtimeKey),
     row_count: 1_200_000,
     generations: 1,
     size_bytes: 890 * 1024 * 1024,
@@ -95,13 +107,20 @@ function nodeEntry(overrides: Partial<CacheNodesResponse["nodes"][number]> = {})
     identity_digests: ["digest-join"],
     retention: "automatic" as const,
     unavailable_reason: null,
-    ...overrides,
+    ...rest,
   }
 }
 
+/** Every key the rows name, addressed as a node of the pipeline under its own text. */
+function rowAddresses(rows: readonly NodeRow[]): CacheNodesResponse["node_addresses"] {
+  const keys = rows.flatMap((row) => [row.node_id, ...(row.reads_from ? [row.reads_from] : []), ...row.shares_snapshot_with])
+  return rootAddresses(...keys.map(keyText))
+}
+
 function nodes(overrides: Partial<CacheNodesResponse> = {}): CacheNodesResponse {
-  return {
-    schema_version: 1,
+  const { node_addresses, ...rest } = overrides
+  const answer = {
+    schema_version: 1 as const,
     source: "live",
     nodes: [nodeEntry(), nodeEntry({
         node_id: "source",
@@ -118,8 +137,9 @@ function nodes(overrides: Partial<CacheNodesResponse> = {}): CacheNodesResponse 
     unattributed_generations: 0,
     unattributed_bytes: 0,
     unmarked_identities: 0,
-    ...overrides,
+    ...rest,
   }
+  return { ...answer, node_addresses: { ...rowAddresses(answer.nodes), ...node_addresses } }
 }
 
 describe("PipelineSettingsModal", () => {
@@ -272,18 +292,29 @@ describe("PipelineSettingsModal", () => {
     expect(source).toHaveTextContent("Not cached")
   })
 
-  it("shows the node's label from the canvas, falling back to its id", async () => {
+  it("names a node by the label its address gives, and a submodel's child with its occurrence", async () => {
+    // The occurrence's label is the pipeline's as it was sent, whichever view is open.
     useGraphStore.setState({
       nodes: [
-        { id: "join", position: { x: 0, y: 0 }, data: { label: "Premium join" } },
+        { id: "pricing", position: { x: 0, y: 0 }, data: { label: "Pricing model", nodeType: "submodel" } },
       ] as never,
       edges: [],
     })
+    const child = "submodel_runtime/pricing/banding_1"
+    mockFetchCacheNodes.mockResolvedValue(nodes({
+      nodes: [nodeEntry(), nodeEntry({ node_id: child })],
+      node_addresses: {
+        join: { occurrence: null, node_id: "join", label: "Premium join" },
+        [child]: { occurrence: "pricing", node_id: "banding_1", label: "Banding 1" },
+      },
+    }))
     render(<PipelineSettingsModal onClose={vi.fn()} />)
 
     expect(await screen.findByTestId("cache-node-join")).toHaveTextContent("Premium join")
-    // No label for this one, so the id stands in rather than an empty cell.
-    expect(screen.getByTestId("cache-node-source")).toHaveTextContent("source")
+    const banding = screen.getByTestId(`cache-node-${child}`)
+    expect(banding).toHaveTextContent("Banding 1 in Pricing model")
+    // Never the key the answer names it by.
+    expect(banding).not.toHaveTextContent("submodel_runtime")
   })
 
   it("never calls a direct file read 'cached', because nothing is cached", async () => {
@@ -312,13 +343,8 @@ describe("PipelineSettingsModal", () => {
 
   it("sends a node that reads elsewhere to the row that holds the data", async () => {
     // Otherwise one join's bytes would be repeated on every consumer's row and
-    // the column would sum to more than the store holds.
-    useGraphStore.setState({
-      nodes: [
-        { id: "join", position: { x: 0, y: 0 }, data: { label: "Premium join" } },
-      ] as never,
-      edges: [],
-    })
+    // the column would sum to more than the store holds. The node it reads is named by
+    // the label the answer's address gives it.
     mockFetchCacheNodes.mockResolvedValue(
       nodes({
         nodes: [
@@ -329,6 +355,7 @@ describe("PipelineSettingsModal", () => {
             size_bytes: 0,
           }),
         ],
+        node_addresses: { join: { occurrence: null, node_id: "join", label: "Premium join" } },
       }),
     )
     render(<PipelineSettingsModal onClose={vi.fn()} />)
@@ -411,7 +438,8 @@ describe("PipelineSettingsModal", () => {
           {
             bucket: "node_output",
             label: "old_join_2",
-            node_id: "old_join_2",
+            pipeline: "main.py",
+            owner: { occurrence: null, occurrence_label: null, node_id: "old_join_2", label: "old_join_2" },
             source: "nb_batch",
             generations: 2,
             row_count: 10_000_000,
@@ -479,7 +507,8 @@ describe("PipelineSettingsModal", () => {
           {
             bucket: "node_output",
             label: "old_join_2",
-            node_id: "old_join_2",
+            pipeline: "main.py",
+            owner: { occurrence: null, occurrence_label: null, node_id: "old_join_2", label: "old_join_2" },
             source: "nb_batch",
             generations: 2,
             row_count: 10_000_000,
@@ -495,10 +524,38 @@ describe("PipelineSettingsModal", () => {
 
     const other = await screen.findByTestId("cache-other-old_join_2")
     expect(other).toHaveTextContent("old_join_2")
-    expect(other).toHaveTextContent("nb_batch")
+    expect(other).toHaveTextContent("main.py · nb_batch")
     expect(other).toHaveTextContent("Stored")
     expect(other).not.toHaveTextContent(/generation/i)
     expect(other).toHaveTextContent("1.4 GB")
+  })
+
+  it("names a deleted submodel child by what its data recorded, and its pipeline", async () => {
+    // The occurrence is gone; its child is still named, with the occurrence it was in.
+    mockFetchCacheNodes.mockResolvedValue(
+      nodes({
+        other: [
+          {
+            bucket: "node_output",
+            label: "Banding 1",
+            pipeline: "rating/alt.py",
+            owner: { occurrence: "pricing_2", occurrence_label: "Pricing copy", node_id: "banding_1", label: "Banding 1" },
+            source: "live",
+            generations: 1,
+            row_count: 10,
+            size_bytes: 1024,
+            newest_created_at: 1_700_000_000,
+            build_seconds: 1,
+            identity_digests: ["digest-deleted-child"],
+          },
+        ],
+      }),
+    )
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+
+    const other = await screen.findByTestId("cache-other-Banding 1")
+    expect(other).toHaveTextContent("Banding 1 in Pricing copy")
+    expect(other).toHaveTextContent("rating/alt.py · live")
   })
 
   it("reports bytes it could not attribute to any node", async () => {

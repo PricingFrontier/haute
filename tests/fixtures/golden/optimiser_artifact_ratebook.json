@@ -63,7 +63,11 @@
   "input_summary": {
     "n_quotes": 400,
     "n_steps": 7,
-    "node_id": "ratebook_opt",
+    "node": {
+      "occurrence": null,
+      "node_id": "ratebook_opt",
+      "label": "Ratebook Opt"
+    },
     "data_source": "batch",
     "source_file": null,
     "graph_fingerprint": "beef"

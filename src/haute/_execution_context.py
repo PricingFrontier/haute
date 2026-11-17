@@ -45,6 +45,10 @@ _MATERIALISING_STRATEGIES = frozenset(
 _CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[ExecutionContext | None] = (
     contextvars.ContextVar("haute_current_execution_context", default=None)
 )
+# The flattened graph a walk or its planning runs, for naming its nodes in messages only.
+_NAMING_GRAPH: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "haute_naming_graph", default=None
+)
 logger = get_logger(component="execution_context")
 
 
@@ -1154,11 +1158,15 @@ class ExecutionProvenance:
         "_preview_seed_plan",
         "_write_outcomes",
         "_full_term",
+        "_node_addresses",
     )
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._full_term: dict[str, FullTermTally] = {}
+        # Every node of the graphs this execution walked, by runtime key: the address the
+        # metrics give each key they name. A worker's travels to its parent with its evidence.
+        self._node_addresses: dict[str, dict[str, Any]] = {}
         self._records: dict[str, list[Any]] = {key: [] for key in _WORKER_RECORD_KEYS}
         self._warnings: list[dict[str, str | None]] = []
         self._preview_seed_plan: tuple[Any, ...] = ()
@@ -1250,19 +1258,93 @@ class ExecutionProvenance:
                 data_output_write_native_reason=native_reason if strategy == "native" else None,
             )
 
-    def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
-        """The records a worker returns to its parent, under their payload keys."""
+    def record_node_addresses(self, flat: Any) -> None:
+        """Address every node of *flat*, a flattened graph this execution walks, so the
+        metrics can address any key they name (specs/server-api/low-level.md, "Node
+        addresses"). Never raises: a node it cannot address is left out."""
+        from haute._node_addresses import address_entry, expansion_of
+
+        keys = [*getattr(flat, "node_map", {}), *expansion_of(flat).occurrences]
+        entries: dict[str, dict[str, Any]] = {}
+        for key in keys:
+            try:
+                entries[key] = address_entry(flat, key).model_dump(mode="json")
+            except ValueError:
+                continue
         with self._lock:
-            evidence = {
+            for key, entry in entries.items():
+                self._node_addresses.setdefault(key, entry)
+
+    def node_name(self, key: str, default: str | None = None) -> str:
+        """How a message names the node this execution runs under *key*: its label, and a
+        submodel child's with its occurrence's (``haute._node_addresses.display_name``).
+        A key the execution did not walk is named *default*, or as it is. Never raises."""
+        from haute._node_addresses import display_name
+
+        with self._lock:
+            entry = self._node_addresses.get(key)
+            occurrence_id = entry.get("occurrence") if entry is not None else None
+            occurrence = self._node_addresses.get(occurrence_id) if occurrence_id else None
+        label = entry.get("label") if entry is not None else None
+        if not isinstance(label, str):
+            return key if default is None else default
+        if not isinstance(occurrence_id, str):
+            return display_name(label, None)
+        occurrence_label = occurrence.get("label") if occurrence is not None else None
+        return display_name(
+            label, occurrence_label if isinstance(occurrence_label, str) else occurrence_id
+        )
+
+    def addresses_for(self, payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        """The address of every key *payload*, a metrics payload, names that this execution
+        walked, and of each named child's occurrence: a reader without the graph (a job's
+        status after a reload) names a child with its occurrence's label from it. Never
+        raises: the metrics are reported on failure paths too."""
+        from haute._execution_schemas import ExecutionMetricsPayload
+        from haute._node_addresses import named_keys
+
+        try:
+            named = named_keys(ExecutionMetricsPayload, payload)
+        except Exception:  # noqa: BLE001 - a diagnostic must never hide the run's own error
+            return {}
+        with self._lock:
+            addresses = {
+                key: dict(self._node_addresses[key]) for key in named if key in self._node_addresses
+            }
+            occurrences = [entry.get("occurrence") for entry in addresses.values()]
+            while occurrences:
+                occurrence = occurrences.pop()
+                if not isinstance(occurrence, str) or occurrence in addresses:
+                    continue
+                entry = self._node_addresses.get(occurrence)
+                if entry is not None:
+                    addresses[occurrence] = dict(entry)
+                    # A nested occurrence is a child of the occurrence holding it.
+                    occurrences.append(entry.get("occurrence"))
+        return dict(sorted(addresses.items()))
+
+    def worker_evidence(self) -> dict[str, Any]:
+        """The records a worker returns to its parent, under their payload keys, and the
+        addresses of the nodes it walked."""
+        with self._lock:
+            evidence: dict[str, Any] = {
                 key: [dict(record.to_dict()) for record in self._records[key]]
                 for key in _WORKER_RECORD_KEYS
             }
             evidence["warnings"] = [dict(warning) for warning in self._warnings]
+            evidence["node_addresses"] = {
+                key: dict(entry) for key, entry in self._node_addresses.items()
+            }
             return evidence
 
     def adopt(self, evidence: Mapping[str, Any]) -> None:
         """Report a worker's evidence, or its whole metrics payload, as this execution's own."""
         with self._lock:
+            addresses = evidence.get("node_addresses")
+            if isinstance(addresses, Mapping):
+                for key, entry in addresses.items():
+                    if isinstance(key, str) and isinstance(entry, Mapping):
+                        self._node_addresses.setdefault(key, dict(entry))
             for key in _WORKER_RECORD_KEYS:
                 self._records[key].extend(
                     _EvidenceRecord(dict(payload)) for payload in evidence.get(key, ())
@@ -1285,7 +1367,9 @@ class ExecutionProvenance:
         earlier worker prepared, read, wrote, and warned about is not lost.
         """
         self.adopt(worker_metrics)
-        return {**worker_metrics, **self.worker_evidence()}
+        merged = {**worker_metrics, **self.worker_evidence()}
+        merged["node_addresses"] = self.addresses_for(merged)
+        return merged
 
     def payload(self) -> dict[str, object]:
         """The write outcomes, records, and warnings as metrics-payload fields."""
@@ -1640,6 +1724,8 @@ class ExecutionContext:
         self.evidence.record_estimate_calibration(
             payload, profile=self.profile, diagnostic=diagnostic
         )
+        # The payload addresses every node it names, so whatever answer carries it does.
+        payload["node_addresses"] = self.provenance.addresses_for(payload)
         self.telemetry.emit_terminal(payload)
         return payload
 
@@ -1766,6 +1852,52 @@ class _TimedStage:
 
 def current_execution_context() -> ExecutionContext | None:
     return _CURRENT_EXECUTION_CONTEXT.get()
+
+
+@contextlib.contextmanager
+def naming_nodes_from(flat: Any) -> Iterator[None]:
+    """Name nodes from *flat*, the flattened graph a walk or its planning runs, in the
+    messages raised inside the block (:func:`execution_node_name`). A walk is not always a
+    stage of its execution (a trace's is not, nor a preview's planning), so it names its
+    nodes from its own graph. It sets nothing else an execution reads."""
+    token = _NAMING_GRAPH.set(flat)
+    try:
+        yield
+    finally:
+        _NAMING_GRAPH.reset(token)
+
+
+def current_node_namer() -> Callable[[str], str] | None:
+    """How a message raised now names a node by key (:func:`execution_node_name`), or
+    ``None`` when no walk or execution is running to name it."""
+    if _NAMING_GRAPH.get() is None and current_execution_context() is None:
+        return None
+    return execution_node_name
+
+
+def execution_node_name(
+    key: str, default: str | None = None, *, context: ExecutionContext | None = None
+) -> str:
+    """How a message names the node under *key*, for code that has no flat graph to name it
+    from (``haute._node_addresses.node_display_name``): through *context*, else the graph
+    the running walk names its nodes from (:func:`naming_nodes_from`), else the current
+    execution (:meth:`ExecutionProvenance.node_name`). A key none of them holds is named
+    *default*, or as it is. Never raises."""
+    if context is None:
+        flat = _NAMING_GRAPH.get()
+        if flat is not None:
+            from haute._node_addresses import address_entry, node_display_name
+
+            try:
+                address_entry(flat, key)
+            except ValueError:
+                pass
+            else:
+                return node_display_name(flat, key)
+        context = current_execution_context()
+    if context is None:
+        return key if default is None else default
+    return context.provenance.node_name(key, default)
 
 
 def _cleanup_failure_note(error: BaseException) -> str:

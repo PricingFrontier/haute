@@ -11,8 +11,8 @@ import { renderHook } from "@testing-library/react"
 import useDocumentStatusStore from "../useDocumentStatusStore"
 import useOptimiserPublishStore, { usePublishState } from "../useOptimiserPublishStore"
 
-const SAVE = { nodeId: "opt_1", pointIndex: null, outputPath: "output/a.json", version: "", stale: false }
-const LOG = { nodeId: "opt_1", jobId: "job_1", pointIndex: null, destination: "", experimentName: "e", stale: false }
+const SAVE = { resultKey: "opt_1", pointIndex: null, outputPath: "output/a.json", version: "", stale: false }
+const LOG = { resultKey: "opt_1", jobId: "job_1", pointIndex: null, destination: "", experimentName: "e", stale: false }
 
 /** A server refusal carrying a structured `{error_code, message}` detail. */
 function structuredError(errorCode: string, message: string): Error {
@@ -21,18 +21,18 @@ function structuredError(errorCode: string, message: string): Error {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  useOptimiserPublishStore.setState({ byNode: {} })
+  useOptimiserPublishStore.setState({ byResultKey: {} })
 })
 
 describe("useOptimiserPublishStore", () => {
   it("keeps receipts per solve job, so a new job starts with none", async () => {
     mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "/p/output/a.json", apply_path: "output/a.json", message: "" })
     await useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_1" })
-    expect(useOptimiserPublishStore.getState().byNode.opt_1?.saveReceipt?.apply_path).toBe("output/a.json")
+    expect(useOptimiserPublishStore.getState().byResultKey.opt_1?.saveReceipt?.apply_path).toBe("output/a.json")
 
     mockSaveOptimiser.mockReturnValue(new Promise(() => {}))
     void useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_2" })
-    const state = useOptimiserPublishStore.getState().byNode.opt_1
+    const state = useOptimiserPublishStore.getState().byResultKey.opt_1
     expect(state?.jobId).toBe("job_2")
     expect(state?.saveReceipt).toBeNull()
     expect(state?.saving).toBe(true)
@@ -47,7 +47,7 @@ describe("useOptimiserPublishStore", () => {
 
     resolveOld({ status: "ok", path: "/old", apply_path: "old.json", message: "" })
     await oldSave
-    const state = useOptimiserPublishStore.getState().byNode.opt_1
+    const state = useOptimiserPublishStore.getState().byResultKey.opt_1
     expect(state?.jobId).toBe("job_2")
     expect(state?.saveReceipt).toBeNull()
   })
@@ -56,20 +56,20 @@ describe("useOptimiserPublishStore", () => {
     let resolveSave: (value: unknown) => void = () => {}
     mockSaveOptimiser.mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
     const save = useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_1" })
-    expect(useOptimiserPublishStore.getState().byNode.opt_1?.saving).toBe(true)
+    expect(useOptimiserPublishStore.getState().byResultKey.opt_1?.saving).toBe(true)
 
     useDocumentStatusStore.getState().reset()
-    expect(useOptimiserPublishStore.getState().byNode).toEqual({})
+    expect(useOptimiserPublishStore.getState().byResultKey).toEqual({})
 
     resolveSave({ status: "ok", path: "/p/a.json", apply_path: "a.json", message: "" })
     await save
-    expect(useOptimiserPublishStore.getState().byNode).toEqual({})
+    expect(useOptimiserPublishStore.getState().byResultKey).toEqual({})
   })
 
   it("sends the target explicitly and records a stale publish", async () => {
     mockLogOptimiserToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "e", run_id: "r", run_url: null, tracking_uri: "" })
     await useOptimiserPublishStore.getState().log({
-      nodeId: "opt_1",
+      resultKey: "opt_1",
       jobId: "job_1",
       pointIndex: 3,
       destination: "",
@@ -83,7 +83,7 @@ describe("useOptimiserPublishStore", () => {
       experiment_name: null,
       stale: true,
     })
-    expect(useOptimiserPublishStore.getState().byNode.opt_1?.logReceipt).toMatchObject({ run_id: "r", pointIndex: 3 })
+    expect(useOptimiserPublishStore.getState().byResultKey.opt_1?.logReceipt).toMatchObject({ run_id: "r", pointIndex: 3 })
   })
 
   it("turns an existing-file refusal into a Replace prompt that keeps the exact request", async () => {
@@ -92,7 +92,7 @@ describe("useOptimiserPublishStore", () => {
     )
     await useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_1", pointIndex: 2 })
 
-    const state = useOptimiserPublishStore.getState().byNode.opt_1
+    const state = useOptimiserPublishStore.getState().byResultKey.opt_1
     expect(state?.saving).toBe(false)
     expect(state?.saveError).toBeNull()
     expect(state?.overwritePrompt).toEqual({
@@ -107,7 +107,7 @@ describe("useOptimiserPublishStore", () => {
     )
     await useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_1", overwrite: true })
 
-    const state = useOptimiserPublishStore.getState().byNode.opt_1
+    const state = useOptimiserPublishStore.getState().byResultKey.opt_1
     expect(state?.overwritePrompt).toBeNull()
     expect(state?.saveError).toBe("Optimiser result already exists: output/a.json")
   })
@@ -116,7 +116,7 @@ describe("useOptimiserPublishStore", () => {
     mockSaveOptimiser.mockRejectedValue(new Error("disk full"))
     await useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_1" })
 
-    const state = useOptimiserPublishStore.getState().byNode.opt_1
+    const state = useOptimiserPublishStore.getState().byResultKey.opt_1
     expect(state?.saving).toBe(false)
     expect(state?.saveError).toBe("disk full")
     expect(state?.overwritePrompt).toBeNull()
@@ -125,14 +125,14 @@ describe("useOptimiserPublishStore", () => {
   it("records a log failure with its error code, and clears both on the next log", async () => {
     mockLogOptimiserToMlflow.mockRejectedValueOnce(structuredError("mlflow_unreachable", "MLflow is unreachable"))
     await useOptimiserPublishStore.getState().log(LOG)
-    let state = useOptimiserPublishStore.getState().byNode.opt_1
+    let state = useOptimiserPublishStore.getState().byResultKey.opt_1
     expect(state?.logging).toBe(false)
     expect(state?.logError).toBe("MLflow is unreachable")
     expect(state?.logErrorCode).toBe("mlflow_unreachable")
 
     mockLogOptimiserToMlflow.mockReturnValueOnce(new Promise(() => {}))
     void useOptimiserPublishStore.getState().log(LOG)
-    state = useOptimiserPublishStore.getState().byNode.opt_1
+    state = useOptimiserPublishStore.getState().byResultKey.opt_1
     expect(state?.logging).toBe(true)
     expect(state?.logError).toBeNull()
     expect(state?.logErrorCode).toBeNull()
@@ -145,10 +145,10 @@ describe("useOptimiserPublishStore", () => {
     await useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_1" })
 
     useOptimiserPublishStore.getState().dismissOverwrite("opt_1", "job_0")
-    expect(useOptimiserPublishStore.getState().byNode.opt_1?.overwritePrompt).not.toBeNull()
+    expect(useOptimiserPublishStore.getState().byResultKey.opt_1?.overwritePrompt).not.toBeNull()
 
     useOptimiserPublishStore.getState().dismissOverwrite("opt_1", "job_1")
-    expect(useOptimiserPublishStore.getState().byNode.opt_1?.overwritePrompt).toBeNull()
+    expect(useOptimiserPublishStore.getState().byResultKey.opt_1?.overwritePrompt).toBeNull()
   })
 
   it("exposes a node's state only for the job it belongs to", async () => {

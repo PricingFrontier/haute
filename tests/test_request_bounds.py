@@ -111,21 +111,33 @@ _COLUMNS = [{"name": "premium", "dtype": "Float64"}]
         ),
         pytest.param(
             "/api/rating/levels",
-            {"graph": {}, "node_id": "rating", "columns": ["c" * 513]},
+            {
+                "graph": {},
+                "target": {"occurrence": None, "node_id": "rating"},
+                "columns": ["c" * 513],
+            },
             ["body", "columns", 0],
             "string_too_long",
             id="a level column",
         ),
         pytest.param(
             "/api/explore/relationships",
-            {"graph": {}, "node_id": "explore", "features": ["f" * 513]},
+            {
+                "graph": {},
+                "target": {"occurrence": None, "node_id": "explore"},
+                "features": ["f" * 513],
+            },
             ["body", "features", 0],
             "string_too_long",
             id="a relationship feature",
         ),
         pytest.param(
             "/api/explore/relationships",
-            {"graph": {}, "node_id": "explore", "key_columns": ["k" * 513]},
+            {
+                "graph": {},
+                "target": {"occurrence": None, "node_id": "explore"},
+                "key_columns": ["k" * 513],
+            },
             ["body", "key_columns", 0],
             "string_too_long",
             id="a key column",

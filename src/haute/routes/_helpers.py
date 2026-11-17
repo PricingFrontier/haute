@@ -25,6 +25,7 @@ from haute._git_lock import repository_mutation
 from haute._io import read_user_text
 from haute._json_files import render_json
 from haute._logging import get_logger
+from haute._node_addresses import node_display_name
 from haute._node_specs import node_spec
 from haute._pipeline_recovery import (
     load_pipeline_editor_document,
@@ -85,10 +86,11 @@ def raise_node_not_found(node_id: str) -> NoReturn:
     raise NotFoundError(f"Node '{node_id}' not found")
 
 
-def raise_node_type_error(node_id: str, expected: str, got: str) -> NoReturn:
-    """Raise 400 for a node type mismatch, with structured logging."""
+def raise_node_type_error(node_id: str, name: str, expected: str, got: str) -> NoReturn:
+    """Raise 400 for a node type mismatch, naming the node by *name* (its label, and a
+    submodel child's occurrence's), with structured logging."""
     logger.warning("node_type_mismatch", node_id=node_id, expected=expected, got=got)
-    raise InvalidRequestError(f"Node '{node_id}' is not a {expected} node (got {got})")
+    raise InvalidRequestError(f"'{name}' is not a {expected} node (got {got})")
 
 
 def raise_pipeline_not_found(name: str) -> NoReturn:
@@ -124,7 +126,9 @@ def find_typed_node(
     if node is None:
         raise_node_not_found(node_id)
     if node.data.nodeType != expected_type:
-        raise_node_type_error(node_id, type_label, str(node.data.nodeType))
+        raise_node_type_error(
+            node_id, node_display_name(graph, node_id), type_label, str(node.data.nodeType)
+        )
     return node
 
 
@@ -859,6 +863,9 @@ def save_sidecar(
     # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
     # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
     content = serialised
+    # A sidecar that already holds these bytes is left alone, so its modification time stays.
+    if sidecar.is_file() and sidecar.read_bytes() == content.encode("utf-8"):
+        return warnings
     # The server's own write: the watcher must not take it for an external edit.
     mark_self_write(sidecar, content=content.encode("utf-8"))
     atomic_write_text(sidecar, content)

@@ -1,9 +1,13 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 import ExecutionDiagnosticsSummary from "../ExecutionDiagnosticsSummary"
+import type { ExecutionMetrics } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
-function strategyMetrics(status: "projected" | "boundary" | "admitted_eager" | "warned" | "rejected" | "not_planned") {
+function strategyMetrics(
+  status: "projected" | "boundary" | "admitted_eager" | "warned" | "rejected" | "not_planned",
+  nodeAddresses: ExecutionMetrics["node_addresses"] = {},
+) {
   const strategyByStatus = {
     projected: "projected",
     boundary: "materialisation-boundary",
@@ -13,6 +17,7 @@ function strategyMetrics(status: "projected" | "boundary" | "admitted_eager" | "
     not_planned: "not-planned",
   } as const
   return makeExecutionMetricsFixture({
+    node_addresses: nodeAddresses,
     memory_pressure_events: [],
     execution_strategy: {
       schema_version: 1,
@@ -64,6 +69,18 @@ describe("ExecutionDiagnosticsSummary", () => {
     expect(screen.getByLabelText("Execution strategy technical details")).toBeInTheDocument()
     expect(screen.getByText(/Reserved envelope/)).toBeInTheDocument()
     expect(screen.getByText(/Remediation Use a bounded aggregation/)).toBeInTheDocument()
+  })
+
+  it("names the warned strategy's blocking node by its label and occurrence, not its key", () => {
+    render(<ExecutionDiagnosticsSummary metrics={strategyMetrics("warned", {
+      aggregate: { occurrence: "pricing", node_id: "group_claims", label: "Claims by region" },
+    })} />)
+
+    expect(
+      screen.getByText("Execution ran without a memory estimate at 'Claims by region in pricing' (group_by)"),
+    ).toBeInTheDocument()
+    expect(screen.getByText("Blocking node Claims by region in pricing")).toBeInTheDocument()
+    expect(screen.queryByText(/aggregate/)).not.toBeInTheDocument()
   })
 
   it("prefers the memory-pressure diagnostic over a warned strategy", () => {

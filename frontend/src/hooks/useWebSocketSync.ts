@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react"
-import type { Edge, Node } from "@xyflow/react"
 import {
   computeNextNodeId,
   filterIncomingEdges,
@@ -34,8 +33,6 @@ import {
 export type WsStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected"
 
 interface WebSocketSyncParams {
-  preambleRef: React.MutableRefObject<string>
-  submodelsRef: React.MutableRefObject<Record<string, unknown>>
   sourceFileRef?: React.MutableRefObject<string>
   sourceRevisionRef: React.MutableRefObject<string>
   preservedBlocksRef: React.MutableRefObject<string[]>
@@ -43,7 +40,8 @@ interface WebSocketSyncParams {
   nodeIdCounter: React.MutableRefObject<number>
   fitView: (options?: { padding?: number }) => void
   enabled?: boolean
-  onDocumentReload?: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
+  /** After a document from disk is installed, the open view kept or closed by it. */
+  onDocumentReload?: () => void
 }
 
 const MAX_RETRIES = 50
@@ -218,7 +216,7 @@ async function parsePipelineDocumentUpdateFrame(
 }
 
 export default function useWebSocketSync({
-  preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
+  sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   graphRefreshingRef, nodeIdCounter, fitView, enabled = true, onDocumentReload,
 }: WebSocketSyncParams): WsStatus {
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
@@ -445,18 +443,15 @@ export default function useWebSocketSync({
             const nodesToApply = newNodes
 
             const previousPreservedBlocks = preservedBlocksRef.current
-            const previousPreamble = preambleRef.current
-            const previousSubmodels = submodelsRef.current
             const nextPreamble = frame.document.preamble ?? ""
 
             graphRefreshingRef.current += 1
             activeSelectionGuardIncrements += 1
             try {
               preservedBlocksRef.current = [...frame.document.preserved_blocks]
-              submodelsRef.current = adapted.submodels
-              preambleRef.current = nextPreamble
               // A document from disk is a reload: set-aside Banding rules go with it.
               useUIStore.getState().clearBandingRuleStash()
+              // An open submodel the new document still holds stays open (specs/frontend-graph-canvas).
               useGraphStore.getState().loadGraphSnapshot({
                 nodes: nodesToApply,
                 edges: newEdges,
@@ -464,20 +459,19 @@ export default function useWebSocketSync({
                 submodels: adapted.submodels,
                 globalConstants: constantDrafts(frame.document.global_constants),
                 globalConstantsError: frame.document.global_constants_error,
-              })
+              }, { keepOpenSubmodel: true })
               useDocumentStatusStore.getState().setGraphSynchronized(true)
               nodeIdCounter.current = computeNextNodeId(newNodes)
               setSyncBanner(null)
             } catch (err) {
               preservedBlocksRef.current = previousPreservedBlocks
-              submodelsRef.current = previousSubmodels
-              preambleRef.current = previousPreamble
               throw err
             } finally {
               scheduleDelayed(releaseSelectionGuard, SELECTION_CHANGE_GUARD_MS)
             }
 
-            const newNodeIds = new Set<string>(newNodes.map((node) => node.id))
+            // The nodes the canvas now shows: the open submodel's when the reload kept it.
+            const newNodeIds = new Set<string>(useGraphStore.getState().nodes.map((node) => node.id))
             const ui = useUIStore.getState()
             if (ui.renameDialog && !newNodeIds.has(ui.renameDialog.nodeId)) {
               ui.setRenameDialog(null)
@@ -488,7 +482,7 @@ export default function useWebSocketSync({
             ) {
               ui.setSubmodelDialog(null)
             }
-            onDocumentReload?.({ nodes: newNodes, edges: newEdges })
+            onDocumentReload?.()
 
             addToast(
               "info",
@@ -604,7 +598,7 @@ export default function useWebSocketSync({
       ws?.close()
     }
   }, [
-    enabled, preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef,
+    enabled, sourceFileRef, sourceRevisionRef,
     preservedBlocksRef, nodeIdCounter, fitView, setSyncBanner, addToast,
     graphRefreshingRef,
   ])

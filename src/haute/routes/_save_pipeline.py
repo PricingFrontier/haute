@@ -168,6 +168,10 @@ class _TouchedFile(NamedTuple):
     written_digest: str | None = None
     # True for a staged delete: rollback restores only while the path is still absent.
     deleted: bool = False
+    # True when the file already held the bytes the save commits: it is not written, so its
+    # modification time stays, and rollback leaves it alone. It is still the save's file, for
+    # the ledger's capture and the external-change check.
+    unchanged: bool = False
 
 
 class _ManagedChildSidecar(NamedTuple):
@@ -246,15 +250,19 @@ def _stage_artifact_write_bytes(
     payload: bytes,
     touched: list[_TouchedFile],
 ) -> None:
-    """Write one artifact atomically while recording exact rollback state."""
+    """Write one artifact atomically while recording exact rollback state; one that already
+    holds *payload* is recorded and not written."""
     previous_bytes = out_path.read_bytes() if out_path.exists() else None
     touched.append(
         _TouchedFile(
             target=out_path,
             previous_bytes=previous_bytes,
             written_digest=hashlib.sha256(payload).hexdigest(),
+            unchanged=previous_bytes == payload,
         )
     )
+    if previous_bytes == payload:
+        return
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with Writer(out_path, mark_self_write=_mark_self_write_cb) as writer:
         writer.write_bytes(payload)
@@ -276,6 +284,8 @@ def _rollback_artifacts(touched: list[_TouchedFile]) -> list[Path]:
     failed: list[Path] = []
     for entry in reversed(touched):
         target = entry.target
+        if entry.unchanged:
+            continue
         try:
             current = _artifact_digest(target)
             if entry.deleted and current is not None:
@@ -2022,8 +2032,13 @@ class SavePipelineService:
             py_path, graph, managed_parent=managed_parent, port_inputs=port_inputs
         )
         if touched is not None:
-            # Record the committed identity so rollback restores only our bytes.
-            touched[-1] = touched[-1]._replace(written_digest=_artifact_digest(sidecar_path))
+            # Record the committed identity so rollback restores only our bytes; a sidecar
+            # that already held them was not written.
+            previous = touched[-1].previous_bytes
+            touched[-1] = touched[-1]._replace(
+                written_digest=_artifact_digest(sidecar_path),
+                unchanged=previous is not None and previous == sidecar_path.read_bytes(),
+            )
         return warnings
 
     def _write_managed_submodel_sidecars(

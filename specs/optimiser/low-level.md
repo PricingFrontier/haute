@@ -117,7 +117,8 @@ frontier; `None` for online jobs), `selected_frontier_point`,
 MLflow summary — `params`/`metrics`/`artifacts` from `solver.summary(solve_result)` — computed
 once in `_finalize_solve_result` before the apply dataframe is persisted, with every Polars
 frame inside it converted to JSON records; `null` if the summary could not be built),
-`input_provenance` (recorded when the solve job is created: `node_id`, the batch `data_source`
+`input_provenance` (recorded when the solve job is created: `node`, the optimiser node's
+address and authored label (`address_entry`, never the key it runs under), the batch `data_source`
 the solve executes against, the graph's `source_file`, and the `graph_fingerprint` the setup
 single-flight key already computes), and, only while heavy state is retained, `solver`,
 `quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`, `setup_chunking`.
@@ -457,7 +458,7 @@ effect — see Artifact lifecycle below), and atomically transitions the job to 
 and always present. Beside the totals, baselines, `effective_bounds` and λ (whose constraint
 names must all agree, see Constraint bounds) the result carries:
 
-- `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node_id`,
+- `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node`,
   `data_source`, `source_file`, `graph_fingerprint`) plus `solver_settings`
   (`OptimiserSolverSettings`: `max_iter`, `tolerance`, and
   `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_steps` and `frontier_ranges` only

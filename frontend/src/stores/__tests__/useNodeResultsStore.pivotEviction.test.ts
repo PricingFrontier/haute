@@ -10,7 +10,6 @@ import useNodeResultsStore, {
 function makePivotResult(nodeId: string, pivotId: string): ExplorePivotResult {
   return {
     version: 1,
-    node_id: nodeId,
     pivot_id: pivotId,
     source: "test-source",
     data_version: `df:${nodeId}`,

@@ -1,5 +1,6 @@
 /** Shared API response/request types for the Haute backend. */
 
+import type { RuntimeNodeKey } from "../generated/api-contracts.generated"
 import type { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 
 // Re-export canonical types from their source locations
@@ -73,7 +74,7 @@ export type ExecutionStrategyBoundary = GeneratedExecutionStrategyBoundary
 
 export type ExecutionStrategyReason = GeneratedExecutionStrategyReason & {
   topological_rank: number | null
-  node_id: string | null
+  node_id: RuntimeNodeKey | null
   operator: string | null
 }
 
@@ -179,8 +180,11 @@ export type {
   ConditionGroup,
   CsvExport,
   CsvImport,
+  ExcelCellsExport,
   ExcelExport,
   ExcelImport,
+  ExportBlock,
+  ExportCell,
   ExportWidget,
   FieldRef,
   FormSchema,
@@ -292,6 +296,14 @@ export type GraphPayload = {
   global_constants_error?: string | null
 }
 
+declare const preparedGraphBrand: unique symbol
+
+/**
+ * The graph a request that runs the pipeline sends: only the request gateway makes
+ * one (`utils/requestGateway.ts`), so no caller sends a graph it built itself.
+ */
+export type PreparedGraph = GraphPayload & { readonly [preparedGraphBrand]: true }
+
 // ---------------------------------------------------------------------------
 // OUTPUT assemble dry-run (/api/output-assemble/dry-run)
 // ---------------------------------------------------------------------------
@@ -332,7 +344,7 @@ export type {
 
 /** Why a training estimate cannot size its input: one reason from a closed set. */
 export type TrainEstimateUnavailable =
-  | { reason: "row_count_unprovable"; blocking_node_id: string }
+  | { reason: "row_count_unprovable"; blocking_node_id: RuntimeNodeKey }
   | { reason: "schema_unresolvable"; blocking_node_id: null }
 
 /**

@@ -11,7 +11,7 @@ import { suppressBrowserContextMenu } from "./utils/suppressBrowserContextMenu"
 // reload offer in the error boundary that catches it.
 recordChunkLoadFailures()
 
-// A right-click opens one of the app's menus or nothing: never the browser's.
+// A right-click opens one of the editor's menus or nothing, but in a text field or on a link.
 suppressBrowserContextMenu()
 
 const root = createRoot(document.getElementById("root")!)

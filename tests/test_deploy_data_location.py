@@ -325,7 +325,7 @@ def test_cached_node_output_not_shipped(project: Path) -> None:
     """
     from haute._data_points import DataPointResolver
     from haute._execution_context import ExecutionProfile
-    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
+    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
     from haute._seed_plans import SeedPlanRequest, resolve_seed_plan
     from haute.parser import parse_pipeline_file
 
@@ -349,6 +349,7 @@ def test_cached_node_output_not_shipped(project: Path) -> None:
         dependencies={},
         explicit=False,
         profile=ExecutionProfile.TRAINING_PREP,
+        owner=NodeSnapshotOwner.of(resolver.graph, "priced"),
     ):
         pass
     cached = store.latest_generation(identity)

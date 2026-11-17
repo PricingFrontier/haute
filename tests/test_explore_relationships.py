@@ -73,6 +73,8 @@ def _source_node(project: Path) -> dict[str, Any]:
 
 
 _EXPLORE = {"id": "explore", "data": {"label": "Explore", "nodeType": "explore", "config": {}}}
+#: The Explore node by address, as a request names the node it reads.
+_EXPLORE_TARGET = {"occurrence": None, "node_id": "explore"}
 
 
 def _graph(project: Path) -> dict[str, Any]:
@@ -112,7 +114,7 @@ def _graph_with_transform(project: Path) -> dict[str, Any]:
 
 
 def _build(client: TestClient, graph: dict[str, Any]) -> None:
-    body = {"graph": graph, "node_id": "explore", "source": "live"}
+    body = {"graph": graph, "target": _EXPLORE_TARGET, "source": "live"}
     run = client.post("/api/node-data/run", json=body)
     assert run.status_code == 200, run.text
     payload = run.json()
@@ -129,10 +131,17 @@ def _build(client: TestClient, graph: dict[str, Any]) -> None:
 
 
 def _body(graph: dict[str, Any], **extra: Any):
+    """A request about the Explore node, resolved over its flattened graph as the route
+    resolves it."""
+    from haute._flatten import flatten_executable_graph
+    from haute._node_addresses import resolved_request
     from haute.schemas import ExploreRelationshipsRequest
 
-    return ExploreRelationshipsRequest.model_validate(
-        {"graph": graph, "node_id": "explore", "source": "live", **extra}
+    body = ExploreRelationshipsRequest.model_validate(
+        {"graph": graph, "target": _EXPLORE_TARGET, "source": "live", **extra}
+    )
+    return resolved_request(
+        body, flatten_executable_graph(body.graph, sample=body.workbench_sample)
     )
 
 
@@ -181,7 +190,7 @@ def test_nothing_is_read_until_the_point_is_cached(client: TestClient, project: 
     _write_source(project, pl.DataFrame({"y": [1.0], "x": ["a"]}))
     graph = _graph_with_transform(project)
 
-    response = _ask(graph, target="y", features=["x"])
+    response = _ask(graph, target_column="y", features=["x"])
 
     assert response.status == "cache_required"
     assert response.relationships == []
@@ -205,11 +214,11 @@ def test_requests_that_ask_nothing_answerable_are_refused(cached) -> None:
 
     assert "at least one" in _refused(graph, features=[" "], key_columns=[])
     assert "target" in _refused(graph, features=["x"])
-    assert "differ" in _refused(graph, target="y", weight="y", features=["x"])
-    assert "'y'" in _refused(graph, target="y", features=["y"])
-    assert "'w'" in _refused(graph, target="y", weight="w", features=["w"])
-    assert "'nope'" in _refused(graph, target="y", features=["x", "nope"])
-    assert "numeric or boolean" in _refused(graph, target="s", features=["x"])
+    assert "differ" in _refused(graph, target_column="y", weight="y", features=["x"])
+    assert "'y'" in _refused(graph, target_column="y", features=["y"])
+    assert "'w'" in _refused(graph, target_column="y", weight="w", features=["w"])
+    assert "'nope'" in _refused(graph, target_column="y", features=["x", "nope"])
+    assert "numeric or boolean" in _refused(graph, target_column="s", features=["x"])
 
 
 def test_a_nested_dtype_feature_cannot_be_grouped(cached) -> None:
@@ -222,7 +231,7 @@ def test_a_nested_dtype_feature_cannot_be_grouped(cached) -> None:
         )
     )
 
-    assert "cannot be grouped" in _refused(graph, target="y", features=["x"])
+    assert "cannot be grouped" in _refused(graph, target_column="y", features=["x"])
 
 
 # ------------------------------------------------------------ numeric features
@@ -233,7 +242,7 @@ def test_a_numeric_feature_is_read_as_ten_bins_and_a_missing_level(cached) -> No
     ys = [2.0 * v for v in range(11)] + [100.0]
     graph = cached(pl.DataFrame({"x": xs, "y": ys, "c": [5.0] * 12}))
 
-    response = _ask(graph, target="y", features=["x", "c"])
+    response = _ask(graph, target_column="y", features=["x", "c"])
 
     assert response.status == "ok"
     assert response.total_rows == response.used_rows == 12
@@ -267,7 +276,7 @@ def test_a_categorical_feature_keeps_its_heaviest_levels_and_folds_the_rest(cach
         )
     )
 
-    response = _ask(graph, target="y", features=["x"], level_limit=2)
+    response = _ask(graph, target_column="y", features=["x"], level_limit=2)
 
     x = _relationship(response, "x")
     assert x.kind == "categorical" and x.levels_truncated
@@ -280,7 +289,7 @@ def test_a_categorical_feature_keeps_its_heaviest_levels_and_folds_the_rest(cach
     assert x.levels[2].target_mean == pytest.approx((3.0 * 2 + 5.0) / 3)
     assert x.levels[3].target_mean == pytest.approx(7.0)
 
-    untruncated = _relationship(_ask(graph, target="y", features=["x"]), "x")
+    untruncated = _relationship(_ask(graph, target_column="y", features=["x"]), "x")
     assert not untruncated.levels_truncated
     assert [level.label for level in untruncated.levels] == ["a", "b", "c", "d", "(missing)"]
 
@@ -299,7 +308,7 @@ def test_strength_is_the_share_of_variance_the_levels_explain(cached) -> None:
         )
     )
 
-    response = _ask(graph, target="y", features=["independent", "decides"])
+    response = _ask(graph, target_column="y", features=["independent", "decides"])
 
     assert [r.feature for r in response.relationships] == ["decides", "independent"]
     assert response.relationships[0].strength == pytest.approx(1.0, abs=1e-9)
@@ -320,7 +329,7 @@ def test_rows_without_a_usable_weight_are_left_out(cached) -> None:
         )
     )
 
-    response = _ask(graph, target="y", weight="w", features=["x"])
+    response = _ask(graph, target_column="y", weight="w", features=["x"])
 
     assert response.total_rows == 5
     assert response.used_rows == 2
@@ -341,8 +350,8 @@ def test_columns_named_like_the_internal_sums_are_read_as_data(cached) -> None:
         )
     )
 
-    plain = _relationship(_ask(graph, target="__w", features=["x"]), "x")
-    weighted = _relationship(_ask(graph, target="__w", weight="__wy", features=["x"]), "x")
+    plain = _relationship(_ask(graph, target_column="__w", features=["x"]), "x")
+    weighted = _relationship(_ask(graph, target_column="__w", weight="__wy", features=["x"]), "x")
 
     assert [level.target_mean for level in plain.levels] == pytest.approx([10.0, 20.0])
     assert plain.strength == pytest.approx(1.0, abs=1e-9)
@@ -373,7 +382,7 @@ def test_each_feature_is_answered_by_one_query(cached, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(relationships_module, "cancellable_streaming_collect", counted)
 
-    response = _ask(graph, target="y", features=["n1", "n2", "c1", "c2"], level_limit=2)
+    response = _ask(graph, target_column="y", features=["n1", "n2", "c1", "c2"], level_limit=2)
 
     # The row count, the target totals and the centred moments, then one per feature.
     assert len(queries) == 3 + 4
@@ -426,11 +435,11 @@ def test_an_identical_question_is_answered_from_the_cache(cached) -> None:
     service = _service()
 
     with patch.object(service, "_compute", wraps=service._compute) as compute:
-        first = service.relationships(_body(graph, target="y", features=["x"]))
-        second = service.relationships(_body(graph, target="y", features=["x"]))
+        first = service.relationships(_body(graph, target_column="y", features=["x"]))
+        second = service.relationships(_body(graph, target_column="y", features=["x"]))
         assert compute.call_count == 1
         assert first == second
-        service.relationships(_body(graph, target="y", features=["x", "z"]))
+        service.relationships(_body(graph, target_column="y", features=["x", "z"]))
         assert compute.call_count == 2
 
 
@@ -442,7 +451,9 @@ def test_a_cancelled_token_stops_the_analysis(cached) -> None:
     token.cancel()
 
     with pytest.raises(ExecutionCancelledError):
-        _service().relationships(_body(graph, target="y", features=["x"]), cancellation_token=token)
+        _service().relationships(
+            _body(graph, target_column="y", features=["x"]), cancellation_token=token
+        )
 
 
 # ------------------------------------------------------------ route
@@ -450,9 +461,11 @@ def test_a_cancelled_token_stops_the_analysis(cached) -> None:
 
 def test_the_route_answers_and_refuses(client: TestClient, cached) -> None:
     graph = cached(pl.DataFrame({"y": [1.0, 2.0], "x": ["a", "b"]}))
-    body = {"graph": graph, "node_id": "explore", "source": "live"}
+    body = {"graph": graph, "target": _EXPLORE_TARGET, "source": "live"}
 
-    ok = client.post("/api/explore/relationships", json={**body, "target": "y", "features": ["x"]})
+    ok = client.post(
+        "/api/explore/relationships", json={**body, "target_column": "y", "features": ["x"]}
+    )
     assert ok.status_code == 200, ok.text
     assert ok.json()["status"] == "ok"
     assert ok.json()["relationships"][0]["feature"] == "x"
@@ -500,7 +513,7 @@ def test_numeric_features_keep_distinct_large_integers_apart(cached) -> None:
         )
     )
 
-    x = _relationship(_ask(graph, target="y", features=["x"]), "x")
+    x = _relationship(_ask(graph, target_column="y", features=["x"]), "x")
 
     # A Float64 cast would call these one value; exact integer bins keep three.
     assert [(level.label, level.rows) for level in x.levels] == [
@@ -525,14 +538,14 @@ def test_strength_survives_a_large_target_mean_and_is_scale_invariant(cached) ->
 
     # The levels explain all of each target's variance whatever its offset or scale.
     for target in ("offset", "scaled"):
-        x = _relationship(_ask(graph, target=target, features=["x"]), "x")
+        x = _relationship(_ask(graph, target_column=target, features=["x"]), "x")
         assert x.strength == pytest.approx(1.0, abs=1e-9)
-    offset = _relationship(_ask(graph, target="offset", features=["x"]), "x")
+    offset = _relationship(_ask(graph, target_column="offset", features=["x"]), "x")
     assert [level.target_mean for level in offset.levels] == pytest.approx(
         [1_000_000.0, 1_000_001.0]
     )
     # A constant target has no variance to explain, however large it is.
-    assert _relationship(_ask(graph, target="flat", features=["x"]), "x").strength == 0.0
+    assert _relationship(_ask(graph, target_column="flat", features=["x"]), "x").strength == 0.0
 
 
 def test_duration_and_binary_features_are_labelled_like_the_profile(cached) -> None:
@@ -551,7 +564,7 @@ def test_duration_and_binary_features_are_labelled_like_the_profile(cached) -> N
         )
     )
 
-    response = _ask(graph, target="y", features=["wait", "raw"])
+    response = _ask(graph, target_column="y", features=["wait", "raw"])
 
     wait = _relationship(response, "wait")
     raw = _relationship(response, "raw")
@@ -579,14 +592,14 @@ def test_every_part_of_the_question_is_part_of_the_cache_key(cached) -> None:
         )
     )
     service = _service()
-    base = {"target": "y", "features": ["x"]}
+    base = {"target_column": "y", "features": ["x"]}
     first = service.relationships(_body(graph, **base))
 
     # Asking again is served from the cache and changes nothing.
     assert service.relationships(_body(graph, **base)) == first
 
     # Each dimension of the question changes the answer, so each must be in the key.
-    by_target = service.relationships(_body(graph, target="z", features=["x"]))
+    by_target = service.relationships(_body(graph, target_column="z", features=["x"]))
     assert by_target.target == "z"
     assert (
         by_target.relationships[0].levels[0].target_mean
@@ -625,13 +638,13 @@ def test_the_request_limits_and_a_non_numeric_weight_are_enforced(
 
     def post(**extra: Any):
         # A raw payload: the model itself would refuse the over-limit lists.
-        payload = {"graph": graph, "node_id": "explore", "source": "live", **extra}
+        payload = {"graph": graph, "target": _EXPLORE_TARGET, "source": "live", **extra}
         return client.post("/api/explore/relationships", json=payload)
 
-    assert post(target="y", features=features[:50]).status_code == 200
-    assert post(target="y", features=features).status_code == 422
+    assert post(target_column="y", features=features[:50]).status_code == 200
+    assert post(target_column="y", features=features).status_code == 422
     assert post(key_columns=keys[:8]).status_code == 200
     assert post(key_columns=keys).status_code == 422
-    refused = post(target="y", weight="label", features=["f0"])
+    refused = post(target_column="y", weight="label", features=["f0"])
     assert refused.status_code == 422
     assert "weight must be numeric" in refused.json()["detail"]

@@ -43,6 +43,22 @@ _fast_optional_training_diagnostics = _modelling_route_helpers._fast_optional_tr
 training_data = _modelling_route_helpers.training_data
 
 
+# The Modelling node every graph here estimates for, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
+
+
+def _dispersion_request(graph: dict[str, Any]):
+    """A theta estimate for the Modelling node, its target resolved over *graph* as the
+    route resolves it over the flattened document (these graphs have no submodels)."""
+    from haute._node_addresses import resolved_request
+    from haute.schemas import DispersionEstimateRequest
+
+    body = DispersionEstimateRequest.model_validate(
+        {"graph": graph, "target": _TRAIN_TARGET, "param": "theta"}
+    )
+    return resolved_request(body, body.graph)
+
+
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
@@ -120,7 +136,7 @@ class TestDispersionEstimateEndpoint:
         graph = _make_negbinomial_graph(nb_training_data)
         resp = client.post(
             "/api/modelling/dispersion/estimate",
-            json={"graph": graph, "node_id": "train", "param": "theta"},
+            json={"graph": graph, "target": _TRAIN_TARGET, "param": "theta"},
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "started"
@@ -152,7 +168,7 @@ class TestDispersionEstimateEndpoint:
         ]
         resp = client.post(
             "/api/modelling/dispersion/estimate",
-            json={"graph": graph, "node_id": "train", "param": "theta"},
+            json={"graph": graph, "target": _TRAIN_TARGET, "param": "theta"},
         )
         assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]
@@ -169,7 +185,7 @@ class TestDispersionEstimateEndpoint:
         """The re-enabled family gates early: an unset theta is a 400 at the
         route, never a RustyStats refusal from inside a training job."""
         graph = _make_negbinomial_graph(nb_training_data)
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        resp = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
         assert resp.status_code == 400
         assert "theta" in resp.json()["detail"]
 
@@ -181,7 +197,7 @@ class TestDispersionEstimateEndpoint:
             metrics=["gini"],
             output_dir=str(tmp_path / "outputs"),
         )
-        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        resp = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
         assert resp.status_code == 200
         final = _poll_until_done(client, resp.json()["job_id"])
         assert final["status"] == "completed"
@@ -191,7 +207,7 @@ class TestDispersionEstimateEndpoint:
         graph = _make_modelling_graph(training_data)
         resp = client.post(
             "/api/modelling/dispersion/estimate",
-            json={"graph": graph, "node_id": "train", "param": "theta"},
+            json={"graph": graph, "target": _TRAIN_TARGET, "param": "theta"},
         )
         assert resp.status_code == 400
         assert "GLM" in resp.json()["detail"]
@@ -200,7 +216,7 @@ class TestDispersionEstimateEndpoint:
         graph = _make_negbinomial_graph(nb_training_data, family="poisson")
         resp = client.post(
             "/api/modelling/dispersion/estimate",
-            json={"graph": graph, "node_id": "train", "param": "theta"},
+            json={"graph": graph, "target": _TRAIN_TARGET, "param": "theta"},
         )
         assert resp.status_code == 400
         assert "negbinomial" in resp.json()["detail"]
@@ -211,7 +227,7 @@ class TestDispersionEstimateEndpoint:
         graph = _make_negbinomial_graph(nb_training_data, terms=None)
         resp = client.post(
             "/api/modelling/dispersion/estimate",
-            json={"graph": graph, "node_id": "train", "param": "theta"},
+            json={"graph": graph, "target": _TRAIN_TARGET, "param": "theta"},
         )
         assert resp.status_code == 400
         assert "add a term to at least one feature" in resp.json()["detail"].lower()
@@ -220,7 +236,7 @@ class TestDispersionEstimateEndpoint:
         graph = _make_negbinomial_graph(nb_training_data)
         resp = client.post(
             "/api/modelling/dispersion/estimate",
-            json={"graph": graph, "node_id": "train", "param": "alpha"},
+            json={"graph": graph, "target": _TRAIN_TARGET, "param": "alpha"},
         )
         # Pydantic Literal["theta", "var_power"] rejects at parse time.
         assert resp.status_code == 422
@@ -358,13 +374,9 @@ class TestDispersionErrorPaths:
         assert "/opt/rustystats" not in job["message"]
 
     def test_start_maps_execute_http_error_to_contract_error(self, nb_training_data):
-        from haute.schemas import DispersionEstimateRequest
-
         graph = _make_negbinomial_graph(nb_training_data)
         store, service = self._service()
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
-        )
+        body = _dispersion_request(graph)
         with patch.object(
             TrainService,
             "_execute_and_sink",
@@ -385,7 +397,6 @@ class TestDispersionErrorPaths:
         columns, projects nothing away, and reads its term columns through
         projection demand."""
         from haute._execution_context import ExecutionContext, ExecutionProfile
-        from haute.schemas import DispersionEstimateRequest
 
         graph = _make_negbinomial_graph(
             nb_training_data,
@@ -393,9 +404,7 @@ class TestDispersionErrorPaths:
             theta=1.5,
         )
         store, service = self._service()
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
-        )
+        body = _dispersion_request(graph)
         captured: dict[str, object] = {}
 
         def capture_sink(*_args, project_to_keep_columns, keep_columns, **_kwargs):
@@ -438,13 +447,9 @@ class TestDispersionErrorPaths:
         assert captured["keep_columns"] == ["y"]
 
     def test_start_maps_unexpected_exception_to_error(self, nb_training_data):
-        from haute.schemas import DispersionEstimateRequest
-
         graph = _make_negbinomial_graph(nb_training_data)
         store, service = self._service()
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
-        )
+        body = _dispersion_request(graph)
         with patch.object(
             TrainService,
             "_execute_and_sink",
@@ -463,13 +468,10 @@ class TestDispersionErrorPaths:
     def test_start_maps_memory_limit_to_507(self, nb_training_data):
         from haute._execution_admission import ExecutionAdmissionError
         from haute._execution_context import ExecutionProfile
-        from haute.schemas import DispersionEstimateRequest
 
         graph = _make_negbinomial_graph(nb_training_data)
         store, service = self._service()
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
-        )
+        body = _dispersion_request(graph)
         admission_error = ExecutionAdmissionError(
             "dispersion_estimate",
             profile=ExecutionProfile.TRAINING_PREP,
@@ -485,13 +487,9 @@ class TestDispersionErrorPaths:
         assert job["http_status_code"] == 507
 
     def test_a_failure_before_admission_is_curated_and_frees_the_job(self, nb_training_data):
-        from haute.schemas import DispersionEstimateRequest
-
         graph = _make_negbinomial_graph(nb_training_data)
         store, service = self._service()
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
-        )
+        body = _dispersion_request(graph)
         from haute.routes import _training_lifecycle
 
         admitted: list[str] = []
@@ -519,13 +517,9 @@ class TestDispersionErrorPaths:
         """The id comes back at once; cancelling stops preparation and frees its slot."""
         import threading
 
-        from haute.schemas import DispersionEstimateRequest
-
         graph = _make_negbinomial_graph(nb_training_data)
         store, service = self._service()
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
-        )
+        body = _dispersion_request(graph)
         released: list[bool] = []
         tokens: list[object] = []
 
@@ -577,7 +571,6 @@ class TestDispersionErrorPaths:
         self, client, nb_training_data, monkeypatch
     ):
         from haute._worker_failures import WorkerTimeoutError
-        from haute.schemas import DispersionEstimateRequest
 
         graph = _make_negbinomial_graph(nb_training_data)
         store, service = self._service()
@@ -620,9 +613,7 @@ class TestDispersionErrorPaths:
                 threads.append(t)
             return t
 
-        body = DispersionEstimateRequest.model_validate(
-            {"graph": graph, "node_id": "train", "param": "theta"}
-        )
+        body = _dispersion_request(graph)
         with (
             patch.object(service, "_launch_dispersion_background", side_effect=capturing_launch),
             patch("haute.routes._training_lifecycle._run_dispersion_process_job", standin_worker),

@@ -4,6 +4,9 @@
 
 | File | Responsibility |
 |---|---|
+| `frontend/src/utils/answerAddresses.ts` | Reading the nodes an answer names (see "Request gateway" item 5): `keyText` (the one reading of a `RuntimeNodeKey` as text, to look it up in its answer), `placeAddress` (the canvas placement table, boundary cards included for a reader that passes them), `keysOnCanvas` (an answer's keys by the canvas node they describe) and `answerTargetKey` (the key an answer runs a frame target under: by address, or through its frame provenance). |
+| `frontend/src/utils/requestGateway.ts` | The request gateway (see "Request gateway"): `documentRequestScope`, `RequestScopeError`, `preparePipelineRequest` and `prepareNodeRequest` (the whole pipeline, the document's identity and semantic generation, the target and the data source, captured once), `canvasTarget` and `canvasNodeAddress` (a canvas node as a frame target or address: the Input card at a port is the occurrence's input, the Output card at a port its output, and on the main pipeline a collapsed occurrence at an `out__` handle its output port), `frameTargetPayload` and `nodeAddressPayload` (the one conversion of a target to the wire's shape, `wireTarget` on a prepared request, and `node`, the address an operation on a node sends), a prepared request's `nodeAt` (a node an answer addresses, in the view it was prepared in), and `resultKey` and `prepareCanvasRequest` (a canvas node's request together with the key its results are kept under). |
+| `frontend/src/utils/nodeAddress.ts` | `NodeAddress`, `FrameTarget`, `rootAddress`, `childAddress`, `nodeFrame`, `sameAddress`, and `addressKey`: a root node's id as it is, a child's key opening with a character no node id holds. |
 | `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; `validateApiResponse` wraps a parser call in that contract. Every background job poller (train, optimiser, Explore, pivot) reports it as a terminal response error. |
 | `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. With an `EditorNamingContext` (the canonical document graph and `allocate`) the request carries the naming context; each node takes the server's `label` (and an occurrence its `alias`), and a response naming any `collision` throws `EditorNameCollisionError` before anything is applied. |
 | `frontend/src/utils/namingContext.ts` | `namingContextGraph`: the editor identity request's naming context, the canonical root graph with its preserved blocks; inside a drilled submodel the live child graph (ports left out) replaces only its definition's nodes and edges, keeping the definition's preamble and preserved blocks. |
@@ -32,8 +35,8 @@
 | `frontend/src/utils/optimiserSolveResults.ts` | The optimiser derivations the results store applies: `frontierFromSolveResult` (the frontier a completed solve carries, refusing one of another generation), `applyFrontierPointSummary`/`resultForFrontierPoint`, `assertSelectReplyForPoint`, `selectReplyIsCurrent`, `frontierPointSummaryFromSelect`, `effectiveConstraintBounds`, and the `/apply` identity (`optimiserApplyIdentityFor`, `optimiserApplyKey`, `sameApplyTarget`) and cache housekeeping. These cross-field checks stay hand-written beside the generated response validators. |
 | `frontend/src/utils/configHash.ts` | `hashConfig`, a node config's identity: its `canonicalJson`. Remembered training handles keep it, so its output must not change. |
 | `frontend/src/utils/trainEstimate.ts` | `nextTrainEstimate`, a training's remaining time from the rate between its last two progress samples (rounds, or fits while tuning). |
-| `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress and whether this tab started it (`startedHere`, as a profile job also records), or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
-| `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
+| `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by the point's opaque `slot_key`, with the producer's label as the point addresses it: the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress and whether this tab started it (`startedHere`, as a profile job also records), or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing; a consumer is keyed by its result key (`resultKey`), taken when its request was prepared, so inside a submodel each occurrence's child keeps its own and its readers find it. A consumer's own availability is derived from the entry and its column demand, never stored. |
+| `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. Its requests are the ones the request gateway prepares for the node (`prepareNodeRequest`: the whole pipeline and the node's runtime id, also inside an open submodel), from the document the store holds, so an edit is in the next request as soon as it is made. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, the preamble, and the Global Constants. |
@@ -67,10 +70,11 @@
 | `frontend/src/hooks/useWindowFileDropGuard.ts` | `useWindowFileDropGuard`, installed by the application: a `dragover` or `drop` carrying files that no drop target handled is prevented, with the drop effect `none`, so the browser never opens the file in place of the editor. |
 | `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
 | `frontend/src/components/SourcePipelineControls.tsx` | The Source selector over the Pipeline button, one column straight after the brand in the pipeline editor's toolbar and the workbench's ([workbench](../workbench/low-level.md)), returned as a fragment so the column stays a direct child of the toolbar, with the host's `wsStatus`, `editingDisabled` and `sourceSelectionTrusted`. The two share a two-row grid column with no text labels beside them, so the Pipeline button is exactly as wide as the selector above it whatever the active source is named; both are on the shared `.toolbar-btn` surface and type and spelled alike, the selector's chevron being one the kit's centred action would not take, so their texts line up. The source menu's Remove asks (`confirmed`) before removing a source whose values split constants hold and then removes those values. The Pipeline button reads "Pipeline" whatever the calculation mode, or "Offline" in the danger colour while live sync is `reconnecting` or `disconnected`, and opens `PipelineSettingsModal` from the component's own local state, unlike the MLflow modal's UI-store flag. |
-| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group rendered via `ToggleButtonGroup` (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and chunk rows; a Caching section with the caching switch and the cache size; a Memory section with the preview memory and the memory kept free; a Time limits section with the pipeline, modelling and optimisation limits (numeric fields built on `CommittedTextField`); the settings file's path; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. The whole store's size (`CacheStoreSize`) sits beside the Cached data heading. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
+| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group rendered via `ToggleButtonGroup` (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and chunk rows; a Caching section with the caching switch and the cache size; a Memory section with the preview memory and the memory kept free; a Time limits section with the pipeline, modelling and optimisation limits (numeric fields built on `CommittedTextField`); the settings file's path; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control, named by the label its answer's `node_addresses` gives it (a submodel child as "<label> in <occurrence label>", the occurrence's label read from the pipeline graph the request sent, whichever view is open); a group for cached data belonging to no node of it, named by the owner it recorded (with its occurrence's recorded label) beside its pipeline and source; and a footnote for unattributed bytes. The whole store's size (`CacheStoreSize`) sits beside the Cached data heading. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
 | `frontend/src/utils/inputSnapshotSource.ts`, `frontend/src/utils/importedTitle.ts` | The one derivation of whether a node reads a snapshot and the input-cache source naming it, and of the input whose source the preview frame's Refresh re-reads (`refreshRereadInput`); and an Import's "last imported" wording, its time by `relativeTime`. |
 | `frontend/src/hooks/previewProgressPoller.ts` | A preview request's id and the poller of its step progress; see [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). |
-| `frontend/src/stores/useInputImportStore.ts` | Imports in flight by the node that started them, and `startInputImport`, which runs one: its node's work and Stop, every outcome raising the node-data epoch, and a re-preview only for a completed, unstopped import whose node still reads the same source; a completed import moves the data epoch (`useDataEpochStore`). |
+| `frontend/src/stores/useInputImportStore.ts` | Imports in flight by the node that started them, and `startInputImport`, which runs one: its node's work and Stop, every outcome raising the node-data epoch, and a re-preview only for a completed, unstopped import whose node still reads the same source; a completed import moves the data epoch (`useDataEpochStore`). `retireInputImport` retires a deleted node's import. |
+| `frontend/src/stores/forgetDeletedNodes.ts` | `forgetDeletedNodes(keys)`, the one clean-up after a node is deleted, by the keyboard or from its menu: its results and caches (`clearNode`), a Data Output's last write (`useOutputWriteStore.forget`) and a running import (`retireInputImport`), for every key `resultKeysOf` took before the deletion; see "Result identity (normative)" below. |
 | `frontend/src/components/InputImportButton.tsx` | The preview frame's Import action for a snapshot-backed Data Input; see [frontend-preview-explore](../frontend-preview-explore/low-level.md). |
 | `frontend/src/stores/useNodeWorkStore.ts` | Work a consumer of a node started for it (a shared data-point build, an Import), keyed by the registering consumer: `useNodeWorkRunning(nodeId)` drives the frame's Stop, and `registerNodeStop`/`stopNodeWork(nodeId)` stop it. Only work this tab started is registered; a build joined from elsewhere is not. |
 | `frontend/src/components/CacheStoreSize.tsx` | The snapshot store's whole size beside Pipeline settings' Cached data heading, read from `GET /api/cache/usage` with each inventory read. |
@@ -460,8 +464,9 @@ only to the job it was asked about. The training and pivot actions take that
 job's id (`updateTrainProgress`, `completeTrainJob`, `failTrainJob`,
 `updateExplorePivotProgress`, `completeExplorePivotJob`,
 `failExplorePivotJob`, each `(key, jobId, ...)`) and change nothing unless the
-key's active job has that id; the solve poller checks the node's active solve
-id before calling the solve actions, as `stopOptimiserSolve` does. Cancel
+key's active job has that id; the solve poller checks the active solve id under
+the node's result key before calling the solve actions, as `stopOptimiserSolve`
+(given that key) does. Cancel
 (`cancelPivot`, the modelling panel's Cancel, `stopOptimiserSolve`) captures
 the document fence before sending, drops a reply that arrives after the fence
 moved, and otherwise hands the reply to the store under the id it cancelled:
@@ -647,10 +652,11 @@ no claim that entries count against budgets. There are no backend cache byte
 or entry-count caps, budget-driven eviction or cache-quota diagnostics. Every
 stored dataset is accounted for beside its node or in the remaining-data group
 and users clear the data they no longer need. Active reads remain protected.
-Displayed node identifiers omit the leading `submodel_runtime/` namespace while
-retaining the submodel and child-node names. This also applies to references in
-row details and cached nodes outside the current pipeline. Cache identities and
-clear requests retain their original values; input file paths are not reformatted.
+Rows name nodes by label, a submodel child's with its occurrence's ("Banding 1 in
+pricing"), never by key: a node of the pipeline from the answer's `node_addresses`, and a
+stored owner the pipeline no longer holds from the owner its data recorded. Cache
+identities and clear requests retain their original values; input file paths are not
+reformatted.
 
 Refreshing is explicit. The server answers the endpoint by walking every
 identity, generation and staging entry, which is what an admission pays, so
@@ -667,9 +673,7 @@ pipeline or source — node, status, size, when it was
 cached, and how long that took — with numeric columns right-aligned and tabular so they
 compare down the column, from `POST /api/cache/nodes`. It builds the graph payload itself from
 `usePanelGraphContext` and the graph store rather than taking it as a prop, since the
-toolbar has no graph of its own to pass. Each row shows the node's label (its id when the
-canvas has none, which is how a node the store holds but the graph has lost still reads),
-its state, its size, and — from the generation's own metadata — when it was cached and the
+toolbar has no graph of its own to pass. Each row shows the node's name (above), its state, its size, and — from the generation's own metadata — when it was cached and the
 seconds it took. An unrecorded duration renders as an em-dash, never as zero: a store
 predating the recording must not claim instant builds. A row that carries bytes also
 carries a visible clear control, which clears exactly the identities that
@@ -781,11 +785,16 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    asking about, so neither another document's answer nor an action started before an edit can
    reach the shared store or strand the consumer without an answer. An answer is kept with the
    identity and the fence it answered for, so a consumer stops showing it the moment either
-   moves on, and inspections also abort in flight. An inspection the backend refuses (400: the
-   graph as it stands gives the node nothing to read, such as a Banding, Rating Step or blank
-   Explore node without exactly one input) is the node's state, not an event: its message is
-   held as the consumer's `unreadable` for that identity, and connecting the input clears it.
-   Any other failed inspection toasts.
+   moves on, and inspections also abort in flight. A failed inspection is the node's state, not
+   an event: the consumer's `problem` holds it for that identity, with no toast — `refused` with
+   the backend's message when it refuses to name a point (400: the graph as it stands gives the
+   node nothing to read, such as a Banding, Rating Step or blank Explore node without exactly
+   one input), and `failed` with the reason for any other failure (a conflict, a server error,
+   the network). A failed `run` or `refresh` also sets `failed`, and toasts as the result of the
+   action. The point and the problem are separate facts, so stale data whose refresh failed is
+   both. The next answer or build response for the identity clears it, and connecting the input
+   changes the identity. `nodeDataProblemText` words it: the backend's message for `refused`,
+   "Couldn't read the data: <reason>" for `failed`.
 3. `stores/useNodeDataStore.ts` keeps one entry per slot, so consumers of the same point share
    the generation and the running build. `run` and `refresh` post `/api/node-data/run`; a
    `started` or `joined` response registers the build under the slot, and `useBackgroundJobs`
@@ -834,8 +843,168 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
    answer yet is `checking` rather than `missing`.
 
+## Request gateway (normative)
+
+Every request that runs the graph is built in one module, `frontend/src/utils/requestGateway.ts`,
+and nowhere else: a node's preview and its frames, a trace, an estimate, Train and Solve, a
+Data Output's destination and write, a profile, a whole-data answer, an Explore pivot, the
+Workbench's sample and the cached-data list.
+
+1. **Addresses.** A request names what it reads by address (`frontend/src/utils/nodeAddress.ts`),
+   never by an id it built: a `NodeAddress` is `{ occurrence, node }`, `occurrence` null for the
+   pipeline's own nodes (an occurrence is itself the pipeline's node `{ null, <instance id> }`);
+   a `FrameTarget` is a node's output port, or a declared input or output port of an occurrence.
+   `addressKey` gives an address one string: a root address's key is its node id, and an
+   occurrence's child's key starts with a character no node id holds, so the two never collide.
+   `canvasAddress` names a node on the canvas: a root node at the root, a child of the open
+   occurrence inside one, and the Input card at one of its ports that occurrence's input port.
+2. **Scope.** A request runs a document its caller is given, a `RequestScope`. App's
+   `GraphProvider` gives its panels `documentRequestScope`, the graph store's document; the
+   comparison view's provider gives none, and a request prepared without a scope is refused
+   (`RequestScopeError`) and never sent. A saved version's editor also leaves the open
+   document's remembered state alone: its Modelling editor restores no remembered training
+   (`useTrainedJobRestore` disabled), so it neither asks for that job's status nor forgets
+   its handle. Code that runs outside React for the open document
+   (stores, job polling, the Workbench's pricing) takes `documentRequestScope` itself.
+3. **Prepared requests.** `prepareNodeRequest(scope, address, ports?)` and
+   `preparePipelineRequest(scope)` capture, together and once: the document payload (the whole
+   pipeline with every definition, also while a submodel is open), the document's identity
+   (source file and execution generation), its semantic generation, the target, and the data
+   source. A frame read may name several ports of one node, read in one run, as the Workbench
+   prices every table of its sample at once. A request sends the source it was prepared with,
+   unless its caller keys state of its own by the source (a request identity, a cached
+   result), when it sends the active source it keyed with, read in the same render. A prepared
+   node request finds a node an answer addresses (`nodeAt`: one of the pipeline's own, a child
+   of the open occurrence, or a child of another occurrence in its definition), in the view it
+   was prepared in, so an answer that arrives after the view changed is still read by it. An operation on a node
+   sends its address (`node`); a port of a submodel card is no node, and reading it throws.
+   `canvasTarget` never refuses a card: an Input card whose port is not named, and an Output
+   card without a named output, are read as the card itself; a named input port nothing feeds
+   is still that port, which the server refuses by name. A prepared request carries no runtime
+   id: the browser never builds one.
+4. **Only prepared graphs are sent.** Every client function that runs the graph takes a
+   `PreparedGraph`, a type only the gateway makes, so type-checking refuses a graph a caller
+   built itself; the payload is `documentGraphPayload`'s, read from the store when prepared.
+5. **Answers by address.** A request sends its target as an address (the gateway converts the
+   in-memory `NodeAddress` and `FrameTarget` to the wire's snake_case shape in one function) and
+   never a runtime id. The preview, its inputs, the trace, the node-data family (a data
+   point, its build, profile and clear, pivots, relationships, banding statistics and rating
+   levels), modelling (training and its estimates), the optimiser (a solve, its estimate and
+   auto range), Data Output (a destination, a write, an assembly dry run) and the cached-data
+   list all do. An answer names
+   nodes by opaque key, each with its address in the
+   answer's `node_addresses` ([server API](../../specs/server-api/low-level.md), "Node
+   addresses"), and one pure function places an address on the canvas
+   (`placeAddress(address, focus, boundaries)`):
+
+   | The key's address | Canvas at the root | Canvas inside occurrence O |
+   |---|---|---|
+   | A pipeline node `{null, n}` (an occurrence's card when `n` is one) | node `n` | the boundary card reaching `n`, else not on the canvas |
+   | A child `{O, c}` of the open occurrence | O's card | node `c` |
+   | A child `{P, c}` of another occurrence | P's card | the boundary card reaching `P`, else not on the canvas |
+
+   A collapsed occurrence's card shows its children's statuses as one, the worst of them. Only
+   a reader that passes the open occurrence's boundary cards (the trace, whose path runs
+   through them) places a node outside it on one: on the Input card when it feeds the
+   occurrence, else on the Output card when it reads from it, by each card's
+   `externalNodeIds`; every other reader leaves such a node off the canvas.
+   Results are still kept by the request's result key (item 1 of "Result identity"), never by
+   a key an answer names.
+
+## Result identity (normative)
+
+Which result a stored answer is, and whether it is current, are separate questions.
+
+1. **Which result.** A result, a cache entry, a background job and a Refresh or Stop
+   registration are kept under the result key of the node they describe (`resultKey`):
+   the node's id on the main pipeline, and its address's key (`addressKey`) for a child of
+   an open submodel, so an owner and its read-only copies, or two instances of one
+   definition, each keep their own. The key is taken when a request is prepared
+   (`prepareCanvasRequest`) or a node is selected, and that one is used after every await;
+   an id an answer names is never turned into a key. The open panel's node is known by its
+   key too, so opening a child of the same id in another occurrence opens another node and
+   asks for its own preview. Leaving a view forgets the open node with its panel, so opening
+   the same node again shows its preview. A panel stays open while another node of the same
+   view is opened, so what it records of the work it starts (an Explore pivot's starting
+   flag, the notice of a Cancel that failed) is kept under the node's key and the pivot's id,
+   never the pivot's id alone: every node numbers its own pivots from `pivot_1`. A
+   consumer's data point (`useNodeDataCache`) answers its identity under the node's key:
+   the same child of another occurrence shows the same canvas, so its identity can hash the
+   same. A build it has sent, until the server answers, is that key's too (its "submitting"
+   state, a Stop pressed before the job id, its input build's abort), so another
+   occurrence's Stop and Refresh neither reach nor wait for it.
+2. **Whether it is current.** A cached result is checked against the source, the frame,
+   the semantic content and the data generation it was made under before it is shown as
+   current.
+3. **Lifetime.** A background job (training, a solve) keeps running when the view
+   changes, and its result stays under the key it was started with, to be shown on
+   returning to that occurrence. Deleting a node, by the keyboard or from its menu, goes
+   through one clean-up (`stores/forgetDeletedNodes.ts`) once the node has left the graph:
+   it forgets what its keys hold (`resultKeysOf`: a definition's child in every occurrence,
+   an occurrence with its children), that is its results and caches, a Data Output's last
+   write (a write already sent still finishes, since stopping it part-way could leave a
+   half-written file) and a running import, which leaves its node at once and is stopped in
+   the background as when its document is replaced. A remembered training job stays, so
+   Undo of the deletion brings the trained model back. Deleting the open node forgets it
+   with its panel, so opening it again after Undo asks for its preview.
+4. **Not keyed by node.** Data slots the server names (`slot_key`), pane and draft state,
+   and file paths built from a node's name stay as they are.
+5. **Annotations.** A child's execution annotations (a preview's columns, its notes) live
+   with its occurrence's view (`submodelAnnotations`), never in the definition.
+
 ## Testing
 
+- `frontend/src/utils/__tests__/requestGateway.test.ts` covers the request gateway: a
+  request about a node of the pipeline captures the whole document, the node's address, the
+  source, the document's identity and its semantic generation; from inside an open
+  submodel it sends the whole pipeline and a child's address, sends an operation on a node
+  its address, and finds an answer's nodes by address; the Input card at a port reads the
+  occurrence's input and the Output card at a port its output; and a request without a scope
+  is refused.
+- Result identity is covered with two occurrences of one definition (an owner and a
+  read-only copy, from `frontend/src/testSupport/twoOccurrencesFixture.ts`):
+  `frontend/src/hooks/__tests__/usePipelineAPI.submodelPreview.test.tsx` (the copy's child
+  shows no flash of the owner's rows and fetches its own, also in manual calculation),
+  `frontend/src/__tests__/stores/useNodeResultsStore.test.ts` (clearing a pipeline node
+  keeps a drilled child of the same id), `frontend/src/panels/explore/__tests__/ExplorePivotsPane.test.tsx`
+  (the owner's pivot result is absent from the copy; a pane moved to another Explore node
+  starts that node's pivot of the same id while the first's is starting, and keeps a failed
+  Cancel's notice on the node it was pressed on),
+  `frontend/src/panels/editors/__tests__/DataOutputEditor.test.tsx` (a write shows and blocks
+  only in its occurrence), `frontend/src/components/__tests__/InputImportButton.test.tsx` (an
+  import runs and stops only in its occurrence), `frontend/src/hooks/__tests__/useNodeDataCache.test.tsx`
+  (Refresh and Stop act on their own occurrence; a consumer kept mounted while the view moves
+  to the copy asks for the copy's point and never shows the owner's, and the owner's build
+  still waiting for its job id is neither stopped by the copy's Stop nor holds up its Refresh), `frontend/src/hooks/__tests__/useDataInputColumns.test.ts`
+  (the owner's columns stay out of the copy) and `frontend/src/hooks/__tests__/useNodeDataProfile.test.tsx`
+  (the copy's profile is asked for after the owner's was stopped), and
+  `frontend/src/utils/__tests__/answerAddresses.test.ts` (the placement table, the keys on a
+  canvas, a target's key by address and through frame provenance, and `frameKey` apart from
+  every node key), `frontend/src/hooks/__tests__/usePipelineAPI.submodelPreview.test.tsx`
+  (a collapsed occurrence's card shows the worst of its children's statuses, and an input a
+  preview reads inside a submodel is prepared from its definition),
+  `frontend/src/hooks/__tests__/useNodeHandlers.deleteCleanup.test.ts` and
+  `frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts` (a deletion forgets the node's
+  write, still writing, and keyboard Delete the open node),
+  `frontend/src/stores/__tests__/useOutputWriteStore.test.ts` (a forgotten write's late
+  answer completes nothing), `frontend/src/stores/__tests__/useInputImportStore.test.ts`
+  (a deleted node's import leaves it at once, is stopped, raises the node-data epoch, and is
+  reported as the deleted node's when its build never stops),
+  `frontend/src/panels/__tests__/ModellingPreview.test.tsx` (Use best as fixed parameters
+  refused in a read-only copy, and writing nothing once the view changed while it asked),
+  `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` (a solve start that fails in an
+  open submodel recorded under its occurrence's own placeholder job),
+  `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (opening the copy's child after the
+  owner's asks for its preview) and `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts`
+  (leaving a view forgets the open node).
+- `frontend/src/components/__tests__/ReadOnlyNodeConfig.requests.test.tsx` covers the
+  comparison view: the Modelling and Optimiser editors of a saved version send no request
+  and report no failure, and a remembered training job of the open pipeline is neither
+  asked about nor forgotten, while the same editors under the open pipeline's scope ask for
+  their estimates.
+- `frontend/src/utils/__tests__/nodeAddress.test.ts` covers address keys: a root node's id
+  as it is, a child's apart from every root node and from the same child of another
+  occurrence, and a root id opening with the child prefix refused.
 - `frontend/src/panels/__tests__/FilesPanel.test.tsx` covers the Files panel: a place's
   listing with its markers and links, opening a folder and returning by the breadcrumb, an
   upload with its capture reported and the data epoch moved, a replace asked first and naming the revision, no row of
@@ -864,7 +1033,10 @@ same Vitest config.
   two consumers, the epoch rising only when the data changes or a preview's own capture is
   announced — a duplicate announcement leaving the epoch untouched while a new generation
   raises it once, and a reset making the next announcement count again — a refused point held
-  as the node's `unreadable` with no toast while a failed lookup toasts, a build adopted from
+  as the node's `refused` problem and a failed lookup as its `failed` problem, neither toasting,
+  the node's Refresh asking for the point again after either, including a failed recheck of
+  data it still shows as current, a failed build kept with the stale
+  point it could not refresh, a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress
   from a build either of them started, a build this tab started stopped by another consumer

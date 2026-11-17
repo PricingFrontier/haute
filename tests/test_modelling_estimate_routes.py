@@ -32,6 +32,9 @@ pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 _fast_optional_training_diagnostics = _modelling_route_helpers._fast_optional_training_diagnostics
 training_data = _modelling_route_helpers.training_data
 
+# The modelling node every graph here trains, by address.
+_TRAIN_TARGET = {"occurrence": None, "node_id": "train"}
+
 
 # ---------------------------------------------------------------------------
 # Phase 1A: Endpoint validation gaps
@@ -43,7 +46,9 @@ class TestEstimateEndpoint:
 
     def test_estimate_success(self, client, training_data):
         graph = _make_modelling_graph(training_data)
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "total_rows" in data
@@ -62,12 +67,18 @@ class TestEstimateEndpoint:
         """A join's row product is a worst case, never a count to downsample from (MDL-01)."""
         graph = _make_joined_modelling_graph(tmp_path, 100_000, validate)
 
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
 
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["total_rows"] == rows
         assert data["unbounded_join_node_ids"] == unbounded
+        # Each unbounded join is addressed, and the answer addresses no other node.
+        assert data["node_addresses"] == {
+            key: {"occurrence": None, "node_id": key, "label": key} for key in unbounded
+        }
         # Neither says "Will downsample": the product is unproven, and 100,000 rows fit.
         assert (data["was_downsampled"], data["warning"]) == (False, None)
         if unbounded:
@@ -84,7 +95,9 @@ class TestEstimateEndpoint:
             params=_fast_training_params(task_type="GPU"),
         )
         with patch("haute._host_memory.available_vram_bytes", return_value=None):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["gpu_warning"] is not None
@@ -111,7 +124,7 @@ class TestEstimateEndpoint:
 
         resp = client.post(
             "/api/modelling/estimate",
-            json={"graph": graph, "node_id": "train"},
+            json={"graph": graph, "target": _TRAIN_TARGET},
         )
 
         assert resp.status_code == 200
@@ -142,7 +155,9 @@ class TestEstimateEndpoint:
         config = graph["nodes"][1]["data"]["config"]
         config.update({"family": "gaussian", "terms": terms})
 
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
 
         assert resp.status_code == 200, resp.text
         preview = resp.json()["evaluation_preview"]
@@ -164,7 +179,9 @@ class TestEstimateEndpoint:
         ).write_parquet(path)
         graph = _make_modelling_graph(str(path), feature_columns=["x1"])
 
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
 
         assert resp.status_code == 422
         refusal = resp.json()["detail"]
@@ -214,7 +231,9 @@ class TestEstimateEndpoint:
             }
         ).model_dump()
 
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
 
         assert resp.status_code == 422
         refusal = resp.json()["detail"]
@@ -225,13 +244,30 @@ class TestEstimateEndpoint:
         # target; the declared output the run reads ('y') is the one it did not create.
         assert "'prep' did not create the column 'y'" in detail
 
+    def test_estimate_maps_out_of_memory_behind_a_polars_error_to_507(self, client, training_data):
+        """Out of memory behind the pipeline's own error is the memory limit, not a 422."""
+        graph = _make_modelling_graph(training_data)
+        source = next(n for n in graph["nodes"] if n["id"] == "source")
+        source["data"]["config"]["code"] = (
+            "raise pl.exceptions.ComputeError('allocation failed') from MemoryError()"
+        )
+
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
+
+        assert resp.status_code == 507, resp.text
+        assert resp.json()["detail"]["error_code"] == "memory_limit"
+
     def test_estimate_maps_polars_missing_column_to_422(self, client, training_data):
         """Post-load code naming a column the source lacks is a 422, never a 500."""
         graph = _make_modelling_graph(training_data)
         source = next(n for n in graph["nodes"] if n["id"] == "source")
         source["data"]["config"]["code"] = "df = df.with_columns(flag = pl.col('missing'))"
 
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
 
         assert resp.status_code == 422
         refusal = resp.json()["detail"]
@@ -252,7 +288,9 @@ class TestEstimateEndpoint:
             make_edge("expander", "train").model_dump(),
         ]
 
-        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
 
         assert resp.status_code == 422, resp.text
         assert resp.json()["detail"] == _MISSING_STEP_COUNT_PAYLOAD
@@ -287,7 +325,7 @@ class TestEstimateEndpoint:
 
         resp = client.post(
             "/api/modelling/estimate",
-            json={"graph": graph, "node_id": "train"},
+            json={"graph": graph, "target": _TRAIN_TARGET},
         )
 
         assert resp.status_code == 200, resp.text
@@ -324,7 +362,7 @@ class TestEstimateEndpoint:
 
         resp = client.post(
             "/api/modelling/estimate",
-            json={"graph": graph, "node_id": "train"},
+            json={"graph": graph, "target": _TRAIN_TARGET},
         )
 
         assert resp.status_code == 200
@@ -371,7 +409,7 @@ class TestEstimateEndpoint:
 
         resp = client.post(
             "/api/modelling/estimate",
-            json={"graph": graph, "node_id": "train"},
+            json={"graph": graph, "target": _TRAIN_TARGET},
         )
 
         assert resp.status_code == 200
@@ -391,7 +429,9 @@ class TestEstimateEndpoint:
             params=_fast_training_params(task_type="GPU"),
         )
         with patch("haute._host_memory.available_vram_bytes", return_value=1):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("gpu_vram_estimated_mb") is not None
@@ -414,7 +454,9 @@ class TestEstimateEndpoint:
                 "haute.routes.modelling._check_gpu_vram", wraps=modelling._check_gpu_vram
             ) as vram_check,
         ):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["total_rows"] > 10
@@ -425,7 +467,9 @@ class TestEstimateEndpoint:
     def test_estimate_xgboost_gpu_vram_path(self, client, training_data):
         graph = _xgboost_gpu_graph(training_data)
         with patch("haute._host_memory.available_vram_bytes", return_value=1):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("gpu_vram_estimated_mb") is not None
@@ -457,7 +501,9 @@ class TestEstimateEndpoint:
         with patch(
             "haute.routes._training_lifecycle.TrainService._launch_training_protocol"
         ) as launch:
-            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 400, resp.text
         assert message in resp.json()["detail"]
         launch.assert_not_called()
@@ -465,7 +511,8 @@ class TestEstimateEndpoint:
     def test_estimate_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
         resp = client.post(
-            "/api/modelling/estimate", json={"graph": graph, "node_id": "nonexistent"}
+            "/api/modelling/estimate",
+            json={"graph": graph, "target": {"occurrence": None, "node_id": "nonexistent"}},
         )
         assert resp.status_code == 404
 
@@ -477,42 +524,56 @@ class TestEstimateEndpoint:
             "haute._ram_estimate.estimate_safe_training_rows",
             side_effect=RuntimeError("probe failed"),
         ):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 500
 
     @pytest.mark.parametrize(
-        ("unavailable", "expected_rows", "expected_reason"),
+        ("unavailable", "expected_rows", "expected_reason", "expected_addresses"),
         [
             (
-                RamEstimate.row_count_unprovable("explode_items", 8 * 1024**3),
+                # The answer addresses the node it names, so the blocking node is one the
+                # graph holds.
+                RamEstimate.row_count_unprovable("source", 8 * 1024**3),
                 None,
-                {"reason": "row_count_unprovable", "blocking_node_id": "explode_items"},
+                {"reason": "row_count_unprovable", "blocking_node_id": "source"},
+                {"source": {"occurrence": None, "node_id": "source", "label": "policies"}},
             ),
             (
                 RamEstimate.schema_unresolvable(250_000, 8 * 1024**3),
                 250_000,
                 {"reason": "schema_unresolvable", "blocking_node_id": None},
+                {},
             ),
         ],
     )
     def test_estimate_the_estimator_cannot_size_says_why_without_figures(
-        self, client, training_data, unavailable, expected_rows, expected_reason
+        self, client, training_data, unavailable, expected_rows, expected_reason, expected_addresses
     ):
         """An unavailable estimate carries its reason and no memory figure or
-        VRAM check, even with GPU training and a user row limit configured."""
+        VRAM check, even with GPU training and a user row limit configured, and
+        addresses the node that blocks its row count."""
         graph = _make_modelling_graph(training_data)
         for node in graph["nodes"]:
             if node["id"] == "train":
                 node["data"]["config"]["params"] = {"task_type": "GPU"}
                 node["data"]["config"]["row_limit"] = 500
+            else:
+                # A label apart from the id, so the address is seen to carry the label.
+                node["data"]["label"] = "policies"
         with (
             patch("haute._ram_estimate.estimate_safe_training_rows", return_value=unavailable),
             patch("haute.routes.modelling._check_gpu_vram") as vram_check,
         ):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["unavailable"] == expected_reason
+        # The blocking node, and no other, is addressed with its label.
+        assert data["node_addresses"] == expected_addresses
         assert data["total_rows"] == expected_rows
         assert (data["estimated_mb"], data["training_mb"], data["bytes_per_row"]) == (
             None,
@@ -538,10 +599,13 @@ class TestEstimateEndpoint:
             probe_columns=4,
         )
         with patch("haute._ram_estimate.estimate_safe_training_rows", return_value=available):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["unavailable"] is None
+        assert data["node_addresses"] == {}
         assert (data["total_rows"], data["estimated_mb"], data["training_mb"]) == (1_000, 3.0, 3.0)
         assert data["bytes_per_row"] == 3_145.7
 
@@ -634,6 +698,7 @@ class TestEstimateEndpoint:
             "bytes_per_row": 10.0,
             "unavailable": None,
             "unbounded_join_node_ids": [],
+            "node_addresses": {},
         }
         with pytest.raises(ValidationError, match=message):
             TrainEstimateResponse.model_validate({**payload, **overrides})
@@ -660,7 +725,9 @@ class TestEstimateEndpoint:
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
         ):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["safe_row_limit"] == 500
@@ -688,7 +755,9 @@ class TestEstimateEndpoint:
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
         ):
-            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+            resp = client.post(
+                "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["safe_row_limit"] == 9_000_000

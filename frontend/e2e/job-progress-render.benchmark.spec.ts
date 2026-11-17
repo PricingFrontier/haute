@@ -71,7 +71,7 @@ type OptimiserRouteMetrics = {
 }
 
 type OptimiserRequestBody = {
-  node_id?: unknown
+  target?: { occurrence?: unknown; node_id?: unknown }
 }
 
 async function installJobProgressRenderProbe(page: Page): Promise<void> {
@@ -400,8 +400,8 @@ async function installOptimiserBenchmarkRoutes(page: Page): Promise<{
     if (method === "POST" && url.pathname === "/api/optimiser/solve") {
       routeMetrics.solveRequests += 1
       const body = request.postDataJSON() as OptimiserRequestBody
-      if (body.node_id !== TARGET_NODE_ID) {
-        throw new Error(`Expected optimiser solve for ${TARGET_NODE_ID}, received ${String(body.node_id)}`)
+      if (body.target?.occurrence !== null || body.target.node_id !== TARGET_NODE_ID) {
+        throw new Error(`Expected optimiser solve for ${TARGET_NODE_ID}, received ${JSON.stringify(body.target)}`)
       }
       await route.fulfill({
         status: 200,

@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from "react"
-import type { GraphPayload } from "../api/types"
+import type { PreparedGraph } from "../api/types"
 import { ErrorBoundary } from "../components/ErrorBoundary"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
@@ -33,7 +33,7 @@ interface WorkbenchViewProps {
   isInsideSubmodel: boolean
   readOnly: boolean
   /** The pipeline as the editor holds it now, the whole document, for pricing the sample on it. */
-  resolveGraph: () => GraphPayload
+  resolveGraph: () => PreparedGraph
 }
 
 const BANNER_STYLE = {

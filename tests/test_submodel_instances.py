@@ -40,6 +40,7 @@ from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
+from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import make_file_input_config
 
@@ -411,7 +412,7 @@ def test_instance_missing_columns_preview_response_and_refresh() -> None:
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(mode="json", by_alias=True),
-                "node_id": qualified_runtime_node_id("copy", "score"),
+                "target": node_target("score", occurrence="copy"),
             },
         )
         assert response.status_code == 200, response.text
@@ -630,8 +631,7 @@ def test_preview_qualified_instance_output_uses_its_bound_inputs(frame: str | No
             "/api/pipeline/preview",
             json={
                 "graph": graph.model_dump(mode="json", by_alias=True),
-                "node_id": qualified_runtime_node_id(occurrence, "finish"),
-                "port_label": frame,
+                "target": node_target("finish", occurrence=occurrence, port_label=frame),
             },
         )
         assert response.status_code == 200, response.text
@@ -688,7 +688,10 @@ def test_owner_and_two_instances_deliver_distinct_rows_through_round_trip(
     assert result.preview == expected
     response = TestClient(app).post(
         "/api/pipeline/preview",
-        json={"graph": graph.model_dump(mode="json", by_alias=True), "node_id": "consumer"},
+        json={
+            "graph": graph.model_dump(mode="json", by_alias=True),
+            "target": node_target("consumer"),
+        },
     )
     assert response.status_code == 200, response.text
     assert response.json()["preview"] == expected

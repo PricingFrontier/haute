@@ -1,13 +1,13 @@
 /**
  * Tests for SubmodelNode component.
  *
- * Tests: SUBMODEL identity and prominent name, single collapsed input socket,
+ * Tests: header title from the occurrence name, single collapsed input socket,
  * output port labels, canonical edge anchors, opacity when dimmed,
  * border style (dashed vs solid).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, renderHook, act, screen, cleanup } from "@testing-library/react"
-import { ReactFlowProvider, type Node, type Edge, type NodeProps } from "@xyflow/react"
+import { ReactFlowProvider, type Node, type NodeProps } from "@xyflow/react"
 import SubmodelNode from "../../nodes/SubmodelNode"
 import useNodeHandlers from "../../hooks/useNodeHandlers"
 import { resolveEditorGraphIdentities } from "../../utils/editorIdentities"
@@ -44,7 +44,7 @@ function setDefinition(overrides: Partial<SubmodelDefinition> = {}) {
 beforeEach(() => setDefinition())
 afterEach(() => {
   cleanup()
-  useGraphStore.setState({ submodels: {}, edges: [] })
+  useGraphStore.setState({ submodels: {}, nodes: [], edges: [] })
 })
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -109,14 +109,14 @@ describe("SubmodelNode", () => {
       id: "pricing", type: "submodel", position: { x: 0, y: 0 },
       data: { label: "pricing", nodeType: "submodel", config: { definition_id: DEFINITION_ID, alias: "pricing" } },
     }
-    const graphRef = { current: { nodes: [owner], edges: [] as Edge[] } }
+    useGraphStore.setState({ nodes: [owner], edges: [] })
     let release!: (response: EditorIdentityBatchResponse) => void
     const response = new Promise<EditorIdentityBatchResponse>((resolve) => { release = resolve })
     const setNodes = vi.fn((update: (nodes: Node[]) => Node[]) => {
-      graphRef.current = { ...graphRef.current, nodes: update(graphRef.current.nodes) }
+      useGraphStore.setState((state) => ({ nodes: update(state.nodes) }))
     })
     const { result } = renderHook(() => useNodeHandlers({
-      graphRef, nodeIdCounter: { current: 0 }, lastSelectedNodeRef: { current: null },
+      nodeIdCounter: { current: 0 }, lastSelectedKeyRef: { current: null },
       setNodes, setNodesAndEdges: vi.fn(), setSelectedNode: vi.fn(), setPreviewData: vi.fn(),
       fitView: vi.fn(),
       submodels: useGraphStore.getState().submodels,
@@ -140,7 +140,7 @@ describe("SubmodelNode", () => {
       await creation
     })
     expect(setNodes).toHaveBeenCalledOnce()
-    const created = graphRef.current.nodes[1]
+    const created = useGraphStore.getState().nodes[1]
     // Render the committed node's data, without the fixture's identity defaults.
     const props = { ...makeProps({ label: "unused" }), id: created.id, data: created.data }
     render(<ReactFlowProvider><SubmodelNode {...(props as NodeProps<SubmodelFlowNode>)} /></ReactFlowProvider>)
@@ -155,28 +155,23 @@ describe("SubmodelNode", () => {
     expect(screen.getByText("copy_premium")).toBeVisible()
     expect(screen.queryByText("premium")).toBeNull()
   })
-  it("keeps the standard node type treatment and strengthens the header name", () => {
+  it("titles the header with the occurrence name in place of the type label", () => {
     renderNode({ label: "My Submodel" })
     const header = screen.getByTestId("submodel-header")
     const body = screen.getByTestId("submodel-body")
-    const typeLabel = screen.getByText("SUBMODEL")
-    const name = screen.getByTestId("submodel-name-badge")
+    const title = screen.getByTestId("submodel-title")
 
-    expect(header).toContainElement(typeLabel)
-    expect(header).toContainElement(name)
-    expect(body).not.toContainElement(name)
-    expect(typeLabel).toHaveClass("text-[10px]", "tracking-[0.1em]")
-    expect(typeLabel).not.toHaveClass("rounded-full")
-    expect(name).toHaveTextContent("My Submodel")
-    expect(name).toHaveClass(
-      "ml-auto",
-      "rounded-full",
-      "text-[13px]",
-      "font-semibold",
-      "leading-tight",
-    )
-    expect(name).toHaveStyle({ color: "var(--text-primary)" })
+    expect(screen.queryByText("SUBMODEL")).toBeNull()
+    expect(header).toContainElement(title)
+    expect(body).not.toContainElement(title)
+    expect(title).toHaveTextContent("My Submodel")
+    expect(title).toHaveClass("flex-1", "text-[13px]", "font-semibold", "leading-tight")
+    expect(title).not.toHaveClass("rounded-full")
+    expect(title.style.background).toBe("")
+    expect(title.style.border).toBe("")
+    expect(title).toHaveStyle({ color: "var(--text-primary)" })
     expect(screen.getAllByText("My Submodel")).toHaveLength(1)
+    expect(screen.getByRole("button")).toHaveAccessibleName(/^Submodel node: My Submodel/)
   })
   it("keeps the definition child count in accessibility text, not the body", () => {
     setDefinition({
@@ -539,13 +534,13 @@ describe("SubmodelNode", () => {
     expect(wrapper().style.border).not.toContain("dashed")
   })
 
-  it("truncates very long prominent header names without losing their full title", () => {
+  it("truncates very long header titles without losing their full text", () => {
     const longName = "Pricing submodel with a deliberately very long display name"
     renderNode({ label: longName })
-    const name = screen.getByTestId("submodel-name-badge")
-    expect(name).toHaveTextContent(longName)
-    expect(name).toHaveClass("max-w-[110px]", "truncate")
-    expect(name).toHaveAttribute("title", longName)
+    const title = screen.getByTestId("submodel-title")
+    expect(title).toHaveTextContent(longName)
+    expect(title).toHaveClass("min-w-0", "truncate")
+    expect(title).toHaveAttribute("title", longName)
   })
 
   it("dims node when _hoverDimmed is true", () => {

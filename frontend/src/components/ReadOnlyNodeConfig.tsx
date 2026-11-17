@@ -47,8 +47,9 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
   // context via useGraph(), which throws without a provider. Supply an EMPTY
   // graph: the node's own configured values still render; upstream-derived UI
   // (column pickers, etc.) is simply empty — fine for a read-only single node.
+  // A saved version runs nothing: no request scope, so the editors send no request.
   return (
-    <GraphProvider allNodes={EMPTY} edges={EMPTY} submodels={{}} preamble="">
+    <GraphProvider allNodes={EMPTY} edges={EMPTY} submodels={{}} preamble="" requestScope={null}>
       <LazyEditorBoundary>
         <NodeConfigEditor
           readOnly
@@ -64,6 +65,7 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
           activeExplorePane="overview"
           activeModellingPane="target"
           activeOptimiserPane="data"
+          ratingSection="all"
           onShowPivots={doNothing}
           loadPivotFilterMembers={noFilterMembers}
           exploreConfigHash={null}

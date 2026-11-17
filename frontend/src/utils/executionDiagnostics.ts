@@ -1,3 +1,5 @@
+import { keyText } from "./answerAddresses"
+import type { RuntimeNodeKey } from "../generated/api-contracts.generated"
 import type {
   ExecutionMemoryPressureEvent,
   ExecutionMetrics,
@@ -75,7 +77,7 @@ function highestPressureEvent(metrics: ExecutionMetrics): ExecutionMemoryPressur
 
 export type ExecutionProjectionWarning = {
   boundary: ExecutionStrategyBoundary | null
-  nodeId: string | null
+  nodeId: RuntimeNodeKey | null
   operator: string | null
   /** The node whose code or contract kept that section full-width, when the planner named one. */
   cause: ExecutionStrategyProjectionCause | null
@@ -117,10 +119,25 @@ function strategyLabel(status: ExecutionStrategyDiagnostic["status"]): string {
   }[status]
 }
 
+/**
+ * The node the metrics name under `key`, as their own addresses give it: its label, and a
+ * child's with its occurrence's, which the metrics address too ("Banding 1 in pricing").
+ * Never the key.
+ */
+export function metricsNodeName(metrics: Pick<ExecutionMetrics, "node_addresses">, key: RuntimeNodeKey): string {
+  const address = metrics.node_addresses[keyText(key)]
+  if (!address) return "a node"
+  if (address.occurrence === null) return address.label
+  return `${address.label} in ${metrics.node_addresses[address.occurrence]?.label ?? address.occurrence}`
+}
+
 /** ` at '<node>' (<operator>)`, omitting the parts the diagnostic leaves null. */
-export function executionStrategyLocation(strategy: ExecutionStrategyDiagnostic): string {
+export function executionStrategyLocation(
+  strategy: ExecutionStrategyDiagnostic,
+  metrics: Pick<ExecutionMetrics, "node_addresses">,
+): string {
   if (!strategy.blocking_node_id) return ""
-  return ` at '${strategy.blocking_node_id}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
+  return ` at '${metricsNodeName(metrics, strategy.blocking_node_id)}'${strategy.blocking_operator ? ` (${strategy.blocking_operator})` : ""}`
 }
 
 function rawCollectionDetail<T>(name: string, collection: { state: string; total_count: number | null; items: T[] }): string {
@@ -134,7 +151,7 @@ export function buildExecutionStrategyDiagnostic(
   const strategy = metrics?.execution_strategy
   if (!strategy) return null
   const details = [`Profile ${profileLabel(strategy.profile)}`]
-  if (strategy.blocking_node_id) details.push(`Blocking node ${strategy.blocking_node_id}`)
+  if (strategy.blocking_node_id) details.push(`Blocking node ${metricsNodeName(metrics, strategy.blocking_node_id)}`)
   if (strategy.blocking_operator) details.push(`Operator ${strategy.blocking_operator}`)
   if (strategy.estimated_peak_bytes !== undefined && strategy.estimated_peak_bytes !== null) details.push(`Estimated materialisation cost ${formatBytes(strategy.estimated_peak_bytes)}`)
   if (strategy.headroom_bytes !== undefined && strategy.headroom_bytes !== null) {
@@ -148,17 +165,17 @@ export function buildExecutionStrategyDiagnostic(
   if (strategy.remediation) details.push(`Remediation ${strategy.remediation}`)
   const cause = strategy.projection_cause
   if (cause) {
-    const input = cause.parent_node_id ? ` from ${cause.parent_node_id}` : ""
+    const input = cause.parent_node_id ? ` from ${metricsNodeName(metrics, cause.parent_node_id)}` : ""
     const operation = cause.operation ? ` in ${cause.operation}` : ""
     details.push(
-      `Projection cause ${cause.node_id} (${cause.operator})${input}: ${cause.reason_code}${operation}; ${cause.total_count} total`,
+      `Projection cause ${metricsNodeName(metrics, cause.node_id)} (${cause.operator})${input}: ${cause.reason_code}${operation}; ${cause.total_count} total`,
     )
   }
   details.push(rawCollectionDetail("Boundaries", strategy.boundaries))
   details.push(rawCollectionDetail("Reasons", strategy.reasons))
   details.push(rawCollectionDetail("Provenance", strategy.provenance))
   const message = strategy.status === "warned"
-    ? `Execution ran without a memory estimate${executionStrategyLocation(strategy)}`
+    ? `Execution ran without a memory estimate${executionStrategyLocation(strategy, metrics)}`
     : strategyLabel(strategy.status)
   return { message, details, kind: "strategy" }
 }
@@ -356,52 +373,48 @@ export function shouldShowMemoryPressureDiagnostic(
   return highestPressureEvent(metrics) !== null
 }
 
+/** What should display warning-complete for an execution. */
+export interface ExecutionWarnings {
+  /** The requested node, which owns the run's overall outcome. */
+  readonly requested: boolean
+  /** The nodes the diagnostic implicates, by the key the metrics name them under. */
+  readonly keys: readonly string[]
+}
+
 /**
- * Node ids that should display warning-complete for this execution. The
- * requested node owns the overall run outcome; any node explicitly implicated
- * by the diagnostic is included as well.
+ * Which nodes should display warning-complete for this execution: the requested node, and
+ * any node the diagnostic explicitly implicates, by its key in the metrics (placed through
+ * their `node_addresses`).
  */
-export function executionWarningNodeIds(
-  metrics: ExecutionMetrics | null | undefined,
-  requestedNodeId: string,
-): string[] {
-  if (!metrics) return []
-  const nodeIds = new Set<string>()
+export function executionWarnings(metrics: ExecutionMetrics | null | undefined): ExecutionWarnings {
+  if (!metrics) return { requested: false, keys: [] }
+  const keys = new Set<string>()
+  let requested = false
   const projectionWarning = executionProjectionWarning(metrics)
 
   if (projectionWarning) {
-    nodeIds.add(requestedNodeId)
+    requested = true
     for (const boundary of metrics.execution_strategy?.boundaries.items ?? []) {
-      if (
-        boundary.boundary_kind === "unprojected-streaming-boundary"
-        && boundary.node_id
-      ) {
-        nodeIds.add(boundary.node_id)
-      }
+      if (boundary.boundary_kind === "unprojected-streaming-boundary") keys.add(keyText(boundary.node_id))
     }
-    if (projectionWarning.nodeId) {
-      nodeIds.add(projectionWarning.nodeId)
-    }
-    if (projectionWarning.cause) {
-      nodeIds.add(projectionWarning.cause.node_id)
-    }
+    if (projectionWarning.nodeId) keys.add(keyText(projectionWarning.nodeId))
+    if (projectionWarning.cause) keys.add(keyText(projectionWarning.cause.node_id))
   }
 
   if (metrics.execution_strategy?.status === "warned") {
-    nodeIds.add(requestedNodeId)
+    requested = true
     const blockingNodeId = metrics.execution_strategy.blocking_node_id
-    if (blockingNodeId) nodeIds.add(blockingNodeId)
+    if (blockingNodeId) keys.add(keyText(blockingNodeId))
   }
 
   if (shouldShowMemoryPressureDiagnostic(metrics)) {
-    nodeIds.add(requestedNodeId)
-    const pressureNodeIds = metrics.memory_pressure_events
-      .map((event) => event.node_id)
-      .filter((nodeId): nodeId is string => Boolean(nodeId))
-    for (const nodeId of pressureNodeIds) nodeIds.add(nodeId)
+    requested = true
+    for (const event of metrics.memory_pressure_events) {
+      if (event.node_id) keys.add(keyText(event.node_id))
+    }
   }
 
-  return [...nodeIds]
+  return { requested, keys: [...keys] }
 }
 
 export function buildMemoryPressureDiagnostic(

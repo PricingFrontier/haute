@@ -36,11 +36,11 @@ from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
+import structlog.testing
 
 from haute._polars_utils import streaming_collect
 from haute._rating import (
     RatingDuplicateEntriesError,
-    RatingTableMissError,
     _apply_rating_table,
     _rating_key_expr,
     apply_rating_step_from_config,
@@ -53,6 +53,17 @@ from haute._trace_correlation import _jsonify_row
 from haute._trace_enrichment import _enrich_single_table
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
+
+def _assert_matched_or_reported(lf: pl.LazyFrame, table: dict[str, Any]) -> None:
+    """The one-row lookup matches the entry's 2.0, or its miss is reported: never a silent null."""
+    with structlog.testing.capture_logs() as logs:
+        out = streaming_collect(_apply_rating_table(lf, table))
+    if out[table["output_column"]].to_list() == [2.0]:
+        return
+    assert out[table["output_column"]].to_list() == [None]
+    assert any(log["event"] == "rating_table_lookup_misses" for log in logs)
+
 
 # ---------------------------------------------------------------------------
 # Engine join semantics
@@ -338,11 +349,7 @@ class TestFloat32AndCrossDtypeAgreement:
             "entries": [{"age": entry_key, "value": 2.0}],
         }
         lf = pl.DataFrame({"age": pl.Series("age", [25], dtype=apply_dtype)}).lazy()
-        try:
-            out = streaming_collect(_apply_rating_table(lf, table))
-        except RatingTableMissError:
-            return  # a loud mismatch is acceptable; a silent neutral is not
-        assert out["f"].to_list() == [2.0]
+        _assert_matched_or_reported(lf, table)
 
     @pytest.mark.parametrize("save_dtype", [pl.Float32, pl.Float64])
     @pytest.mark.parametrize("apply_dtype", [pl.Float32, pl.Float64])
@@ -350,8 +357,8 @@ class TestFloat32AndCrossDtypeAgreement:
         self, save_dtype: pl.DataType, apply_dtype: pl.DataType
     ) -> None:
         """A non-dyadic decimal whose f32 and f64 bit patterns differ: the
-        lookup either matches (keys agree) or raises RatingTableMissError —
-        it must never silently return a neutral/None value."""
+        lookup either matches (keys agree) or reports the miss — it must
+        never silently return a neutral/None value."""
         value = 0.123456789
         entry_key = normalise_rating_key(
             pl.Series("s", [value], dtype=save_dtype).item(),
@@ -363,11 +370,7 @@ class TestFloat32AndCrossDtypeAgreement:
             "entries": [{"s": entry_key, "value": 2.0}],
         }
         lf = pl.DataFrame({"s": pl.Series("s", [value], dtype=apply_dtype)}).lazy()
-        try:
-            out = streaming_collect(_apply_rating_table(lf, table))
-        except RatingTableMissError:
-            return
-        assert out["f"].to_list() == [2.0]
+        _assert_matched_or_reported(lf, table)
 
 
 class TestDuplicateCanonicalKeysRefused:
@@ -437,7 +440,6 @@ class TestDuplicateCanonicalKeysRefused:
         table = {
             "factors": ["age"],
             "output_column": "f",
-            "on_missing": "neutral",
             "entries": [
                 {"age": 25.0, "value": 1.0},
                 {"age": "25", "value": 2.0},
@@ -691,12 +693,11 @@ class TestRatebookSchemaCollection:
 def _engine_truth(frame: pl.DataFrame, table: dict[str, Any]) -> list[bool]:
     """Per-row engine ground truth: did the lookup join match a real entry?
 
-    Runs the engine itself with the default stripped and misses allowed,
-    so nulls mark true misses — independent of the enrichment code under
+    Runs the engine itself with the default stripped, so misses stay null
+    and nulls mark true misses — independent of the enrichment code under
     test.
     """
     probe = {key: value for key, value in table.items() if key != "default_value"}
-    probe["on_missing"] = "neutral"
     out = _apply_rating_table(frame.lazy(), probe).collect()
     return [value is not None for value in out[table["output_column"]].to_list()]
 
@@ -750,7 +751,6 @@ class TestEnrichmentAgreesWithEngine:
         table = {
             "factors": ["age"],
             "output_column": "f",
-            "on_missing": "neutral",
             "entries": [
                 {"age": "25", "value": 2.0},
                 {"age": "30.5", "value": 3.0},
@@ -771,7 +771,6 @@ class TestEnrichmentAgreesWithEngine:
         table = {
             "factors": ["age"],
             "output_column": "f",
-            "on_missing": "neutral",
             "entries": [{"age": 25.0, "value": 2.0}],
         }
         frame = pl.DataFrame({"age": [25, 26]})
@@ -783,7 +782,6 @@ class TestEnrichmentAgreesWithEngine:
         table = {
             "factors": ["region"],
             "output_column": "f",
-            "on_missing": "neutral",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": "South", "value": 0.9},
@@ -823,7 +821,6 @@ class TestEnrichmentAgreesWithEngine:
         table = {
             "factors": ["flag"],
             "output_column": "f",
-            "on_missing": "neutral",
             "entries": [{"flag": True, "value": 2.0}, {"flag": False, "value": 3.0}],
         }
         frame = pl.DataFrame({"flag": ["true", "false", "TRUE"]})
@@ -838,7 +835,6 @@ class TestEnrichmentAgreesWithEngine:
         table = {
             "factors": ["age", "region"],
             "output_column": "f",
-            "on_missing": "neutral",
             "entries": [
                 {"age": "25", "region": "North", "value": 1.5},
                 {"age": "30.5", "region": "South", "value": 0.9},
@@ -856,7 +852,6 @@ class TestEnrichmentAgreesWithEngine:
         table = {
             "factors": ["age"],
             "output_column": "f",
-            "on_missing": "neutral",
             "entries": [{"age": "25", "value": 2.0}],
         }
         frame = pl.DataFrame({"age": [25.0, None]})
@@ -876,7 +871,7 @@ class TestTraceEndToEndAgreement:
     same flags survive the whole trace pipeline (row correlation, value
     jsonification, ``enrich_rating_step`` dispatch)."""
 
-    def _rating_graph(self, tmp_path: Any, on_missing: str | None):
+    def _rating_graph(self, tmp_path: Any):
         from haute.graph_utils import GraphNode, NodeData
         from tests.conftest import make_edge, make_graph, make_source_node
 
@@ -891,8 +886,6 @@ class TestTraceEndToEndAgreement:
                 {"age": "30.5", "value": 3.0},
             ],
         }
-        if on_missing:
-            table["on_missing"] = on_missing
         rating = GraphNode(
             id="rate",
             data=NodeData(label="rate", nodeType="ratingStep", config={"tables": [table]}),
@@ -907,7 +900,7 @@ class TestTraceEndToEndAgreement:
     def test_engine_matched_rows_trace_as_matched(self, tmp_path: Any) -> None:
         from haute.trace import execute_trace
 
-        graph = self._rating_graph(tmp_path, on_missing="neutral")
+        graph = self._rating_graph(tmp_path)
         for row_index, expected_value in [(0, 2.0), (1, 3.0)]:
             result = execute_trace(
                 graph, row_index=row_index, target_node_id="rate", column="age_factor"
@@ -923,7 +916,7 @@ class TestTraceEndToEndAgreement:
     def test_engine_miss_traces_as_no_match(self, tmp_path: Any) -> None:
         from haute.trace import execute_trace
 
-        graph = self._rating_graph(tmp_path, on_missing="neutral")
+        graph = self._rating_graph(tmp_path)
         result = execute_trace(graph, row_index=2, target_node_id="rate", column="age_factor")
         assert result.output_value is None
         step = next(s for s in result.steps if s.node_id == "rate")

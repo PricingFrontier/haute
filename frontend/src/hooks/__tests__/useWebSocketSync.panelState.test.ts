@@ -91,6 +91,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useUIStore from "../../stores/useUIStore.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 
@@ -120,8 +121,6 @@ const SOURCE_FILE = "rating/main.py"
 
 function makeHookParams(sourceFile = SOURCE_FILE) {
   return {
-    preambleRef: { current: "" },
-    submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
     sourceRevisionRef: { current: "revision-test" },
     preservedBlocksRef: { current: [] as string[] },
@@ -227,6 +226,39 @@ describe("useWebSocketSync - orphaned dialog state cleared on WS sync (#39)", ()
       }))
     })
 
+    const setRename = useUIStore.getState().setRenameDialog as Mock
+    expect(setRename).not.toHaveBeenCalledWith(null)
+  })
+
+  it("renameDialog for a child of the submodel the reload keeps open is NOT cleared", async () => {
+    // The canvas after the reload is the open submodel's: its children, not the
+    // pipeline's own nodes, are what a dialog may name.
+    const store = useUIStore.getState() as unknown as Record<string, unknown>
+    store.renameDialog = { nodeId: "child_1", currentLabel: "Child" }
+    const graph = useGraphStore.getState() as unknown as { nodes: unknown[]; loadGraphSnapshot: Mock }
+    const loads: unknown[] = []
+    graph.loadGraphSnapshot.mockImplementationOnce((_snapshot: unknown, options?: { keepOpenSubmodel?: boolean }) => {
+      loads.push(options)
+      // The store keeps the view only when asked to.
+      if (options?.keepOpenSubmodel) graph.nodes = [nodeWithId("child_1")]
+    })
+
+    const params = makeHookParams()
+    const document = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-test",
+      nodes: [nodeWithId("pricing")],
+    })
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify(pipelineDocumentFrame(document)),
+      }))
+    })
+
+    expect(loads).toEqual([{ keepOpenSubmodel: true }])
     const setRename = useUIStore.getState().setRenameDialog as Mock
     expect(setRename).not.toHaveBeenCalledWith(null)
   })

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
-import { makePreviewResponse, makeTraceResult, makeTraceStep } from "../src/test-utils/factories"
+import { makePreviewResponse, makeTraceResult, makeTraceStep, previewTargetNode } from "../src/test-utils/factories"
 import { resetE2eProject } from "./projectIsolation"
 
 const TRACE_COLUMN = "value_doubled"
@@ -13,7 +13,6 @@ type TraceShape = "linear" | "join-multi-frame"
 function previewResponse(nodeId: string): string {
   return JSON.stringify(makePreviewResponse({
     status: "ok",
-    node_id: nodeId,
     row_count: 1,
     column_count: 2,
     columns: [
@@ -204,14 +203,15 @@ async function installTraceBenchmarkRoutes(
     })
   })
   await page.route("**/api/pipeline/preview", async (route) => {
-    const body = route.request().postDataJSON() as { node_id?: unknown }
-    if (typeof body.node_id !== "string") {
-      throw new Error(`Trace benchmark expected node_id, received ${String(body.node_id)}`)
+    const body: unknown = route.request().postDataJSON()
+    const nodeId = previewTargetNode(body)
+    if (nodeId === null) {
+      throw new Error(`Trace benchmark expected a pipeline node target, received ${JSON.stringify(body)}`)
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: previewResponse(body.node_id),
+      body: previewResponse(nodeId),
     })
   })
 

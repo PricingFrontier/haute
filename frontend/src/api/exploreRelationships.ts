@@ -6,9 +6,10 @@
  * generated explore validators check its response.
  */
 
+import type { NodeAddressPayload } from "../generated/api-contracts.generated"
 import { post } from "./client"
 import { workbenchSampleField } from "./workbenchSample"
-import type { GraphPayload } from "./types"
+import type { PreparedGraph } from "./types"
 import type { ExploreRelationshipsResponse } from "../generated/api-contracts.generated"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 
@@ -19,10 +20,12 @@ export type {
 } from "../generated/api-contracts.generated"
 
 export interface ExploreRelationshipsArgs {
-  graph: GraphPayload
-  node_id: string
+  graph: PreparedGraph
+  /** The Explore node, by address. */
+  target: NodeAddressPayload
   source: string
-  target: string | null
+  /** The column the features are related to. */
+  target_column: string | null
   weight: string | null
   features: string[]
   key_columns: string[]

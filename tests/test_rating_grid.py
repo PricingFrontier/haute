@@ -45,7 +45,6 @@ def _round_trip(tmp_path: Path, config: dict) -> tuple[str, dict]:
         {
             "factors": ["age", "region"],
             "output_column": "f",
-            "on_missing": "neutral",
             "default_value": 1.0,
             "factor_dtypes": {"age": {"kind": "Int64"}},
             "entries": [

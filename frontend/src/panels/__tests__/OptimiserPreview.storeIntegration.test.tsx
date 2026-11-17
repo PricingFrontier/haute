@@ -6,7 +6,9 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
 import useGraphStore from "../../stores/useGraphStore"
-import { makeFrontier } from "../../test-utils/factories"
+import { makeFrontier, makeIdentifiedNode } from "../../test-utils/factories"
+import type { SubmodelDefinition } from "../../types/node"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
 import { solveConfigHash } from "../optimiser/solveActions"
 import {
   makeOnlineFrontier,
@@ -715,5 +717,135 @@ describe("OptimiserPreview store integration", () => {
       expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
       expect(screen.queryByText(/Rate table load failed/)).not.toBeInTheDocument()
     })
+  })
+})
+
+describe("OptimiserPreview of a child of a submodel with two occurrences", () => {
+  // The owner "pricing" and its read-only copy "pricing_copy" show the same child, opt_1.
+  const OWNER = { instanceId: "pricing", definitionId: "pricing" }
+  const ownerKey = addressKey(childAddress(OWNER.instanceId, "opt_1"))
+  const copyKey = addressKey(childAddress("pricing_copy", "opt_1"))
+
+  function loadOccurrences() {
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing",
+      file: "modules/pricing.py",
+      graph: {
+        nodes: [makeIdentifiedNode("opt_1", "optimiser", { data: { label: "My Optimiser", nodeType: "optimiser", config: {} } })],
+        edges: [],
+      },
+      inputPorts: [],
+      outputPorts: [],
+    }
+    const occurrence = (id: string, instanceOf?: string) => makeIdentifiedNode(id, "submodel", {
+      data: {
+        label: id,
+        nodeType: "submodel",
+        config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) },
+      },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [occurrence(OWNER.instanceId), occurrence("pricing_copy", OWNER.instanceId)],
+      edges: [],
+      preamble: "",
+      submodels: { pricing: definition },
+    })
+    act(() => useGraphStore.getState().enterSubmodelView(OWNER))
+  }
+
+  /** A completed solve kept under `key`. */
+  function solve(key: string, jobId: string, result: ReturnType<typeof makeOnlineSolveResult>) {
+    const store = useNodeResultsStore.getState()
+    store.startSolveJob(key, jobId, "My Optimiser", { loss_ratio: { max: 1.05 } }, "h1", "live", 0)
+    store.completeSolveJob(key, result)
+  }
+
+  /** The owner's child's preview, as App hands it the result it shows. */
+  function renderOwnerPreview() {
+    const data = useNodeResultsStore.getState().getOptimiserPreview(ownerKey)
+    if (!data) throw new Error("No optimiser preview for the owner's child")
+    return render(<OptimiserPreview data={data} nodeId="opt_1" allNodes={[]} edges={[]} />)
+  }
+
+  beforeEach(() => {
+    resetStore()
+    mockSelectFrontierPoint.mockReset()
+    mockApplyOptimiser.mockReset()
+    loadOccurrences()
+  })
+
+  afterEach(() => {
+    cleanup()
+    resetStore()
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("moves only the owner's selection when a frontier point is picked in its child", async () => {
+    solve(ownerKey, "job_owner", makeOnlineSolveResult({ frontier: makeFrontier(makeOnlineFrontier(5)) }))
+    solve(copyKey, "job_copy", makeOnlineSolveResult({ frontier: makeFrontier(makeOnlineFrontier(5)) }))
+    renderOwnerPreview()
+
+    fireEvent.click(screen.getByRole("button", { name: "Select frontier point 3" }))
+
+    expect(await screen.findByText("Point 3 of 5")).toBeInTheDocument()
+    expect(useNodeResultsStore.getState().solveResults[ownerKey].selectedPointIndex).toBe(2)
+    expect(useNodeResultsStore.getState().solveResults[copyKey].selectedPointIndex).toBe(0)
+  })
+
+  it("keeps a selected point's rates with the occurrence that asked for them", async () => {
+    mockSelectFrontierPoint.mockResolvedValueOnce({
+      status: "ok",
+      point_index: 0,
+      total_objective: 120,
+      constraints: { volume: 0.9 },
+      baseline_objective: 80,
+      baseline_constraints: { volume: 0.8 },
+      effective_bounds: { volume: { kind: "min", bound: 0.9 } },
+      lambdas: { volume: 0.1 },
+      converged: true,
+      cd_iterations: 5,
+      factor_tables: {
+        region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 120 }],
+      },
+      diagnostics_errors: [],
+      error: null,
+    })
+    solve(ownerKey, "job_owner", makeRatebookSolveResult({
+      frontier: makeFrontier(makeRatebookFrontier([{ objective: 120, volume: 0.9, lambda: 0.1 }])),
+    }))
+    renderOwnerPreview()
+
+    fireEvent.click(screen.getByRole("tab", { name: "Rates" }))
+
+    expect(await screen.findAllByText("North")).not.toHaveLength(0)
+    expect(useNodeResultsStore.getState().solveResults[ownerKey].frontier?.point_summaries[0].factor_tables)
+      .toEqual({ region: [{ __factor_group__: "North", optimal_scenario_value: 1.08, quote_count: 120 }] })
+  })
+
+  it("keeps the Quotes pages it reads with the occurrence that asked for them", async () => {
+    mockApplyOptimiser.mockResolvedValueOnce({
+      status: "ok",
+      total_objective: 1250000,
+      constraints: { loss_ratio: 0.66 },
+      from_artifact: true,
+      columns: [
+        { name: "quote_id", role: "id", sortable: false, filterable: false },
+        { name: "optimal_scenario_value", role: "scenario", sortable: true, filterable: false },
+      ],
+      preview: [{ quote_id: "Q001", optimal_scenario_value: 1.05 }],
+      row_count: 1250,
+      matched_row_count: 1250,
+      offset: 0,
+      preview_row_count: 1,
+      preview_row_limit: 100,
+      error: null,
+    } satisfies ApplyOptimiserResponse)
+    solve(ownerKey, "job_owner", makeOnlineSolveResult({ frontier: null }))
+    renderOwnerPreview()
+
+    fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
+
+    expect(await screen.findByText("Q001")).toBeInTheDocument()
+    expect(useNodeResultsStore.getState().optimiserApplyCache.map((entry) => entry.nodeId)).toEqual([ownerKey])
   })
 })

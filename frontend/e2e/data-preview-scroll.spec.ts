@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
-import { makePreviewResponse } from "../src/test-utils/factories"
+import { makePreviewResponse, previewTargetNode } from "../src/test-utils/factories"
 import { resetE2eProject } from "./projectIsolation"
 
 const PREVIEW_ROW_COUNT = 30
@@ -15,9 +15,10 @@ function columnName(index: number): string {
  */
 async function routePreviewColumns(page: Page, columnCount: () => number): Promise<void> {
   await page.route("**/api/pipeline/preview", async (route) => {
-    const body = route.request().postDataJSON() as { node_id?: unknown }
-    if (typeof body.node_id !== "string" || body.node_id.length === 0) {
-      throw new Error(`Preview route expected a string node_id, received ${String(body.node_id)}`)
+    const body: unknown = route.request().postDataJSON()
+    const nodeId = previewTargetNode(body)
+    if (nodeId === null) {
+      throw new Error(`Preview route expected a pipeline node target, received ${JSON.stringify(body)}`)
     }
     const columns = Array.from({ length: columnCount() }, (_, index) => ({
       name: columnName(index),
@@ -31,7 +32,6 @@ async function routePreviewColumns(page: Page, columnCount: () => number): Promi
       contentType: "application/json",
       body: JSON.stringify(makePreviewResponse({
         status: "ok",
-        node_id: body.node_id,
         row_count: PREVIEW_ROW_COUNT,
         column_count: columns.length,
         columns,
@@ -44,7 +44,7 @@ async function routePreviewColumns(page: Page, columnCount: () => number): Promi
         timings: [],
         memory: [],
         schema_warnings: [],
-        node_statuses: { [body.node_id]: "ok" },
+        node_statuses: { [nodeId]: "ok" },
       })),
     })
   })

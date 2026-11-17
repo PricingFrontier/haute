@@ -8,13 +8,14 @@ import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore, { type OptimiserPane } from "../../stores/useUIStore"
 import useGraphStore from "../../stores/useGraphStore"
-import { buildGraph } from "../../utils/buildGraph"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import { solveConfigHash } from "../optimiser/solveActions"
 import type { SimpleNode, SimpleEdge } from "../editors/_shared"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
-import { makeSolveResult } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeSolveResult } from "../../test-utils/factories"
+import type { Node } from "@xyflow/react"
+import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
 
 // ── Mock API client ──
 const mockSolveOptimiser = vi.fn()
@@ -37,11 +38,6 @@ vi.mock("../../api/client", () => ({
   saveOptimiser: (...args: unknown[]) => mockSaveOptimiser(...args),
   logOptimiserToMlflow: (...args: unknown[]) => mockLogOptimiserToMlflow(...args),
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPoint(...args),
-}))
-
-// ── Mock buildGraph ──
-vi.mock("../../utils/buildGraph", () => ({
-  buildGraph: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
 }))
 
 // ── Mock banding utilities ──
@@ -70,6 +66,9 @@ vi.mock("../../hooks/useDataInputColumns", () => ({
   ]),
 }))
 import { useDataInputColumns } from "../../hooks/useDataInputColumns"
+import { documentRequestScope } from "../../utils/requestGateway"
+import { addressKey, childAddress } from "../../utils/nodeAddress"
+import { makeOnlineFrontier } from "../optimiser/__tests__/fixtures"
 const mockUseDataInputColumns = vi.mocked(useDataInputColumns)
 
 vi.mock("../../hooks/useConstraintHandlers", () => ({
@@ -199,7 +198,7 @@ type MakePropsOverrides = Partial<Parameters<typeof OptimiserConfig>[0]> & {
 
 /**
  * Returns the component props plus the graph data, so tests can wrap
- * `<OptimiserConfig {...props} />` in `<GraphProvider {...graph}>` at render
+ * `<OptimiserConfig {...props} />` in `<GraphProvider requestScope={documentRequestScope} {...graph}>` at render
  * time.  Graph keys (allNodes/edges/submodels/preamble) live on the returned
  * object under `graph` — they're not spread onto the component.
  */
@@ -263,7 +262,7 @@ function showPane(pane: OptimiserPane) {
  */
 function renderConfig(made: ReturnType<typeof makeProps>) {
   return render(
-    <GraphProvider
+    <GraphProvider requestScope={documentRequestScope}
       allNodes={made.graph.allNodes}
       edges={made.graph.edges}
       submodels={made.graph.submodels}
@@ -272,6 +271,26 @@ function renderConfig(made: ReturnType<typeof makeProps>) {
       <PaneBoundConfig {...made.componentProps} />
     </GraphProvider>,
   )
+}
+
+/**
+ * Put the pipeline `made` describes in the graph store, which every request reads
+ * its document from: its graph's nodes and edges, and the optimiser with its config.
+ */
+function loadDocument(made: ReturnType<typeof makeProps>) {
+  const storeNode = (node: SimpleNode): Node => (
+    { id: node.id, type: node.data.nodeType, position: { x: 0, y: 0 }, data: node.data }
+  )
+  const optimiser: SimpleNode = {
+    id: made.componentProps.nodeId,
+    data: { label: "Optimiser", description: "", nodeType: "optimiser", config: made.componentProps.config },
+  }
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: [...made.graph.allNodes, optimiser].map(storeNode),
+    edges: made.graph.edges as PipelineEdge[],
+    preamble: made.graph.preamble ?? "",
+    submodels: made.graph.submodels ?? {},
+  })
 }
 
 function renderStatefulConfig(
@@ -297,7 +316,7 @@ function renderStatefulConfig(
     }
 
     return (
-      <GraphProvider
+      <GraphProvider requestScope={documentRequestScope}
         allNodes={made.graph.allNodes}
         edges={made.graph.edges}
         submodels={made.graph.submodels}
@@ -320,9 +339,10 @@ const INITIAL_STRUCTURAL_VERSION = useGraphStore.getState().structuralVersion
 
 beforeEach(() => {
   defaultPane = "data"
+  useGraphStore.getState().resetForTests()
   useGraphStore.setState({ structuralVersion: INITIAL_STRUCTURAL_VERSION })
   useUIStore.setState({ optimiserPanes: {} })
-  useOptimiserPublishStore.setState({ byNode: {} })
+  useOptimiserPublishStore.setState({ byResultKey: {} })
   useNodeResultsStore.setState({
     solveJobs: {},
     solveResults: {},
@@ -1171,7 +1191,7 @@ describe("OptimiserConfig", () => {
       const view = renderConfig(made)
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1))
       const rerenderWith = (config: Record<string, unknown>) => view.rerender(
-        <GraphProvider allNodes={made.graph.allNodes} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={made.graph.allNodes} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={config} />
         </GraphProvider>,
       )
@@ -1327,7 +1347,7 @@ describe("OptimiserConfig", () => {
       })
       const graphNodes = (config: Record<string, unknown>) => [...made.graph.allNodes, optimiserNode(config)]
       const view = render(
-        <GraphProvider allNodes={graphNodes(made.componentProps.config)} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={graphNodes(made.componentProps.config)} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} />
         </GraphProvider>,
       )
@@ -1339,7 +1359,7 @@ describe("OptimiserConfig", () => {
         useGraphStore.setState({ structuralVersion: useGraphStore.getState().structuralVersion + 1 })
       })
       view.rerender(
-        <GraphProvider allNodes={graphNodes(edited)} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={graphNodes(edited)} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={edited} />
         </GraphProvider>,
       )
@@ -1351,7 +1371,7 @@ describe("OptimiserConfig", () => {
         index === 0 ? { ...node, data: { ...node.data, description: "changed" } } : node
       ))
       view.rerender(
-        <GraphProvider allNodes={[...upstreamChanged, optimiserNode(edited)]} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={[...upstreamChanged, optimiserNode(edited)]} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={edited} />
         </GraphProvider>,
       )
@@ -1557,8 +1577,6 @@ describe("OptimiserConfig", () => {
 
     it("solve sends a global constant edited after the panel mounted", async () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
-      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
-      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       renderConfig(makeProps({
         config: { mode: "online", objective: "premium", constraints: {} },
       }))
@@ -1572,16 +1590,10 @@ describe("OptimiserConfig", () => {
       expect(mockSolveOptimiser.mock.calls[0][0].graph.global_constants).toEqual([
         { name: "rate", type: "float", value: 1.5 },
       ])
-      act(() => useGraphStore.getState().setGlobalConstantsRaw([]))
-      vi.mocked(buildGraph).mockImplementation(
-        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
-      )
     })
 
     it("the estimate and solve requests carry the preamble", async () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
-      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
-      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       act(() => useGraphStore.getState().setPreambleRaw("def helper(x):\n    return x\n"))
       renderConfig(makeProps({
         config: { mode: "online", objective: "premium", constraints: {} },
@@ -1591,10 +1603,6 @@ describe("OptimiserConfig", () => {
       await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
       expect(mockEstimateOptimiserSolve.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
       expect(mockSolveOptimiser.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
-      act(() => useGraphStore.getState().setPreambleRaw(""))
-      vi.mocked(buildGraph).mockImplementation(
-        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
-      )
     })
 
     it("solve button calls solveOptimiser with graph payload", async () => {
@@ -1606,15 +1614,108 @@ describe("OptimiserConfig", () => {
           constraints: { loss_ratio: { max: 1.05 } },
         },
       })
+      loadDocument(props)
       renderConfig(props)
       fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
       await waitFor(() => {
         expect(mockSolveOptimiser).toHaveBeenCalledTimes(1)
       })
-      // Verify it was called with a graph payload containing node_id
+      // The pipeline the editor holds, with the optimiser's own config, and the node's id.
       expect(mockSolveOptimiser).toHaveBeenCalledWith(
-        expect.objectContaining({ node_id: "opt_1" }),
+        expect.objectContaining({
+          graph: expect.objectContaining({
+            nodes: [
+              expect.objectContaining({ id: "input_1" }),
+              expect.objectContaining({
+                id: "opt_1",
+                data: expect.objectContaining({ config: props.componentProps.config }),
+              }),
+            ],
+            edges: [expect.objectContaining({ source: "input_1", target: "opt_1" })],
+          }),
+          target: { occurrence: null, node_id: "opt_1" },
+        }),
       )
+    })
+
+    it("inside an open submodel the estimate, solve and auto range send the whole pipeline", async () => {
+      // The pipeline: a source feeding the occurrence "pricing", whose definition holds this optimiser.
+      const definition: SubmodelDefinition = {
+        definitionId: "pricing",
+        file: "modules/pricing.py",
+        graph: {
+          nodes: [makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Optimiser", nodeType: "optimiser", config: {} } })],
+          edges: [],
+        },
+        inputPorts: [{ name: "policy", targets: [{ nodeId: "opt_1", handleId: null }] }],
+        outputPorts: [],
+      }
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [
+          makeIdentifiedNode("source", "dataInput"),
+          makeIdentifiedNode("pricing", "submodel", {
+            data: { label: "pricing", nodeType: "submodel", config: { definition_id: "pricing", alias: "pricing" } },
+          }),
+        ],
+        edges: [{ id: "feed", source: "source", target: "pricing", targetHandle: "in__policy" }],
+        preamble: "",
+        submodels: { pricing: definition },
+      })
+      act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "pricing" }))
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
+      mockStartOptimiserFrontierAutoRange.mockReturnValue(new Promise(() => {}))
+      const config = { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 35 } } }
+      renderConfig(makeProps({ config }))
+      const sent = expect.objectContaining({
+        graph: expect.objectContaining({
+          // The pipeline's own nodes and edges, not the view's, with the definition.
+          nodes: [expect.objectContaining({ id: "source" }), expect.objectContaining({ id: "pricing" })],
+          edges: [expect.objectContaining({ id: "feed", target: "pricing" })],
+          submodels: {
+            pricing: expect.objectContaining({
+              graph: expect.objectContaining({ nodes: [expect.objectContaining({ id: "opt_1" })] }),
+            }),
+          },
+        }),
+        target: { occurrence: "pricing", node_id: "opt_1" },
+      })
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledWith(sent))
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(sent))
+      cleanup()
+      // Auto range fills the frontier's missing ranges.
+      renderConfig(makeProps({ activePane: "constraints", config: { ...config, frontier_ranges: { loss_ratio: {} } } }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+      await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith(sent))
+    })
+
+    it("records a start that fails inside an open submodel under its occurrence's own placeholder job", async () => {
+      const definition: SubmodelDefinition = {
+        definitionId: "pricing",
+        file: "modules/pricing.py",
+        graph: {
+          nodes: [makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Optimiser", nodeType: "optimiser", config: {} } })],
+          edges: [],
+        },
+        inputPorts: [],
+        outputPorts: [],
+      }
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [makeIdentifiedNode("pricing", "submodel", {
+          data: { label: "pricing", nodeType: "submodel", config: { definition_id: "pricing", alias: "pricing" } },
+        })],
+        edges: [],
+        preamble: "",
+        submodels: { pricing: definition },
+      })
+      act(() => useGraphStore.getState().enterSubmodelView({ instanceId: "pricing", definitionId: "pricing" }))
+      mockSolveOptimiser.mockResolvedValue({ status: "error", job_id: null, error: "Objective column is required" })
+      renderConfig(makeProps({ config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } } }))
+
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+
+      const key = addressKey(childAddress("pricing", "opt_1"))
+      await waitFor(() => expect(useNodeResultsStore.getState().solveResults[key]?.jobId).toBe(`startup-failure:${key}`))
     })
 
     it("preserves structured execution metrics when solve admission fails", async () => {
@@ -2578,14 +2679,19 @@ describe("OptimiserConfig", () => {
           frontier_ranges: { loss_ratio: {} },
         },
       })
+      loadDocument(props)
       renderConfig(props)
 
       fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
 
       await waitFor(() => {
         expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledWith({
-          graph: { nodes: [], edges: [], preamble: "" },
-          node_id: "opt_1",
+          // The pipeline the editor holds.
+          graph: expect.objectContaining({
+            nodes: [expect.objectContaining({ id: "input_1" }), expect.objectContaining({ id: "opt_1" })],
+            edges: [expect.objectContaining({ source: "input_1", target: "opt_1" })],
+          }),
+          target: { occurrence: null, node_id: "opt_1" },
           signal: expect.any(AbortSignal),
         })
         expect(mockGetOptimiserFrontierAutoRangeStatus).toHaveBeenCalledWith(
@@ -2607,8 +2713,6 @@ describe("OptimiserConfig", () => {
         elapsed_seconds: 1,
         result: { status: "ok", ranges: { loss_ratio: { min: 11, max: 39 } }, method: "scenario_envelope" },
       })
-      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
-      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
       act(() => useGraphStore.getState().setPreambleRaw("import numpy as np"))
       renderConfig(makeProps({
         config: {
@@ -2621,10 +2725,6 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
       await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledTimes(1))
       expect(mockStartOptimiserFrontierAutoRange.mock.calls[0][0].graph.preamble).toBe("import numpy as np")
-      act(() => useGraphStore.getState().setPreambleRaw(""))
-      vi.mocked(buildGraph).mockImplementation(
-        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
-      )
     })
 
     it("fills only the clicked constraint and keeps the other swept range", async () => {
@@ -3406,7 +3506,7 @@ describe("OptimiserConfig", () => {
 
       // Back to Local folder with no experiment: the next log follows the config.
       view.rerender(
-        <GraphProvider allNodes={made.graph.allNodes} edges={made.graph.edges}>
+        <GraphProvider requestScope={documentRequestScope} allNodes={made.graph.allNodes} edges={made.graph.edges}>
           <PaneBoundConfig {...made.componentProps} config={config} />
         </GraphProvider>,
       )
@@ -3824,5 +3924,174 @@ describe("OptimiserConfig factors table", () => {
     renderConfig(analysisProps({ analysis_columns: ["region"] }))
     showPane("solve")
     expect(screen.getByText("Config changed since last solve")).toBeInTheDocument()
+  })
+})
+
+describe("Solving a child of a submodel with two occurrences", () => {
+  // The owner "pricing" and its read-only copy "pricing_copy" show the same child, opt_1.
+  const OWNER = { instanceId: "pricing", definitionId: "pricing" }
+  const COPY = { instanceId: "pricing_copy", definitionId: "pricing" }
+  const ownerKey = addressKey(childAddress(OWNER.instanceId, "opt_1"))
+  const copyKey = addressKey(childAddress(COPY.instanceId, "opt_1"))
+  const CONFIG = { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 35 } } }
+
+  function loadOccurrences() {
+    const definition: SubmodelDefinition = {
+      definitionId: "pricing",
+      file: "modules/pricing.py",
+      graph: {
+        nodes: [makeIdentifiedNode("opt_1", "optimiser", { data: { label: "Optimiser", nodeType: "optimiser", config: CONFIG } })],
+        edges: [],
+      },
+      inputPorts: [{ name: "policy", targets: [{ nodeId: "opt_1", handleId: null }] }],
+      outputPorts: [],
+    }
+    const occurrence = (id: string, instanceOf?: string) => makeIdentifiedNode(id, "submodel", {
+      data: {
+        label: id,
+        nodeType: "submodel",
+        config: { definition_id: "pricing", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) },
+      },
+    })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [makeIdentifiedNode("source", "dataInput"), occurrence(OWNER.instanceId), occurrence(COPY.instanceId, OWNER.instanceId)],
+      edges: [
+        { id: "feed", source: "source", target: OWNER.instanceId, targetHandle: "in__policy" },
+        { id: "feed_copy", source: "source", target: COPY.instanceId, targetHandle: "in__policy" },
+      ],
+      preamble: "",
+      submodels: { pricing: definition },
+    })
+  }
+
+  /** Open `view` and render the child's editor there. */
+  function renderIn(view: typeof OWNER, overrides: MakePropsOverrides = {}) {
+    act(() => {
+      const store = useGraphStore.getState()
+      if (store.focus) store.exitSubmodelView()
+      store.enterSubmodelView(view)
+    })
+    return renderConfig(makeProps({ config: CONFIG, ...overrides }))
+  }
+
+  /** What the background poller does: complete every running solve under the key it is kept under. */
+  function completeRunningSolves() {
+    act(() => {
+      for (const key of Object.keys(useNodeResultsStore.getState().solveJobs)) {
+        useNodeResultsStore.getState().completeSolveJob(key, makeSolveResult({ converged: true, iterations: 15 }))
+      }
+    })
+  }
+
+  beforeEach(() => {
+    loadOccurrences()
+  })
+
+  it("keeps a solve completed in the owner's child out of the copy's", async () => {
+    mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_owner", error: null })
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+    await waitFor(() => expect(useNodeResultsStore.getState().solveJobs[ownerKey]?.jobId).toBe("job_owner"))
+    expect(useNodeResultsStore.getState().solveJobs.opt_1).toBeUndefined()
+
+    completeRunningSolves()
+    expect(screen.getByText(/15 iterations/)).toBeInTheDocument()
+
+    cleanup()
+    renderIn(COPY, { activePane: "solve" })
+    expect(screen.queryByText(/15 iterations/)).not.toBeInTheDocument()
+    expect(useNodeResultsStore.getState().solveResults[copyKey]).toBeUndefined()
+  })
+
+  it("keeps a solve started in the owner with the owner when its start is answered after leaving it, and stops it there", async () => {
+    let respond: (value: unknown) => void = () => {}
+    mockSolveOptimiser.mockReturnValue(new Promise((resolve) => { respond = resolve }))
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+    await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+
+    // Navigating away unmounts the panel before the start is answered.
+    cleanup()
+    renderIn(COPY, { activePane: "solve" })
+    await act(async () => {
+      respond({ status: "started", job_id: "job_owner", error: null })
+    })
+
+    expect(useNodeResultsStore.getState().solveJobs[ownerKey]?.jobId).toBe("job_owner")
+    expect(useNodeResultsStore.getState().solveJobs[copyKey]).toBeUndefined()
+    expect(useNodeResultsStore.getState().solveJobs.opt_1).toBeUndefined()
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument()
+
+    cleanup()
+    mockCancelOptimiserSolve.mockResolvedValue({
+      status: "cancelled",
+      progress: 0.4,
+      message: "Cancelled by user",
+      elapsed_seconds: 3,
+      result: null,
+      frontier: null,
+      terminal_reason: "cancelled",
+      execution_metrics: null,
+    })
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+    await waitFor(() => expect(useNodeResultsStore.getState().solveJobs[ownerKey]).toBeUndefined())
+    expect(mockCancelOptimiserSolve).toHaveBeenCalledWith("job_owner")
+    expect(useNodeResultsStore.getState().solveResults[ownerKey]?.failedAttempt?.error).toBe("Cancelled by user")
+    expect(useNodeResultsStore.getState().solveResults[copyKey]).toBeUndefined()
+  })
+
+  it("records a solve refused after leaving the owner with the owner", async () => {
+    let refuse: (reason: unknown) => void = () => {}
+    mockSolveOptimiser.mockReturnValue(new Promise((_, reject) => { refuse = reject }))
+    renderIn(OWNER, { activePane: "solve" })
+    fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+    await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+
+    cleanup()
+    renderIn(COPY, { activePane: "solve" })
+    await act(async () => {
+      refuse(new Error("The solver ran out of memory"))
+    })
+
+    expect(useNodeResultsStore.getState().solveResults[ownerKey]?.failedAttempt?.error).toContain("The solver ran out of memory")
+    expect(useNodeResultsStore.getState().solveResults[copyKey]).toBeUndefined()
+    expect(useNodeResultsStore.getState().solveResults.opt_1).toBeUndefined()
+    expect(screen.queryByText(/The solver ran out of memory/)).not.toBeInTheDocument()
+  })
+
+  it("keeps a frontier choice and a save made in the owner's Export pane out of the copy's", async () => {
+    const frontier = makeOnlineFrontier(2)
+    const solved = (jobId: string) => ({
+      result: makeSolveResult(),
+      originalResult: makeSolveResult(),
+      jobId,
+      configHash: solveConfigHash(CONFIG),
+      source: "live",
+      structuralVersion: useGraphStore.getState().structuralVersion,
+      constraints: {},
+      nodeLabel: "Optimiser",
+      frontier,
+      selectedPointIndex: null,
+    })
+    useNodeResultsStore.setState({ solveResults: { [ownerKey]: solved("job_owner"), [copyKey]: solved("job_copy") } })
+    mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "p", apply_path: "rating/files/models/owner.json", message: "" })
+    const saveButton = () => screen.getByRole("button", { name: /^Save (to file|outdated result)$/ })
+
+    renderIn(OWNER, { activePane: "export" })
+    fireEvent.change(screen.getByRole("combobox", { name: "Result to publish" }), { target: { value: "1" } })
+    expect(useNodeResultsStore.getState().solveResults[ownerKey]?.selectedPointIndex).toBe(1)
+    expect(useNodeResultsStore.getState().solveResults[copyKey]?.selectedPointIndex).toBeNull()
+    fireEvent.click(saveButton())
+    await waitFor(() => expect(mockSaveOptimiser).toHaveBeenCalledWith(expect.objectContaining({ job_id: "job_owner", point_index: 1 })))
+    expect(await screen.findByTestId("optimiser-save-receipt")).toHaveTextContent("rating/files/models/owner.json")
+    expect(useOptimiserPublishStore.getState().byResultKey[ownerKey]?.saveReceipt?.apply_path).toBe("rating/files/models/owner.json")
+    expect(useOptimiserPublishStore.getState().byResultKey.opt_1).toBeUndefined()
+
+    cleanup()
+    renderIn(COPY, { activePane: "export" })
+    expect(screen.getByRole("combobox", { name: "Result to publish" })).toHaveValue("")
+    expect(saveButton()).toBeInTheDocument()
+    expect(screen.queryByTestId("optimiser-save-receipt")).not.toBeInTheDocument()
   })
 })
