@@ -452,8 +452,9 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    contract error about a node keeps its key in `node_id` and, where the route holds the graph
    (a trace's node failure), carries the node as `node: {key, occurrence, node_id, label}`
    (`node_reference`). Keys stay in machine codes and `assumptions` and in the job `node_label`
-   fields the browser does not read. The deployed scorer's refusals and internal invariant
-   errors are exceptions that still name a node by key.
+   fields the browser does not read. Two exceptions still name a node by its flat label or key:
+   the deployed scorer, whose graph carries no expansion record and whose messages no browser
+   reads, and internal invariant errors.
 
    `tests/test_node_display_names.py` checks a copy's child in each message above except the
    trace's Workbench Output and multi-frame refusals, a seed continuation's diagnostics, the
