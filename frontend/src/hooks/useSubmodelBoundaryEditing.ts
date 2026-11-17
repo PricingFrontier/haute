@@ -53,20 +53,36 @@ const isBoundaryEdge = (edge: Edge) => {
 
 type Positions = ReadonlyMap<string, XYPosition>
 
-/** Where the document's nodes are: the canvas, the pipeline's own nodes and the open definition's children. */
+/** A canvas node's place and the state a gesture changes: whether it is dragged or selected. */
+interface ViewState {
+  position: XYPosition
+  dragging: boolean
+  selected: boolean
+}
+
+/**
+ * Where the document's nodes are: the canvas (with its nodes' drag and selection),
+ * the pipeline's own nodes and the open definition's children.
+ */
 interface DocumentLayout {
-  view: Positions
+  view: ReadonlyMap<string, ViewState>
   parent: Positions
   definition: Positions
 }
 
 const positionsOf = (nodes: readonly Node[]): Positions => new Map(nodes.map((node) => [node.id, node.position]))
 
+const samePosition = (a: XYPosition, b: XYPosition) => a.x === b.x && a.y === b.y
+
 function documentLayout(definitionId: string): DocumentLayout {
   const { nodes, focus, submodels } = useGraphStore.getState()
   const definition = submodels[definitionId]
   return {
-    view: positionsOf(nodes),
+    view: new Map(nodes.map((node) => [node.id, {
+      position: node.position,
+      dragging: node.dragging === true,
+      selected: node.selected === true,
+    }])),
     parent: positionsOf(focus?.rootNodes ?? []),
     definition: positionsOf(isSubmodelDefinition(definition, definitionId) ? definition.graph.nodes : []),
   }
@@ -76,14 +92,14 @@ function documentLayout(definitionId: string): DocumentLayout {
 function movedSince(id: string, base: Positions, now: Positions): boolean {
   const position = now.get(id)
   const was = base.get(id)
-  return position !== undefined && !(was && was.x === position.x && was.y === position.y)
+  return position !== undefined && !(was && samePosition(was, position))
 }
 
 /** `nodes`, each one `moved` placed where `now` has it; the others keep their place. */
 function placedAs(nodes: Node[], now: Positions, moved: (id: string) => boolean): Node[] {
   return nodes.map((node) => {
     const position = moved(node.id) ? now.get(node.id) : undefined
-    return position && (position.x !== node.position.x || position.y !== node.position.y)
+    return position && !samePosition(position, node.position)
       ? { ...node, position }
       : node
   })
@@ -92,17 +108,20 @@ function placedAs(nodes: Node[], now: Positions, moved: (id: string) => boolean)
 /**
  * Carry the live canvas presentation onto a candidate's view nodes.
  *
- * A pending candidate is kept across selection and position changes made while
- * parent identities resolve; committing it must not revert those, so the
- * presentation-only fields are taken from the current view by node id. A child
- * is placed where `children` has it, unless a drag of it is under way, shown
- * where it is; a card `moved` is placed where it is.
+ * A pending candidate is kept across selection, drag and position changes made
+ * while parent identities resolve; committing it must not revert those, nor the
+ * candidate's own (a deletion batch's selection, or the release ending a drag).
+ * So each of a node's position, drag and selection takes the canvas's value when
+ * the canvas changed it since `base`, else the candidate's; its measured size is
+ * the canvas's. A child that is not being dragged is then placed where `children`
+ * has it, so the canvas and the definition agree; a drag under way, and a card,
+ * keep the position chosen.
  */
 function mergeViewPresentation<T extends { viewNodes: Node[] }>(
   result: T,
   currentNodes: Node[],
+  base: ReadonlyMap<string, ViewState>,
   children: Positions,
-  moved: (id: string) => boolean,
 ): T {
   const byId = new Map(currentNodes.map((node) => [node.id, node]))
   return {
@@ -110,14 +129,15 @@ function mergeViewPresentation<T extends { viewNodes: Node[] }>(
     viewNodes: result.viewNodes.map((node) => {
       const live = byId.get(node.id)
       if (!live) return node
-      const position = live.dragging || (!children.has(node.id) && moved(node.id))
-        ? live.position
-        : children.get(node.id) ?? node.position
+      const was = base.get(node.id)
+      const position = !was || !samePosition(was.position, live.position) ? live.position : node.position
+      const dragging = !was || was.dragging !== (live.dragging === true) ? live.dragging : node.dragging
+      const selected = !was || was.selected !== (live.selected === true) ? live.selected : node.selected
       return {
         ...node,
-        position,
-        selected: live.selected,
-        dragging: live.dragging,
+        position: dragging ? position : children.get(node.id) ?? position,
+        selected,
+        dragging,
         measured: live.measured,
         width: live.width,
         height: live.height,
@@ -167,7 +187,9 @@ function focusedOccurrence() {
  * alike: where the definition has it now when the definition moved it (a drag that
  * ended), else where `result` put it. Only a drag still under way shows the canvas's
  * position, its end reaching the definition as its own step; a drag released where
- * it started leaves the document as it was, so `result`'s place stands.
+ * it started leaves the document as it was, so `result`'s place stands. Whether a
+ * drag is under way is itself judged against `base`, so a release in the edit's own
+ * batch ends it.
  */
 function withCurrentLayout(result: SubmodelBoundaryEditResult, base: DocumentLayout): SubmodelBoundaryEditResult {
   const { nodes } = useGraphStore.getState()
@@ -178,7 +200,7 @@ function withCurrentLayout(result: SubmodelBoundaryEditResult, base: DocumentLay
     ? placedAs(owned.graph.nodes, now.definition, (id) => movedSince(id, base.definition, now.definition))
     : []
   return {
-    ...mergeViewPresentation(result, nodes, positionsOf(children), (id) => movedSince(id, base.view, now.view)),
+    ...mergeViewPresentation(result, nodes, base.view, positionsOf(children)),
     parentNodes: placedAs(result.parentNodes, now.parent, (id) => movedSince(id, base.parent, now.parent)),
     submodels: owned
       ? { ...result.submodels, [result.definitionId]: { ...owned, graph: { ...owned.graph, nodes: children } } }

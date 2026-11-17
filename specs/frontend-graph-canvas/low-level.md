@@ -1125,9 +1125,11 @@ reconciliation rather than dropping them or committing a second mutation.
     else where the candidate put it. Only a drag still under way (`dragging`)
     shows the canvas's position, its end reaching the definition as its own
     step; a drag released where it started leaves the document as it was, so
-    the candidate's place stands. The view nodes' `selected`,
-    `dragging`, `measured`, `width` and `height` are taken from the canvas
-    then, by id. A shared-node deletion whose
+    the candidate's place stands. A view node's position, `dragging` and
+    `selected` are each the canvas's when the canvas changed them since the
+    candidate was prepared, else the candidate's, so the candidate's own
+    selection and a release in its own batch land; `measured`, `width` and
+    `height` are the canvas's, by id. A shared-node deletion whose
     commit went asynchronous reports `"pending"` and settles its caller through
     an `onSettled(committed)` callback, so selection, preview, cached-result and
     dialog cleanup only runs once the commit actually lands. The projection
@@ -1993,8 +1995,9 @@ again through the editor and save paths.
     their order, output names and consumer mappings; the collapsed generic input at the
     root; a refused route shown with its reason; and the prepared transaction of an edit
     waiting on server names: a move made meanwhile is kept and the edit commits, with a
-    deletion batch's own moves in the definition through Undo and Redo and a drag that
-    ends meanwhile placing the canvas and the definition alike, while a
+    deletion batch's own moves in the definition through Undo and Redo, a drag that
+    ends meanwhile, or that the batch itself ends, placing the canvas and the definition
+    alike, while a
     superseding edit, Undo then Redo back to the same document, or leaving and reopening
     the submodel discards it.
   - `frontend/src/hooks/__tests__/useSubmodelNavigation.boundaryPorts.test.ts`,

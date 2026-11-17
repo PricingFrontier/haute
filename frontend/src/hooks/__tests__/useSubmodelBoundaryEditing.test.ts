@@ -1145,6 +1145,40 @@ describe("useSubmodelBoundaryEditing", () => {
       expect(definitionPosition()).toEqual({ x: 42, y: 24 })
     })
 
+    it("lands a drag the deletion batch itself ends, with its selection, when nothing happens meanwhile", async () => {
+      const fixture = makeUnresolvedFixture()
+      const { resolutions, resolveGraphIdentities } = deferredResolver()
+      openInStore(fixture)
+      const { result } = renderHook(() => useSubmodelBoundaryEditing({
+        ...hookParams(fixture), resolveGraphIdentities,
+      }))
+      const canvasNode = () => store().nodes.find((node) => node.id === "child_b")!
+      const definitionPosition = () => storedDefinition().graph.nodes.find((node) => node.id === "child_b")!.position
+      act(() => {
+        store().pushSnapshot()
+        store().setNodesRaw((nodes) => nodes.map((node) => (
+          node.id === "child_b" ? { ...node, position: { x: 10, y: 20 }, dragging: true } : node)))
+      })
+
+      act(() => {
+        expect(result.current.commitSharedNodeDeletion(new Set(["child_a"]), new Set(), [
+          { type: "remove", id: "child_a" },
+          { type: "position", id: "child_b", position: { x: 42, y: 24 }, dragging: false },
+          { type: "select", id: "child_b", selected: true },
+        ])).toBe("pending")
+      })
+      const request = resolveGraphIdentities.mock.calls[0]![0]
+      await act(async () => resolutions[0]!.resolve({
+        nodes: [...request.nodes], edges: [...request.edges] as PipelineEdge[],
+      }))
+
+      expect(store().nodes.map((node) => node.id)).not.toContain("child_a")
+      expect(canvasNode().position).toEqual({ x: 42, y: 24 })
+      expect(canvasNode().dragging).toBe(false)
+      expect(canvasNode().selected).toBe(true)
+      expect(definitionPosition()).toEqual({ x: 42, y: 24 })
+    })
+
     it.each([
       // Released elsewhere: the drag's end is the later move, and wins.
       [{ x: 10, y: 20 }, { x: 10, y: 20 }],
