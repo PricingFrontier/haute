@@ -636,6 +636,7 @@ def _writers() -> dict[str, set[str]]:
     return found
 
 
+@pytest.mark.meta
 def test_every_code_writer_names_the_steps_it_renders() -> None:
     assert _writers() == CODE_WRITERS
     assert "edited_steps" in SavePipelineRequest.model_fields
