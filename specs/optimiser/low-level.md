@@ -2343,8 +2343,8 @@ factor whose name is also an analysis column is listed once, as the rating facto
 are the Rates tab's. `_finalize_solve_result` records them on the result as `segment_keys`, one
 `{key, source, binning, available, unavailable_reason}` per key: `source` is `"analysis"` or
 `"factor"`; `binning` is `"numeric"` for an analysis column of a number kind (integer, float of any
-width or decimal, `_polars_dtypes.NUMBER_KINDS`, recorded as `kind` in the side table's
-`column_stats`) and `"categorical"` otherwise (every factor, and String,
+width or decimal, `_polars_dtypes.NUMBER_KINDS`; the side table's `column_stats` records the
+column's base type by name, `dtype`, whose kind `base_type_kind` reads) and `"categorical"` otherwise (every factor, and String,
 Categorical, Enum, Boolean, date, time or binary analysis columns). `segment_keys` survives every slimming
 and is shared by every target: a frontier point has the same quotes and the same levels. The
 **cardinality gate** decides availability, before any query:

@@ -20,7 +20,7 @@ import { dirname, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import ts from "typescript"
 import { describe, expect, it } from "vitest"
-import { COLUMN_KIND_GROUPS, COLUMN_KINDS } from "../../generated/api-contracts.constants.generated"
+import { COLUMN_KIND_GROUPS, COLUMN_KINDS } from "../../generated/api-contracts.column-kinds.generated"
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 
@@ -44,6 +44,20 @@ const NAMED_TYPES: Record<string, string> = {
     "the cast targets Polars 2 refuses for each source kind (the server's CAST_REFUSALS)",
   "frontend/src/panels/editors/polarsSteps/catalogue.ts::defaultArgFor::name":
     "a new cast() argument's default target",
+  "frontend/src/panels/editors/polarsSteps/catalogue.ts::createStep::name":
+    "a new Change types entry's default target",
+  "frontend/src/panels/editors/polarsSteps/forms.tsx::CastForm::name":
+    "a Change types entry added in the form: its default target",
+  "frontend/src/panels/editors/polarsSteps/AddStepMenu.tsx::ENTRIES::name":
+    "the Convert menu entry's default target",
+  "frontend/src/panels/editors/polarsSteps/catalogue.ts::DATE_FORMAT_DEFAULTS::name":
+    "the format a text column is parsed with for each of the two date cast targets",
+  "frontend/src/panels/GlobalConstantsPanel.tsx::TYPE_LABELS::name":
+    "the English label Decimal, for a float constant, not a type",
+  "frontend/src/workbench/columnTypes.ts::COLUMN_TYPES::name":
+    "the English label Decimal, for a float column, not a type",
+  "frontend/src/workbench/fieldDatabaseIssues.ts::DATABASE_TYPES::name":
+    "the English label Decimal, for a database float column, not a type",
   "frontend/src/panels/editors/rating/ratingTableUtils.ts::primitiveRatingKinds::name":
     "the persisted Rating factor descriptor kinds (the server's _RATING_PRIMITIVE_DESCRIPTOR_KINDS)",
   "frontend/src/panels/editors/rating/ratingTableUtils.ts::normaliseRatingFactorDtype::name":
@@ -52,16 +66,44 @@ const NAMED_TYPES: Record<string, string> = {
 
 type Finding = { line: number; scope: string; rule: "name" | "pattern"; text: string }
 
+const OTHER_TYPE_NAMES: readonly string[] = [...TYPE_NAMES].filter((name) => !NUMBER_TYPE_NAMES.includes(name))
+
+/** Whether *pattern* matches one of *names*: the whole name, or the start of one when it is not prose. */
+function matchesAName(source: string, pattern: RegExp, names: readonly string[]): boolean {
+  const whole = new RegExp(`^(?:${source})$`, pattern.flags)
+  return names.some((name) => whole.test(name) || (!/\s/.test(source) && pattern.test(name)))
+}
+
+/**
+ * Whether *source* is a pattern matched against a type's name: a number type's in any
+ * letter case (the editor's patterns were lower-cased), another type's as Polars writes it.
+ */
 function isTypePattern(source: string, flags: string): boolean {
-  if (!REGEX_SYNTAX.test(source) || !NUMBER_STEM.test(source)) return false
-  let pattern: RegExp
+  if (!REGEX_SYNTAX.test(source)) return false
   try {
-    pattern = new RegExp(source, flags.includes("i") ? flags : `${flags}i`)
+    if (NUMBER_STEM.test(source)) {
+      const pattern = new RegExp(source, flags.includes("i") ? flags : `${flags}i`)
+      if (matchesAName(source, pattern, NUMBER_TYPE_NAMES)) return true
+    }
+    const named = OTHER_TYPE_NAMES.filter((name) => source.includes(name))
+    return named.length > 0 && matchesAName(source, new RegExp(source, flags), named)
   } catch {
     return false
   }
-  const whole = new RegExp(`^(?:${source})$`, pattern.flags)
-  return NUMBER_TYPE_NAMES.some((name) => whole.test(name) || (!/\s/.test(source) && pattern.test(name)))
+}
+
+/** Whether a literal holding *node* names two types or more: a list kept by hand. */
+function inListOfTypes(node: ts.Node): boolean {
+  const parent = node.parent
+  const members = ts.isArrayLiteralExpression(parent)
+    ? parent.elements
+    : ts.isPropertyAssignment(parent) && ts.isObjectLiteralExpression(parent.parent) && parent.name === node
+      ? parent.parent.properties.map((property) => property.name)
+      : []
+  const names = members.filter(
+    (member) => member !== undefined && (ts.isStringLiteral(member) || ts.isIdentifier(member)) && TYPE_NAMES.has(member.text),
+  )
+  return names.length >= 2
 }
 
 function isTypeStem(text: string): boolean {
@@ -118,17 +160,17 @@ export function kindDecisionsByHand(source: string, fileName = "source.tsx"): Fi
       const callee = call && ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : undefined
       const constructsPattern = (ts.isNewExpression(parent) || ts.isCallExpression(parent))
         && ts.isIdentifier(parent.expression) && parent.expression.text === "RegExp"
-      // A property's value is data (a label, a default), not a test of a type's name.
-      const propertyValue = ts.isPropertyAssignment(parent) && parent.initializer === node
-      if (NUMBER_TYPE_NAMES.includes(node.text) && !propertyValue) report(node, "name")
-      else if (constructsPattern && isTypePattern(node.text, "")) report(node, "pattern")
+      if (NUMBER_TYPE_NAMES.includes(node.text) || (TYPE_NAMES.has(node.text) && inListOfTypes(node))) {
+        report(node, "name")
+      } else if (constructsPattern && isTypePattern(node.text, "")) report(node, "pattern")
       else if (callee && ["startsWith", "endsWith", "includes", "indexOf"].includes(callee) && isTypeStem(node.text)) {
         report(node, "pattern")
       }
     } else if (
       (ts.isPropertyAssignment(node) || ts.isPropertySignature(node) || ts.isShorthandPropertyAssignment(node))
       && node.name && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))
-      && NUMBER_TYPE_NAMES.includes(node.name.text) && !inTypePosition(node)
+      && (NUMBER_TYPE_NAMES.includes(node.name.text) || (TYPE_NAMES.has(node.name.text) && inListOfTypes(node.name)))
+      && !inTypePosition(node)
       && !ts.isPropertySignature(node)
     ) {
       report(node.name, "name")
@@ -189,6 +231,13 @@ describe("column kinds decided by hand", () => {
     ["a lookup keyed by type name", 'const colours = { Float64: "text-emerald-400" }'],
     ["a prefix test", 'return dtype.startsWith("Float")'],
     ["a pattern built from text", 'const pattern = new RegExp("^Float\\\\d+$")'],
+    [
+      "a list of type names held as property values",
+      'const FLOATS = [{ type: "Float32" }, { type: "Float64" }]\nconst isFloat = (d) => FLOATS.some((t) => t.type === d)',
+    ],
+    ["a list of text type names", 'return ["String", "Categorical"].includes(dtype)'],
+    ["a pattern over date type names", "return /^(?:Date|Datetime)/.test(dtype)"],
+    ["a lookup keyed by two type names", 'const colours = { Date: "text-rose-400", Datetime: "text-rose-400" }'],
   ])("the scan finds %s", (_label, source) => {
     expect(kindDecisionsByHand(source)).not.toEqual([])
   })

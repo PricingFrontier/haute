@@ -5,12 +5,14 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  COLUMN_KINDS_FILENAME,
   CONSTANTS_FILENAME,
   GENERATED_TYPES_FILENAME,
   brandedNodeKeys,
   compactNullableSchemas,
   extractContractSchema,
   extractModuleContractSchema,
+  generateColumnKinds,
   run,
   untypedAsUnknown,
   validatorModules,
@@ -172,6 +174,7 @@ test(
     const artifacts = [
       GENERATED_TYPES_FILENAME,
       CONSTANTS_FILENAME,
+      COLUMN_KINDS_FILENAME,
       ...modules.flatMap(({ validatorFilename, declarationFilename }) => [
         validatorFilename,
         declarationFilename,
@@ -287,4 +290,20 @@ test("a schema that says nothing of its type is declared unknown, never an objec
       either: { anyOf: [{ type: "string" }, { tsType: "unknown" }] },
     },
   });
+});
+
+test("the column kinds are refused unless every name and group holds a kind the table names", () => {
+  const table = { kinds: ["integer", "float"], groups: { number: ["integer", "float"] }, types: { Int8: "integer" } };
+  const schema = (kinds) => ({ "x-haute-column-kinds": kinds });
+  assert.match(generateColumnKinds(schema(table)), /export const COLUMN_KINDS = \{"Int8":"integer"\} as const;/);
+  assert.throws(() => generateColumnKinds({}), /x-haute-column-kinds kinds/);
+  assert.throws(() => generateColumnKinds(schema({ ...table, types: [] })), /x-haute-column-kinds types/);
+  assert.throws(
+    () => generateColumnKinds(schema({ ...table, types: { Float16: "half" } })),
+    /Unknown column kind in x-haute-column-kinds types: Float16/,
+  );
+  assert.throws(
+    () => generateColumnKinds(schema({ ...table, groups: { number: [] } })),
+    /Unknown column kind in x-haute-column-kinds groups: number/,
+  );
 });

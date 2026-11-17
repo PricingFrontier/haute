@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { COLUMN_KINDS } from "../../generated/api-contracts.constants.generated"
+import { COLUMN_KINDS } from "../../generated/api-contracts.column-kinds.generated"
 import { glmDtypeClass } from "../../panels/modelling/glmTerms"
 import { dtypeFits } from "../workbenchTables"
 import {

@@ -985,7 +985,7 @@ is no eager dataframe or collect-then-write fallback.
   `polars_type_kinds()` is that table for every type class Polars defines a column can
   have (all but `DataType` and `Unknown`), and the contract generator writes it, with the
   kind groups, into the bundle's `x-haute-column-kinds` keyword: the browser's
-  `COLUMN_KINDS` and `COLUMN_KIND_GROUPS` constants, which `frontend/src/utils/polarsDtypes.ts`
+  `COLUMN_KINDS` and `COLUMN_KIND_GROUPS` constants (`api-contracts.column-kinds.generated.ts`), which `frontend/src/utils/polarsDtypes.ts`
   reads by the base name before the first bracket of `str(dtype)`.
 - A fact about one width comes from Polars too: `integer_range(dtype)` is the least and
   greatest value Polars states for an integer type (`dtype.min()`, `dtype.max()`), and

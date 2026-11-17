@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -143,22 +144,29 @@ def _names_kind(names: list[str | None]) -> bool:
     return any(name in _NUMBER_TYPE_NAMES for name in named) or len(named) >= 2
 
 
-def _is_type_pattern(text: str) -> bool:
-    """Whether *text* is a pattern that matches a number type's name.
-
-    It matches the whole name, or the start of one and is not prose: a message such as
-    "one of int|float|str" is not a pattern anything is matched against.
-    """
-    if not _REGEX_SYNTAX.search(text) or not re.search(r"(?i)u?int|float|decimal", text):
-        return False
-    try:
-        pattern = re.compile(text, re.IGNORECASE)
-    except re.error:
-        return False
+def _matches_a_name(text: str, pattern: re.Pattern[str], names: Iterable[str]) -> bool:
+    """Whether *pattern* matches the whole of a name, or the start of one and is not prose:
+    a message such as "one of int|float|str" is not a pattern anything is matched against."""
     return any(
         pattern.fullmatch(name) or (pattern.match(name) and not re.search(r"\s", text))
-        for name in _NUMBER_TYPE_NAMES
+        for name in names
     )
+
+
+def _is_type_pattern(text: str) -> bool:
+    """Whether *text* is a pattern matched against a type's name: a number type's in any
+    letter case, another type's as Polars writes it."""
+    if not _REGEX_SYNTAX.search(text):
+        return False
+    try:
+        if re.search(r"(?i)u?int|float|decimal", text) and _matches_a_name(
+            text, re.compile(text, re.IGNORECASE), _NUMBER_TYPE_NAMES
+        ):
+            return True
+        named = [name for name in _TYPE_NAMES - _NUMBER_TYPE_NAMES if name in text]
+        return bool(named) and _matches_a_name(text, re.compile(text), named)
+    except re.error:
+        return False
 
 
 def _is_type_stem(node: ast.AST) -> bool:
@@ -295,6 +303,8 @@ def test_every_named_type_place_is_still_in_the_source() -> None:
         "PATTERN = re.compile(r'float(?:16|32|64)|f(?:16|32|64)', re.IGNORECASE)",
         "name.startswith('Float')",
         "'UInt' in rendered",
+        r"DATES = re.compile(r'(?:Date|Datetime)(?:\(.*\))?')",
+        "TEXT = frozenset({'String', 'Categorical'})",
     ],
 )
 def test_the_scan_finds_a_kind_decided_by_hand(source: str) -> None:

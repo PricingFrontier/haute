@@ -2,7 +2,7 @@ import {
   COLUMN_KIND_GROUPS,
   COLUMN_KINDS,
   type COLUMN_KIND_VALUES,
-} from "../generated/api-contracts.constants.generated"
+} from "../generated/api-contracts.column-kinds.generated"
 
 /**
  * What kind of column a type is: the server's `column_kind` (specs/io-layer, "Column

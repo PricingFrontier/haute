@@ -546,9 +546,12 @@ def test_a_traced_value_matches_its_row_in_a_column_of_every_kind_or_says_why_no
 
     values = _python_values(dtype)
     expression, reason = _typed_value_match_expr("x", values[0], dtype)
-    if expression is None:
-        assert reason
+    # A trace matches a value of every kind but an object's and an extension's, which
+    # Haute reads as its storage type before a pipeline sees it.
+    if column_kind(dtype) in {"object", "extension"}:
+        assert (expression, reason) == (None, "unsupported_dtype")
         return
+    assert expression is not None, reason
     frame = pl.DataFrame([sample_column(dtype)])
     assert frame.filter(expression).height == values.count(values[0])
 

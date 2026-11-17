@@ -5,6 +5,3 @@ export const EXPLORE_CHART_AXIS_VALUES = ["primary","secondary"] as const;
 export const EXPLORE_CHART_ORIENTATION_VALUES = ["vertical","horizontal"] as const;
 export const EXPLORE_CHART_NUMBER_FORMAT_VALUES = ["inherit","number","integer","percent","currency_gbp","currency_usd","currency_eur"] as const;
 export const EXPLORE_CHART_LEGEND_POSITION_VALUES = ["top","right","bottom","left"] as const;
-export const COLUMN_KIND_VALUES = ["integer","float","decimal","boolean","text","category","date","datetime","duration","time","binary","null","nested","object","extension"] as const;
-export const COLUMN_KIND_GROUPS = {"date":["date","datetime"],"number":["decimal","float","integer"],"text":["category","text"]} as const;
-export const COLUMN_KINDS = {"Array":"nested","BaseExtension":"extension","Binary":"binary","Boolean":"boolean","Categorical":"category","Date":"date","Datetime":"datetime","Decimal":"decimal","Duration":"duration","Enum":"category","Extension":"extension","Float16":"float","Float32":"float","Float64":"float","Int128":"integer","Int16":"integer","Int32":"integer","Int64":"integer","Int8":"integer","List":"nested","Map":"nested","Null":"null","Object":"object","String":"text","Struct":"nested","Time":"time","UInt128":"integer","UInt16":"integer","UInt32":"integer","UInt64":"integer","UInt8":"integer","Utf8":"text"} as const;
