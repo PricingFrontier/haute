@@ -483,6 +483,73 @@ def test_a_scoped_save_never_reads_a_record_a_hand_edit_left_behind(tmp_path: Pa
     assert "NotImplementedError" not in saved
 
 
+def test_a_scoped_save_keeps_unfinished_steps_behind_an_inline_placeholder(
+    tmp_path: Path,
+) -> None:
+    """A placeholder on its function's own line is the placeholder all the same: an unedited
+    scoped save writes the node from its record, whose join names an input it is not
+    connected to (it renders, so the loaded node carries code), and keeps it unfinished."""
+    from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+    from haute.schemas import PipelineNodeSaveRequest
+
+    root = tmp_path
+    (root / "haute.toml").write_text('[project]\nname="demo"\n', encoding="utf-8")
+    (root / "main.py").write_text(
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        "@pipeline.polars\n"
+        "def transform(source_a: pl.LazyFrame) -> pl.LazyFrame: "
+        f'raise NotImplementedError("{INCOMPLETE_STEPS_MESSAGE}")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    broken = {
+        "input_type": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": "",
+        "arguments": {},
+    }
+    (root / "a.json").write_text(json.dumps({**broken, "cacheMode": "snapshot"}), encoding="utf-8")
+    record = [
+        {"id": "source-1", "kind": "source", "input": "source_a"},
+        {
+            "id": "join-2",
+            "kind": "join",
+            "input": "rates",
+            "how": "left",
+            "maintain_order": "left_right",
+            "left_on": ["region"],
+            "right_on": ["region"],
+            "suffix": "_rate",
+        },
+    ]
+    sidecar = root / "main.haute.json"
+    sidecar.write_text(json.dumps({"unfinished_steps": {"transform": record}}), encoding="utf-8")
+    use_project(root)
+    document = load_pipeline_editor_document(root / "main.py", project_root=root)
+    target = next(node for node in document.nodes if node.authored_id == "transform")
+    assert target.scoped_editable
+    assert target.config is not None and target.config.get("code")
+    request = PipelineNodeSaveRequest(
+        source_file=document.source_file,
+        source_revision=document.source_revision,
+        target_source_file=target.source_file,
+        target_recovery_id=target.recovery_id,
+        config=_as_javascript_holds_it(target.config),
+    )
+
+    apply_scoped_node_save(project_root=root, request=request)
+
+    assert INCOMPLETE_STEPS_MESSAGE in (root / "main.py").read_text(encoding="utf-8")
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["unfinished_steps"] == {
+        "transform": record
+    }
+
+
 # ---------------------------------------------------------------------------
 # The guard: every writer of a pipeline's code is one that names its edited steps
 # ---------------------------------------------------------------------------

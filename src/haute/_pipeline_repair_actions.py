@@ -713,7 +713,11 @@ def _finalise_action_plan(
 
 
 def _function_body(path: Path, name: str) -> str | None:
-    """The body of the top-level function *name* in the Python file *path*, as written."""
+    """The body of the top-level function *name* in the Python file *path*, as the parser
+    extracts it (``_function_body_source``)."""
+    from haute._ast_helpers import _function_body_source
+    from haute._source_layout import python_lines
+
     raw = path.read_bytes()
     _prefix, source, _body = _decode_utf8_artifact(raw, artifact="Repair source")
     for statement in _parse(raw).body:
@@ -721,8 +725,7 @@ def _function_body(path: Path, name: str) -> str | None:
             isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
             and statement.name == name
         ):
-            lines = source.splitlines()
-            return "\n".join(lines[statement.body[0].lineno - 1 : statement.end_lineno])
+            return _function_body_source(python_lines(source), statement)
     return None
 
 
