@@ -121,12 +121,14 @@ function strategyLabel(status: ExecutionStrategyDiagnostic["status"]): string {
 
 /**
  * The node the metrics name under `key`, as their own addresses give it: its label, and a
- * child's occurrence ("Banding 1 in pricing"). Never the key.
+ * child's with its occurrence's, which the metrics address too ("Banding 1 in pricing").
+ * Never the key.
  */
 export function metricsNodeName(metrics: Pick<ExecutionMetrics, "node_addresses">, key: RuntimeNodeKey): string {
   const address = metrics.node_addresses[keyText(key)]
   if (!address) return "a node"
-  return address.occurrence === null ? address.label : `${address.label} in ${address.occurrence}`
+  if (address.occurrence === null) return address.label
+  return `${address.label} in ${metrics.node_addresses[address.occurrence]?.label ?? address.occurrence}`
 }
 
 /** ` at '<node>' (<operator>)`, omitting the parts the diagnostic leaves null. */

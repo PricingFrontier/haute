@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import polars as pl
 import pytest
 
 from haute._execution_context import (
@@ -280,6 +281,71 @@ def test_an_unreadable_snapshot_of_a_copys_child_names_it(
 
     assert raised.value.node_id == _COPY_SCALE
     assert raised.value.node_label == "scale in rating_ie"
+    assert raised.value.to_payload()["message"].startswith(
+        "The cached data for 'scale in rating_ie' is unreadable."
+    )
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["leased", "adopted-by-a-worker"])
+def test_a_seed_found_unreadable_at_its_lease_names_the_copys_child(
+    monkeypatch: pytest.MonkeyPatch, adopted: bool
+) -> None:
+    """Resolution read the seed's generation; leasing it, in the parent or a worker
+    adopting the plan, finds it unreadable."""
+    from haute._data_points import DataPointResolver
+    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
+    from haute._seed_plans import (
+        SeedPlan,
+        SeedPlanRequest,
+        open_resolved_seed_plan,
+        resolve_seed_plan,
+    )
+    from haute._source_cache import SourceCacheCorruptError
+
+    flat = _flat_copy_with()
+    store = NodeSnapshotStore(current_project().root)
+    resolver = DataPointResolver(flat, source="live", store=store)
+    identity = resolver.node_output_slot(_COPY_SCALE).identity(
+        resolver.node_output_signature(_COPY_SCALE)
+    )
+    artifact = store.stage_node_output(identity)
+    pl.DataFrame({"x": [10]}).write_parquet(artifact.part_path(0))
+    with store.publish_node_output(
+        identity,
+        artifact,
+        columns=NodeSnapshotColumns.all(),
+        dependencies={},
+        explicit=False,
+        profile=ExecutionProfile.TRAINING_PREP,
+        refresh=False,
+        owner=NodeSnapshotOwner.of(flat, _COPY_SCALE),
+    ) as publication:
+        assert publication.outcome == "published"
+    request = SeedPlanRequest(
+        graph=flat,
+        target_node_id=_COPY_FINISH,
+        source="live",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    parent = open_resolved_seed_plan(request, store=store) if adopted else None
+    if parent is None:
+        assert set(resolve_seed_plan(request, store=store).seeds) == {_COPY_SCALE}
+
+    def unreadable(*_args: Any, **_kwargs: Any) -> Any:
+        raise SourceCacheCorruptError("generation is unreadable")
+
+    monkeypatch.setattr(NodeSnapshotStore, "lease_generation", unreadable)
+    try:
+        with pytest.raises(SnapshotCorruptError) as raised:
+            if parent is not None:
+                SeedPlan.adopt(pickle.loads(pickle.dumps(parent.handoff())))
+            else:
+                open_resolved_seed_plan(request, store=store)
+    finally:
+        if parent is not None:
+            parent.close()
+
+    assert raised.value.node_id == _COPY_SCALE
     assert raised.value.to_payload()["message"].startswith(
         "The cached data for 'scale in rating_ie' is unreadable."
     )

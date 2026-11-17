@@ -146,6 +146,18 @@ describe("executionDiagnostics", () => {
     expect(metricsNodeName(metrics, runtimeKey("unaddressed"))).toBe("a node")
   })
 
+  it("names a child with its occurrence's label from the occurrence's own address", () => {
+    const key = "submodel_runtime/instance-17/aggregate"
+    const metrics = makeExecutionMetricsFixture({
+      node_addresses: {
+        [key]: { occurrence: "instance-17", node_id: "aggregate", label: "Claims totals" },
+        "instance-17": { occurrence: null, node_id: "instance-17", label: "Renewal pricing" },
+      },
+    })
+
+    expect(metricsNodeName(metrics, runtimeKey(key))).toBe("Claims totals in Renewal pricing")
+  })
+
   it("places a strategy's location at the blocking node's name, leaving out what it omits", () => {
     const metrics = warnedMetrics({ node_addresses: { [CHILD_KEY]: CHILD } })
     const strategy = metrics.execution_strategy

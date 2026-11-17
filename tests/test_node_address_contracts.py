@@ -20,6 +20,7 @@ import haute._node_address_schemas as address_schemas
 import haute.schemas as schemas
 from haute._node_address_schemas import RUNTIME_NODE_KEY_MARKER
 from haute._node_addresses import named_keys
+from haute._submodel_instances import qualified_runtime_node_id
 from haute._types import PipelineGraph
 from scripts.generate_api_contracts import RESPONSE_CONTRACT_GROUPS
 from tests._preview_targets import node_target, occurrence_output_target
@@ -232,12 +233,40 @@ def _authored_label(graph: PipelineGraph, occurrence: str | None, node_id: str) 
     return graph.submodels[definition_id].graph.node_map[node_id].data.label
 
 
+def _occurrences_of(addresses: Mapping[str, Any], keys: set[str]) -> set[str]:
+    """The occurrences holding *keys*, a nested one's too."""
+    found: set[str] = set()
+    pending = [addresses[key]["occurrence"] for key in keys if key in addresses]
+    while pending:
+        occurrence = pending.pop()
+        if occurrence is None or occurrence in found:
+            continue
+        found.add(occurrence)
+        if occurrence in addresses:
+            pending.append(addresses[occurrence]["occurrence"])
+    return found
+
+
 def _addresses_every_key(answer_type: type[BaseModel], graph: PipelineGraph, answer: Any) -> None:
     named = named_keys(answer_type, answer)
     assert named, f"{answer_type.__name__} named no node"
-    assert set(answer["node_addresses"]) == named
-    for address in answer["node_addresses"].values():
-        assert address["label"] == _authored_label(graph, address["occurrence"], address["node_id"])
+    addresses = answer["node_addresses"]
+    # The metrics address each named child's occurrence too, so a reader without the graph
+    # names the child with its occurrence's label.
+    expected = (
+        named | _occurrences_of(addresses, named)
+        if answer_type is execution_schemas.ExecutionMetricsPayload
+        else named
+    )
+    assert set(addresses) == expected
+    for key, address in addresses.items():
+        # Each key is addressed to the node flattening ran under it, not merely to a node
+        # with the same label: a copy's children share their owner's labels.
+        occurrence, node_id = address["occurrence"], address["node_id"]
+        assert key == (
+            node_id if occurrence is None else qualified_runtime_node_id(occurrence, node_id)
+        ), (key, address)
+        assert address["label"] == _authored_label(graph, occurrence, node_id)
 
 
 @pytest.mark.parametrize(

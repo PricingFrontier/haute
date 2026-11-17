@@ -1047,7 +1047,7 @@ def test_plan_fingerprint(project: Path, store: NodeSnapshotStore) -> None:
     other = SourceCacheIdentity(provider="node_output", descriptor={"node": "y"})
 
     def seed(node: str, ident: SourceCacheIdentity, generation: str) -> SeedDecision:
-        return SeedDecision(node, ident, generation, ALL, ALL, {})
+        return SeedDecision(node, ident, generation, ALL, ALL, {}, node)
 
     g1, g2 = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
     both = {"x": seed("x", identity, g1), "y": seed("y", other, g2)}

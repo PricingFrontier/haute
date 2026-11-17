@@ -296,8 +296,9 @@ materialisation plan) or rejection places a warning/error icon
 immediately after the row/column summary, and memory pressure uses the warning
 path (including when it accompanies materialisation). A `warned` conservative run
 places the warning icon titled "Execution ran without a memory estimate" (a diagnostic names
-a node by the label the metrics' `node_addresses` give it, "<label> in <occurrence>" for a
-child, never by its key), explaining
+a node by the label the metrics' `node_addresses` give it, "<label> in <occurrence label>"
+for a child, its occurrence's label from the occurrence's own entry, never by its key),
+explaining
 that the step ran under the run's full reserved memory envelope inside a hard-capped
 worker; memory pressure on such a run appends the pressure message exactly once
 rather than duplicating the strategy remediation, a terminal memory-limit failure

@@ -507,17 +507,39 @@ def test_one_node_instance_cross_path_proof(
             metrics = job["execution_metrics"]
             named = named_keys(ExecutionMetricsPayload, metrics)
             assert named
-            assert set(metrics["node_addresses"]) == named
+            if kind == NodeType.OPTIMISER:
+                # A solve's metrics name the copy's node it ran; a training job's name only
+                # the inputs its parent prepared.
+                assert target in named
+            # Each key is addressed to the node flattening ran under it: the owner's and the
+            # copy's children share labels, so a child given the wrong occurrence fails here.
             definition = graph.submodels[  # type: ignore[index]
                 graph.node_map["rate_calc_2"].data.config["definition_id"]
             ]
-            copy_children = {
-                entry["node_id"]: entry["label"]
-                for entry in metrics["node_addresses"].values()
-                if entry["occurrence"] == "rate_calc_2"
+            children = {
+                qualified_runtime_node_id(occurrence, local): {
+                    "occurrence": occurrence,
+                    "node_id": local,
+                    "label": node.data.label,
+                }
+                for occurrence in ("rate_calc", "rate_calc_2")
+                for local, node in definition.graph.node_map.items()
             }
-            for local, label in copy_children.items():
-                assert label == definition.graph.node_map[local].data.label
+            expected = {
+                key: children.get(
+                    key,
+                    {"occurrence": None, "node_id": key, "label": graph.node_map[key].data.label}
+                    if key in graph.node_map
+                    else None,
+                )
+                for key in metrics["node_addresses"]
+            }
+            assert metrics["node_addresses"] == expected
+            # Every key the metrics name is addressed, and so is the occurrence of each
+            # child they name, which a reader needs for the child's name.
+            assert set(metrics["node_addresses"]) == named | {
+                children[key]["occurrence"] for key in named if key in children
+            }
             if kind == NodeType.MODELLING:
                 assert result["development_rows"] > 0
                 assert Path(result["model_path"]).is_file()

@@ -1297,7 +1297,9 @@ class ExecutionProvenance:
 
     def addresses_for(self, payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         """The address of every key *payload*, a metrics payload, names that this execution
-        walked. Never raises: the metrics are reported on failure paths too."""
+        walked, and of each named child's occurrence: a reader without the graph (a job's
+        status after a reload) names a child with its occurrence's label from it. Never
+        raises: the metrics are reported on failure paths too."""
         from haute._execution_schemas import ExecutionMetricsPayload
         from haute._node_addresses import named_keys
 
@@ -1306,11 +1308,20 @@ class ExecutionProvenance:
         except Exception:  # noqa: BLE001 - a diagnostic must never hide the run's own error
             return {}
         with self._lock:
-            return {
-                key: dict(self._node_addresses[key])
-                for key in sorted(named)
-                if key in self._node_addresses
+            addresses = {
+                key: dict(self._node_addresses[key]) for key in named if key in self._node_addresses
             }
+            occurrences = [entry.get("occurrence") for entry in addresses.values()]
+            while occurrences:
+                occurrence = occurrences.pop()
+                if not isinstance(occurrence, str) or occurrence in addresses:
+                    continue
+                entry = self._node_addresses.get(occurrence)
+                if entry is not None:
+                    addresses[occurrence] = dict(entry)
+                    # A nested occurrence is a child of the occurrence holding it.
+                    occurrences.append(entry.get("occurrence"))
+        return dict(sorted(addresses.items()))
 
     def worker_evidence(self) -> dict[str, Any]:
         """The records a worker returns to its parent, under their payload keys, and the

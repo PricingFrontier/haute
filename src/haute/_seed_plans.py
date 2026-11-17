@@ -135,6 +135,9 @@ class SeedDecision:
     columns: NodeSnapshotColumns
     demand: NodeSnapshotColumns
     dependencies: Mapping[str, str]
+    #: How a message names the node (``haute._node_addresses.node_display_name``), so a
+    #: lease that finds its generation unreadable names it, a worker's adopting one too.
+    node_label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,6 +587,8 @@ class _Resolver:
         wanted = demand_columns(demand)
         if not latest.columns.covers(wanted):
             return None
+        from haute._node_addresses import node_display_name
+
         return SeedDecision(
             node_id=node_id,
             identity=identity,
@@ -591,6 +596,7 @@ class _Resolver:
             columns=latest.columns,
             demand=wanted,
             dependencies=dict(latest.dependencies),
+            node_label=node_display_name(self.points.graph, node_id),
         )
 
     def walk(
@@ -984,6 +990,8 @@ class _ListedResolver(_Resolver):
         wanted = demand_columns(demand)
         if not described.columns.covers(wanted):
             return None
+        from haute._node_addresses import node_display_name
+
         return SeedDecision(
             node_id=node_id,
             identity=described.identity,
@@ -991,6 +999,7 @@ class _ListedResolver(_Resolver):
             columns=described.columns,
             demand=wanted,
             dependencies=dict(described.dependencies),
+            node_label=node_display_name(self.points.graph, node_id),
         )
 
     def capture_points(
@@ -1256,13 +1265,15 @@ class SeedPlan:
         # Corruption first seen between resolution and open reads the same
         # metadata resolution reads, and would otherwise reach the user as the
         # store's own text against an identity, naming no node.
-        node_by_digest = {seed.identity.digest: node_id for node_id, seed in decision.seeds.items()}
+        seed_by_digest = {seed.identity.digest: seed for seed in decision.seeds.values()}
 
         def corrupt_named(digest: str, exc: SourceCacheCorruptError) -> Exception:
             from haute.errors import SnapshotCorruptError
 
-            node_id = node_by_digest.get(digest)
-            return SnapshotCorruptError(node_id=node_id) if node_id is not None else exc
+            seed = seed_by_digest.get(digest)
+            if seed is None:
+                return exc
+            return SnapshotCorruptError(node_id=seed.node_id, node_label=seed.node_label)
 
         try:
             for identity, generation_id in decision.generations:
@@ -1363,6 +1374,10 @@ def open_seed_plan(
     """
     from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 
+    if execution_context is not None:
+        # Input preparation and planning name nodes in the metrics before any walk, and a
+        # run that fails here publishes them (specs/server-api/low-level.md, "Node addresses").
+        execution_context.provenance.record_node_addresses(request.graph)
     if store is None:
         store = _project_store()
     resolver = _Resolver(request, store)

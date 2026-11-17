@@ -959,6 +959,46 @@ def test_job_metrics_keep_parent_preparation_with_child_evidence(
     assert third.captures == {"B": "published"}
 
 
+def test_a_job_failing_after_its_parent_prepared_an_input_addresses_its_metrics(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parent prepares the CSV source, then resolving the plan finds the snapshot an
+    earlier run captured unreadable: the job's metrics name the prepared input, with no walk
+    to address it, and still address it."""
+    import haute._input_preparation as input_preparation
+    from haute._chunked_writes import part_paths
+
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setattr(
+        input_preparation,
+        "run_isolated_worker",
+        lambda function, request, budget, **_: function(request, budget),
+    )
+    graph = _csv_chain(project)
+    assert _train(monkeypatch, graph).captures == {"B": "published"}
+    identity = _identity(store, graph, "B")
+    latest = store.latest_generation(identity)
+    assert latest is not None
+    generation = store.inputs_root / identity.digest / "generations" / latest.generation_id
+    for part in part_paths(generation):
+        (generation / part.name).write_bytes(b"corrupt")
+
+    # The memory estimate resolves the plan too: it is stubbed so the parent prepares.
+    run = _train(monkeypatch, graph, row_limit=_ROWS)
+
+    assert run.worker_configs == [], "planning failed in the parent"
+    assert "The cached data for 'B' is unreadable" in run.job["message"], run.job
+    assert [
+        (record["node_id"], record["action"]) for record in run.metrics["input_preparation"]
+    ] == [("src", "reused")]
+    assert set(run.metrics["node_addresses"]) == named_keys(ExecutionMetricsPayload, run.metrics)
+    assert run.metrics["node_addresses"]["src"] == {
+        "occurrence": None,
+        "node_id": "src",
+        "label": "src",
+    }
+
+
 def _train_to_completion(client: Any, graph: dict[str, Any]) -> dict[str, Any]:
     response = client.post("/api/modelling/train", json={"graph": graph, "target": _TRAIN_TARGET})
     assert response.status_code == 200, response.text

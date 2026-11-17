@@ -415,9 +415,13 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
    evidence, and a merged payload is addressed again. Addressing never raises (the metrics are
    reported on failure paths too): a key the execution did not walk is left out, which
    `tests/test_node_address_contracts.py` and `tests/test_node_instance_proof.py` check never
-   happens for a real preview (a cached one too), training run or solve. The executor and the
-   optimiser's setup record the table before they prepare inputs, so the metrics of a run that
-   fails before its walk, or of a preview served from the cache, still address what they name.
+   happens for a real preview (a cached one too), training run or solve, nor for a training
+   run that fails after its parent prepared an input. Opening a seed plan (`open_seed_plan`,
+   which every operation's planning goes through) records the table before it prepares inputs,
+   and the executor before it serves a preview, so the metrics of a run that fails before its
+   walk, or of a preview served from the cache, still address what they name. The metrics also
+   address each named child's occurrence, so a reader without the graph names a child with its
+   occurrence's label.
    A deployed scorer's metrics, which no browser reads, carry an empty table.
 6. **Frame provenance.** A preview answer carries `occurrence_ports: [{occurrence, direction:
    "input"|"output", port, endpoint: {key, handle} | null}]` for every declared port of every
@@ -458,7 +462,9 @@ The browser never builds or parses a runtime key (`submodel_runtime/<occurrence>
 
    `tests/test_node_display_names.py` checks a copy's child in each message above except the
    trace's Workbench Output and multi-frame refusals, a seed continuation's diagnostics, the
-   executor's schema-warning and Data Output messages, a capture's unreadable snapshot, a data
+   executor's schema-warning and Data Output messages, a capture's unreadable snapshot (one
+   found when a seed plan leases or a worker adopts its generations is checked: a seed carries
+   its node's name for it), a data
    point's refusals other than a missing port, a trace omission's and an input source's name, a
    walk's progress label, "No input data" and a training join's downsampling warning. It also
    checks that no key or flat name shows outside a key position in a failing preview or trace
