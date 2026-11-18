@@ -25,14 +25,14 @@ from haute.errors import (
     RequestRefusedError,
 )
 from haute.graph_utils import NodeType
-from tests._training_helpers import join_training_preparation
+from tests._training_helpers import PREPARATION_JOIN_TIMEOUT_S, join_training_preparation
 from tests.conftest import (
     make_edge,
     make_graph,
     make_output_config,
     make_ram_estimate,
 )
-from tests.optimiser_fixtures import optimiser_request, setup_grid_stub
+from tests.optimiser_fixtures import optimiser_request, setup_grid_stub, solve_launch_stand_in
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -652,15 +652,18 @@ def test_optimiser_start_creates_admitted_setup_context(
         captured["execution_context"] = kwargs["execution_context"]
         return {"source": scored_lf}
 
+    launch_stand_in, launched = solve_launch_stand_in()
+
     with (
         patch("haute.routes._optimiser_service.threading.Thread", _ImmediateThread),
         patch.object(service, "_execute_pipeline", side_effect=fake_execute_pipeline),
         patch.object(service, "_validate_and_project", return_value=([], scored_lf)) as validate,
         patch.object(service, "_extract_factors", return_value=None) as extract,
         patch.object(service, "_build_grid", return_value=setup_grid_stub()) as build,
-        patch.object(service, "_launch_background") as launch,
+        patch.object(service, "_launch_background", side_effect=launch_stand_in) as launch,
     ):
         response = service.start(body)
+        assert launched.wait(timeout=PREPARATION_JOIN_TIMEOUT_S)
 
     assert response.status == "started"
     context = captured["execution_context"]

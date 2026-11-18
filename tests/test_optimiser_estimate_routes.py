@@ -7,9 +7,10 @@ auto-range job reports its status, cancels and projects the inputs it reads.
 from __future__ import annotations
 
 import functools
+import json
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import polars as pl
@@ -33,11 +34,13 @@ from tests._optimiser_route_helpers import (
 )
 from tests._process_state import clear_execution_admission_reservations
 from tests._projection_helpers import pair_value
+from tests._training_helpers import PREPARATION_JOIN_TIMEOUT_S
 from tests.conftest import make_edge, make_graph
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import (
     optimiser_request,
     setup_grid_stub,
+    solve_launch_stand_in,
 )
 
 # Fixtures shared with the other modules split from one suite.
@@ -245,6 +248,12 @@ def _poll_auto_range_until_done(client: TestClient, job_id: str, timeout: float 
             return data
         time.sleep(poll_interval)
     raise TimeoutError(f"Auto-range job {job_id} did not finish within {timeout}s")
+
+
+def _said(status: Any) -> str:
+    """*status* in full, as an assertion's message: a job that ended otherwise says why."""
+    fields = status.model_dump() if hasattr(status, "model_dump") else status
+    return json.dumps(fields, default=str, indent=1)
 
 
 @pytest.fixture()
@@ -491,7 +500,7 @@ class TestEstimateRoute:
         # 400 is the right status: bad input, not a server fault.
         assert resp.status_code == 200, resp.text
         status = _poll_until_done(client, resp.json()["job_id"])
-        assert status["status"] == "contract_error"
+        assert status["status"] == "contract_error", _said(status)
         detail = status["message"]
         # The message must name the offending column AND the offending
         # value.  Generic "grid construction failed" without specifics
@@ -581,7 +590,7 @@ class TestEstimateRoute:
 
         assert resp.status_code == 200, resp.text
         status = _poll_until_done(client, resp.json()["job_id"])
-        assert status["status"] == "contract_error"
+        assert status["status"] == "contract_error", _said(status)
         detail = status["message"]
         assert "Null values found in optimiser input" in detail
         assert expected_fragment in detail, (
@@ -793,7 +802,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "completed"
+        assert status["status"] == "completed", _said(status)
         data = status["result"]
         assert data["status"] == "ok"
         assert data["method"] == "scenario_envelope"
@@ -825,7 +834,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "contract_error"
+        assert status["status"] == "contract_error", _said(status)
         detail = message_of(status["error_detail"])
         assert "Source projection references columns missing" in detail
         assert "scenario_index" in detail
@@ -931,7 +940,7 @@ class TestEstimateRoute:
             "Every row must have a non-null quote_id; check upstream filters and joins."
         )
         status = service.frontier_auto_range_status(job_id)
-        assert status.status == "contract_error"
+        assert status.status == "contract_error", _said(status)
         assert status.http_status_code == 400
         assert status.error_detail == exc_info.value.detail
 
@@ -993,7 +1002,7 @@ class TestEstimateRoute:
         assert expected_fragment in exc_info.value.detail
         assert "finite objective, constraint, and scenario values" in exc_info.value.detail
         status = service.frontier_auto_range_status(job_id)
-        assert status.status == "contract_error"
+        assert status.status == "contract_error", _said(status)
         assert status.http_status_code == 400
         assert status.error_detail == exc_info.value.detail
 
@@ -1045,7 +1054,7 @@ class TestEstimateRoute:
         assert expected_fragment in exc_info.value.detail
         assert "non-null objective, constraint, and scenario values" in exc_info.value.detail
         status = service.frontier_auto_range_status(job_id)
-        assert status.status == "contract_error"
+        assert status.status == "contract_error", _said(status)
         assert status.http_status_code == 400
         assert status.error_detail == exc_info.value.detail
 
@@ -1076,7 +1085,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "contract_error"
+        assert status["status"] == "contract_error", _said(status)
         detail = status["error_detail"]
         assert "Non-finite values found in optimiser input" in detail
         assert "'expected_income' (1 NaN row)" in detail
@@ -1217,7 +1226,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200, start_resp.text
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "completed"
+        assert status["status"] == "completed", _said(status)
         data = status["result"]
         assert data["ranges"]["volume"]["min"] == pytest.approx(9.0)
         assert data["ranges"]["volume"]["max"] == pytest.approx(12.0)
@@ -1251,7 +1260,7 @@ class TestEstimateRoute:
             time.sleep(0.02)
 
         assert status_data is not None
-        assert status_data["status"] == "completed"
+        assert status_data["status"] == "completed", _said(status_data)
         assert status_data["result"]["status"] == "ok"
         assert (
             status_data["result"]["ranges"]["volume"]["min"]
@@ -1439,12 +1448,14 @@ class TestEstimateRoute:
             )
         }
 
+        launch, launched = solve_launch_stand_in()
         with (
             patch.object(service, "_execute_pipeline", return_value=lazy_outputs),
             patch.object(service, "_build_grid", return_value=setup_grid_stub()),
-            patch.object(service, "_launch_background", return_value=None),
+            patch.object(service, "_launch_background", side_effect=launch),
         ):
             solve_started = service.start(solve_body)
+            assert launched.wait(timeout=PREPARATION_JOIN_TIMEOUT_S)
 
         with pytest.raises(RequestRefusedError) as exc_info:
             service.start_frontier_auto_range(auto_body)
@@ -1925,7 +1936,7 @@ class TestEstimateRoute:
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         status = service.frontier_auto_range_status(job_id)
-        assert status.status == "contract_error"
+        assert status.status == "contract_error", _said(status)
         assert status.terminal_reason == "contract_error"
         assert status.http_status_code == 400
         assert isinstance(status.error_detail, str)
@@ -1964,7 +1975,7 @@ class TestEstimateRoute:
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         status = service.frontier_auto_range_status(job_id)
-        assert status.status == "contract_error"
+        assert status.status == "contract_error", _said(status)
         assert status.terminal_reason == "contract_error"
         assert status.http_status_code == 400
         assert isinstance(status.error_detail, str)
@@ -2185,7 +2196,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "completed"
+        assert status["status"] == "completed", _said(status)
         data = status["result"]
         assert data["ranges"] == {
             "conversion_prediction": {"min": 350.0, "max": 700.0},
@@ -2220,7 +2231,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "completed"
+        assert status["status"] == "completed", _said(status)
         assert status["terminal_reason"] == "completed"
         assert status["result"]["ranges"] == {
             "conversion_prediction": {"min": 350.0, "max": 700.0},
@@ -2270,7 +2281,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "contract_error"
+        assert status["status"] == "contract_error", _said(status)
         detail = message_of(status["error_detail"])
         assert "Null quote_id values found in optimiser input" in detail
         assert "(2 rows)" in detail
@@ -2307,7 +2318,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "contract_error"
+        assert status["status"] == "contract_error", _said(status)
         # The source scan refuses the projection before anything reads it.
         said = message_of(status["error_detail"])
         assert "Source projection references columns missing" in said
@@ -2369,7 +2380,7 @@ class TestEstimateRoute:
 
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
-        assert status["status"] == "completed"
+        assert status["status"] == "completed", _said(status)
         data = status["result"]
         assert data["status"] == "ok"
         assert "warning" not in data

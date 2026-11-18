@@ -15,6 +15,37 @@ from haute._event_bus import EventBus, HandlerType
 from haute.routes._supersession import SupersessionCoordinator
 
 
+def held_execution_admission_reservations(*, within_seconds: float) -> tuple[str, ...]:
+    """The in-flight budget reservations still held by live work once *within_seconds* pass.
+
+    Work a test started may still be releasing as it ends. A context nothing refers to
+    any more frees its reservation when it is collected, which a reference cycle (an
+    exception's traceback, a mock's call record) defers to the next collection; one
+    collection settles those. What is still held after both is work the test left
+    running, or a grant a stand-in took and keeps. Each names its profile, its
+    operation and what it holds.
+    """
+    import gc
+    import time
+
+    from haute import _execution_admission as admission
+
+    def settled(deadline: float) -> tuple[str, ...]:
+        with admission._IN_FLIGHT_LOCK:
+            while admission._IN_FLIGHT_RESERVATIONS and (left := deadline - time.monotonic()) > 0:
+                admission._IN_FLIGHT_RELEASED.wait(timeout=left)
+            return tuple(
+                f"{profile.value}:{operation} ({amount // 2**20} MiB)"
+                for profile, amount, operation in admission._IN_FLIGHT_RESERVATIONS.values()
+            )
+
+    if not settled(time.monotonic()):
+        return ()
+    # Outside the lock: a collected context's release takes it.
+    gc.collect()
+    return settled(time.monotonic() + within_seconds)
+
+
 def clear_execution_admission_reservations() -> None:
     """Forget every in-flight budget reservation and wake any waiter."""
     from haute import _execution_admission as admission

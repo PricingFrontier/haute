@@ -49,6 +49,7 @@ from tests.optimiser_fixtures import (
     optimiser_request,
     setup_grid_stub,
     setup_launch_context,
+    solve_launch_stand_in,
     typed_frontier_point,
 )
 
@@ -365,14 +366,14 @@ class TestSolveRoute:
             )
         }
 
-        launch_called = threading.Event()
+        launch, launch_called = solve_launch_stand_in()
         with (
             patch.object(_solve_service, "_execute_pipeline", return_value=lazy_outputs),
             patch.object(_solve_service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(
                 _solve_service,
                 "_launch_background",
-                side_effect=lambda *args, **kwargs: launch_called.set(),
+                side_effect=launch,
             ) as launch_background,
         ):
             resp = client.post(
@@ -401,22 +402,19 @@ class TestSolveRoute:
         service = OptimiserSolveService(store)
         setup_started = threading.Event()
         release_setup = threading.Event()
-        launch_called = threading.Event()
+        launch, launch_called = solve_launch_stand_in()
 
         def slow_execute(*args, **kwargs):
             setup_started.set()
             assert release_setup.wait(timeout=10.0), "setup was never released"
             return {"source": scored_lf}
 
-        def mark_launched(*args, **kwargs):
-            launch_called.set()
-
         with (
             patch.object(service, "_execute_pipeline", side_effect=slow_execute),
             patch.object(service, "_validate_and_project", return_value=(["volume"], scored_lf)),
             patch.object(service, "_extract_factors", return_value=None),
             patch.object(service, "_build_grid", return_value=setup_grid_stub()),
-            patch.object(service, "_launch_background", side_effect=mark_launched),
+            patch.object(service, "_launch_background", side_effect=launch),
         ):
             response = service.start(body)
             # ``start`` returned while setup is still blocked on release_setup,
@@ -799,10 +797,7 @@ class TestSolveRoute:
             }
         ).model_dump()
 
-        launched = threading.Event()
-
-        def mark_launched(*args, **kwargs):
-            launched.set()
+        launch, launched = solve_launch_stand_in()
 
         with (
             patch.object(_solve_service, "_execute_pipeline", return_value={}),
@@ -827,7 +822,7 @@ class TestSolveRoute:
             patch.object(
                 _solve_service,
                 "_launch_background",
-                side_effect=mark_launched,
+                side_effect=launch,
             ) as launch_background,
         ):
             resp = client.post(
@@ -1979,6 +1974,7 @@ class TestLaunchBackground:
             }
         )
 
+        ctx = setup_launch_context(service, job_id)
         with (
             patch(
                 "haute.routes._optimiser_service.threading.Thread.start",
@@ -1987,11 +1983,13 @@ class TestLaunchBackground:
             pytest.raises(RequestRefusedError) as exc_info,
         ):
             service._launch_background(
-                setup_launch_context(service, job_id),
+                ctx,
                 config={"timeout": 42},
                 quote_grid=MagicMock(),
                 ratebook_factors_handle=None,
             )
+        # A launch that never started leaves the context with setup, which frees it.
+        ctx.execution_context.release_admission()
 
         assert exc_info.value.status_code == 500
         job = clean_job_store.require_job(job_id)

@@ -8,7 +8,6 @@ plan, streams chunks and re-raises refusals; ``_build_grid`` routes through the 
 from __future__ import annotations
 
 import contextlib
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -37,6 +36,7 @@ from tests.optimiser_fixtures import (
     SOLVE_SCENARIO_GRID,
     optimiser_request,
     setup_grid_stub,
+    solve_launch_stand_in,
 )
 
 # Fixtures shared with the other modules split from one suite.
@@ -451,7 +451,7 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        launch_called = threading.Event()
+        launch, launch_called = solve_launch_stand_in()
         with (
             patch.object(
                 service,
@@ -462,7 +462,7 @@ class TestExecutePipelineArgs:
             patch.object(
                 service,
                 "_launch_background",
-                side_effect=lambda *args, **kwargs: launch_called.set(),
+                side_effect=launch,
             ),
         ):
             response = service.start(body)
