@@ -14,6 +14,7 @@ ROOT = Path(__file__).parents[1]
 
 GIT_MODULES = (
     "haute._git_core",
+    "haute._git_operation",
     "haute._git_setup",
     "haute._git_transactions",
     "haute._git_read_models",
@@ -41,6 +42,7 @@ GIT_SERIALIZED_MUTATORS = {
         "create_working_branch",
         "merge_to_working",
         "restore_version",
+        "retry_interrupted",
     },
     "haute._git_remote": {
         "branch_away",
@@ -236,7 +238,8 @@ def test_git_mutators_preserve_the_shared_repository_lock_boundary() -> None:
         for name in expected_names:
             decorators = functions[name].decorator_list
             assert any(
-                isinstance(decorator, ast.Name) and decorator.id == "_serialized_mutation"
+                isinstance(decorator, ast.Name)
+                and decorator.id in ("_serialized_mutation", "_serialized_while_interrupted")
                 for decorator in decorators
             ), f"{module_name}.{name} lost the repository mutation lock"
 

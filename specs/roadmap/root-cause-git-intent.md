@@ -67,6 +67,15 @@ or puts it back. Add a test that fails when a function moves a ref outside
 an operation that holds a record, apart from a save's one commit to the
 ledger.
 
+**Decided with Ralph on 18 November 2026:** the work covers every action
+that moves a ref, not only the three named above, and the git runners
+refuse a ref move outside a recorded operation's step. What the analyst
+sees changes: an interrupted clone's toolbar reads "Unfinished" with Retry,
+its tooltip names the operation and its files ("Restoring a version stopped
+part-way: rating/main.py and 2 more."), and the server refuses a save's
+capture while it is interrupted, as the editor already does. `VCS-01`'s own
+part is done here too.
+
 **Acceptance:** A test stops the process after each step of each such
 operation in turn. At the next start readiness names the operation and its
 files, and Retry completes it or returns every ref to the commit the record

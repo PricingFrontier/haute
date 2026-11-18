@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import haute._git_core as git_core
+import haute._git_operation as git_operation
 import haute._git_transactions as git_transactions
 from haute._git import (
     GitDomainError,
@@ -204,30 +205,40 @@ class TestRestoreVersion:
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from haute._git_core import GitFilesInUseError
-        from haute._git_state import read_interrupted
+        from haute._git_state import read_operation
 
         sha1, sha2 = self._saves(repo)
 
-        def held_open(*args: str, cwd: Path | None = None) -> tuple[int, str]:
+        def held_open(*args: str, cwd: Path | None = None, **_: object) -> tuple[int, str]:
             return 1, "error: unable to unlink old 'rating.py': Invalid argument"
 
-        monkeypatch.setattr(git_transactions, "_run_git_capture", held_open)
+        monkeypatch.setattr(git_operation, "_run_git_capture", held_open)
         (repo / ".haute_cache").mkdir()
 
         with pytest.raises(GitFilesInUseError, match="rating.py is open in another program"):
             restore_version(sha1, repo, cwd=repo)
 
+        # Past the commit point: history keeps the restore, and the record stays.
         assert _parents(repo, LEDGER) == [sha2]
         assert _tree(repo, LEDGER) == _tree(repo, sha1)
         assert (repo / ".haute_cache").is_dir()
-        record = read_interrupted(repo)
-        assert record is not None and "rating.py" in record["files"]  # type: ignore[operator]
+        record = read_operation(repo)
+        assert record is not None and record.operation == "restore"
+        assert set(record.files) == {"rating.py", "added.txt", "gone.txt"}
+        status = working_branch_status(repo, cwd=repo)
+        assert status.state == "interrupted"
+        assert status.errors == [
+            "Restoring a version stopped part-way: added.txt, gone.txt, rating.py."
+        ]
 
         monkeypatch.undo()
         retry_interrupted(repo, cwd=repo)
 
-        assert read_interrupted(repo) is None
+        assert read_operation(repo) is None
         assert (repo / "rating.py").read_text() == "# v1\n"
+        assert (repo / "gone.txt").read_text() == "old\n"
+        assert not (repo / "added.txt").exists()
+        assert not (repo / ".haute_cache").exists()
         assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
 
 
@@ -235,8 +246,9 @@ class TestTreeFence:
     """Every command that rewrites the working tree runs through one fence. On
     Windows git cannot replace a file another program holds open, and a checkout
     still exits 0 with that file left at the old version; the fence finds the file
-    out of step, puts HEAD back and refuses by name, or records the clone
-    interrupted when it cannot."""
+    out of step and refuses by name. It puts nothing back itself: the operation it
+    is a step of puts everything back from its record, and keeps the record when it
+    cannot."""
 
     @staticmethod
     def _two_branches(repo: Path) -> None:
@@ -267,58 +279,54 @@ class TestTreeFence:
 
         monkeypatch.setattr(git_core, "_run_git_capture", checkout_leaving_a_file)
 
-    def test_a_checkout_leaving_a_file_stale_is_put_back_and_refused_by_name(
+    @classmethod
+    def _hold_unreadable(
+        cls, monkeypatch: pytest.MonkeyPatch, repo: Path, held: str, content: str
+    ) -> None:
+        """As :meth:`_hold`, and from the checkout on git cannot read *held* either, so
+        it reads as changed whatever it holds, as an Excel-held CSV does."""
+        cls._hold(monkeypatch, repo, held, content)
+        held_since: list[bool] = []
+        checkout = git_core._run_git_capture
+
+        def checkout_then_unreadable(*args: str, cwd: Path | None = None) -> tuple[int, str]:
+            if args[0] == "checkout":
+                held_since.append(True)
+            return checkout(*args, cwd=cwd)
+
+        monkeypatch.setattr(git_core, "_run_git_capture", checkout_then_unreadable)
+        changes = git_operation._tracked_changes
+        monkeypatch.setattr(
+            git_operation,
+            "_tracked_changes",
+            lambda cwd=None: changes(cwd) | ({held} if held_since else set()),
+        )
+
+    @staticmethod
+    def _fence(*args: str, repo: Path) -> None:
+        from haute._git_core import _ref_moves_permitted, _rewrite_tree
+
+        with _ref_moves_permitted():
+            _rewrite_tree(*args, cwd=repo)
+
+    def test_a_checkout_leaving_a_file_stale_is_refused_by_name(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._git_core import GitFilesInUseError, _rewrite_tree
-        from haute._git_state import read_interrupted
+        from haute._git_core import GitFilesInUseError
 
         self._two_branches(repo)
         self._hold(monkeypatch, repo, "b.txt", "b.txt on main\n")
 
         with pytest.raises(GitFilesInUseError, match="b.txt is open in another program"):
-            _rewrite_tree("checkout", "other", cwd=repo)
+            self._fence("checkout", "other", repo=repo)
 
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
-        assert (repo / "a.txt").read_text() == "a.txt on main\n"
-        assert (repo / "b.txt").read_text() == "b.txt on main\n"
-        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
-        assert read_interrupted(repo) is None
-
-    def test_a_file_held_too_tightly_to_read_is_put_back_by_force(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Excel holds an open CSV with no sharing, so git cannot even read it to
-        stage it for the put-back, and a plain checkout back then refuses over it:
-        HEAD stayed on the new branch. With nothing changed before the command the
-        put-back is forced, and HEAD goes back."""
-        from haute._git_core import GitFilesInUseError, _rewrite_tree
-
-        self._two_branches(repo)
-        self._hold(monkeypatch, repo, "b.txt", "b.txt on main\n")
-        real_ok = git_core._run_git_ok
-
-        def add_unreadable(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
-            if args[0] == "add":
-                return False, 'error: open("b.txt"): Permission denied'
-            return real_ok(*args, cwd=cwd)
-
-        monkeypatch.setattr(git_core, "_run_git_ok", add_unreadable)
-
-        with pytest.raises(GitFilesInUseError, match="b.txt is open in another program"):
-            _rewrite_tree("checkout", "other", cwd=repo)
-
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
-        assert (repo / "a.txt").read_text() == "a.txt on main\n"
-        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
-
-    def test_a_file_the_checkout_could_not_remove_is_put_back_and_refused(
+    def test_a_file_the_checkout_could_not_remove_is_refused_by_name(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The new HEAD drops c.txt but git cannot remove it: it stays behind,
         untracked, where the status comparison never looks. git's own message
         names it."""
-        from haute._git_core import GitFilesInUseError, _rewrite_tree
+        from haute._git_core import GitFilesInUseError
 
         self._two_branches(repo)
         (repo / "c.txt").write_text("c.txt on main\n")
@@ -336,35 +344,26 @@ class TestTreeFence:
         monkeypatch.setattr(git_core, "_run_git_capture", checkout_leaving_a_removed_file)
 
         with pytest.raises(GitFilesInUseError, match="c.txt"):
-            _rewrite_tree("checkout", "other", cwd=repo)
-
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
-        assert (repo / "c.txt").read_text() == "c.txt on main\n"
-        assert _git(repo, "status", "--porcelain") == ""
+            self._fence("checkout", "other", repo=repo)
 
     def test_a_forced_checkout_over_a_changed_file_it_could_not_replace_is_refused(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """b.txt was already changed, so a status comparison sees nothing new when
-        a forced checkout leaves it as it was; git's own message names it. The
-        put-back is forced too, since the changes were to be discarded."""
-        from haute._git_core import GitFilesInUseError, _rewrite_tree
+        a forced checkout leaves it as it was; git's own message names it."""
+        from haute._git_core import GitFilesInUseError
 
         self._two_branches(repo)
         (repo / "b.txt").write_text("edited, not saved\n")
         self._hold(monkeypatch, repo, "b.txt", "edited, not saved\n")
 
         with pytest.raises(GitFilesInUseError, match="b.txt"):
-            _rewrite_tree("checkout", "-f", "other", cwd=repo)
+            self._fence("checkout", "-f", "other", repo=repo)
 
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
-        assert (repo / "a.txt").read_text() == "a.txt on main\n"
-        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
-
-    def test_a_failed_fast_forward_puts_the_files_it_wrote_back(
+    def test_a_fast_forward_stopping_part_way_is_refused_by_name(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._git_core import GitFilesInUseError, _rewrite_tree
+        from haute._git_core import GitFilesInUseError
 
         self._two_branches(repo)
 
@@ -375,74 +374,13 @@ class TestTreeFence:
         monkeypatch.setattr(git_core, "_run_git_capture", merge_stopping_part_way)
 
         with pytest.raises(GitFilesInUseError, match="b.txt"):
-            _rewrite_tree("merge", "--ff-only", "other", cwd=repo)
-
-        assert (repo / "a.txt").read_text() == "a.txt on main\n"
-        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
-
-    def test_a_put_back_that_cannot_finish_interrupts_the_clone_until_retry(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from haute._git_core import GitFilesInUseError, _rewrite_tree
-        from haute._git_state import read_interrupted
-
-        self._two_branches(repo)
-        set_working_branch(WORKING, repo, cwd=repo)
-        _git(repo, "checkout", "-q", "main")
-        self._hold(monkeypatch, repo, "b.txt", "b.txt on main\n")
-        real_ok = git_core._run_git_ok
-
-        def put_back_refused(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
-            if args[0] in ("checkout", "restore"):
-                return False, ""
-            return real_ok(*args, cwd=cwd)
-
-        monkeypatch.setattr(git_core, "_run_git_ok", put_back_refused)
-
-        with pytest.raises(GitFilesInUseError):
-            _rewrite_tree("checkout", "other", cwd=repo)
-
-        record = read_interrupted(repo)
-        assert record is not None and record["files"] == ["b.txt"]
-        status = working_branch_status(repo, cwd=repo)
-        assert status.state == "interrupted"
-        assert "b.txt" in status.errors[0]
-        with pytest.raises(GitDomainError, match="out of step with version history: b.txt"):
-            commit_milestone("Not now", repo, cwd=repo)
-        with pytest.raises(GitDomainError, match="out of step with version history: b.txt"):
-            restore_version("HEAD", repo, cwd=repo)
-
-        monkeypatch.undo()
-        retry_interrupted(repo, cwd=repo)
-
-        assert read_interrupted(repo) is None
-        assert (repo / "b.txt").read_text() == "b.txt on other\n"
-
-    def test_retry_refuses_while_the_file_is_still_held(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from haute._git_core import GitFilesInUseError
-        from haute._git_state import read_interrupted, record_interrupted
-
-        self._two_branches(repo)
-        (repo / "b.txt").write_text("b.txt left behind\n")
-        record_interrupted(repo, "checkout", ["b.txt"])
-        monkeypatch.setattr(
-            git_transactions,
-            "_run_git_capture",
-            lambda *a, cwd=None: (1, "error: unable to unlink old 'b.txt': Invalid argument"),
-        )
-
-        with pytest.raises(GitFilesInUseError, match="b.txt"):
-            retry_interrupted(repo, cwd=repo)
-
-        assert read_interrupted(repo) is not None
+            self._fence("merge", "--ff-only", "other", repo=repo)
 
     def test_a_switch_through_set_working_branch_is_refused_and_left_as_it_was(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from haute._git_core import GitFilesInUseError
-        from haute._git_state import read_working_branch
+        from haute._git_state import read_operation, read_working_branch
 
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# on dev\n"})
@@ -455,12 +393,75 @@ class TestTreeFence:
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
         assert read_working_branch(repo) == WORKING
         assert (repo / "rating.py").read_text() == "# on dev\n"
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+        assert read_operation(repo) is None
+
+    def test_a_file_held_too_tightly_to_check_leaves_the_clone_interrupted_until_retry(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Excel holds an open CSV so tightly git cannot read it: the put-back cannot
+        write it nor check it, so the record stays. Readiness names the operation and
+        the file, every other git action refuses, and Retry puts the switch back once
+        the file is closed."""
+        from haute._git_core import GitFilesInUseError
+        from haute._git_state import read_operation, read_working_branch
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# on dev\n"})
+        create_working_branch("other", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# on dev, saved again\n"})
+        self._hold_unreadable(monkeypatch, repo, "rating.py", "# on dev, saved again\n")
+
+        with pytest.raises(GitFilesInUseError, match="rating.py"):
+            set_working_branch("other", repo, cwd=repo)
+
+        record = read_operation(repo)
+        assert record is not None and record.operation == "select-branch"
+        status = working_branch_status(repo, cwd=repo)
+        assert status.state == "interrupted"
+        assert status.errors == ["Choosing a branch stopped part-way: rating.py."]
+        refusal = "Choosing a branch stopped part-way. Choose Retry first."
+        with pytest.raises(GitDomainError, match=refusal):
+            commit_milestone("Not now", repo, cwd=repo)
+        with pytest.raises(GitDomainError, match=refusal):
+            restore_version("HEAD", repo, cwd=repo)
+        with pytest.raises(GitDomainError, match=refusal):
+            commit_save(["rating.py"], WORKING, cwd=repo)
+
+        monkeypatch.undo()
+        retry_interrupted(repo, cwd=repo)
+
+        assert read_operation(repo) is None
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert read_working_branch(repo) == WORKING
+        assert (repo / "rating.py").read_text() == "# on dev, saved again\n"
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+    def test_retry_refuses_while_the_file_is_still_held(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_core import GitFilesInUseError
+        from haute._git_state import read_operation
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# on dev\n"})
+        create_working_branch("other", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# on dev, saved again\n"})
+        self._hold_unreadable(monkeypatch, repo, "rating.py", "# on dev, saved again\n")
+        with pytest.raises(GitFilesInUseError):
+            set_working_branch("other", repo, cwd=repo)
+
+        with pytest.raises(GitFilesInUseError, match="rating.py"):
+            retry_interrupted(repo, cwd=repo)
+
+        assert read_operation(repo) is not None
 
     @pytest.mark.skipif(
         sys.platform != "win32", reason="Windows holds open files against replacement"
     )
     def test_a_file_held_open_on_windows_refuses_the_switch(self, repo: Path) -> None:
         from haute._git_core import GitFilesInUseError
+        from haute._git_state import read_operation
 
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# on dev\n"})
@@ -471,3 +472,4 @@ class TestTreeFence:
 
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
         assert (repo / "rating.py").read_text() == "# on dev\n"
+        assert read_operation(repo) is None

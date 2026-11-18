@@ -287,23 +287,27 @@ class TestReadTrashFallbacks:
 
 
 class TestRecordTrashCap:
-    def test_trim_drops_and_returns_the_oldest_beyond_the_cap(self, tmp_path: Path) -> None:
-        from haute._git_state import read_trash, record_trash, trim_trash
+    def test_overflow_names_the_oldest_the_cap_drops_once_an_entry_is_added(
+        self, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_trash, record_trash, trash_overflow
 
-        # Exceed the cap by two — the two oldest tombstones are dropped (and
-        # returned, for their pins to go) and the newest survive.
-        for i in range(22):
+        # Twenty-one tombstones: adding a twenty-second goes two past the cap, so the
+        # two oldest go (their pins with them); the newest stay.
+        for i in range(21):
             record_trash(tmp_path, f"pricing/test-user/b{i:02d}", {"branch_tip": f"sha{i}"})
-        assert len(read_trash(tmp_path)) == 22
-        dropped = trim_trash(tmp_path)
+        trash = read_trash(tmp_path)
+        dropped = trash_overflow(trash, "pricing/test-user/b21")
         assert [entry_id for entry_id, _ in dropped] == [
             "pricing/test-user/b00",
             "pricing/test-user/b01",
         ]
-        names = set(read_trash(tmp_path))
-        assert len(names) == 20
-        assert "pricing/test-user/b21" in names
-        assert trim_trash(tmp_path) == []
+        assert dropped[0][1] == {"branch_tip": "sha0"}
+        # Re-adding an entry already there moves it to the back; it never drops itself.
+        assert [entry_id for entry_id, _ in trash_overflow(trash, "pricing/test-user/b00")] == [
+            "pricing/test-user/b01",
+        ]
+        assert trash_overflow({}, "pricing/test-user/b00") == []
 
     def test_redelete_same_name_refreshes_recency(self, tmp_path: Path) -> None:
         from haute._git_state import read_trash, record_trash

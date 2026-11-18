@@ -11,7 +11,6 @@ from haute._git_core import (
     _FETCH_TIMEOUT_SECONDS,
     _PUSH_TIMEOUT_SECONDS,
     LEDGER_SUFFIX,
-    CompensationStep,
     GitBootstrapIncompleteError,
     GitDomainError,
     GitError,
@@ -19,7 +18,6 @@ from haute._git_core import (
     GitRemoteUnavailableError,
     _assert_git_repo,
     _assert_no_git_op_in_progress,
-    _compensate,
     _fetch_exec_lock,
     _fetch_refs,
     _free_pair_name,
@@ -33,17 +31,15 @@ from haute._git_core import (
     _remote_env,
     _remote_names,
     _rev_parse,
-    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _run_git_process,
     _serialized_mutation,
     _validate_managed_working_branch,
     _validate_ref_name,
-    _wipe_volatile_artefacts,
     ledger_name,
 )
-from haute._git_setup import resolve_ledger
+from haute._git_operation import Operation
 from haute._logging import get_logger
 
 # The command core is the sole process boundary.  Its helpers are imported
@@ -140,16 +136,17 @@ def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None 
             f"The stored project does not contain branch '{working}'. "
             "Its storage binding names a branch the remote no longer has."
         )
-    _run_git("branch", "--force", working, tracking, cwd=cwd)
-
     ledger = ledger_name(working)
-    ledger_tracking = f"refs/remotes/{remote}/{ledger}"
-    if _rev_parse(ledger_tracking, cwd=cwd) is not None:
-        # Check out the ledger: saves commit there, and a ledger re-spawned
-        # from the working tip would diverge from the published one.
-        _run_git("checkout", "-B", ledger, ledger_tracking, cwd=cwd)
-    else:
-        _run_git("checkout", working, cwd=cwd)
+    ledger_tip = _rev_parse(f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+    adoption = Operation("adopt-clone", cwd or current_project().root, cwd)
+    updates: dict[str, str | None] = {f"refs/heads/{working}": _rev_parse(tracking, cwd=cwd)}
+    if ledger_tip is not None:
+        updates[f"refs/heads/{ledger}"] = ledger_tip
+    adoption.refs(updates)
+    # Check out the ledger: saves commit there, and a ledger re-spawned from the
+    # working tip would diverge from the published one.
+    adoption.checkout(ledger if ledger_tip is not None else working)
+    adoption.run()
     logger.info("cloned_lineage_adopted", working=working)
 
 
@@ -217,13 +214,10 @@ def clone_project(url: str, destination: Path, branch: str | None = None) -> Non
     if branch is not None:
         _validate_ref_name(branch)
 
-    cmd = ["git", "clone"]
-    if branch is not None:
-        cmd.extend(["--branch", branch])
-    cmd.extend([url, str(destination)])
+    args = ("clone", *(("--branch", branch) if branch is not None else ()), url, str(destination))
     try:
         result = _run_git_process(
-            *cmd[1:],
+            *args,
             env=_remote_env(),
             timeout=_CLONE_TIMEOUT_SECONDS,
         )
@@ -1050,41 +1044,26 @@ def fast_forward_pair_from_tracking(
     if w_leg.status != "behind" and l_leg.status != "behind":
         raise GitDomainError(f"Already up to date with '{label}'.")
 
+    # One recorded operation: the ledger first (it's HEAD; merge --ff-only advances
+    # it and the working tree), then the working ref (not checked out) by CAS. Any
+    # failure puts both refs and the files back from the record, so a file git could
+    # not remove leaves nothing moved. Volatile caches must not survive into the
+    # caught-up tree (S12); they go once it is in place, so a refused catch-up
+    # deletes nothing.
     fast_forwarded: list[str] = []
-    old_ledger = _rev_parse(ledger, cwd=cwd)
-    old_working = _rev_parse(working, cwd=cwd)
-    ledger_advanced = False
-    working_advanced = False
-    try:
-        # Ledger first (it's HEAD; merge --ff-only advances it and the working tree).
-        if l_leg.status == "behind":
-            _rewrite_tree("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
-            ledger_advanced = True
-            fast_forwarded.append(ledger)
-        # Working ref (not checked out): CAS-advance it to its remote tip.
-        if w_leg.status == "behind":
-            target = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
-            if old_working is None or target is None:
-                raise GitError("could not resolve refs for the working-branch fast-forward")
-            _run_git("update-ref", f"refs/heads/{working}", target, old_working, cwd=cwd)
-            working_advanced = True
-            fast_forwarded.append(working)
-    except Exception as exc:
-        steps: list[CompensationStep] = []
-        if working_advanced and old_working is not None:
-            working_back = old_working
-            steps.append(
-                lambda: _run_git_ok("update-ref", f"refs/heads/{working}", working_back, cwd=cwd)[0]
-            )
-        if ledger_advanced and old_ledger is not None:
-            ledger_back = old_ledger
-            steps.append(lambda: _run_git_ok("reset", "--hard", ledger_back, cwd=cwd)[0])
-        _compensate(exc, "Catch-up", steps)
-        raise
-
-    # Volatile caches must not survive into the caught-up tree (S12); wiped only
-    # once it is in place, so a refused catch-up deletes nothing.
-    _wipe_volatile_artefacts(cwd or current_project().root)
+    catch_up = Operation("catch-up", project_root, cwd, wipes_caches=True)
+    for branch, leg in ((ledger, l_leg), (working, w_leg)):
+        if leg.status != "behind":
+            continue
+        target = _rev_parse(f"refs/remotes/{remote}/{branch}", cwd=cwd)
+        if target is None:
+            raise GitError("could not resolve refs for the fast-forward")
+        if branch == ledger:
+            catch_up.fast_forward(target)
+        else:
+            catch_up.refs({f"refs/heads/{working}": target})
+        fast_forwarded.append(branch)
+    catch_up.run()
 
     logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
     return GitFastForwardResponse(
@@ -1103,7 +1082,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
     (S35: surfaced, never silent). NOT the move-mode rewind — no ref is ever wound
     back. ``oL`` absent (X2) → repoint only ``W`` and let the ledger respawn at the
     refreshed tip. Atomic with rollback; the caller pauses the watcher (M4)."""
-    from haute._git_state import read_working_branch, write_working_branch
+    from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
     _assert_no_git_op_in_progress(cwd)
@@ -1147,48 +1126,27 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
         raise GitDomainError(f"Already in sync with '{remote}' — nothing to set aside.")
 
     aside = _free_pair_name(f"{working}-local", bare_first=False, cwd=cwd)
-    aside_ledger = ledger_name(aside)
 
-    renamed_w = renamed_l = created_w = created_l = False
-    try:
-        # Free the pair for renaming (HEAD is on the ledger): detach at its tip —
-        # same commit, so the working tree doesn't change here.
-        _run_git("checkout", "--detach", old_l, cwd=cwd)
-        _run_git("branch", "-m", working, aside, cwd=cwd)
-        renamed_w = True
-        _run_git("branch", "-m", ledger, aside_ledger, cwd=cwd)
-        renamed_l = True
-        _run_git("branch", working, remote_w, cwd=cwd)
-        created_w = True
-        if remote_l is not None:
-            _run_git("branch", ledger, remote_l, cwd=cwd)
-            created_l = True
-            _rewrite_tree("checkout", ledger, cwd=cwd)
-        else:
-            # X2: no remote ledger — respawn it at the adopted working tip + checkout.
-            resolve_ledger(working, cwd=cwd)
-        write_working_branch(project_root, working)  # canonical name unchanged
-    except Exception as exc:
-        # Undo in reverse: drop the canonical refs made, rename the aside pair back,
-        # and put HEAD on the ledger again.
-        _compensate(
-            exc,
-            "Spinning off the local branch",
-            [
-                lambda: not created_l or _run_git_ok("branch", "-D", ledger, cwd=cwd)[0],
-                lambda: not created_w or _run_git_ok("branch", "-D", working, cwd=cwd)[0],
-                lambda: (
-                    not renamed_l or _run_git_ok("branch", "-m", aside_ledger, ledger, cwd=cwd)[0]
-                ),
-                lambda: not renamed_w or _run_git_ok("branch", "-m", aside, working, cwd=cwd)[0],
-                lambda: _run_git_ok("checkout", ledger, cwd=cwd)[0],
-            ],
-        )
-        raise
-
-    # Volatile caches must not bleed from the local tree into the adopted one (S12);
-    # wiped only once it is in place, so a refused spin-off deletes nothing.
-    _wipe_volatile_artefacts(cwd or current_project().root)
+    # One recorded operation, put back whole on any failure. HEAD (on the ledger)
+    # first detaches at its tip: same commit, so the working tree doesn't change.
+    # One ref transaction then sets the pair aside under the dated name and moves
+    # the canonical names to the remote's tips (X2: no remote ledger, so the ledger
+    # moves to the adopted working tip), and the ledger is checked out again. The
+    # canonical name and the recorded working branch are unchanged. Volatile caches
+    # must not bleed from the local tree into the adopted one (S12); they go once it
+    # is in place, so a refused spin-off deletes nothing.
+    spin_off = Operation("spin-off", project_root, cwd, wipes_caches=True)
+    spin_off.checkout_detached(old_l)
+    spin_off.refs(
+        {
+            f"refs/heads/{aside}": old_w,
+            f"refs/heads/{ledger_name(aside)}": old_l,
+            f"refs/heads/{working}": remote_w,
+            f"refs/heads/{ledger}": remote_l if remote_l is not None else remote_w,
+        }
+    )
+    spin_off.checkout(ledger)
+    spin_off.run()
 
     logger.info("branched_away", working=working, set_aside=aside, remote=remote)
     return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)

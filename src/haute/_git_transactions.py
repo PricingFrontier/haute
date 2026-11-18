@@ -7,26 +7,19 @@ from pathlib import Path, PurePosixPath
 
 from haute._git_core import (
     NO_HOOKS,
-    CompensationStep,
     GitDomainError,
     GitError,
-    GitFilesInUseError,
     GitGuardrailError,
     GitMilestoneForkError,
-    GitTransactionError,
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
     _assert_no_git_op_in_progress,
     _canonical_remote,
     _commit_parents,
-    _compensate,
-    _delete_branch_if_present,
     _generate_commit_message,
-    _get_current_branch,
     _git_env,
     _GitProcessTimeoutError,
-    _held_files,
     _is_ancestor,
     _is_valid_full_ref_name,
     _ledger_or_branch_sha,
@@ -34,19 +27,18 @@ from haute._git_core import (
     _refuse_too_large_for_history,
     _remote_names,
     _rev_parse,
-    _rewrite_tree,
     _run_git,
-    _run_git_capture,
     _run_git_ok,
     _run_git_process,
+    _save_commit,
     _serialized_mutation,
-    _tracked_changes,
+    _serialized_while_interrupted,
     _tree_of,
     _validate_ref_name,
-    _wipe_volatile_artefacts,
     divergence_state,
     ledger_name,
 )
+from haute._git_operation import Operation, recover
 from haute._git_setup import (
     _crystallize_milestone,
     _folding_anchor,
@@ -129,8 +121,10 @@ def commit_save(
         return None
     msg = message if message is not None else _generate_commit_message(changed)
     # `git commit -- <paths>` commits the working-tree state of exactly those
-    # paths, bypassing unrelated index content the user may have pre-staged.
-    _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
+    # paths, bypassing unrelated index content the user may have pre-staged. It is
+    # the one ref move outside a recorded operation: one commit, all or nothing.
+    with _save_commit():
+        _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
 
     sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
     logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
@@ -339,14 +333,13 @@ def merge_to_working(
     sha = _run_git(
         "commit-tree", tree, "-p", working_tip, "-p", ledger_tip, "-m", message, cwd=cwd
     ).strip()
-    if tag_ref is None:
-        _run_git("update-ref", f"refs/heads/{working}", sha, working_tip, cwd=cwd)
-    else:
-        # Build the annotated tag object without publishing its ref, then update
-        # the branch CAS and create the label in one ref transaction. If either
-        # precondition loses a race, Git applies neither update.
+    # The branch moves by CAS, and a label is created with it in the same ref
+    # transaction: if either precondition loses a race, git applies neither.
+    updates: dict[str, str | None] = {f"refs/heads/{working}": sha}
+    if tag_ref is not None:
+        # The annotated tag object, built without publishing its ref.
         tagger = _run_git("var", "GIT_COMMITTER_IDENT", cwd=cwd)
-        tag_object = _run_git(
+        updates[f"refs/tags/{tag_ref}"] = _run_git(
             "hash-object",
             "--literally",
             "-t",
@@ -358,15 +351,9 @@ def merge_to_working(
                 f"object {sha}\ntype commit\ntag {tag_ref}\ntagger {tagger}\n\n{tag_label}\n"
             ),
         )
-        _run_git(
-            "update-ref",
-            "--stdin",
-            cwd=cwd,
-            input_text=(
-                f"update refs/heads/{working} {sha} {working_tip}\n"
-                f"create refs/tags/{tag_ref} {tag_object}\n"
-            ),
-        )
+    milestone = Operation("milestone", cwd or current_project().root, cwd)
+    milestone.refs(updates)
+    milestone.run()
 
     logger.info("milestone_merged", working=working, sha=sha, tag=tag_label or "", ledger=ledger)
     return sha
@@ -409,26 +396,6 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
     return tip
 
 
-def _rollback_fork(
-    name: str, ledger: str, ledger_tip: str, cwd: Path | None = None
-) -> list[CompensationStep]:
-    """The steps undoing a partially-applied fork of *name* from *ledger*."""
-    new_ledger = ledger_name(name)
-    steps: list[CompensationStep] = []
-    if _get_current_branch(cwd) == new_ledger:
-        # The spawning ledger isn't checked out → safe to restore it, then move
-        # HEAD back so the new ledger can be deleted.
-        steps += [
-            lambda: _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)[0],
-            lambda: _run_git_ok("checkout", ledger, cwd=cwd)[0],
-        ]
-    return [
-        *steps,
-        lambda: _delete_branch_if_present(new_ledger, cwd=cwd),
-        lambda: _delete_branch_if_present(name, cwd=cwd),
-    ]
-
-
 @_serialized_mutation
 def create_working_branch(
     name: str,
@@ -451,7 +418,7 @@ def create_working_branch(
     to the fork point, and switches you over. Move is valid only at the latest
     milestone or a pending save, and not with ``switch``, which it implies.
     """
-    from haute._git_state import read_working_branch, write_working_branch
+    from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
     _assert_new_branch_name(name, cwd=cwd)
@@ -521,22 +488,12 @@ def create_working_branch(
     if not move:
         # Two fresh refs at the base; with *switch* the new ledger is then checked
         # out, the current pair's refs untouched either way.
-        try:
-            _run_git("branch", name, base, cwd=cwd)
-            _run_git("branch", ledger_name(name), base, cwd=cwd)
-            if switch:
-                _rewrite_tree("checkout", ledger_name(name), cwd=cwd)
-                write_working_branch(project_root, name)
-        except Exception as exc:
-            _compensate(
-                exc,
-                "Creating the branch",
-                [
-                    *_rollback_fork(name, ledger, ledger_tip, cwd=cwd),
-                    lambda: write_working_branch(project_root, current),
-                ],
-            )
-            raise
+        fork = Operation("create-branch", project_root, cwd)
+        fork.refs({f"refs/heads/{name}": base, f"refs/heads/{ledger_name(name)}": base})
+        if switch:
+            fork.checkout(ledger_name(name))
+            fork.working_branch(name)
+        fork.run()
         logger.info("working_branch_forked", name=name, at=point[:8], moved=False, switched=switch)
         return GitCreateWorkingBranchResponse(
             working_branch=name,
@@ -574,29 +531,19 @@ def create_working_branch(
     else:
         new_ledger_tip = _replay_onto(base, _commits_in_range(point, ledger_tip, cwd=cwd), cwd=cwd)
 
-    # The mutations below are not individually atomic; on any failure roll the
-    # whole fork back so the user isn't wedged behind the "already exists" guard
-    # with work duplicated across two lineages (S38).
-    try:
-        _run_git("branch", name, base, cwd=cwd)
-        _run_git("branch", ledger_name(name), new_ledger_tip, cwd=cwd)
-        # Switch onto the new ledger. The new ledger tip shares the old HEAD's
-        # tree, so uncommitted edits carry across the checkout untouched.
-        _rewrite_tree("checkout", ledger_name(name), cwd=cwd)
-        # Rewind the spawning branch's ledger to the fork point (its later work
-        # has been relocated; the commits stay reachable via the new ledger).
-        _run_git("branch", "-f", ledger, point, cwd=cwd)
-        write_working_branch(project_root, name)
-    except Exception as exc:
-        _compensate(
-            exc,
-            "Creating and moving to the branch",
-            [
-                *_rollback_fork(name, ledger, ledger_tip, cwd=cwd),
-                lambda: write_working_branch(project_root, current),
-            ],
-        )
-        raise
+    # One recorded operation, put back whole on any failure, so the user isn't
+    # wedged behind the "already exists" guard with work duplicated across two
+    # lineages (S38).
+    fork = Operation("create-branch", project_root, cwd)
+    fork.refs({f"refs/heads/{name}": base, f"refs/heads/{ledger_name(name)}": new_ledger_tip})
+    # Switch onto the new ledger. The new ledger tip shares the old HEAD's tree,
+    # so uncommitted edits carry across the checkout untouched.
+    fork.checkout(ledger_name(name))
+    # Rewind the spawning branch's ledger to the fork point (its later work has
+    # been relocated; the commits stay reachable via the new ledger).
+    fork.refs({f"refs/heads/{ledger}": point})
+    fork.working_branch(name)
+    fork.run()
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
     return GitCreateWorkingBranchResponse(
         working_branch=name,
@@ -682,29 +629,32 @@ def _run_commit_hooks(
     index = _git_path("haute-milestone-index", cwd)
     message_file = _git_path("HAUTE_MILESTONE_MSG", cwd)
     env = _git_env({"GIT_INDEX_FILE": str(index)})
+    rewritten: list[str] = []
 
-    _run_git("symbolic-ref", "HEAD", f"refs/heads/{working}", cwd=cwd)
-    try:
+    def run_hooks() -> None:
         _run_git("read-tree", ledger, cwd=cwd, env=env)
         if "pre-commit" in hooks:
             _run_hook("pre-commit", env=env, cwd=cwd)
         if "commit-msg" in hooks:
             message_file.write_text(f"{message}\n", encoding="utf-8")
             _run_hook("commit-msg", str(message_file), env=env, cwd=cwd)
-            message = message_file.read_text(encoding="utf-8").strip()
-            if not message:
+            rewritten.append(message_file.read_text(encoding="utf-8").strip())
+            if not rewritten[0]:
                 raise GitDomainError("The project's commit-msg hook left the message empty.")
+
+    # HEAD names the working branch while the hooks run; a failure in them has the
+    # operation put it back on the ledger, and a server that stops leaves the record.
+    pass_ = Operation("milestone-hooks", project_root, cwd)
+    pass_.head(f"refs/heads/{working}")
+    pass_.call(run_hooks)
+    pass_.head(f"refs/heads/{ledger}")
+    try:
+        pass_.run()
     finally:
-        # HEAD goes back first, whatever ended the hooks (an interrupt included), so no
-        # failure below can leave it on the working branch.
-        head_back, _ = _run_git_ok("symbolic-ref", "HEAD", f"refs/heads/{ledger}", cwd=cwd)
-        if not head_back:
-            raise GitTransactionError(
-                "Running the project's commit hooks left HEAD on the working branch. "
-                "Inspect the repository before retrying."
-            )
         index.unlink(missing_ok=True)
         message_file.unlink(missing_ok=True)
+    if rewritten:
+        message = rewritten[0]
 
     rewritten = _unrecorded_project_files(project_root, pipeline_folder, cwd)
     if rewritten:
@@ -743,7 +693,6 @@ def commit_milestone(
     from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
-    _assert_not_interrupted(project_root)
     working = read_working_branch(project_root)
     if working is None:
         raise GitDomainError("No working branch is set for this project.")
@@ -809,10 +758,9 @@ def restore_version(
     into one (reachable from the working tip) or a pending or earlier save
     (reachable from the ledger tip). *pipeline_folder* is as for
     :func:`commit_milestone`."""
-    from haute._git_state import read_working_branch, record_interrupted
+    from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
-    _assert_not_interrupted(project_root)
     working = read_working_branch(project_root)
     if working is None:
         raise GitDomainError("No working branch is set for this project.")
@@ -866,24 +814,17 @@ def restore_version(
     restored = _run_git(
         "commit-tree", target_tree, "-p", ledger_tip, "-m", message, cwd=cwd
     ).strip()
-    _run_git("update-ref", f"refs/heads/{ledger}", restored, ledger_tip, cwd=cwd)
 
-    # HEAD is the ledger, now at the restore: bring the index and the files to it.
-    # Paths tracked but absent from the restore are removed; untracked and ignored
+    # The ledger's advance is the commit point: history holds the restore from
+    # then on. HEAD is the ledger, so the files are then brought to it: paths
+    # tracked but absent from the restore are removed, and untracked and ignored
     # files, .haute/ among them, are not git's to touch. A file another program
-    # holds open cannot be written; the restore stays recorded and the clone is
-    # interrupted until Retry writes what is left.
-    code, stderr = _run_git_capture(
-        "restore", "--source=HEAD", "--staged", "--worktree", "--", ":/", cwd=cwd
-    )
-    left = sorted(_tracked_changes(cwd))
-    if left:
-        record_interrupted(project_root, "restore", left)
-        raise GitFilesInUseError(_held_files(stderr) or left)
-    if code != 0:
-        logger.warning("git_command_failed", cmd=["git", "restore"], stderr=stderr)
-        raise GitError(stderr or "git restore failed")
-    _wipe_volatile_artefacts(cwd or current_project().root)
+    # holds open cannot be written; the record stays, and Retry writes the rest.
+    restore = Operation("restore", project_root, cwd, wipes_caches=True)
+    restore.refs({f"refs/heads/{ledger}": restored})
+    restore.committed()
+    restore.write_files()
+    restore.run()
 
     logger.info("version_restored", working=working, sha=restored, restored_from=target)
     return GitRestoreVersionResponse(
@@ -894,51 +835,16 @@ def restore_version(
     )
 
 
-def _assert_not_interrupted(project_root: Path) -> None:
-    """Refuse while files are out of step with HEAD: a milestone's sweep or a
-    restore would record or overwrite them as if they were the analyst's."""
-    from haute._git_state import read_interrupted
-
-    record = read_interrupted(project_root)
-    if record is None:
-        return
-    files = record["files"]
-    assert isinstance(files, list)
-    named = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
-    raise GitDomainError(
-        f"These files are out of step with version history: {named or 'unknown'}. "
-        "Close them and choose Retry first."
-    )
-
-
-@_serialized_mutation
+@_serialized_while_interrupted
 def retry_interrupted(project_root: Path, cwd: Path | None = None) -> None:
-    """Write HEAD's version of the files an interrupted git action left out of step,
-    and clear the interruption once none is left. Files still held open refuse with
-    ``GitFilesInUseError`` and the interruption stays."""
-    from haute._git_state import clear_interrupted, read_interrupted
+    """Finish the operation that stopped part-way, or put it back, from its record and
+    the refs as they are (:func:`haute._git_operation.recover`). Files still held open
+    refuse with ``GitFilesInUseError``, a file changed since it stopped is refused by
+    name, and refs moved since raise ``GitTransactionError``; the record stays each time."""
+    from haute._git_state import read_operation
 
     _assert_git_repo(cwd)
-    record = read_interrupted(project_root)
-    if record is None:
+    if read_operation(project_root) is None:
         return
-    files = record["files"]
-    assert isinstance(files, list)
-    stderr = ""
-    if files:
-        _assert_no_git_op_in_progress(cwd)
-        _code, stderr = _run_git_capture(
-            "restore",
-            "--source=HEAD",
-            "--staged",
-            "--worktree",
-            "--",
-            *[f":(literal){path}" for path in files],
-            cwd=cwd,
-        )
-    left = sorted(_tracked_changes(cwd) & set(files))
-    if left:
-        raise GitFilesInUseError(_held_files(stderr) or left)
-    clear_interrupted(project_root)
-    _wipe_volatile_artefacts(cwd or current_project().root)
-    logger.info("interrupted_tree_retried", files=files)
+    _assert_no_git_op_in_progress(cwd)
+    recover(project_root, cwd, direction="retry")

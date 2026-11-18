@@ -10,6 +10,7 @@ change.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 
@@ -24,7 +25,7 @@ _STATE_FILE = "state.json"
 _PREFS_FILE = "prefs.json"
 _PUSHED_FILE = "pushed.json"
 _TRASH_FILE = "trash.json"
-_INTERRUPTED_FILE = "interrupted.json"
+_OPERATION_FILE = "operation.json"
 _WORKING_BRANCH_KEY = "workingBranch"
 
 # Serialises pushed.json access within this process. Atomic replacement keeps
@@ -55,8 +56,8 @@ def _trash_path(project_root: Path) -> Path:
     return project_root / _STATE_DIR / _TRASH_FILE
 
 
-def _interrupted_path(project_root: Path) -> Path:
-    return project_root / _STATE_DIR / _INTERRUPTED_FILE
+def _operation_path(project_root: Path) -> Path:
+    return project_root / _STATE_DIR / _OPERATION_FILE
 
 
 def read_working_branch(project_root: Path) -> str | None:
@@ -101,15 +102,6 @@ def clear_working_branch(project_root: Path) -> None:
         if path.exists():
             path.unlink()
             logger.info("git_state_cleared")
-
-
-def restore_working_branch(project_root: Path, previous: str | None) -> None:
-    """Record *previous* as the clone's working branch again, or none when it is ``None``:
-    a rolled-back mutation's undo of the record it changed."""
-    if previous is None:
-        clear_working_branch(project_root)
-    else:
-        write_working_branch(project_root, previous)
 
 
 # ---------------------------------------------------------------------------
@@ -206,18 +198,14 @@ def record_trash(project_root: Path, entry_id: str, entry: dict[str, object]) ->
     logger.info("git_trash_recorded", entry=entry_id)
 
 
-def trim_trash(project_root: Path) -> list[tuple[str, dict[str, object]]]:
-    """Drop the oldest tombstones beyond the cap and return them, for the caller to
-    delete their pins: nothing could restore them any more."""
-    with repository_mutation(project_root):
-        trash = read_trash(project_root)
-        dropped: list[tuple[str, dict[str, object]]] = []
-        while len(trash) > _TRASH_MAX_ENTRIES:
-            oldest = next(iter(trash))
-            dropped.append((oldest, trash.pop(oldest)))
-        if dropped:
-            _write_trash(project_root, trash)
-    return dropped
+def trash_overflow(
+    trash: dict[str, dict[str, object]], adding: str
+) -> list[tuple[str, dict[str, object]]]:
+    """The oldest tombstones of *trash* the cap drops once the entry *adding* is the
+    newest: nothing could restore them any more, so their pins go too."""
+    kept = [entry_id for entry_id in trash if entry_id != adding] + [adding]
+    over = len(kept) - _TRASH_MAX_ENTRIES
+    return [(entry_id, trash[entry_id]) for entry_id in kept[: max(over, 0)]]
 
 
 def remove_trash(project_root: Path, branch: str) -> None:
@@ -229,53 +217,153 @@ def remove_trash(project_root: Path, branch: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# An interrupted tree — files a git action could not write (Windows refuses to
-# replace a file another program holds open) and the fence could not put back,
-# so the working tree is out of step with HEAD. Readiness answers "interrupted"
-# while it exists; Retry writes HEAD's version of the files and clears it.
+# The record of a git operation in progress (``_git_operation``): written before
+# its first step and removed after its last, so one still there is an operation
+# that stopped part-way. Readiness answers "interrupted" while it exists, and
+# every git action but Retry refuses.
 # ---------------------------------------------------------------------------
 
+#: What the analyst reads for each operation a record can name.
+_OPERATION_WORDS = {
+    "restore": "Restoring a version",
+    "catch-up": "Catching up",
+    "select-branch": "Choosing a branch",
+    "open-ledger": "Opening the working branch",
+    "seed": "Making the first version",
+    "create-branch": "Creating a branch",
+    "spin-off": "Spinning off a copy",
+    "archive": "Archiving a branch",
+    "delete": "Deleting a branch",
+    "undelete": "Restoring a deleted branch",
+    "unarchive": "Restoring an archived branch",
+    "repair": "Repairing a branch",
+    "milestone": "Committing a milestone",
+    "milestone-hooks": "Running the project's commit hooks",
+    "adopt-clone": "Opening the stored project",
+}
 
-def read_interrupted(project_root: Path) -> dict[str, object] | None:
-    """The interrupted tree's record (``operation``, ``files``, ``at``), or None.
+#: The operations a record can name.
+OPERATIONS = frozenset(_OPERATION_WORDS)
 
-    A record that cannot be read is still an interruption: the files it would
-    name are unknown, so it reads as one with no files rather than as healthy."""
-    path = _interrupted_path(project_root)
+# How many files a message names before counting the rest.
+_FILES_NAMED = 5
+
+
+def name_files(files: list[str]) -> str:
+    """The first files of *files* by name and the rest counted, for a message."""
+    more = len(files) - _FILES_NAMED
+    return ", ".join(files[:_FILES_NAMED]) + (f" and {more} more" if more > 0 else "")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationRecord:
+    """An operation's record as ``operation.json`` holds it.
+
+    *initial* maps each slot the operation changes to its value before the first
+    step, and each of *steps* the slots that step sets, so the state after step k
+    is *initial* overlaid with the first k steps. A record that cannot be read is
+    still an interruption: *readable* is False and the operation ``unknown``."""
+
+    operation: str
+    at: str | None
+    initial: dict[str, object]
+    steps: list[dict[str, object]]
+    commit_point: int
+    files: list[str]
+    wipes_caches: bool
+    readable: bool = True
+
+    @property
+    def words(self) -> str:
+        return operation_words(self.operation)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "operation": self.operation,
+            "at": self.at,
+            "initial": self.initial,
+            "steps": self.steps,
+            "commit_point": self.commit_point,
+            "files": self.files,
+            "wipes_caches": self.wipes_caches,
+        }
+
+
+def operation_words(operation: str) -> str:
+    """The analyst's words for *operation* ("Restoring a version")."""
+    return _OPERATION_WORDS.get(operation, "A git action")
+
+
+def interruption_message(record: OperationRecord) -> str:
+    """Readiness's line for an interrupted clone: the operation and its files."""
+    if record.files:
+        return f"{record.words} stopped part-way: {name_files(record.files)}."
+    return f"{record.words} stopped part-way."
+
+
+def _unreadable_operation() -> OperationRecord:
+    return OperationRecord("unknown", None, {}, [], 0, [], False, readable=False)
+
+
+def _parse_operation(raw: object) -> OperationRecord | None:
+    if not isinstance(raw, dict):
+        return None
+    operation, at, initial, steps = (
+        raw.get("operation"),
+        raw.get("at"),
+        raw.get("initial"),
+        raw.get("steps"),
+    )
+    commit_point, files, wipes = raw.get("commit_point"), raw.get("files"), raw.get("wipes_caches")
+    if not (
+        operation in OPERATIONS
+        and isinstance(at, str)
+        and isinstance(initial, dict)
+        and all(isinstance(slot, str) for slot in initial)
+        and isinstance(steps, list)
+        and all(isinstance(step, dict) and all(isinstance(k, str) for k in step) for step in steps)
+        and isinstance(commit_point, int)
+        and not isinstance(commit_point, bool)
+        and 0 <= commit_point <= len(steps)
+        and isinstance(files, list)
+        and all(isinstance(path, str) for path in files)
+        and isinstance(wipes, bool)
+    ):
+        return None
+    assert isinstance(operation, str)
+    return OperationRecord(operation, at, initial, steps, commit_point, files, wipes)
+
+
+def read_operation(project_root: Path) -> OperationRecord | None:
+    """The record of the operation in progress or stopped part-way, or None."""
+    path = _operation_path(project_root)
     with repository_mutation(project_root):
         try:
-            raw = json.loads(path.read_text())
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
         except (OSError, json.JSONDecodeError):
-            logger.warning("git_interrupted_unreadable", path=str(path))
-            return {"operation": "unknown", "files": [], "at": None}
-    if not isinstance(raw, dict):
-        return {"operation": "unknown", "files": [], "at": None}
-    files = raw.get("files")
-    return {
-        "operation": raw.get("operation") if isinstance(raw.get("operation"), str) else "unknown",
-        "files": [f for f in files if isinstance(f, str)] if isinstance(files, list) else [],
-        "at": raw.get("at") if isinstance(raw.get("at"), str) else None,
-    }
+            logger.warning("git_operation_unreadable", path=str(path))
+            return _unreadable_operation()
+    record = _parse_operation(raw)
+    if record is None:
+        logger.warning("git_operation_unreadable", path=str(path))
+        return _unreadable_operation()
+    return record
 
 
-def record_interrupted(project_root: Path, operation: str, files: list[str]) -> None:
-    """Record the working tree as out of step with HEAD over *files*."""
-    from datetime import UTC, datetime
-
-    path = _interrupted_path(project_root)
+def write_operation(project_root: Path, record: OperationRecord) -> None:
+    """Record an operation before its first step (creates ``.haute/`` if needed)."""
+    path = _operation_path(project_root)
     with repository_mutation(project_root):
         path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"operation": operation, "files": files, "at": datetime.now(UTC).isoformat()}
-        atomic_write_text(path, json.dumps(record, indent=2) + "\n")
-    logger.warning("git_tree_interrupted", operation=operation, files=files)
+        atomic_write_text(path, json.dumps(record.to_json(), indent=2) + "\n")
 
 
-def clear_interrupted(project_root: Path) -> None:
-    """Forget the interruption once HEAD's version of its files is written."""
+def clear_operation(project_root: Path) -> None:
+    """Forget an operation once it has finished or been put back."""
     with repository_mutation(project_root):
-        _interrupted_path(project_root).unlink(missing_ok=True)
+        _operation_path(project_root).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
