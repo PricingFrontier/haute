@@ -77,6 +77,49 @@ describe("useQuoteListStore", () => {
     expect(store()).toMatchObject({ error: "down", loadingMore: false, next: "c2" })
   })
 
+  it("lets another list load its own further page while the first's is awaited, and keeps it when that answer comes", async () => {
+    let firstMore: (value: WorkbenchAppQuotesResponse) => void = () => {}
+    vi.mocked(fetchAppQuotes)
+      .mockResolvedValueOnce(page(["a"], "mine-1"))
+      .mockReturnValueOnce(new Promise((resolve) => (firstMore = resolve)))
+      .mockResolvedValueOnce(page(["t"], "team-1"))
+      .mockResolvedValueOnce(page(["t2"], null))
+    await store().load(MINE)
+    const awaited = store().more()
+    expect(store().loadingMore).toBe(true)
+
+    await store().load(TEAM)
+    expect(store().loadingMore).toBe(false)
+    await store().more()
+    expect(vi.mocked(fetchAppQuotes).mock.calls.at(-1)).toEqual([TEAM, "team-1"])
+    expect(store().quotes.map((quote) => quote.reference)).toEqual(["t", "t2"])
+
+    firstMore(page(["b"], "mine-2"))
+    await awaited
+    expect(store()).toMatchObject({ query: TEAM, next: null, loadingMore: false })
+    expect(store().quotes.map((quote) => quote.reference)).toEqual(["t", "t2"])
+  })
+
+  it("keeps a further page the newer list is loading when the first list's page answers", async () => {
+    let firstMore: (value: WorkbenchAppQuotesResponse) => void = () => {}
+    let teamMore: (value: WorkbenchAppQuotesResponse) => void = () => {}
+    vi.mocked(fetchAppQuotes)
+      .mockResolvedValueOnce(page(["a"], "mine-1"))
+      .mockReturnValueOnce(new Promise((resolve) => (firstMore = resolve)))
+      .mockResolvedValueOnce(page(["t"], "team-1"))
+      .mockReturnValueOnce(new Promise((resolve) => (teamMore = resolve)))
+    await store().load(MINE)
+    const awaited = store().more()
+    await store().load(TEAM)
+    const teams = store().more()
+    firstMore(page(["b"], "mine-2"))
+    await awaited
+    expect(store().loadingMore).toBe(true)
+    teamMore(page(["t2"], null))
+    await teams
+    expect(store()).toMatchObject({ loadingMore: false, next: null })
+  })
+
   it("loads nothing more past the last page", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValueOnce(page(["a"]))
     await store().load(MINE)

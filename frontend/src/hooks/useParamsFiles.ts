@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../api/errors"
 import { listProjectFiles } from "../api/projectFiles"
 import { fetchParamFile } from "../api/workbench"
+import { ask, newest } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 
 /** Whether a file in the params folder is a CSV, whatever the case of its extension. */
 const isCsv = (name: string): boolean => name.toLowerCase().endsWith(".csv")
@@ -28,33 +30,32 @@ export function useParamsFiles(file: string, onHeaderProblem: (message: string) 
     onHeaderProblemRef.current = onHeaderProblem
   }, [onHeaderProblem])
 
+  const listings = useRequestKind()
   useEffect(() => {
-    let current = true
-    void listProjectFiles("pipeline", "params")
-      .then((folder) => {
-        if (current) setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name))
-      })
-      .catch((error: unknown) => {
-        if (current) setUnlisted(apiErrorMessage(error, "The params files could not be listed."))
-      })
-    return () => {
-      current = false
-    }
-  }, [listing])
+    const asked = ask([newest(listings)])
+    void asked.answer(listProjectFiles("pipeline", "params"), {
+      ok: (folder) => setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name)),
+      failed: (error) => setUnlisted(apiErrorMessage(error, "The params files could not be listed.")),
+    })
+    return () => asked.release()
+  }, [listing, listings])
 
   const header = file === "" ? undefined : headers[file]
+  const headerReads = useRequestKind()
   useEffect(() => {
     if (file === "" || header !== undefined) return
-    let current = true
-    void fetchParamFile(file)
-      .then(({ columns }) => setHeaders((read) => ({ ...read, [file]: columns })))
-      .catch((error: unknown) => {
-        if (current) onHeaderProblemRef.current(apiErrorMessage(error))
-      })
-    return () => {
-      current = false
-    }
-  }, [file, header])
+    const asked = ask([newest(headerReads)])
+    const keep = (columns: readonly string[]) => setHeaders((read) => ({ ...read, [file]: columns }))
+    void asked.answer(fetchParamFile(file), {
+      ok: ({ columns }) => keep(columns),
+      failed: (error) => onHeaderProblemRef.current(apiErrorMessage(error)),
+      // A file's header is that file's whichever file is chosen now: it is kept.
+      stale: (settled) => {
+        if ("value" in settled) keep(settled.value.columns)
+      },
+    })
+    return () => asked.release()
+  }, [file, header, headerReads])
 
   return {
     /** The CSV files' names; null until the folder is listed. */

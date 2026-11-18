@@ -314,6 +314,26 @@ asked of the shared draft from outside React. A code editor keeps its own rule f
 change from outside that arrives while it holds typing not yet flushed waits until that typing
 is committed or reverted.
 
+**Late answers.** An answer from the server is written to the page only while what asked for
+it is as it was. Every request whose answer is written to state, or followed by anything that
+writes state, is asked through one helper (`utils/answers.ts`), which records, when it is
+asked, what the answer belongs to: the newest request of its kind, or the one a further page
+belongs to; the pipeline document on show, or for an answer about running it, the document's
+execution fence; the graph as it stood (an edit, an Undo, a Redo, a view change or a load moves
+it); a node, by address; whether a field holds text typed and not committed, asked of the
+shared draft; and any other state the answer was asked under, such as the Workbench form, the
+branch a list was read on or the file a panel shows. An answer that arrives once any of these
+has moved is dropped, or handed back marked stale to a caller that settles it: a repair whose
+document live sync has already replaced closes its dialog and keeps the document on show; a
+deleted file still leaves the list. What runs after an answer (a flag cleared, a list read
+again, a toast) runs in the helper's handlers, under the same check. A flag a request set
+while it waited, such as a list's loading of a further page, is reset the moment the request
+stops being current, not when its answer comes, so dropping the answer never leaves it set. A
+read is aborted at that moment; a write is never aborted, since what it did would then be
+unknown, and its answer is dropped or settled. A component's requests are let go when it
+unmounts, and an effect's when it runs again. No code writes state after waiting for the
+server any other way: a scan of the browser source fails for any function that does.
+
 **Pipeline imports.** The Utility pane's file list starts with a fixed `Imports` entry, which
 edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl` and
 `import haute` are always included, has no delete button and never goes through the utility

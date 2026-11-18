@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `frontend/src/utils/answerAddresses.ts` | Reading the nodes an answer names (see "Request gateway" item 5): `keyText` (the one reading of a `RuntimeNodeKey` as text, to look it up in its answer), `placeAddress` (the canvas placement table, boundary cards included for a reader that passes them), `keysOnCanvas` (an answer's keys by the canvas node they describe) and `answerTargetKey` (the key an answer runs a frame target under: by address, or through its frame provenance). |
-| `frontend/src/utils/requestGateway.ts` | The request gateway (see "Request gateway"): `documentRequestScope`, `RequestScopeError`, `preparePipelineRequest` and `prepareNodeRequest` (the whole pipeline, the document's identity and semantic generation, the target and the data source, captured once), `canvasTarget` and `canvasNodeAddress` (a canvas node as a frame target or address: the Input card at a port is the occurrence's input, the Output card at a port its output, and on the main pipeline a collapsed occurrence at an `out__` handle its output port), `frameTargetPayload` and `nodeAddressPayload` (the one conversion of a target to the wire's shape, `wireTarget` on a prepared request, and `node`, the address an operation on a node sends), a prepared request's `nodeAt` (a node an answer addresses, in the view it was prepared in), and `resultKey` and `prepareCanvasRequest` (a canvas node's request together with the key its results are kept under). |
+| `frontend/src/utils/requestGateway.ts` | The request gateway (see "Request gateway"): `documentRequestScope`, `RequestScopeError`, `preparePipelineRequest` and `prepareNodeRequest` (the whole pipeline, the document's identity and semantic generation, the target and the data source, captured once), `canvasTarget` and `canvasNodeAddress` (a canvas node as a frame target or address: the Input card at a port is the occurrence's input, the Output card at a port its output, and on the main pipeline a collapsed occurrence at an `out__` handle its output port), `frameTargetPayload` and `nodeAddressPayload` (the one conversion of a target to the wire's shape, `wireTarget` on a prepared request, and `node`, the address an operation on a node sends), a prepared request's `nodeAt` (a node an answer addresses, in the view it was prepared in), and `resultKey` and `prepareCanvasRequest` (a canvas node's request together with the key its results are kept under). `nodeExists(address)` says whether the node at an address is in the document as it stands, and `nodePart(address)` is that as a late answer's part ("Late answers"). |
 | `frontend/src/utils/nodeAddress.ts` | `NodeAddress`, `FrameTarget`, `rootAddress`, `childAddress`, `nodeFrame`, `sameAddress`, and `addressKey`: a root node's id as it is, a child's key opening with a character no node id holds. |
 | `frontend/src/api/responseValidation.ts` | `ApiResponseValidationError` distinguishes invalid API responses from retryable transport failures while preserving the parser error as its cause; `validateApiResponse` wraps a parser call in that contract. Every background job poller (train, optimiser, Explore, pivot) reports it as a terminal response error. |
 | `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. With an `EditorNamingContext` (the canonical document graph and `allocate`) the request carries the naming context; each node takes the server's `label` (and an occurrence its `alias`), and a response naming any `collision` throws `EditorNameCollisionError` before anything is applied. |
@@ -53,7 +53,8 @@
 | `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`, owns `formatDuration`, the one seconds formatter (`0.4 s`, `12 s`, `2m 05s`), and `formatNumber`, the compact number formatter (`12.3K`, `1.23M`, four decimals below a thousand), whose unit is chosen by the value as printed so rounding carries into the next one: 999,999 reads `1.00M`, never `1000.0K`, and 999,949 reads `999.9K`; and `formatFixed`. Numbers follow the browser's locale. |
 | `frontend/src/utils/isoDate.ts` | The one check of each ISO 8601 calendar form the browser validates: `isDay` (a real YYYY-MM-DD day from year 1, without a `Date`, which reads years before 100 as the 1900s), `isTime` (HH:MM:SS with an optional fraction and offset) and `isDateTime` (the two joined by `T`); the sheets, global constants, pivot card filters and pivot response guards all use them. |
 | `frontend/src/utils/serial.ts` | `serial()`, a turn queue: each piece of work given to it runs once the one before has settled, failed or not, so each acts on the state as it is when its turn comes, its promise the work's own. The workbench's form store (its reads, syncs and saves) and the editor's project Save take turns through one each. |
-| `frontend/src/utils/latest.ts` | `latest()`, the ticket of the newest of a kind of request, so an answer that comes back after a newer request was made is dropped: `take()` stamps one, putting every earlier one out of date; `current()` reads the newest without taking one, for work done under the request it belongs to; `is(ticket)`; and `bump()`, putting every ticket out of date, as leaving the scope they were taken in does. What else makes an answer stale (the document, the quote, the form) stays with the caller. The preview, open-quote, quote-list and workbench stores and the allowed-values field use it. |
+| `frontend/src/utils/answers.ts` | The one way an answer from the server is written to state ("Late answers", below): `ask(belongsTo, { pending })` takes the parts the answer belongs to and gives an `Asked` (`current()`, `signal`, `answer(request, { ok, failed, stale })`, `release()`); `answer(belongsTo, request, handlers, { pending, inFlight })` asks, answers once and lets go; `requestKind()` a kind of request of which only the newest is current, with `newest(kind)` and `under(kind)` its parts and `bump()`; `watch(store, select, holds)` a piece of a store's state an answer was asked under. It reads no store: each store makes its own parts. The editor's, the panels', the Workbench's and the underwriter app's requests all go through it. |
+| `frontend/src/hooks/useRequestKind.ts` | `useRequestKind()`, a `requestKind()` held for one mounted component and bumped when it unmounts, so the answers its requests are waiting for are dropped. |
 | `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
 | `frontend/src/utils/documentation.ts` | The published documentation's URLs, which the editor's server does not serve: `DOCUMENTATION_URL` (the site, for the toolbar's Help menu) and `NODE_REFERENCE_URL` (the node reference, for the unknown-node-type banner). |
 | `frontend/src/utils/dtypeColors.ts` | A column type's badge colour by its kind (`columnKind`): `getDtypeColor` for a type as `str(dtype)` renders it and `getKindColor` for a kind (integers blue, floats and decimals green, text amber, booleans purple, dates rose, every other kind slate). |
@@ -121,7 +122,7 @@
 | `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
 | `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement over enabled options, per-option `disabled` with a `disabledReason` tooltip, optional accessible name, and token-derived active styling. |
 | `frontend/src/components/form/ColourSwatches.tsx` | A colour chosen as an Explore chart's is: Automatic (null), one of the swatches (`PIVOT_CHART_COLORS.defaultSeries` unless the caller gives its own `swatches`), or a colour of the caller's own from a native picker (`CustomColourInput`), unseen over a square of `COLOUR_WHEEL_GRADIENT` that opens it, the square outlined while the value is one no swatch holds, its draft committed once on blur in capitals rather than per drag tick, and, given `onPreview`, each step of the pick handed up as it is made, the picker kept mounted meanwhile so it stays open; each control is labelled for `name` ("Automatic colour for …", "Colour #RRGGBB for …", "Custom colour for …"). Explore's series colour and the workbench's sheets' colours are made of it. |
-| `frontend/src/components/form/useCommittedDraft.ts` | The one draft every panel and node field holds a value being edited in: `useCommittedDraft(value, onCommit, { owner, equals })` returns what to show (the stored value, or the draft once typed), whether a draft is open, `edit`, `commit` and `discard`. A draft lets go the moment the stored value it was typed over moves (by `equals`, `Object.is` by default: an Undo, a Redo, a sync frame, any outside change) or its `owner` (the row or item it belongs to) changes; `commit` calls `onCommit` once, skips a value equal to the stored one, and keeps the draft when the owner refuses it (`{ ok: false }`). While open, a draft is in the module's registry: `commitOpenDrafts()` commits every open draft as leaving its field would (the save barrier's first step, `useGraphCommitController.settleEdits`), and `isDraftOpen()` says from outside React whether any field is being typed in. A code editor (`panels/editors/CodeMirrorEditor.tsx`) keeps its own rule for now: a change from outside that arrives while it holds typing not yet flushed waits until that typing is committed or reverted, and its unflushed text commits on blur, which every save reaches first. A commit that names the stored value it brings back (`{ ok: true, stays }`) keeps the draft, for a draft that holds more than the store can (a list row not yet complete, a catalog chosen before its table); `commit(next)` commits a value a list builds in an event. |
+| `frontend/src/components/form/useCommittedDraft.ts` | The one draft every panel and node field holds a value being edited in: `useCommittedDraft(value, onCommit, { owner, equals })` returns what to show (the stored value, or the draft once typed), whether a draft is open, `edit`, `commit` and `discard`. A draft lets go the moment the stored value it was typed over moves (by `equals`, `Object.is` by default: an Undo, a Redo, a sync frame, any outside change) or its `owner` (the row or item it belongs to) changes; `commit` calls `onCommit` once, skips a value equal to the stored one, and keeps the draft when the owner refuses it (`{ ok: false }`). While open, a draft is in the module's registry: `commitOpenDrafts()` commits every open draft as leaving its field would (the save barrier's first step, `useGraphCommitController.settleEdits`), and `isDraftOpen()` says from outside React whether any field is being typed in, `subscribeOpenDrafts` tells a listener whenever a draft opens or closes, and `draftPart()` is that as a late answer's part ("Late answers"). A code editor (`panels/editors/CodeMirrorEditor.tsx`) keeps its own rule for now: a change from outside that arrives while it holds typing not yet flushed waits until that typing is committed or reverted, and its unflushed text commits on blur, which every save reaches first. A commit that names the stored value it brings back (`{ ok: true, stays }`) keeps the draft, for a draft that holds more than the store can (a list row not yet complete, a catalog chosen before its table); `commit(next)` commits a value a list builds in an event. |
 | `frontend/src/components/form/CommittedTextField.tsx` | The shared typed fields, built on `useCommittedDraft`, their `ref` given to the input: `CommittedTextField` (commits on blur and Enter) and `CommittedTextArea` (on blur) hold their own draft; `DraftTextField` and `DraftTextArea` show a draft their caller holds, for a value whose draft must outlive the field or that the caller validates (the Params pane's JSON, a grid cell keyed by its row). A caller's `onKeyDown` runs first, and Enter commits unless it prevented the default. `ValidatedTextField` is the validated single-line variant the node editors share (API Input and Output schema fields, constant names, the pivot name, Scenario steps and range bounds, chart stack groups and axis bounds), with an optional `inputMode` for a number typed as text: an invalid candidate is refused with its error beside the field and the draft kept, an invalid committed value shows its error too, a commit its owner refuses (`{ ok: false }`) keeps the draft, an owner's `commitError` shows while the value itself is valid, a non-blocking `warning` shows only when there is no error, and an `ariaLabel` names the input where no `<label>` does. |
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
@@ -846,6 +847,89 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
    answer yet is `checking` rather than `missing`.
 
+## Late answers (normative)
+
+An answer from the server is written to state through `frontend/src/utils/answers.ts` and no
+other way (high-level, "Late answers").
+
+1. **What an answer belongs to.** `ask(belongsTo, options)` takes a list of parts, at least
+   one (an empty list throws), each captured when it is made, at the call. The request is
+   current while every part holds and has held throughout: an `Asked` subscribes to each part
+   from the moment it is asked until it ends, and the first time a part is seen not to hold it
+   stops being current for good, so a part that moves and moves back never revives it. The
+   helper reads no store; each store's part is made beside it:
+   - `newest(kind)` takes the kind's turn, so each request of that kind asked earlier stops
+     being current at that moment; `under(kind)` holds the kind's turn as it stands, for work
+     done under a request (a further page of the list loaded, a save of the quote open), and
+     stops at the kind's next turn. `kind.bump()` ends the turn without asking, as leaving what
+     the requests were asked in does (another branch, a closed panel, another catalog shown).
+     `requestKind()` makes a kind; `useRequestKind()` (`hooks/useRequestKind.ts`) makes one
+     for a mounted component, bumped when it unmounts.
+   - `documentPart()` (`stores/useDocumentStatusStore.ts`): the document status store's
+     `sourceFile` and `executionGeneration`, which every adoption of a document advances (a
+     load, a live-sync frame, a reset). `executionPart()`: the document execution fence
+     (`captureDocumentExecutionFence`), holding while `isDocumentExecutionFenceCurrent` does.
+   - `editPart()` (`stores/useGraphStore.ts`): the graph store's `semanticGeneration`, which
+     an edit, an Undo, a Redo, a view change and a load advance. `unsavedEditsPart()`: no edit
+     made on the canvas since, holding while the canvas is as saved, or while nothing has been
+     done to it since it was asked (no change to the document, no Undo or Redo, no history
+     entry, no node moved on the canvas, a drag's steps inside a submodel too), so a document it takes while as saved (the
+     answer's own change arriving by live sync) is no edit made here; a dirty canvas takes
+     none, the sync banner holding it back. `formEditsPart()` (`stores/useWorkbenchStore.ts`)
+     holds while the Workbench form is as read or is the form it was when asked, read from the
+     form store's mirror (`formEdits`, which each change but a read anew sets, a gesture's
+     steps too), since the form store is a lazy chunk.
+   - `nodePart(address)` (`utils/requestGateway.ts`): holds while the node at that address is
+     in the document, one of the pipeline's own nodes or a child of an occurrence
+     (`nodeExists`).
+   - `draftPart()` (`components/form/useCommittedDraft.ts`): holds while no field holds an
+     edit not yet committed (`isDraftOpen`), told by `subscribeOpenDrafts`. A draft is seen
+     open from the commit of the render that opened it, so a field typed in before a request
+     is asked makes it never current.
+   - `watch(store, select, holds)`: what `select` reads of a store (anything with `getState`
+     and `subscribe`), holding while `holds(asked, now)` says so, by default while the two are
+     `Object.is`: the Workbench form, the branch a list was read on, the quote open.
+2. **Applying an answer.** `asked.answer(request, { ok, failed, stale })` waits for the
+   request (a promise, or a function given the request's `signal` that sends it) and, in the
+   same turn as it settles, checks that the request is current: if it is, `ok(value, asked)` or
+   `failed(error, asked)` runs; if not, `stale({ value } | { error })` runs when the caller gave
+   one, to settle an answer it must not drop (a write that landed, or failed), and otherwise
+   nothing runs. A current rejection with no `failed` rejects the promise `answer` returns; a
+   late one never does. `answer` resolves `"ok"`, `"failed"` or `"stale"` once its handler has
+   run, awaiting a promise the handler returns. A handler's own waits are its own: what it
+   writes after one, it writes through a further answer, which it asks under the same request
+   (`asked.answer`, checked against the same parts) or under parts of its own.
+   `answer(belongsTo, request, handlers, options)` asks, answers once, and lets go once its
+   handler has run.
+3. **What a request sets while it waits.** `options.pending(waiting)` is called with `true`
+   when the request is asked (after the requests a `newest` turn ends have been reset) and
+   once with `false` when it ends: the moment it stops being current, or when it is let go,
+   whichever is first. It is for what shows the request is being waited for: a list's loading
+   of a further page is reset when another list is loaded, not when the page's answer comes,
+   so the other list can ask for its own. `options.inFlight(flying)`, of `answer`, is a
+   write's exclusion: `true` when it is asked and `false` once its answer has settled and its
+   handler (`stale` included) has run, current or not, so no other write starts while one is
+   under way (Catch up, a repair, a test quote's save).
+4. **Abort and release.** `asked.signal` aborts the moment the request stops being current or
+   is let go. A read passes it to its request; a write never does, since an aborted write
+   leaves what it did unknown, and settles its answer through `stale` instead.
+   `asked.release()` lets go: the request stops being current; only `stale` runs when its
+   answer comes. An effect lets go of its requests in its cleanup; a component's requests
+   asked with `newest` or `under` of `useRequestKind()` end when it unmounts.
+5. **The scan.** `frontend/src/utils/__tests__/answersByHand.test.ts` reads the browser
+   source, but tests, generated code, the API client (`api/`, whose functions send the requests and keep the transport's own state) and `answers.ts` itself, and fails for a function that
+   writes state after a wait. A wait is an `await`, or a callback given to `.then`, `.catch`
+   or `.finally`; a loop that waits waits from its first statement; a wait for no answer from
+   the server (a question to the analyst through `confirmed`, the clipboard, a lazy import) is
+   listed by what it awaits, with its reason. A write is an assignment to a ref's `current` or
+   to a variable of the module, or a call of: a state setter (`set`, `setState`, a `set…`
+   name, `dispatch`); a store's action (through `getState()`, or a store's `get()`); a callback
+   prop (`on…`); a function a hook gave; `ask` or `answer`, which capture what an answer
+   belongs to when they are called; or a function that writes, followed through the source
+   whichever module declares it (an import, under its own name or another, or a re-export). A
+   method of the function's own local value (a `Map` it built) is not state. A handler given to
+   `answer` or `asked.answer`, a `pending` and an `inFlight` start unwaited.
+
 ## Request gateway (normative)
 
 Every request that runs the graph is built in one module, `frontend/src/utils/requestGateway.ts`,
@@ -957,6 +1041,30 @@ Which result a stored answer is, and whether it is current, are separate questio
 
 ## Testing
 
+- `frontend/src/utils/__tests__/answers.test.tsx` covers the late-answer helper once for each
+  part an answer belongs to (the newest of a kind, a further page under a kind, a bumped
+  kind, the document, the execution fence, an edit and an Undo, a node removed, a field
+  typed in and not committed, a watched store, a component unmounted, an effect run again):
+  it holds the answer, changes what it belongs to, lets the answer go, and requires that no
+  handler but `stale` ran; the same answer let go while nothing moved reaches `ok` or
+  `failed`. It also covers a `pending` flag reset the moment its request stops being current
+  and not again when the late answer comes, a newer request's `pending` set after the older
+  one's reset, a read aborted through `signal` and a write's answer settled by `stale`, a
+  current rejection with no `failed` passed on and a late one never, and a `belongsTo` that
+  names nothing refused. `frontend/src/utils/__tests__/answersByHand.test.ts` is the scan
+  ("Late answers", item 6); it is shown failing on a guard written by hand (a ticket checked
+  after an `await`, a `cancelled` flag, a `finally` that clears a flag), on a write in a
+  `.then` callback and on a write through a function of the same file. The surfaces the
+  scan holds to the helper are driven through it by their own tests; the ones whose late
+  answers were found by hand are driven end to end: the repair dialog
+  (`frontend/src/components/__tests__/PipelineRepairDialog.test.tsx`), Catch up
+  (`frontend/src/components/__tests__/RemotePushControl.test.tsx`), the Utility panel's
+  delete (`frontend/src/panels/__tests__/UtilityPanel.test.tsx`), the Databricks catalog and
+  schema selects (`frontend/src/panels/editors/__tests__/_DatabricksSelector.test.tsx`), a
+  Banding import whose factor is removed (`frontend/src/__tests__/editors/BandingEditor.test.tsx`),
+  a test quote's Open while a field is typed in
+  (`frontend/src/stores/__tests__/useWorkbenchTestQuotesStore.test.ts`) and the quote list's
+  further page (`frontend/src/app/__tests__/useQuoteListStore.test.ts`).
 - `frontend/src/utils/__tests__/requestGateway.test.ts` covers the request gateway: a
   request about a node of the pipeline captures the whole document, the node's address, the
   source, the document's identity and its semantic generation; from inside an open

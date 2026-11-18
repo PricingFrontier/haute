@@ -24,8 +24,8 @@ import {
   runTestQuote,
   saveTestQuote,
 } from "../api/workbench"
-import { canonicalJson } from "../utils/canonicalJson"
-import { latest } from "../utils/latest"
+import { draftPart } from "../components/form/useCommittedDraft"
+import { answer, ask, newest, requestKind, under, watch, type Settled } from "../utils/answers"
 import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
@@ -72,15 +72,24 @@ interface WorkbenchTestQuotesState {
   forget: () => void
 }
 
-/** The run asked for last, the list read last and the quote opened last: a late answer to an
- * earlier one, or to one asked before `forget`, is nobody's. */
-const runAsked = latest()
-const listAsked = latest()
-const openAsked = latest()
+/** What the panel's answers are asked under: `forget` (another branch, a document adopted
+ * anew) ends it, so a late answer to one asked before is nobody's. The run, the list and the
+ * quote opened are each the newest of their kind besides. */
+const panel = requestKind()
+const runAsked = requestKind()
+const listAsked = requestKind()
+const openAsked = requestKind()
+
+const SAVE_FIRST = "Save the project first: test quotes are priced on the project as saved."
 
 /** Whether the project has edits a pricing on the saved project would not see. */
 function projectDirty(): boolean {
   return useGraphStore.getState().dirty || useWorkbenchFormStore.getState().dirty
+}
+
+/** A write that landed reports its capture on the save ledger, whatever came of the panel. */
+function settleWrite(settled: Settled<Parameters<typeof reportSaveCapture>[0]>): void {
+  if ("value" in settled) reportSaveCapture(settled.value)
 }
 
 const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get) => {
@@ -88,11 +97,19 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
   const saved = async (): Promise<boolean> => {
     if (!projectDirty()) return true
     const save = get().saveProject
-    if (save === null || !(await save()) || projectDirty()) {
-      set({ error: "Save the project first: test quotes are priced on the project as saved." })
+    if (save === null) {
+      set({ error: SAVE_FIRST })
       return false
     }
-    return true
+    let done = false
+    await answer([under(panel)], save(), {
+      ok: (landed) => {
+        done = landed && !projectDirty()
+        if (!done) set({ error: SAVE_FIRST })
+      },
+      failed: () => set({ error: SAVE_FIRST }),
+    })
+    return done
   }
   return {
     open: false,
@@ -113,132 +130,149 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     },
     setSaveProject: (saveProject) => set({ saveProject }),
     load: async () => {
-      const mine = listAsked.take()
-      set({ loading: true })
-      try {
-        const { quotes, branch } = await fetchTestQuotes()
-        if (!listAsked.is(mine)) return
-        // Another branch's results are nobody's here.
-        if (get().branch !== null && get().branch !== branch) {
-          runAsked.bump()
-          openAsked.bump()
-          set({ runs: {}, running: null, opened: null })
-        }
-        const files = new Set(quotes.map((quote) => quote.file))
-        set((s) => ({ quotes, branch, error: null, ticked: s.ticked.filter((file) => files.has(file)) }))
-      } catch (error: unknown) {
-        if (listAsked.is(mine)) set({ error: apiErrorMessage(error) })
-      } finally {
-        if (listAsked.is(mine)) set({ loading: false })
-      }
+      await answer([newest(listAsked), under(panel)], fetchTestQuotes(), {
+        ok: ({ quotes, branch }) => {
+          // Another branch's results are nobody's here.
+          if (get().branch !== null && get().branch !== branch) {
+            runAsked.bump()
+            openAsked.bump()
+            set({ runs: {}, running: null, opened: null })
+          }
+          const files = new Set(quotes.map((quote) => quote.file))
+          set((s) => ({ quotes, branch, error: null, ticked: s.ticked.filter((file) => files.has(file)) }))
+        },
+        failed: (error) => set({ error: apiErrorMessage(error) }),
+      }, { pending: (loading) => set({ loading }) })
     },
     save: async ({ name, replace }) => {
       if (get().busy || get().running !== null) return false
-      set({ busy: true, error: null, notice: null })
-      try {
-        if (!(await saved())) return false
-        const formRevision = useWorkbenchFormStore.getState().revision
-        if (formRevision === null) {
-          set({ error: "Save the project first: test quotes are priced on the project as saved." })
-          return false
-        }
-        const quote = replace === undefined ? undefined : get().quotes.find((each) => each.file === replace)
-        if (replace !== undefined && quote === undefined) {
-          set({ error: `${replace} is no longer listed: list the test quotes again.` })
-          return false
-        }
-        // The branch the panel read on: a save decided there is refused on any other.
-        const branch = get().branch
-        if (branch === null) {
-          set({ error: "List the test quotes again before saving one." })
-          return false
-        }
-        reportSaveCapture(
-          await saveTestQuote({
-            name,
-            replace: quote === undefined ? undefined : { file: quote.file, revision: quote.revision },
-            branch,
-            formRevision,
-          }),
-        )
-        await get().load()
-        return true
-      } catch (error: unknown) {
-        set({ error: `Not saved: ${apiErrorMessage(error)}` })
-        return false
-      } finally {
-        set({ busy: false })
-      }
+      set({ error: null, notice: null })
+      let landed = false
+      await answer([under(panel)], saved(), {
+        ok: async (isSaved, asked) => {
+          if (!isSaved) return
+          const formRevision = useWorkbenchFormStore.getState().revision
+          if (formRevision === null) {
+            set({ error: SAVE_FIRST })
+            return
+          }
+          const quote = replace === undefined ? undefined : get().quotes.find((each) => each.file === replace)
+          if (replace !== undefined && quote === undefined) {
+            set({ error: `${replace} is no longer listed: list the test quotes again.` })
+            return
+          }
+          // The branch the panel read on: a save decided there is refused on any other.
+          const branch = get().branch
+          if (branch === null) {
+            set({ error: "List the test quotes again before saving one." })
+            return
+          }
+          await asked.answer(
+            saveTestQuote({
+              name,
+              replace: quote === undefined ? undefined : { file: quote.file, revision: quote.revision },
+              branch,
+              formRevision,
+            }),
+            {
+              ok: async (capture) => {
+                reportSaveCapture(capture)
+                landed = true
+                await get().load()
+              },
+              failed: (error) => set({ error: `Not saved: ${apiErrorMessage(error)}` }),
+              stale: settleWrite,
+            },
+          )
+        },
+      }, { inFlight: (busy) => set({ busy }) })
+      return landed
     },
     openQuote: async (file) => {
       const { form } = useWorkbenchFormStore.getState()
       if (form === null) return
-      const mine = openAsked.take()
-      const sent = canonicalJson(form)
-      try {
-        const opened = await openTestQuote(file, form)
-        // Typing since, a later open, or another branch's sheets: the values are not wanted.
-        const now = useWorkbenchFormStore.getState().form
-        if (!openAsked.is(mine) || now === null || canonicalJson(now) !== sent) return
-        useWorkbenchFormStore.getState().change((spec) => ({ ...spec, sample: opened.values }))
-        set({
-          opened: file,
-          error: null,
-          notice:
-            opened.not_opened.length === 0 ? null : `Opened ${file}. Not opened: ${opened.not_opened.join(", ")}.`,
-        })
-      } catch (error: unknown) {
-        if (openAsked.is(mine)) set({ error: apiErrorMessage(error) })
-      }
+      // Typing since, even text not yet committed, a later open, or another branch's sheets:
+      // the values are not wanted.
+      await answer(
+        [newest(openAsked), under(panel), watch(useWorkbenchFormStore, (state) => state.form), draftPart()],
+        openTestQuote(file, form),
+        {
+          ok: (opened) => {
+            useWorkbenchFormStore.getState().change((spec) => ({ ...spec, sample: opened.values }))
+            set({
+              opened: file,
+              error: null,
+              notice:
+                opened.not_opened.length === 0 ? null : `Opened ${file}. Not opened: ${opened.not_opened.join(", ")}.`,
+            })
+          },
+          failed: (error) => set({ error: apiErrorMessage(error) }),
+        },
+      )
     },
     toggle: (file) =>
       set((s) => ({ ticked: s.ticked.includes(file) ? s.ticked.filter((x) => x !== file) : [...s.ticked, file] })),
     run: async () => {
       if (get().running !== null || get().busy) return
       set({ error: null, notice: null })
-      if (!(await saved())) return
-      const { quotes, ticked } = get()
-      const files = (ticked.length > 0 ? ticked : quotes.map((quote) => quote.file)).filter(
-        (file) => quotes.find((quote) => quote.file === file)?.problem === null,
-      )
-      const mine = runAsked.take()
-      set({
-        running: { done: 0, of: files.length, stopping: false },
-        runs: Object.fromEntries(files.map((file) => [file, { status: "running" } as QuoteRun])),
-      })
-      // One quote at a time, each its own request, as the build prices them.
-      for (const [index, file] of files.entries()) {
-        if (!runAsked.is(mine) || get().running?.stopping) break
-        try {
-          const result = await runTestQuote(file)
-          if (!runAsked.is(mine)) return
-          // A result read on another branch than the list's is nobody's here.
-          if (result.branch !== get().branch) {
-            runAsked.bump()
-            set({ runs: {}, running: null })
-            // Listed again first, so the reason stays once the list is read.
-            await get().load()
-            set({ error: "The branch changed during the run: run again." })
-            return
+      await answer([under(panel)], saved(), {
+        ok: async (isSaved) => {
+          if (!isSaved) return
+          const { quotes, ticked } = get()
+          const files = (ticked.length > 0 ? ticked : quotes.map((quote) => quote.file)).filter(
+            (file) => quotes.find((quote) => quote.file === file)?.problem === null,
+          )
+          const asked = ask([newest(runAsked), under(panel)])
+          try {
+            set({
+              running: { done: 0, of: files.length, stopping: false },
+              runs: Object.fromEntries(files.map((file) => [file, { status: "running" } as QuoteRun])),
+            })
+            // One quote at a time, each its own request, as the build prices them.
+            for (const [index, file] of files.entries()) {
+              if (!asked.current() || get().running?.stopping) break
+              await asked.answer(runTestQuote(file), {
+                ok: async (result) => {
+                  // A result read on another branch than the list's is nobody's here.
+                  if (result.branch !== get().branch) {
+                    runAsked.bump()
+                    set({ runs: {}, running: null })
+                    // Listed again first, so the reason stays once the list is read.
+                    await answer([under(panel)], get().load(), {
+                      ok: () => set({ error: "The branch changed during the run: run again." }),
+                    })
+                    return
+                  }
+                  set((s) => ({
+                    runs: { ...s.runs, [file]: { status: "done", ...result } },
+                    running: { done: index + 1, of: files.length, stopping: s.running?.stopping ?? false },
+                  }))
+                },
+                failed: (error) => {
+                  set((s) => {
+                    const runs = { ...s.runs }
+                    delete runs[file]
+                    return {
+                      runs,
+                      error: apiErrorMessage(error),
+                      running: { done: index + 1, of: files.length, stopping: s.running?.stopping ?? false },
+                    }
+                  })
+                },
+              })
+            }
+            // Quotes a stop left unrun show nothing.
+            asked.apply(() =>
+              set((s) => ({
+                running: null,
+                runs: Object.fromEntries(Object.entries(s.runs).filter(([, run]) => run.status === "done")),
+              })),
+            )
+          } finally {
+            asked.release()
           }
-          set((s) => ({ runs: { ...s.runs, [file]: { status: "done", ...result } } }))
-        } catch (error: unknown) {
-          if (!runAsked.is(mine)) return
-          set((s) => {
-            const runs = { ...s.runs }
-            delete runs[file]
-            return { runs, error: apiErrorMessage(error) }
-          })
-        }
-        if (runAsked.is(mine)) set({ running: { done: index + 1, of: files.length, stopping: get().running?.stopping ?? false } })
-      }
-      if (runAsked.is(mine)) {
-        // Quotes a stop left unrun show nothing.
-        set((s) => ({
-          running: null,
-          runs: Object.fromEntries(Object.entries(s.runs).filter(([, run]) => run.status === "done")),
-        }))
-      }
+        },
+      })
     },
     stop: () => set((s) => (s.running === null ? {} : { running: { ...s.running, stopping: true } })),
     accept: async (file) => {
@@ -254,25 +288,22 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
       const quote = get().quotes.find((each) => each.file === file)
       const branch = get().branch
       if (quote === undefined || branch === null || get().busy) return
-      set({ busy: true })
-      try {
-        reportSaveCapture(await deleteTestQuote(file, quote.revision, branch))
-        set((s) => {
-          const runs = { ...s.runs }
-          delete runs[file]
-          return { error: null, runs, ticked: s.ticked.filter((x) => x !== file), opened: s.opened === file ? null : s.opened }
-        })
-        await get().load()
-      } catch (error: unknown) {
-        set({ error: `Not deleted: ${apiErrorMessage(error)}` })
-      } finally {
-        set({ busy: false })
-      }
+      await answer([under(panel)], deleteTestQuote(file, quote.revision, branch), {
+        ok: async (capture) => {
+          reportSaveCapture(capture)
+          set((s) => {
+            const runs = { ...s.runs }
+            delete runs[file]
+            return { error: null, runs, ticked: s.ticked.filter((x) => x !== file), opened: s.opened === file ? null : s.opened }
+          })
+          await get().load()
+        },
+        failed: (error) => set({ error: `Not deleted: ${apiErrorMessage(error)}` }),
+        stale: settleWrite,
+      }, { inFlight: (busy) => set({ busy }) })
     },
     forget: () => {
-      runAsked.bump()
-      listAsked.bump()
-      openAsked.bump()
+      panel.bump()
       set({ runs: {}, running: null, opened: null })
       if (get().open) void get().load()
     },
@@ -287,38 +318,46 @@ const useWorkbenchTestQuotesStore = create<WorkbenchTestQuotesState>()((set, get
     if (results.length === 0) return
     const [first] = results
     if (first.basis === null) return
-    set({ busy: true, error: null, notice: null })
-    const mine = runAsked.current()
-    try {
-      // Accepting prices again: on the project as saved, which a save of edits made since the
-      // run changes, and the server then refuses as priced on something else.
-      if (!(await saved())) return
-      const answered = await acceptTestQuotes({
-        branch: first.branch,
-        basis: first.basis,
-        quotes: results.map((result) => ({ file: result.file, revision: result.revision })),
-      })
-      reportSaveCapture(answered)
-      const accepted = new Set(answered.accepted.map((quote) => quote.file))
-      if (runAsked.is(mine)) {
-        set((s) => {
-          const kept = { ...s.runs }
-          for (const file of accepted) {
-            const run = kept[file]
-            if (run?.status === "done") kept[file] = { ...run, outcome: "unchanged", moves: [], removed: [], why: null }
-          }
-          return { runs: kept }
+    set({ error: null, notice: null })
+    // Accepting prices again: on the project as saved, which a save of edits made since the
+    // run changes, and the server then refuses as priced on something else.
+    await answer([under(panel)], saved(), {
+      ok: async (isSaved) => {
+        if (!isSaved) return
+        // The run the results are from: a newer one keeps its own results.
+        await answer([under(runAsked), under(panel)], acceptTestQuotes({
+          branch: first.branch,
+          basis: first.basis as string,
+          quotes: results.map((result) => ({ file: result.file, revision: result.revision })),
+        }), {
+          ok: async (answered) => {
+            reportSaveCapture(answered)
+            const accepted = new Set(answered.accepted.map((quote) => quote.file))
+            set((s) => {
+              const kept = { ...s.runs }
+              for (const file of accepted) {
+                const run = kept[file]
+                if (run?.status === "done") kept[file] = { ...run, outcome: "unchanged", moves: [], removed: [], why: null }
+              }
+              return { runs: kept }
+            })
+            if (answered.refused.length > 0) {
+              set({ notice: `Not accepted: ${answered.refused.map((each) => `${each.file} (${each.why})`).join(", ")}.` })
+            }
+            await get().load()
+          },
+          failed: (error) => set({ error: `Not accepted: ${apiErrorMessage(error)}` }),
+          stale: (settled) => {
+            if (!("value" in settled)) return
+            reportSaveCapture(settled.value)
+            if (settled.value.refused.length > 0) {
+              set({ notice: `Not accepted: ${settled.value.refused.map((each) => `${each.file} (${each.why})`).join(", ")}.` })
+            }
+            void get().load()
+          },
         })
-      }
-      if (answered.refused.length > 0) {
-        set({ notice: `Not accepted: ${answered.refused.map((each) => `${each.file} (${each.why})`).join(", ")}.` })
-      }
-      await get().load()
-    } catch (error: unknown) {
-      set({ error: `Not accepted: ${apiErrorMessage(error)}` })
-    } finally {
-      set({ busy: false })
-    }
+      },
+    }, { inFlight: (busy) => set({ busy }) })
   }
 })
 

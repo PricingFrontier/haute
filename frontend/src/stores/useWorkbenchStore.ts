@@ -19,6 +19,7 @@ import useGraphStore from "./useGraphStore"
 import useNodeDataStore from "./useNodeDataStore"
 import useToastStore from "./useToastStore"
 import { latest } from "../utils/latest"
+import { watch, type Part } from "../utils/answers"
 
 /** The editor's views: the pipeline editor's, and the workbench's while it is enabled. */
 export type EditorView = "pipeline" | "workbench"
@@ -42,6 +43,11 @@ interface WorkbenchState {
    * the form store is loaded.
    */
   formDirty: boolean
+  /**
+   * The form as edited here, mirrored by the form store: each change but a read anew (a gesture's
+   * steps too) sets it to the form it made; a read anew sets it to null, the form as read.
+   */
+  formEdits: object | null
   /**
    * The form store's sample, given whenever it changes (null once it has no form), published
    * for the pipeline editor's reads of the pipeline's data (`setWorkbenchSample`), which send
@@ -121,6 +127,7 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     if (view === "pipeline") readHeldSample()
   },
   formDirty: false,
+  formEdits: null,
   noteSample: (sample) => {
     setWorkbenchSample(sample)
     const held = canonicalJson(sample)
@@ -176,6 +183,15 @@ function readHeldSample(): void {
   if (sampleHeld === sampleRead) return
   useWorkbenchStore.setState({ sampleRead: sampleHeld })
   useNodeDataStore.getState().bumpEpoch()
+}
+
+/**
+ * No edit made in the Workbench form since it was asked, as an answer's part
+ * (`utils/answers.ts`): it holds while the form is as read, or holds the form it held then, so a
+ * form read anew (its file changed on disk) is no edit made here, and a gesture's step is.
+ */
+export function formEditsPart(): Part {
+  return watch(useWorkbenchStore, (state) => state.formEdits, (asked, now) => now === null || now === asked)
 }
 
 export default useWorkbenchStore

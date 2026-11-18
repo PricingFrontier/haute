@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from "react"
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react"
 import { Check, ChevronDown, Loader2, RefreshCw } from "lucide-react"
 import { getWarehouses, getCatalogs, getSchemas, getTables } from "../../api/client"
 import { apiErrorMessage } from "../../api/errors"
 import { CommittedTextField } from "../../components/form"
 import { useCommittedDraft } from "../../components/form/useCommittedDraft"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, newest, type RequestKind } from "../../utils/answers"
 
 // ─── WarehousePicker ──────────────────────────────────────────────
 //
@@ -75,36 +77,30 @@ export function WarehousePicker({
   const requested = useRef(false)
   const latest = useRef({ httpPath, onSelect })
   const rootRef = useRef<HTMLDivElement>(null)
+  const warehousesAsked = useRequestKind()
 
   useEffect(() => {
     latest.current = { httpPath, onSelect }
   })
 
-  const fetchWarehouses = useCallback(() => {
+  const reload = () => {
     requested.current = true
-    getWarehouses()
-      .then((data) => {
+    setError(null)
+    void answer([newest(warehousesAsked)], getWarehouses(), {
+      ok: (data) => {
         const list = data.warehouses || []
         setWarehouses(list)
-        setLoading(false)
         const { httpPath: current, onSelect: select } = latest.current
         if (!current && list.length === 1) select(list[0].http_path)
-      })
-      .catch((e: Error) => {
-        setError(apiErrorMessage(e))
-        setLoading(false)
-      })
-  }, [])
-
-  const reload = () => {
-    setLoading(true)
-    setError(null)
-    fetchWarehouses()
+      },
+      failed: (e) => setError(apiErrorMessage(e)),
+    }, { pending: setLoading })
   }
 
+  const firstRead = useRef(reload)
   useEffect(() => {
-    if (!startedManual && !requested.current) fetchWarehouses()
-  }, [startedManual, fetchWarehouses])
+    if (!startedManual && !requested.current) firstRead.current()
+  }, [startedManual])
 
   useEffect(() => {
     if (!open) return
@@ -311,20 +307,24 @@ function CatalogSchemaSelects({
   const [schemas, setSchemas] = useState<{ catalog: string; items: SchemaItem[] } | null>(null)
   const [loadingCatalogs, setLoadingCatalogs] = useState(false)
   const [loadingSchemas, setLoadingSchemas] = useState(false)
+  const catalogsAsked = useRequestKind()
+  // A catalog's schemas belong to that catalog being shown: another shown, by a choice, a
+  // clear, an Undo or another editor's change, puts them out of date.
+  const schemasAsked = useAskedFor(catalog)
 
   const refreshCatalogs = () => {
-    setLoadingCatalogs(true)
     onError(null)
-    getCatalogs()
-      .then((data) => { setCatalogs(data.catalogs || []); setLoadingCatalogs(false) })
-      .catch((e: unknown) => { onError(apiErrorMessage(e)); setLoadingCatalogs(false) })
+    void answer([newest(catalogsAsked)], getCatalogs(), {
+      ok: (data) => setCatalogs(data.catalogs || []),
+      failed: (e) => onError(apiErrorMessage(e)),
+    }, { pending: setLoadingCatalogs })
   }
   const refreshSchemas = (cat: string) => {
-    setLoadingSchemas(true)
     onError(null)
-    getSchemas(cat)
-      .then((data) => { setSchemas({ catalog: cat, items: data.schemas || [] }); setLoadingSchemas(false) })
-      .catch((e: unknown) => { onError(apiErrorMessage(e)); setLoadingSchemas(false) })
+    void answer([schemasAsked.newest(cat)], getSchemas(cat), {
+      ok: (data) => setSchemas({ catalog: cat, items: data.schemas || [] }),
+      failed: (e) => onError(apiErrorMessage(e)),
+    }, { pending: setLoadingSchemas })
   }
   const schemaItems = schemas?.catalog === catalog ? schemas.items : []
 
@@ -400,6 +400,28 @@ function useTableDraft(table: string, quoted: boolean, fullName: (parts: TablePa
 }
 
 /**
+ * A kind of request whose answers belong to one value being shown (a catalog, a schema):
+ * `newest(value)` asks for that value, and the answers asked for are put out of date once
+ * another value shows, whether it was asked for or not.
+ */
+function useAskedFor(shown: string): { newest: (value: string) => ReturnType<typeof newest> } {
+  const kind: RequestKind = useRequestKind()
+  const askedFor = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (askedFor.current !== shown) {
+      kind.bump()
+      askedFor.current = shown
+    }
+  }, [kind, shown])
+  return useMemo(() => ({
+    newest: (value: string) => {
+      askedFor.current = value
+      return newest(kind)
+    },
+  }), [kind])
+}
+
+/**
  * The tables of the schema on show: `load(catalog, schema)` asks for a schema's
  * tables, and only the answer to the latest ask, for the schema on show, is listed.
  */
@@ -407,22 +429,19 @@ function useSchemaTables(catalog: string, schema: string, onError: (message: str
   const key = catalog && schema ? `${catalog}.${schema}` : ""
   const [listed, setListed] = useState<{ key: string; items: TableItem[] } | null>(null)
   const [requested, setRequested] = useState("")
-  const latest = useRef({ requested: "", onError })
+  const tablesAsked = useAskedFor(key)
+  const latest = useRef(onError)
   useEffect(() => {
-    latest.current.onError = onError
+    latest.current = onError
   })
   const load = useCallback((cat: string, sch: string) => {
     const asked = `${cat}.${sch}`
-    latest.current.requested = asked
     setRequested(asked)
-    getTables(cat, sch)
-      .then((data) => {
-        if (latest.current.requested === asked) setListed({ key: asked, items: data.tables || [] })
-      })
-      .catch((e: unknown) => {
-        if (latest.current.requested === asked) latest.current.onError(apiErrorMessage(e))
-      })
-  }, [])
+    void answer([tablesAsked.newest(asked)], getTables(cat, sch), {
+      ok: (data) => setListed({ key: asked, items: data.tables || [] }),
+      failed: (e) => latest.current(apiErrorMessage(e)),
+    })
+  }, [tablesAsked])
   const tables = listed?.key === key ? listed.items : null
   return { tables, loading: key !== "" && requested === key && tables === null, load }
 }

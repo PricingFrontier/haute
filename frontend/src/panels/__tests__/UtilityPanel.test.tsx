@@ -647,6 +647,39 @@ describe("UtilityPanel saving", () => {
     expect(useUIStore.getState().utilityUnsaved).toBe(true)
   })
 
+  it("keeps the edit of a file chosen while another is being deleted, and saves it on close (FEP-04)", async () => {
+    mockListFiles.mockResolvedValue({
+      files: [
+        { name: "old_rates.py", module: "old_rates" },
+        { name: "new_rates.py", module: "new_rates" },
+      ],
+    })
+    mockReadFile.mockImplementation((module: string) =>
+      Promise.resolve({ name: `${module}.py`, module, content: module === "new_rates" ? "x * 2\n" : "# old\n", revision: "1-1" }),
+    )
+    let deleted: (value: unknown) => void = () => {}
+    mockDeleteFile.mockReturnValue(new Promise((resolve) => (deleted = resolve)))
+    mockUpdateFile.mockResolvedValue(saved("x * 3\n", "2-2", { module: "new_rates", name: "new_rates.py" }))
+    render(<RightPanel />)
+    await waitFor(() => expect(editor()).toHaveValue("# old\n"))
+
+    fireEvent.click(screen.getByTitle("Delete old_rates"))
+    await answerQuestion("confirm")
+    await waitFor(() => expect(mockDeleteFile).toHaveBeenCalledWith("old_rates", "1-1"))
+    await switchTo("new_rates")
+    await waitFor(() => expect(editor()).toHaveValue("x * 2\n"))
+    type("x * 3\n")
+    mockListFiles.mockResolvedValue({ files: [{ name: "new_rates.py", module: "new_rates" }] })
+    await act(async () => deleted({ status: "ok" }))
+
+    expect(editor()).toHaveValue("x * 3\n")
+    expect(screen.getByTestId("utility-file-selector")).toHaveTextContent("new_rates")
+    expect(useUIStore.getState().utilityUnsaved).toBe(true)
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(2))
+    act(() => useUIStore.getState().setUtilityOpen(false))
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledExactlyOnceWith("new_rates", "x * 3\n", "1-1"))
+  })
+
   it("drops the draft when its file is deleted", async () => {
     mockDeleteFile.mockResolvedValue({ status: "ok" })
     const { unmount } = render(<UtilityPanel {...defaultProps} />)

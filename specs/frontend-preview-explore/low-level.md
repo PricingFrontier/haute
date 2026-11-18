@@ -331,8 +331,12 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    refused save stops the switch, and the draft plus inline error remain visible until a later
    save succeeds. Text typed in the open file while the next file's read waited is saved the
    same way before the next file is shown, a refused save keeping the open file; and each
-   selection takes a serial (`selectionSerialRef`), so a file read or save that a newer
-   selection overtook (another file, or the Imports entry) is dropped. The editor reports every change at once (`reportEachChange`), so the draft
+   selection takes the turn of the panel's selection kind (`useRequestKind`, frontend-shared
+   "Late answers"), so a file read or save that a newer selection overtook (another file, or
+   the Imports entry) is dropped. A delete belongs to the selection it was pressed in: its
+   answer clears the draft and the chosen file only while that file is still the one open;
+   when another was chosen while it ran, the chosen file keeps its draft and its edit is saved
+   as any other is, and the list is read again either way. The editor reports every change at once (`reportEachChange`), so the draft
    and `utilityUnsaved` hold the text as it is at each keystroke and a close, a switch or a
    save straight after typing takes all of it. Ctrl+S (`hasModifier`, on the open file's
    editor) runs `saveDraft(false)` and prevents the key, so the pipeline's window-level Ctrl+S, which skips a prevented key, does

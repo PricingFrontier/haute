@@ -5,6 +5,7 @@
  * forgotten when the branch changes, and an accept naming the revisions and the basis its
  * results were made on.
  */
+import { act, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/workbench", async (importOriginal) => ({
@@ -26,6 +27,7 @@ import {
   runTestQuote,
   saveTestQuote,
 } from "../../api/workbench"
+import { useCommittedDraft } from "../../components/form/useCommittedDraft"
 import { BLANK_THEME } from "../../utils/workbenchForm"
 import { sheet } from "../../workbench/__tests__/fixtures"
 import useDocumentStatusStore from "../useDocumentStatusStore"
@@ -208,6 +210,24 @@ describe("useWorkbenchTestQuotesStore", () => {
 
     expect(useWorkbenchFormStore.getState().form?.sample).toEqual({ t1: [{ c1: "typed" }] })
     expect(store().opened).toBeNull()
+  })
+
+  it("drops an Open answered while a field holds text typed and not committed (WB-61)", async () => {
+    useWorkbenchFormStore.setState({ form: { ...form, sample: { t1: [{ notes: "kept in quote" }] } } })
+    const answer = deferred<{ values: Record<string, { notes: string }[]>; not_opened: string[] }>()
+    vi.mocked(openTestQuote).mockImplementationOnce(() => answer.promise)
+    const committed = vi.fn()
+    const field = renderHook(() => useCommittedDraft("kept in quote", committed))
+
+    const opening = store().openQuote("a.json")
+    act(() => field.result.current.edit("typed during open"))
+    answer.resolve({ values: { t1: [{ notes: "kept in quote" }] }, not_opened: [] })
+    await opening
+
+    expect(field.result.current.shown).toBe("typed during open")
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(0)
+    expect(store().opened).toBeNull()
+    field.unmount()
   })
 
   it("drops an earlier Open answered after a later one", async () => {

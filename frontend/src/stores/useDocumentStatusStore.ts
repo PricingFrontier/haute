@@ -1,5 +1,7 @@
 import { create } from "zustand"
 
+import { watch, type Part } from "../utils/answers"
+
 import type {
   PipelineDiagnostic,
   PipelineDocumentCapabilities,
@@ -257,6 +259,20 @@ export function isDocumentExecutionFenceCurrent(
     // document is loaded, responses cannot publish against a retained graph
     // that the live document fence has marked unsynchronised.
     (current.loadStatus === null || currentState.graphSynchronized)
+}
+
+/**
+ * The document on show, as an answer's part (`utils/answers.ts`): its file and the generation
+ * every adoption advances (a load, a live-sync frame, a reset).
+ */
+export function documentPart(): Part {
+  return watch(useDocumentStatusStore, (state) => `${state.executionGeneration}:${state.sourceFile}`)
+}
+
+/** The document execution fence, as an answer's part: an answer about running the pipeline. */
+export function executionPart(): Part {
+  const fence = captureDocumentExecutionFence()
+  return { holds: () => isDocumentExecutionFenceCurrent(fence), subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()) }
 }
 
 export default useDocumentStatusStore

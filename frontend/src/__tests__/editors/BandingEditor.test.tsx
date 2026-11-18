@@ -8,7 +8,7 @@
  * Numeric bands on Date and Datetime columns, and Categorical's Import from params.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
 import { useState, type ReactElement } from "react"
 import { ApiError } from "../../api/client"
 import { listProjectFiles } from "../../api/projectFiles"
@@ -1549,6 +1549,44 @@ describe("BandingEditor Import from params", () => {
       expect.objectContaining({ rules: [south, { value: "North", assignment: "North" }] }),
     ]))
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import from params" })).toBeNull())
+  })
+
+  it("drops the values of an import whose factor was removed while they were read (FEN-10)", async () => {
+    vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder("regions.csv"))
+    let release: (values: string[]) => void = () => {}
+    vi.mocked(fetchParamFile).mockImplementation((_file, column) =>
+      column === undefined
+        ? Promise.resolve({ columns: ["region"], values: [] })
+        : new Promise((resolve) => (release = (values) => resolve({ columns: ["region"], values }))))
+    const written: unknown[] = []
+    function Editing() {
+      const [config, setConfig] = useState<Record<string, unknown>>({
+        factors: [
+          { banding: "categorical", column: "channel", output_column: "channel_group", rules: [{ value: "web", assignment: "web" }] },
+          { banding: "categorical", column: "vehicle_age", output_column: "vehicle_age_group", rules: [{ value: "new", assignment: "new" }] },
+        ],
+      })
+      return (
+        <BandingEditor
+          config={config}
+          onUpdate={(key, value) => {
+            written.push(value)
+            setConfig((current) => ({ ...current, [key]: value }))
+          }}
+          inputSources={[]}
+          accentColor="#22d3ee"
+        />
+      )
+    }
+    renderEditor(<Editing />)
+
+    await importFrom("Import", "regions.csv", "region")
+    fireEvent.click(within(columnList()).getByRole("button", { name: "Remove channel_group column" }))
+    await act(async () => release(["North", "South", "East"]))
+
+    expect(written.at(-1)).toEqual([
+      { banding: "categorical", column: "vehicle_age", output_column: "vehicle_age_group", rules: [{ value: "new", assignment: "new" }] },
+    ])
   })
 
   it("shows why a column cannot give values, and why the folder could not be listed with Retry", async () => {

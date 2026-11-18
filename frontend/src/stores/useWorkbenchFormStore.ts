@@ -348,6 +348,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
 // The pipeline editor's reads take the sample the view holds, saved or not, from it too.
 useWorkbenchFormStore.subscribe((state, previous) => {
   if (state.dirty !== previous.dirty) useWorkbenchStore.setState({ formDirty: state.dirty })
+  if (state.reads !== previous.reads) useWorkbenchStore.setState({ formEdits: null })
+  else if (state.form !== previous.form) useWorkbenchStore.setState({ formEdits: state.form })
   if (state.form?.sample !== previous.form?.sample) useWorkbenchStore.getState().noteSample(state.form?.sample ?? null)
   // A question asked of the form before it was read anew is nobody's: what it would delete
   // may be gone, or another thing under the same id.

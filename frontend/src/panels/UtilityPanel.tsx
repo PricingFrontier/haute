@@ -19,7 +19,10 @@ import {
   deleteUtilityFile,
 } from "../api/client"
 import { apiErrorMessage, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
-import type { UtilityFile } from "../api/types"
+import type { UtilityDeleteResponse, UtilityFile, UtilityWriteResult } from "../api/types"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, newest, under } from "../utils/answers"
+import { serial } from "../utils/serial"
 
 /**
  * Extract syntax error info from an ApiError's flat string detail.
@@ -78,16 +81,21 @@ export default function UtilityPanel({
   // name stays until a create succeeds.
   const [createError, setCreateError] = useState<string | null>(null)
 
-  const inflightSaveRef = useRef<Promise<boolean> | null>(null)
   // The edit not saved yet: its file and the editor's text. It is saved when the panel
   // closes, when another file opens, or on Ctrl+S, never while typing, so a project hook
   // the save runs never rewrites a file under the cursor. A refused save leaves it here.
   const draftRef = useRef<{ module: string; value: string } | null>(null)
   // The draft a save is sending, so a second trigger waits for that save, not another.
   const sendingRef = useRef<{ draft: { module: string; value: string }; result: Promise<boolean> } | null>(null)
-  // Each file or Imports selection takes the next number; a selection overtaken while it
-  // waited (on a save or a read) is dropped rather than replacing the newer one.
-  const selectionSerialRef = useRef(0)
+  // Saves take turns, each sending the revision the one before returned; a Reload or an
+  // Overwrite reads the file in the turn after the saves already queued.
+  const [saves] = useState(serial)
+  // What the panel's answers belong to (specs/frontend-shared, "Late answers"): its life; the
+  // newest selection of a file or the Imports entry, so one overtaken while it waited (on a
+  // save or a read) is dropped; and the file open, which a save and a delete of it belong to.
+  const life = useRequestKind()
+  const selections = useRequestKind()
+  const opened = useRequestKind()
   const unsaved = useUIStore((s) => s.utilityUnsaved)
   const setUtilityUnsaved = useUIStore((s) => s.setUtilityUnsaved)
   const leave = useUIStore((s) => s.utilityLeave)
@@ -106,41 +114,45 @@ export default function UtilityPanel({
   const contentRef = useRef(content)
   const editorViewRef = useRef<EditorView | null>(null)
   useEffect(() => { contentRef.current = content }, [content])
-  const activeModuleRef = useRef(activeModule)
-  const mountedRef = useRef(true)
-  useEffect(() => { activeModuleRef.current = activeModule }, [activeModule])
-  useEffect(() => {
-    mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
 
-  // Persist one edit and reconcile the error banner. Post-await state updates
-  // are guarded so a stale (switched-away or unmounted) response can't clobber
-  // the current file's error UI.
+  /** Open *module*, or the Imports entry: what was open before stops being so. */
+  const show = useCallback((module: string | null, imports: boolean) => {
+    opened.bump()
+    setActiveModule(module)
+    setImportsSelected(imports)
+  }, [opened])
+
+  /** A request whose module has no revision read: refused before anything is sent. */
+  const unread = (module: string) => Promise.reject(new Error(`no revision of ${module} was read`))
+
+  // Persist one edit and reconcile the error banner. The save belongs to the file open: once
+  // another is open, or the panel closed, its answer touches the editor no more, while what
+  // it wrote (its capture, the revision the next save sends) is still kept.
   const persistSave = useCallback(async (module: string, value: string): Promise<boolean> => {
     if (conflictModuleRef.current === module) return false
-    try {
-      const revision = revisionsRef.current.get(module)
-      if (revision === undefined) throw new Error(`no revision of ${module} was read`)
-      const saved = await updateUtilityFile(module, value, revision)
+    const revision = revisionsRef.current.get(module)
+    let landed = false
+    const wrote = (saved: UtilityWriteResult) => {
       reportSaveCapture(saved)
       // Helper code a node runs changed: every preview and estimate made before is old.
       noteProjectInputsChanged()
-      const active = mountedRef.current && activeModuleRef.current === module
-      const typedSince = active && contentRef.current !== value
-      if (typedSince && saved.content !== value) {
-        // The file is not what was sent (a project hook rewrote it, or another editor
-        // changed it meanwhile) and text was typed since: neither replaces the other unasked.
-        // The old revision stays, so nothing more saves until Reload or Overwrite.
-        conflictModuleRef.current = module
-        setConflict({
-          module,
-          message: `utility/${module}.py changed while it was saved. Reload it, or overwrite it with your edit.`,
-        })
-        return false
-      }
-      revisionsRef.current.set(module, saved.revision)
-      if (active) {
+    }
+    await answer([under(opened), under(life)], revision === undefined ? unread(module) : updateUtilityFile(module, value, revision), {
+      ok: (saved) => {
+        wrote(saved)
+        if (contentRef.current !== value && saved.content !== value) {
+          // The file is not what was sent (a project hook rewrote it, or another editor
+          // changed it meanwhile) and text was typed since: neither replaces the other unasked.
+          // The old revision stays, so nothing more saves until Reload or Overwrite.
+          conflictModuleRef.current = module
+          setConflict({
+            module,
+            message: `utility/${module}.py changed while it was saved. Reload it, or overwrite it with your edit.`,
+          })
+          return
+        }
+        revisionsRef.current.set(module, saved.revision)
+        landed = true
         setErrorLine(null)
         setErrorMsg(null)
         // The file as the save left it, a project hook's formatting included, in the editor
@@ -158,10 +170,8 @@ export default function UtilityPanel({
             setReadGeneration((generation) => generation + 1)
           }
         }
-      }
-      return true
-    } catch (err) {
-      if (mountedRef.current && activeModuleRef.current === module) {
+      },
+      failed: (err) => {
         const syntaxErr = parseSyntaxError(err)
         if (syntaxErr) {
           setErrorLine(syntaxErr.error_line)
@@ -174,20 +184,21 @@ export default function UtilityPanel({
           addToast("error", `Failed to save utility file "${module}": ${detail}`)
           setErrorMsg("Failed to save")
         }
-      }
-      return false
-    }
-  }, [addToast])
-
-  const queueSave = useCallback((module: string, value: string): Promise<boolean> => {
-    const prior = inflightSaveRef.current ?? Promise.resolve(true)
-    const queued = prior.then(() => persistSave(module, value))
-    inflightSaveRef.current = queued
-    void queued.then(() => {
-      if (inflightSaveRef.current === queued) inflightSaveRef.current = null
+      },
+      stale: (settled) => {
+        if (!("value" in settled)) return
+        wrote(settled.value)
+        revisionsRef.current.set(module, settled.value.revision)
+        landed = true
+      },
     })
-    return queued
-  }, [persistSave])
+    return landed
+  }, [addToast, life, opened])
+
+  const queueSave = useCallback(
+    (module: string, value: string): Promise<boolean> => saves(() => persistSave(module, value)),
+    [persistSave, saves],
+  )
 
   const recordEdit = useCallback((module: string, value: string) => {
     if (value === contentRef.current) return
@@ -198,32 +209,52 @@ export default function UtilityPanel({
 
   // Send *draft*, which stops being the draft once saved unless text was typed since.
   const sendDraft = useCallback((draft: { module: string; value: string }): Promise<boolean> => {
-    const result = queueSave(draft.module, draft.value).then((saved) => {
-      // Settled: a later save of the same draft sends it again.
-      if (sendingRef.current?.draft === draft) sendingRef.current = null
-      if (saved && draftRef.current === draft) {
-        draftRef.current = null
-        useUIStore.getState().setUtilityUnsaved(false)
-      }
+    const sent = queueSave(draft.module, draft.value)
+    const result = (async () => {
+      let saved = false
+      await answer([under(life)], sent, {
+        ok: (done) => {
+          saved = done
+          // Settled: a later save of the same draft sends it again.
+          if (sendingRef.current?.draft === draft) sendingRef.current = null
+          if (done && draftRef.current === draft) {
+            draftRef.current = null
+            useUIStore.getState().setUtilityUnsaved(false)
+          }
+        },
+        stale: (settled) => {
+          saved = "value" in settled && settled.value
+        },
+      })
       return saved
-    })
+    })()
     sendingRef.current = { draft, result }
     return result
-  }, [queueSave])
+  }, [life, queueSave])
 
   // Save the draft: the text as it is now, or with *all* until no draft is left (text typed
   // during a save is saved next), as leaving the file needs. False when a save is refused,
   // the draft then kept.
-  const saveDraft = useCallback(async (all: boolean): Promise<boolean> => {
-    let draft = draftRef.current
-    while (draft !== null) {
+  const saveDraft = useCallback((all: boolean): Promise<boolean> => {
+    const next = async (): Promise<boolean> => {
+      const draft = draftRef.current
+      if (draft === null) return true
       const sending = sendingRef.current
-      if (!(await (sending?.draft === draft ? sending.result : sendDraft(draft)))) return false
-      if (!all) return true
-      draft = draftRef.current
+      const sent = sending?.draft === draft ? sending.result : sendDraft(draft)
+      if (!all) return sent
+      let saved = false
+      await answer([under(life)], sent, {
+        ok: async (done) => {
+          saved = done && (await next())
+        },
+        stale: (settled) => {
+          saved = "value" in settled && settled.value
+        },
+      })
+      return saved
     }
-    return true
-  }, [sendDraft])
+    return next()
+  }, [life, sendDraft])
 
   // Closing, or another panel opening in this one's place, waits (the store holds it) for
   // the draft to save; a refused save keeps the panel open showing why.
@@ -231,13 +262,15 @@ export default function UtilityPanel({
   useEffect(() => {
     if (leave === null || leavingRef.current) return
     leavingRef.current = true
-    void saveDraft(true).then((saved) => {
-      leavingRef.current = false
-      const ui = useUIStore.getState()
-      if (saved) ui.completeUtilityLeave()
-      else ui.cancelUtilityLeave()
+    void answer([under(life)], saveDraft(true), {
+      ok: (saved) => {
+        leavingRef.current = false
+        const ui = useUIStore.getState()
+        if (saved) ui.completeUtilityLeave()
+        else ui.cancelUtilityLeave()
+      },
     })
-  }, [leave, saveDraft])
+  }, [leave, life, saveDraft])
 
   // Close without saving, after a refused save: the draft is dropped.
   const discardDraft = () => {
@@ -269,104 +302,99 @@ export default function UtilityPanel({
   // Load file list.  The backend returns `{files: []}` for a missing
   // utility/ dir, so anything reaching this catch is a real failure
   // (network, 500, auth) — surface it as a toast, not a silent empty list.
-  const loadFiles = useCallback(async () => {
-    try {
-      const res = await listUtilityFiles()
-      setFiles(res.files)
-    } catch (err) {
+  const listings = useRequestKind()
+  const loadFiles = useCallback(() => answer([newest(listings), under(life)], listUtilityFiles(), {
+    ok: (res) => setFiles(res.files),
+    failed: (err) => {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to list utility files: ${detail}`)
       setFiles([])
-    }
-  }, [addToast])
+    },
+  }), [addToast, life, listings])
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount pattern
-  useEffect(() => { loadFiles() }, [loadFiles])
+  useEffect(() => { void loadFiles() }, [loadFiles])
 
-  // Load file content
+  // Load file content. The previous file's draft saves first, a refused save keeping it
+  // open; text typed in it while the read waited saves too before it goes. A selection a
+  // newer one overtook does nothing more: that file's draft is its own.
   const loadFile = useCallback(async (module: string) => {
-    const serial = ++selectionSerialRef.current
-    const current = () => mountedRef.current && selectionSerialRef.current === serial
-    // The previous file's draft saves first; a refused save keeps it open.
-    if (!await saveDraft(true) || !current()) return
-    let res: Awaited<ReturnType<typeof readUtilityFile>>
-    try {
-      res = await readUtilityFile(module)
-    } catch (err) {
-      // A read a newer selection overtook reports nothing over the file now open.
-      if (!current()) return
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Failed to load utility file "${module}": ${detail}`)
-      setErrorMsg(`Failed to load ${module}`)
-      return
-    }
-    // A read a newer selection overtook saves nothing either: that file's draft is its own.
-    if (!current()) return
-    // Text typed in the previous file while the read waited saves too before it goes.
-    if (!await saveDraft(true) || !current()) return
-    revisionsRef.current.set(module, res.revision)
-    setContent(res.content)
-    setActiveModule(module)
-    setImportsSelected(false)
-    setErrorLine(null)
-    setErrorMsg(null)
-  }, [addToast, saveDraft])
+    await answer([newest(selections), under(life)], saveDraft(true), {
+      ok: async (saved, asked) => {
+        if (!saved) return
+        await asked.answer(readUtilityFile(module), {
+          ok: async (res) => {
+            await asked.answer(saveDraft(true), {
+              ok: (savedAgain) => {
+                if (!savedAgain) return
+                revisionsRef.current.set(module, res.revision)
+                setContent(res.content)
+                show(module, false)
+                setErrorLine(null)
+                setErrorMsg(null)
+              },
+            })
+          },
+          failed: (err) => {
+            const detail = apiErrorMessage(err, "unknown error")
+            addToast("error", `Failed to load utility file "${module}": ${detail}`)
+            setErrorMsg(`Failed to load ${module}`)
+          },
+        })
+      },
+    })
+  }, [addToast, life, saveDraft, selections, show])
 
   // Reload drops the draft for the file as it is now; Overwrite saves the draft over it.
-  // Either first lets the saves already queued settle (the conflict refuses each), so none
-  // lands on the file once it is read.
+  // Either reads in the save queue's next turn, so the saves already queued settle first (the
+  // conflict refuses each) and none lands on the file once it is read. A read the panel has
+  // moved on from (closed, or another file) is dropped.
   const recoverConflict = useCallback(async (choice: "reload" | "overwrite") => {
     const module = conflictModuleRef.current
     if (module === null || recoveringRef.current) return
-    recoveringRef.current = true
-    setRecovering(true)
-    try {
-      await inflightSaveRef.current
-      let read: { content: string; revision: string }
-      try {
-        read = await readUtilityFile(module)
-      } catch (err) {
+    await answer([under(opened), under(life)], saves(() => readUtilityFile(module)), {
+      ok: async (read) => {
+        if (conflictModuleRef.current !== module) return
+        revisionsRef.current.set(module, read.revision)
+        conflictModuleRef.current = null
+        setConflict(null)
+        if (choice === "reload") {
+          draftRef.current = null
+          setUtilityUnsaved(false)
+          setContent(read.content)
+          setReadGeneration((generation) => generation + 1)
+          setErrorLine(null)
+          setErrorMsg(null)
+        } else {
+          const draft = draftRef.current?.module === module
+            ? draftRef.current
+            : { module, value: contentRef.current }
+          if (draftRef.current === null) setUtilityUnsaved(true)
+          draftRef.current = draft
+          await sendDraft(draft)
+        }
+      },
+      failed: (err) => {
         const detail = apiErrorMessage(err, "unknown error")
         addToast("error", `Failed to load utility file "${module}": ${detail}`)
-        return
-      }
-      // A read the panel has moved on from (closed, or another file) is dropped.
-      if (
-        !mountedRef.current
-        || conflictModuleRef.current !== module
-        || activeModuleRef.current !== module
-      ) return
-      revisionsRef.current.set(module, read.revision)
-      conflictModuleRef.current = null
-      setConflict(null)
-      if (choice === "reload") {
-        draftRef.current = null
-        setUtilityUnsaved(false)
-        setContent(read.content)
-        setReadGeneration((generation) => generation + 1)
-        setErrorLine(null)
-        setErrorMsg(null)
-      } else {
-        const draft = draftRef.current?.module === module
-          ? draftRef.current
-          : { module, value: contentRef.current }
-        if (draftRef.current === null) setUtilityUnsaved(true)
-        draftRef.current = draft
-        await sendDraft(draft)
-      }
-    } finally {
-      recoveringRef.current = false
-      if (mountedRef.current) setRecovering(false)
-    }
-  }, [addToast, sendDraft, setUtilityUnsaved])
+      },
+    }, {
+      inFlight: (flying) => {
+        recoveringRef.current = flying
+        setRecovering(flying)
+      },
+    })
+  }, [addToast, life, opened, saves, sendDraft, setUtilityUnsaved])
 
   const selectImports = useCallback(async () => {
-    const serial = ++selectionSerialRef.current
-    if (!await saveDraft(true) || !mountedRef.current || selectionSerialRef.current !== serial) return
-    setImportsSelected(true)
-    setErrorLine(null)
-    setErrorMsg(null)
-  }, [saveDraft])
+    await answer([newest(selections), under(life)], saveDraft(true), {
+      ok: (saved) => {
+        if (!saved) return
+        show(activeModule, true)
+        setErrorLine(null)
+        setErrorMsg(null)
+      },
+    })
+  }, [activeModule, life, saveDraft, selections, show])
 
   // Auto-select first file
   useEffect(() => {
@@ -379,46 +407,67 @@ export default function UtilityPanel({
     const name = newName.trim().replace(/\.py$/, "")
     if (!name) return
     setCreateError(null)
-    try {
-      const res = await createUtilityFile({ name })
+    // A created file is the project's whatever the panel shows by its answer: its revision,
+    // its capture and its import line are kept.
+    const created = (res: UtilityWriteResult) => {
       revisionsRef.current.set(res.module, res.revision)
       reportSaveCapture(res)
       noteProjectInputsChanged()
-      setCreating(false)
-      setNewName("")
       // Auto-add import to preamble
-      if (res.import_line) {
-        onImportAdded(res.import_line)
-      }
-      await loadFiles()
-      loadFile(res.module)
-    } catch (err) {
-      const syntaxErr = parseSyntaxError(err)
-      setCreateError(syntaxErr ? syntaxErr.error : apiErrorMessage(err, "Failed to create"))
+      if (res.import_line) onImportAdded(res.import_line)
     }
-  }, [newName, loadFiles, loadFile, onImportAdded])
+    await answer([under(life)], createUtilityFile({ name }), {
+      ok: async (res, asked) => {
+        created(res)
+        setCreating(false)
+        setNewName("")
+        await asked.answer(loadFiles(), { ok: () => loadFile(res.module) })
+      },
+      failed: (err) => {
+        const syntaxErr = parseSyntaxError(err)
+        setCreateError(syntaxErr ? syntaxErr.error : apiErrorMessage(err, "Failed to create"))
+      },
+      stale: (settled) => {
+        if ("value" in settled) created(settled.value)
+      },
+    })
+  }, [newName, life, loadFiles, loadFile, onImportAdded])
 
+  // A delete belongs to the file open when it was pressed (FEP-04): its answer clears the
+  // draft and the file only while that file is still open. A file chosen meanwhile keeps its
+  // draft; the list is read again either way, since the deleted file has gone.
   const handleDelete = useCallback(async () => {
-    if (!activeModule) return
-    if (!(await confirmed({ title: `Delete ${activeModule}?`, confirm: "Delete", danger: true }))) return
-    try {
-      const revision = revisionsRef.current.get(activeModule)
-      if (revision === undefined) throw new Error(`no revision of ${activeModule} was read`)
-      reportSaveCapture(await deleteUtilityFile(activeModule, revision))
+    const module = activeModule
+    if (!module) return
+    if (!(await confirmed({ title: `Delete ${module}?`, confirm: "Delete", danger: true }))) return
+    const revision = revisionsRef.current.get(module)
+    const deleted = (capture: UtilityDeleteResponse) => {
+      reportSaveCapture(capture)
       noteProjectInputsChanged()
-      // The file is gone, its draft with it; a refused delete keeps both.
-      draftRef.current = null
-      setUtilityUnsaved(false)
-      revisionsRef.current.delete(activeModule)
-      setActiveModule(null)
-      setContent("")
-      await loadFiles()
-    } catch (err) {
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
-      setErrorMsg("Failed to delete")
+      revisionsRef.current.delete(module)
     }
-  }, [activeModule, setUtilityUnsaved, loadFiles, addToast])
+    await answer([under(opened), under(life)], revision === undefined ? unread(module) : deleteUtilityFile(module, revision), {
+      ok: async (capture) => {
+        deleted(capture)
+        // The file is gone, its draft with it; a refused delete keeps both.
+        draftRef.current = null
+        setUtilityUnsaved(false)
+        show(null, false)
+        setContent("")
+        await loadFiles()
+      },
+      failed: (err) => {
+        const detail = apiErrorMessage(err, "unknown error")
+        addToast("error", `Failed to delete utility file "${module}": ${detail}`)
+        setErrorMsg("Failed to delete")
+      },
+      stale: (settled) => {
+        if (!("value" in settled)) return
+        deleted(settled.value)
+        void loadFiles()
+      },
+    })
+  }, [activeModule, life, opened, setUtilityUnsaved, show, loadFiles, addToast])
 
   return (
     <PanelShell

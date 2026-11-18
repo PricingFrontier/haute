@@ -83,6 +83,7 @@ import {
   type SubmodelFocusIdentity,
 } from "../utils/submodelDocument"
 import useToastStore from "./useToastStore"
+import { watch, type Part } from "../utils/answers"
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -1592,5 +1593,41 @@ export function canvasGraph(): { nodes: Node[]; edges: PipelineEdge[] } {
 // and calls the store action directly instead.
 export const resetGraphStoreForTests = () =>
   useGraphStore.getState().resetForTests()
+
+/**
+ * The graph as it stood, as an answer's part (`utils/answers.ts`): an edit, an Undo, a Redo, a
+ * view change or a load moves it (`semanticGeneration`).
+ */
+export function editPart(): Part {
+  return watch(useGraphStore, (state) => state.semanticGeneration)
+}
+
+/**
+ * No edit made on the canvas since it was asked, as an answer's part: it holds while the canvas
+ * is as saved, or while nothing has been done to it since (no change to the document, no Undo
+ * or Redo, no history entry, as a move's first step records). A document the canvas takes
+ * while it is as saved (the answer's own change arriving by live sync) is no edit made here;
+ * a dirty canvas takes none, the sync banner holding it back.
+ */
+export function unsavedEditsPart(): Part {
+  return watch(
+    useGraphStore,
+    (state) => (state.dirty
+      ? { generation: state.semanticGeneration, undone: state.undoStack.at(-1), redone: state.redoStack.at(-1), nodes: state.nodes }
+      : null),
+    (asked, now) => now === null || (
+      asked !== null && now.generation === asked.generation && now.undone === asked.undone
+      && now.redone === asked.redone && sameNodePositions(asked.nodes, now.nodes)
+    ),
+  )
+}
+
+/** Whether the canvas holds the same nodes at the same places: a drag's steps, in a submodel too, move them. */
+function sameNodePositions(asked: readonly Node[], now: readonly Node[]): boolean {
+  return asked === now || (
+    asked.length === now.length
+    && now.every((node, index) => node.id === asked[index].id && positionsEqual(node.position, asked[index].position))
+  )
+}
 
 export default useGraphStore

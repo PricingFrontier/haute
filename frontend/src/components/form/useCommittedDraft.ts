@@ -1,4 +1,5 @@
 import { useLayoutEffect, useState } from "react"
+import type { Part } from "../../utils/answers"
 
 // ─── The shared draft ─────────────────────────────────────────────
 //
@@ -24,6 +25,23 @@ export type CommitResult<T = unknown> = void | { ok: boolean; stays?: T }
 type OpenEdit = { commit: () => boolean }
 
 const openEdits = new Set<OpenEdit>()
+const draftListeners = new Set<() => void>()
+
+function draftsMoved(): void {
+  for (const listener of [...draftListeners]) listener()
+}
+
+/**
+ * Call *listener* whenever a draft opens or closes, until the returned function is called:
+ * how a request that must not write over typing (`utils/answers.ts`, `draft`) learns the
+ * moment a field is typed in.
+ */
+export function subscribeOpenDrafts(listener: () => void): () => void {
+  draftListeners.add(listener)
+  return () => {
+    draftListeners.delete(listener)
+  }
+}
 
 /**
  * Commit every open draft, as leaving its field would: the first step of the barrier every
@@ -34,11 +52,21 @@ export function commitOpenDrafts(): void {
   for (const edit of [...openEdits]) {
     if (edit.commit()) openEdits.delete(edit)
   }
+  draftsMoved()
 }
 
 /** Whether any field holds an edit not yet committed, asked from outside React. */
 export function isDraftOpen(): boolean {
   return openEdits.size > 0
+}
+
+/**
+ * No field being typed in, as an answer's part (`utils/answers.ts`): an answer that would
+ * write over a field is dropped once any field holds an edit not yet committed. A draft is
+ * seen open from the commit of the render that opened it.
+ */
+export function draftPart(): Part {
+  return { holds: () => !isDraftOpen(), subscribe: subscribeOpenDrafts }
 }
 
 /**
@@ -51,8 +79,10 @@ function useOpenEdit(commit: (() => boolean) | null): void {
     if (!commit) return
     const edit: OpenEdit = { commit }
     openEdits.add(edit)
+    draftsMoved()
     return () => {
       openEdits.delete(edit)
+      draftsMoved()
     }
   }, [commit])
 }
