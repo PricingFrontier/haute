@@ -2273,6 +2273,8 @@ describe("ModellingConfig", () => {
       const { props } = renderConfig()
       const rowLimitInput = screen.getByLabelText("Row limit")
       fireEvent.change(rowLimitInput, { target: { value: "50000" } })
+      expect(props.onUpdate).not.toHaveBeenCalledWith("row_limit", expect.anything())
+      fireEvent.blur(rowLimitInput)
       expect(props.onUpdate).toHaveBeenCalledWith("row_limit", 50000)
     })
 
@@ -2282,6 +2284,7 @@ describe("ModellingConfig", () => {
       })
       const rowLimitInput = screen.getByDisplayValue("50000")
       fireEvent.change(rowLimitInput, { target: { value: "" } })
+      fireEvent.blur(rowLimitInput)
       expect(props.onUpdate).toHaveBeenCalledWith("row_limit", null)
     })
 

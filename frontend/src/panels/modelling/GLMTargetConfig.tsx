@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import type { OnUpdateConfig } from "../editors/_shared"
+import CommittedTextField from "../../components/form/CommittedTextField"
 import { apiErrorMessage } from "../../api/errors"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
@@ -282,12 +283,12 @@ export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate 
               <FailoverHelp label={THETA_HELP} />
             </label>
             <div className="mt-1 flex gap-1.5">
-              <input
+              <CommittedTextField
                 type="number" min={0} step="any"
-                value={typeof theta === "number" ? theta : ""}
+                value={typeof theta === "number" ? String(theta) : ""}
                 placeholder="e.g. 1.5"
-                onChange={(e) => {
-                  const parsed = parseFloat(e.target.value)
+                onCommit={(text) => {
+                  const parsed = parseFloat(text)
                   onUpdate("theta", Number.isFinite(parsed) ? parsed : null)
                 }}
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono"

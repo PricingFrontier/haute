@@ -32,6 +32,8 @@ import {
   MODELLING_INPUT_STYLE,
 } from "./styles"
 import { NumberField } from "./NumberField"
+import { DraftTextField } from "../../components/form/CommittedTextField"
+import { useCommittedDraft } from "../../components/form/useCommittedDraft"
 
 type Direction = {
   value: "decreasing" | "increasing" | undefined
@@ -145,49 +147,38 @@ function JsonArrayField({
   onChange: (values: unknown[] | undefined) => void
 }) {
   const committed = value === undefined ? "" : JSON.stringify(value)
-  const [draft, setDraft] = useState(committed)
-  const [previous, setPrevious] = useState(committed)
-  const [error, setError] = useState<string | null>(null)
-  if (previous !== committed) {
-    setPrevious(committed)
-    setDraft(committed)
-    setError(null)
-  }
+  // Why the last commit was refused, and the text refused: shown while that text is on screen.
+  const [refusal, setRefusal] = useState<{ text: string; reason: string } | null>(null)
+  // An untouched field never writes: only an edit reaches the config.
+  const draft = useCommittedDraft(committed, (typed) => {
+    if (typed.trim() === "") {
+      onChange(undefined)
+      return
+    }
+    let reason: string | null
+    let parsed: unknown = undefined
+    try {
+      parsed = JSON.parse(typed)
+      reason = Array.isArray(parsed) ? validate(parsed) : "Must be a JSON array"
+    } catch (err) {
+      reason = (err as Error).message
+    }
+    if (reason !== null) {
+      setRefusal({ text: typed, reason })
+      return { ok: false }
+    }
+    onChange(parsed as unknown[])
+  })
+  const error = draft.editing && refusal?.text === draft.shown ? refusal.reason : null
   return (
     <Field label={label}>
-      <input
+      <DraftTextField
+        draft={draft}
         aria-label={inputLabel}
         aria-invalid={error !== null}
         className="h-7 w-full min-w-0 rounded px-1.5 py-1 font-mono text-xs"
         style={{ ...MODELLING_INPUT_STYLE, borderColor: error ? "var(--danger)" : "var(--border)" }}
-        value={draft}
         placeholder={placeholder}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={() => {
-          // An untouched field never writes: only an edit reaches the config.
-          if (draft === committed) {
-            setError(null)
-            return
-          }
-          if (draft.trim() === "") {
-            setError(null)
-            onChange(undefined)
-            return
-          }
-          try {
-            const parsed: unknown = JSON.parse(draft)
-            if (!Array.isArray(parsed)) throw new Error("Must be a JSON array")
-            const reason = validate(parsed)
-            if (reason) {
-              setError(reason)
-              return
-            }
-            setError(null)
-            onChange(parsed)
-          } catch (err) {
-            setError((err as Error).message)
-          }
-        }}
       />
       <span className="text-[10px]">{help}</span>
       {error && <span role="alert" className="text-[10px]" style={{ color: "var(--danger)" }}>{error}</span>}
@@ -233,14 +224,10 @@ function CommittedText({
   placeholder?: string
   onCommit: (next: string) => boolean
 }) {
-  const [draft, setDraft] = useState<string | null>(null)
-  const [lastValue, setLastValue] = useState(value)
-  if (lastValue !== value) {
-    setLastValue(value)
-    setDraft(null)
-  }
+  const draft = useCommittedDraft(value, (next) => (onCommit(next) ? undefined : { ok: false }))
   return (
-    <input
+    <DraftTextField
+      draft={draft}
       type="text"
       aria-label={label}
       aria-invalid={invalid}
@@ -248,13 +235,7 @@ function CommittedText({
       placeholder={placeholder}
       className={`h-7 w-full min-w-0 rounded px-1.5 py-1 text-xs ${mono ? "font-mono" : ""}`}
       style={{ ...MODELLING_INPUT_STYLE, borderColor: invalid ? "var(--danger)" : "var(--border)" }}
-      value={draft ?? value}
       spellCheck={false}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => {
-        if (draft === null || draft === value) return
-        if (onCommit(draft)) setDraft(null)
-      }}
     />
   )
 }

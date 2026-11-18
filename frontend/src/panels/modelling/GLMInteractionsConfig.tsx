@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo } from "react"
 import { Plus, Trash2 } from "lucide-react"
 
 import type { OnUpdateConfig } from "../editors/_shared"
@@ -37,6 +37,7 @@ import {
   type Terms,
 } from "./glmTerms"
 import { GLM_FIELD_CLASS, GLM_ROW_CLASS, GLM_SELECT_CLASS, MODELLING_INPUT_STYLE, toggleButtonStyle } from "./styles"
+import { useRowKeys } from "../editors/shared/useRowKeys"
 import { EncodingControls, TermCard } from "./TermCard"
 
 type Props = {
@@ -49,27 +50,6 @@ const INCLUDE_MAIN_HELP = "Adds a main effect for features that have none; featu
 const UNUSED_ENTRY: InteractionSpec = { factors: [], include_main: false }
 const CARD_STYLE = { background: "var(--bg-elevated)", border: "1px solid var(--border)" } as const
 const SLOT_ROW_CLASS = `${GLM_ROW_CLASS} rounded-lg border bg-[var(--bg-input)] px-2 py-1.5`
-
-/**
- * Keys that stay with an item for its lifetime in the editor. Removing an item
- * through `remove` drops its key, so its neighbours keep their drafts and
- * disclosure state; a length change from outside appends or truncates keys.
- */
-function useStableKeys(count: number): { keys: number[]; remove: (index: number) => void } {
-  const [state, setState] = useState(() => ({ keys: Array.from({ length: count }, (_, index) => index), next: count }))
-  let current = state
-  if (state.keys.length !== count) {
-    const keys = state.keys.length > count
-      ? state.keys.slice(0, count)
-      : [...state.keys, ...Array.from({ length: count - state.keys.length }, (_, offset) => state.next + offset)]
-    current = { keys, next: state.next + Math.max(0, count - state.keys.length) }
-    setState(current)
-  }
-  return {
-    keys: current.keys,
-    remove: (index) => setState((previous) => ({ ...previous, keys: previous.keys.filter((_, position) => position !== index) })),
-  }
-}
 
 function Alert({ children }: { children: React.ReactNode }) {
   return <p role="alert" className="text-[11px]" style={{ color: "var(--danger)" }}>{children}</p>
@@ -103,7 +83,13 @@ type CardProps = {
 }
 
 function InteractionCard({ number, index, interaction, analysed, stored, terms, context, design, duplicate, write, onRemove }: CardProps) {
-  const slotKeys = useStableKeys(interaction.factors.length)
+  // Each slot's key, so its drafts and disclosure state stay with it; the card's own
+  // writes of its slots say what they do, and an Undo gives every slot a new key.
+  const slotKeys = useRowKeys(interaction.factors)
+  const writeSlots = (next: InteractionSpec[], change: (factors: string[]) => string[]) => {
+    change(next[index].factors)
+    write(next)
+  }
   const dtypeOf = (name: string) => context.byName.get(name)?.dtype ?? ""
   // Transitions index into the stored list, so malformed neighbours stay put.
   const entries = stored as InteractionSpec[]
@@ -178,7 +164,7 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
                   className={`${GLM_SELECT_CLASS} font-mono`}
                   style={{ ...MODELLING_INPUT_STYLE, borderColor: ineligible !== null || incompatible ? "var(--danger)" : "var(--border)" }}
                   value={factor}
-                  onChange={(event) => write(pickSlotColumn(entries, index, slot, event.target.value))}
+                  onChange={(event) => writeSlots(pickSlotColumn(entries, index, slot, event.target.value), slotKeys.edit)}
                 >
                   <option value="">Select…</option>
                   {(ineligible !== null || incompatible) && <option value={factor} disabled>{factor} (unavailable)</option>}
@@ -220,8 +206,7 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
                   <RemoveIconButton
                     label={`Remove feature ${slot + 1}`}
                     onClick={() => {
-                      slotKeys.remove(slot)
-                      write(removeSlot(entries, index, slot))
+                      writeSlots(removeSlot(entries, index, slot), (factors) => slotKeys.remove(slot, factors))
                     }}
                   />
                 </span>
@@ -232,7 +217,7 @@ function InteractionCard({ number, index, interaction, analysed, stored, terms, 
       </div>
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <button type="button" className="focus-ring rounded px-2 py-0.5 text-[11px] font-medium" style={toggleButtonStyle(false)} onClick={() => write(addSlot(entries, index))}>
+        <button type="button" className="focus-ring rounded px-2 py-0.5 text-[11px] font-medium" style={toggleButtonStyle(false)} onClick={() => writeSlots(addSlot(entries, index), slotKeys.add)}>
           + feature
         </button>
         {anyWithoutMain && (
@@ -269,12 +254,12 @@ export function GLMInteractionsConfig({ config, onUpdate, columns }: Props) {
     [terms, analysed, context],
   )
   const duplicates = useMemo(() => duplicateInteractionIndexes(analysed), [analysed])
-  const cardKeys = useStableKeys(stored.length)
-  const write = (next: InteractionSpec[]) => onUpdate("interactions", next)
-  const remove = (index: number) => {
-    cardKeys.remove(index)
-    write(removeInteraction(stored as InteractionSpec[], index))
-  }
+  // Each card's key, kept through the editor's own writes; an Undo gives every card a new one.
+  const cardKeys = useRowKeys(stored)
+  const write = (next: InteractionSpec[]) =>
+    onUpdate("interactions", next.length === stored.length ? cardKeys.edit(next) : next)
+  const remove = (index: number) =>
+    onUpdate("interactions", cardKeys.remove(index, removeInteraction(stored as InteractionSpec[], index)))
 
   return (
     <section aria-labelledby="model-interactions-heading" className="mt-4">
@@ -282,7 +267,7 @@ export function GLMInteractionsConfig({ config, onUpdate, columns }: Props) {
         <h3 id="model-interactions-heading" className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
           Interactions
         </h3>
-        <button type="button" className="focus-ring flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold" style={toggleButtonStyle(true)} onClick={() => write(addInteraction(stored as InteractionSpec[]))}>
+        <button type="button" className="focus-ring flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold" style={toggleButtonStyle(true)} onClick={() => onUpdate("interactions", cardKeys.add(addInteraction(stored as InteractionSpec[])))}>
           <Plus size={12} aria-hidden="true" /> Add interaction
         </button>
       </div>

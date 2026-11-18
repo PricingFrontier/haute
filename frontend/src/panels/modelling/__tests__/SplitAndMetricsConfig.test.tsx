@@ -164,11 +164,14 @@ describe("SplitAndMetricsConfig", () => {
 
     expect(screen.getByLabelText("Test starts")).toHaveValue("")
     fireEvent.change(screen.getByLabelText("Test starts"), { target: { value: "2025-06-01" } })
+    expect(onEvaluationChange).not.toHaveBeenCalled()
+    fireEvent.blur(screen.getByLabelText("Test starts"))
     const withTest = { ...evaluation, test: { start: "2025-06-01" } }
     expect(onEvaluationChange).toHaveBeenLastCalledWith(withTest)
 
     rerender(<SplitAndMetricsConfig {...props} evaluation={withTest} />)
     fireEvent.change(screen.getByLabelText("Test starts"), { target: { value: "" } })
+    fireEvent.blur(screen.getByLabelText("Test starts"))
     expect(onEvaluationChange).toHaveBeenLastCalledWith(evaluation)
   })
 

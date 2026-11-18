@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useMemo, useState } from "react"
+import { DraftTextArea } from "../../components/form/CommittedTextField"
+import { useCommittedDraft } from "../../components/form/useCommittedDraft"
 import { Plus, Search } from "lucide-react"
 
 import type { OnUpdateConfig } from "../editors/_shared"
@@ -108,34 +110,29 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
 
   // JSON mode: the RustyStats dict, saved on blur.
   const termsJson = useMemo(() => JSON.stringify(terms, null, 2), [terms])
-  const [jsonDraft, setJsonDraft] = useState(termsJson)
-  const [jsonError, setJsonError] = useState<string | null>(null)
-  const lastSyncedRef = useRef(termsJson)
-  useEffect(() => {
-    if (termsJson !== lastSyncedRef.current) {
-      setJsonDraft(termsJson)
-      lastSyncedRef.current = termsJson
-      setJsonError(null)
-    }
-  }, [termsJson])
-  const commitJson = (text: string) => {
+  // Why the last commit was refused, and the text refused: shown while that text is on screen.
+  const [refusal, setRefusal] = useState<{ text: string; reason: string } | null>(null)
+  const jsonDraft = useCommittedDraft(termsJson, (text) => {
+    let parsed: unknown
+    let reason: string | null = null
     try {
-      const parsed = JSON.parse(text)
+      parsed = JSON.parse(text)
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        setJsonError("Must be a JSON object")
-        return
+        reason = "Must be a JSON object"
+      } else {
+        const malformed = Object.entries(parsed as Record<string, unknown>).find(([, spec]) => !isTermSpecShape(spec))
+        if (malformed) reason = `Term "${malformed[0]}" must be an object with a string "type"`
       }
-      const malformed = Object.entries(parsed as Record<string, unknown>).find(([, spec]) => !isTermSpecShape(spec))
-      if (malformed) {
-        setJsonError(`Term "${malformed[0]}" must be an object with a string "type"`)
-        return
-      }
-      setJsonError(null)
-      writeTerms(parsed as Terms)
     } catch (error) {
-      setJsonError((error as Error).message)
+      reason = (error as Error).message
     }
-  }
+    if (reason !== null) {
+      setRefusal({ text, reason })
+      return { ok: false }
+    }
+    writeTerms(parsed as Terms)
+  })
+  const jsonError = jsonDraft.editing && refusal?.text === jsonDraft.shown ? refusal.reason : null
 
   const renderAdditional = ({ key, spec }: TermEntry, column: ModellingColumn | null, notice?: string) => {
     const handlers = handlersFor(key)
@@ -262,13 +259,11 @@ export function GLMTermsConfig({ config, onUpdate, columns }: Props) {
           <p className="mb-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
             RustyStats terms dict. Paste from Atelier or edit directly. Saved on blur.
           </p>
-          <textarea
+          <DraftTextArea
+            draft={jsonDraft}
             aria-label="Terms JSON"
-            value={jsonDraft}
-            onChange={(event) => setJsonDraft(event.target.value)}
-            onBlur={() => commitJson(jsonDraft)}
             spellCheck={false}
-            rows={Math.min(20, Math.max(6, jsonDraft.split("\n").length + 1))}
+            rows={Math.min(20, Math.max(6, jsonDraft.shown.split("\n").length + 1))}
             className="w-full rounded-lg px-2.5 py-2 font-mono text-xs"
             style={{ ...MODELLING_INPUT_STYLE, border: `1px solid ${jsonError ? "var(--danger)" : "var(--border)"}`, resize: "vertical" }}
           />
