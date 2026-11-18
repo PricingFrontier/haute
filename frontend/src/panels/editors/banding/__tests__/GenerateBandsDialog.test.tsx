@@ -18,9 +18,9 @@ describe("GenerateBandsDialog", () => {
         initial={{ start: 4000, end: 7000, step: 1200 }}
       />,
     )
-    expect(screen.getByLabelText("Start")).toHaveValue(4000)
-    expect(screen.getByLabelText("End")).toHaveValue(7000)
-    expect(screen.getByLabelText("Step")).toHaveValue(1200)
+    expect(screen.getByLabelText("Start")).toHaveValue("4000")
+    expect(screen.getByLabelText("End")).toHaveValue("7000")
+    expect(screen.getByLabelText("Step")).toHaveValue("1200")
 
     fireEvent.click(screen.getByRole("button", { name: "Generate" }))
     expect(onGenerate).toHaveBeenCalledWith([
@@ -34,9 +34,9 @@ describe("GenerateBandsDialog", () => {
     render(
       <GenerateBandsDialog onGenerate={vi.fn()} onClose={vi.fn()} accentColor="#22d3ee" dataMin={0} dataMax={100} />,
     )
-    expect(screen.getByLabelText("Start")).toHaveValue(0)
-    expect(screen.getByLabelText("End")).toHaveValue(100)
-    expect(screen.getByLabelText("Step")).toHaveValue(10)
+    expect(screen.getByLabelText("Start")).toHaveValue("0")
+    expect(screen.getByLabelText("End")).toHaveValue("100")
+    expect(screen.getByLabelText("Step")).toHaveValue("10")
   })
 
   it.each([
@@ -47,7 +47,7 @@ describe("GenerateBandsDialog", () => {
     render(
       <GenerateBandsDialog onGenerate={vi.fn()} onClose={vi.fn()} accentColor="#22d3ee" dataMin={dataMin} dataMax={dataMax} />,
     )
-    expect(screen.getByLabelText("Step")).toHaveValue(step)
+    expect(screen.getByLabelText("Step")).toHaveValue(String(step))
   })
 
   describe("on a date column", () => {
@@ -67,7 +67,7 @@ describe("GenerateBandsDialog", () => {
       expect(screen.getByLabelText("Start")).toHaveValue("2024-01-05")
       expect(screen.getByLabelText("End")).toHaveAttribute("type", "date")
       expect(screen.getByLabelText("End")).toHaveValue("2024-03-20")
-      expect(screen.getByLabelText("Step")).toHaveValue(1)
+      expect(screen.getByLabelText("Step")).toHaveValue("1")
       expect(screen.getByLabelText("Step unit")).toHaveValue("months")
       expect(
         Array.from((screen.getByLabelText("Step unit") as HTMLSelectElement).options).map((option) => option.value),
@@ -103,7 +103,7 @@ describe("GenerateBandsDialog", () => {
       )
       expect(screen.getByLabelText("Start")).toHaveValue("2024-01-01")
       expect(screen.getByLabelText("End")).toHaveValue("2024-01-28")
-      expect(screen.getByLabelText("Step")).toHaveValue(2)
+      expect(screen.getByLabelText("Step")).toHaveValue("2")
       expect(screen.getByLabelText("Step unit")).toHaveValue("weeks")
       fireEvent.change(screen.getByLabelText("Step unit"), { target: { value: "days" } })
       fireEvent.change(screen.getByLabelText("Step"), { target: { value: "14" } })

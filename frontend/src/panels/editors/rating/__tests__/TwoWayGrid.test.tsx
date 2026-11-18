@@ -8,7 +8,7 @@ function makeTable(overrides: Partial<RatingTable> = {}): RatingTable {
   return {
     factors: ["age_band", "region"],
     output_column: "factor",
-    default_value: "1.0",
+    default_value: 1.0,
     entries: [
       { age_band: "young", region: "north", value: 1.1 },
       { age_band: "young", region: "south", value: 0.9 },

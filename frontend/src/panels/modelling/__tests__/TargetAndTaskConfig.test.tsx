@@ -100,14 +100,14 @@ describe("TargetAndTaskConfig", () => {
     render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie", variance_power: null } })} />)
     expect(screen.getByText(/Variance power/)).toBeInTheDocument()
     expect(screen.queryByRole("slider")).toBeNull()
-    expect(screen.getByRole("spinbutton", { name: "Variance power" })).toHaveValue(null)
+    expect(screen.getByRole("textbox", { name: "Variance power" })).toHaveValue("")
     expect(screen.queryByRole("button", { name: /Set variance power/ })).not.toBeInTheDocument()
   })
 
   it("shows a previously stored Tweedie variance power", () => {
     render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie", variance_power: 1.7 } })} />)
     expect(screen.getByRole("slider")).toHaveValue("1.7")
-    expect(screen.getByRole("spinbutton", { name: "Variance power" })).toHaveValue(1.7)
+    expect(screen.getByRole("textbox", { name: "Variance power" })).toHaveValue("1.7")
   })
 
   it("selecting Tweedie initializes an absent variance power in the same update", () => {
@@ -185,7 +185,7 @@ describe("TargetAndTaskConfig", () => {
   it("supports precise Tweedie power while rejecting boundary drafts", () => {
     const onUpdate = vi.fn()
     render(<TargetAndTaskConfig {...makeProps({ onUpdate, config: { loss_function: "Tweedie", variance_power: 1.5 } })} />)
-    const input = screen.getByRole("spinbutton", { name: "Variance power" })
+    const input = screen.getByRole("textbox", { name: "Variance power" })
     fireEvent.change(input, { target: { value: "1.99" } })
     fireEvent.blur(input)
     expect(onUpdate).toHaveBeenLastCalledWith("variance_power", 1.99)

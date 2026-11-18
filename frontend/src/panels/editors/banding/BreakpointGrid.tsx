@@ -4,7 +4,8 @@ import { useTwoColumnGridClipboard } from "../shared/useTwoColumnGridClipboard"
 import { boundaryDayNumber, boundaryKind, breakpointLabelIssues } from "./bandingUtils"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
-import { GridCell } from "../shared/GridCell"
+import { GridCell, type CellRead } from "../shared/GridCell"
+import { DECIMAL_COMMA, readTypedNumber, trimTyped } from "../../../utils/typedNumbers"
 import { useRowKeys } from "../shared/useRowKeys"
 
 type Breakpoint = { boundary: string; label: string }
@@ -33,11 +34,21 @@ const BOXED_CELL_STYLE = { background: "var(--bg-panel)", border: "1px solid var
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
 const ACTION_BUTTON_CLASS = "accent-hover-btn -my-1 flex size-6 items-center justify-center rounded"
 
+/** A number factor's boundary as a number, by the one grammar for a typed number; null for a blank or other text. */
 function parseBoundaryValue(boundary: string): number | null {
-  const trimmed = boundary.trim()
-  if (!trimmed) return null
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
+  return readTypedNumber(boundary)
+}
+
+/**
+ * A number factor's typed boundary as it is stored: blank for the open-ended band, or the
+ * number's own text (`1,000` is stored as 1000); text that is not a number is refused, a
+ * decimal comma among it, since `40,5` could be 40.5 or 405.
+ */
+function readNumberBoundary(text: string): CellRead {
+  if (trimTyped(text) === "") return { ok: true, value: "" }
+  const number = readTypedNumber(text)
+  if (number !== null) return { ok: true, value: String(number) }
+  return { ok: false, problem: text.includes(",") ? DECIMAL_COMMA : "Enter a number, such as 25." }
 }
 
 function boundaryOrderWarnings(breakpoints: Breakpoint[]): Map<number, string> {
@@ -199,7 +210,9 @@ export function BreakpointGrid({
                         <div className="relative">
                           <GridCell
                             row={rowKeys.keys[i]}
-                            type={temporal ? "text" : "number"}
+                            type="text"
+                            inputMode={temporal ? undefined : "decimal"}
+                            read={temporal ? undefined : readNumberBoundary}
                             aria-label={`Breakpoint ${i + 1} boundary`}
                             aria-invalid={boundaryWarning ? true : undefined}
                             aria-describedby={boundaryWarning ? boundaryWarningId : undefined}

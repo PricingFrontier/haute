@@ -1,11 +1,21 @@
 import { Plus, Trash2 } from "lucide-react"
 import type { OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
-import { CommittedTextField, ValidatedTextField } from "../../components/form"
+import { ValidatedTextField } from "../../components/form"
+import { constantValue } from "../../utils/constantValues"
 import { duplicateConstantNames, nextConstantName } from "./constantNames"
 import { useRowKeys } from "./shared/useRowKeys"
 
 type ConstantValue = { name: string; value: string }
+
+/**
+ * Why a Constant's value is refused, as the server's settings check refuses it: a value no
+ * column can hold, `nan`, `inf` or a whole number past a 64-bit integer. Any other text is a
+ * number when it is canonical decimal text and text otherwise (specs/frontend-shared, "Typed
+ * numbers").
+ */
+const valueError = (text: string): string | null =>
+  constantValue(text) === null ? "Enter a finite number, or text." : null
 
 const FIELD_STYLE = {
   background: "var(--bg-input)",
@@ -66,12 +76,15 @@ export default function ConstantEditor({
               className="w-full px-2 py-1.5 text-xs font-mono rounded-lg"
               style={FIELD_STYLE}
             />
-            <CommittedTextField
-              type="text"
+            <ValidatedTextField
               value={v.value}
+              validate={valueError}
               onCommit={(val) => updateRow(i, "value", val)}
               placeholder="value"
-              className="w-24 px-2 py-1.5 text-xs font-mono rounded-lg text-right"
+              ariaLabel={`Value of ${v.name || `constant ${i + 1}`}`}
+              dataTestId={`constant-value-${i}`}
+              containerClassName="w-24 shrink-0"
+              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg text-right"
               style={FIELD_STYLE}
             />
             <button

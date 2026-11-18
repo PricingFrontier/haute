@@ -423,7 +423,7 @@ describe("extractBandingLevels", () => {
 
 describe("buildCartesianEntries", () => {
   it("returns empty array for zero factors", () => {
-    const result = buildCartesianEntries([], {}, [], "1.0")
+    const result = buildCartesianEntries([], {}, [], 1.0)
     expect(result).toEqual([])
   })
 
@@ -433,7 +433,7 @@ describe("buildCartesianEntries", () => {
       ["age_band", "region_band"],
       { age_band: ["Young", "Old"] },  // region_band missing -> 0 levels
       existing,
-      "1.0",
+      1.0,
     )
     expect(result).toBe(existing)
   })
@@ -444,7 +444,7 @@ describe("buildCartesianEntries", () => {
       ["age_band"],
       { age_band: [] },
       existing,
-      "1.0",
+      1.0,
     )
     expect(result).toBe(existing)
   })
@@ -454,7 +454,7 @@ describe("buildCartesianEntries", () => {
       ["age_band"],
       { age_band: ["Young", "Middle", "Senior"] },
       [],
-      "1.0",
+      1.0,
     )
 
     expect(result).toHaveLength(3)
@@ -468,7 +468,7 @@ describe("buildCartesianEntries", () => {
       ["age_band", "region_band"],
       { age_band: ["Young", "Old"], region_band: ["East", "West"] },
       [],
-      "1.0",
+      1.0,
     )
 
     expect(result).toHaveLength(4)
@@ -493,7 +493,7 @@ describe("buildCartesianEntries", () => {
         vehicle_band: ["Car", "Truck"],
       },
       [],
-      "1.0",
+      1.0,
     )
 
     expect(result).toHaveLength(8)
@@ -522,7 +522,7 @@ describe("buildCartesianEntries", () => {
       ["age_band", "region_band"],
       { age_band: ["Young", "Old"], region_band: ["East", "West"] },
       existing,
-      "1.0",
+      1.0,
     )
 
     expect(result).toHaveLength(4)
@@ -546,7 +546,7 @@ describe("buildCartesianEntries", () => {
       ["age_band"],
       { age_band: ["Young", "Old"] },
       [],
-      "2.5",
+      2.5,
     )
 
     expect(result).toHaveLength(2)
@@ -566,30 +566,6 @@ describe("buildCartesianEntries", () => {
     expect(result[0].value).toBe(1.0)
   })
 
-  it("falls back to 1.0 when defaultValue is empty string", () => {
-    const result = buildCartesianEntries(
-      ["age_band"],
-      { age_band: ["Young"] },
-      [],
-      "",
-    )
-
-    expect(result).toHaveLength(1)
-    expect(result[0].value).toBe(1.0)
-  })
-
-  it("falls back to 1.0 when defaultValue is whitespace-only", () => {
-    const result = buildCartesianEntries(
-      ["age_band"],
-      { age_band: ["Young"] },
-      [],
-      "   ",
-    )
-
-    expect(result).toHaveLength(1)
-    expect(result[0].value).toBe(1.0)
-  })
-
   it("preserves existing numeric values parsed from strings", () => {
     const existing = [
       { age_band: "Young", value: "1.75" },
@@ -599,7 +575,7 @@ describe("buildCartesianEntries", () => {
       ["age_band"],
       { age_band: ["Young", "Old"] },
       existing as Record<string, string | number>[],
-      "1.0",
+      1.0,
     )
 
     expect(result).toHaveLength(2)

@@ -74,12 +74,12 @@ import {
   indexTextLimit,
   isTyping,
   newQuoteValues,
-  parseTypedNumber,
   pricedRows,
   valuesIndex,
   type PricedRows,
   type RowsByTable,
 } from "./sheetValues"
+import { readTypedNumber, trimTyped } from "./typedNumbers"
 import { keyCollisions } from "./workbenchTables"
 import {
   ALWAYS,
@@ -2686,10 +2686,10 @@ const EQUALITY_TESTS: ReadonlySet<ConditionTest> = new Set(["equals", "not_equal
 /** Whether `value` is one of `column`'s allowed values, a number's read as numbers. */
 function allowed(column: SchemaColumn, value: string): boolean {
   if (column.type === "int" || column.type === "float") {
-    const number = parseTypedNumber(value)
-    return column.options.some((option) => number !== null && parseTypedNumber(option) === number)
+    const number = readTypedNumber(value)
+    return column.options.some((option) => number !== null && readTypedNumber(option) === number)
   }
-  return column.options.some((option) => option.trim() === value.trim())
+  return column.options.some((option) => trimTyped(option) === trimTyped(value))
 }
 
 /**
@@ -2887,7 +2887,7 @@ export function columnNameProblem(name: string): string | null {
 
 /** Whether `text` is a number, a whole one when `whole`, as a cell and the server read one. */
 const isNumber = (text: string, whole: boolean): boolean => {
-  const n = parseTypedNumber(text)
+  const n = readTypedNumber(text)
   return n !== null && (!whole || Number.isInteger(n))
 }
 

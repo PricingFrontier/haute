@@ -955,9 +955,14 @@ node-config error naming the name, wherever its frame is built (`constant_frame`
 canvas execution and a standalone run share), rather than keeping the second value; an
 entry whose name is not text is refused the same way, and an entry without a name is
 skipped, as before. Its sidecar writes `values` as a map from each name to its value,
-one a line (`haute._constant_config`, READ-28): a value that reads as a number and
-reads back to the text it was typed as is a JSON number, anything else as typed; each
-runs as before, and the editor reads the map back into its rows. A row without a name
+one a line (`haute._constant_config`, READ-28), each value as it runs, by the Constant's
+reading of the one grammar for a typed number (`haute._typed_numbers.constant_value`;
+specs/frontend-shared high-level, "Typed numbers"): canonical finite decimal text is a JSON
+number (a whole number an integer, `0123` and `1E5` text), a boolean a boolean, anything
+else text, so a value runs as the type its sidecar holds, in a preview, a run and the
+deployed scorer alike; a value no column can hold (`nan`, `inf`, a whole number past a
+64-bit integer) is refused, naming the constant, by the settings check before the node
+runs. The editor reads the map back into its rows, a number as its canonical text. A row without a name
 is not written, two rows with one name are refused, and a sidecar still holding rows is
 refused, naming the map form. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees

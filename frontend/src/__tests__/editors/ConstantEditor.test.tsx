@@ -80,6 +80,28 @@ describe("ConstantEditor", () => {
     ])
   })
 
+  // EXE-02: a value no column can hold is refused at the field, as the server's settings
+  // check refuses it; text such as a branch code with a leading zero is kept as typed.
+  it.each([["nan"], ["-Infinity"], ["9223372036854775808"]])("refuses a value %j no column can hold, saying why", (typed) => {
+    const onUpdate = vi.fn()
+    render(<ConstantEditor config={{ values: [{ name: "rate", value: "0.05" }] }} onUpdate={onUpdate} />)
+    const valueInput = screen.getByLabelText("Value of rate")
+    fireEvent.change(valueInput, { target: { value: typed } })
+    fireEvent.blur(valueInput)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(valueInput).toHaveValue(typed)
+    expect(screen.getByTestId("constant-value-0-error")).toHaveTextContent("Enter a finite number, or text.")
+  })
+
+  it("keeps a value that is not canonical decimal text as typed", () => {
+    const onUpdate = vi.fn()
+    render(<ConstantEditor config={{ values: [{ name: "branch", value: "1" }] }} onUpdate={onUpdate} />)
+    const valueInput = screen.getByLabelText("Value of branch")
+    fireEvent.change(valueInput, { target: { value: "0123" } })
+    fireEvent.blur(valueInput)
+    expect(onUpdate).toHaveBeenCalledWith("values", [{ name: "branch", value: "0123" }])
+  })
+
   it("remove button calls onUpdate with filtered array", () => {
     const onUpdate = vi.fn()
     const values = [

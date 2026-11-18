@@ -1,7 +1,7 @@
 /** The showing sheet's own panel (specs/workbench). */
 import { Trash2 } from "lucide-react"
 import type { FormSpec, Page } from "../../api/types"
-import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, NumberField } from "../../components/form"
 import { confirmed } from "../../stores/useQuestionStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { takesNothingTyped } from "../../utils/sheetVisibility"
@@ -32,8 +32,7 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
     showPage(remaining.id)
   }
   const least = leastSheetWidth(pageWidgets(page))
-  const width = wholeNumber({ min: least, unit: "pixels" })
-  const height = wholeNumber({ min: leastSheetHeight(page.sections), unit: "pixels" })
+  const leastHeight = leastSheetHeight(page.sections)
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
       <Section title="Title">
@@ -58,25 +57,29 @@ export function SheetSettings({ form, page }: { form: FormSpec; page: Page }) {
       </Section>
       <Section title="Layout">
         <LabelledRow label="Width">
-          <ValidatedTextField
-            dataTestId="sheet-width"
-            value={String(page.width)}
-            onCommit={(text) => change((spec) => setPageWidth(spec, page.id, Number(text)))}
-            validate={width}
+          <NumberField
+            data-testid="sheet-width"
+            integer required min={least} unit="pixels"
+            value={page.width}
+            onCommit={(width) => { if (width !== null) change((spec) => setPageWidth(spec, page.id, width)) }}
             containerClassName="w-20"
             className={`${FIELD_CLASS} w-full tabular-nums`}
             style={INPUT_STYLE}
+            problemTestId="sheet-width-error"
+            problemClassName="mt-0.5 block text-[10px] leading-snug"
           />
         </LabelledRow>
         <LabelledRow label="Height">
-          <ValidatedTextField
-            dataTestId="sheet-height"
-            value={String(sectionsHeight(page.sections))}
-            onCommit={(text) => change((spec) => setPageHeight(spec, page.id, Number(text)))}
-            validate={height}
+          <NumberField
+            data-testid="sheet-height"
+            integer required min={leastHeight} unit="pixels"
+            value={sectionsHeight(page.sections)}
+            onCommit={(height) => { if (height !== null) change((spec) => setPageHeight(spec, page.id, height)) }}
             containerClassName="w-20"
             className={`${FIELD_CLASS} w-full tabular-nums`}
             style={INPUT_STYLE}
+            problemTestId="sheet-height-error"
+            problemClassName="mt-0.5 block text-[10px] leading-snug"
           />
         </LabelledRow>
       </Section>

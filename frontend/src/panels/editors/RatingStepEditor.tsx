@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Plus, X } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
-import { CommittedTextField } from "../../components/form"
+import { CommittedTextField, NumberField } from "../../components/form"
 import { ColumnSelector } from "../modelling/ColumnSelector"
 import SearchableItemList from "./shared/SearchableItemList"
 import { indexAfterMove, isListMove, moveListItem } from "./shared/moveListItem"
@@ -19,6 +19,7 @@ import {
   extractTableEntryFactorLevels,
   mergeFactorLevels,
   ratingFactorProblem,
+  storedNumber,
 } from "./rating/ratingTableUtils"
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
@@ -37,7 +38,8 @@ type CombinedOperation = "multiply" | "add" | "min" | "max"
 type CombinedOutput = {
   output_column: string
   operation: string
-  base_value: string
+  /** The value the tables' outputs are combined with; null while it is blank. */
+  base_value: number | null
 }
 
 const OPERATION_OPTIONS: { value: CombinedOperation; label: string }[] = [
@@ -55,9 +57,9 @@ function asOperation(value: unknown): CombinedOperation {
   return typeof value === "string" && isCombinedOperation(value) ? value : "multiply"
 }
 
-function defaultBaseValue(operation: string): string {
-  if (operation === "add") return "0.0"
-  return "1.0"
+function defaultBaseValue(operation: string): number {
+  if (operation === "add") return 0
+  return 1
 }
 
 function normaliseCombinedOutputs(config: Record<string, unknown>): CombinedOutput[] {
@@ -69,15 +71,13 @@ function normaliseCombinedOutputs(config: Record<string, unknown>): CombinedOutp
       operation: typeof item.operation === "string" && item.operation.trim()
         ? item.operation
         : "multiply",
-      base_value: typeof item.base_value === "string" || typeof item.base_value === "number"
-        ? String(item.base_value)
-        : "",
+      base_value: storedNumber(item.base_value),
     }
   })
 }
 
-function formulaFor(operation: string, columns: string[], baseValue: string): string {
-  const values = [baseValue, ...columns].filter(Boolean)
+function formulaFor(operation: string, columns: string[], baseValue: number | null): string {
+  const values = [baseValue === null ? "" : String(baseValue), ...columns].filter(Boolean)
   if (operation === "add") return values.join(" + ")
   if (operation === "min") return `min(${values.join(", ")})`
   if (operation === "max") return `max(${values.join(", ")})`
@@ -105,7 +105,7 @@ function combinedOutputHasIssue(
     tableOutputColumns.includes(outputName) ||
     outputs.some((other, otherIdx) => otherIdx !== idx && other.output_column.trim() === outputName)
   const operationIssue = !isCombinedOperation(output.operation)
-  const baseValueIssue = output.base_value.trim() === "" || !Number.isFinite(Number(output.base_value))
+  const baseValueIssue = output.base_value === null
   return outputNameIssue || operationIssue || baseValueIssue
 }
 
@@ -291,17 +291,14 @@ export default function RatingStepEditor({
   const usesDefault = tableUsesDefault(table)
   const hasCombinedOutput = combinedOutputs.length > 0
   const safeCombinedIdx = hasCombinedOutput ? Math.min(activeCombinedIdx, combinedOutputs.length - 1) : 0
-  const combinedOutput = combinedOutputs[safeCombinedIdx] || { output_column: "", operation: "multiply" as CombinedOperation, base_value: "1.0" }
+  const combinedOutput = combinedOutputs[safeCombinedIdx] || { output_column: "", operation: "multiply" as CombinedOperation, base_value: 1 }
   const combinedColumnBlank = combinedOutput.output_column.trim() === ""
   const combinedColumnInputId = `rating-combined-output-column-${safeCombinedIdx}`
   const combinedColumnErrorId = `${combinedColumnInputId}-error`
   const combinedBaseValueInputId = `rating-combined-base-value-${safeCombinedIdx}`
   const combinedBaseValueErrorId = `${combinedBaseValueInputId}-error`
   const combinedOperationErrorId = `rating-combined-operation-${safeCombinedIdx}-error`
-  const combinedBaseValueBlank = combinedOutput.base_value.trim() === ""
-  const combinedBaseValueInvalid = hasCombinedOutput && (
-    combinedBaseValueBlank || !Number.isFinite(Number(combinedOutput.base_value))
-  )
+  const combinedBaseValueInvalid = hasCombinedOutput && combinedOutput.base_value === null
   const combinedOperationInvalid = hasCombinedOutput && !isCombinedOperation(combinedOutput.operation)
   const tableOutputColumns = tables.map(t => t.output_column.trim()).filter(Boolean)
   const currentCombinedOutputName = combinedOutput.output_column.trim()
@@ -322,12 +319,11 @@ export default function RatingStepEditor({
 
   // An empty Default is removed rather than saved, so the table's misses are
   // left empty (On miss: Leave empty).
-  const setDefaultValue = (idx: number, raw: string) => {
-    const value = raw.trim()
+  const setDefaultValue = (idx: number, value: number | null) => {
     commitTables(tables.map((t, i) => {
       if (i !== idx) return t
       const { default_value: _previous, ...rest } = t
-      return value ? { ...rest, default_value: value } : rest
+      return value === null ? rest : { ...rest, default_value: value }
     }))
   }
 
@@ -428,9 +424,9 @@ export default function RatingStepEditor({
     const next = combinedOutputs.map((item, i) => {
       if (i !== idx) return item
       const operation = patch.operation ?? item.operation
-      const baseValue = patch.operation && !patch.base_value
+      const baseValue = patch.operation && patch.base_value === undefined
         ? defaultBaseValue(operation)
-        : patch.base_value ?? item.base_value
+        : patch.base_value === undefined ? item.base_value : patch.base_value
       return { ...item, ...patch, operation, base_value: baseValue }
     })
     commitCombinedOutputs(next)
@@ -439,7 +435,7 @@ export default function RatingStepEditor({
   const addCombinedOutput = () => {
     const next = [
       ...combinedOutputs,
-      { output_column: nextCombinedOutputName(combinedOutputs, tableOutputColumns), operation: "multiply" as CombinedOperation, base_value: "1.0" },
+      { output_column: nextCombinedOutputName(combinedOutputs, tableOutputColumns), operation: "multiply" as CombinedOperation, base_value: 1 },
     ]
     commitCombinedOutputs(next)
     setActiveCombinedIdx(combinedOutputs.length)
@@ -699,8 +695,8 @@ export default function RatingStepEditor({
           <label htmlFor={onMissingInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>On miss</label>
           <select id={onMissingInputId} value={usesDefault ? "default" : "empty"}
             onChange={(e) => {
-              if (e.target.value === "empty") setDefaultValue(safeIdx, "")
-              else if (!usesDefault) updateTable(safeIdx, { default_value: "1.0" })
+              if (e.target.value === "empty") setDefaultValue(safeIdx, null)
+              else if (!usesDefault) updateTable(safeIdx, { default_value: 1 })
             }}
             className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2"
             style={INPUT_STYLE}>
@@ -710,11 +706,12 @@ export default function RatingStepEditor({
         </div>
         <div>
           <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
-          <CommittedTextField key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" value={table.default_value ?? ""}
+          <NumberField key={`def-${safeIdx}`} id={defaultInputId} value={table.default_value ?? null}
             disabled={!usesDefault}
             onCommit={(value) => setDefaultValue(safeIdx, value)}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
-            style={INPUT_STYLE} />
+            style={INPUT_STYLE}
+            problemClassName="mt-1 block text-[10px] font-medium" />
         </div>
       </div>
         </>
@@ -847,12 +844,11 @@ export default function RatingStepEditor({
               </div>
               <div>
                 <label htmlFor={combinedBaseValueInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: combinedBaseValueInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Base Value</label>
-                <CommittedTextField
+                <NumberField
                   key={`combined-base-${safeCombinedIdx}`}
                   id={combinedBaseValueInputId}
-                  type="number"
-                  step="any"
                   value={combinedOutput.base_value}
+                  problemClassName="mt-1 block text-[10px] font-medium"
                   onCommit={(baseValue) => updateCombinedOutput(safeCombinedIdx, { base_value: baseValue })}
                   aria-invalid={combinedBaseValueInvalid}
                   aria-describedby={combinedBaseValueInvalid ? combinedBaseValueErrorId : undefined}

@@ -12,8 +12,6 @@ import {
   filled,
   formattedNumber,
   newQuoteValues,
-  parseTypedNumber,
-  parseTypedWhole,
   indexProblemCells,
   presetRows,
   pricedRows,
@@ -203,6 +201,16 @@ describe("formattedNumber", () => {
     expect(formattedNumber(column("count", { type: "int", decimal_places: 0, use_grouping: false }), 12345.6)).toBe("12346")
   })
 
+  // WB-62: a whole number past what a JavaScript number holds is shown with every digit, in an
+  // input cell (typed text) and in an output (the exact decimal string the pricing sends).
+  it.each([["123456789012345678", "123,456,789,012,345,678"], ["9007199254740993", "9,007,199,254,740,993"], ["-9,007,199,254,740,993", "-9,007,199,254,740,993"]])(
+    "shows the Integer %s with every digit, grouped",
+    (value, shown) => {
+      const count = column("count", { type: "int", number_format: "number", decimal_places: 0, use_grouping: true })
+      expect(formattedNumber(count, value)).toBe(shown)
+    },
+  )
+
   it("leaves a value as it is in General, outside a number column, or when it is not a number", () => {
     expect(formattedNumber(column("premium", { type: "float" }), "1000")).toBeNull()
     expect(formattedNumber(column("name", { number_format: "number" }), "1000")).toBeNull()
@@ -211,13 +219,6 @@ describe("formattedNumber", () => {
 })
 
 describe("typed text, as the server reads it", () => {
-  it.each(typedCases.numbers)("reads $name as the server does", ({ text, number, whole, integer }) => {
-    expect(parseTypedNumber(text)).toBe(number)
-    expect(parseTypedNumber(` ${text} `)).toBe(number)
-    // An Integer column's whole number, exactly however large.
-    expect(parseTypedWhole(text)).toBe(whole && number !== null ? BigInt(integer ?? number) : null)
-  })
-
   it.each(typedCases.filled)("counts $name as typed as the server does", ({ value, filled: typed }) => {
     expect(filled(value ?? undefined)).toBe(typed)
   })

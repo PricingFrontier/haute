@@ -16,7 +16,8 @@ import type { SubmodelBoundaryEdgeData } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
 import { castFamily } from "./polarsDtypes"
 import { IDENTITY_COLUMNS, tableIndex } from "./quoteIdentity"
-import { indexTextLimit, keyText, listed, parseTypedNumber, parseTypedWhole } from "./sheetValues"
+import { indexTextLimit, keyText, listed } from "./sheetValues"
+import { readTypedNumber, readTypedWhole, trimTyped } from "./typedNumbers"
 
 /** The workbench's tables and sample quote from one fetch, numbered so that only the newest counts. */
 export interface WorkbenchTables {
@@ -110,7 +111,7 @@ export interface PricedSample {
 
 /** An index of values' allowed value as the server types it for an Integer (`_typed`): a whole number exactly, else a number, else the text itself. */
 const typedOption = (value: string): string => {
-  const read = parseTypedWhole(value) ?? parseTypedNumber(value)
+  const read = readTypedWhole(value) ?? readTypedNumber(value)
   return read === null ? `text:${value}` : `number:${String(read)}`
 }
 
@@ -176,7 +177,7 @@ export function outputMisfit(table: WorkbenchTable, answer: readonly unknown[], 
   const verb = (held: readonly unknown[]): string => (held.length === 1 ? "is" : "are")
   const parts: string[] = []
   const hasIndex = (value: unknown): boolean => value !== null && value !== undefined &&
-    (typeof value !== "string" || value.trim() !== "")
+    (typeof value !== "string" || trimTyped(value) !== "")
   const given = answer.filter(hasIndex)
   const missing = answer.length - given.length
   if (missing > 0) parts.push(missing === 1 ? `1 row has no ${key}` : `${missing} rows have no ${key}`)

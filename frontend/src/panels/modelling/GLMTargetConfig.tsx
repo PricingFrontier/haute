@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import type { OnUpdateConfig } from "../editors/_shared"
-import CommittedTextField from "../../components/form/CommittedTextField"
+import { NumberField } from "../../components/form/NumberField"
 import { apiErrorMessage } from "../../api/errors"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
@@ -258,7 +258,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate 
                 <input
                   type="range" min={1.0} max={2.0} step={0.05}
                   value={configField(config, "var_power", 1.5)}
-                  onChange={(e) => onUpdate("var_power", parseFloat(e.target.value))}
+                  onChange={(e) => onUpdate("var_power", e.currentTarget.valueAsNumber)}
                   className="w-full mt-0.5"
                 />
                 <div className="mt-0.5 flex items-center justify-between gap-1.5">
@@ -282,15 +282,13 @@ export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate 
               Dispersion theta (required for Neg. Binomial)
               <FailoverHelp label={THETA_HELP} />
             </label>
-            <div className="mt-1 flex gap-1.5">
-              <CommittedTextField
-                type="number" min={0} step="any"
-                value={typeof theta === "number" ? String(theta) : ""}
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              <NumberField
+                aria-label="Dispersion theta"
+                value={typeof theta === "number" ? theta : null}
                 placeholder="e.g. 1.5"
-                onCommit={(text) => {
-                  const parsed = parseFloat(text)
-                  onUpdate("theta", Number.isFinite(parsed) ? parsed : null)
-                }}
+                onCommit={(next) => onUpdate("theta", next)}
+                problemClassName="basis-full text-[11px]"
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono"
                 style={
                   typeof theta === "number" && theta > 0

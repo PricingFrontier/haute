@@ -549,6 +549,38 @@ def test_constant_run_matches_executor_batch(tmp_path):
     assert_frame_equal(standalone, reference)
 
 
+def test_a_constant_runs_as_the_type_its_settings_file_holds_in_every_run(tmp_path):
+    # EXE-02: text that is not canonical decimal text stays text, a boolean a boolean and a
+    # whole number an integer, in plain Python and in the executor the preview and the
+    # deployed scorer build through (``_build_node_fn``).
+    values = [
+        {"name": "branch", "value": "0123"},
+        {"name": "written", "value": "1E5"},
+        {"name": "flag", "value": True},
+        {"name": "count", "value": "5"},
+        {"name": "rate", "value": "2.5"},
+    ]
+    graph = PipelineGraph(nodes=[_const("c", "rates", values)], edges=[])
+
+    module = _write_and_import(graph, tmp_path)
+    standalone = _collect(module.pipeline.run(source="batch"))
+    reference = _executor_frame(graph, "c", source="batch")
+
+    assert standalone.schema == pl.Schema(
+        {
+            "branch": pl.String,
+            "written": pl.String,
+            "flag": pl.Boolean,
+            "count": pl.Int64,
+            "rate": pl.Float64,
+        }
+    )
+    assert standalone.to_dicts() == [
+        {"branch": "0123", "written": "1E5", "flag": True, "count": 5, "rate": 2.5}
+    ]
+    assert_frame_equal(standalone, reference)
+
+
 def test_banding_run_matches_executor_batch(tmp_path):
     src = _const("c", "policies", [{"name": "age", "value": 30}])
     band = _node(

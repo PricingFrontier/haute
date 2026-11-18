@@ -250,3 +250,47 @@ def test_captured_values_are_read_from_the_bytes_taken_never_the_working_tree(
         read("other.csv", "code")
     with pytest.raises(ParamFileError, match="isn't the name of a CSV file"):
         read("../states.csv", "code")
+
+
+def _sourced(kind: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "policy",
+            "inputs": [
+                {
+                    "name": "limit",
+                    "type": kind,
+                    "options_source": {"file": "limits.csv", "column": "limit"},
+                }
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "value"),
+    [("int", "1,000"), ("float", "1,000.00"), ("int", "1.0"), ("float", "£ 2 500")],
+)
+def test_a_params_number_is_read_as_the_same_text_typed_in_a_cell(kind: str, value: str) -> None:
+    # WB-68: a file saved from a spreadsheet groups its thousands; a cell of the column reads
+    # the same text as a number, so the form loads with it.
+    tables = _sourced(kind)
+    _workbench_params.fill_sourced_options(tables, lambda _file, _column: [value, "5"])
+
+    assert tables[0]["inputs"][0]["options"] == [value, "5"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "type_name"),
+    [("int", "1.5", "an Integer"), ("int", "1,5", "an Integer"), ("float", "lots", "a Decimal")],
+)
+def test_a_params_value_its_column_does_not_hold_is_refused_naming_the_type(
+    kind: str, value: str, type_name: str
+) -> None:
+    with pytest.raises(ParamFileError) as refused:
+        _workbench_params.fill_sourced_options(_sourced(kind), lambda _file, _column: [value])
+
+    assert refused.value.message == (
+        f"limits.csv gives policy.limit the value {value!r}, "
+        f"which {type_name} column does not hold."
+    )

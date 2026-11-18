@@ -10,6 +10,7 @@ import { formatPivotNumber } from "../panels/explore/pivotNumberFormat"
 import type { SampleRow, SampleValue } from "./workbenchForm"
 import { isDay } from "./isoDate"
 import { hasInputs, isOutputColumn, tableIndex } from "./quoteIdentity"
+import { readTypedNumber, readTypedWhole, trimTyped } from "./typedNumbers"
 
 /** Rows by table id, as the sample and a quote hold them. */
 export type RowsByTable = Readonly<Record<string, readonly SampleRow[]>>
@@ -22,7 +23,7 @@ export const cellKey = (tableId: string, row: number, columnId: string): string 
 
 /** Whether a value was typed, as the server counts it: text other than blank, or a tick. */
 export const filled = (value: SampleValue | undefined): boolean =>
-  value === true || (typeof value === "string" && value.trim() !== "")
+  value === true || (typeof value === "string" && trimTyped(value) !== "")
 
 /**
  * Whether a row holds a value in any input but a numbered index, as the server sends a row
@@ -54,7 +55,7 @@ export const valuesIndex = (table: SchemaTable): SchemaColumn | null => {
 export function presetRows(table: SchemaTable, rows: readonly SampleRow[]): readonly SampleRow[] {
   const column = valuesIndex(table)
   if (column === null) return rows
-  const identity = (value: string): string => indexIdentity(typedIndexValue(column.type, value.trim()))
+  const identity = (value: string): string => indexIdentity(typedIndexValue(column.type, trimTyped(value)))
   const places = new Map<string, number>()
   column.options.forEach((value, place) => {
     const key = identity(value)
@@ -148,44 +149,23 @@ export const quoteTyped = (schema: FormSchema, rows: RowsByTable, reads: ReadsCo
     )
   })
 
-/** A decimal number as the server reads one, once a currency sign, separators and spaces are gone. */
-const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/
-
-/**
- * A typed number as the server types it, or null for text that is not a number, one too
- * large to be finite included, as the server keeps such text as typed.
- */
-export function parseTypedNumber(text: string): number | null {
-  const cleaned = text.replace(/[$£€,\s]/g, "")
-  if (!NUMBER.test(cleaned)) return null
-  const number = Number(cleaned)
-  return Number.isFinite(number) ? number : null
-}
-
-/** Digits alone with a sign, which the server reads as a whole number exactly. */
-const WHOLE = /^[+-]?\d+$/
-
-/**
- * A typed whole number as the server types one for an Integer column: digits alone read
- * exactly however large, not through a Number; any other number that is whole as the
- * Number it reads as; or null for text that is not a whole number.
- */
-export function parseTypedWhole(text: string): bigint | null {
-  const cleaned = text.replace(/[$£€,\s]/g, "")
-  if (WHOLE.test(cleaned)) return BigInt(cleaned)
-  const number = parseTypedNumber(cleaned)
-  return number !== null && Number.isInteger(number) ? BigInt(number) : null
-}
-
 /**
  * A value as its number column's format shows it, as an Explore pivot shows a value (a
  * percent the value times 100), typed text read as the server reads it; or null when the
  * column shows numbers as they are, is not a number column, or the value is not a number.
+ * An Integer column's whole number is formatted from its digits, every one as typed or as
+ * the pricing sent them, never through a JavaScript number, which holds 15 or so.
  */
 export function formattedNumber(column: SchemaColumn, value: unknown): string | null {
   if (column.type !== "int" && column.type !== "float") return null
   if (column.number_format === "general" && column.decimal_places === null) return null
-  return formatPivotNumber(typeof value === "string" ? parseTypedNumber(value) : value, column)
+  return formatPivotNumber(typeof value === "string" ? typedFigure(column, value) : value, column)
+}
+
+/** Typed text as the figure a number column's format takes: an Integer's whole number as its digits. */
+function typedFigure(column: SchemaColumn, text: string): string | number | null {
+  const whole = column.type === "int" ? readTypedWhole(text) : null
+  return whole !== null ? whole.toString() : readTypedNumber(text)
 }
 
 /**
@@ -201,13 +181,13 @@ export function cellProblem(column: SchemaColumn, value: SampleValue | undefined
   if (!isTyping(column)) return null
   // A value of another type, left in a column since retyped: the server sends it as it is,
   // and the Workbench Input refuses it, so it is marked where the sheet cannot show it.
-  if (column.type === "bool") return typeof value === "string" && value.trim() !== "" ? "Not a tick" : null
+  if (column.type === "bool") return typeof value === "string" && trimTyped(value) !== "" ? "Not a tick" : null
   if (value === true) return "A tick, not a value"
-  const text = typeof value === "string" ? value.trim() : ""
+  const text = typeof value === "string" ? trimTyped(value) : ""
   if (text === "") return column.required ? "Required" : null
   if (column.type === "date" && !isDay(text)) return "Not a date"
   if (column.type === "int" || column.type === "float") {
-    const number = parseTypedNumber(text)
+    const number = readTypedNumber(text)
     if (number === null) return "Not a number"
     if (column.type === "int" && !Number.isInteger(number)) return "Not a whole number"
     if (column.min !== null && number < column.min) return `At least ${column.min.toLocaleString()}`
@@ -299,7 +279,7 @@ export function keyText(value: unknown, type: SchemaColumn["type"]): string {
  */
 export function typedIndexValue(type: SchemaColumn["type"], text: string): string | number | bigint {
   if (type !== "int") return text
-  return parseTypedWhole(text) ?? parseTypedNumber(text) ?? text
+  return readTypedWhole(text) ?? readTypedNumber(text) ?? text
 }
 
 /** A typed index's value as the server's sets compare it: a number by its value and text as itself, never the one for the other. */
@@ -338,7 +318,7 @@ export function typedIndexProblems(schema: FormSchema, rows: RowsByTable, reads:
         if (read.some((column) => filled(row[column.name]))) blank.push(number)
         return
       }
-      const value = typeof raw === "string" ? typedIndexValue(index.type, raw.trim()) : true
+      const value = typeof raw === "string" ? typedIndexValue(index.type, trimTyped(raw)) : true
       const limit = typeof value === "string" ? indexTextLimit(value) : null
       if (limit !== null) long.push({ number, limit })
       const identity = indexIdentity(value)

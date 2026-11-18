@@ -8,6 +8,7 @@ from collections import Counter
 from copy import deepcopy
 from typing import Any
 
+from haute._typed_numbers import setting_number, trim_typed
 from haute._validation_error import ConfigSettingError
 
 _MAX_RATING_FACTORS = 3
@@ -110,25 +111,17 @@ def _validate_factor_value(value: Any, context: str) -> None:
 
 
 def _validate_rating_value(value: Any, context: str) -> None:
-    if value is None or value == "":
+    """A relativity is a finite number, held as a JSON number or as text a numeric field reads
+    (the one grammar for a typed number: ``haute._typed_numbers``)."""
+    if value is None or (isinstance(value, str) and not trim_typed(value)):
         raise ConfigSettingError(f"{context} requires value", setting="tables")
-    if isinstance(value, bool):
-        raise ConfigSettingError(f"{context} must be numeric", setting="tables")
-    if isinstance(value, int | float):
-        if not math.isfinite(float(value)):
-            raise ConfigSettingError(f"{context} must be finite", setting="tables")
-        return
-    if isinstance(value, str):
-        if not value.strip():
-            raise ConfigSettingError(f"{context} requires value", setting="tables")
-        try:
-            numeric_value = float(value)
-        except ValueError as exc:
-            raise ConfigSettingError(f"{context} must be numeric", setting="tables") from exc
-        if not math.isfinite(numeric_value):
-            raise ConfigSettingError(f"{context} must be finite", setting="tables")
-        return
-    raise ConfigSettingError(f"{context} must be a JSON string or number", setting="tables")
+    if not isinstance(value, str | int | float):
+        raise ConfigSettingError(f"{context} must be a JSON string or number", setting="tables")
+    if setting_number(value) is None:
+        finite = isinstance(value, int | float) and not isinstance(value, bool)
+        raise ConfigSettingError(
+            f"{context} must be {'finite' if finite else 'numeric'}", setting="tables"
+        )
 
 
 def _validate_entry_row(
@@ -175,15 +168,10 @@ def rating_default_value(raw: object, *, where: str) -> float | None:
     config codec refuses one when a config is saved or read, and the engine
     when it builds a table's lookup; *where* names the table.
     """
-    if raw is None or (isinstance(raw, str) and not raw.strip()):
+    if raw is None or (isinstance(raw, str) and not trim_typed(raw)):
         return None
-    value = math.nan
-    if isinstance(raw, (str, int, float)) and not isinstance(raw, bool):
-        try:
-            value = float(raw)
-        except ValueError:
-            value = math.nan
-    if not math.isfinite(value):
+    value = setting_number(raw)
+    if value is None:
         raise ConfigSettingError(
             f"{where} has default_value {raw!r}, which is not a finite number",
             setting="tables",

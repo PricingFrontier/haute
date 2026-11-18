@@ -164,7 +164,7 @@ describe("GLMTermsConfig", () => {
   it("clearing a spline df field keeps Fixed mode and sibling settings", () => {
     const initial = { age: { type: "bs", df: 6, degree: 2, boundary_knots: [0, 90] } }
     const latest = setupStateful({ terms: initial })
-    const df = within(row("age")).getByRole("spinbutton", { name: "age df" })
+    const df = within(row("age")).getByRole("textbox", { name: "age df" })
     fireEvent.change(df, { target: { value: "" } })
     fireEvent.blur(df)
     expect(latest.config.terms).toEqual(initial)

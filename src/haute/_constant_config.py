@@ -2,43 +2,46 @@
 
 In memory, as the editor and the engine hold them, a Constant node's ``values`` are rows of
 ``{"name", "value"}``, each value as typed. Its sidecar writes them as one map, a constant a
-line: a value that reads as a number, and reads back to the text it was typed as, is a JSON
-number (``1.45``); any other value stays as written, text included. Each runs as it ran
-before: a value that reads as a number is a number, the rest as written. A row with no name,
-which a run skips, is not written; two rows with one name, which a run refuses, are refused.
+line, each value as it runs (``haute._typed_numbers.constant_value``, specs/frontend-shared
+high-level, "Typed numbers"): canonical finite decimal text is a JSON number (``1.45``,
+``5``), which reads back as the text it was typed as; a boolean stays a boolean; any other
+value stays text. So a value runs as the type its sidecar holds. A value that is not finite,
+or a whole number outside a 64-bit integer's range, is refused, naming the constant; a row
+with no name, which a run skips, is not written; two rows with one name, which a run refuses,
+are refused.
 """
 
 from __future__ import annotations
 
-import math
-import re
 from typing import Any
 
+from haute._typed_numbers import ConstantValueError, canonical_text, constant_value
 from haute.errors import NodeConfigError
 
-__all__ = ["constants_for_sidecar", "constants_from_sidecar"]
-
-_INTEGER_TEXT = re.compile(r"-?(?:0|[1-9]\d*)")
+__all__ = ["constant_held", "constants_for_sidecar", "constants_from_sidecar"]
 
 
-def _as_written(value: Any) -> Any:
-    """A constant's value as its sidecar writes it: a number where it reads back to its text."""
-    if not isinstance(value, str):
-        return value
-    if _INTEGER_TEXT.fullmatch(value):
-        return int(value)
+def constant_held(
+    name: str, value: Any, *, setting: str = "values"
+) -> bool | int | float | str | None:
+    """The value of the constant *name* as it runs and as its sidecar holds it; a value no
+    column can hold is refused, naming the constant (and its row, as *setting*)."""
     try:
-        number = float(value)
-    except ValueError:
-        return value
-    return number if math.isfinite(number) and repr(number) == value else value
+        return constant_value(value)
+    except ConstantValueError as exc:
+        raise NodeConfigError(
+            f"Constant {name!r} has the value {value!r}, which is {exc}. Give it a finite "
+            "number or text.",
+            setting=setting,
+        ) from exc
 
 
 def _as_read(value: Any) -> Any:
-    """A sidecar's value as the editor holds it: a number as its text."""
+    """A sidecar's value as the editor holds it: a number as its canonical text. What no
+    column can hold is left for the settings check to refuse, naming its row."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return value
-    return repr(value) if isinstance(value, float) else str(value)
+    return canonical_text(value)
 
 
 def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +50,7 @@ def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(rows, list):
         return config
     values: dict[str, Any] = {}
-    for row in rows:
+    for index, row in enumerate(rows):
         name = row.get("name", "") if isinstance(row, dict) else ""
         if not isinstance(name, str) or not name:
             continue
@@ -57,7 +60,7 @@ def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
                 "give each value its own name.",
                 setting="values",
             )
-        values[name] = _as_written(row.get("value", ""))
+        values[name] = constant_held(name, row.get("value", ""), setting=f"values[{index}].value")
     return {**config, "values": values}
 
 

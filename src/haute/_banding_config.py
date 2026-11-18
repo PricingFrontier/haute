@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import math
-import re
 from copy import deepcopy
 from typing import Any
 
+from haute._typed_numbers import canonical_number, canonical_text
 from haute._validation_error import ConfigSettingError
 
 _COMPACT_RULE_TYPES = frozenset({"categorical", "breakpoints"})
@@ -228,28 +228,22 @@ def _compact_rule_rows(
     return compact
 
 
-_INTEGER_TEXT = re.compile(r"-?(?:0|[1-9]\d*)")
-
-
 def _edge_as_written(boundary: str) -> Any:
     """A band's upper edge as its sidecar writes it: a number where the number reads back to
-    the same text (``4``, ``4.5``), else its text, a date or a date with a time among them."""
-    if _INTEGER_TEXT.fullmatch(boundary):
-        return int(boundary)
-    try:
-        number = float(boundary)
-    except ValueError:
-        return boundary
-    return number if math.isfinite(number) and repr(number) == boundary else boundary
+    the same text (``4``, ``4.5``: ``haute._typed_numbers.canonical_number``), else its text,
+    a date or a date with a time among them."""
+    number = canonical_number(boundary)
+    return boundary if number is None else number
 
 
 def _edge_as_read(upper: Any) -> str:
-    """A band's upper edge as the editor and the engine hold it: its text."""
+    """A band's upper edge as the editor and the engine hold it: its text, a number's
+    canonical text."""
     if isinstance(upper, bool) or not isinstance(upper, int | float | str):
         raise ConfigSettingError(
             "a band's upper edge must be a number or text", setting="factors", values=(upper,)
         )
-    return repr(upper) if isinstance(upper, float) else str(upper)
+    return upper if isinstance(upper, str) else canonical_text(upper)
 
 
 def _bands_for_sidecar(compact: dict[str, Any]) -> list[dict[str, Any]]:

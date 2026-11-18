@@ -100,9 +100,9 @@ describe("SplitAndMetricsConfig", () => {
   it("shows validation and final-test controls with the seed kept internal", () => {
     render(<SplitAndMetricsConfig {...makeProps()} />)
 
-    expect(screen.getByLabelText("Validation set (%)")).toHaveValue(20)
+    expect(screen.getByLabelText("Validation set (%)")).toHaveValue("20")
     expect(screen.queryByRole("checkbox", { name: /test set/i })).not.toBeInTheDocument()
-    expect(screen.getByLabelText("Test set (%)")).toHaveValue(20)
+    expect(screen.getByLabelText("Test set (%)")).toHaveValue("20")
     expect(screen.queryByLabelText("Evaluation seed")).not.toBeInTheDocument()
   })
 
@@ -118,8 +118,8 @@ describe("SplitAndMetricsConfig", () => {
         })}
       />,
     )
-    expect(screen.getByLabelText("Validation set (%)")).toHaveValue(29)
-    expect(screen.getByLabelText("Test set (%)")).toHaveValue(29)
+    expect(screen.getByLabelText("Validation set (%)")).toHaveValue("29")
+    expect(screen.getByLabelText("Test set (%)")).toHaveValue("29")
   })
 
   it("defaults the test percentage to zero and commits a positive percentage as a fraction", () => {
@@ -133,7 +133,7 @@ describe("SplitAndMetricsConfig", () => {
     render(<SplitAndMetricsConfig {...makeProps({ evaluation, onEvaluationChange })} />)
 
     const input = screen.getByLabelText("Test set (%)")
-    expect(input).toHaveValue(0)
+    expect(input).toHaveValue("0")
     fireEvent.change(input, { target: { value: "12.5" } })
     expect(onEvaluationChange).not.toHaveBeenCalled()
     fireEvent.blur(input)
@@ -233,8 +233,8 @@ describe("SplitAndMetricsConfig", () => {
     )
 
     expect(screen.getByLabelText("Group column")).toHaveValue("group_id")
-    expect(screen.getByLabelText("Fold count")).toHaveValue(5)
-    expect(screen.getByLabelText("Test set (%)")).toHaveValue(0)
+    expect(screen.getByLabelText("Fold count")).toHaveValue("5")
+    expect(screen.getByLabelText("Test set (%)")).toHaveValue("0")
   })
 
   it("updates validation and final-test configuration without retired fields", () => {
@@ -261,7 +261,7 @@ describe("SplitAndMetricsConfig", () => {
     expect(onEvaluationChange).toHaveBeenLastCalledWith(withoutTest)
 
     rerender(<SplitAndMetricsConfig {...props} evaluation={withoutTest} />)
-    expect(screen.getByLabelText("Test set (%)")).toHaveValue(0)
+    expect(screen.getByLabelText("Test set (%)")).toHaveValue("0")
     expect(screen.getByLabelText("Data allocation")).not.toHaveTextContent("Test set")
   })
 

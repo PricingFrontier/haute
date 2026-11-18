@@ -120,8 +120,8 @@ describe("HyperparametersConfig", () => {
       "{}",
     )
     expect(editor).toBeVisible()
+    // The search space's JSON is the only box: no number field beside it.
     expect(screen.getAllByRole("textbox")).toHaveLength(1)
-    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument()
     expect(screen.queryByText("Advanced parameters")).not.toBeInTheDocument()
     expect(editor).toHaveClass("font-mono")
     expect(screen.queryByLabelText("CatBoost search space JSON")).toBeNull()

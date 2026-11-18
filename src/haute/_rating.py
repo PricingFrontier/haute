@@ -8,7 +8,6 @@ module itself, keeping the dependency graph acyclic.
 
 from __future__ import annotations
 
-import math
 import operator
 import re
 from collections.abc import Iterable, Mapping
@@ -36,6 +35,7 @@ from haute._rating_step_config import (
     rating_default_value,
     validate_unique_rating_table_outputs,
 )
+from haute._typed_numbers import read_typed_number, setting_number, trim_typed
 from haute._types import NodeType, _Frame
 from haute._validation_error import ConfigSettingError
 from haute.errors import (
@@ -108,22 +108,15 @@ _DATETIME_BOUNDARY = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1
 def parse_breakpoint_boundary(boundary: str) -> float | date | datetime:
     """Read one breakpoint boundary: a number, a date, or a date and time.
 
-    A date is ``YYYY-MM-DD``; a date and time is ``YYYY-MM-DD HH:MM`` with
-    optional seconds and fraction, ``T`` or a space between. A time carries no
-    UTC offset: it is read in the banded column's own time zone.
+    A number is read by the one grammar for a typed number
+    (``haute._typed_numbers``), finite; a date is ``YYYY-MM-DD``; a date and
+    time is ``YYYY-MM-DD HH:MM`` with optional seconds and fraction, ``T`` or a
+    space between. A time carries no UTC offset: it is read in the banded
+    column's own time zone.
     """
-    text = boundary.strip()
-    try:
-        number = float(text)
-    except ValueError:
-        pass
-    else:
-        if not math.isfinite(number):
-            raise ConfigSettingError(
-                f"Breakpoint has non-finite boundary '{boundary}'",
-                setting="factors",
-                values=(boundary,),
-            )
+    text = trim_typed(boundary)
+    number = read_typed_number(text)
+    if number is not None:
         return number
     try:
         if _DATE_BOUNDARY.fullmatch(text):
@@ -184,17 +177,12 @@ def _banding_rule_comparators(
             # A date or date-and-time boundary, already read from the breakpoint.
             comparators.append((op, val))
             continue
-        try:
-            num = float(val)
-        except (ValueError, TypeError):
+        num = setting_number(val)
+        if num is None:
+            finite = isinstance(val, int | float) and not isinstance(val, bool)
             raise ConfigSettingError(
-                f"Banding rule has non-numeric threshold '{val}' for op{suffix}",
-                setting="factors",
-                values=(val,),
-            )
-        if not math.isfinite(num):
-            raise ConfigSettingError(
-                f"Banding rule has non-finite threshold '{val}' for op{suffix}",
+                f"Banding rule has non-{'finite' if finite else 'numeric'} threshold '{val}' "
+                f"for op{suffix}",
                 setting="factors",
                 values=(val,),
             )
@@ -1626,16 +1614,12 @@ def normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
                 f"ratingStep combined_outputs[{idx}] requires base_value",
                 setting="combined_outputs",
             )
-        try:
-            base_value = float(base_raw)
-        except (TypeError, ValueError) as exc:
+        base_value = setting_number(base_raw)
+        if base_value is None:
+            finite = isinstance(base_raw, int | float)
             raise ConfigSettingError(
-                f"ratingStep combined_outputs[{idx}].base_value must be numeric",
-                setting="combined_outputs",
-            ) from exc
-        if not math.isfinite(base_value):
-            raise ConfigSettingError(
-                f"ratingStep combined_outputs[{idx}].base_value must be finite",
+                f"ratingStep combined_outputs[{idx}].base_value must be "
+                f"{'finite' if finite else 'numeric'}",
                 setting="combined_outputs",
             )
         outputs.append(

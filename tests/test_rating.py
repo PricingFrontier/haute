@@ -1714,7 +1714,7 @@ class TestBandingWithNanBoundary:
         rules = [
             {"boundary": float("nan"), "label": "nan_band"},
         ]
-        with pytest.raises(ValueError, match="non-finite"):
+        with pytest.raises(ValueError, match="unreadable boundary"):
             _apply_banding(lf, "x", "band", "breakpoints", rules)
 
 

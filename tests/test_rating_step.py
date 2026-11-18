@@ -647,7 +647,7 @@ class TestRatingStepExecutor:
                 "ratingStep combined_outputs[1].base_value must be numeric",
             ),
             (
-                {"output_column": "premium", "operation": "multiply", "base_value": "inf"},
+                {"output_column": "premium", "operation": "multiply", "base_value": float("inf")},
                 "ratingStep combined_outputs[1].base_value must be finite",
             ),
         ],
@@ -1343,16 +1343,38 @@ def test_validate_rating_value_rejects_non_numeric_string() -> None:
         _validate_rating_value("abc", "ctx")
 
 
-def test_validate_rating_value_rejects_non_finite_numeric_string() -> None:
-    with pytest.raises(ValueError, match="must be finite"):
+def test_validate_rating_value_rejects_a_value_that_is_not_finite() -> None:
+    # Words Python reads as numbers are not numbers by the typed-number grammar.
+    with pytest.raises(ValueError, match="must be numeric"):
         _validate_rating_value("nan", "ctx")
-    with pytest.raises(ValueError, match="must be finite"):
+    with pytest.raises(ValueError, match="must be numeric"):
         _validate_rating_value("inf", "ctx")
+    with pytest.raises(ValueError, match="must be finite"):
+        _validate_rating_value(float("inf"), "ctx")
 
 
 def test_validate_rating_value_coerces_numeric_string() -> None:
     # Numeric strings are accepted (coerced for the finite check) without raising.
     assert _validate_rating_value("2.25", "ctx") is None
+
+
+@pytest.mark.parametrize("text", ["1,5", "1,00", "1 000,50", "1_000"])
+def test_a_relativity_and_a_default_that_could_be_two_numbers_are_refused(text: str) -> None:
+    # RTG-03: the one grammar for a typed number refuses a decimal comma, never guessing.
+    from haute._rating_step_config import rating_default_value
+
+    with pytest.raises(ValueError, match="must be numeric"):
+        _validate_rating_value(text, "ctx")
+    with pytest.raises(ValueError, match="not a finite number"):
+        rating_default_value(text, where="tables[0]")
+
+
+def test_a_relativity_and_a_default_read_thousands_as_the_grammar_does() -> None:
+    from haute._rating_step_config import rating_default_value
+
+    assert _validate_rating_value("1,000.5", "ctx") is None
+    assert rating_default_value("1,000.5", where="tables[0]") == 1000.5
+    assert rating_default_value(1.5, where="tables[0]") == 1.5
 
 
 def test_validate_rating_value_rejects_other_types() -> None:

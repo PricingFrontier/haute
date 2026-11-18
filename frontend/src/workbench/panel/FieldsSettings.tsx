@@ -1,7 +1,7 @@
 /** A Table's, a Collection's or a Chart's panel, in its panes (specs/workbench). */
 import { useState } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, SearchField, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, LabelledRow, NumberField, SearchField } from "../../components/form"
 import useCollapsedSet from "../../hooks/useCollapsedSet"
 import PreviewPanelTabs, { type PreviewPanelTab } from "../../panels/PreviewPanelTabs"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -102,24 +102,28 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
           <Section title="Layout">
             <LabelledRow label={widget.type === "collection" ? "Columns" : "Rows"}>
               {widget.type === "collection" ? (
-                <ValidatedTextField
-                  dataTestId="widget-columns"
-                  value={String(widget.columns)}
-                  onCommit={(text) => change((spec) => updateWidget(spec, widget.id, { columns: Number(text) }))}
-                  validate={wholeNumber({ min: 1, max: COLLECTION_COLUMNS_MAX })}
+                <NumberField
+                  data-testid="widget-columns"
+                  integer required min={1} max={COLLECTION_COLUMNS_MAX}
+                  value={widget.columns}
+                  onCommit={(columns) => { if (columns !== null) change((spec) => updateWidget(spec, widget.id, { columns })) }}
                   containerClassName="w-16"
                   className={`${FIELD_CLASS} w-full tabular-nums`}
                   style={INPUT_STYLE}
+                  problemTestId="widget-columns-error"
+                  problemClassName="mt-0.5 block text-[10px] leading-snug"
                 />
               ) : (
-                <ValidatedTextField
-                  dataTestId="widget-rows"
-                  value={String(widget.rows)}
-                  onCommit={(text) => change((spec) => setTableRows(spec, widget.id, Number(text)))}
-                  validate={wholeNumber({ min: 1, max: TABLE_ROWS_MAX })}
+                <NumberField
+                  data-testid="widget-rows"
+                  integer required min={1} max={TABLE_ROWS_MAX}
+                  value={widget.rows}
+                  onCommit={(rows) => { if (rows !== null) change((spec) => setTableRows(spec, widget.id, rows)) }}
                   containerClassName="w-16"
                   className={`${FIELD_CLASS} w-full tabular-nums`}
                   style={INPUT_STYLE}
+                  problemTestId="widget-rows-error"
+                  problemClassName="mt-0.5 block text-[10px] leading-snug"
                 />
               )}
             </LabelledRow>

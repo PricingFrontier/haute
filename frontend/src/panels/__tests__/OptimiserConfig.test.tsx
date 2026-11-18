@@ -1879,7 +1879,7 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      const valueInput = screen.getByRole("spinbutton", {
+      const valueInput = screen.getByRole("textbox", {
         name: "loss_ratio constraint value",
       })
       fireEvent.change(valueInput, { target: { value: "0.95" } })
@@ -1888,7 +1888,7 @@ describe("OptimiserConfig", () => {
       expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("loss_ratio", "max", 0.95)
     })
 
-    it("clearing a bound restores its value instead of relaxing the constraint to 0", () => {
+    it("refuses a cleared bound in words instead of relaxing the constraint to 0", () => {
       renderConfig(makeProps({
             config: {
               mode: "online",
@@ -1896,13 +1896,32 @@ describe("OptimiserConfig", () => {
               constraints: { loss_ratio: { max: 1.05 } },
             },
           }))
-      const valueInput = screen.getByRole("spinbutton", {
+      const valueInput = screen.getByRole("textbox", {
         name: "loss_ratio constraint value",
       })
       fireEvent.change(valueInput, { target: { value: "" } })
       fireEvent.blur(valueInput)
       expect(mockHandleConstraintValueChange).not.toHaveBeenCalled()
-      expect(valueInput).toHaveValue(1.05)
+      expect(valueInput).toHaveValue("")
+      expect(screen.getByRole("alert")).toHaveTextContent("Enter a number.")
+    })
+
+    // RTG-03: a decimal comma in an optimiser's bound is refused in words, in any browser
+    // language, never saved as five where 0,5 was typed.
+    it("refuses a bound typed with a decimal comma, saying why", () => {
+      renderConfig(makeProps({
+            config: {
+              mode: "online",
+              objective: "premium",
+              constraints: { loss_ratio: { max: 1.05 } },
+            },
+          }))
+      const valueInput = screen.getByRole("textbox", { name: "loss_ratio constraint value" })
+      fireEvent.change(valueInput, { target: { value: "0,5" } })
+      fireEvent.blur(valueInput)
+      expect(mockHandleConstraintValueChange).not.toHaveBeenCalled()
+      expect(valueInput).toHaveValue("0,5")
+      expect(screen.getByRole("alert")).toHaveTextContent("Use a point for decimals.")
     })
 
     it("changing the constraint type dropdown calls handleConstraintKindChange", () => {
@@ -1933,10 +1952,10 @@ describe("OptimiserConfig", () => {
           }))
       expect(screen.getByRole("combobox", { name: "volume constraint bound type" }))
         .toHaveDisplayValue("at least % of baseline")
-      const valueInput = screen.getByRole("spinbutton", {
+      const valueInput = screen.getByRole("textbox", {
         name: "volume constraint value (% of baseline)",
       })
-      expect(valueInput).toHaveValue(95)
+      expect(valueInput).toHaveValue("95")
       fireEvent.change(valueInput, { target: { value: "90" } })
       fireEvent.blur(valueInput)
       expect(mockHandleConstraintValueChange).toHaveBeenCalledWith("volume", "min_pct", 0.9)
@@ -1953,10 +1972,10 @@ describe("OptimiserConfig", () => {
             },
             onUpdate,
           }))
-      const from = screen.getByRole("spinbutton", { name: "volume sweep from (% of baseline)" })
-      const to = screen.getByRole("spinbutton", { name: "volume sweep to (% of baseline)" })
-      expect(from).toHaveValue(90)
-      expect(to).toHaveValue(null)
+      const from = screen.getByRole("textbox", { name: "volume sweep from (% of baseline)" })
+      const to = screen.getByRole("textbox", { name: "volume sweep to (% of baseline)" })
+      expect(from).toHaveValue("90")
+      expect(to).toHaveValue("")
       fireEvent.change(to, { target: { value: "110" } })
       fireEvent.blur(to)
       expect(onUpdate).toHaveBeenCalledWith({ frontier_ranges: { volume: { min: 0.9, max: 1.1 } } })
@@ -1976,7 +1995,7 @@ describe("OptimiserConfig", () => {
       const typeSelect = screen.getByRole("combobox", { name: "volume constraint bound type" })
       expect(typeSelect).toHaveValue("")
       expect(typeSelect).toHaveAttribute("aria-invalid", "true")
-      expect(screen.getByRole("spinbutton", { name: "volume constraint value" })).toBeDisabled()
+      expect(screen.getByRole("textbox", { name: "volume constraint value" })).toBeDisabled()
     })
 
     it("shows multiple constraints with correct count", () => {
@@ -2579,7 +2598,7 @@ describe("OptimiserConfig", () => {
       const card = screen.getByRole("group", { name: "loss_ratio constraint" })
       expect(within(card).getByRole("combobox", { name: "loss_ratio constraint bound type" })).toHaveValue("max")
       expect(within(card).getByRole("combobox", { name: "loss_ratio constraint bound type" })).toHaveDisplayValue("at most")
-      expect(within(card).getByLabelText("loss_ratio constraint value")).toHaveValue(1.05)
+      expect(within(card).getByLabelText("loss_ratio constraint value")).toHaveValue("1.05")
       expect(within(card).getByRole("radio", { name: "Fixed" })).toBeChecked()
       expect(within(card).queryByLabelText("loss_ratio sweep from")).not.toBeInTheDocument()
       expect(screen.queryByTestId("frontier-settings")).not.toBeInTheDocument()
@@ -2598,10 +2617,10 @@ describe("OptimiserConfig", () => {
       // A swept constraint shows its range in place of a fixed value.
       expect(within(loss).queryByLabelText("loss_ratio constraint value")).not.toBeInTheDocument()
       expect(within(loss).getByRole("radio", { name: "Sweep" })).toBeChecked()
-      expect(within(loss).getByLabelText("loss_ratio sweep from")).toHaveValue(0.9)
-      expect(within(loss).getByLabelText("loss_ratio sweep to")).toHaveValue(1.2)
+      expect(within(loss).getByLabelText("loss_ratio sweep from")).toHaveValue("0.9")
+      expect(within(loss).getByLabelText("loss_ratio sweep to")).toHaveValue("1.2")
       const volume = screen.getByRole("group", { name: "volume constraint" })
-      expect(within(volume).getByLabelText("volume constraint value")).toHaveValue(900)
+      expect(within(volume).getByLabelText("volume constraint value")).toHaveValue("900")
       expect(within(volume).getByRole("radio", { name: "Fixed" })).toBeChecked()
       // Points and Auto range belong to the whole frontier, not to one card.
       const frontier = screen.getByTestId("frontier-settings")

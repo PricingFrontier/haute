@@ -657,22 +657,21 @@ describe("PipelineSettingsModal settings fields", () => {
     })
   })
 
-  it("row limit input changes the store value", () => {
+  it("row limit input changes the store value once it is committed", () => {
     render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "500" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(500)
+    fireEvent.change(getRowLimitInput(), { target: { value: "1,500" } })
+    expect(useSettingsStore.getState().rowLimit).not.toBe(1500)
+    fireEvent.blur(getRowLimitInput())
+    expect(useSettingsStore.getState().rowLimit).toBe(1500)
   })
 
-  it("row limit clamps negative values to 0", () => {
+  it.each([["-50"], ["abc"], ["1,5"]])("row limit refuses %j in words and keeps the store value", (draft) => {
+    useSettingsStore.setState({ rowLimit: 2000 })
     render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "-50" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(0)
-  })
-
-  it("row limit treats NaN input as 0", () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getRowLimitInput(), { target: { value: "abc" } })
-    expect(useSettingsStore.getState().rowLimit).toBe(0)
+    commit(getRowLimitInput(), draft)
+    expect(useSettingsStore.getState().rowLimit).toBe(2000)
+    expect(getRowLimitInput().value).toBe(draft)
+    expect(screen.getByTestId("pipeline-settings-rows-problem")).toBeInTheDocument()
   })
 
   it("row limit input shows current store value", () => {
@@ -739,30 +738,23 @@ describe("PipelineSettingsModal settings fields", () => {
     )
   })
 
-  it("clamps chunk rows to the server's bounds", async () => {
-    await opened()
-    commit(getChunkInput(), "5")
-    await waitFor(() => expect(mockPatchPipelineSettings).toHaveBeenCalledWith({ chunk_rows: 1000 }))
-    commit(getChunkInput(), "15000000")
-    await waitFor(() =>
-      expect(mockPatchPipelineSettings).toHaveBeenLastCalledWith({ chunk_rows: 10_000_000 }),
-    )
-  })
-
   it.each([
     [/^chunk rows$/i, "abc"],
+    [/^chunk rows$/i, "5"],
+    [/^chunk rows$/i, "15000000"],
+    [/^chunk rows$/i, "1,5"],
     [/^previews$/i, "0"],
     [/^previews$/i, "-2"],
     [/^kept free$/i, "-1"],
     [/^pipeline$/i, "0"],
     [/^pipeline$/i, "10081"],
-  ])("ignores an invalid draft for %s (%s)", async (label, draft) => {
+  ])("refuses an invalid draft for %s (%s) in words, sending nothing", async (label, draft) => {
     await opened()
     const input = field(label)
-    const before = input.value
     commit(input, draft)
     expect(mockPatchPipelineSettings).not.toHaveBeenCalled()
-    expect(input.value).toBe(before)
+    expect(input.value).toBe(draft)
+    expect(input).toHaveAttribute("aria-invalid", "true")
   })
 
   it("accepts keeping nothing free", async () => {

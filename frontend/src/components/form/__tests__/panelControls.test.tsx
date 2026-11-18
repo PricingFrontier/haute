@@ -6,22 +6,25 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { Trash2 } from "lucide-react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { LabelledRow, QuietAction, SelectRow, wholeNumber } from ".."
+import { LabelledRow, QuietAction, SelectRow } from ".."
+import { readNumberDraft } from "../../../utils/numberRule"
 
 describe("panel controls", () => {
   afterEach(cleanup)
 
   it("checks a whole number against a range, or a least number of a unit, never past a safe one", () => {
-    const columns = wholeNumber({ min: 1, max: 12 })
-    expect(columns("4")).toBeNull()
-    expect(columns(" 12 ")).toBeNull()
-    for (const text of ["0", "13", "2.5", "-1", "", "x"]) expect(columns(text)).toBe("Enter a whole number from 1 to 12.")
+    const columns = (text: string) => readNumberDraft(text, { integer: true, required: true, min: 1, max: 12 })
+    expect(columns("4")).toEqual({ ok: true, value: 4 })
+    expect(columns(" 12 ")).toEqual({ ok: true, value: 12 })
+    for (const text of ["0", "13", "2.5", "-1", "", "x"]) expect(columns(text)).toEqual({ ok: false, problem: "Enter a whole number from 1 to 12." })
 
-    const width = wholeNumber({ min: 240, unit: "pixels" })
-    expect(width("1280")).toBeNull()
-    expect(width("200")).toBe("Enter a whole number of pixels, 240 or more.")
-    expect(width("9".repeat(20))).toBe("Enter a whole number of pixels, 240 or more.")
-    expect(wholeNumber({ min: 0 })("-3")).toBe("Enter a whole number, 0 or more.")
+    const width = (text: string) => readNumberDraft(text, { integer: true, required: true, min: 240, unit: "pixels" })
+    expect(width("1,280")).toEqual({ ok: true, value: 1280 })
+    expect(width("200")).toEqual({ ok: false, problem: "Enter a whole number of pixels, 240 or more." })
+    expect(width("9".repeat(20))).toEqual({ ok: false, problem: "Enter a whole number of pixels, 240 or more." })
+    expect(readNumberDraft("-3", { integer: true, min: 0 })).toEqual({ ok: false, problem: "Enter a whole number, 0 or more." })
+    // A comma that could be a decimal mark is never guessed.
+    expect(width("1,5")).toEqual({ ok: false, problem: "Use a point for decimals." })
   })
 
   it("labels a control in a row, and leaves the label's column blank for a row of tick boxes", () => {

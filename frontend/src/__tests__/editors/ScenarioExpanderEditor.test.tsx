@@ -352,7 +352,7 @@ describe("ScenarioExpanderEditor", () => {
     fireEvent.change(minInput, { target: { value: "abc" } })
     fireEvent.blur(minInput)
     expect(onUpdate).not.toHaveBeenCalled()
-    expect(screen.getByTestId("scenario-min_value-error").textContent).toBe("Enter a number, or leave it blank.")
+    expect(screen.getByTestId("scenario-min_value-error").textContent).toBe("Enter a number.")
   })
 
   it("commits a whole step count once on blur", () => {
@@ -380,7 +380,7 @@ describe("ScenarioExpanderEditor", () => {
       expect(onUpdate).not.toHaveBeenCalled()
       expect(stepsInput.value).toBe(typed)
       expect(screen.getByTestId("scenario-steps-error").textContent).toBe(
-        "Steps must be a whole number of at least 1.",
+        "Enter a whole number of steps, 1 or more.",
       )
     },
   )
@@ -388,7 +388,7 @@ describe("ScenarioExpanderEditor", () => {
   it("marks a saved step count the backend refuses", () => {
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ step_count: 2.7 }} />)
     expect(screen.getByTestId("scenario-steps-error").textContent).toBe(
-      "Steps must be a whole number of at least 1.",
+      "Enter a whole number of steps, 1 or more.",
     )
   })
 
