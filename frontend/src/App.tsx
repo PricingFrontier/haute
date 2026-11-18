@@ -1362,7 +1362,7 @@ function FlowEditor() {
     ])
   }, [])
 
-  const { onUpdateNode, onRenameNode, waitForPendingCommits, pendingNodeData } = useGraphCommitController({
+  const { onUpdateNode, onRenameNode, settleEdits, pendingNodeData } = useGraphCommitController({
     
     
     readDocumentIdentity,
@@ -1407,8 +1407,8 @@ function FlowEditor() {
   } = useScopedNodeSave({
     scopedEditingActive,
     selectedNodeId: selectedNode?.id ?? null,
-    
     onUpdateNode,
+    settleEdits,
     applyDocument: applyScopedSaveDocument,
   })
 
@@ -1444,6 +1444,14 @@ function FlowEditor() {
       return false
     }
     if (refused()) return false
+    // The values still being typed in the panels and the workbench's form are committed
+    // first, so the form saved is the one on screen.
+    const settled = await settleEdits()
+    if (!settled.ok) {
+      addToast("error", settled.error)
+      return false
+    }
+    if (refused()) return false
     // What earlier writes left off the ledger is captured first; a capture that fails
     // says so, and the project is saved all the same.
     await captureUncaptured()
@@ -1462,9 +1470,10 @@ function FlowEditor() {
         return false
       }
     }
-    // Through the graph-commit fence: an update of a node still resolving its identity
+    // Through the same barrier again, as edits can be made while the save waits: a value
+    // still being typed is committed and an update of a node still resolving its identity
     // lands or fails before the pipeline is saved, and a failure saves nothing.
-    const pending = await waitForPendingCommits()
+    const pending = await settleEdits()
     if (!pending.ok) {
       addToast("error", pending.error)
       return false
@@ -1477,7 +1486,7 @@ function FlowEditor() {
       return false
     }
     return handleSave()
-  }, [addToast, handleSave, holdConnections, waitForPendingCommits])
+  }, [addToast, handleSave, holdConnections, settleEdits])
   const saveProjectNowRef = useRef(saveProjectNow)
   useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
 

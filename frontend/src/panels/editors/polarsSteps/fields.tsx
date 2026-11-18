@@ -397,24 +397,18 @@ export function RowList<T>({
     <div className="grid gap-1.5">
       {rows.map((row, index) => (
         <div key={rowKeys.keys[index]} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`${label} ${index + 1}`}>
-          {renderRow(row, (next) => onChange(rows.map((r, i) => (i === index ? next : r))), index)}
+          {renderRow(row, (next) => onChange(rowKeys.edit(rows.map((r, i) => (i === index ? next : r)))), index)}
           {rows.length > min && (
             <RowRemove
               label={`Remove ${label.toLowerCase()} ${index + 1}`}
-              onClick={() => {
-                rowKeys.remove(index)
-                onChange(rows.filter((_, i) => i !== index))
-              }}
+              onClick={() => onChange(rowKeys.remove(index, rows.filter((_, i) => i !== index)))}
             />
           )}
         </div>
       ))}
       {children}
       <QuietAction
-        onClick={() => {
-          rowKeys.add()
-          onChange([...rows, create()])
-        }}
+        onClick={() => onChange(rowKeys.add([...rows, create()]))}
         className="justify-self-start"
       >
         {addLabel}
@@ -1368,22 +1362,16 @@ export function ConditionList({
           renderExpression={renderExpression}
           columnId={index === 0 ? firstId : undefined}
           boxed={conditions.length > 1}
-          onChange={(next) => onChange(conditions.map((c, i) => (i === index ? next : c)), match)}
+          onChange={(next) => onChange(rowKeys.edit(conditions.map((c, i) => (i === index ? next : c))), match)}
           onRemove={
             conditions.length > 1
-              ? () => {
-                  rowKeys.remove(index)
-                  onChange(conditions.filter((_, i) => i !== index), match)
-                }
+              ? () => onChange(rowKeys.remove(index, conditions.filter((_, i) => i !== index)), match)
               : undefined
           }
         />
       ))}
       <QuietAction
-        onClick={() => {
-          rowKeys.add()
-          onChange([...conditions, defaultCondition()], match)
-        }}
+        onClick={() => onChange(rowKeys.add([...conditions, defaultCondition()]), match)}
         className="justify-self-start"
       >
         Add condition

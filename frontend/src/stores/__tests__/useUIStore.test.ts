@@ -1,3 +1,4 @@
+import { rowIdentity } from "../../utils/rowKeys"
 import { describe, it, expect, beforeEach } from "vitest"
 import useUIStore from "../useUIStore"
 
@@ -93,27 +94,23 @@ describe("useUIStore", () => {
     const young = [{ boundary: "25", label: "young" }]
     const grouped = [{ value: "A", assignment: "a" }]
 
-    it("keeps each node's factors apart and adds to a factor's stash", () => {
+    const identity = rowIdentity([{ column: "age" }, { column: "region" }])
+
+    it("keeps each node's stash apart, by its factors' identities", () => {
       const state = useUIStore.getState()
-      state.setBandingRuleStash("band", 0, { breakpoints: young })
-      state.setBandingRuleStash("band", 1, { categorical: grouped })
-      state.setBandingRuleStash("other", 0, { categorical: grouped })
-      state.setBandingRuleStash("band", 0, { breakpoints: young, categorical: grouped })
+      state.setBandingRuleStash("band", { identity, rules: { 0: { breakpoints: young }, 1: { categorical: grouped } } })
+      state.setBandingRuleStash("other", { identity, rules: { 0: { categorical: grouped } } })
+      state.setBandingRuleStash("band", { identity, rules: { 0: { breakpoints: young, categorical: grouped } } })
 
       expect(useUIStore.getState().bandingRuleStash).toEqual({
-        band: { 0: { breakpoints: young, categorical: grouped }, 1: { categorical: grouped } },
-        other: { 0: { categorical: grouped } },
+        band: { identity, rules: { 0: { breakpoints: young, categorical: grouped } } },
+        other: { identity, rules: { 0: { categorical: grouped } } },
       })
     })
 
-    it("forgets one node's stash, and every stash on reload", () => {
+    it("forgets every stash on reload", () => {
       const state = useUIStore.getState()
-      state.setBandingRuleStash("band", 0, { breakpoints: young })
-      state.setBandingRuleStash("other", 0, { categorical: grouped })
-
-      state.forgetBandingRuleStash("band")
-      expect(useUIStore.getState().bandingRuleStash).toEqual({ other: { 0: { categorical: grouped } } })
-
+      state.setBandingRuleStash("band", { identity, rules: { 0: { breakpoints: young } } })
       state.clearBandingRuleStash()
       expect(useUIStore.getState().bandingRuleStash).toEqual({})
     })

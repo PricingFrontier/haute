@@ -85,7 +85,11 @@ describe("BandingRulesGrid", () => {
     value.focus()
     fireEvent.change(value, { target: { value: "van" } })
     fireEvent.change(screen.getByLabelText("Rule 1 match value"), { target: { value: "vans" } })
+    // Typing writes nothing: the cell's edit reaches the factor once, as one undo step.
+    expect(written).toEqual([])
+    fireEvent.keyDown(screen.getByLabelText("Rule 1 match value"), { key: "Enter" })
 
+    expect(written).toHaveLength(1)
     expect(written.at(-1)?.rules).toEqual([{ value: "vans", assignment: "Small" }])
     for (const factor of written) {
       for (const rule of factor.rules ?? []) expect(Object.keys(rule).sort()).toEqual(["assignment", "value"])
@@ -127,6 +131,9 @@ describe("BandingRulesGrid", () => {
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     const inputs = screen.getAllByRole("textbox")
     fireEvent.change(inputs[0], { target: { value: "Truck" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(inputs[0])
+    expect(onUpdate).toHaveBeenCalledOnce()
     const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
     expect(lastCall.rules[0].value).toBe("Truck")
     expect(lastCall.rules[0].assignment).toBe("Vehicle")
@@ -139,6 +146,7 @@ describe("BandingRulesGrid", () => {
     ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     fireEvent.change(screen.getByLabelText("Rule 1 group name"), { target: { value: "Motor" } })
+    fireEvent.blur(screen.getByLabelText("Rule 1 group name"))
     const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
     expect(lastCall.rules[0]).toMatchObject({ value: "Car", assignment: "Motor" })
   })
@@ -160,6 +168,7 @@ describe("BandingRulesGrid", () => {
     expect(document.activeElement).toBe(textbox)
 
     fireEvent.change(textbox, { target: { value: "Van" } })
+    fireEvent.blur(textbox)
     expect(onUpdate).toHaveBeenCalledOnce()
     // The row keys never reach the config.
     expect(onUpdate.mock.calls[0][0].rules).toEqual([{ value: "Van", assignment: "Vehicle" }])
@@ -191,6 +200,7 @@ describe("BandingRulesGrid", () => {
     ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     fireEvent.change(screen.getByLabelText("Rule 2 group name"), { target: { value: "Pedal" } })
+    fireEvent.blur(screen.getByLabelText("Rule 2 group name"))
     expect(onUpdate.mock.calls[0][0].rules).toEqual([
       { value: "Car", assignment: "Vehicle" },
       { value: "Bike", assignment: "Pedal" },
@@ -459,16 +469,16 @@ describe("BandingRulesGrid", () => {
 
   // --- Keyboard: Enter to add row ---
 
-  it("Enter on non-last assignment input does not call onAddRule", () => {
-    const onAddRule = vi.fn()
+  it("Enter on a group name that is not the last adds no rule", () => {
+    const onUpdate = vi.fn()
     const rules = [
       { value: "Car", assignment: "Vehicle", _id: "e3" },
       { value: "Bike", assignment: "Cycle", _id: "e4" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} onAddRule={onAddRule} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} addsRuleOnEnter />)
     const firstInput = screen.getByLabelText("Rule 1 group name")
     fireEvent.keyDown(firstInput, { key: "Enter" })
-    expect(onAddRule).not.toHaveBeenCalled()
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   // --- Header labels ---
@@ -516,15 +526,20 @@ describe("BandingRulesGrid", () => {
 
   // --- Enter for categorical ---
 
-  it("Enter on last categorical assignment input calls onAddRule", () => {
-    const onAddRule = vi.fn()
+  it("Enter on the last group name commits it and adds a rule, in one update", () => {
+    const onUpdate = vi.fn()
     const rules = [
       { value: "Car", assignment: "Vehicle", _id: "ce1" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} onAddRule={onAddRule} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} addsRuleOnEnter />)
     const lastInput = screen.getByLabelText("Rule 1 group name")
+    fireEvent.change(lastInput, { target: { value: "Motor" } })
     fireEvent.keyDown(lastInput, { key: "Enter" })
-    expect(onAddRule).toHaveBeenCalledTimes(1)
+    expect(onUpdate).toHaveBeenCalledOnce()
+    expect(onUpdate.mock.calls[0][0].rules).toEqual([
+      { value: "Car", assignment: "Motor" },
+      { value: "", assignment: "" },
+    ])
   })
 
   // --- Paste edge cases ---
@@ -598,13 +613,13 @@ describe("BandingRulesGrid", () => {
     expect(screen.getByText("Matches", { selector: "th" })).toBeInTheDocument()
   })
 
-  it("Enter without onAddRule prop does not throw", () => {
+  it("Enter on the last group name adds no rule when the grid does not add one", () => {
+    const onUpdate = vi.fn()
     const rules = [
       { value: "Car", assignment: "Vehicle", _id: "nr1" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
-    const lastInput = screen.getByLabelText("Rule 1 group name")
-    // Should not throw even without onAddRule
-    expect(() => fireEvent.keyDown(lastInput, { key: "Enter" })).not.toThrow()
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    fireEvent.keyDown(screen.getByLabelText("Rule 1 group name"), { key: "Enter" })
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 })

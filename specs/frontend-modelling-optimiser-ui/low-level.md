@@ -831,6 +831,11 @@ The behavioural contract is defined in
   cross-validation settings and those conflicts.
 - `HyperparametersConfig.tsx` owns the algorithm-neutral JSON-object editor, while
   `hyperparameters.ts` owns its formatting, object parsing, and reserved-key merge transitions.
+  Its two drafts, the Parameters JSON and the search space JSON, are `useCommittedDraft` drafts
+  held by `ModellingConfig` (owned by the node id, so a pane switch keeps them and another node
+  starts from its own) and shown through `DraftTextArea`; each commits on blur, an
+  unparseable or refused one is kept and blocks Train, and a change of the stored value lets
+  go of it.
   The editor receives the family's capability label, starter search space and reserved keys
   from its caller, accepts arbitrary non-reserved object contents without duplicating
   algorithm-specific validation, and renders no dedicated parameter fields. A Target-style

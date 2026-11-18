@@ -1,5 +1,6 @@
 import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import { useCallback, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react"
+import { commitOpenDrafts } from "../components/form/useCommittedDraft"
 import { EditorNameCollisionError } from "../utils/editorIdentities"
 import type { Edge, Node } from "@xyflow/react"
 
@@ -24,7 +25,10 @@ const MAX_IDENTITY_ATTEMPTS = 3
 type GraphCommitRequest = {
   nodeId: string
   generation: number
-  editKey: string
+  /** The node's own authored fields when the request began. */
+  nodeKey: string
+  /** The definition interfaces it is resolved against. */
+  definitionsKey: string
   documentIdentity: string
   contextGeneration: number
 }
@@ -32,10 +36,16 @@ type GraphCommitRequest = {
 /** A request input's update accepted ahead of its identities; the object is its identity. */
 type PendingDraft = { data: Record<string, unknown> }
 
+/** The definition interfaces a node's identities are resolved against. */
+const definitionsKey = (): string => structuralFingerprint({ submodels: useGraphStore.getState().submodels })
+
 const NO_PENDING_DRAFTS: ReadonlyMap<string, Record<string, unknown>> = new Map()
 
 const SUPERSEDED_UPDATE =
   "Node update was not applied because the document, editing capability, or a newer node edit superseded it."
+
+const NODE_MOVED_UPDATE =
+  "Node update was not applied because the node changed while it was resolving (an Undo, a Redo or a change made elsewhere)."
 
 export type UseGraphCommitControllerOptions = {
   readDocumentIdentity: () => string
@@ -61,6 +71,8 @@ export type GraphCommitController = {
   onUpdateNode: (nodeId: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   waitForPendingCommits: () => Promise<OnUpdateConfigResult>
+  /** Commit every open panel draft, then wait for every pending commit: what every save waits on. */
+  settleEdits: () => Promise<OnUpdateConfigResult>
   /** Each request input's pending draft, by node id, while its identities
    *  resolve: the data its editor builds the next update on. */
   pendingNodeData: ReadonlyMap<string, Record<string, unknown>>
@@ -137,6 +149,14 @@ export default function useGraphCommitController({
     return { ok: true }
   }, [])
 
+  // The one barrier every save waits on, of the pipeline or of one node: each value still
+  // being typed is committed, as leaving its field would, then every commit still resolving
+  // lands or fails, so the save reads what the panels show.
+  const settleEdits = useCallback((): Promise<OnUpdateConfigResult> => {
+    commitOpenDrafts()
+    return waitForPendingCommits()
+  }, [waitForPendingCommits])
+
   const prepare = useCallback((
     nodeId: string,
     data: Record<string, unknown>,
@@ -154,14 +174,13 @@ export default function useGraphCommitController({
   // What an identity resolution depends on: the node's own authored fields and
   // the definition interfaces. Positions, selection and preview metadata
   // (underscore-prefixed data) change constantly and must not invalidate it.
-  const editKey = useCallback((nodeId: string): string => {
+  const nodeKey = useCallback((nodeId: string): string => {
     const node = canvasGraph().nodes.find((candidate) => candidate.id === nodeId)
     const data = (node?.data ?? {}) as Record<string, unknown>
     return JSON.stringify({
       label: data.label ?? null,
       nodeType: data.nodeType ?? null,
       config: data.config ?? null,
-      submodels: structuralFingerprint({ submodels: useGraphStore.getState().submodels }),
     })
   }, [])
 
@@ -171,11 +190,12 @@ export default function useGraphCommitController({
     return {
       nodeId,
       generation,
-      editKey: editKey(nodeId),
+      nodeKey: nodeKey(nodeId),
+      definitionsKey: definitionsKey(),
       documentIdentity: contextRef.current.readDocumentIdentity(),
       contextGeneration: contextRef.current.generation,
     }
-  }, [editKey])
+  }, [nodeKey])
 
   const contextInvalidated = useCallback((request: GraphCommitRequest): boolean => (
     contextRef.current.readOnly
@@ -190,8 +210,9 @@ export default function useGraphCommitController({
 
   const requestIsStale = useCallback((request: GraphCommitRequest): boolean => (
     requestInvalidated(request)
-    || editKey(request.nodeId) !== request.editKey
-  ), [editKey, requestInvalidated])
+    || nodeKey(request.nodeId) !== request.nodeKey
+    || definitionsKey() !== request.definitionsKey
+  ), [nodeKey, requestInvalidated])
 
   const commit = useCallback((prepared: PreparedNodeUpdate): void => {
     // Keep request-facing refs coherent immediately; the store subscription
@@ -249,7 +270,16 @@ export default function useGraphCommitController({
         if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
           throw new Error("identity resolver returned an invalid node")
         }
-        if (requestIsStale(request)) continue
+        if (requestIsStale(request)) {
+          // The draft is a whole node built on the node as it was: an Undo, a Redo or a sync
+          // frame that moved the node under it lets go of the draft, as every panel draft lets
+          // go when its value moves. Only new definitions it is resolved against resolve it again.
+          if (nodeKey(nodeId) !== request.nodeKey) {
+            retireDraft(nodeId, draft)
+            return { ok: false, error: NODE_MOVED_UPDATE }
+          }
+          continue
+        }
         const finalPlan = prepare(nodeId, resolved[0].data, true)
         if (!finalPlan.ok) {
           retireDraft(nodeId, draft)
@@ -273,7 +303,7 @@ export default function useGraphCommitController({
         error: `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
       }
     }
-  }, [beginRequest, commit, contextInvalidated, prepare, requestInvalidated, requestIsStale, resolveNodeIdentities, retireDraft])
+  }, [beginRequest, commit, contextInvalidated, nodeKey, prepare, requestInvalidated, requestIsStale, resolveNodeIdentities, retireDraft])
 
   const onUpdateNode = useCallback((
     nodeId: string,
@@ -409,5 +439,5 @@ export default function useGraphCommitController({
     return pending
   }, [beginRequest, commit, prepare, readNamingContextKey, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])
 
-  return { onUpdateNode, onRenameNode, waitForPendingCommits, pendingNodeData }
+  return { onUpdateNode, onRenameNode, waitForPendingCommits, settleEdits, pendingNodeData }
 }

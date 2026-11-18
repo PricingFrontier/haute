@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
-import type { ReactElement } from "react"
+import { useState, type ReactElement } from "react"
 import { ApiError } from "../../api/client"
 import { listProjectFiles } from "../../api/projectFiles"
 import type { ProjectFolderResponse } from "../../api/types"
@@ -720,6 +720,49 @@ describe("BandingEditor", () => {
     expect(restored.banding).toBe("breakpoints")
     expect(restored.rules).toEqual(existingRules)
     // Loading a document forgets the stash: usePipelineAPI and useWebSocketSync suites.
+  })
+
+  it("gives a factor its own remembered rules, never another factor's after an Undo (FEN-09)", () => {
+    const proposer = { banding: "breakpoints", column: "proposer_age", output_column: "proposer_age_band", rules: [] }
+    const vehicle = {
+      banding: "categorical",
+      column: "vehicle_age",
+      output_column: "vehicle_age_band",
+      rules: [{ value: "0", assignment: "New" }, { value: "1", assignment: "Nearly new" }],
+    }
+    // The node's config with its undo history, as the graph store holds it.
+    let shown: Record<string, unknown> = {}
+    function WithHistory() {
+      const [history, setHistory] = useState<Record<string, unknown>[]>([{ factors: [proposer, vehicle] }])
+      shown = history[history.length - 1]
+      return (
+        <>
+          <button type="button" onClick={() => setHistory((h) => h.slice(0, -1))}>Undo</button>
+          <BandingEditor
+            nodeId="band_1"
+            config={shown}
+            onUpdate={((key: string, value: unknown) => setHistory((h) => [...h, { ...h[h.length - 1], [key]: value }])) as never}
+            inputSources={[]}
+            accentColor="#22d3ee"
+          />
+        </>
+      )
+    }
+    renderEditor(<WithHistory />)
+    const factor = (name: string) => (shown.factors as typeof proposer[]).find((f) => f.output_column === name)!
+
+    fireEvent.keyDown(rowOf("vehicle_age_band"), { key: "ArrowUp", altKey: true })
+    fireEvent.click(rowOf("vehicle_age_band"))
+    fireEvent.click(screen.getByText("Numeric"))
+    expect(factor("vehicle_age_band").banding).toBe("breakpoints")
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }))
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }))
+    expect((shown.factors as typeof proposer[]).map((f) => f.output_column)).toEqual(["proposer_age_band", "vehicle_age_band"])
+
+    fireEvent.click(rowOf("proposer_age_band"))
+    fireEvent.click(screen.getByText("Categorical"))
+    expect(factor("proposer_age_band")).toMatchObject({ banding: "categorical", rules: [] })
+    expect(factor("vehicle_age_band").rules).toEqual(vehicle.rules)
   })
 
   // ─── Feature 4: Breakpoints mode rendering ────────────────────

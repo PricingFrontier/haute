@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react"
+import { useMemo } from "react"
 import { Copy, Trash } from "lucide-react"
 import { CHART_COLORS } from "../../../theme/colors"
 import { parsePastedGrid } from "../shared/tableClipboard"
@@ -8,6 +8,7 @@ import { categoricalRuleIssues } from "./bandingUtils"
 import { useRowKeys } from "../shared/useRowKeys"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
+import { GridCell } from "../shared/GridCell"
 
 const CATEGORICAL_FIELDS = ["value", "assignment"] as const
 const RULE_GRID = { name: "banding", fields: CATEGORICAL_FIELDS, copyHeaders: ["Value", "Maps To"] } as const
@@ -35,6 +36,8 @@ function parsePastedRules(text: string): CategoricalRule[] {
 
   return parsed
 }
+
+const EMPTY_RULE: CategoricalRule = { value: "", assignment: "" }
 
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors text-[var(--text-muted)] hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
 const ACTION_BUTTON_CLASS = "accent-hover-btn -my-1 flex size-6 items-center justify-center rounded"
@@ -66,50 +69,42 @@ export function BandingRulesGrid({
   onUpdateFactor,
   accentColor = CHART_COLORS.bandingAccent,
   matchCounts,
-  onAddRule,
+  addsRuleOnEnter = false,
 }: {
   factor: BandingFactor
   onUpdateFactor: (patch: Partial<BandingFactor>) => void
   accentColor?: string
   /** Rows each rule claims; null while a count is still being worked out. */
   matchCounts?: (number | null)[]
-  onAddRule?: () => void
+  /** Enter in the last rule's label cell commits it and adds a rule, in one update. */
+  addsRuleOnEnter?: boolean
 }) {
   const rules = useMemo(() => (factor.rules || []) as CategoricalRule[], [factor.rules])
-  // Each row's key lives here, never in the config: an edit keeps every key, so
-  // focus stays in the cell being typed in.
+  // Each row's key lives here, never in the config: the grid's own writes keep every
+  // key, so focus stays in the cell being typed in and a cell's draft stays with its row.
   const rowKeys = useRowKeys(rules)
 
   // A rule is its value and mapping: any editor-only key (an `_id` an earlier
-  // editor kept on the rule) is dropped from what is written.
-  const setRules = (r: CategoricalRule[]) =>
-    onUpdateFactor({ rules: r.map(({ value, assignment }) => ({ value, assignment })) })
-  const { handleCellPaste, copyTsv } = useTwoColumnGridClipboard(RULE_GRID, rules, setRules)
-  const updateRule = (idx: number, field: string, value: string) => {
-    const next = [...rules]; next[idx] = { ...next[idx], [field]: value }; setRules(next)
-  }
-  const removeRule = (idx: number) => {
-    rowKeys.remove(idx)
-    setRules(rules.filter((_, i) => i !== idx))
-  }
+  // editor kept on the rule) is dropped from what is written, before the row keys
+  // see the write, so the rules that come back are the ones they expect.
+  const written = (r: CategoricalRule[]): CategoricalRule[] => r.map(({ value, assignment }) => ({ value, assignment }))
+  const setRules = (r: CategoricalRule[]) => onUpdateFactor({ rules: r })
+  // A paste fills cells from the one pasted into and may add rows below.
+  const pasteRules = (next: CategoricalRule[]) =>
+    setRules(next.length > rules.length ? rowKeys.add(written(next)) : rowKeys.edit(written(next)))
+  const { handleCellPaste, copyTsv } = useTwoColumnGridClipboard(RULE_GRID, rules, pasteRules)
+  const withCell = (idx: number, field: string, value: string): CategoricalRule[] =>
+    written(rules.map((rule, i) => (i === idx ? { ...rule, [field]: value } : rule)))
+  const updateRule = (idx: number, field: string, value: string) => setRules(rowKeys.edit(withCell(idx, field, value)))
+  const removeRule = (idx: number) => setRules(rowKeys.remove(idx, written(rules.filter((_, i) => i !== idx))))
 
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
+  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
     const text = e.clipboardData.getData("text/plain")
     if (!text.includes("\t")) return // Not TSV data
     e.preventDefault()
     const parsed = parsePastedRules(text)
-    if (parsed.length > 0) {
-      setRules([...rules, ...parsed])
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rules])
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, ruleIndex: number) => {
-    if (e.key === "Enter" && ruleIndex === rules.length - 1 && onAddRule) {
-      rowKeys.add()
-      onAddRule()
-    }
-  }, [rules.length, onAddRule, rowKeys])
+    if (parsed.length > 0) setRules(rowKeys.add(written([...rules, ...parsed])))
+  }
 
   const showMatchCounts = !!matchCounts
   const issues = categoricalRuleIssues(rules)
@@ -141,7 +136,8 @@ export function BandingRulesGrid({
                   const issueId = `rule-${i + 1}-${column.field}-issue`
                   const common = {
                     value: String(rule[column.field] ?? ""),
-                    onChange: (e: React.ChangeEvent<HTMLInputElement>) => updateRule(i, column.field, e.target.value),
+                    row: rowKeys.keys[i],
+                    onCommit: (next: string) => updateRule(i, column.field, next),
                     onPaste: (e: React.ClipboardEvent<HTMLInputElement>) => handleCellPaste(e, i, fieldIndex),
                     "aria-label": column.ariaLabel(i + 1),
                     "aria-invalid": issue ? true : undefined,
@@ -154,13 +150,19 @@ export function BandingRulesGrid({
                   return (
                     <td key={column.field} className={CELL_CLASS}>
                       <div className="relative">
-                        {column.cell === "value" ? (
-                          <input type="text" {...common} className={className} style={style} placeholder="" />
-                        ) : (
-                          <input type="text" {...common}
-                            onKeyDown={(e) => handleKeyDown(e, i)}
-                            className={className} style={style} placeholder="" />
-                        )}
+                        <GridCell
+                          type="text"
+                          {...common}
+                          onEnter={column.cell === "label" && addsRuleOnEnter && i === rules.length - 1
+                            ? (shown) => {
+                                setRules(rowKeys.add([...withCell(i, column.field, shown), { ...EMPTY_RULE }]))
+                                return true
+                              }
+                            : undefined}
+                          className={className}
+                          style={style}
+                          placeholder=""
+                        />
                         {issue && <CellIssueMark id={issueId} message={issue} severity="error" />}
                       </div>
                     </td>

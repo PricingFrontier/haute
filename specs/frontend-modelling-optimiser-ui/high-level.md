@@ -265,13 +265,16 @@ CatBoost. Pane ownership:
   parameters are visible and editable in that JSON: CatBoost's include
   `one_hot_max_size: 10`, and t-boost's are under
   [Model family capabilities](#model-family-capabilities). Haute adds no hidden default, nodes
-  created earlier keep their parameters, and an empty stored object shows as `{}`. A
-  syntactically valid top-level object updates its corresponding config automatically, except
+  created earlier keep their parameters, and an empty stored object shows as `{}`. What is typed
+  in either JSON editor is a draft that commits when the editor is left, as one undo step; a
+  syntactically valid top-level object then updates its corresponding config, except
   that a fixed-parameter object holding a key the family's descriptor reserves (its loss,
   metric, seed and training-file keys, read from `algorithmCapabilities.json`), or CatBoost's
   Train-owned `task_type`, is refused with the reason. An invalid, non-object, or reserved-key
-  draft stays local to that node, is named in an inline alert beneath its editor, and is a
-  Train-guard issue while its strategy is selected. This preserves each library's complete
+  draft stays local to that node, across a switch of pane, is named in an inline alert beneath
+  its editor, and is a Train-guard issue while its strategy is selected. An Undo, a Redo or any
+  other change to the stored parameters or search space lets go of the draft, so the editor
+  shows, and training uses, what the node holds. This preserves each library's complete
   parameter surface without duplicating its evolving catalogue: arbitrary current or future
   keys and nested JSON values round-trip unchanged, and the Train-pane GPU `task_type` remains
   merged from the latest stored object. Search-space candidate arrays render on one line per

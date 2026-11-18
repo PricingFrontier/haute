@@ -1,4 +1,5 @@
-export { default as CommittedTextField, CommittedTextArea, ValidatedTextField } from "./CommittedTextField"
+export { default as CommittedTextField, CommittedTextArea, DraftTextArea, DraftTextField, ValidatedTextField } from "./CommittedTextField"
+export { commitOpenDrafts, isDraftOpen, useCommittedDraft, useOpenEdit, type CommitResult, type CommittedDraft } from "./useCommittedDraft"
 export { default as ColourSwatches } from "./ColourSwatches"
 export { default as ConfigCheckbox } from "./ConfigCheckbox"
 export { default as EditorLabel } from "./EditorLabel"

@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { expectRows, followRows, rowIdentity, type RowChange, type RowIdentity } from "../../utils/rowKeys"
 import { ArrowRight, Plus } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import { CommittedTextField } from "../../components/form"
@@ -27,7 +28,7 @@ import { BandingHistogram } from "./banding/BandingHistogram"
 import useBandingStats from "./banding/useBandingStats"
 import { wholeDataStatusText } from "./shared/useWholeDataAnswer"
 import { useGraph } from "../useGraph"
-import useUIStore from "../../stores/useUIStore"
+import useUIStore, { type BandingRuleStash } from "../../stores/useUIStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
@@ -73,13 +74,16 @@ export default function BandingEditor({
 }) {
   const factors = normaliseBandingFactors(config)
   const [activeIdx, setActiveIdx] = useState(0)
-  // The rules a factor had under each banding type, by factor position, so
-  // switching the type back restores them until the pipeline reloads. Editor
-  // state, never config: it lives in the UI store under the node's id, and a
-  // removal or reorder forgets it. An editor bound to no node keeps none.
+  // The rules a factor had under each banding type, by the factor's row identity, so
+  // switching the type back restores them until the pipeline reloads. Editor state,
+  // never config: it lives in the UI store under the node's id. The identities follow
+  // the editor's own writes of the factors; factors replaced from outside (an Undo, a
+  // Redo, a sync frame) take new ones, so no stash passes to another factor. An editor
+  // bound to no node keeps none.
   const ruleStash = useUIStore((state) => (nodeId ? state.bandingRuleStash[nodeId] : undefined))
   const setBandingRuleStash = useUIStore((state) => state.setBandingRuleStash)
-  const forgetBandingRuleStash = useUIStore((state) => state.forgetBandingRuleStash)
+  // The factors' identities as they stand: the stash's, followed to the factors on screen.
+  const factorIdentity = (): RowIdentity => followRows(ruleStash?.identity ?? rowIdentity(factors), factors)
   const safeIdx = Math.max(0, Math.min(activeIdx, factors.length - 1))
   const factor = factors[safeIdx]
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
@@ -103,13 +107,15 @@ export default function BandingEditor({
     factor: factors[safeIdx] ?? null,
   })
 
-  const commitFactors = (next: BandingFactor[]) => {
+  // Every write of the factors says what it does, so a stash's identities follow it.
+  const commitFactors = (next: BandingFactor[], change: RowChange, rules = ruleStash?.rules) => {
+    if (nodeId && rules) setBandingRuleStash(nodeId, { identity: expectRows(factorIdentity(), next, change), rules })
     onUpdate("factors", next)
   }
 
-  const updateFactor = (idx: number, patch: Partial<BandingFactor>) => {
+  const updateFactor = (idx: number, patch: Partial<BandingFactor>, rules = ruleStash?.rules) => {
     const next = factors.map((f, i) => i === idx ? { ...f, ...patch } : f)
-    commitFactors(next)
+    commitFactors(next, { kind: "edit" }, rules)
   }
 
   const setColumnWithAutoDetect = (idx: number, colName: string) => {
@@ -130,9 +136,9 @@ export default function BandingEditor({
 
   const switchBandingType = (newType: BandingMode) => {
     const current = factors[safeIdx]
-    const stash = { ...ruleStash?.[safeIdx], [current.banding]: current.rules }
-    if (nodeId) setBandingRuleStash(nodeId, safeIdx, stash)
-    updateFactor(safeIdx, { banding: newType, rules: stash[newType] ?? [] })
+    const key = factorIdentity().keys[safeIdx]
+    const stash: BandingRuleStash = { ...ruleStash?.rules[key], [current.banding]: current.rules }
+    updateFactor(safeIdx, { banding: newType, rules: stash[newType] ?? [] }, { ...ruleStash?.rules, [key]: stash })
   }
 
   // A new factor is Numeric; choosing a column that is not numeric makes it
@@ -140,7 +146,7 @@ export default function BandingEditor({
   const addFactor = () => {
     const added: BandingFactor = { banding: "breakpoints", column: "", output_column: "", rules: [], default: null }
     const next = [...factors, added]
-    commitFactors(next)
+    commitFactors(next, { kind: "add" })
     setActiveIdx(next.length - 1)
     factorList.reset()
   }
@@ -148,8 +154,7 @@ export default function BandingEditor({
   const removeFactor = (idx: number) => {
     if (factors.length <= 1) return
     const next = factors.filter((_, i) => i !== idx)
-    if (nodeId) forgetBandingRuleStash(nodeId)
-    commitFactors(next)
+    commitFactors(next, { kind: "remove", index: idx })
     if (safeIdx >= next.length) setActiveIdx(next.length - 1)
   }
 
@@ -157,8 +162,7 @@ export default function BandingEditor({
   // onto another, or moved with Alt+Up/Down, takes its place.
   const moveFactor = (from: number, to: number) => {
     if (!isListMove(factors.length, from, to)) return
-    if (nodeId) forgetBandingRuleStash(nodeId)
-    commitFactors(moveListItem(factors, from, to))
+    commitFactors(moveListItem(factors, from, to), { kind: "move", from, to })
     setActiveIdx(indexAfterMove(safeIdx, from, to))
   }
 
@@ -664,7 +668,7 @@ export default function BandingEditor({
             onUpdateFactor={(patch) => updateFactor(safeIdx, patch)}
             accentColor={accentColor}
             matchCounts={matchCounts}
-            onAddRule={handleAddRule}
+            addsRuleOnEnter
           />
         </div>
       )}

@@ -7,12 +7,20 @@
  * Graph-shaped state (nodes, edges, preamble) and the dirty-tracking
  * `lastSavedSnapshot` live in useGraphStore.
  */
+import type { RowIdentity } from "../utils/rowKeys"
 import { create } from "zustand"
 import type { ProjectFilePlace } from "../api/types"
 import type { BandingFactor, BandingMode } from "../types/banding"
 
 /** The rules a Banding factor had under each type, set aside when its type was switched. */
 export type BandingRuleStash = Partial<Record<BandingMode, BandingFactor["rules"]>>
+
+/**
+ * One Banding node's set-aside rules, by each factor's row identity: the identities follow the
+ * editor's own writes of the factors, and a factor list replaced from outside (an Undo, a Redo,
+ * a sync frame) gives every factor a new one, so a stash never passes to another factor.
+ */
+export type BandingFactorStash = { identity: RowIdentity; rules: Readonly<Record<number, BandingRuleStash>> }
 
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
 export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts" | "relationships"
@@ -120,11 +128,9 @@ interface UIState {
   setModellingPane: (nodeId: string, pane: ModellingPane) => void
   optimiserPanes: Record<string, OptimiserPane>
   setOptimiserPane: (nodeId: string, pane: OptimiserPane) => void
-  /** Banding rules a type switch set aside, by node and factor position, until the pipeline reloads. */
-  bandingRuleStash: Record<string, Record<number, BandingRuleStash>>
-  setBandingRuleStash: (nodeId: string, factor: number, stash: BandingRuleStash) => void
-  /** Forget one node's stash: its factors were removed or reordered. */
-  forgetBandingRuleStash: (nodeId: string) => void
+  /** Banding rules a type switch set aside, by node and each factor's row identity, until the pipeline reloads. */
+  bandingRuleStash: Record<string, BandingFactorStash>
+  setBandingRuleStash: (nodeId: string, stash: BandingFactorStash) => void
   /** Forget every stash: a pipeline document was loaded. */
   clearBandingRuleStash: () => void
 
@@ -286,17 +292,9 @@ const useUIStore = create<UIState>()((set, get) => ({
     optimiserPanes: setNodeIdEntry(state.optimiserPanes, nodeId, pane),
   })),
   bandingRuleStash: {},
-  setBandingRuleStash: (nodeId, factor, stash) => set((state) => ({
-    bandingRuleStash: setNodeIdEntry(state.bandingRuleStash, nodeId, {
-      ...state.bandingRuleStash[nodeId],
-      [factor]: stash,
-    }),
+  setBandingRuleStash: (nodeId, stash) => set((state) => ({
+    bandingRuleStash: setNodeIdEntry(state.bandingRuleStash, nodeId, stash),
   })),
-  forgetBandingRuleStash: (nodeId) => set((state) => {
-    const { [nodeId]: forgotten, ...rest } = state.bandingRuleStash
-    void forgotten
-    return { bandingRuleStash: rest }
-  }),
   clearBandingRuleStash: () => set({ bandingRuleStash: {} }),
 
   // Hover highlight

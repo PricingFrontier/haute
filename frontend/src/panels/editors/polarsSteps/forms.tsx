@@ -771,13 +771,12 @@ function ConditionalEditor({
 }) {
   const many = expr.branches.length > 1
   const branchKeys = useRowKeys(expr.branches)
-  const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: expr.branches.map((b, i) => (i === index ? next : b)) })
+  const setBranch = (index: number, next: ConditionalBranch) => onChange({ ...expr, branches: branchKeys.edit(expr.branches.map((b, i) => (i === index ? next : b))) })
   const addBranch = () => {
     // A new branch tests the previous branch's first column and starts from a value of its Then's type.
     const last = expr.branches[expr.branches.length - 1]
     const then = last.then.kind === "literal" ? defaultLiteral(last.then.type) : literal("number", 0)
-    branchKeys.add()
-    onChange({ ...expr, branches: [...expr.branches, { match: "all", conditions: [defaultCondition(last.conditions[0]?.column ?? "")], then }] })
+    onChange({ ...expr, branches: branchKeys.add([...expr.branches, { match: "all", conditions: [defaultCondition(last.conditions[0]?.column ?? "")], then }]) })
   }
   return (
     <>
@@ -804,10 +803,7 @@ function ConditionalEditor({
               {many && (
                 <RowRemove
                   label={`Remove branch ${index + 1}`}
-                  onClick={() => {
-                    branchKeys.remove(index)
-                    onChange({ ...expr, branches: expr.branches.filter((_, i) => i !== index) })
-                  }}
+                  onClick={() => onChange({ ...expr, branches: branchKeys.remove(index, expr.branches.filter((_, i) => i !== index)) })}
                 />
               )}
             </div>
