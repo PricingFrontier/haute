@@ -610,3 +610,29 @@ def test_a_fingerprint_that_is_not_project_code_has_no_utility_generation() -> N
     for malformed in ("abcdef", ".def", "abc."):
         with pytest.raises(ValueError, match="not a project code fingerprint"):
             utility_generation(malformed)
+
+
+def test_successive_bundled_models_each_run_their_own_shipped_utility(tmp_path: Path) -> None:
+    """An MLflow model ships the project's ``utility`` in its code folder, outside its root
+    (``ProjectContext.utility_root``). Two models served one after the other in a process,
+    each with a blank preamble and a node-level import, each run their own."""
+    from haute._project_context import ProjectContext, project_scope
+    from haute.executor import _compile_preamble
+
+    def model(name: str, value: int) -> ProjectContext:
+        root = tmp_path / name / "artifacts"
+        code = tmp_path / name / "code" / "utility"
+        root.mkdir(parents=True)
+        code.mkdir(parents=True)
+        (code / "__init__.py").write_text(f"VALUE = {value}\n", encoding="utf-8")
+        return ProjectContext.at(root, utility_root=code.parent)
+
+    seen = []
+    for context in (model("first", 1), model("second", 2)):
+        with project_scope(context):
+            _compile_preamble("", pipeline_dir=None)
+            import utility  # type: ignore[import-not-found]
+
+            seen.append(utility.VALUE)
+
+    assert seen == [1, 2]

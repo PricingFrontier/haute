@@ -57,7 +57,8 @@ def utility_tree_files(location: Path) -> list[Path]:
 def utility_search_dirs(
     pipeline_dir: str | Path | None, *, project_root: str | Path | None = None
 ) -> list[str]:
-    """Where a project's ``utility`` is found: beside the pipeline, then the project root.
+    """Where a project's ``utility`` is found: beside the pipeline, then the project root,
+    then the folder a deployed bundle ships it in (``ProjectContext.utility_root``).
 
     The project root is the current project's unless *project_root* names one. One
     entry when they are the same directory. The cache fingerprint and the deploy
@@ -69,6 +70,9 @@ def utility_search_dirs(
         dirs.append(str(Path(pipeline_dir).resolve()))
     root = current_project().root if project_root is None else Path(project_root).resolve()
     dirs.append(str(root))
+    bundled = installed_project()
+    if bundled is not None and bundled.utility_root is not None:
+        dirs.append(str(bundled.utility_root))
     return list(dict.fromkeys(dirs))
 
 

@@ -194,7 +194,9 @@ a preamble edit alone puts none aside. With a request memo the record is resolve
 preamble and folder (`GraphFingerprintMemo.project_code`). In a project only the project's
 directories are searched, each directory's own finder cache invalidated first (never the whole
 import system's), so a `utility` created or removed a moment ago is seen at the cost of two
-listings; one found only elsewhere on `sys.path` is an installed library, which the deploy
+listings (three for a deployed bundle, whose `ProjectContext.utility_root` names the folder it
+ships `utility` in, an MLflow model's `code` folder); one found only elsewhere on `sys.path` is an
+installed library, which the deploy
 bundle never ships and which, like every library, is not signed. Outside an installed project
 the import system's own search finds `utility`. The deploy bundle's copy (`src/haute/deploy/_container.py`), a release's utility hashes
 (`src/haute/_workbench_app.py::_utility_hashes`) and a test quote's basis

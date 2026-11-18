@@ -1230,9 +1230,9 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
 def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
     """Resolve the project's top-level ``utility`` module or package.
 
-    Resolves it as an import does (:func:`haute._project_imports.find_utility_spec`: the
-    project's directories, then the rest of the path for a project without one), so the
-    bytes hashed are the bytes that will run. ``PathFinder.find_spec`` performs
+    Resolves it as an import does (:func:`haute._project_imports.find_utility_spec`: in a
+    project its own directories alone, a deployed bundle's included), so the bytes hashed
+    are the bytes that will run. ``PathFinder.find_spec`` performs
     pure resolution: it neither imports the module nor mutates ``sys.modules``.
 
     Returns the filesystem location(s) to hash (a single file for a module, one
