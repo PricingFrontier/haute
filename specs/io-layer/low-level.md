@@ -185,8 +185,13 @@ platforms, and on Windows with long paths on, nothing is renamed.
    is installed already: the nearest Haute project (`haute.toml`) holding the file,
    whatever the working directory, or the file's own folder in no project; a pipeline with
    no defining file runs in the project holding the session's working directory), the explicit snapshot build, the preview request's path check and the API Input's schema
-   inference, so one locator names one file at every seam. Deploy bundles a Data Input's
-   file by its own rule, the pipeline directory first ([deploy](../deploy/low-level.md)).
+   inference, so one locator names one file at every seam. Deploy reads by the same rule:
+   the bundler, the deploy path check, schema inference and scoring
+   ([deploy](../deploy/low-level.md)), so the bundle ships the file the preview read. The
+   resolver takes no preference, so no caller can put the pipeline directory first; outside
+   `_path_resolution.py` only the places `tests/test_path_anchoring_by_hand.py` lists, each
+   with its reason, anchor a relative path on the pipeline directory themselves (a node's
+   config sidecar and a SQLite URI among them).
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
    effective mode `scan` is direct; every other canonical Data Input is snapshot-backed.
    No cache-mode field is stored — validation rejects a config still carrying the removed
@@ -1173,9 +1178,10 @@ failure sections above are the maintained answers.
   `test_hashed_streaming_sink_cleans_up_after_a_partial_write`) verifies native streaming
   execution, cancellation without publication, and cleanup after partial writes.
 - `tests/test_saved_path_resolution.py` places the same relative path at the project root and
-  a decoy beside the pipeline: the registry's anchoring and the canonical graph both name the
-  project-root file and the read returns its rows; a path only beside the pipeline is found
-  there, and one found nowhere keeps the project-root candidate.
+  a decoy beside the pipeline: the registry's anchoring, the canonical graph and deploy's
+  schema inference and scoring all name the project-root file and the read returns its rows;
+  a path only beside the pipeline is found there, and one found nowhere keeps the
+  project-root candidate.
   `tests/test_input_cache_route.py::test_build_identity_names_the_file_execution_opens`
   holds the explicit build's identity equal to the registry's for the saved locator.
 - `tests/test_discovery.py` and `tests/test_path_case_audit.py` cover pipeline discovery,

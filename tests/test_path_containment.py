@@ -557,24 +557,24 @@ class TestRequestInputCallers:
 class TestRuntimePaths:
     @_ESCAPES
     def test_a_relative_runtime_path(self, layout: tuple[Path, Path], escape: str) -> None:
-        from haute._path_resolution import RuntimePathOutsideProjectError, resolve_runtime_file_path
+        from haute._path_resolution import RuntimePathOutsideProjectError, resolve_node_input_path
 
         project, _ = layout
-        assert resolve_runtime_file_path("data/rows.csv", project_root=project) == (
+        assert resolve_node_input_path("data/rows.csv", project_root=project) == (
             project.resolve() / "data" / "rows.csv"
         )
         with pytest.raises(RuntimePathOutsideProjectError):
-            resolve_runtime_file_path(_escaping(project, escape, "rows.csv"), project_root=project)
+            resolve_node_input_path(_escaping(project, escape, "rows.csv"), project_root=project)
 
     @_ESCAPES
     def test_an_absolute_runtime_path(self, layout: tuple[Path, Path], escape: str) -> None:
-        from haute._path_resolution import RuntimePathOutsideProjectError, resolve_runtime_file_path
+        from haute._path_resolution import RuntimePathOutsideProjectError, resolve_node_input_path
 
         project, _ = layout
         inside = str(project / "data" / "rows.csv")
-        assert resolve_runtime_file_path(inside, project_root=project) == Path(inside)
+        assert resolve_node_input_path(inside, project_root=project) == Path(inside)
         with pytest.raises(RuntimePathOutsideProjectError):
-            resolve_runtime_file_path(
+            resolve_node_input_path(
                 str(project / _escaping(project, escape, "rows.csv")), project_root=project
             )
 
@@ -582,23 +582,23 @@ class TestRuntimePaths:
     def test_a_pipeline_source_spelled_inside_the_project(
         self, layout: tuple[Path, Path], escape: str
     ) -> None:
-        from haute._path_resolution import (
-            resolve_runtime_file_path,
-        )
+        from haute._path_resolution import resolve_node_input_path
 
-        project, _ = layout
+        project, outside = layout
         (project / "inputs").mkdir(exist_ok=True)
         assert (
-            resolve_runtime_file_path("inputs/data.csv", source_file=str(project / "main.py"))
+            resolve_node_input_path("inputs/data.csv", source_file=str(project / "main.py"))
             == (project / "inputs" / "data.csv").resolve()
         )
         # A source spelled to escape cannot carry a read out of the project: its folder is
-        # a candidate only inside the root, so the root's candidate is read.
+        # a candidate only inside the root, so the root's candidate is named although only
+        # the escaped folder holds the file.
+        (outside / "inputs").mkdir()
+        (outside / "inputs" / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
         assert (
-            resolve_runtime_file_path(
+            resolve_node_input_path(
                 "inputs/data.csv",
                 source_file=str(project / _escaping(project, escape, "main.py")),
-                prefer="pipeline",
             )
             == (project / "inputs" / "data.csv").resolve()
         )

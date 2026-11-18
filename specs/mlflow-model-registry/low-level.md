@@ -282,7 +282,7 @@ it to its contract:
   reads. An alias that moves, or a settings change, during the load therefore
   cannot pair one version's or one backend's model with another's contract.
 - **File.** `resolve_model_file(model_path, base_dir)` resolves the path through
-  `resolve_runtime_file_path` (project preferred, pipeline directory
+  `resolve_node_input_path` (the project root first, then the pipeline directory
   `base_dir`, project root enforced) and raises `ConfigError` naming the file
   when it does not exist. `model_contract_path(source, feature_contract_path,
   base_dir)` returns the explicit contract (resolved the same way, which must

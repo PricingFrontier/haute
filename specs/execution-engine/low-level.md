@@ -2015,7 +2015,7 @@ present a structural or schema result as execution evidence.
   other local input and `_runtime_file_signature_paths` signs it. Without an
   explicit `feature_contract_path`, it also signs both
   `model_contract_candidates` of the resolved model (`contract_candidate:0`,
-  `contract_candidate:1`), each first passed through `resolve_runtime_file_path`
+  `contract_candidate:1`), each first passed through `resolve_node_input_path`
   so one that leaves the project through a symlink is refused before it is
   hashed, a missing one by its stat, so replacing either
   sibling, adding the higher-priority one, or deleting the selected one

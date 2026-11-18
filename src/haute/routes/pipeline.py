@@ -73,11 +73,7 @@ from haute._node_addresses import (
 from haute._node_snapshots import NodeSnapshotStore
 from haute._node_specs import known_node_spec
 from haute._output_assembler import OutputMappingSchemaError
-from haute._path_resolution import (
-    RuntimePathError,
-    resolve_node_input_path,
-    resolve_runtime_file_path,
-)
+from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._pipeline_recovery import (
     empty_pipeline_editor_document,
     name_violations_payload,
@@ -647,12 +643,8 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
     """
     if graph.source_file:
         try:
-            resolve_runtime_file_path(
-                graph.source_file,
-                project_root=current_project().root,
-                prefer="project",
-                enforce_project_root=True,
-            )
+            # With no pipeline directory, the one candidate is the project root's.
+            resolve_node_input_path(graph.source_file, project_root=current_project().root)
         except RuntimePathError as exc:
             raise runtime_path_http_exception(exc) from None
 

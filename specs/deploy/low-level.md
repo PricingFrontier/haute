@@ -210,8 +210,21 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    (node `a` with `b__c.pkl` and node `a__b` with `c.pkl` both give `a__b__c.pkl`), and keys
    differing only in case clobber each other on a case-insensitive file system. Adding the
    same file under the same key again is accepted. The pipeline and every local runtime input are already canonicalised
-   and checked for project-root containment. Bundling repeats that check at the copy
-   boundary. Explicit `modelScore.feature_contract_path` files are copied under the
+   and checked for project-root containment, each relative path by the one anchoring rule
+   (`_path_resolution.resolve_node_input_path`). In the same pass, before anything is
+   read, prepared or copied, a relative path that exists under both the project root and
+   the pipeline folder is compared (`_path_resolution.node_input_path_copies` and
+   `copies_differ`): the copies are one when they are the same file, or when they hold
+   the same files at the same relative paths with the same bytes (a folder's files,
+   followed through links, a link back to a folder above not entered again, or the files a
+   glob matches, matched during the same walk with `**` for any number of folders; read in
+   1 MiB chunks after the sizes, every time, with no cache). An entry a copy uses that leads
+   outside the project root is never listed or opened: it raises the invalid-path
+   `DeployError`. Copies that differ
+   raise a `DeployError` naming the node, the field, both files relative to the project
+   root and the one the editor reads, before `refuse_data_outside_pipeline_folder`;
+   identical copies pass. Bundling repeats the
+   containment check at the copy boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
    download. Each model-score node's source is read through `parse_model_source`, the
@@ -258,7 +271,10 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    retained file or lakehouse Data Input that is not a request input (`_resolve_path`, as
    bundling resolves it) and raises a `DeployError` naming the node, the configured path and
    the pipeline folder (`pipeline_file.parent`, shown relative to the project root)
-   for one outside that folder, with the remedy `<folder>/files/data`. The path counts as
+   for one outside that folder, with the remedy `<folder>/files/data`. It judges the file
+   the anchoring rule names, the one the preview read: a project-root file is refused even
+   when an identical copy lies at the same relative path in the pipeline folder, and the
+   refusal then names that copy and says to point the path at it. The path counts as
    outside when, followed through links, it or any file it names (`named_source_files`,
    resolved) lies outside the resolved folder. Then
    `prepare_shipped_snapshots` admits a `LAZY_SINK` execution context
@@ -768,9 +784,9 @@ the profile `MLFLOW_TRACKING_URI` selects, rather than as an SDK traceback.
    `request_rows=None` (the dry runs, the bundle's schema check and the lookup checks) is
    always one frame and never counted. `score_graph_lazy` takes a quote-by-quote request of
    one quote only; the batch child and `score_graph` route several.
-1. Resolve the graph's relative path configs as bundling does, the directory of
-   `graph.source_file` first and then the project root, backslashes read as separators,
-   neither candidate leaving the project root
+1. Resolve the graph's relative path configs by the one anchoring rule, as bundling and
+   the editor do: the project root first and then the directory of `graph.source_file`,
+   backslashes read as separators, neither candidate leaving the project root
    (`_resolve_runtime_graph_paths`, through `_path_resolution.resolve_graph_source_path`,
    which `_schema._resolve_pipeline_path` shares for schema inference and the sample row;
    the root is the current project's. `resolve_config` runs everything after validating the
@@ -921,14 +937,16 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   the manifest can never advertise conservative execution that the running service would
   not actually perform.
 
-- **Pipeline-relative path resolution wins within the project**
-  (`_bundler.py::_resolve_path`): local paths use
-  `resolve_runtime_file_path(..., prefer="pipeline", enforce_project_root=True)`.
-  A pipeline-relative existing file (or a glob pattern matching a file) wins over a
-  project-root peer, while an absolute,
-  traversal, or symlink-resolved path outside the project raises `DeployError` before
-  copy/load. Every accepted path is absolute, so the manifest never bakes in a
-  re-resolution-dependent pointer.
+- **One anchoring rule for every deploy reader**: the bundler (`_bundler.py::_resolve_path`),
+  the path check in `resolve_config`, schema inference (`_schema._resolve_pipeline_path`)
+  and scoring (`_scorer._resolve_runtime_graph_paths`) resolve a relative path by
+  `_path_resolution.resolve_node_input_path`, the rule the editor and the engine use: the
+  project root's file first, then the pipeline folder's. The resolver takes no preference,
+  so no reader can put the pipeline folder first. An absolute, traversal, or
+  symlink-resolved path outside the project raises `DeployError` before copy/load. Every
+  accepted path is absolute, so the manifest never bakes in a re-resolution-dependent
+  pointer. The rule's own first choice decides; two copies that differ are refused before
+  it is applied (step 7).
 - **Container manifest artefact paths are image-relative, not pipeline-relative**:
   every bundled path is rewritten to `artifacts/<file>` (`artifact_file_name`) and resolves against
   `WORKDIR /app`; the generated Dockerfile copies the same build-context directory to
@@ -1094,8 +1112,24 @@ what they cover:
   folder (`tests/quotes` once it holds a JSON quote when `haute.toml` names no folder, a
   folder outside the project refused).
 - **`test_deploy_config_and_bundle.py`** — `TestBaseImageMustBePinned` (every accepted/
-  rejected base-image tag form) and `TestBundledPathsAreAbsolute` (the pipeline-dir-wins
-  path resolution invariant — the test this behaviour's docstring explicitly names).
+  rejected base-image tag form) and `TestBundledPathsAreAbsolute` (a bundled path is
+  resolved against the project, never the working directory, and is absolute in the
+  manifest).
+- **`test_deploy_path_anchoring.py`** — a project with its pipeline in `rating/` and a
+  relative path present under both the project root and the pipeline folder. Every
+  path-bearing node setting (found from the engine's `_RUNTIME_INPUTS`, so a new one with no
+  case fails) names the project root's copy through the engine's canonical graph, the
+  bundler, schema inference and scoring. `resolve_config` with differing copies refuses
+  naming both files for each setting, and for a Data Input's Parquet file, CSV, folder and
+  glob; with identical copies a Load File ships the file the preview read, asserted by
+  content and by its score, and a Data Input is refused by the pipeline-folder rule naming
+  its copy in the folder; a single Load File copy at the root and a single Data Input copy
+  in the pipeline folder ship.
+- **`test_path_anchoring_by_hand.py`** — no function outside `_path_resolution.py` joins a
+  configured path onto the pipeline directory, passes a `prefer` to a call, or imports the
+  module's private resolver, apart from a list naming each place and its reason (a node's
+  config sidecar beside the pipeline and a SQLite URI among them); the list may only
+  shrink. The scan finds the deploy rule this replaced in the code before the change.
 - **`test_deploy_container.py`** — Docker availability check, `docker build`/`push`
   subprocess handling, git-SHA detection, platform-container service-update stub.
 - **`test_container.py`** — base-image/model-name hardening; consecutive and concurrent

@@ -7,8 +7,7 @@ specification](../deploy/high-level.md) describes it: which files a deploy
 ships for the paths a pipeline names, how the served `/quote` route answers
 a quote it cannot price, what `haute deploy --dry-run` checks, and what a
 test quote can expect. The packages below come from the 9 November
-2026 codebase review; the rule for relative paths has its own file,
-[path anchoring](root-cause-path-anchoring.md), and is taken first.
+2026 codebase review.
 `DPL-02` is read from the source and was not run against a built image;
 `DPL-03` was reproduced by running the command, and `DPL-04` by calling the
 comparison a deploy's validation uses. `DPL-05` comes from the review

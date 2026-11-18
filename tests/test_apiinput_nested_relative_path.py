@@ -199,7 +199,7 @@ def test_the_project_pipeline_dir_is_the_root_without_toml(tmp_path, monkeypatch
 
 def test_resolve_runtime_data_path_passthrough_and_absolute(tmp_path, monkeypatch) -> None:
     """An empty path is returned verbatim; an absolute path passes straight
-    through ``resolve_runtime_file_path`` unchanged (no pipeline-dir rewrite)."""
+    through ``resolve_node_input_path`` unchanged (no pipeline-dir rewrite)."""
     from haute._builders import _resolve_runtime_data_path
 
     use_project(tmp_path)

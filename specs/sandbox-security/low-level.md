@@ -318,8 +318,8 @@ the app's own origin check refuses another site's writes. Its tests are in
    `source_file` values to remain inside that project.
 2. Every local runtime input field (`apiInput`/file or lakehouse `dataInput`,
    `externalFile`, model-score feature-contract files, and file-sourced
-   optimiser artifacts) passes through `resolve_runtime_file_path(...,
-   enforce_project_root=True)`. Separator normalization happens before `Path`
+   optimiser artifacts) passes through `resolve_node_input_path`, which always
+   holds both candidates inside the project root. Separator normalization happens before `Path`
    construction and `resolve()` follows symlinks before containment is checked.
    A path whose components include a DOS device name is rejected as
    `MalformedRuntimePathError` on **every** platform, using the same
@@ -333,7 +333,11 @@ the app's own origin check refuses another site's writes. Its tests are in
    `COM10.json` remain ordinary names. Of the project-root and pipeline-directory
    candidates for a relative path, one that exists wins (a glob pattern exists where it
    matches a path, so a relative pattern anchors to the folder holding its files);
-   when both or neither do, the caller's `prefer` decides.
+   when both do, the project root's wins, and when neither does the project-root
+   candidate is kept. No caller chooses another order. Deploy's comparison of two
+   copies (`_path_resolution.copies_differ`) holds every file a folder or glob copy
+   names, followed through links, inside the project root before it opens any, and
+   raises `RuntimePathOutsideProjectError` naming one that leads out.
 3. `_builders._resolve_runtime_data_path` repeats the containment check against the
    current project's root at the final read seam.
    Database/Databricks/named-provider identifiers are not local path fields and

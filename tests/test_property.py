@@ -16,7 +16,7 @@ from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 from haute._config_io import is_windows_reserved_filename
-from haute._path_resolution import MalformedRuntimePathError, resolve_runtime_file_path
+from haute._path_resolution import MalformedRuntimePathError, resolve_node_input_path
 from haute._rating import _apply_banding
 from haute.codegen import graph_to_code
 from haute.errors import PathOutsideProjectError
@@ -153,7 +153,7 @@ class TestTopoSortProperties:
 # ---------------------------------------------------------------------------
 
 # A DOS device name is deliberately NOT a harmless component: Windows resolves
-# it to the device rather than to a file, so `resolve_runtime_file_path` rejects
+# it to the device rather than to a file, so `resolve_node_input_path` rejects
 # it on every platform. Excluding it here keeps this property about what it
 # claims to be about; the rejection has its own test below.
 path_part_strategy = st.text(
@@ -179,15 +179,13 @@ class TestRuntimePathResolutionProperties:
         raw = "/".join(parts)
         with_dot = f"./{raw}"
 
-        resolved = resolve_runtime_file_path(
+        resolved = resolve_node_input_path(
             raw,
             project_root=root,
-            enforce_project_root=True,
         )
-        resolved_with_dot = resolve_runtime_file_path(
+        resolved_with_dot = resolve_node_input_path(
             with_dot,
             project_root=root,
-            enforce_project_root=True,
         )
 
         assert resolved == resolved_with_dot
@@ -212,10 +210,9 @@ class TestRuntimePathResolutionProperties:
         """
 
         with pytest.raises(MalformedRuntimePathError, match="reserved device name"):
-            resolve_runtime_file_path(
+            resolve_node_input_path(
                 raw,
                 project_root=tmp_path,
-                enforce_project_root=True,
             )
 
     def test_ordinary_names_sharing_a_device_prefix_still_resolve(
@@ -225,10 +222,9 @@ class TestRuntimePathResolutionProperties:
         """The stem must match exactly; `CONTRACT` and `COM10` are ordinary."""
 
         for raw in ("CONTRACT.json", "COM10.json", "nullable", "auxiliary/data.csv"):
-            resolved = resolve_runtime_file_path(
+            resolved = resolve_node_input_path(
                 raw,
                 project_root=tmp_path,
-                enforce_project_root=True,
             )
             assert resolved.is_relative_to(tmp_path.resolve())
 
@@ -247,10 +243,9 @@ class TestRuntimePathResolutionProperties:
         raw = "../" + "/".join(parts)
 
         with pytest.raises(ValueError, match="outside the project root"):
-            resolve_runtime_file_path(
+            resolve_node_input_path(
                 raw,
                 project_root=root,
-                enforce_project_root=True,
             )
 
 

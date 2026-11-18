@@ -50,11 +50,11 @@ A fix that lands as corrected call sites leaves the class at ④. A fix that lan
 
 ### Runtime path anchoring — relative paths resolved against the working directory
 
-**Shape.** Every loader accepting a user-relative path must agree on what that path is relative *to* — and the process working directory is the accidental default. One node type mis-resolved a relative data path against the server's working directory; two sibling loaders had the same bug.
+**Shape.** Every loader accepting a user-relative path must agree on what that path is relative *to* — and the process working directory is the accidental default. One node type mis-resolved a relative data path against the server's working directory; two sibling loaders had the same bug. Later the registry, then deploy, kept a second order of their own (the pipeline folder before the project root), so with a file under both the bundle shipped one copy and the preview read the other.
 
-**Ladder: ①-partial / ④** — a shared resolution helper, `_resolve_runtime_data_path` in `src/haute/_builders.py`, exists and is the chokepoint, but nothing *forces* a new loader through it.
+**Ladder: ①/②** — one rule, `resolve_node_input_path` in `src/haute/_path_resolution.py`, which takes no preference, so a caller cannot choose another order; `tests/test_path_anchoring_by_hand.py` fails a relative path joined onto the pipeline directory, or a preference passed, outside that module, apart from a reasoned list; and deploy refuses a path whose project-root and pipeline-folder copies differ.
 
-**Check recipe.** Sweep for new path resolution of user-supplied relative paths outside that helper. Any new node type that reads files must resolve through it.
+**Check recipe.** Any new node type that reads files lists its path fields in the engine's `_RUNTIME_INPUTS`, so `tests/test_deploy_path_anchoring.py` drives it through every reader; a new place on the scan's list needs a reason the rule cannot serve.
 
 ### Write containment — code writing outside its owned roots
 

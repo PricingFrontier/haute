@@ -9,7 +9,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from haute._config_io import is_windows_reserved_filename
-from haute._path_resolution import resolve_runtime_file_path
+from haute._path_resolution import resolve_node_input_path
 
 _WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -77,15 +77,13 @@ class TestPathResolutionProperties:
         slash_path = "/".join(parts)
         backslash_path = "\\".join(parts)
 
-        resolved_slash = resolve_runtime_file_path(
+        resolved_slash = resolve_node_input_path(
             slash_path,
             project_root=root,
-            enforce_project_root=True,
         )
-        resolved_backslash = resolve_runtime_file_path(
+        resolved_backslash = resolve_node_input_path(
             backslash_path,
             project_root=root,
-            enforce_project_root=True,
         )
 
         assert resolved_slash == expected.resolve()
@@ -99,7 +97,7 @@ class TestPathResolutionProperties:
         max_examples=80,
         suppress_health_check=[HealthCheck.function_scoped_fixture],
     )
-    def test_single_existing_candidate_wins_regardless_of_preference(
+    def test_the_single_existing_candidate_is_named(
         self,
         parts: list[str],
         existing_target: str,
@@ -115,21 +113,12 @@ class TestPathResolutionProperties:
         expected.parent.mkdir(parents=True, exist_ok=True)
         expected.write_text("{}", encoding="utf-8")
 
-        raw_path = "/".join(parts)
-        for prefer in ("project", "pipeline"):
-            resolved = resolve_runtime_file_path(
-                raw_path,
-                project_root=root,
-                pipeline_dir=pipeline_dir,
-                prefer=prefer,
-                enforce_project_root=True,
-            )
-            assert resolved == expected.resolve()
+        resolved = resolve_node_input_path(
+            "/".join(parts), project_root=root, pipeline_dir=pipeline_dir
+        )
+        assert resolved == expected.resolve()
 
-    @given(
-        parts=_SAFE_RELATIVE_PATH,
-        prefer=st.sampled_from(["project", "pipeline"]),
-    )
+    @given(parts=_SAFE_RELATIVE_PATH)
     @settings(
         max_examples=80,
         suppress_health_check=[HealthCheck.function_scoped_fixture],
@@ -137,27 +126,21 @@ class TestPathResolutionProperties:
     def test_safe_relative_paths_resolve_within_project_root(
         self,
         parts: list[str],
-        prefer: str,
         tmp_path_factory: pytest.TempPathFactory,
     ) -> None:
         root = tmp_path_factory.mktemp("path_resolution_root")
         pipeline_dir = root / "nested" / "pipelines"
         pipeline_dir.mkdir(parents=True)
 
-        resolved = resolve_runtime_file_path(
+        resolved = resolve_node_input_path(
             "/".join(parts),
             project_root=root,
             pipeline_dir=pipeline_dir,
-            prefer=prefer,
-            enforce_project_root=True,
         )
 
         assert resolved.is_relative_to(root.resolve())
 
-    @given(
-        parts=_SAFE_RELATIVE_PATH,
-        prefer=st.sampled_from(["project", "pipeline"]),
-    )
+    @given(parts=_SAFE_RELATIVE_PATH)
     @settings(
         max_examples=80,
         suppress_health_check=[HealthCheck.function_scoped_fixture],
@@ -165,7 +148,6 @@ class TestPathResolutionProperties:
     def test_pipeline_candidate_outside_root_is_never_selected(
         self,
         parts: list[str],
-        prefer: str,
         tmp_path_factory: pytest.TempPathFactory,
     ) -> None:
         root = tmp_path_factory.mktemp("path_resolution_project")
@@ -176,12 +158,10 @@ class TestPathResolutionProperties:
         project_candidate.parent.mkdir(parents=True, exist_ok=True)
         project_candidate.write_text("{}", encoding="utf-8")
 
-        resolved = resolve_runtime_file_path(
+        resolved = resolve_node_input_path(
             "/".join(parts),
             project_root=root,
             pipeline_dir=outside,
-            prefer=prefer,
-            enforce_project_root=True,
         )
 
         assert resolved == project_candidate.resolve()
@@ -201,17 +181,15 @@ class TestPathResolutionProperties:
         pipeline_dir.mkdir()
 
         raw_path = "/".join(parts)
-        resolved_from_source = resolve_runtime_file_path(
+        resolved_from_source = resolve_node_input_path(
             raw_path,
             project_root=root,
             source_file="pipelines/pricing.py",
-            enforce_project_root=True,
         )
-        resolved_from_pipeline_dir = resolve_runtime_file_path(
+        resolved_from_pipeline_dir = resolve_node_input_path(
             raw_path,
             project_root=root,
             pipeline_dir=pipeline_dir,
-            enforce_project_root=True,
         )
 
         assert resolved_from_source == resolved_from_pipeline_dir

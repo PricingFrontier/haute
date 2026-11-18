@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -9,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
 from haute._model_flavors import family_for_artifact
-from haute._path_resolution import PathPreference, RuntimePathError, resolve_runtime_file_path
+from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._sandbox import is_contained
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.errors import DeployError
@@ -159,14 +160,8 @@ def collect_artifacts(
                         field="feature_contract_path",
                         path=explicit_contract,
                     )
-                # The scoring rule: the project before the pipeline directory.
                 contract_path = _resolve_path(
-                    explicit_contract,
-                    pipeline_dir,
-                    project_root,
-                    nid,
-                    "feature_contract_path",
-                    prefer="project",
+                    explicit_contract, pipeline_dir, project_root, nid, "feature_contract_path"
                 )
                 _check_exists(contract_path, nid, "modelScore feature contract")
                 artifacts.add(nid, f"{nid}__feature_contract.json", contract_path)
@@ -305,12 +300,7 @@ def _collect_model_file(
     # An unsupported suffix is refused before anything is copied.
     family_for_artifact(model_source.model_path)
     model_path = _resolve_path(
-        model_source.model_path,
-        pipeline_dir,
-        project_root,
-        node_id,
-        "model_path",
-        prefer="project",
+        model_source.model_path, pipeline_dir, project_root, node_id, "model_path"
     )
     _check_exists(model_path, node_id, node_label)
     artifacts.add(node_id, f"{node_id}__{artifact_basename(model_source.model_path)}", model_path)
@@ -495,6 +485,59 @@ def _shipped_file_inputs(
     ]
 
 
+def check_local_input_paths(graph: PipelineGraph, pipeline_dir: Path, project_root: Path) -> None:
+    """Refuse a local path *graph* reads that deploy could not ship as the preview read it.
+
+    Every local runtime input field (execution's own enumeration, so deploy cannot drift
+    from the engine's definition of a local file read) is resolved by the one anchoring
+    rule before any bundle copy, schema read or sample load. A path that leaves the
+    project raises, and so does a relative path whose project-root and pipeline-folder
+    copies differ: the editor reads the project root's, and the analyst may have checked
+    either, so deploy names both instead of shipping one. Identical copies pass.
+    """
+    from haute._path_resolution import copies_differ, node_input_path_copies
+    from haute.execution import _local_runtime_input_path_fields
+
+    for node in graph.nodes:
+        for field_name in _local_runtime_input_path_fields(node):
+            raw_path = node.data.config.get(field_name)
+            if not isinstance(raw_path, str) or not raw_path:
+                continue
+            try:
+                copies = node_input_path_copies(
+                    raw_path, pipeline_dir=pipeline_dir, project_root=project_root
+                )
+                differ = copies is not None and copies_differ(*copies, project_root=project_root)
+            except RuntimePathError as exc:
+                raise DeployError(
+                    f"Node {node.id!r} field {field_name!r} has invalid local "
+                    f"runtime path {raw_path!r} ({type(exc).__name__}): {exc}. "
+                    "Use a path inside the configured project.",
+                    node_id=node.id,
+                    field=field_name,
+                    path=raw_path,
+                ) from exc
+            if copies is None or not differ:
+                continue
+            project_copy, pipeline_copy = (_project_path(path, project_root) for path in copies)
+            raise DeployError(
+                f"Node {node.id!r} field {field_name!r} names {raw_path!r}, which is two "
+                f"different files: {project_copy} under the project root and {pipeline_copy} "
+                f"in the pipeline folder. The editor reads {project_copy}, and deploy will not "
+                "choose between them: delete or rename the copy you do not mean.",
+                node_id=node.id,
+                field=field_name,
+                path=raw_path,
+                project_copy=project_copy,
+                pipeline_copy=pipeline_copy,
+            )
+
+
+def _project_path(path: Path, project_root: Path) -> str:
+    """*path* as the project names it: relative to *project_root*, with forward slashes."""
+    return Path(os.path.relpath(path, project_root)).as_posix()
+
+
 def refuse_data_outside_pipeline_folder(
     graph: PipelineGraph, input_node_ids: list[str], pipeline_dir: Path, project_root: Path
 ) -> None:
@@ -506,9 +549,12 @@ def refuse_data_outside_pipeline_folder(
     depend on (the pruned graph no longer holds it: a training or optimisation branch, a
     data export, a source switch's non-live input), so those may read from anywhere.
     Each file is judged where it lies, so a link inside the folder to data outside it
-    is refused too.
+    is refused too. The file judged is the one the anchoring rule names, the one the
+    preview read: a project-root file is refused even when an identical copy lies at the
+    same relative path in the folder, and the refusal says to point the path at that copy.
     """
     from haute._input_providers import named_source_files
+    from haute._path_resolution import node_input_path_copies
     from haute._project_layout import PIPELINE_FILES_FOLDER
 
     folder = pipeline_dir.resolve()
@@ -521,6 +567,19 @@ def refuse_data_outside_pipeline_folder(
         read = (source.resolve(), *named_source_files(validated, source))
         if all(is_contained(folder, path) for path in read):
             continue
+        copies = node_input_path_copies(raw_path, pipeline_dir=pipeline_dir, project_root=root)
+        if copies is not None:
+            project_copy, pipeline_copy = (_project_path(path, root) for path in copies)
+            raise DeployError(
+                f"Data Input node {node_id!r} reads {raw_path!r}, which names {project_copy} "
+                f"under the project root, outside the pipeline folder {shown!r}, and the quote "
+                "output depends on it. Deploy ships only data stored in the pipeline folder, "
+                f"and the editor reads the project root's copy, not the one at {pipeline_copy}: "
+                f"set the path to {pipeline_copy}, or delete {project_copy}.",
+                node_id=node_id,
+                field="path",
+                path=raw_path,
+            )
         raise DeployError(
             f"Data Input node {node_id!r} reads {raw_path!r}, outside the pipeline folder "
             f"{shown!r}, and the quote output depends on it. Deploy ships only data stored "
@@ -607,27 +666,15 @@ def _resolve_path(
     project_root: Path | None = None,
     node_id: str | None = None,
     field_name: str | None = None,
-    *,
-    prefer: PathPreference = "pipeline",
 ) -> Path:
-    """Resolve ``raw_path`` to an absolute path at bundle time.
+    """Resolve ``raw_path`` to an absolute path at bundle time, as the editor reads it.
 
-    Resolution order:
-
-    1. Absolute paths are returned :meth:`~Path.resolve`-ed.
-    2. Relative paths are first resolved against ``pipeline_dir`` — the
-       directory containing the pipeline source file.  When the
-       pipeline-relative file exists, that absolute path is returned.
-    The key invariant — enforced by the test in
-    ``test_deploy_config_and_bundle`` — is that a file existing under
-    ``pipeline_dir`` **always wins** over a same-named file elsewhere.  The
-    old code preferred CWD when both existed, which baked the caller's
-    working directory into the manifest; the deployed container then failed
-    because CWD in the container is ``/``.
-
-    Every path returned is already absolute, so the manifest stores a
-    deterministic, re-resolution-free pointer into the bundle.  Missing
-    files surface loudly via :func:`_check_exists`.
+    The one anchoring rule (:func:`haute._path_resolution.resolve_node_input_path`):
+    the project root's file first, then the one under ``pipeline_dir``, never outside
+    the project root and never against the working directory, so the bundle ships the
+    file the preview read. Every path returned is already absolute, so the manifest
+    stores a deterministic, re-resolution-free pointer into the bundle. Missing files
+    surface loudly via :func:`_check_exists`.
     """
     root = (project_root or pipeline_dir).resolve()
     if not isinstance(raw_path, str) or not raw_path:
@@ -639,13 +686,7 @@ def _resolve_path(
             path=raw_path,
         )
     try:
-        return resolve_runtime_file_path(
-            raw_path,
-            pipeline_dir=pipeline_dir,
-            project_root=root,
-            prefer=prefer,
-            enforce_project_root=True,
-        )
+        return resolve_node_input_path(raw_path, pipeline_dir=pipeline_dir, project_root=root)
     except RuntimePathError as exc:
         raise DeployError(
             f"Node {node_id!r} field {field_name!r} has invalid local deploy path "
