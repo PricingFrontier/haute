@@ -21,6 +21,7 @@ from haute._ram_estimate import RamEstimate
 from haute.errors import RequestRefusedError, UnprocessableError
 from haute.routes._training_lifecycle import TrainService
 from tests import _modelling_route_helpers
+from tests._failure_assertions import assert_unnamed, incident_in
 from tests._modelling_route_helpers import (
     _TERMINAL_JOB_STATUSES,
     _admitted_training_context_for_launch,
@@ -368,8 +369,8 @@ class TestDispersionErrorPaths:
 
         job = store.require_job(job_id)
         assert job["status"] == "error"
-        assert job["message"].startswith("Dispersion estimation of ")
-        assert "RuntimeError" in job["message"]
+        assert_unnamed(job["message"])
+        assert job["incident"] == incident_in(job["message"])
         assert "librs panic" not in job["message"]
         assert "/opt/rustystats" not in job["message"]
 
@@ -459,9 +460,10 @@ class TestDispersionErrorPaths:
             join_training_preparation(response.job_id)
         job = store.require_job(response.job_id)
         assert job["status"] == "error"
-        # Curated as training's are: the raw text stays in the diagnostic field.
-        assert job["message"].startswith("Dispersion estimation of ")
-        assert "RuntimeError" in job["message"]
+        # Answered as every edge answers a failure nothing names: an incident; the raw
+        # text stays in the diagnostic field.
+        assert_unnamed(job["message"])
+        assert job["incident"] == incident_in(job["message"])
         assert "sink exploded" not in job["message"]
         assert "sink exploded" in job["error"]
 
@@ -508,7 +510,9 @@ class TestDispersionErrorPaths:
 
         job = store.require_job(response.job_id)
         assert job["status"] == "error"
-        assert job["message"].startswith("Dispersion estimation of ")
+        assert_unnamed(job["message"])
+        assert job["incident"] == incident_in(job["message"])
+        assert "probe exploded" not in job["message"]
         assert "probe exploded" in job["error"]
         assert "dispersion_estimate" not in admitted
         assert service._training_jobs.cancel(response.job_id) is False
@@ -817,7 +821,8 @@ class TestDispersionErrorPaths:
         assert exc_info.value.status_code == 500
         job = store.require_job(job_id)
         assert job["status"] == "error"
-        assert "Failed to start isolated supervisor" in job["message"]
+        assert_unnamed(job["message"])
+        assert "thread boom" not in job["message"]
         assert not tmp_parquet.exists()
 
 

@@ -299,6 +299,7 @@ def _edge_files() -> list[Path]:
     return files
 
 
+@pytest.mark.meta
 def test_only_the_http_adapter_builds_an_error_response() -> None:
     found: Counter[tuple[str, str]] = Counter()
     for path in source_files(SOURCE_ROOT):
@@ -314,6 +315,7 @@ def test_only_the_http_adapter_builds_an_error_response() -> None:
     assert not stale, f"Listed places that no longer build an error response: {stale}"
 
 
+@pytest.mark.meta
 def test_every_edge_hands_an_unnamed_failure_to_the_module() -> None:
     found: Counter[tuple[str, str]] = Counter()
     handing = _handing_functions()

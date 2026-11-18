@@ -887,7 +887,7 @@ def _cancelled() -> Exception:
         pytest.param(
             _preparation_refused, "contract_error", "input_preparation_failed", id="contract"
         ),
-        pytest.param(_corrupt_cache, "error", None, id="corrupt"),
+        pytest.param(_corrupt_cache, "error", "unexpected_failure", id="corrupt"),
         pytest.param(_admission_refused, "memory_limited", "memory_limit", id="admission"),
     ],
 )

@@ -16,10 +16,57 @@ silently falling back to a default.
 
 from __future__ import annotations
 
+import errno
 import tomllib
 from pathlib import Path
+from typing import Any, Literal
 
-from haute.errors import ConfigError, InvalidPathError, PathOutsideProjectError, PipelineFileError
+from haute.errors import ConfigError, InvalidPathError, PathOutsideProjectError
+
+
+class PipelineFileError(FileNotFoundError):
+    """``haute.toml``'s ``[project].pipeline`` names a file that is not there (``missing``) or
+    that holds no pipeline (``not_a_pipeline``).
+
+    Still a ``FileNotFoundError``, so every caller that catches one keeps doing so. It carries
+    the file, so each edge names it as it names files (relative to the project), and its
+    message the remedy.
+    """
+
+    def __init__(
+        self, path: str, *, reason: Literal["missing", "not_a_pipeline"] = "missing"
+    ) -> None:
+        self.reason = reason
+        super().__init__(errno.ENOENT, self.words(path), path)
+
+    def words(self, named: str) -> str:
+        """The refusal, naming the file as *named*."""
+        if self.reason == "missing":
+            return (
+                f"Pipeline file configured in haute.toml [project].pipeline does not exist: "
+                f"{named}. Fix the path in haute.toml or create the file."
+            )
+        return (
+            f"Pipeline file configured in haute.toml [project].pipeline does not look like a "
+            f"Haute pipeline: {named}. Point [project].pipeline at a .py file containing "
+            "'haute.Pipeline'."
+        )
+
+    def __str__(self) -> str:
+        return str(self.strerror)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (_restore_pipeline_file_error, (type(self), str(self.filename), self.reason))
+
+
+def _restore_pipeline_file_error(
+    error_type: type[PipelineFileError],
+    path: str,
+    reason: Literal["missing", "not_a_pipeline"],
+) -> PipelineFileError:
+    """A :class:`PipelineFileError` as a worker sent it."""
+    return error_type(path, reason=reason)
+
 
 # Files that look like Python modules but are never pipeline entry points.
 # Kept in sync with :mod:`haute.discovery` so resolver and discovery don't

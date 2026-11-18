@@ -724,7 +724,7 @@ def file_answer(exc: BaseException, *, named: str | None = None) -> FailureAnswe
     file is *named* as the caller names it when it knows it better (a request's own
     path), else as :func:`display_file` names the error's."""
     from haute._file_ops import path_too_long_error
-    from haute.errors import PipelineFileError
+    from haute._project import PipelineFileError
 
     if isinstance(exc, PipelineFileError):
         # haute.toml names a pipeline file that is not there or holds no pipeline: the
