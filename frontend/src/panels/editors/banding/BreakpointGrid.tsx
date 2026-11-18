@@ -4,6 +4,8 @@ import { useTwoColumnGridClipboard } from "../shared/useTwoColumnGridClipboard"
 import { boundaryDayNumber, boundaryKind, breakpointLabelIssues } from "./bandingUtils"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
+import { GridCell } from "../shared/GridCell"
+import { useRowKeys } from "../shared/useRowKeys"
 
 type Breakpoint = { boundary: string; label: string }
 
@@ -112,7 +114,12 @@ export function BreakpointGrid({
   matchCounts,
   temporal = false,
 }: BreakpointGridProps) {
-  const { handleCellPaste, copyTsv } = useTwoColumnGridClipboard(BREAKPOINT_GRID, breakpoints, onUpdate)
+  // Each row's key, so a cell's draft stays with its row; the grid's own writes keep them.
+  const rowKeys = useRowKeys(breakpoints)
+  // A paste fills cells from the one pasted into and may add rows below.
+  const paste = (next: Breakpoint[]) =>
+    onUpdate(next.length > breakpoints.length ? rowKeys.add(next) : rowKeys.edit(next))
+  const { handleCellPaste, copyTsv } = useTwoColumnGridClipboard(BREAKPOINT_GRID, breakpoints, paste)
   const showMatches = matchCounts != null
   const boundaryWarnings = temporal ? dateBoundaryWarnings(breakpoints) : boundaryOrderWarnings(breakpoints)
   const labelIssues = breakpointLabelIssues(breakpoints)
@@ -121,15 +128,15 @@ export function BreakpointGrid({
     const next = breakpoints.map((bp, i) =>
       i === index ? { ...bp, [field]: value } : bp,
     )
-    onUpdate(next)
+    onUpdate(rowKeys.edit(next))
   }
 
   const addBreakpoint = () => {
-    onUpdate([...breakpoints, { boundary: "", label: "" }])
+    onUpdate(rowKeys.add([...breakpoints, { boundary: "", label: "" }]))
   }
 
   const removeBreakpoint = (index: number) => {
-    onUpdate(breakpoints.filter((_, i) => i !== index))
+    onUpdate(rowKeys.remove(index, breakpoints.filter((_, i) => i !== index)))
   }
 
   return (
@@ -187,17 +194,18 @@ export function BreakpointGrid({
                   const labelStyle = { ...BOXED_CELL_STYLE, color: accentColor }
 
                   return (
-                    <tr key={i}>
+                    <tr key={rowKeys.keys[i]}>
                       <td className={CELL_CLASS}>
                         <div className="relative">
-                          <input
+                          <GridCell
+                            row={rowKeys.keys[i]}
                             type={temporal ? "text" : "number"}
                             aria-label={`Breakpoint ${i + 1} boundary`}
                             aria-invalid={boundaryWarning ? true : undefined}
                             aria-describedby={boundaryWarning ? boundaryWarningId : undefined}
                             title={boundaryWarning ?? undefined}
                             value={bp.boundary}
-                            onChange={(e) => updateBreakpoint(i, "boundary", e.target.value)}
+                            onCommit={(next) => updateBreakpoint(i, "boundary", next)}
                             onPaste={(e) => handleCellPaste(e, i, 0)}
                             className={`${BOXED_INPUT_CLASS}${boundaryWarning ? " pr-5" : ""}`}
                             style={boundaryWarning ? cellIssueStyle(BOXED_CELL_STYLE, "warning") : BOXED_CELL_STYLE}
@@ -211,14 +219,15 @@ export function BreakpointGrid({
                     </td>
                     <td className={CELL_CLASS}>
                       <div className="relative">
-                        <input
+                        <GridCell
+                          row={rowKeys.keys[i]}
                           type="text"
                           aria-label={`Breakpoint ${i + 1} label`}
                           aria-invalid={labelIssue ? true : undefined}
                           aria-describedby={labelIssue ? labelIssueId : undefined}
                           title={labelIssue}
                           value={bp.label}
-                          onChange={(e) => updateBreakpoint(i, "label", e.target.value)}
+                          onCommit={(next) => updateBreakpoint(i, "label", next)}
                           onPaste={(e) => handleCellPaste(e, i, 1)}
                           className={`${BOXED_LABEL_INPUT_CLASS}${labelIssue ? " pr-5" : ""}`}
                           style={labelIssue ? cellIssueStyle(labelStyle, "error") : labelStyle}

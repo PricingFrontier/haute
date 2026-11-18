@@ -3,6 +3,7 @@ import type { OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
 import { CommittedTextField, ValidatedTextField } from "../../components/form"
 import { duplicateConstantNames, nextConstantName } from "./constantNames"
+import { useRowKeys } from "./shared/useRowKeys"
 
 type ConstantValue = { name: string; value: string }
 
@@ -20,14 +21,16 @@ export default function ConstantEditor({
   onUpdate: OnUpdateConfig
 }) {
   const values = configField<ConstantValue[]>(config, "values", [])
+  // Each row's key, so a field's draft stays with its value; an Undo gives every row a new one.
+  const rowKeys = useRowKeys(values)
 
   const updateRow = (index: number, field: "name" | "value", val: string) => {
     const next = values.map((v, i) => (i === index ? { ...v, [field]: val } : v))
-    onUpdate("values", next)
+    onUpdate("values", rowKeys.edit(next))
   }
 
   const addRow = () => {
-    onUpdate("values", [...values, { name: nextConstantName(values.map((v) => v.name)), value: "0" }])
+    onUpdate("values", rowKeys.add([...values, { name: nextConstantName(values.map((v) => v.name)), value: "0" }]))
   }
 
   // Execution refuses two values of one name, so a row whose name another row
@@ -38,7 +41,7 @@ export default function ConstantEditor({
   }
 
   const removeRow = (index: number) => {
-    onUpdate("values", values.filter((_, i) => i !== index))
+    onUpdate("values", rowKeys.remove(index, values.filter((_, i) => i !== index)))
   }
 
   return (
@@ -52,7 +55,7 @@ export default function ConstantEditor({
 
       <div className="space-y-1.5">
         {values.map((v, i) => (
-          <div key={i} className="flex items-start gap-1.5">
+          <div key={rowKeys.keys[i]} className="flex items-start gap-1.5">
             <ValidatedTextField
               value={v.name}
               validate={(candidate) => nameError(i, candidate)}

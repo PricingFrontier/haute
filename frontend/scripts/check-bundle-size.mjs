@@ -281,7 +281,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // name, and their generated validators, bring the total to 1,806.5 KiB (initial 299.2 KiB);
 // 1,809 KiB restores about 2.5 KiB headroom. Deleting the browser's runtime-id adapter when
 // the package ends gives some back. The other limits are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1809
+// Panel values and Undo (FES-05, 18 November 2026): the shared draft, row identity and the
+// fields moved onto them bring the total to 1,809.8 KiB (initial 299.6 KiB); 1,812 KiB
+// restores about 2.2 KiB headroom. The other limits are unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1812
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

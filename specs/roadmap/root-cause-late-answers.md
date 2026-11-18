@@ -29,7 +29,9 @@ keeps something of its own to do.
 | `WB-41` | [workbench](workbench.md) | Fence `loadingMore` in `useQuoteListStore`, resolve submodel `WORKBENCH_OUTPUT` runtime targets in `priceSample`, and remove stale blank-form rationale | In part |
 
 `WB-61` needs the helper to see text typed and not yet committed, which
-[panel values and Undo](root-cause-panel-drafts.md) provides. Of `WB-41`
+the shared draft answers: `isDraftOpen` in
+`frontend/src/components/form/useCommittedDraft.ts`, which every typed
+field of the editor and the Workbench holds its text in. Of `WB-41`
 the quote list's `loadingMore`, its reset and its guard, is done here; the
 rest of that package is not this cause. Four packages
 that look alike are not: `MLR-10` (a retry that reuses an operation's id
@@ -66,7 +68,9 @@ if its author remembers.
 **Plan:** One request helper that every call goes through when its answer
 will be written to state. It records what the answer belongs to: the
 document, the node, the panel, the edit it was asked under, and whether a
-field it would write to is being typed in, read from the shared draft. A
+field it would write to is being typed in, read from the shared draft
+(`isDraftOpen`); a code editor's text not yet flushed is not registered
+there until `FES-07`, so an answer that writes code asks the editor. A
 late answer is dropped, or handed back marked stale for the caller to
 settle, and what runs after the answer (a flag cleared, a list reloaded) is
 under the same check. Whatever a request set while it waited, such as a
@@ -89,8 +93,9 @@ function writes state
 after waiting outside the helper. The journeys of `FEG-10`, `VCS-10`,
 `FEP-04`, `FEN-01` and `FEN-10` pass.
 
-**Dependencies:** [Panel values and Undo](root-cause-panel-drafts.md), for
-the draft the helper asks. Deliver before the packages its table names.
+**Dependencies:** None: the shared draft it asks is built
+(`frontend/src/components/form/useCommittedDraft.ts`, `isDraftOpen`).
+Deliver before the packages its table names.
 
 **Evidence:** `frontend/src/stores/useDocumentStatusStore.ts`;
 `frontend/src/panels/optimiser/useLatestRequest.ts`; `frontend/src/App.tsx`;

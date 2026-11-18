@@ -1,4 +1,4 @@
-import { ConfigSection, SavedValueOption } from "../../components/form"
+import { CommittedTextField, ConfigSection, SavedValueOption } from "../../components/form"
 import type { EvaluationPreview } from "../../api/types"
 import { fractionToPercent } from "../../utils/formatValue"
 import { evaluationConfigurationIssues } from "../../utils/trainingObjective"
@@ -124,15 +124,13 @@ export function SplitAndMetricsConfig({
     <div className="space-y-3">
       <ConfigSection title="Row limit">
         <div className="flex items-center gap-2">
-          <input
+          <CommittedTextField
             aria-label="Row limit"
             type="number"
             min={0}
             step={100000}
-            value={rowLimit ?? ""}
-            onChange={(event) =>
-              onRowLimitChange(event.target.value === "" ? null : Math.max(0, Number(event.target.value)))
-            }
+            value={rowLimit == null ? "" : String(rowLimit)}
+            onCommit={(next) => onRowLimitChange(next === "" ? null : Math.max(0, Number(next)))}
             placeholder="All rows"
             className="h-8 w-full min-w-0 rounded px-2 font-mono text-[13px]"
             style={MODELLING_INPUT_STYLE}
@@ -248,13 +246,13 @@ export function SplitAndMetricsConfig({
           (strategy === "temporal" ? (
             <label className={field}>
               Validation starts
-              <input
+              <CommittedTextField
                 aria-label="Validation starts"
                 type="date"
                 value={text(current.start)}
-                onChange={(e) =>
+                onCommit={(start) =>
                   update({
-                    validation: { method: "single", start: e.target.value },
+                    validation: { method: "single", start },
                   })
                 }
                 className="h-8 rounded px-2 font-mono text-[13px]"
@@ -333,13 +331,11 @@ export function SplitAndMetricsConfig({
         {strategy === "temporal" ? (
           <label className={field}>
             Test starts
-            <input
+            <CommittedTextField
               aria-label="Test starts"
               type="date"
               value={text(test?.start)}
-              onChange={(e) =>
-                updateTest(e.target.value ? { start: e.target.value } : null)
-              }
+              onCommit={(start) => updateTest(start ? { start } : null)}
               className="h-8 rounded px-2 font-mono text-[13px]"
               style={MODELLING_INPUT_STYLE}
             />

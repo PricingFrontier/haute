@@ -17,7 +17,7 @@ browser sweep of failed calls on the same day; the main session ran it
 again with a dropped connection and with a gateway's answer. `FEG-05`
 comes from the plan's browser sweep of what happens around an open editor,
 also on 11 November; the main session ran it again with a slip in a code
-editor and with a branch checked out and back. `FEG-06` to `FEG-08` come
+editor and with a branch checked out and back. `FEG-06` and `FEG-07` come
 from the plan's phase 5, a reader from a second model family (Codex) over
 the code changed since the 31 October audit. A worker ran each in a
 browser, and the main session ran each journey again on 13 November.
@@ -38,7 +38,6 @@ session ran each again on 15 November 2026.
 | FEG-05 | Planned | P2 | A tab with unsaved work that a change on disk locked is editable again once the file is back as the tab loaded it, and the banner offers the reload it names. |
 | FEG-06 | Planned | P3 | Nodes pasted together stay connected in their code: a pasted Transform reads the pasted input, not the original under a name it no longer has. |
 | FEG-07 | Planned | P3 | An Edge Join dropped on the edge into an optimiser moves the optimiser's chosen input to the join, and a save's refusal names the node as the canvas does. |
-| FEG-08 | Planned | P3 | "Save node" saves the change the panel shows, however long the editor takes to resolve it. |
 | FEG-09 | Planned | P2 | Comparing an earlier milestone of a submodel that gained an output shows the comparison; an output with no identity yet never replaces the screen with an error. |
 | FEG-10 | Planned | P2 | A repair's late answer leaves the tab on the newer document it already shows. |
 
@@ -344,31 +343,6 @@ uses the name on the canvas.
 **Evidence:** `frontend/src/utils/edgeJoinGraph.ts`;
 `frontend/src/utils/nodeUpdatePlan.ts`;
 `specs/frontend-modelling-optimiser-ui/high-level.md`.
-
-### FEG-08 — "Save node" saves what the panel shows
-**Why:** Reproduced on 13 November 2026 in a browser. A pipeline the
-editor opens in recovery, because one node reads a node the file lacks,
-has no Save for the whole pipeline; each node that can be edited has "Save
-node". In the Quote Input the sample file is changed to
-`other_quote.json` and Save node is pressed while the editor is still
-resolving the change (the run held that request). The save sends the old
-`sample_quote.json`. When the resolution answers the panel shows
-`other_quote.json`; when the save answers it shows `sample_quote.json`
-again. Undo is off, nothing is said, and the file keeps the old value.
-With no delay the new value is saved. The whole pipeline's Save waits for
-changes that are still resolving; Save node does not.
-
-**Plan:** Have Save node wait for the node's pending change, as the whole
-pipeline's Save does, or stay off until it has resolved.
-
-**Acceptance:** In the run above the file holds `other_quote.json` after
-Save node, however slow the resolution is, and the panel never goes back
-to the old value.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useScopedNodeSave.ts`;
-`frontend/src/App.tsx`.
 
 ### FEG-09 — A submodel output with no resolved identity does not replace the screen
 **Why:** Reproduced on 15 November 2026 in the browser, in two journeys.

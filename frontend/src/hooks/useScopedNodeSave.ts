@@ -21,6 +21,8 @@ interface UseScopedNodeSaveArgs {
   scopedEditingActive: boolean
   selectedNodeId: string | null
   onUpdateNode: UpdateNode
+  /** The barrier every save waits on: open drafts committed, pending commits landed. */
+  settleEdits: () => Promise<OnUpdateConfigResult>
   /** Adopt the authoritative response and the fingerprint it names; owns selection retention. */
   applyDocument: (document: PipelineEditorDocument, documentFingerprint: string, savedNodeId: string) => void
 }
@@ -36,13 +38,16 @@ interface UseScopedNodeSaveArgs {
  *   instance) is refused, so a delayed response can never adopt over work
  *   entered after submission;
  * - a late response is discarded when the on-screen document identity moved
- *   after submission.
+ *   after submission;
+ * - the save first settles the open edits through the barrier the pipeline's
+ *   save uses, so it sends the node as the panel shows it, however long a
+ *   change still resolving takes.
  */
 export function useScopedNodeSave({
   scopedEditingActive,
   selectedNodeId,
-  
   onUpdateNode,
+  settleEdits,
   applyDocument,
 }: UseScopedNodeSaveArgs) {
   const editedNodeIdsRef = useRef<Set<string>>(new Set())
@@ -100,34 +105,40 @@ export function useScopedNodeSave({
     if (inFlightRef.current) {
       return { ok: false, error: "A node save is already in flight." }
     }
-    const target = canvasGraph()?.nodes.find((item) => item.id === selectedNodeId)
-    const data = target?.data as HauteNodeData | undefined
-    const state = useDocumentStatusStore.getState()
-    if (
-      !target ||
-      typeof data?._sourceFile !== "string" ||
-      typeof data?._recoveryId !== "string" ||
-      !state.sourceRevision
-    ) {
-      return { ok: false, error: "This node cannot be saved in isolation right now." }
-    }
-    const others = otherScopedEditedNodes(editedNodeIdsRef.current, target.id)
-    if (others.length > 0) {
-      return { ok: false, error: `Save the other edited node first: ${nodeLabel(others[0])}.` }
-    }
-    const requestSourceFile = state.sourceFile
-    const requestRevision = state.sourceRevision
-    // Steps the node holds as saved are not sent as its program: the code saved for them is
-    // (CGEN-11).
-    const config = (data.config ?? {}) as Record<string, unknown>
-    const graph = useGraphStore.getState()
-    const stepped = isSteppedConfig(String(data.nodeType), config)
-    const savedCode = stepped
-      ? savedCodeForSteps(graph.lastSavedSnapshot, graph.focus?.definitionId ?? null, target.id, config.steps)
-      : null
+    // What the panel shows is saved: the barrier commits each value still being typed at
+    // once, and the save is in flight from then on, so no later edit joins it; a change
+    // still resolving lands (or fails, and nothing is saved) before the node is read.
+    const settling = settleEdits()
     inFlightRef.current = true
     setScopedSaveInFlight(true)
     try {
+      const settled = await settling
+      if (!settled.ok) return { ok: false, error: settled.error }
+      const target = canvasGraph()?.nodes.find((item) => item.id === selectedNodeId)
+      const data = target?.data as HauteNodeData | undefined
+      const state = useDocumentStatusStore.getState()
+      if (
+        !target ||
+        typeof data?._sourceFile !== "string" ||
+        typeof data?._recoveryId !== "string" ||
+        !state.sourceRevision
+      ) {
+        return { ok: false, error: "This node cannot be saved in isolation right now." }
+      }
+      const others = otherScopedEditedNodes(editedNodeIdsRef.current, target.id)
+      if (others.length > 0) {
+        return { ok: false, error: `Save the other edited node first: ${nodeLabel(others[0])}.` }
+      }
+      const requestSourceFile = state.sourceFile
+      const requestRevision = state.sourceRevision
+      // Steps the node holds as saved are not sent as its program: the code saved for them is
+      // (CGEN-11).
+      const config = (data.config ?? {}) as Record<string, unknown>
+      const graph = useGraphStore.getState()
+      const stepped = isSteppedConfig(String(data.nodeType), config)
+      const savedCode = stepped
+        ? savedCodeForSteps(graph.lastSavedSnapshot, graph.focus?.definitionId ?? null, target.id, config.steps)
+        : null
       const { value: document, documentFingerprint } = await saveNodeScoped({
         sourceFile: requestSourceFile,
         sourceRevision: requestRevision,
@@ -154,7 +165,7 @@ export function useScopedNodeSave({
       inFlightRef.current = false
       setScopedSaveInFlight(false)
     }
-  }, [applyDocument, nodeLabel, selectedNodeId])
+  }, [applyDocument, nodeLabel, selectedNodeId, settleEdits])
 
   return { handlePanelUpdateNode, handleScopedSave, scopedSaveInFlight }
 }

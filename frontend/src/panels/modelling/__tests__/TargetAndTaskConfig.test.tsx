@@ -237,6 +237,7 @@ describe("TargetAndTaskConfig", () => {
       )
       expect(screen.getByRole("alert")).toHaveTextContent("Choose which label is the positive class.")
       fireEvent.change(screen.getByLabelText("Positive class"), { target: { value: "claim" } })
+      fireEvent.blur(screen.getByLabelText("Positive class"))
       expect(onUpdate).toHaveBeenCalledWith("positive_class", "claim")
     })
 
@@ -267,6 +268,7 @@ describe("TargetAndTaskConfig", () => {
       )
       expect(screen.queryByRole("alert")).toBeNull()
       fireEvent.change(screen.getByLabelText("Positive class"), { target: { value: "2" } })
+      fireEvent.blur(screen.getByLabelText("Positive class"))
       expect(onUpdate).toHaveBeenCalledWith("positive_class", 2)
     })
 
@@ -284,6 +286,7 @@ describe("TargetAndTaskConfig", () => {
       )
       expect(screen.getByLabelText("Positive class")).toHaveValue("2")
       fireEvent.change(screen.getByLabelText("Positive class"), { target: { value: "" } })
+      fireEvent.blur(screen.getByLabelText("Positive class"))
       expect(onUpdate).toHaveBeenCalledWith("positive_class", null)
     })
 

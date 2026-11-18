@@ -49,6 +49,7 @@ describe("useScopedNodeSave", () => {
   let revisionCounter: number
   let onUpdateNode: Mock<(id: string, data: Record<string, unknown>) => OnUpdateConfigResult>
   let applyDocument: Mock<(document: PipelineEditorDocument, documentFingerprint: string, savedNodeId: string) => void>
+  let settleEdits: Mock<() => Promise<OnUpdateConfigResult>>
 
   function serverDocument(revision: string): PipelineEditorDocument {
     return makePipelineEditorDocument({
@@ -93,6 +94,7 @@ describe("useScopedNodeSave", () => {
       }))
       return { ok: true as const }
     })
+    settleEdits = vi.fn(async () => ({ ok: true as const }))
     // The backend persists the submitted configuration and returns a full
     // authoritative document built from its own state.
     saveNodeScoped.mockImplementation(
@@ -126,6 +128,7 @@ describe("useScopedNodeSave", () => {
           scopedEditingActive: true,
           selectedNodeId: props.selectedNodeId,
           onUpdateNode,
+          settleEdits,
           applyDocument,
         }),
       { initialProps: { selectedNodeId } },
@@ -135,6 +138,13 @@ describe("useScopedNodeSave", () => {
   function nodeConfig(id: string): Record<string, unknown> {
     const node = useGraphStore.getState().nodes.find((item) => item.id === id)
     return ((node?.data as HauteNodeData)?.config ?? {}) as Record<string, unknown>
+  }
+
+  /** Until the save, past its settle, has sent its request. */
+  async function sent(): Promise<void> {
+    await act(async () => {
+      await vi.waitFor(() => expect(saveNodeScoped).toHaveBeenCalled())
+    })
   }
 
   function editedData(id: string, code: string): Record<string, unknown> {
@@ -154,6 +164,7 @@ describe("useScopedNodeSave", () => {
     act(() => {
       pending = hook.result.current.handleScopedSave()
     })
+    await sent()
 
     // The user closes A's panel and opens B before the response returns: the
     // guard lives in the App-lifetime hook, not the unmounted panel.
@@ -258,6 +269,7 @@ describe("useScopedNodeSave", () => {
     act(() => {
       pending = hook.result.current.handleScopedSave()
     })
+    await sent()
     // Something else replaced the document while the request was in flight.
     act(() => {
       useDocumentStatusStore.getState().loadDocumentStatus(serverDocument("rev-external"))
@@ -272,6 +284,42 @@ describe("useScopedNodeSave", () => {
     expect(applyDocument).not.toHaveBeenCalled()
   })
 
+  it("saves the change the panel shows, after a change still resolving lands", async () => {
+    // The node's change is still resolving its identity when Save node is pressed.
+    let land!: () => void
+    settleEdits.mockImplementationOnce(() => new Promise((resolve) => {
+      land = () => {
+        // The controller commits a resolved change itself, not through the panel's guarded path.
+        onUpdateNode("a@1", editedData("a@1", "resolved-edit"))
+        resolve({ ok: true })
+      }
+    }))
+    const hook = render("a@1")
+    let pending!: Promise<{ ok: boolean; error?: string }>
+    act(() => {
+      pending = hook.result.current.handleScopedSave()
+    })
+    expect(saveNodeScoped).not.toHaveBeenCalled()
+    await act(async () => {
+      land()
+      await expect(pending).resolves.toEqual({ ok: true })
+    })
+    expect(saveNodeScoped).toHaveBeenCalledWith(expect.objectContaining({ config: { code: "resolved-edit" } }))
+    expect(nodeConfig("a@1")).toEqual({ code: "resolved-edit" })
+  })
+
+  it("saves nothing when a change still resolving fails", async () => {
+    settleEdits.mockResolvedValueOnce({ ok: false, error: "Update node failed: no identity" })
+    const hook = render("a@1")
+    await act(async () => {
+      await expect(hook.result.current.handleScopedSave()).resolves.toEqual({
+        ok: false,
+        error: "Update node failed: no identity",
+      })
+    })
+    expect(saveNodeScoped).not.toHaveBeenCalled()
+  })
+
   it("refuses a second save while one is in flight", async () => {
     let release!: (value: unknown) => void
     saveNodeScoped.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
@@ -280,6 +328,7 @@ describe("useScopedNodeSave", () => {
     act(() => {
       pending = hook.result.current.handleScopedSave()
     })
+    await sent()
     await expect(hook.result.current.handleScopedSave()).resolves.toMatchObject({
       ok: false,
       error: expect.stringContaining("already in flight"),

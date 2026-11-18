@@ -32,6 +32,7 @@ describe("EBMInteractionsConfig (MOD-F04)", () => {
     const onUpdate = renderInteractions({ params: { max_rounds: 500, interactions: 3 } })
     expect(screen.getByLabelText("Maximum interaction count")).toHaveValue(3)
     fireEvent.change(screen.getByLabelText("Maximum interaction count"), { target: { value: "7" } })
+    fireEvent.blur(screen.getByLabelText("Maximum interaction count"))
     expect(onUpdate).toHaveBeenLastCalledWith("params", { max_rounds: 500, interactions: 7 })
     fireEvent.click(screen.getByRole("radio", { name: "Choose pairs" }))
     expect(onUpdate).toHaveBeenLastCalledWith("params", { max_rounds: 500, interactions: [] })

@@ -104,7 +104,7 @@ describe("BreakpointGrid", () => {
     expect(result[0].label).toBe("Mid")
   })
 
-  it("editing boundary value calls onUpdate", () => {
+  it("a boundary's edit reaches onUpdate once, when the cell is left", () => {
     const onUpdate = vi.fn()
     render(
       <BreakpointGrid
@@ -114,12 +114,15 @@ describe("BreakpointGrid", () => {
       />,
     )
     const boundaryInput = screen.getByDisplayValue("10")
+    fireEvent.change(boundaryInput, { target: { value: "1" } })
     fireEvent.change(boundaryInput, { target: { value: "15" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(boundaryInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate.mock.calls[0][0][0].boundary).toBe("15")
   })
 
-  it("editing label calls onUpdate", () => {
+  it("a band name's edit reaches onUpdate once, on Enter", () => {
     const onUpdate = vi.fn()
     render(
       <BreakpointGrid
@@ -129,7 +132,10 @@ describe("BreakpointGrid", () => {
       />,
     )
     const labelInput = screen.getByDisplayValue("Low")
+    fireEvent.change(labelInput, { target: { value: "Very" } })
     fireEvent.change(labelInput, { target: { value: "Very Low" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.keyDown(labelInput, { key: "Enter" })
     expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate.mock.calls[0][0][0].label).toBe("Very Low")
   })

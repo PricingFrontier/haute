@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
+import { act, render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { useState } from "react"
 
+import { commitOpenDrafts } from "../../../../components/form"
 import { summarizeStep } from "../summary"
 import { MAX_EXPR_DEPTH, createStep, stepProblem } from "../catalogue"
 import { calculationExpr } from "../calculations"
@@ -146,6 +147,56 @@ describe("step forms only build schema-valid payloads", () => {
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
     expect(latest.conditions[0].values).toEqual([{ kind: "literal", type: "number", value: 5 }])
     expect(screen.getByLabelText("Filter condition 1 values type")).toHaveValue("number")
+  })
+
+  it("adds nothing while the new-value box shows a number it refused, and says why", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "f",
+      kind: "filter",
+      match: "all",
+      conditions: [{ column: "region", operator: "is_in", values: [{ kind: "literal", type: "number", value: 1 }] }],
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    const input = screen.getByLabelText("Filter condition 1 values new value")
+    fireEvent.change(input, { target: { value: "" } })
+    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+    expect(spy).not.toHaveBeenCalled()
+    expect(screen.getAllByText("Enter a finite number.").length).toBeGreaterThan(0)
+
+    // Once the box takes a number, that number is what is added.
+    fireEvent.change(input, { target: { value: "7" } })
+    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
+    expect(latest.conditions[0].values).toEqual([
+      { kind: "literal", type: "number", value: 1 },
+      { kind: "literal", type: "number", value: 7 },
+    ])
+  })
+
+  it("adds again once a refused number in the new-value box is put back to the one it held", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "f",
+      kind: "filter",
+      match: "all",
+      conditions: [{ column: "region", operator: "is_in", values: [{ kind: "literal", type: "number", value: 1 }] }],
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    const input = screen.getByLabelText("Filter condition 1 values new value")
+    fireEvent.change(input, { target: { value: "" } })
+    fireEvent.blur(input)
+    // Back to the number the box held: nothing changes, and the refusal goes.
+    fireEvent.change(input, { target: { value: "0" } })
+    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
+    expect(latest.conditions[0].values).toEqual([
+      { kind: "literal", type: "number", value: 1 },
+      { kind: "literal", type: "number", value: 0 },
+    ])
   })
 
   it("string operators offer text values only, while comparisons offer every type", () => {
@@ -1623,6 +1674,127 @@ describe("Computed as", () => {
     fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "round" } })
     fireEvent.change(screen.getByLabelText("Part 1 expression type"), { target: { value: "formula" } })
     expect(screen.getByLabelText("Formula")).toHaveValue("strip()")
+  })
+})
+
+describe("a formula and what an expression remembers let go when the stored expression moves", () => {
+  afterEach(cleanup)
+  const formulaStep = (text: string): Step => ({ id: "w", kind: "with_column", name: "total", expr: parseFormula(text, ctx.variables) })
+  const exprOf = (step: unknown) => (step as Extract<Step, { kind: "with_column" }>).expr
+
+  it("a formula writes nothing while typing and once on commit, and shows the stored formula when it moves under a draft", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<StepForm step={formulaStep("premium * 2")} onChange={onChange} ctx={ctx} />)
+    const box = screen.getByRole("combobox", { name: "Formula" })
+    fireEvent.change(box, { target: { value: "premium * 3" } })
+    fireEvent.change(box, { target: { value: "premium * 30" } })
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.blur(box)
+    fireEvent.blur(box)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(exprOf(onChange.mock.calls[0][0])).toEqual(parseFormula("premium * 30", ctx.variables))
+    // An Undo moves the formula under a draft, and a Redo brings back the one it was typed over.
+    fireEvent.change(box, { target: { value: "premium * 4" } })
+    rerender(<StepForm step={formulaStep("premium + 1")} onChange={onChange} ctx={ctx} />)
+    expect(box).toHaveValue("premium + 1")
+    rerender(<StepForm step={formulaStep("premium * 2")} onChange={onChange} ctx={ctx} />)
+    expect(box).toHaveValue("premium * 2")
+    fireEvent.blur(box)
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps a formula it cannot read in the box with why, until the stored formula moves", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<StepForm step={formulaStep("premium * 2")} onChange={onChange} ctx={ctx} />)
+    const box = screen.getByRole("combobox", { name: "Formula" })
+    fireEvent.change(box, { target: { value: "premium * (" } })
+    fireEvent.keyDown(box, { key: "Enter" })
+    expect(box).toHaveValue("premium * (")
+    expect(screen.getByText(/^Not understood/)).toBeInTheDocument()
+    // The reason stays while the formula is being fixed.
+    fireEvent.change(box, { target: { value: "premium * (1" } })
+    expect(screen.getByText(/^Not understood/)).toBeInTheDocument()
+    rerender(<StepForm step={formulaStep("premium + 1")} onChange={onChange} ctx={ctx} />)
+    expect(box).toHaveValue("premium + 1")
+    expect(screen.queryByText(/^Not understood/)).not.toBeInTheDocument()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it("a save commits an open formula once, and a refused one keeps its text and reason", () => {
+    const onChange = vi.fn()
+    render(<StepForm step={formulaStep("premium * 2")} onChange={onChange} ctx={ctx} />)
+    const box = screen.getByRole("combobox", { name: "Formula" })
+    fireEvent.change(box, { target: { value: "premium * 5" } })
+    act(() => commitOpenDrafts())
+    act(() => commitOpenDrafts())
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(exprOf(onChange.mock.calls[0][0])).toEqual(parseFormula("premium * 5", ctx.variables))
+    fireEvent.change(box, { target: { value: "premium *" } })
+    act(() => commitOpenDrafts())
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(box).toHaveValue("premium *")
+    expect(screen.getByText(/^Not understood/)).toBeInTheDocument()
+  })
+
+  it("forgets the expression left under a calculation when the stored expression moves from outside", () => {
+    const clipExpr: Expr = { type: "function", fn: "clip", operand: { kind: "column", name: "load" }, args: [{ kind: "literal", type: "number", value: 0.8 }, { kind: "literal", type: "number", value: 1.2 }] }
+    const clipLoad: Step = { id: "w", kind: "with_column", name: "capped", expr: clipExpr }
+    const onChange = vi.fn()
+    const latest = () => onChange.mock.calls.at(-1)?.[0] as Step
+    const { rerender } = render(<StepForm step={clipLoad} onChange={onChange} ctx={ctx} />)
+    const fn = () => screen.getByLabelText("Function")
+    // The form's own writes coming back keep what it left.
+    fireEvent.change(fn(), { target: { value: "round" } })
+    rerender(<StepForm step={latest()} onChange={onChange} ctx={ctx} />)
+    fireEvent.change(fn(), { target: { value: "clip" } })
+    expect(exprOf(latest())).toEqual(clipExpr)
+    rerender(<StepForm step={latest()} onChange={onChange} ctx={ctx} />)
+    fireEvent.change(fn(), { target: { value: "round" } })
+    const rounded = latest()
+    rerender(<StepForm step={rounded} onChange={onChange} ctx={ctx} />)
+    // An Undo and a Redo from outside bring the same rounded step back: the clip left is forgotten.
+    rerender(<StepForm step={clipLoad} onChange={onChange} ctx={ctx} />)
+    rerender(<StepForm step={rounded} onChange={onChange} ctx={ctx} />)
+    fireEvent.change(fn(), { target: { value: "clip" } })
+    expect(exprOf(latest())).toEqual(calculationExpr("clip", exprOf(rounded), ctx.variables))
+    expect(exprOf(latest())).not.toEqual(clipExpr)
+  })
+
+  it("forgets a formula's unfinished text when the stored expression moves from outside, even back to the formula it was typed over", () => {
+    const formula = parseFormula("premium * 2", ctx.variables)
+    const fill = (expr: Expr): Step => ({ id: "f", kind: "fill_null", columns: [], fill: { kind: "value", value: { kind: "expr", expr } } })
+    const onChange = vi.fn()
+    const latest = () => onChange.mock.calls.at(-1)?.[0] as Step
+    const { rerender } = render(<StepForm step={fill(formula)} onChange={onChange} ctx={ctx} />)
+    const type = () => screen.getByLabelText("Fill value expression type")
+    fireEvent.change(screen.getByLabelText("Formula"), { target: { value: "premium * (" } })
+    fireEvent.blur(screen.getByLabelText("Formula"))
+    // The form's own switches keep the unfinished text.
+    fireEvent.change(type(), { target: { value: "round" } })
+    rerender(<StepForm step={latest()} onChange={onChange} ctx={ctx} />)
+    fireEvent.change(type(), { target: { value: "formula" } })
+    rerender(<StepForm step={latest()} onChange={onChange} ctx={ctx} />)
+    expect(screen.getByLabelText("Formula")).toHaveValue("premium * (")
+    // The remembered text is the box's draft once the box is used: leaving it tries it again.
+    const written = onChange.mock.calls.length
+    fireEvent.focus(screen.getByLabelText("Formula"))
+    fireEvent.blur(screen.getByLabelText("Formula"))
+    expect(screen.getByText(/^Not understood/)).toBeInTheDocument()
+    expect(onChange.mock.calls.length).toBe(written)
+    fireEvent.change(type(), { target: { value: "round" } })
+    const rounded = latest()
+    rerender(<StepForm step={rounded} onChange={onChange} ctx={ctx} />)
+    // An Undo brings back the very formula the text was typed over: the text does not come back.
+    rerender(<StepForm step={fill(formula)} onChange={onChange} ctx={ctx} />)
+    expect(screen.getByLabelText("Formula")).toHaveValue("premium * 2")
+    // Nor after a Redo and a switch back.
+    rerender(<StepForm step={rounded} onChange={onChange} ctx={ctx} />)
+    const calls = onChange.mock.calls.length
+    fireEvent.change(type(), { target: { value: "formula" } })
+    expect(onChange.mock.calls.length).toBe(calls + 1)
+    rerender(<StepForm step={latest()} onChange={onChange} ctx={ctx} />)
+    expect(screen.getByLabelText("Formula")).not.toHaveValue("premium * (")
+    expect((latest() as Extract<Step, { kind: "fill_null" }>).fill).not.toEqual({ kind: "value", value: { kind: "expr", expr: formula } })
   })
 })
 

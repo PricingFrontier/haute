@@ -708,7 +708,7 @@ describe("ModellingConfig", () => {
       expect(screen.getAllByText(/seed is managed elsewhere/).length).toBeGreaterThan(0)
     })
 
-    it("autosaves arbitrary algorithm parameters", () => {
+    it("commits arbitrary algorithm parameters when the editor is left", () => {
       const { props } = renderConfig()
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(textarea, {
@@ -716,6 +716,8 @@ describe("ModellingConfig", () => {
           value: '{"grow_policy":"Lossguide","max_leaves":64,"custom":{"enabled":true}}',
         },
       })
+      expect(props.onUpdate).not.toHaveBeenCalledWith("params", expect.anything())
+      fireEvent.blur(textarea)
       expect(props.onUpdate).toHaveBeenCalledWith("params", {
         grow_policy: "Lossguide",
         max_leaves: 64,
@@ -2271,6 +2273,8 @@ describe("ModellingConfig", () => {
       const { props } = renderConfig()
       const rowLimitInput = screen.getByLabelText("Row limit")
       fireEvent.change(rowLimitInput, { target: { value: "50000" } })
+      expect(props.onUpdate).not.toHaveBeenCalledWith("row_limit", expect.anything())
+      fireEvent.blur(rowLimitInput)
       expect(props.onUpdate).toHaveBeenCalledWith("row_limit", 50000)
     })
 
@@ -2280,6 +2284,7 @@ describe("ModellingConfig", () => {
       })
       const rowLimitInput = screen.getByDisplayValue("50000")
       fireEvent.change(rowLimitInput, { target: { value: "" } })
+      fireEvent.blur(rowLimitInput)
       expect(props.onUpdate).toHaveBeenCalledWith("row_limit", null)
     })
 
@@ -2464,9 +2469,41 @@ describe("ModellingConfig", () => {
       expect(mockTrainModel).not.toHaveBeenCalled()
     })
 
-    it("autosaves fixed params exactly while Train owns GPU, Split owns row limit and Export owns MLflow", () => {
+    it("shows the search space training will use after an Undo", () => {
+      const tuning = (searchSpace: Record<string, unknown>) => ({
+        schema_version: 1, trial_count: 20, seed: 42, metric: "gini", search_space: searchSpace,
+      })
+      const config = (searchSpace: Record<string, unknown>) => ({
+        target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE", metrics: ["gini"],
+        tuning: tuning(searchSpace),
+      })
+      const { rerender, props } = renderConfig({ activePane: "params", nodeId: "node_1", config: config({ depth: [4, 6] }) })
+      const box = () => screen.getByLabelText("CatBoost search space JSON") as HTMLTextAreaElement
+      // The store's value moves: the edit lands, then Undo and Redo move it again.
+      const stored = (searchSpace: Record<string, unknown>) => rerender(
+        <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
+          <ModellingConfig {...props} config={config(searchSpace)} />
+        </GraphProvider>,
+      )
+
+      fireEvent.change(box(), { target: { value: '{"depth":[8,10]}' } })
+      fireEvent.blur(box())
+      expect(props.onUpdate).toHaveBeenCalledWith("tuning", tuning({ depth: [8, 10] }))
+      stored({ depth: [8, 10] })
+      stored({ depth: [4, 6] })
+      expect(JSON.parse(box().value)).toEqual({ depth: [4, 6] })
+
+      // A draft still being typed lets go too, so the box never shows a range training will not use.
+      fireEvent.change(box(), { target: { value: '{"depth":[12' } })
+      stored({ depth: [8, 10] })
+      expect(JSON.parse(box().value)).toEqual({ depth: [8, 10] })
+      expect(screen.queryByText(/Search space JSON:/)).toBeNull()
+    })
+
+    it("commits fixed params exactly while Train owns GPU, Split owns row limit and Export owns MLflow", () => {
       const { rerender, props } = renderConfig({ activePane: "params", nodeId: "node_1", config: { algorithm: "catboost", params: { depth: 6, task_type: "GPU" } } })
       fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: '{"iterations":200,"custom":true}' } })
+      fireEvent.blur(screen.getByLabelText("CatBoost hyperparameters JSON"))
       expect(props.onUpdate).toHaveBeenCalledWith("params", {
         iterations: 200,
         custom: true,

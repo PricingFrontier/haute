@@ -1,4 +1,4 @@
-import { ConfigSection } from "../../components/form"
+import { CommittedTextField, ConfigSection } from "../../components/form"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
 import { isNumericDtype } from "../../utils/polarsDtypes"
@@ -213,18 +213,13 @@ export function TargetAndTaskConfig({
                   Positive class
                   {positiveClassRequired ? "" : " (only if the labels are not 0/1)"}
                 </label>
-                <input
+                <CommittedTextField
                   id="positive-class"
                   aria-label="Positive class"
                   className="mt-0.5 w-full rounded-md px-2 py-1 text-xs font-mono"
                   value={positiveClassText}
                   placeholder={positiveClassRequired ? "e.g. claim" : "e.g. 2"}
-                  onChange={(event) =>
-                    onUpdate(
-                      "positive_class",
-                      positiveClassValue(event.target.value, targetDtype),
-                    )
-                  }
+                  onCommit={(next) => onUpdate("positive_class", positiveClassValue(next, targetDtype))}
                 />
                 <p className="mt-0.5 text-[12px]" style={{ color: "var(--text-muted)" }}>
                   The label the model predicts the probability of. Predictions

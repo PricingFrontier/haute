@@ -834,15 +834,20 @@ export default function ExploreChartsConfig({
       }
     }
   }
-  const nameCommit = (name: string) => {
+  // A refused name stays in the box, with the reason above it.
+  const nameCommit = (name: string): { ok: boolean } => {
     const trimmed = name.trim()
-    if (!trimmed) return setMessage("Chart name cannot be blank.")
-    if (
-      charts.some((c) => c.id !== chart.id && c.name.trim().toLowerCase() === trimmed.toLowerCase())
-    )
-      return setMessage("Chart name must be unique.")
+    if (!trimmed) {
+      setMessage("Chart name cannot be blank.")
+      return { ok: false }
+    }
+    if (charts.some((c) => c.id !== chart.id && c.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+      setMessage("Chart name must be unique.")
+      return { ok: false }
+    }
     setMessage(null)
     if (trimmed !== chart.name) commit({ ...chart, name: trimmed })
+    return { ok: true }
   }
   const updateAxis = (axis: "primary" | "secondary", change: ChartAxisChange) =>
     commit({ ...chart, axes: { ...chart.axes, [axis]: { ...chart.axes[axis], ...change } } })
@@ -875,16 +880,17 @@ export default function ExploreChartsConfig({
         </div>
       )}
       <Field label="Chart name">
-        <input
-          key={`${chart.id}:${chart.name}`}
+        <CommittedTextField
+          key={chart.id}
           aria-label="Chart name"
-          defaultValue={chart.name}
+          value={chart.name}
           className="rounded px-2 py-1 text-xs"
           style={INPUT_STYLE}
-          onBlur={(e) => nameCommit(e.currentTarget.value)}
+          onCommit={nameCommit}
           onKeyDown={(e) => {
+            // Enter leaves the box, which commits it once.
             if (e.key === "Enter") {
-              nameCommit(e.currentTarget.value)
+              e.preventDefault()
               e.currentTarget.blur()
             }
           }}

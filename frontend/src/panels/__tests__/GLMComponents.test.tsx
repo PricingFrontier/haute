@@ -240,15 +240,17 @@ describe("GLMTargetConfig", () => {
     expect(input.value).toBe("")
   })
 
-  it("typing a theta updates the config", () => {
+  it("a typed theta updates the config when the field is left", () => {
     render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial" }} onUpdate={onUpdate} columns={defaultColumns} />)
     fireEvent.change(screen.getByPlaceholderText("e.g. 1.5"), { target: { value: "2.5" } })
+    fireEvent.blur(screen.getByPlaceholderText("e.g. 1.5"))
     expect(onUpdate).toHaveBeenCalledWith("theta", 2.5)
   })
 
   it("clearing the theta field unsets it (re-arms the gate)", () => {
     render(<GLMTargetConfig config={{ ...baseConfig, family: "negbinomial", theta: 2.5 }} onUpdate={onUpdate} columns={defaultColumns} />)
     fireEvent.change(screen.getByPlaceholderText("e.g. 1.5"), { target: { value: "" } })
+    fireEvent.blur(screen.getByPlaceholderText("e.g. 1.5"))
     expect(onUpdate).toHaveBeenCalledWith("theta", null)
   })
 

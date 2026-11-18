@@ -290,6 +290,30 @@ tooltip. The shared form primitives associate labels with controls, honour
 disabled state, and buffer text locally until an explicit commit boundary, so typing into a
 graph-backed configuration cannot create one undo entry per character.
 
+**Panel values and Undo.** A value being edited in a panel or a node, whatever its kind (a
+line of text, a number, a JSON text, a grid cell, a list of rows), is held by one shared
+draft, `useCommittedDraft`. The few still held another way (a code editor's typing, the
+colour picker's preview, the Columns tab's empty selection, and the fields of lists still keyed
+by position) are listed under
+[FES-07](../roadmap/frontend-shared.md#fes-07--the-last-panel-values-outside-the-shared-draft). The field shows the stored value until the
+analyst types; the typed draft commits once, on blur or Enter (a text area: on blur), as one
+undo step, and a commit whose value is unchanged commits nothing. When the stored value moves
+under an open draft, by an Undo, a Redo, a live-sync frame or any other change from outside
+the field, the draft lets go and the field shows what the store holds. A draft belongs to the
+item it edits: a value in a list's row is keyed by that row's identity rather than its
+position, and a row keeps its identity only through the list's own edits, additions,
+removals and moves; a list replaced from outside, as by an Undo, gives every row a new
+identity, so no draft or remembered value passes to another row. A value a panel remembers
+beside the stored one (a Banding factor's rules under its other type) is held against the
+same identity and lets go the same way. A draft its owner refuses (an invalid number, JSON
+that does not parse) stays on screen with its reason and is not committed. Every save, of the
+pipeline or of one node, first commits each open draft, as leaving its field would, and then
+waits for each commit still resolving, so what is saved is what the panels show; a refused
+draft is left out and keeps its reason on screen. Whether any field is being typed in can be
+asked of the shared draft from outside React. A code editor keeps its own rule for now: a
+change from outside that arrives while it holds typing not yet flushed waits until that typing
+is committed or reverted.
+
 **Pipeline imports.** The Utility pane's file list starts with a fixed `Imports` entry, which
 edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl` and
 `import haute` are always included, has no delete button and never goes through the utility

@@ -1,6 +1,7 @@
-import { useMemo, useRef, type CSSProperties } from "react"
+import { useMemo, type CSSProperties } from "react"
 import { AlertTriangle, Plus, Trash2, Variable } from "lucide-react"
-import { CommittedTextField } from "../components/form"
+import { CommittedTextField, DraftTextField, useCommittedDraft } from "../components/form"
+import { useRowKeys } from "./editors/shared/useRowKeys"
 import PanelShell from "./PanelShell"
 import { INPUT_STYLE } from "./editors/_shared"
 import { isPlainObject } from "../types/guards"
@@ -11,6 +12,7 @@ import {
   GLOBAL_CONSTANT_TYPES,
   MISSING_VALUE,
   constantIssues,
+  valueProblem,
   type GlobalConstantDraft,
   type GlobalConstantIssues,
   type GlobalConstantType,
@@ -76,18 +78,20 @@ interface ValueCellProps {
   label: string
   /** Shown while the cell is empty and nothing is wrong with it. */
   placeholder?: string
-  /** `continuing` is true for a keystroke after the first of one edit of the cell. */
-  onChange: (value: string, continuing: boolean) => void
+  /** What would be wrong with *text* as this cell's value, as it is typed. */
+  problemOf: (text: string) => string | undefined
+  onChange: (value: string) => void
 }
 
 /**
  * One value as a table cell: the input that fits the type, marked when invalid or missing.
- * Every keystroke reaches the store, so the pane validates as the analyst types; an edit,
- * from its first keystroke until the cell loses focus, is one undo step. A value changed
- * from outside the cell (Undo) starts a new edit.
+ * What is typed is the shared draft, marked as it is typed, and commits once, on leaving
+ * the cell or Enter, as one undo step; a value changed from outside the cell (Undo) is
+ * what the cell shows.
  */
-function ValueCell({ type, value, disabled, problem, testId, label, placeholder, onChange }: ValueCellProps) {
-  const emittedRef = useRef<string | null>(null)
+function ValueCell({ type, value, disabled, problem: stored, problemOf, testId, label, placeholder, onChange }: ValueCellProps) {
+  const draft = useCommittedDraft(value, onChange)
+  const problem = draft.editing ? problemOf(draft.shown) : stored
   const title = problem === MISSING_VALUE ? "Missing" : problem
   if (type === "boolean") {
     return (
@@ -97,7 +101,7 @@ function ValueCell({ type, value, disabled, problem, testId, label, placeholder,
         title={title}
         value={value}
         disabled={disabled}
-        onChange={(event) => onChange(event.target.value, false)}
+        onChange={(event) => onChange(event.target.value)}
         className={CELL_INPUT}
         style={cellStyle(problem)}
       >
@@ -108,23 +112,16 @@ function ValueCell({ type, value, disabled, problem, testId, label, placeholder,
     )
   }
   return (
-    <input
+    <DraftTextField
+      draft={draft}
       data-testid={testId}
       aria-label={label}
       title={title}
       type={type === "date" ? "date" : "text"}
       inputMode={type === "integer" || type === "float" ? "decimal" : undefined}
       placeholder={problem === MISSING_VALUE ? "missing" : placeholder}
-      value={value}
       disabled={disabled}
       aria-invalid={problem && problem !== MISSING_VALUE ? true : undefined}
-      onFocus={() => { emittedRef.current = null }}
-      onBlur={() => { emittedRef.current = null }}
-      onChange={(event) => {
-        const continuing = emittedRef.current === value
-        emittedRef.current = event.target.value
-        onChange(event.target.value, continuing)
-      }}
       className={CELL_INPUT}
       style={{ ...cellStyle(problem), colorScheme: "dark" }}
     />
@@ -161,8 +158,7 @@ interface ConstantRowProps {
   sources: readonly string[]
   readers: string[]
   disabled: boolean
-  /** `continuing` carries on the current value edit's undo step. */
-  onChange: (draft: GlobalConstantDraft, continuing?: boolean) => void
+  onChange: (draft: GlobalConstantDraft) => void
   /** Rename the constant, asking first when it is read; resolves false when it is not renamed. */
   onRename: (name: string) => Promise<boolean>
   onDelete: () => void
@@ -238,9 +234,10 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
               value={draft.bySource[source] ?? ""}
               disabled={disabled}
               problem={issues.bySource[source]}
+              problemOf={(text) => (text === "" ? MISSING_VALUE : valueProblem(draft.type, text) ?? undefined)}
               testId={`constant-value-${index}-${source}`}
               label={`${label} ${source} value`}
-              onChange={(value, continuing) => onChange({ ...draft, bySource: { ...draft.bySource, [source]: value } }, continuing)}
+              onChange={(value) => onChange({ ...draft, bySource: { ...draft.bySource, [source]: value } })}
             />
           </td>
         ))
@@ -251,10 +248,11 @@ function ConstantRow({ index, draft, issues, sources, readers, disabled, onChang
             value={draft.value}
             disabled={disabled}
             problem={issues.value}
+            problemOf={(text) => (text === "" && draft.type !== "text" ? "Enter a value." : valueProblem(draft.type, text) ?? undefined)}
             testId={`constant-value-${index}`}
             label={`${label} value`}
             placeholder={sources.length > 1 ? "same value for every source" : undefined}
-            onChange={(value, continuing) => onChange({ ...draft, value }, continuing)}
+            onChange={(value) => onChange({ ...draft, value })}
           />
         </td>
       )}
@@ -335,15 +333,13 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
   )
   const unknownSources = useMemo(() => unknownSourceKeys(drafts, sources), [drafts, sources])
 
-  // Each edit is one undo step; the later keystrokes of one value edit join its step.
-  const setDrafts = (next: GlobalConstantDraft[], continuing = false) => {
-    const graph = useGraphStore.getState()
-    if (continuing) graph.setGlobalConstantsRaw(next)
-    else graph.setGlobalConstants(next)
-  }
-  const replace = (index: number, draft: GlobalConstantDraft, continuing = false) =>
-    setDrafts(drafts.map((current, at) => (at === index ? draft : current)), continuing)
-  const add = () => setDrafts([...drafts, newConstantDraft(drafts)])
+  // Each edit is one undo step. Each row's key follows the pane's own writes, so a
+  // cell's draft stays with its constant; an Undo gives every row a new one.
+  const rowKeys = useRowKeys(drafts)
+  const setDrafts = (next: GlobalConstantDraft[]) => useGraphStore.getState().setGlobalConstants(next)
+  const replace = (index: number, draft: GlobalConstantDraft) =>
+    setDrafts(rowKeys.edit(drafts.map((current, at) => (at === index ? draft : current))))
+  const add = () => setDrafts(rowKeys.add([...drafts, newConstantDraft(drafts)]))
   const rename = async (index: number, name: string): Promise<boolean> => {
     const draft = drafts[index]
     const readBy = readers[index]
@@ -358,16 +354,16 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
     const draft = drafts[index]
     const readBy = readers[index]
     if (readBy.length > 0 && !(await confirmed({ title: `Delete ${draft.name}?`, text: `${readBy.join(", ")} read it.`, confirm: "Delete", danger: true }))) return
-    setDrafts(drafts.filter((_, at) => at !== index))
+    setDrafts(rowKeys.remove(index, drafts.filter((_, at) => at !== index)))
   }
   const removeUnknownSources = () =>
-    setDrafts(drafts.map((draft) => {
+    setDrafts(rowKeys.edit(drafts.map((draft) => {
       if (!draft.split) return draft
       const bySource = Object.fromEntries(
         Object.entries(draft.bySource).filter(([source]) => sources.includes(source)),
       )
       return { ...draft, bySource }
-    }))
+    })))
 
   const addButton = !disabled && (
     <button
@@ -452,14 +448,14 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
                 <tbody>
                   {drafts.map((draft, index) => (
                     <ConstantRow
-                      key={index}
+                      key={rowKeys.keys[index]}
                       index={index}
                       draft={draft}
                       issues={issues[index]}
                       sources={sources}
                       readers={readers[index]}
                       disabled={disabled}
-                      onChange={(next, continuing) => replace(index, next, continuing)}
+                      onChange={(next) => replace(index, next)}
                       onRename={(name) => rename(index, name)}
                       onDelete={() => void remove(index)}
                     />

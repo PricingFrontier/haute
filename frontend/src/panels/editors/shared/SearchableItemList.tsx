@@ -4,6 +4,8 @@ import { GripVertical, Plus, Search, Trash2 } from "lucide-react"
 import { withAlpha } from "../../../utils/color"
 import { INPUT_STYLE } from "../_shared"
 import type { SearchableList } from "./useSearchableList"
+import { DraftTextField } from "../../../components/form/CommittedTextField"
+import { useCommittedDraft } from "../../../components/form/useCommittedDraft"
 
 export interface SearchableItemListProps {
   list: SearchableList
@@ -362,37 +364,42 @@ function RenameField({
   /** The new name, or null for none; `byKey` when Enter or Escape ended it. */
   onDone: (name: string | null, byKey: boolean) => void
 }) {
-  const [draft, setDraft] = useState(initial)
   // Enter or Escape ends the box, and its removal may blur it too: only the first counts.
   const done = useRef(false)
-  const name = draft.trim()
-  const changed = name !== "" && name !== initial.trim()
-  const error = changed ? validate(name) : null
-  const finish = (keep: boolean, byKey: boolean) => {
+  const end = (renamedTo: string | null, byKey: boolean) => {
     if (done.current) return
     done.current = true
-    onDone(keep && changed && error === null ? name : null, byKey)
+    onDone(renamedTo, byKey)
   }
+  const renamedTo = (typed: string): string | null => {
+    const candidate = typed.trim()
+    return candidate !== "" && candidate !== initial.trim() && validate(candidate) === null ? candidate : null
+  }
+  // The name being typed is the shared draft: a save commits it, and a name changed from
+  // outside while the box is open (an Undo, a sync frame) is what the box shows.
+  const draft = useCommittedDraft(initial, (typed) => end(renamedTo(typed), false))
+  const name = draft.shown.trim()
+  const changed = name !== "" && name !== initial.trim()
+  const error = changed ? validate(name) : null
   return (
     <div className="min-w-0 flex-1">
-      <input
+      <DraftTextField
+        draft={draft}
         autoFocus
         type="text"
         aria-label={label}
         aria-invalid={error !== null ? true : undefined}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
         onFocus={(e) => e.currentTarget.select()}
-        onBlur={() => finish(true, false)}
+        onBlur={() => end(null, false)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault()
-            if (error === null) finish(true, true)
+            if (error === null) end(renamedTo(draft.shown), true)
           } else if (e.key === "Escape") {
             // The box's Escape, not the pipeline's (which closes the panel).
             e.preventDefault()
             e.stopPropagation()
-            finish(false, true)
+            end(null, true)
           }
         }}
         className={`${NAME_BOX} w-full border-[var(--border)] focus:border-[var(--accent)] focus:outline-none`}

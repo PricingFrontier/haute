@@ -10,6 +10,7 @@
 import { useMemo } from "react"
 import { Plus, X } from "lucide-react"
 import type { OnUpdateConfig } from "../editors/_shared"
+import CommittedTextField from "../../components/form/CommittedTextField"
 import { configField } from "../../utils/configField"
 import {
   finalSelectedFeatureNames,
@@ -100,16 +101,16 @@ export function EBMInteractionsConfig({ config, onUpdate, columns }: Props) {
       {mode === "automatic" ? (
         <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
           Up to
-          <input
+          <CommittedTextField
             type="number"
             min={0}
             step={1}
             aria-label="Maximum interaction count"
             className={`${inputClass} w-20`}
             style={inputStyle}
-            value={count}
-            onChange={(event) => {
-              const next = Number.parseInt(event.target.value, 10)
+            value={String(count)}
+            onCommit={(text) => {
+              const next = Number.parseInt(text, 10)
               write(Number.isFinite(next) && next >= 0 ? next : 0)
             }}
           />

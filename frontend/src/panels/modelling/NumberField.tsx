@@ -1,4 +1,6 @@
-import { useState, type CSSProperties } from "react"
+import type { CSSProperties } from "react"
+import { DraftTextField } from "../../components/form/CommittedTextField"
+import { useCommittedDraft } from "../../components/form/useCommittedDraft"
 
 import { MODELLING_INPUT_STYLE } from "./styles"
 
@@ -56,37 +58,25 @@ export function NumberField({
   onCommit: (value: number | undefined) => void
 }) {
   const committed = value === undefined ? "" : String(value)
-  const [draft, setDraft] = useState<string | null>(null)
-  const [lastValue, setLastValue] = useState(committed)
-  if (lastValue !== committed) {
-    setLastValue(committed)
-    setDraft(null)
-  }
-  const error = draft === null ? null : numberDraftIssue(draft, bounds)
-  const commit = () => {
-    if (draft === null || error !== null) return
-    const text = draft.trim()
+  const draft = useCommittedDraft(committed, (typed) => {
+    if (numberDraftIssue(typed, bounds) !== null) return { ok: false }
+    const text = typed.trim()
     if (text !== committed) onCommit(text === "" ? undefined : Number(text))
-    setDraft(null)
-  }
+  })
+  const error = draft.editing ? numberDraftIssue(draft.shown, bounds) : null
   return (
     <>
-      <input
+      <DraftTextField
+        draft={draft}
         type="number"
         aria-label={label}
         aria-invalid={error !== null}
         className={className}
         style={{ ...MODELLING_INPUT_STYLE, ...style, borderColor: error ? "var(--danger)" : "var(--border)" }}
-        value={draft ?? committed}
         placeholder={placeholder}
         min={bounds.min}
         max={bounds.max}
         step={step}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") commit()
-        }}
       />
       {error && <span role="alert" className="text-[10px]" style={{ color: "var(--danger)" }}>{error}</span>}
     </>

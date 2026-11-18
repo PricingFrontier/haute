@@ -1,31 +1,23 @@
-import { useEffect, useMemo, useRef } from "react"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
+import { DraftTextArea } from "../../components/form/CommittedTextField"
 import { MODEL_COLORS } from "../../theme/colors"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { NumberField } from "./NumberField"
 import { MODELLING_INPUT_STYLE } from "./styles"
 import { fitBudgetLabel } from "./trainingFitBudget"
-import {
-  formatHyperparameters,
-  formatTuningSearchSpace,
-  mergeReservedKeys,
-  parseHyperparameters,
-  parseTuningSearchSpace,
-} from "./hyperparameters"
+import { parseHyperparameters, parseTuningSearchSpace } from "./hyperparameters"
+import type { HyperparameterDrafts } from "./useHyperparameterDrafts"
 
 type Props = {
   algorithmLabel: string
-  params: Record<string, unknown>
   reservedKeys?: readonly string[]
   reservedKeysHelp?: string
   onUpdate: OnUpdateConfig
-  draft: string
-  setDraft: (draft: string) => void
+  /** The two JSON drafts, held by the caller so they outlive a pane switch. */
+  drafts: HyperparameterDrafts
   tuning: Record<string, unknown> | null
   evaluation: Record<string, unknown>
   metrics: string[]
-  searchSpaceDraft: string
-  setSearchSpaceDraft: (draft: string) => void
   onReviewSplit?: () => void
   /** The search space "Tune parameters" starts from; it must use the family's own keys. */
   starterSearchSpace?: Record<string, unknown>
@@ -46,63 +38,32 @@ export function HyperparametersConfig({
   publishesValidationFit = false,
   refitOnDevelopment,
   algorithmLabel,
-  params,
   reservedKeys = [],
   reservedKeysHelp = "",
   onUpdate,
-  draft,
-  setDraft,
+  drafts,
   tuning,
   evaluation,
   metrics,
-  searchSpaceDraft,
-  setSearchSpaceDraft,
   onReviewSplit,
 }: Props) {
-  const stored = useMemo(
-    () => formatHyperparameters(params, reservedKeys),
-    [params, reservedKeys],
-  )
-  const previousStored = useRef(stored)
-  useEffect(() => {
-    if (stored === previousStored.current) return
-    if (draft === previousStored.current) setDraft(stored)
-    previousStored.current = stored
-  }, [draft, setDraft, stored])
-
-  let projection: Record<string, unknown> | null = null
   let fixedError: string | null = null
   let searchError: string | null = null
   if (!tuning) {
     try {
-      projection = parseHyperparameters(draft, reservedKeys, reservedKeysHelp)
+      parseHyperparameters(drafts.params.shown, reservedKeys, reservedKeysHelp)
     } catch (cause) {
       fixedError = cause instanceof Error ? cause.message : "Invalid JSON"
     }
   } else {
     try {
-      parseTuningSearchSpace(searchSpaceDraft)
+      parseTuningSearchSpace(drafts.searchSpace.shown)
     } catch (cause) {
       searchError = cause instanceof Error ? cause.message : "Invalid JSON"
     }
   }
   // The Train pane's run summary words the same budget.
   const fitBudget = fitBudgetLabel(evaluation, tuning, { publishesValidationFit, refitOnDevelopment })
-  const updateFixedDraft = (nextDraft: string) => {
-    setDraft(nextDraft)
-    try {
-      onUpdate(
-        "params",
-        mergeReservedKeys(
-          params,
-          parseHyperparameters(nextDraft, reservedKeys, reservedKeysHelp),
-          reservedKeys,
-        ),
-      )
-    } catch {
-      /* An invalid draft remains editable and is shown below. */
-    }
-  }
   const updateTuning = (fields: Record<string, unknown>) => {
     if (tuning) onUpdate("tuning", { ...tuning, ...fields })
   }
@@ -115,8 +76,8 @@ export function HyperparametersConfig({
     const searchSpace = { ...starterSearchSpace }
     // Tuning hides the fixed-parameter editor: drop an unsaved draft rather
     // than keep text the user can no longer see or correct.
-    setDraft(stored)
-    setSearchSpaceDraft(formatTuningSearchSpace(searchSpace))
+    drafts.params.discard()
+    drafts.searchSpace.discard()
     onUpdate({
       ...(publishesValidationFit ? {} : { refit_on_development: true }),
       tuning: {
@@ -157,16 +118,12 @@ export function HyperparametersConfig({
             style={{ color: "var(--text-secondary)" }}
           >
             Parameters JSON
-            <textarea
+            <DraftTextArea
+              draft={drafts.params}
               aria-label={`${algorithmLabel} hyperparameters JSON`}
               aria-invalid={Boolean(fixedError)}
-              value={draft}
-              onChange={(event) => updateFixedDraft(event.target.value)}
-              onBlur={() => {
-                if (projection) setDraft(formatHyperparameters(projection))
-              }}
               spellCheck={false}
-              rows={Math.min(24, Math.max(6, draft.split("\n").length + 1))}
+              rows={Math.min(24, Math.max(6, drafts.params.shown.split("\n").length + 1))}
               className={`${inputClass} leading-5`}
               style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
             />
@@ -255,32 +212,14 @@ export function HyperparametersConfig({
           </div>
           <label className="block text-[13px]">
             Search space JSON
-            <textarea
+            <DraftTextArea
+              draft={drafts.searchSpace}
               aria-label={`${algorithmLabel} search space JSON`}
               aria-invalid={Boolean(searchError)}
-              value={searchSpaceDraft}
-              onChange={(event) => {
-                setSearchSpaceDraft(event.target.value)
-                try {
-                  updateTuning({
-                    search_space: parseTuningSearchSpace(event.target.value),
-                  })
-                } catch {
-                  /* Preserve invalid drafts; the error is shown below. */
-                }
-              }}
-              onBlur={() => {
-                if (!searchError)
-                  setSearchSpaceDraft(
-                    formatTuningSearchSpace(
-                      parseTuningSearchSpace(searchSpaceDraft),
-                    ),
-                  )
-              }}
               spellCheck={false}
               rows={Math.min(
                 20,
-                Math.max(6, searchSpaceDraft.split("\n").length + 1),
+                Math.max(6, drafts.searchSpace.shown.split("\n").length + 1),
               )}
               className={`${inputClass} leading-5`}
               style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}

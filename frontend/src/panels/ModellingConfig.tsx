@@ -59,11 +59,10 @@ import {
   HyperparametersConfig,
 } from "./modelling/HyperparametersConfig"
 import {
-  formatHyperparameters,
-  formatTuningSearchSpace,
   parseHyperparameters,
   parseTuningSearchSpace,
 } from "./modelling/hyperparameters"
+import { useHyperparameterDrafts } from "./modelling/useHyperparameterDrafts"
 import { trainingIdentityConfig } from "../utils/modellingExportConfig"
 import { trainingLineage } from "../utils/trainedJobHandles"
 import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
@@ -398,10 +397,6 @@ export default function ModellingConfig({
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
   const [submitting, setSubmitting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
-  // Drafts live above the Params pane.  They deliberately survive a Params
-  // unmount for this node, while a newly seen node starts from its own params.
-  const [paramDrafts, setParamDrafts] = useState<Record<string, string>>({})
-  const [searchSpaceDrafts, setSearchSpaceDrafts] = useState<Record<string, string>>({})
 
   const algorithm = String(config.algorithm ?? "").toLowerCase()
   const params = configField<Record<string, unknown>>(config, "params", {})
@@ -421,20 +416,18 @@ export default function ModellingConfig({
     : null
   const metrics = effectiveMetrics(config)
   const reservedParams = reservedParamsFor(algorithm)
-  const paramsProjection = formatHyperparameters(
+  // Drafts live above the Params pane.  They deliberately survive a Params
+  // unmount for this node, while a newly seen node starts from its own params.
+  const drafts = useHyperparameterDrafts({
+    nodeId,
     params,
-    reservedParams.keys,
-  )
-  const paramDraft = paramDrafts[nodeId] ?? paramsProjection
-  const tuningSearchSpace = (
-    tuning?.search_space !== null
-    && typeof tuning?.search_space === "object"
-    && !Array.isArray(tuning.search_space)
-  )
-    ? tuning.search_space
-    : {}
-  const searchSpaceDraft = searchSpaceDrafts[nodeId]
-    ?? formatTuningSearchSpace(tuningSearchSpace as Record<string, unknown>)
+    tuning,
+    reservedKeys: reservedParams.keys,
+    reservedKeysHelp: reservedParams.help,
+    onUpdate,
+  })
+  const paramDraft = drafts.params.shown
+  const searchSpaceDraft = drafts.searchSpace.shown
   // Tuning hides the fixed-parameter editor, so only a visible draft can block training.
   let paramDraftIssue: TrainingConfigurationIssue | null = null
   if (usesSharedPanes(algorithm) && !tuning) {
@@ -737,19 +730,13 @@ export default function ModellingConfig({
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
           publishesValidationFit={validationFit}
           refitOnDevelopment={config.refit_on_development !== false}
-          params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}
           onUpdate={onUpdate}
-          draft={paramDraft}
-          setDraft={(value) => setParamDrafts((current) => ({ ...current, [nodeId]: value }))}
+          drafts={drafts}
           tuning={tuning}
           evaluation={evaluation}
           metrics={metrics}
-          searchSpaceDraft={searchSpaceDraft}
-          setSearchSpaceDraft={(value) => setSearchSpaceDrafts(
-            (current) => ({ ...current, [nodeId]: value }),
-          )}
         />
       )
     }

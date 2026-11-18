@@ -292,12 +292,15 @@ toast.
   monotonically. Undo/redo restores all four graph fields and the global constants together and retains
   transient server-owned editor identities required by the live graph; Save
   payloads and dirty fingerprints omit those identities.
-- **Save waits for committed editor work.** A blur-triggered node update or
-  rename that is still resolving a server-owned identity is part of the edit
-  that preceded the Save gesture. Save and Save-then-Commit wait for every such
-  in-flight graph commit before reading the graph snapshot, and abort visibly
-  if an in-flight commit is rejected. They never persist the earlier graph and
-  report success while the visible edit lands afterwards.
+- **Save waits for committed editor work.** A value still being typed in a
+  panel, and a node update or rename that is still resolving a server-owned
+  identity, are part of the edit that preceded the Save gesture. Save,
+  Save-then-Commit and a node-scoped "Save node" go through one barrier
+  (`useGraphCommitController.settleEdits`): it commits every open panel draft,
+  then waits for every such in-flight graph commit before the save reads the
+  graph, and the save aborts visibly if an in-flight commit is rejected. No save
+  persists the earlier graph and reports success while the visible edit lands
+  afterwards.
 - **A boundary edge's port is its handle.** An edge into or out of a submodel occurrence names
   the public port in its `in__<name>` or `out__<name>` handle; `PipelineEdge` carries no other
   port field.

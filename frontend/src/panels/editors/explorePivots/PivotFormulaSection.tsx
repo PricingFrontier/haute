@@ -24,7 +24,8 @@ type PivotFormulaSectionProps = {
 
 type FormulaEditorState =
   | { mode: "new" }
-  | { mode: "edit"; formulaId: string }
+  /** The formula edited, and its name and expression when the edit opened. */
+  | { mode: "edit"; formulaId: string; opened: { display_name: string; expression: string } }
   | null
 
 export default function PivotFormulaSection({
@@ -53,8 +54,13 @@ export default function PivotFormulaSection({
   const editingFormula = editor?.mode === "edit"
     ? formulas.find((formula) => formula.id === editor.formulaId)
     : undefined
-  // An edit whose formula is gone (an undo, a redo) is closed.
-  const openEditor = editor?.mode === "edit" && editingFormula === undefined ? null : editor
+  // An edit whose formula is gone, or was changed under it (an undo, a redo), is
+  // closed: its drafts were typed over a formula the pivot no longer holds.
+  const openEditor = editor?.mode === "edit" && (
+    editingFormula === undefined
+    || editingFormula.display_name !== editor.opened.display_name
+    || editingFormula.expression !== editor.opened.expression
+  ) ? null : editor
   const editorOpen = openEditor !== null
 
   const openNewEditor = () => {
@@ -65,7 +71,11 @@ export default function PivotFormulaSection({
   }
 
   const openEditEditor = (formula: PivotFormulaPlacement) => {
-    setEditor({ mode: "edit", formulaId: formula.id })
+    setEditor({
+      mode: "edit",
+      formulaId: formula.id,
+      opened: { display_name: formula.display_name, expression: formula.expression },
+    })
     setNameDraft(formula.display_name)
     setExpressionDraft(formula.expression)
     setError(null)
