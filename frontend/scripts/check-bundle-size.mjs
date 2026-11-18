@@ -284,7 +284,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Panel values and Undo (FES-05, 18 November 2026): the shared draft, row identity and the
 // fields moved onto them bring the total to 1,809.8 KiB (initial 299.6 KiB); 1,812 KiB
 // restores about 2.2 KiB headroom. The other limits are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1812
+// Late answers (FES-04, 18 November 2026): the one helper every answer from the server is
+// written through and the call sites moved onto it bring the total to 1,815.5 KiB (initial
+// 302.6 KiB); 1,817 KiB (approved) restores about 1.5 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1817
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -423,7 +426,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // FoldVertical, Divide, Link2, Equal, Hash, CaseSensitive, CalendarDays), which land in
 // the eager vendor-ui chunk as every lucide icon does; the step editor itself stays lazy.
 // The merged initial bundle is 298.6 KiB; 300 KiB restores ~1.4 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 300
+// Late answers (FES-04) add ~3 KiB of deliberate eager code: the helper every answer is
+// written through (`utils/answers.ts`) and the editor's requests moved onto it (the preview
+// engine, the shared data point, App's saves and git gates, the graph store's Undo of a
+// version-control entry). Nothing lazy became eager. The merged initial bundle is 302.6 KiB;
+// 304 KiB (approved) restores ~1.4 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 304
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
