@@ -632,6 +632,9 @@ function CompletingInput({
           else completion.show()
         }}
         onFocus={completion.show}
+        // Accepting an entry closes the list but keeps the focus, so a click on the
+        // focused box has to reopen it: no focus event follows.
+        onClick={completion.show}
         onBlur={() => {
           completion.hide()
           onCommit(draft)
