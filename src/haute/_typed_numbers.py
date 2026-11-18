@@ -71,9 +71,9 @@ def trim_typed(text: str) -> str:
     return text.strip(TYPED_SPACES)
 
 
-def _parts(text: str) -> tuple[str, bool] | None:
-    """The number *text* is, as plain digits for the language to read, and whether it holds
-    only digits (no fraction or exponent); or None when it is not a number."""
+def _plain(text: str) -> str | None:
+    """The number *text* is, as plain digits for the language to read (no currency sign, no
+    grouping), or None when it is not a number."""
     match = _NUMBER.fullmatch(trim_typed(text))
     if match is None:
         return None
@@ -85,30 +85,30 @@ def _parts(text: str) -> tuple[str, bool] | None:
     if whole is None and (fraction is None or fraction == "."):
         return None
     digits = re.sub("[," + _GROUP_SPACES + "]", "", whole or "")
-    plain = f"{sign1 or sign2}{digits}{fraction or ''}{exponent or ''}"
-    return plain, fraction is None and exponent is None
+    return f"{sign1 or sign2}{digits}{fraction or ''}{exponent or ''}"
 
 
 def read_typed_number(text: str) -> float | None:
     """The number *text* is, read by the grammar, or None when it is not one (finite)."""
-    parts = _parts(text)
-    if parts is None:
+    plain = _plain(text)
+    if plain is None:
         return None
-    number = float(parts[0])
+    number = float(plain)
     return number if math.isfinite(number) else None
 
 
 def read_typed_whole(text: str) -> int | None:
     """The whole number *text* is, exactly however large, or None when it is not a number or
-    not whole: digits alone read as digits, any other number when its value is whole."""
-    parts = _parts(text)
-    if parts is None:
+    not whole: its value read from its decimal digits, never through a float, so
+    ``1234567890123456789.0`` is that whole number and ``1234567890123456789.5`` is not; a
+    number written with an exponent is one only when it is finite."""
+    plain = _plain(text)
+    # Digits written out are exact however large; a number written with an exponent is
+    # finite or not a number (``1e999``), as the numeric field reads it.
+    if plain is None or ("e" in plain.lower() and read_typed_number(text) is None):
         return None
-    plain, digits_only = parts
-    if digits_only:
-        return int(plain)
-    number = read_typed_number(text)
-    return int(number) if number is not None and number.is_integer() else None
+    exact = Decimal(plain)
+    return int(exact) if exact == exact.to_integral_value() else None
 
 
 def setting_number(value: object) -> float | None:
@@ -124,7 +124,10 @@ def setting_number(value: object) -> float | None:
 
 
 def number_text(number: float) -> str:
-    """A float's canonical text: its shortest digits, without an exponent, with a point."""
+    """A finite float's canonical text: its shortest digits, without an exponent, with a
+    point. A float that is not finite has none, and is refused."""
+    if not math.isfinite(number):
+        raise ValueError(f"{number!r} is not finite and has no canonical text")
     text = format(Decimal(repr(number)), "f")
     return text if "." in text else f"{text}.0"
 

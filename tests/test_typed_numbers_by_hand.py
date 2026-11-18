@@ -1,7 +1,7 @@
 """No server code reads text as a number but the one reader (specs/frontend-shared high-level,
 "Typed numbers"): the mypy plugin ``scripts/mypy_typed_numbers.py``, which the project's mypy
 gate loads, refuses ``float``, ``int`` and ``Decimal`` given text outside
-``haute._typed_numbers`` but the functions on its ``NOT_TYPED`` list."""
+``haute._typed_numbers`` but the calls on its ``NOT_TYPED`` list, each one call."""
 
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ def test_a_language_reader_given_text_is_refused_and_one_given_a_number_is_not(
             int(either)
             Decimal(text)
             int(raw)
+            float(text)
 
         def not_typed(number: float, whole: int, anything: Any) -> None:
             float(number)
@@ -58,29 +59,58 @@ def test_a_language_reader_given_text_is_refused_and_one_given_a_number_is_not(
     )
 
     lines = [line for line in found.splitlines() if "Text read as a number by hand" in line]
-    assert [re.search(r":(\d+): error", line).group(1) for line in lines] == ["6", "7", "8", "9"]
-    assert all("typed_probe.typed:" in line for line in lines)
+    assert [re.search(r":(\d+): error", line).group(1) for line in lines] == [
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+    ]
+    # Each finding is keyed by its own call, a second of the same call by its place, so an
+    # exception for one never covers another beside it.
+    assert [re.search(r"by hand at `([^`]*)`", line).group(1) for line in lines] == [
+        "typed_probe.typed::float(text)",
+        "typed_probe.typed::int(either)",
+        "typed_probe.typed::Decimal(text)",
+        "typed_probe.typed::int(raw)",
+        "typed_probe.typed::float(text)#2",
+    ]
 
 
-def test_every_exception_names_a_function_that_still_reads_a_number() -> None:
-    """A function listed on ``NOT_TYPED`` exists and calls ``float``, ``int`` or ``Decimal``, so
-    the list holds no exception for code that has gone, and none for the reader itself."""
-    assert [key for key in NOT_TYPED if not _reads_a_number(key)] == []
+def test_every_exception_names_a_call_that_still_reads_a_number() -> None:
+    """Each call listed on ``NOT_TYPED`` is still in its function's source, as many times as
+    its ``#n`` says, so the list holds no exception for code that has gone, and none for the
+    reader itself."""
+    assert [key for key in NOT_TYPED if not _still_called(key)] == []
     assert not any(key.startswith(f"{READER}.") for key in NOT_TYPED)
 
 
-def _reads_a_number(key: str) -> bool:
-    """Whether the function *key* names (``module.function``, ``module.Class.method`` or
-    ``module.<module>`` for a module's top level) calls a language reader of a number."""
-    parts = key.split(".")
+def _still_called(key: str) -> bool:
+    where, _, call = key.partition("::")
+    call, _, nth = call.partition("#")
+    node = _function(where)
+    if node is None:
+        return False
+    source, tree = node
+    segment = source if isinstance(tree, ast.Module) else ast.get_source_segment(source, tree)
+    text = " ".join((segment or "").split())
+    return _calls_a_reader(tree) and text.count(call) >= int(nth or 1)
+
+
+def _function(where: str) -> tuple[str, ast.AST] | None:
+    """The source of the module *where* names and the function in it (``module.function``,
+    ``module.Class.method``, or ``module.<module>`` for its top level), or None."""
+    parts = where.split(".")
     for split in range(len(parts) - 1, 0, -1):
         base = ROOT / "src" if parts[0] == "haute" else ROOT
-        source = base.joinpath(*parts[:split]).with_suffix(".py")
-        if source.is_file():
-            tree = ast.parse(source.read_text(encoding="utf-8"))
+        path = base.joinpath(*parts[:split]).with_suffix(".py")
+        if path.is_file():
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
             scope = parts[split:]
-            return _calls_a_reader(tree if scope == ["<module>"] else _find(tree, scope))
-    return False
+            found = tree if scope == ["<module>"] else _find(tree, scope)
+            return None if found is None else (source, found)
+    return None
 
 
 def _find(tree: ast.AST, scope: list[str]) -> ast.AST | None:

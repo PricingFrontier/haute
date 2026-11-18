@@ -16,7 +16,9 @@
  *
  * Text that is not typed by anyone (a regular expression's matched digits, a select's own
  * option value, a style's or a data attribute's figure, an answer's field) is on `NOT_TYPED`
- * with its reason, keyed `path::scope::rule`.
+ * with its reason, keyed by the conversion itself, `path::scope::rule::call`, a second of the
+ * same call in one scope `call#2`: an exception covers that one call, so another beside it,
+ * in the same component, is still found.
  */
 
 import { dirname, relative, resolve, sep } from "node:path"
@@ -30,54 +32,164 @@ const READERS = new Set(["frontend/src/utils/typedNumbers.ts", "frontend/src/uti
 
 /** `path::scope::rule` -> why the text it reads is not typed by anyone. */
 const NOT_TYPED: Record<string, string> = {
-  "frontend/src/app/route.ts::routeOf::parse": "the app's address: a quote's option number Haute wrote into it",
-  "frontend/src/hooks/useDragResize.ts::availablePanelHeight::parse": "a laid-out panel's flex-grow, as the browser computes it",
-  "frontend/src/panels/DataPreview.tsx::DataPreview::parse": "a row's index, written into its data attribute by the grid",
-  "frontend/src/panels/GitPanel.tsx::GitPanelBranchScope.measure::parse": "a commit dot's position, written into its data attribute by the graph",
-  "frontend/src/panels/OptimiserPreview.tsx::FrontierTab::parse": "a select's or a slider's own option value, a point's index",
-  "frontend/src/panels/editors/ExploreChartsConfig.tsx::ExploreChartsConfig::parse": "the label rotation select's own option value",
-  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse": "a date's or a time's digits, matched by its pattern",
-  "frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx::selectedDecimalPlaces::parse": "the decimal places select's own option value",
-  "frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx::parseStepsError::parse": "a step's index in the server's error text, matched by its pattern",
-  "frontend/src/panels/editors/polarsSteps/fields.tsx::decimalPlaces::parse": "the exponent of a number's own text",
-  "frontend/src/panels/editors/polarsSteps/formula.ts::operandText::parse": "a formula's number literal, which the formula grammar tokenised",
-  "frontend/src/panels/editors/polarsSteps/formula.ts::tokenize::parse": "a formula's number literal, by the formula grammar the server's expression parser shares",
-  "frontend/src/panels/explore/PivotTableGrid.tsx::numericCellValue::parse": "a pivot answer's cell, a whole number past 2^53 sent as its digits",
-  "frontend/src/panels/explore/chartConfig.ts::chartPosition::parse": "a chart's place, matched by its pattern from the chart's own id",
-  "frontend/src/panels/explore/chartData.ts::numericCellValue::parse": "a chart answer's cell, a whole number past 2^53 sent as its digits",
-  "frontend/src/panels/explore/pivotNumberFormat.ts::parseDecimalParts::parse": "the exponent of a number's own text, matched by its pattern",
-  "frontend/src/panels/modelling/GLMCoefficientsTab.tsx::GLMCoefficientsTab::parse": "a fitted coefficient table's values, sorted as the training answer gives them",
-  "frontend/src/panels/modelling/PdpTab.tsx::PdpChart::parse": "a partial dependence answer's grid value",
-  "frontend/src/panels/modelling/ShapCurvesTab.tsx::CategoricalCurve.describe::parse": "a bar's index, the chart's own key",
-  "frontend/src/panels/modelling/ShapCurvesTab.tsx::CategoricalCurve.onActivate::parse": "a bar's index, the chart's own key",
-  "frontend/src/panels/modelling/ShapCurvesTab.tsx::CategoricalCurve.render::parse": "a bar's index, the chart's own key",
-  "frontend/src/panels/modelling/TermTableView.tsx::AxisSelect::parse": "the axis select's own option value",
-  "frontend/src/panels/modelling/TrainingRunSummary.tsx::TrainingRunSummary::parse": "a split's share, a setting the shared number field stores as a number",
-  "frontend/src/panels/modelling/beeswarm.ts::parseHexColor::parse": "a colour's hexadecimal channels",
-  "frontend/src/panels/modelling/trainingFitBudget.ts::trainingFitBudget::parse": "a fold or trial count, a setting the shared number field stores as a number",
-  "frontend/src/panels/optimiser/OptimiserPublishSection.tsx::OptimiserPublishSection.renderPublishBody::parse": "the point select's own option value",
-  "frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx::numericFeatureValue::parse": "a ratebook answer's feature value, matched by its pattern",
-  "frontend/src/panels/optimiserScenarioStats.ts::readFiniteNumber::parse": "a solve answer's statistic",
-  "frontend/src/trace/derivationTreeHelpers.ts::substitutionRestatesValue::parse": "a trace answer's substituted figure",
-  "frontend/src/utils/chartHelpers.ts::decade::parse": "a power of ten built from an exponent",
-  "frontend/src/utils/color.ts::withAlpha::parse": "a colour's hexadecimal channels",
-  "frontend/src/utils/graphHelpers.ts::computeNextNodeId::parse": "a node id's counter, matched by its pattern",
-  "frontend/src/utils/isoDate.ts::isTime::parse": "a time's digits, matched by its pattern",
-  "frontend/src/utils/polarsDtypes.ts::decimalScale::parse": "a Decimal type's scale, matched by its pattern from the type's name",
-  "frontend/src/utils/sheetValues.ts::pythonFloat::parse": "the exponent of a number's own text",
-  "frontend/src/utils/sheetVisibility.ts::dayNumber::parse": "a day's digits, held to YYYY-MM-DD",
-  "frontend/src/utils/trainingObjective.ts::evaluationConfigurationIssues::parse": "a fold count, a setting the shared number field stores as a number",
-  "frontend/src/utils/trainingObjective.ts::trainingConfigurationIssues::parse": "a fold or trial count, a setting the shared number field stores as a number",
-  "frontend/src/utils/workbenchForm.ts::cellAddress::parse": "a spreadsheet cell's row, the digits of an address like B12 matched by its pattern",
-  "frontend/src/workbench/ShowWhenEditor.tsx::MatchSentence::parse": "the How many select's own option value",
-  "frontend/src/workbench/panel/CollectionLook.tsx::CollectionLook::parse": "the text size select's own option value",
-  "frontend/src/workbench/panel/TableLook.tsx::TableLook::parse": "the text size select's own option value",
-  "frontend/src/workbench/panel/lookParts.tsx::HeaderRows::parse": "the header size select's own option value",
-  "frontend/src/workbench/schema/ColumnDetails.tsx::ColumnDetails::parse": "the decimal places select's own option value",
+  "frontend/src/app/route.ts::routeOf::parse::Number(params.get(\"option\"))":
+    "the app's address: a quote's option number Haute wrote into it",
+  "frontend/src/app/route.ts::routeOf::parse::Number(quote[2])":
+    "the app's address: a quote's option number Haute wrote into it",
+  "frontend/src/app/route.ts::routeOf::parse::Number(quote[2])#2":
+    "the app's address: a quote's option number Haute wrote into it",
+  "frontend/src/hooks/useDragResize.ts::availablePanelHeight::parse::Number.parseFloat(getComputedStyle(sibling).flexGrow)":
+    "a laid-out panel's flex-grow, as the browser computes it",
+  "frontend/src/panels/DataPreview.tsx::DataPreview::parse::Number(cell.dataset.rowIndex)":
+    "a row's index, written into its data attribute by the grid",
+  "frontend/src/panels/GitPanel.tsx::GitPanelBranchScope.measure::parse::Number(el.dataset.dotY ?? 0)":
+    "a commit dot's position, written into its data attribute by the graph",
+  "frontend/src/panels/OptimiserPreview.tsx::FrontierTab::parse::Number(e.target.value)":
+    "a select's or a slider's own option value, a point's index",
+  "frontend/src/panels/OptimiserPreview.tsx::FrontierTab::parse::Number(e.target.value)#2":
+    "a select's or a slider's own option value, a point's index",
+  "frontend/src/panels/editors/ExploreChartsConfig.tsx::ExploreChartsConfig::parse::Number(e.target.value)":
+    "the label rotation select's own option value",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(`0.${fraction}`)":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(day)":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(hour)":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(hour)#2":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(minute)":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(minute)#2":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(month)":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(second)":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(year)":
+    "a date's or a time's digits, matched by its pattern",
+  "frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx::selectedDecimalPlaces::parse::Number(value)":
+    "the decimal places select's own option value",
+  "frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx::parseStepsError::parse::Number.parseInt(match[1], 10)":
+    "a step's index in the server's error text, matched by its pattern",
+  "frontend/src/panels/editors/polarsSteps/fields.tsx::decimalPlaces::parse::Number(exponent ?? 0)":
+    "the exponent of a number's own text",
+  "frontend/src/panels/editors/polarsSteps/formula.ts::operandText::parse::Number(operand.value)":
+    "a formula's number literal, which the formula grammar tokenised",
+  "frontend/src/panels/editors/polarsSteps/formula.ts::tokenize::parse::Number(match[0])":
+    "a formula's number literal, by the formula grammar the server's expression parser shares",
+  "frontend/src/panels/explore/PivotTableGrid.tsx::numericCellValue::parse::Number(value)":
+    "a pivot answer's cell, a whole number past 2^53 sent as its digits",
+  "frontend/src/panels/explore/chartConfig.ts::chartPosition::parse::Number(match[1])":
+    "a chart's place, matched by its pattern from the chart's own id",
+  "frontend/src/panels/explore/chartData.ts::numericCellValue::parse::Number(value)":
+    "a chart answer's cell, a whole number past 2^53 sent as its digits",
+  "frontend/src/panels/explore/pivotNumberFormat.ts::parseDecimalParts::parse::Number(match[4] ?? 0)":
+    "the exponent of a number's own text, matched by its pattern",
+  "frontend/src/panels/modelling/GLMCoefficientsTab.tsx::GLMCoefficientsTab::parse::Number(av)":
+    "a fitted coefficient table's values, sorted as the training answer gives them",
+  "frontend/src/panels/modelling/GLMCoefficientsTab.tsx::GLMCoefficientsTab::parse::Number(bv)":
+    "a fitted coefficient table's values, sorted as the training answer gives them",
+  "frontend/src/panels/modelling/PdpTab.tsx::PdpChart::parse::Number(point.value)":
+    "a partial dependence answer's grid value",
+  "frontend/src/panels/modelling/PdpTab.tsx::PdpChart::parse::Number(point.value)#2":
+    "a partial dependence answer's grid value",
+  "frontend/src/panels/modelling/PdpTab.tsx::PdpChart::parse::Number(point.value)#3":
+    "a partial dependence answer's grid value",
+  "frontend/src/panels/modelling/PdpTab.tsx::PdpChart::parse::Number(point.value)#4":
+    "a partial dependence answer's grid value",
+  "frontend/src/panels/modelling/PdpTab.tsx::PdpChart::parse::Number(point.value)#5":
+    "a partial dependence answer's grid value",
+  "frontend/src/panels/modelling/PdpTab.tsx::PdpChart::parse::Number(point.value)#6":
+    "a partial dependence answer's grid value",
+  "frontend/src/panels/modelling/ShapCurvesTab.tsx::CategoricalCurve.describe::parse::Number(bar.key)":
+    "a bar's index, the chart's own key",
+  "frontend/src/panels/modelling/ShapCurvesTab.tsx::CategoricalCurve.onActivate::parse::Number(key)":
+    "a bar's index, the chart's own key",
+  "frontend/src/panels/modelling/ShapCurvesTab.tsx::CategoricalCurve.render::parse::Number(bar.key)":
+    "a bar's index, the chart's own key",
+  "frontend/src/panels/modelling/TermTableView.tsx::AxisSelect::parse::Number(event.target.value)":
+    "the axis select's own option value",
+  "frontend/src/panels/modelling/TrainingRunSummary.tsx::TrainingRunSummary::parse::Number(test.size)":
+    "a split's share, a setting the shared number field stores as a number",
+  "frontend/src/panels/modelling/TrainingRunSummary.tsx::TrainingRunSummary::parse::Number(test.size)#2":
+    "a split's share, a setting the shared number field stores as a number",
+  "frontend/src/panels/modelling/TrainingRunSummary.tsx::TrainingRunSummary::parse::Number(validation.size)":
+    "a split's share, a setting the shared number field stores as a number",
+  "frontend/src/panels/modelling/beeswarm.ts::parseHexColor::parse::parseInt(channels[0], 16)":
+    "a colour's hexadecimal channels",
+  "frontend/src/panels/modelling/beeswarm.ts::parseHexColor::parse::parseInt(channels[1], 16)":
+    "a colour's hexadecimal channels",
+  "frontend/src/panels/modelling/beeswarm.ts::parseHexColor::parse::parseInt(channels[2], 16)":
+    "a colour's hexadecimal channels",
+  "frontend/src/panels/modelling/trainingFitBudget.ts::trainingFitBudget::parse::Number(tuning.trial_count)":
+    "a fold or trial count, a setting the shared number field stores as a number",
+  "frontend/src/panels/modelling/trainingFitBudget.ts::trainingFitBudget::parse::Number(validation.fold_count)":
+    "a fold or trial count, a setting the shared number field stores as a number",
+  "frontend/src/panels/optimiser/OptimiserPublishSection.tsx::OptimiserPublishSection.renderPublishBody::parse::Number(event.target.value)":
+    "the point select's own option value",
+  "frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx::numericFeatureValue::parse::Number(exactMatch[1])":
+    "a ratebook answer's feature value, matched by its pattern",
+  "frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx::numericFeatureValue::parse::Number(match[0])":
+    "a ratebook answer's feature value, matched by its pattern",
+  "frontend/src/panels/optimiserScenarioStats.ts::readFiniteNumber::parse::Number(rawValue)":
+    "a solve answer's statistic",
+  "frontend/src/trace/derivationTreeHelpers.ts::substitutionRestatesValue::parse::Number(text)":
+    "a trace answer's substituted figure",
+  "frontend/src/utils/chartHelpers.ts::decade::parse::Number(`1e${exponent}`)":
+    "a power of ten built from an exponent",
+  "frontend/src/utils/color.ts::withAlpha::parse::parseInt(full.slice(0, 2), 16)":
+    "a colour's hexadecimal channels",
+  "frontend/src/utils/color.ts::withAlpha::parse::parseInt(full.slice(2, 4), 16)":
+    "a colour's hexadecimal channels",
+  "frontend/src/utils/color.ts::withAlpha::parse::parseInt(full.slice(4, 6), 16)":
+    "a colour's hexadecimal channels",
+  "frontend/src/utils/graphHelpers.ts::computeNextNodeId::parse::parseInt(match[1], 10)":
+    "a node id's counter, matched by its pattern",
+  "frontend/src/utils/isoDate.ts::isTime::parse::Number(match[1])":
+    "a time's digits, matched by its pattern",
+  "frontend/src/utils/isoDate.ts::isTime::parse::Number(match[2])":
+    "a time's digits, matched by its pattern",
+  "frontend/src/utils/isoDate.ts::isTime::parse::Number(match[3])":
+    "a time's digits, matched by its pattern",
+  "frontend/src/utils/isoDate.ts::isTime::parse::Number(offset[2])":
+    "a time's digits, matched by its pattern",
+  "frontend/src/utils/isoDate.ts::isTime::parse::Number(offset[3])":
+    "a time's digits, matched by its pattern",
+  "frontend/src/utils/polarsDtypes.ts::decimalScale::parse::Number(match[1])":
+    "a Decimal type's scale, matched by its pattern from the type's name",
+  "frontend/src/utils/sheetValues.ts::pythonFloat::parse::Number(exponentText)":
+    "the exponent of a number's own text",
+  "frontend/src/utils/sheetVisibility.ts::dayNumber::parse::Number(day.slice(0, 4))":
+    "a day's digits, held to YYYY-MM-DD",
+  "frontend/src/utils/sheetVisibility.ts::dayNumber::parse::Number(day.slice(5, 7))":
+    "a day's digits, held to YYYY-MM-DD",
+  "frontend/src/utils/sheetVisibility.ts::dayNumber::parse::Number(day.slice(8, 10))":
+    "a day's digits, held to YYYY-MM-DD",
+  "frontend/src/utils/trainingObjective.ts::evaluationConfigurationIssues::parse::Number(validation?.fold_count)":
+    "a fold count, a setting the shared number field stores as a number",
+  "frontend/src/utils/trainingObjective.ts::evaluationConfigurationIssues::parse::Number(validation?.fold_count)#2":
+    "a fold count, a setting the shared number field stores as a number",
+  "frontend/src/utils/trainingObjective.ts::trainingConfigurationIssues::parse::Number(tuning.trial_count)":
+    "a fold or trial count, a setting the shared number field stores as a number",
+  "frontend/src/utils/trainingObjective.ts::trainingConfigurationIssues::parse::Number(validation?.fold_count)":
+    "a fold or trial count, a setting the shared number field stores as a number",
+  "frontend/src/utils/workbenchForm.ts::cellAddress::parse::Number(found[2])":
+    "a spreadsheet cell's row, the digits of an address like B12 matched by its pattern",
+  "frontend/src/workbench/ShowWhenEditor.tsx::MatchSentence::parse::Number(event.target.value)":
+    "the How many select's own option value",
+  "frontend/src/workbench/panel/CollectionLook.tsx::CollectionLook::parse::Number(size)":
+    "the text size select's own option value",
+  "frontend/src/workbench/panel/TableLook.tsx::TableLook::parse::Number(size)":
+    "the text size select's own option value",
+  "frontend/src/workbench/panel/lookParts.tsx::HeaderRows::parse::Number(size)":
+    "the header size select's own option value",
+  "frontend/src/workbench/schema/ColumnDetails.tsx::ColumnDetails::parse::Number(e.target.value)":
+    "the decimal places select's own option value",
 }
 
 type Rule = "parse" | "input"
-type Finding = { line: number; text: string }
+type Finding = { line: number }
 
 const PARSERS = new Set(["Number", "parseFloat", "parseInt"])
 const OWN_TEXT = new Set(["toFixed", "toPrecision", "toExponential"])
@@ -109,7 +221,11 @@ function scan(): Record<string, Finding[]> {
   const config = ts.readConfigFile(resolve(FRONTEND, "tsconfig.app.json"), ts.sys.readFile)
   const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, FRONTEND)
   const files = parsed.fileNames.filter((file) => !/[\\/]__tests__[\\/]|\.test\.|\.spec\./.test(file))
-  const program = ts.createProgram(files, { ...parsed.options, noEmit: true })
+  return scanProgram(ts.createProgram(files, { ...parsed.options, noEmit: true }), files)
+}
+
+/** The findings in *files* of *program*, each keyed by its conversion. */
+function scanProgram(program: ts.Program, files: readonly string[]): Record<string, Finding[]> {
   const checker = program.getTypeChecker()
   const wanted = new Set(files.map((file) => resolve(file)))
   const found: Record<string, Finding[]> = {}
@@ -118,9 +234,11 @@ function scan(): Record<string, Finding[]> {
     const path = relative(resolve(FRONTEND, ".."), resolve(source.fileName)).split(sep).join("/")
     if (READERS.has(path)) continue
     const note = (node: ts.Node, rule: Rule) => {
-      const key = `${path}::${scopeOf(node)}::${rule}`
-      const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
-      ;(found[key] ??= []).push({ line, text: node.getText(source).replace(/\s+/g, " ").slice(0, 80) })
+      const call = node.getText(source).replace(/\s+/g, " ")
+      const scoped = `${path}::${scopeOf(node)}::${rule}::${call}`
+      let key = scoped
+      for (let nth = 2; key in found; nth += 1) key = `${scoped}#${nth}`
+      found[key] = [{ line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 }]
     }
     const visit = (node: ts.Node) => {
       let argument: ts.Expression | undefined
@@ -151,7 +269,7 @@ describe("typed numbers by hand", () => {
     const unlisted = Object.fromEntries(
       Object.entries(found)
         .filter(([key]) => !(key in NOT_TYPED))
-        .map(([key, findings]) => [key, findings.map((finding) => `line ${finding.line}: ${finding.text}`)]),
+        .map(([key, findings]) => [key, findings.map((finding) => `line ${finding.line}`)]),
     )
     expect(
       unlisted,
@@ -161,5 +279,29 @@ describe("typed numbers by hand", () => {
 
   it("lists only exceptions that still exist", () => {
     expect(Object.keys(NOT_TYPED).filter((key) => !(key in found))).toEqual([])
+  })
+
+  it("finds a new conversion beside one excepted in the same scope, and a second of the same call", () => {
+    // A probe module, typed by the checker as the sources are: one select's own value read
+    // as a number beside a typed text and a second read of the same select's value.
+    const probe = resolve(FRONTEND, "src/probe/Probe.tsx")
+    const text = [
+      "export function Probe(select: { target: { value: string } }, typed: string): number {",
+      "  const chosen = Number(select.target.value)",
+      "  const again = Number(select.target.value)",
+      "  return chosen + again + Number(typed) + Number(chosen)",
+      "}",
+    ].join("\n")
+    const host = ts.createCompilerHost({ noEmit: true, strict: true, target: ts.ScriptTarget.ES2022 })
+    const readFile = host.readFile
+    host.readFile = (file) => (resolve(file) === probe ? text : readFile(file))
+    host.fileExists = ((exists) => (file: string) => resolve(file) === probe || exists(file))(host.fileExists)
+    const program = ts.createProgram([probe], { noEmit: true, strict: true, target: ts.ScriptTarget.ES2022 }, host)
+
+    expect(Object.keys(scanProgram(program, [probe])).sort()).toEqual([
+      "frontend/src/probe/Probe.tsx::Probe::parse::Number(select.target.value)",
+      "frontend/src/probe/Probe.tsx::Probe::parse::Number(select.target.value)#2",
+      "frontend/src/probe/Probe.tsx::Probe::parse::Number(typed)",
+    ])
   })
 })

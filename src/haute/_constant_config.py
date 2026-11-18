@@ -13,7 +13,7 @@ are refused.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from haute._typed_numbers import ConstantValueError, canonical_text, constant_value
 from haute.errors import NodeConfigError
@@ -36,12 +36,16 @@ def constant_held(
         ) from exc
 
 
-def _as_read(value: Any) -> Any:
-    """A sidecar's value as the editor holds it: a number as its canonical text. What no
-    column can hold is left for the settings check to refuse, naming its row."""
+def _as_read(name: str, value: Any, index: int) -> Any:
+    """A sidecar's value as the editor holds it: a number as its canonical text, a number no
+    column can hold (``NaN``, ``Infinity``, ``1e400``, a whole number past a 64-bit integer)
+    refused, naming the constant. A value of another shape is left for the settings model to
+    refuse, naming its row."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return value
-    return canonical_text(value)
+    # A number is held as a number: constant_value returns it as it is, or refuses it.
+    held = cast(int | float, constant_held(name, value, setting=f"values[{index}].value"))
+    return canonical_text(held)
 
 
 def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
@@ -82,5 +86,8 @@ def constants_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         **config,
-        "values": [{"name": name, "value": _as_read(value)} for name, value in values.items()],
+        "values": [
+            {"name": name, "value": _as_read(name, value, index)}
+            for index, (name, value) in enumerate(values.items())
+        ],
     }

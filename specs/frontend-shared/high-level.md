@@ -369,7 +369,8 @@ in Python): a scan of the browser's sources by their types
 (`frontend/src/components/form/__tests__/typedNumbersByHand.test.ts`, which also refuses an
 element of `type="number"`) and a mypy plugin over the server's
 (`scripts/mypy_typed_numbers.py`, loaded by `[tool.mypy] plugins`) fail for any such call on
-text that is not on a list of named exceptions, each with its reason (a regular expression's
+text that is not on a list of named exceptions, each one call with its reason, so another
+conversion beside an excepted one is still refused (a regular expression's
 matched digits, a select's own option value, an environment variable, an answer's field). The
 plugin sees text by its declared type; a setting the server receives as `Any` is read through
 `setting_number`, the grammar for a value a settings file holds as a JSON number or as text.

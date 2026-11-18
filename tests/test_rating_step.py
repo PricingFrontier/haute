@@ -1797,3 +1797,27 @@ def test_a_save_refuses_levels_equal_under_the_tables_factor_dtypes() -> None:
 
     as_text = {"tables": [_age_table("25.0", "25.00", dtypes={"age": {"kind": "String"}})]}
     assert _prepare_config_for_sidecar(NodeType.RATING_STEP, as_text, node_label="rate")
+
+
+@pytest.mark.parametrize(
+    ("rate", "priced"), [("1,000.5", 1000.5), ("1 000", 1000.0), (" 2.5 ", 2.5)]
+)
+def test_a_rate_held_as_grouped_text_prices_as_the_number_it_is(rate: str, priced: float) -> None:
+    # The run reads a rate as the config codec validated it: by the one grammar for a typed
+    # number, never by Polars' own cast, which refuses a thousands separator.
+    from haute._config_validation import validate_node_config
+    from haute._rating import apply_rating_step_from_config
+
+    config = {
+        "tables": [
+            {
+                "factors": ["region"],
+                "output_column": "region_factor",
+                "entries": [{"region": "north", "value": rate}],
+            }
+        ]
+    }
+    validate_node_config(NodeType.RATING_STEP, config)
+    out = apply_rating_step_from_config(pl.LazyFrame({"region": ["north"]}), config).collect()
+
+    assert out["region_factor"].to_list() == [priced]

@@ -138,3 +138,17 @@ def test_a_constant_that_is_not_finite_is_refused_by_the_settings_check() -> Non
         NodeConfigError, match="Constant 'rate' has the value 'nan', which is not a finite number"
     ):
         validate_node_config(NodeType.CONSTANT, {"values": [{"name": "rate", "value": "nan"}]})
+
+
+@pytest.mark.parametrize("held", ["NaN", "Infinity", "-Infinity", "1e400", "9223372036854775808"])
+def test_a_sidecar_number_no_column_can_hold_is_refused_naming_the_constant(
+    tmp_path: Path, held: str
+) -> None:
+    # EXE-02: a non-finite number (which Python's JSON reader takes) or a whole number past a
+    # 64-bit integer is refused when the sidecar is read, never turned into text.
+    sidecar = tmp_path / "config" / "constant" / "rates.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_bytes(("{" + f'"values": {{"rate": {held}}}' + "}").encode("utf-8"))
+    with pytest.raises(NodeConfigError, match="Constant 'rate' has the value") as refused:
+        load_node_config("config/constant/rates.json", base_dir=tmp_path)
+    assert refused.value.setting == "values[0].value"

@@ -1205,6 +1205,22 @@ class RatingTableLookup:
         ]
 
 
+def _entry_with_rate(entry: Mapping[str, Any], output_col: str) -> dict[str, Any]:
+    """*entry* with a rate held as text read as the number it is, by the one grammar for a
+    typed number; text that is not one is refused, naming the table."""
+    rate = entry.get("value")
+    if not isinstance(rate, str):
+        return dict(entry)
+    number = setting_number(rate)
+    if number is None:
+        raise ConfigSettingError(
+            f"Rating table for '{output_col}' has the rate {rate!r}, which is not a number",
+            setting="tables",
+            values=(rate,),
+        )
+    return {**entry, "value": number}
+
+
 def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTableLookup | None:
     """Build *table*'s lookup against a frame of *frame_schema*, or ``None`` for a no-op table.
 
@@ -1277,7 +1293,11 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     # plan is returned to a caller.  The frame reads every entry, so each key
     # the check above found in any entry is a column: an entry without a value
     # is a null value, refused below, wherever it sits in the table.
-    lookup = pl.DataFrame(entries, infer_schema_length=None)
+    # A rate held as text is read by the one grammar for a typed number, as the config
+    # codec validated it (``1,000.5`` is a number), never by Polars' own cast.
+    lookup = pl.DataFrame(
+        [_entry_with_rate(entry, output_col) for entry in entries], infer_schema_length=None
+    )
     lookup = lookup.with_columns(pl.col("value").cast(pl.Float64, strict=True))
 
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently

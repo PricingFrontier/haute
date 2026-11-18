@@ -46,35 +46,47 @@ export function trimTyped(text: string): string {
   return text.slice(start, end)
 }
 
-/** The number *text* is as plain digits for the language to read, and whether it holds only digits; or null. */
-function parts(text: string): { plain: string; digitsOnly: boolean } | null {
+/** The number *text* is as plain digits for the language to read (no currency sign, no grouping), or null. */
+function plainDigits(text: string): string | null {
   const match = NUMBER.exec(trimTyped(text))
   if (match === null) return null
   const [, sign1, sign2, whole, fraction, exponent] = match
   if (sign1 && sign2) return null
   if (whole === undefined && (fraction === undefined || fraction === ".")) return null
   const digits = (whole ?? "").replace(GROUPING, "")
-  return { plain: `${sign1 || sign2}${digits}${fraction ?? ""}${exponent ?? ""}`, digitsOnly: fraction === undefined && exponent === undefined }
+  return `${sign1 || sign2}${digits}${fraction ?? ""}${exponent ?? ""}`
 }
 
 /** The number *text* is, read by the grammar, or null when it is not one (finite). */
 export function readTypedNumber(text: string): number | null {
-  const read = parts(text)
-  if (read === null) return null
-  const number = Number(read.plain)
+  const plain = plainDigits(text)
+  if (plain === null) return null
+  const number = Number(plain)
   return Number.isFinite(number) ? number : null
 }
 
 /**
  * The whole number *text* is, exactly however large, or null when it is not a number or not
- * whole: digits alone read as digits, any other number when its value is whole.
+ * whole: its value read from its decimal digits, never through a Number, so
+ * `1234567890123456789.0` is that whole number and `1234567890123456789.5` is not; a number
+ * written with an exponent is one only when it is finite.
  */
 export function readTypedWhole(text: string): bigint | null {
-  const read = parts(text)
-  if (read === null) return null
-  if (read.digitsOnly) return BigInt(read.plain)
-  const number = readTypedNumber(text)
-  return number !== null && Number.isInteger(number) ? BigInt(number) : null
+  const plain = plainDigits(text)
+  // Digits written out are exact however large; a number written with an exponent is finite
+  // or not a number (`1e999`), as the numeric field reads it.
+  if (plain === null || (/e/i.test(plain) && readTypedNumber(text) === null)) return null
+  const match = /^([+-]?)([0-9]*)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$/.exec(plain)
+  if (match === null) return null
+  const [, sign, whole, fraction = "", exponentText] = match
+  // The value is the digits times ten to the power `shift`.
+  const shift = (exponentText === undefined ? 0 : Number(exponentText)) - fraction.length
+  const digits = `${whole}${fraction}`.replace(/^0+(?=[0-9])/, "") || "0"
+  if (shift >= 0) return BigInt(`${sign}${digits}${"0".repeat(shift)}`)
+  const dropped = digits.slice(Math.max(0, digits.length + shift))
+  if (/[1-9]/.test(dropped) || (digits.length + shift < 0 && /[1-9]/.test(digits))) return null
+  const kept = digits.slice(0, Math.max(0, digits.length + shift)) || "0"
+  return BigInt(`${sign}${kept}`)
 }
 
 /** A decimal comma, said as what to do: the grammar never guesses which a comma is. */
