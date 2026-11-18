@@ -91,6 +91,8 @@ class Node:
     #: From the defining file to its pipeline's directory, where ``config=``
     #: paths resolve: ``.`` except in a submodel definition file.
     pipeline_dir: str = "."
+    #: The submodel occurrence a run expanded this node from, whose name prefixes its own.
+    occurrence: str | None = None
     kind: FunctionKind = field(init=False, repr=False)
     _input_arity: _InputArity = field(init=False, repr=False)
 
@@ -101,6 +103,17 @@ class Node:
             is_source=self.is_source,
             node_name=self.name,
         )
+
+    @property
+    def message_name(self) -> str:
+        """How a message names this node, as the graph walker names it
+        (``haute._node_addresses.node_display_name``): its name, a submodel child's with its
+        occurrence's ("enriched in enrichment")."""
+        from haute._node_addresses import display_name
+
+        if self.occurrence is None:
+            return self.name
+        return display_name(self.name.removeprefix(f"{self.occurrence}."), self.occurrence)
 
     @property
     def node_type(self) -> NodeType:
@@ -191,7 +204,7 @@ class Node:
             fn=self.fn,
             pipeline_dir=self.pipeline_dir,
         )
-        return shape_node_output(result, settings, node_label=self.name)
+        return shape_node_output(result, settings, node_label=self.message_name)
 
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
         return self._invoke(dfs, None)
@@ -765,29 +778,24 @@ class Pipeline(NodeRegistry):
                     inactive.add(edge)
         return frozenset(inactive)
 
-    def _read_by(self, order: list[Node], response: Node) -> list[Node]:
-        """*order*'s nodes that *response* reads, itself included: what a run of it runs,
-        as the graph walker runs only a target's ancestors. A branch beside it (an
-        Explore, a Model Training, an Optimisation) is neither run nor seeded. A Workbench
-        Input is always read: the response gives every table its quote's identity."""
+    def _read_by(
+        self, order: list[Node], response: Node, inactive: frozenset[RegisteredEdge]
+    ) -> list[Node]:
+        """*order*'s nodes that *response* reads through its active edges, itself included:
+        the one subgraph a run runs and seeds, as the graph walker prunes a Source Switch's
+        inactive inputs and then runs a target's ancestors. A branch beside the response
+        (an Explore, a Model Training, an Optimisation) and a node only an *inactive* edge
+        leads from are neither run nor seeded. A Workbench Input is always read: the
+        response gives every table its quote's identity."""
         read = {response.name} | {n.name for n in order if _is_workbench_input(n.node_type)}
         for node in reversed(order):
             if node.name in read:
-                read.update(edge.source for edge in self._edges if edge.target == node.name)
+                read.update(
+                    edge.source
+                    for edge in self._edges
+                    if edge.target == node.name and edge not in inactive
+                )
         return [node for node in order if node.name in read]
-
-    def _unreached(self, order: list[Node], inactive: frozenset[RegisteredEdge]) -> frozenset[str]:
-        """The nodes whose every outgoing edge is inactive or leads to such a node.
-
-        They feed only a switch's inactive branch, so the run never resolves them. A
-        node with no outgoing edge at all is a leaf the run keeps.
-        """
-        unreached: set[str] = set()
-        for node in reversed(order):
-            outgoing = [edge for edge in self._edges if edge.source == node.name]
-            if outgoing and all(edge in inactive or edge.target in unreached for edge in outgoing):
-                unreached.add(node.name)
-        return frozenset(unreached)
 
     @staticmethod
     def _workbench_quote(order: list[Node], outputs: Mapping[str, Any]) -> Any:
@@ -855,7 +863,7 @@ class Pipeline(NodeRegistry):
         wired: list[_WiredEdge] = []
         for occurrence, definition in occurrences.items():
             nodes.extend(
-                dataclasses.replace(node, name=f"{occurrence}.{node.name}")
+                dataclasses.replace(node, name=f"{occurrence}.{node.name}", occurrence=occurrence)
                 for node in definition._nodes
             )
             wired.extend(
@@ -1033,15 +1041,12 @@ class Pipeline(NodeRegistry):
             with standalone_project_scope(self._pipeline_file()):
                 everything = self._topo_order()
                 response = self._resolve_output_node(everything)
-                order = self._read_by(everything, response)
+                inactive = self._inactive_switch_edges(source)
+                order = self._read_by(everything, response, inactive)
                 constants = self._run_constants(source)
                 outputs: dict[str, Any] = {}
-                inactive = self._inactive_switch_edges(source)
-                unreached = self._unreached(order, inactive)
 
                 for n in order:
-                    if n.name in unreached:
-                        continue
                     if n.is_source:
                         outputs[n.name] = n.output(n._invoke((), constants))
                     else:
@@ -1104,14 +1109,13 @@ class Pipeline(NodeRegistry):
             with standalone_project_scope(self._pipeline_file()):
                 everything = self._topo_order()
                 response = self._resolve_output_node(everything)
-                order = self._read_by(everything, response)
+                inactive = self._inactive_switch_edges("live")
+                order = self._read_by(everything, response, inactive)
                 constants = self._run_constants("live")
                 outputs: dict[str, Any] = {}
-                inactive = self._inactive_switch_edges("live")
-                unreached = self._unreached(order, inactive)
 
                 # A source only a switch's inactive branch reads is neither seeded nor run.
-                sources = [n for n in order if n.is_source and n.name not in unreached]
+                sources = [n for n in order if n.is_source]
                 deploy_inputs = [n for n in sources if n.is_deploy_input]
                 if len(deploy_inputs) > 1:
                     raise ExecutionError(
@@ -1187,7 +1191,7 @@ class Pipeline(NodeRegistry):
                         outputs[n.name] = n.output(n._invoke((), constants))
 
                 for n in order:
-                    if n.is_source or n.name in unreached:
+                    if n.is_source:
                         continue
                     self._execute_transform(n, outputs, constants, inactive)
 

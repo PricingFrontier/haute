@@ -613,10 +613,12 @@ The ways share what decides an answer, so they cannot differ in it:
   node, as the walker gives a builder its `source_names`, so a Source Switch, a Quote
   Response and an Apply Optimisation read their inputs by the same names (`données` is
   `donn_xe9_es`) whichever way runs them.
-- **What runs.** Every way runs the nodes its target reads and nothing beside them: the
-  walker a target's ancestors, the plain-Python loop the nodes its response reads (a
-  Workbench Input always, whose quote gives every table its identity), so a branch beside
-  the answer (an Explore, a Model Training, an Optimisation) is neither run nor seeded.
+- **What runs.** Every way runs the nodes its target reads through its active edges and
+  nothing beside them: a Source Switch's inputs another source routes are pruned first,
+  then the walker runs a target's ancestors and the plain-Python loop the nodes its response
+  reads (a Workbench Input always, whose quote gives every table its identity). A branch
+  beside the answer (an Explore, a Model Training, an Optimisation) and a source only an
+  inactive input reads are neither run nor seeded.
 - **The frames between nodes.** Every way passes each node's output on as a lazy frame.
 - **A request's quotes.** `deploy._request_frame.RequestReader` reads them for the
   service, its batch worker, the Databricks model and the dry run alike.

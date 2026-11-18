@@ -194,8 +194,9 @@ has one — given its inputs by the names the parser gives them and its output s
 own Columns settings, as the walker runs it (the execution engine's **Ways of running a
 pipeline**). Like the graph walker, they never resolve a Source Switch's inactive branch: an edge into a
 switch from an input its sidecar maps to another source (`score()` runs as `live`) is
-inactive, a node whose every outgoing edge is inactive or leads to such a node is not run
-(nor seeded), and the switch receives `None` for that input. A switch whose map does not name
+inactive, the nodes the response reads are found through active edges alone, so a node only
+an inactive edge leads from is not run (nor seeded) even when it also feeds a branch beside
+the response, and the switch receives `None` for that input. A switch whose map does not name
 the run's source keeps every edge and refuses the run itself. Of the output node, an explicit
 response node (`@pipeline.output` or `@pipeline.workbench_output`) wins if there is exactly one;
 two raise, naming both; otherwise the single node with no

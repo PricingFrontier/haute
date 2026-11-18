@@ -217,6 +217,31 @@ def _shown(answers: Mapping[Way, Answer]) -> str:
     return "\n".join(f"    {way}: {answer.show()}" for way, answer in answers.items())
 
 
+def _owned(
+    package: str,
+    present: bool,
+    answers: Mapping[Way, Answer],
+    refusal: str | None = None,
+) -> None:
+    """The difference *package* owns, held by its strict expected failure.
+
+    When *present* (the case has checked the owned difference itself) it raises the
+    ``AssertionError`` that failure takes. Otherwise the ways must give one answer: any other
+    difference, an unexpected exception included, fails the test outright, never taken for
+    the owned one; and one answer passes, so the strict mark fails until it is removed.
+    """
+    if present:
+        raise AssertionError(f"{package}, as its entry describes:\n{_shown(answers)}")
+    problems = _disagreements(answers, refusal)
+    if problems:
+        pytest.fail(f"not {package}'s difference: " + "; ".join(problems) + "\n" + _shown(answers))
+
+
+def _refuses(answer: Answer, words: str) -> bool:
+    """Whether *answer* is a refusal holding *words*, as the way answered it."""
+    return answer.refusal is not None and not answer.internal and words in answer.refusal
+
+
 def _assert_one_answer(answers: Mapping[Way, Answer], refusal: str | None = None) -> None:
     problems = _disagreements(answers, refusal)
     assert not problems, "; ".join(problems) + "\n" + _shown(answers)
@@ -691,7 +716,13 @@ def test_a_shipped_example_gives_one_answer_every_way(
             assert refused.refusal is not None and meant.words in refused.refusal, (
                 f"{way}: {refused.show()}"
             )
-    _assert_one_answer(answers, refusal=_EXAMPLES_REFUSED.get(name))
+    words = _EXAMPLES_REFUSED.get(name)
+    if name in _EXAMPLES_OWNED_ELSEWHERE:
+        assert words is not None
+        refused = all(answer.refusal is not None for answer in answers.values())
+        _owned("MLR-04", refused and bool(_disagreements(answers, words)), answers, words)
+        return
+    _assert_one_answer(answers, refusal=words)
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +859,14 @@ class Columns:
         return [self.renames.get(c, c) for c in kept]
 
 
-STALE_WORDS = "keeps columns its input no longer has any of"
+def _stale_words(node: str) -> str:
+    """The one sentence every way refuses a selection none of whose columns exist in."""
+    return (
+        f"Node {node!r} keeps columns its input no longer has any of: 'gone'. "
+        "Choose its columns again."
+    )
+
+
 EVERY_COLUMN = Columns("every column")
 
 
@@ -900,7 +938,7 @@ def _generated_project(tmp_path: Path, case: Generated) -> Project:
     for node in case.also:
         _write(root, f"leaf_{node}.py", _pipeline_text(defs, upto=node))
     _finish_project(root)
-    refusal = STALE_WORDS if stale else None
+    refusal = _stale_words(case.node) if stale else None
     sources = ["live", *([case.other_source] if case.other_source else [])]
     targets = [Target(case.node, source, refusal, "leaf.py") for source in sources]
     targets.extend(Target(node, leaf=f"leaf_{node}.py") for node in case.also)
@@ -1258,6 +1296,32 @@ def _optimiser_apply(root: Path, columns: Columns) -> Written:
     )
 
 
+def _optimised(root: Path, columns: Columns) -> Written:
+    """Scenarios expanded from the quotes, with an online Optimisation beside the response
+    reading them: in a run it passes on the frame it optimises."""
+    written = _scenario_expander(root, columns)
+    _write_json(
+        root,
+        "config/optimiser/optimise.json",
+        {
+            "mode": "online",
+            "objective": "age",
+            "constraints": {"exposure": {"min": 0.1}},
+            "quote_id": "quote_id",
+            "scenario_index": "scenario_index",
+            "scenario_value": "scenario_value",
+            "max_iter": 5,
+            "tolerance": 0.001,
+        },
+    )
+    optimise = _Def(
+        "optimise",
+        '@pipeline.optimiser(config="config/optimiser/optimise.json")\ndef optimise(expanded): ...',
+        (("expanded", None, None),),
+    )
+    return Written([*written.defs, optimise], written.columns)
+
+
 def _side_branches(root: Path, columns: Columns) -> Written:
     """A Transform on the quotes, with an Explore, a Model Training and an Optimiser
     beside it reading the same rows: none feeds the response, and every way leaves them
@@ -1325,6 +1389,7 @@ def _generated_cases() -> list[Any]:
         for columns in _columns_settings(chosen, other)
     ]
     cases.append(Generated(NodeType.EXPLORE, "calc", _side_branches, also=("looked", "trained")))
+    cases.append(Generated(NodeType.OPTIMISER, "expanded", _optimised, also=("optimise",)))
     return [pytest.param(case, id=case.name) for case in cases]
 
 
@@ -1422,7 +1487,11 @@ def test_a_workbench_sample_is_priced_under_one_identity_every_way(
     tables = [
         json.dumps(json.loads(row)["pricing"], separators=(",", ":")) for row in document.rows
     ]
-    assert list(preview.rows) == tables, f"{preview.show()}\n{document.show()}"
+    answers = {Way.PREVIEW: preview, Way.PYTHON: Answer(rows=tuple(tables))}
+    (previewed,), (ran,) = (json.loads(row) for row in preview.rows), map(json.loads, tables)
+    # The walker leaves the identity out (null), where the file run as Python gives the stand-in.
+    owned = "quote_reference" not in previewed and ran.get("quote_reference") == "PREVIEW"
+    _owned("WB-76", owned, answers)
 
 
 def _workbench_project(tmp_path: Path) -> Project:
@@ -1611,6 +1680,25 @@ def _reads_dropped(root: Path, columns: Columns) -> Written:
     return Written(written.defs, written.columns, ("banded", lambda shaped: [*shaped, "age"]))
 
 
+def test_a_stale_selection_inside_a_submodel_is_refused_in_one_sentence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _example_project(tmp_path, "reusable_submodel")
+    root = tmp_path.parent / _short_name(tmp_path, "reusable_submodel")
+    module = root / "modules" / "reusable_enrichment.py"
+    source = module.read_text(encoding="utf-8")
+    assert source.count("@submodel.polars\n") == 1
+    module.write_text(
+        source.replace("@submodel.polars\n", '@submodel.polars(selected_columns=["gone"])\n'),
+        encoding="utf-8",
+    )
+    (target,) = project.targets
+
+    answers = _answers(project, target, capsys, monkeypatch)
+
+    _assert_one_answer(answers, refusal=_stale_words("enriched in enrichment"))
+
+
 def test_a_column_a_selection_drops_is_refused_by_the_node_reading_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1661,7 +1749,10 @@ def test_a_transform_crossing_a_constant_answers_every_way(
         tmp_path, Generated(NodeType.POLARS, "priced", _constant_cross_join)
     )
 
-    _assert_one_answer(_answers(project, Target("quote_response"), capsys, monkeypatch))
+    answers = _answers(project, Target("quote_response"), capsys, monkeypatch)
+    admitted = [answer for way, answer in answers.items() if way is not Way.PYTHON]
+    owned = all(_refuses(answer, "cross_join_unmeasured") for answer in admitted)
+    _owned("EXE-05", owned, answers)
 
 
 def _csv_quotes(root: Path, columns: Columns) -> Written:
@@ -1684,13 +1775,15 @@ def test_a_quote_input_on_a_csv_answers_every_way(
     project = _generated_project(tmp_path, Generated(NodeType.API_INPUT, "calc", _csv_quotes))
     target = Target("calc", leaf="leaf.py")
 
-    _assert_one_answer(
-        {
-            Way.PREVIEW: _preview(project, target),
-            Way.HAUTE_RUN: _haute_run(project, target, capsys),
-            Way.PYTHON: _python(project, target),
-        }
+    answers = {
+        Way.PREVIEW: _preview(project, target),
+        Way.HAUTE_RUN: _haute_run(project, target, capsys),
+        Way.PYTHON: _python(project, target),
+    }
+    owned = answers[Way.PREVIEW].refusal is None and _refuses(
+        answers[Way.HAUTE_RUN], "CSV sources require declared dtypes"
     )
+    _owned("IOL-03", owned, answers)
 
 
 @pytest.mark.xfail(
@@ -1721,7 +1814,11 @@ def test_a_clean_checkout_runs_every_way(
     dry = _dry_run(project, capsys)
     preview = _preview(project, project.targets[0])
 
-    _assert_one_answer({Way.PREVIEW: preview, Way.PYTHON: ran, Way.DRY_RUN: dry})
+    answers = {Way.PREVIEW: preview, Way.PYTHON: ran, Way.DRY_RUN: dry}
+    owned = preview.refusal is None and all(
+        _refuses(answer, "input_snapshot_missing") for answer in (ran, dry)
+    )
+    _owned("DPL-05", owned, answers)
 
 
 #: The node types a test above runs, by the case that holds it.
@@ -1743,7 +1840,7 @@ _NODE_TYPE_CASES: Mapping[NodeType, tuple[str, ...]] = node_type_table(
         NodeType.EXTERNAL_FILE: ("externalFile: every column",),
         NodeType.LIVE_SWITCH: ("liveSwitch: every column", "live_batch_parity"),
         NodeType.MODELLING: ("explore: every column",),
-        NodeType.OPTIMISER: ("online_scenario_optimisation", "ratebook_optimisation_apply"),
+        NodeType.OPTIMISER: ("optimiser: every column",),
         NodeType.SCENARIO_EXPANDER: ("scenarioExpander: every column",),
         NodeType.OPTIMISER_APPLY: ("optimiserApply: every column", "ratebook_optimisation_apply"),
         NodeType.CONSTANT: ("constant: every column",),
@@ -1753,39 +1850,57 @@ _NODE_TYPE_CASES: Mapping[NodeType, tuple[str, ...]] = node_type_table(
 )
 
 
-def _node_types(pipeline: Path) -> set[NodeType]:
-    """The node types *pipeline*'s graph holds, its submodels' included."""
+def _node_types(pipeline: Path, targets: Sequence[str]) -> set[NodeType]:
+    """The node types the ways run reading *targets* of *pipeline*: each target and the
+    nodes it reads, a submodel occurrence's definition included."""
     from haute.routes._helpers import parse_pipeline_to_graph
 
     graph = parse_pipeline_to_graph(pipeline)
-    nodes = [
-        *graph.nodes,
-        *(
-            node
+    parents: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        parents.setdefault(edge.target, set()).add(edge.source)
+    read: set[str] = set()
+    pending = list(targets)
+    while pending:
+        node = pending.pop()
+        if node not in read:
+            read.add(node)
+            pending.extend(parents.get(node, ()))
+    nodes = [graph.node_map[node] for node in read]
+    types = {NodeType(node.data.nodeType) for node in nodes}
+    if NodeType.SUBMODEL in types:
+        # A Port has no decorator: no file holds one, and an occurrence runs its ports.
+        types.add(NodeType.SUBMODEL_PORT)
+        types.update(
+            NodeType(node.data.nodeType)
             for definition in (graph.submodels or {}).values()
             for node in definition.graph.nodes
-        ),
-    ]
-    return {NodeType(node.data.nodeType) for node in nodes}
+        )
+    return types
 
 
 def _case_node_types(tmp_path: Path, name: str) -> set[NodeType]:
-    """The node types the case *name* runs, read from its pipeline as written."""
+    """The node types the case *name* runs at its targets, read from its pipeline as
+    written."""
     from haute.assistant._assets import materialize_example_bundle
 
     (tmp_path / "e").mkdir(parents=True)
 
     generated = {param.id: param.values[0] for param in _generated_cases()}
     if name in generated:
-        return _node_types(_generated_project(tmp_path / "g", generated[name]).pipeline)
-    if name == "workbench":
-        return _node_types(_workbench_project(tmp_path / "w").pipeline)
-    if name == "reference":
-        return _node_types(REPO / "examples" / "reference" / "main.py")
-    root = tmp_path / "e" / name
-    materialize_example_bundle(name, root)
-    use_project(root)
-    return _node_types(root / "pipeline.py")
+        project = _generated_project(tmp_path / "g", generated[name])
+    elif name == "workbench":
+        project = _workbench_project(tmp_path / "w")
+    elif name == "reference":
+        project = Project(
+            REPO, REPO / "examples" / "reference" / "main.py", [Target("quote_response")]
+        )
+    else:
+        root = tmp_path / "e" / name
+        materialize_example_bundle(name, root)
+        use_project(root)
+        project = Project(root, root / "pipeline.py", [Target("quote_response")])
+    return _node_types(project.pipeline, [target.node for target in project.targets])
 
 
 def test_every_node_type_has_a_case(tmp_path: Path) -> None:
@@ -1797,21 +1912,16 @@ def test_every_node_type_has_a_case(tmp_path: Path) -> None:
     }
     assert not unknown, f"node types without a case, or naming none: {unknown}"
     named = {case for cases in _NODE_TYPE_CASES.values() for case in cases}
-    # A Port has no decorator: no file holds one, and a case runs a submodel's ports by
-    # running its occurrence.
     held = {
         case: _case_node_types(tmp_path / f"c{index}", case)
         for index, case in enumerate(sorted(named))
     }
-    for case_types in held.values():
-        if NodeType.SUBMODEL in case_types:
-            case_types.add(NodeType.SUBMODEL_PORT)
     absent = {
         node_type.value: [case for case in cases if node_type not in held[case]]
         for node_type, cases in _NODE_TYPE_CASES.items()
         if any(node_type not in held[case] for case in cases)
     }
-    assert not absent, f"cases naming a node type their pipeline does not hold: {absent}"
+    assert not absent, f"cases naming a node type no target of theirs reads: {absent}"
 
 
 def test_the_ways_are_the_specification_s() -> None:
