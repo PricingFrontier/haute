@@ -9,7 +9,6 @@ with its reason, anchor a relative path on the pipeline directory themselves.
 
 from __future__ import annotations
 
-import filecmp
 import glob
 import os
 from pathlib import Path, PureWindowsPath
@@ -19,6 +18,8 @@ from haute._sandbox import is_contained
 from haute._validation_error import HauteValidationError
 
 _GLOB_MARKERS = "*?["
+#: How much of each copy a comparison holds in memory at once.
+_COMPARE_CHUNK_BYTES = 1 << 20
 
 
 class RuntimePathError(HauteValidationError):
@@ -188,23 +189,39 @@ def node_input_path_copies(
     return project_copy, pipeline_copy
 
 
-def copies_differ(first: Path, second: Path) -> bool:
+def copies_differ(first: Path, second: Path, *, project_root: str | Path | None = None) -> bool:
     """Whether two copies of one relative path hold different data.
 
     A copy is a file, a folder or a glob pattern; a folder or a pattern stands for the
-    files under it or matched, keyed by their path below the copy's fixed part (the
-    pattern's directory). The copies are the same when they name the same keys and each
-    pair is one file or holds the same bytes, compared streamed after the sizes.
+    files under it or matched, followed through links, keyed by their path below the
+    copy's fixed part (the pattern's directory). Every one of them is held inside the
+    project root (the current project's unless *project_root* is given) before any is
+    opened, and one that leads out raises :class:`RuntimePathOutsideProjectError`. The
+    copies are the same when they name the same keys and each pair is one file or holds
+    the same bytes, read afresh every time: a file rewritten with its size and time kept
+    still compares by its content.
     """
-    first_files = _copy_files(first)
-    second_files = _copy_files(second)
+    root = current_project().root if project_root is None else Path(project_root).resolve()
+    first_files = _copy_files(first, root)
+    second_files = _copy_files(second, root)
     if first_files.keys() != second_files.keys():
         return True
-    return not all(
-        os.path.samefile(path, second_files[key])
-        or filecmp.cmp(path, second_files[key], shallow=False)
-        for key, path in first_files.items()
-    )
+    return not all(_same_bytes(path, second_files[key]) for key, path in first_files.items())
+
+
+def _same_bytes(first: Path, second: Path) -> bool:
+    """Whether two files hold the same bytes, read in chunks with nothing cached."""
+    if os.path.samefile(first, second):
+        return True
+    if first.stat().st_size != second.stat().st_size:
+        return False
+    with first.open("rb") as one, second.open("rb") as other:
+        while True:
+            chunk = one.read(_COMPARE_CHUNK_BYTES)
+            if chunk != other.read(_COMPARE_CHUNK_BYTES):
+                return False
+            if not chunk:
+                return True
 
 
 def _fixed_part(copy: Path) -> Path:
@@ -224,22 +241,33 @@ def _real_entry(copy: Path) -> Path:
     return Path(os.path.realpath(fixed)) / copy.relative_to(fixed)
 
 
-def _copy_files(copy: Path) -> dict[str, Path]:
-    """Every file *copy* stands for, keyed by its posix path below the copy's fixed part."""
+def _copy_files(copy: Path, project_root: Path) -> dict[str, Path]:
+    """Every file *copy* stands for, keyed by its posix path below the copy's fixed part.
+
+    A folder is walked through its links, each folder once, and every entry met is held
+    inside *project_root* before the walk goes on, so nothing outside is listed or read.
+    """
     base = _fixed_part(copy)
-    entries = (
+    pending = (
         [copy]
         if base == copy
         else [Path(match) for match in glob.iglob(str(copy), recursive=True, include_hidden=True)]
     )
     files: dict[str, Path] = {}
-    for entry in entries:
-        if entry.is_file():
+    walked: set[str] = set()
+    while pending:
+        entry = pending.pop()
+        real = os.path.realpath(entry)
+        if not is_contained(project_root, Path(real)):
+            raise RuntimePathOutsideProjectError(
+                f"{entry} leads outside the project root, to {real}"
+            )
+        if os.path.isdir(real):
+            if real not in walked:
+                walked.add(real)
+                pending.extend(entry.iterdir())
+        elif os.path.isfile(real):
             files[entry.relative_to(base).as_posix()] = entry
-        elif entry.is_dir():
-            for path in entry.rglob("*"):
-                if path.is_file():
-                    files[path.relative_to(base).as_posix()] = path
     return files
 
 

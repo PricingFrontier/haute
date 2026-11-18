@@ -123,9 +123,19 @@ def _anchor(expr: ast.expr) -> str | None:
 
 
 def _literal(expr: ast.expr) -> bool:
-    """Whether *expr* is a path the code spells itself: a string, or a constant's name."""
-    if isinstance(expr, ast.Constant | ast.JoinedStr):
+    """Whether *expr* is a path the code spells itself: a string, or a constant's name.
+
+    An f-string is one only when everything it interpolates is, so ``f"{config['path']}"``
+    is a configured path.
+    """
+    if isinstance(expr, ast.Constant):
         return True
+    if isinstance(expr, ast.JoinedStr):
+        return all(
+            isinstance(value, ast.Constant)
+            or (isinstance(value, ast.FormattedValue) and _literal(value.value))
+            for value in expr.values
+        )
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
         return _literal(expr.left) and _literal(expr.right)
     if isinstance(expr, ast.Name):
@@ -135,20 +145,24 @@ def _literal(expr: ast.expr) -> bool:
     return False
 
 
-def _joins(body: list[ast.AST]) -> Iterator[tuple[ast.expr, ast.expr, ast.AST]]:
-    """Each path join in *body*: ``base / part``, ``base.joinpath(part)``, ``os.path.join``."""
+def _joins(body: list[ast.AST]) -> Iterator[tuple[ast.expr, list[ast.expr], ast.AST]]:
+    """Each path join in *body*, its base and every part joined onto it.
+
+    ``base / part``, ``base.joinpath(*parts)``, ``os.path.join(base, *parts)`` and
+    ``Path(base, *parts)``.
+    """
     for node in body:
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            yield node.left, node.right, node
+            yield node.left, [node.right], node
         elif isinstance(node, ast.Call) and len(node.args) >= 1:
             func = node.func
             if isinstance(func, ast.Attribute) and func.attr == "joinpath":
-                yield func.value, node.args[0], node
+                yield func.value, list(node.args), node
             elif len(node.args) >= 2 and (
                 (isinstance(func, ast.Attribute) and ast.unparse(func) == "os.path.join")
                 or (isinstance(func, ast.Name) and func.id in {"Path", "PurePath"})
             ):
-                yield node.args[0], node.args[1], node
+                yield node.args[0], list(node.args[1:]), node
 
 
 def _own_nodes(function: ast.AST) -> list[ast.AST]:
@@ -168,8 +182,8 @@ def _function_findings(scope: str, function: ast.AST) -> list[Finding]:
     body = _own_nodes(function)
     joins = [
         Finding(scope, getattr(join, "lineno", 0), ast.unparse(join))
-        for base, part, join in _joins(body)
-        if _anchor(base) == "pipeline" and not _literal(part)
+        for base, parts, join in _joins(body)
+        if _anchor(base) == "pipeline" and not all(_literal(part) for part in parts)
     ]
     preferences = [
         Finding(scope, node.lineno, ast.unparse(node))
@@ -254,6 +268,10 @@ def test_every_listed_place_still_anchors_a_path() -> None:
         "def read(graph, raw):\n    return graph_pipeline_dir(graph) / raw",
         "class Reader:\n    def read(self, raw):\n        return self.pipeline_dir / raw",
         "def read(raw):\n    return resolve_node_input_path(raw, prefer='pipeline')",
+        "def read(config):\n    return pipeline_dir / f\"{config['path']}\"",
+        "def read(config):\n    return pipeline_dir.joinpath('data', config['path'])",
+        "def read(raw):\n    return os.path.join(base_dir, 'data', raw)",
+        "def read(raw):\n    return Path(pipeline_dir, 'data', raw)",
         "from haute._path_resolution import _anchored_candidates",
     ],
 )
@@ -279,7 +297,8 @@ def test_the_scan_finds_a_path_tried_against_both_folders() -> None:
     [
         "def read(raw):\n    return root / raw",
         "def read():\n    return pipeline_dir / 'config' / 'rates.json'",
-        "def read(name):\n    return pipeline_dir / f'{name}.json'",
+        "def read():\n    return pipeline_dir / f'{CONFIG_FOLDER}/rates.json'",
+        "def read():\n    return pipeline_dir.joinpath('config', 'rates.json')",
         "def read():\n    return pipeline_dir / CONFIG_FOLDER",
         "def read(raw):\n    return resolve_node_input_path(raw, pipeline_dir=pipeline_dir)",
         "def ratio(total, count):\n    return total / count",

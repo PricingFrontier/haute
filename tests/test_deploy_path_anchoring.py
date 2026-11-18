@@ -11,6 +11,7 @@ copies differ refuses the deploy, naming both files.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -354,6 +355,29 @@ def test_differing_copies_of_any_path_setting_refuse_the_deploy(
     assert repr(field) in message
     assert f"rating/{raw}" in message
     assert f"{raw} under the project root" in message
+
+
+def test_a_copy_linking_out_of_the_project_refuses_the_deploy(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Comparing the copies never reads a file outside the project: the link is refused."""
+    outside = tmp_path_factory.mktemp("outside")
+    _rates_file(outside / "part.parquet", {"N": 1.1, "S": 1.2})
+    link = project / "data" / "rates" / "linked"
+    link.parent.mkdir(parents=True)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(link))
+    else:
+        link.symlink_to(outside, target_is_directory=True)
+    _rates_file(project / "rating" / "data" / "rates" / "linked" / "part.parquet", {"N": 1.1})
+    _save(project, *_rates_pipeline(make_file_input_config("data/rates")))
+
+    message = _refusal(project)
+
+    assert "'rates'" in message
+    assert "leads outside the project root" in message
 
 
 def test_identical_load_file_copies_ship_the_file_the_preview_read(project: Path) -> None:

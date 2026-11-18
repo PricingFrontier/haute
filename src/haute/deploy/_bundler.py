@@ -507,6 +507,7 @@ def check_local_input_paths(graph: PipelineGraph, pipeline_dir: Path, project_ro
                 copies = node_input_path_copies(
                     raw_path, pipeline_dir=pipeline_dir, project_root=project_root
                 )
+                differ = copies is not None and copies_differ(*copies, project_root=project_root)
             except RuntimePathError as exc:
                 raise DeployError(
                     f"Node {node.id!r} field {field_name!r} has invalid local "
@@ -516,7 +517,7 @@ def check_local_input_paths(graph: PipelineGraph, pipeline_dir: Path, project_ro
                     field=field_name,
                     path=raw_path,
                 ) from exc
-            if copies is None or not copies_differ(*copies):
+            if copies is None or not differ:
                 continue
             project_copy, pipeline_copy = (_project_path(path, project_root) for path in copies)
             raise DeployError(

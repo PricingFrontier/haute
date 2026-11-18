@@ -213,12 +213,15 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    and checked for project-root containment, each relative path by the one anchoring rule
    (`_path_resolution.resolve_node_input_path`). In the same pass, before anything is
    read, prepared or copied, a relative path that exists under both the project root and
-   the pipeline folder is compared (`_path_resolution.differing_copy`): the copies are
-   one when they are the same file, or when they hold the same files at the same relative
-   paths with the same bytes (a folder's files, or the files a glob matches, compared
-   streamed, sizes first). Copies that differ raise a `DeployError` naming the node, the
-   field, both files relative to the project root and the one the editor reads, before
-   `refuse_data_outside_pipeline_folder`; identical copies pass. Bundling repeats the
+   the pipeline folder is compared (`_path_resolution.node_input_path_copies` and
+   `copies_differ`): the copies are one when they are the same file, or when they hold
+   the same files at the same relative paths with the same bytes (a folder's files,
+   followed through links, or the files a glob matches, read in 1 MiB chunks after the
+   sizes, every time, with no cache). A file a copy names that leads outside the project
+   root is never opened: it raises the invalid-path `DeployError`. Copies that differ
+   raise a `DeployError` naming the node, the field, both files relative to the project
+   root and the one the editor reads, before `refuse_data_outside_pipeline_folder`;
+   identical copies pass. Bundling repeats the
    containment check at the copy boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before

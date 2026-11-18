@@ -35,6 +35,17 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _link(link: Path, folder: Path) -> None:
+    """Make *link* a link to *folder*: a junction on Windows, which needs no privilege."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(folder), str(link))
+    else:
+        link.symlink_to(folder, target_is_directory=True)
+
+
 def test_the_project_candidate_wins_when_both_exist(tmp_path: Path) -> None:
     project_root, pipeline_dir = _layout(tmp_path)
     _write(project_root / "data.json", "project")
@@ -224,7 +235,7 @@ def test_a_path_in_both_places_names_both_copies_the_rule_s_first(tmp_path: Path
         resolve_node_input_path("data.json", project_root=project_root, pipeline_dir=pipeline_dir),
         pipeline_dir / "data.json",
     )
-    assert copies is not None and copies_differ(*copies)
+    assert copies is not None and copies_differ(*copies, project_root=project_root)
 
 
 @pytest.mark.parametrize("where", ["project", "pipeline", "nowhere"])
@@ -250,16 +261,9 @@ def test_one_entry_reached_twice_is_one_copy(tmp_path: Path) -> None:
     _write(project_root / "data.json", "{}")
     assert _copies("data.json", project_root, project_root) is None
 
-    # The pipeline directory is a link inside the project back to its root: a junction on
-    # Windows, which needs no privilege.
-    link = project_root / "linked"
-    if os.name == "nt":
-        import _winapi
-
-        _winapi.CreateJunction(str(project_root), str(link))
-    else:
-        link.symlink_to(project_root, target_is_directory=True)
-    assert _copies("data.json", project_root, link) is None
+    # The pipeline directory is a link inside the project back to its root.
+    _link(project_root / "linked", project_root)
+    assert _copies("data.json", project_root, project_root / "linked") is None
 
 
 def test_identical_file_copies_do_not_differ(tmp_path: Path) -> None:
@@ -269,7 +273,7 @@ def test_identical_file_copies_do_not_differ(tmp_path: Path) -> None:
 
     copies = _copies("data.json", project_root, pipeline_dir)
 
-    assert copies is not None and not copies_differ(*copies)
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)
 
 
 @pytest.mark.parametrize("change", ["bytes", "extra file", "missing file", "renamed file"])
@@ -279,7 +283,7 @@ def test_folder_copies_differ_by_any_file(tmp_path: Path, change: str) -> None:
         _write(folder / "rates" / "region=N" / "part.parquet", "north")
         _write(folder / "rates" / "region=S" / "part.parquet", "south")
     copies = _copies("rates", project_root, pipeline_dir)
-    assert copies is not None and not copies_differ(*copies)
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)
 
     changed = pipeline_dir / "rates" / "region=S" / "part.parquet"
     if change == "bytes":
@@ -291,7 +295,7 @@ def test_folder_copies_differ_by_any_file(tmp_path: Path, change: str) -> None:
     else:
         changed.rename(changed.with_name("other.parquet"))
 
-    assert copies_differ(*copies)
+    assert copies_differ(*copies, project_root=project_root)
 
 
 def test_glob_copies_compare_the_files_they_match(tmp_path: Path) -> None:
@@ -302,11 +306,11 @@ def test_glob_copies_compare_the_files_they_match(tmp_path: Path) -> None:
     # A file the pattern does not match is not part of either copy.
     _write(pipeline_dir / "data" / "other.parquet", "not matched")
     copies = _copies("data/r*.parquet", project_root, pipeline_dir)
-    assert copies is not None and not copies_differ(*copies)
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)
 
     _write(pipeline_dir / "data" / "r2.parquet", "TWO")
 
-    assert copies_differ(*copies)
+    assert copies_differ(*copies, project_root=project_root)
 
 
 def test_a_project_folder_named_with_a_glob_marker_still_compares_its_files(
@@ -320,7 +324,7 @@ def test_a_project_folder_named_with_a_glob_marker_still_compares_its_files(
 
     copies = _copies("data.json", project_root, pipeline_dir)
 
-    assert copies is not None and copies_differ(*copies)
+    assert copies is not None and copies_differ(*copies, project_root=project_root)
 
 
 def test_a_file_and_a_folder_differ(tmp_path: Path) -> None:
@@ -330,7 +334,7 @@ def test_a_file_and_a_folder_differ(tmp_path: Path) -> None:
 
     copies = _copies("rates", project_root, pipeline_dir)
 
-    assert copies is not None and copies_differ(*copies)
+    assert copies is not None and copies_differ(*copies, project_root=project_root)
 
 
 def test_hard_linked_copies_are_one_file(tmp_path: Path) -> None:
@@ -340,4 +344,44 @@ def test_hard_linked_copies_are_one_file(tmp_path: Path) -> None:
 
     copies = _copies("data.json", project_root, pipeline_dir)
 
-    assert copies is not None and not copies_differ(*copies)
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)
+
+
+def test_a_rewrite_keeping_size_and_time_is_compared_by_its_content(tmp_path: Path) -> None:
+    """Nothing is cached: a second comparison in the same process reads the files again."""
+    project_root, pipeline_dir = _layout(tmp_path)
+    _write(project_root / "data.json", '{"factor": 1}')
+    rewritten = _write(pipeline_dir / "data.json", '{"factor": 1}')
+    copies = _copies("data.json", project_root, pipeline_dir)
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)
+    stamp = rewritten.stat()
+
+    _write(rewritten, '{"factor": 9}')
+    os.utime(rewritten, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+    assert rewritten.stat().st_size == stamp.st_size
+    assert rewritten.stat().st_mtime_ns == stamp.st_mtime_ns
+    assert copies_differ(*copies, project_root=project_root)
+
+
+@pytest.mark.parametrize("raw", ["rates", "rates/*"], ids=["folder", "glob"])
+def test_a_copy_leading_out_of_the_project_is_refused_before_anything_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """A link inside one copy to a folder outside the project is refused, never opened."""
+    project_root, pipeline_dir = _layout(tmp_path)
+    outside = tmp_path / "outside"
+    _write(outside / "part.parquet", "outside")
+    _link(project_root / "rates" / "linked", outside)
+    _write(pipeline_dir / "rates" / "linked" / "part.parquet", "outside")
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        "haute._path_resolution._same_bytes", lambda first, second: opened.append(first)
+    )
+    copies = _copies(raw, project_root, pipeline_dir)
+    assert copies is not None
+
+    with pytest.raises(RuntimePathOutsideProjectError, match="leads outside the project root"):
+        copies_differ(*copies, project_root=project_root)
+
+    assert opened == []
