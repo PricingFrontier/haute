@@ -17,11 +17,8 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from haute._execute_lazy import (
-    _apply_column_renames,
-    _apply_selected_columns,
-    _prune_live_switch_edges,
-)
+from haute._execute_lazy import _prune_live_switch_edges
+from haute._node_apply import _apply_column_renames, _apply_selected_columns
 from haute._types import (
     GraphEdge,
     GraphNode,

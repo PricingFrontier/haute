@@ -40,11 +40,11 @@ _EXPECTED_DEBT_IDS = {
     # tests/test_run_parity.py (EXE-10): differences between the ways of running a
     # pipeline that another roadmap package owns, each strict so its delivery turns
     # it green: MLR-04, WB-76, EXE-05, IOL-03 and DPL-05.
-    "54b913d430048d28",
-    "ac378a8c68ba550d",
-    "a2784bd74a21e9cb",
-    "73042823acd5d3df",
-    "2f33a80c3c0ce0fa",
+    "2e1728e0067476c5",
+    "04008f4cbb41a642",
+    "b5fdde6eb4c9ad9c",
+    "df8007541766fc3a",
+    "2e3d3169003ad6c5",
     # The chunked GLM suite (MOD-M01) fits real RustyStats models in both fit modes;
     # rustystats is an optional dependency, so the module importorskips it like the
     # other GLM suites. See tests/test_glm_chunked_fit.py.

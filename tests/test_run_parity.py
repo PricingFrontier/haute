@@ -141,6 +141,9 @@ class Answer:
     columns: tuple[str, ...] | None = None
     dtypes: tuple[str, ...] | None = None
     refusal: str | None = None
+    #: Whether the refusal is an exception the way did not answer: never a refusal a case
+    #: names, however its words read.
+    internal: bool = False
 
     @classmethod
     def of_frame(cls, frame: pl.DataFrame) -> Answer:
@@ -169,9 +172,14 @@ class Answer:
     def refused(cls, words: object) -> Answer:
         return cls(refusal=str(words))
 
+    @classmethod
+    def raised(cls, exc: Exception) -> Answer:
+        return cls(refusal=f"{type(exc).__name__}: {exc}", internal=True)
+
     def show(self) -> str:
         if self.refusal is not None:
-            return f"refused: {self.refusal[:600]}"
+            raised = "raised and " if self.internal else ""
+            return f"{raised}refused: {self.refusal[:600]}"
         described = [f"{len(self.rows)} rows"]
         if self.columns is not None:
             described.append(f"columns {list(self.columns)}")
@@ -186,7 +194,7 @@ def _disagreements(answers: Mapping[Way, Answer], refusal: str | None) -> list[s
     problems: list[str] = []
     if refusal is not None:
         for way, answer in answers.items():
-            if answer.refusal is None or refusal not in answer.refusal:
+            if answer.refusal is None or answer.internal or refusal not in answer.refusal:
                 problems.append(f"{way} does not refuse in the words {refusal!r}")
         return problems
     reference_way, reference = next(iter(answers.items()))
@@ -246,15 +254,17 @@ class Project:
     response: str = "quote_response"
 
 
-def _short_root(tmp_path: Path, name: str) -> Path:
-    # Snapshot generations add long content-addressed components; keep the project
-    # path short enough for Windows' legacy path limit.
-    suffix = hashlib.sha256(f"{tmp_path}:{name}".encode()).hexdigest()[:10]
-    root = tmp_path.parent / f"rp-{suffix}"
+def _short_name(tmp_path: Path, name: str) -> str:
+    """A short folder name for the project of *name* beside *tmp_path*: snapshot
+    generations add long content-addressed components, and the project's path must stay
+    short enough for Windows' legacy path limit."""
+    return "rp-" + hashlib.sha256(f"{tmp_path}:{name}".encode()).hexdigest()[:10]
+
+
+def _fresh(root: Path) -> None:
     if root.exists():
         shutil.rmtree(root)
     root.mkdir()
-    return root
 
 
 def _finish_project(root: Path) -> None:
@@ -405,29 +415,28 @@ def _python(project: Project, target: Target) -> Answer:
 
 
 def _scored_request(project: Project) -> pl.DataFrame | None:
-    """The quotes as the service frames them for a flat request input, which
-    ``pipeline.score()`` takes; ``None`` for any other pipeline."""
-    from haute._node_specs import node_spec
-    from haute.deploy._request_frame import frame_rows
-
-    if project.request is None:
-        return None
-    graph = _graph(project)
-    inputs = [n for n in graph.nodes if node_spec(n.data.nodeType).request_input]
-    if len(inputs) != 1 or inputs[0].data.nodeType != NodeType.API_INPUT:
-        return None
-    tables = inputs[0].data.config.get("tables") or []
-    if len(tables) != 1 or tables[0].get("path") != "$[:]":
-        return None
+    """The quotes as the service frames them, which ``pipeline.score()`` seeds its one input
+    with: a Quote Input whose one table is the request's root, or a Data Input the
+    deployment reads its requests by; ``None`` for any other pipeline."""
     from haute.cli._helpers import EXPECTED_FAILURES
-    from haute.deploy._request_frame import request_frame_schema
+    from haute.deploy._request_frame import frame_rows, request_frame_schema
 
+    if not project.request:
+        return None
     try:
         resolved = _resolved(project)
     except EXPECTED_FAILURES:
         # A pipeline its deployment refuses: run() alone answers.
         return None
     try:
+        (input_id,) = resolved.input_node_ids
+        node = _graph(project).node_map[input_id]
+        tables = node.data.config.get("tables") or []
+        one_root_table = len(tables) == 1 and tables[0].get("path") == "$[:]"
+        if node.data.nodeType == NodeType.API_INPUT and not one_root_table:
+            return None
+        if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_INPUT):
+            return None
         schema = request_frame_schema(resolved.input_schema)
         return frame_rows(project.request, schema, omittable=frozenset(resolved.omittable_inputs))
     finally:
@@ -532,19 +541,32 @@ def _answers(
     target: Target,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    without: frozenset[Way] = frozenset(),
 ) -> dict[Way, Answer]:
-    """*target*'s answer from each way that answers at it."""
+    """*target*'s answer from each way that answers at it (``MEANT["deployment answers"]``),
+    but the ways *without*."""
     deployed = (
         project.request is not None and target.node == project.response and target.source == "live"
     )
-    answers: dict[Way, Answer] = {Way.PREVIEW: _preview(project, target)}
-    answers[Way.TRACE] = _trace(project, target, len(answers[Way.PREVIEW].rows))
-    answers[Way.HAUTE_RUN] = _haute_run(project, target, capsys)
-    answers[Way.PYTHON] = _python(project, target)
+    preview = _answered(lambda: _preview(project, target))
+    runs: dict[Way, Callable[[], Answer]] = {
+        Way.PREVIEW: lambda: preview,
+        Way.TRACE: lambda: _trace(project, target, len(preview.rows)),
+        Way.HAUTE_RUN: lambda: _haute_run(project, target, capsys),
+        Way.PYTHON: lambda: _python(project, target),
+    }
     if deployed:
-        answers[Way.DRY_RUN] = _dry_run(project, capsys)
-        answers[Way.SERVICE] = _service(project, monkeypatch)
-    return answers
+        runs[Way.DRY_RUN] = lambda: _dry_run(project, capsys)
+        runs[Way.SERVICE] = lambda: _service(project, monkeypatch)
+    return {way: _answered(run) for way, run in runs.items() if way not in without}
+
+
+def _answered(run: Callable[[], Answer]) -> Answer:
+    """*run*'s answer, or the exception it raised as an internal error."""
+    try:
+        return run()
+    except Exception as exc:
+        return Answer.raised(exc)
 
 
 def _assert_every_target(
@@ -570,7 +592,9 @@ def _example_project(tmp_path: Path, name: str) -> Project:
     from haute.assistant._assets import materialize_example_bundle
     from haute.deploy._pruner import find_output_node
 
-    root = _short_root(tmp_path, name)
+    root = tmp_path.parent / _short_name(tmp_path, name)
+
+    _fresh(root)
     if name == "reference":
         shutil.copytree(REPO / "examples" / "reference", root / "examples" / "reference")
         (root / "haute.toml").write_text(
@@ -586,6 +610,10 @@ def _example_project(tmp_path: Path, name: str) -> Project:
     graph = _graph(project)
     project.response = find_output_node(graph)
     project.targets = [Target(project.response)]
+    if name in _EXAMPLES_REFUSED:
+        # Nothing to prepare or send: the pipeline is refused before it reads a quote.
+        project.request = []
+        return project
     _prepare_inputs(project)
     project.request = _request_rows(project, graph)
     return project
@@ -619,10 +647,15 @@ def _request_rows(project: Project, graph: Any) -> list[dict[str, Any]] | None:
 _EXAMPLES_OWNED_ELSEWHERE: Mapping[str, Any] = {
     "model_lifecycle": pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason="MLR-04: a Model Scoring run that does not exist is refused in other words "
         "by each way",
     ),
 }
+
+#: The words every way refuses an example in: one whose model was never trained, refused
+#: naming the run its Model Scoring names.
+_EXAMPLES_REFUSED: Mapping[str, str] = {"model_lifecycle": "replace-with-training-run-id"}
 
 
 #: The examples a deployment refuses, by the meant difference that allows it.
@@ -658,7 +691,7 @@ def test_a_shipped_example_gives_one_answer_every_way(
             assert refused.refusal is not None and meant.words in refused.refusal, (
                 f"{way}: {refused.show()}"
             )
-    _assert_one_answer(answers)
+    _assert_one_answer(answers, refusal=_EXAMPLES_REFUSED.get(name))
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +866,8 @@ class Generated:
     columns: Columns = EVERY_COLUMN
     #: Another source the node is read under, beside ``live``.
     other_source: str | None = None
+    #: Other nodes read, each from its own leaf file, beside the node under test.
+    also: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -840,7 +875,8 @@ class Generated:
 
 
 def _generated_project(tmp_path: Path, case: Generated) -> Project:
-    root = _short_root(tmp_path, case.name)
+    root = tmp_path.parent / _short_name(tmp_path, case.name)
+    _fresh(root)
     _write_json(root, "data/quotes.json", _QUOTES)
     _write_json(root, "config/quote_input.json", _quote_input_config())
     written = case.write(root, case.columns)
@@ -861,10 +897,13 @@ def _generated_project(tmp_path: Path, case: Generated) -> Project:
     ]
     _write(root, "main.py", _pipeline_text(defs))
     _write(root, "leaf.py", _pipeline_text(defs, upto=case.node))
+    for node in case.also:
+        _write(root, f"leaf_{node}.py", _pipeline_text(defs, upto=node))
     _finish_project(root)
     refusal = STALE_WORDS if stale else None
     sources = ["live", *([case.other_source] if case.other_source else [])]
     targets = [Target(case.node, source, refusal, "leaf.py") for source in sources]
+    targets.extend(Target(node, leaf=f"leaf_{node}.py") for node in case.also)
     targets.append(Target("quote_response", refusal=refusal))
     project = Project(
         root=root,
@@ -1285,7 +1324,7 @@ def _generated_cases() -> list[Any]:
         for node_type, (node, write, chosen, other) in _COLUMNS_TAB_CASES.items()
         for columns in _columns_settings(chosen, other)
     ]
-    cases.append(Generated(NodeType.EXPLORE, "calc", _side_branches))
+    cases.append(Generated(NodeType.EXPLORE, "calc", _side_branches, also=("looked", "trained")))
     return [pytest.param(case, id=case.name) for case in cases]
 
 
@@ -1351,10 +1390,9 @@ def test_a_workbench_project_is_released_as_its_app(
 ) -> None:
     project = _workbench_project(tmp_path)
     (target,) = project.targets
-    answers = _answers(project, target, capsys, monkeypatch)
+    answers = _answers(project, target, capsys, monkeypatch, without=frozenset({Way.SERVICE}))
     meant = MEANT["workbench"]
     refused = answers.pop(Way.DRY_RUN)
-    answers.pop(Way.SERVICE)
     assert refused.refusal is not None and meant.words in refused.refusal, refused.show()
     # A trace explains the cell from the frame filling the table: its values, and others.
     traced = json.loads(answers.pop(Way.TRACE).rows[0])
@@ -1368,6 +1406,7 @@ def test_a_workbench_project_is_released_as_its_app(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="WB-76: the walker prices a workbench's sample under no quote identity, where "
     "pipeline.run() gives it the stand-in",
 )
@@ -1417,7 +1456,8 @@ def _workbench_project(tmp_path: Path) -> Project:
             ),
         ],
     )
-    root = _short_root(tmp_path, "workbench")
+    root = tmp_path.parent / _short_name(tmp_path, "workbench")
+    _fresh(root)
     saved = without_form_tables(graph)
     files = {
         **graph_to_code_multi(saved, pipeline_name="main"),
@@ -1610,7 +1650,9 @@ def _constant_cross_join(root: Path, columns: Columns) -> Written:
 
 
 @pytest.mark.xfail(
-    strict=True, reason="EXE-05: a cross join with a one-row Constant is refused without a cap"
+    strict=True,
+    raises=AssertionError,
+    reason="EXE-05: a cross join with a one-row Constant is refused without a cap",
 )
 def test_a_transform_crossing_a_constant_answers_every_way(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -1633,6 +1675,7 @@ def _csv_quotes(root: Path, columns: Columns) -> Written:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="IOL-03: a bounded run reads a Quote Input's CSV without the types its table declares",
 )
 def test_a_quote_input_on_a_csv_answers_every_way(
@@ -1652,6 +1695,7 @@ def test_a_quote_input_on_a_csv_answers_every_way(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="DPL-05: plain Python and the dry run read a Data Input only from a snapshot a "
     "preview or haute run built",
 )
@@ -1660,7 +1704,9 @@ def test_a_clean_checkout_runs_every_way(
 ) -> None:
     from haute.assistant._assets import materialize_example_bundle
 
-    root = _short_root(tmp_path, "clean")
+    root = tmp_path.parent / _short_name(tmp_path, "clean")
+
+    _fresh(root)
     root.rmdir()
     materialize_example_bundle("minimal_batch", root)
     _finish_project(root)
@@ -1707,7 +1753,42 @@ _NODE_TYPE_CASES: Mapping[NodeType, tuple[str, ...]] = node_type_table(
 )
 
 
-def test_every_node_type_has_a_case() -> None:
+def _node_types(pipeline: Path) -> set[NodeType]:
+    """The node types *pipeline*'s graph holds, its submodels' included."""
+    from haute.routes._helpers import parse_pipeline_to_graph
+
+    graph = parse_pipeline_to_graph(pipeline)
+    nodes = [
+        *graph.nodes,
+        *(
+            node
+            for definition in (graph.submodels or {}).values()
+            for node in definition.graph.nodes
+        ),
+    ]
+    return {NodeType(node.data.nodeType) for node in nodes}
+
+
+def _case_node_types(tmp_path: Path, name: str) -> set[NodeType]:
+    """The node types the case *name* runs, read from its pipeline as written."""
+    from haute.assistant._assets import materialize_example_bundle
+
+    (tmp_path / "e").mkdir(parents=True)
+
+    generated = {param.id: param.values[0] for param in _generated_cases()}
+    if name in generated:
+        return _node_types(_generated_project(tmp_path / "g", generated[name]).pipeline)
+    if name == "workbench":
+        return _node_types(_workbench_project(tmp_path / "w").pipeline)
+    if name == "reference":
+        return _node_types(REPO / "examples" / "reference" / "main.py")
+    root = tmp_path / "e" / name
+    materialize_example_bundle(name, root)
+    use_project(root)
+    return _node_types(root / "pipeline.py")
+
+
+def test_every_node_type_has_a_case(tmp_path: Path) -> None:
     names = {param.id for param in [*_examples(), *_generated_cases()]} | {"workbench"}
     unknown = {
         node_type.value: [case for case in cases if case not in names]
@@ -1715,6 +1796,22 @@ def test_every_node_type_has_a_case() -> None:
         if not cases or any(case not in names for case in cases)
     }
     assert not unknown, f"node types without a case, or naming none: {unknown}"
+    named = {case for cases in _NODE_TYPE_CASES.values() for case in cases}
+    # A Port has no decorator: no file holds one, and a case runs a submodel's ports by
+    # running its occurrence.
+    held = {
+        case: _case_node_types(tmp_path / f"c{index}", case)
+        for index, case in enumerate(sorted(named))
+    }
+    for case_types in held.values():
+        if NodeType.SUBMODEL in case_types:
+            case_types.add(NodeType.SUBMODEL_PORT)
+    absent = {
+        node_type.value: [case for case in cases if node_type not in held[case]]
+        for node_type, cases in _NODE_TYPE_CASES.items()
+        if any(node_type not in held[case] for case in cases)
+    }
+    assert not absent, f"cases naming a node type their pipeline does not hold: {absent}"
 
 
 def test_the_ways_are_the_specification_s() -> None:

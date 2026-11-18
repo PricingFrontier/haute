@@ -668,8 +668,10 @@ def _collect_standalone_output(result: Any) -> pl.DataFrame:
 class Pipeline(NodeRegistry):
     """A haute pricing pipeline - a DAG of decorated nodes.
 
-    Nodes are functions. Edges define data flow: the output DataFrame
-    of the source node is passed as the input to the target node.
+    Nodes are functions. Edges define data flow: the output frame of the
+    source node is passed, as a lazy frame, as the input to the target node,
+    as every way of running a pipeline passes it (specs/execution-engine,
+    "Ways of running a pipeline").
 
     Usage:
         pipeline = Pipeline("main")
@@ -762,6 +764,17 @@ class Pipeline(NodeRegistry):
                 if routes.get(edge.input_name or "", source) != source:
                     inactive.add(edge)
         return frozenset(inactive)
+
+    def _read_by(self, order: list[Node], response: Node) -> list[Node]:
+        """*order*'s nodes that *response* reads, itself included: what a run of it runs,
+        as the graph walker runs only a target's ancestors. A branch beside it (an
+        Explore, a Model Training, an Optimisation) is neither run nor seeded. A Workbench
+        Input is always read: the response gives every table its quote's identity."""
+        read = {response.name} | {n.name for n in order if _is_workbench_input(n.node_type)}
+        for node in reversed(order):
+            if node.name in read:
+                read.update(edge.source for edge in self._edges if edge.target == node.name)
+        return [node for node in order if node.name in read]
 
     def _unreached(self, order: list[Node], inactive: frozenset[RegisteredEdge]) -> frozenset[str]:
         """The nodes whose every outgoing edge is inactive or leads to such a node.
@@ -997,7 +1010,7 @@ class Pipeline(NodeRegistry):
         )
 
     def run(self, *, source: str | None = None) -> pl.DataFrame:
-        """Execute the full pipeline under *source*, following edges for data flow.
+        """Run the nodes the pipeline's response reads under *source*, following edges.
 
         *source* is required: it is what Source Switches route on, which value
         each global constant takes, and (anything but ``"live"``) selects
@@ -1018,7 +1031,9 @@ class Pipeline(NodeRegistry):
         _token = _scenario_ctx.set(source)
         try:
             with standalone_project_scope(self._pipeline_file()):
-                order = self._topo_order()
+                everything = self._topo_order()
+                response = self._resolve_output_node(everything)
+                order = self._read_by(everything, response)
                 constants = self._run_constants(source)
                 outputs: dict[str, Any] = {}
                 inactive = self._inactive_switch_edges(source)
@@ -1032,11 +1047,8 @@ class Pipeline(NodeRegistry):
                     else:
                         self._execute_transform(n, outputs, constants, inactive)
 
-                response = as_response(
-                    outputs[self._resolve_output_node(order).name],
-                    self._workbench_quote(order, outputs),
-                )
-                return _collect_standalone_output(response)
+                answer = as_response(outputs[response.name], self._workbench_quote(order, outputs))
+                return _collect_standalone_output(answer)
         finally:
             _scenario_ctx.reset(_token)
 
@@ -1090,7 +1102,9 @@ class Pipeline(NodeRegistry):
         _token = _scenario_ctx.set("live")
         try:
             with standalone_project_scope(self._pipeline_file()):
-                order = self._topo_order()
+                everything = self._topo_order()
+                response = self._resolve_output_node(everything)
+                order = self._read_by(everything, response)
                 constants = self._run_constants("live")
                 outputs: dict[str, Any] = {}
                 inactive = self._inactive_switch_edges("live")
@@ -1179,8 +1193,8 @@ class Pipeline(NodeRegistry):
 
                 # The quote is the frames given, by port, a bare frame under the one port
                 # connected: its identity and its keyed tables' rows the response holds to.
-                response = as_response(outputs[self._resolve_output_node(order).name], given)
-                return _collect_standalone_output(response)
+                answer = as_response(outputs[response.name], given)
+                return _collect_standalone_output(answer)
         finally:
             _scenario_ctx.reset(_token)
 
