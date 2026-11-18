@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequen
 from typing import Any, Literal
 
 from haute._env import int_env
+from haute._failure_answers import answer_failure
 from haute._logging import get_logger
 from haute._node_specs import STEPPED_NODE_TYPES, node_spec
 from haute._types import NodeType
@@ -163,7 +164,7 @@ def _prefixed_outcome(response_text: str, changes: Sequence[str]) -> AssistantTu
 
 
 DEFAULT_MAX_TOOL_CALLS = 40
-_INTERNAL_ERROR_DETAIL = "The assistant turn failed unexpectedly."
+
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[Mapping[str, Any]]]
 # Renders the turn context update after a round's applies saved these changes.
@@ -1439,9 +1440,10 @@ async def run_turn(
         yield AssistantFailedEvent(message=str(exc))
     except asyncio.CancelledError:
         raise
-    except Exception:
-        logger.error("assistant_turn_failed", exc_info=True)
-        yield AssistantFailedEvent(message=_INTERNAL_ERROR_DETAIL)
+    except Exception as exc:
+        # Said as every edge says it: a failure Haute names in its words, any other an
+        # incident whose record holds the traceback.
+        yield AssistantFailedEvent(message=answer_failure(exc, operation="assistant_turn").message)
     finally:
         # Abnormal-exit guard: the happy path already closed each round's
         # stream; a limit, error, cancel, or generator close lands here with

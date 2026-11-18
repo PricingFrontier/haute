@@ -2289,7 +2289,7 @@ the turn that follows.
 | A rename whose consumers' code reads the old input name | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
-| Any unexpected exception in the loop | `_loop` outermost handler | Logged server-side with `exc_info=True`; terminal `failed` event carrying the sanitized `_INTERNAL_ERROR_DETAIL` text only |
+| Any unexpected exception in the loop | `_loop` outermost handler | Answered by `answer_failure(exc, operation="assistant_turn")`: terminal `failed` event carrying the answer's message (a named failure in its own words, anything else the incident sentence, its traceback recorded under that incident) |
 | Broadcast subscriber failures | event bus | Isolated and logged by `EventBus.publish` (existing behaviour); never fails the committed save |
 
 The stream invariant: every response the client can still read ends with exactly one

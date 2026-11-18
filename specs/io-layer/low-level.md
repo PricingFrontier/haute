@@ -289,7 +289,11 @@ platforms, and on Windows with long paths on, nothing is renamed.
    `NativeMemoryLimitCleanupError` are `cap_unavailable`, and `PathTooLongError` is
    `path_too_long`. It then uses
    `worker_failure_is_memory` and the worker's terminal reason to choose
-   `memory_limited`, `cancelled`, `timed_out`, or `build_failed`. An in-process build's
+   `memory_limited`, `cancelled` or `timed_out`; any other failure ends as its failure answer
+   says (`haute._failure_answers`, classified in the child where it was raised): its end
+   state, code and fields (an ENOMEM `memory_limited`, a refusal `contract_error`), and one
+   nothing names `error` / `unexpected_failure` with an incident, the provider's text
+   recorded under it redacted. An in-process build's
    failure is `path_too_long` when `path_too_long_error` finds one behind it, after a
    cancellation or a `MemoryError`. Each reason code carries
    its own remediation text. After any spawned-build
@@ -334,7 +338,8 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    `capped_worker_config(isolated_execution_budget(context), timeout_seconds=` the pipeline
    time limit`, stop_reason=` the job's cancellation`)`, then `published_data_input`. A
    worker failure maps onto the job lifecycle (`memory_limited`, `cancelled`, `timed_out`,
-   or `error` with `cap_unavailable`/`build_failed`/`path_too_long`), after
+   `error` with `cap_unavailable`, `contract_error` with `path_too_long`, or the end state of
+   the failure's answer, an incident for one nothing names), after
    `reconcile_unpublished` has settled the build's parent-chosen generation and staging.
    `cap_unavailable` (`worker_failure_is_cap_unavailable`: under `required`, the
    spawn refused for a host without the cap, or the child could not install it) is decided

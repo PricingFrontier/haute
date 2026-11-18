@@ -52,6 +52,7 @@ EDGE_GLOBS = (
     "src/haute/routes/[a-z]*.py",
     "src/haute/server.py",
     "src/haute/_workbench_app*.py",
+    "src/haute/assistant/_loop.py",
     "src/haute/cli/*.py",
     "src/haute/routes/_background_jobs.py",
     "src/haute/routes/_node_data_service.py",
@@ -65,19 +66,26 @@ EDGE_GLOBS = (
 #: The module's functions that answer any failure, an incident for one nothing names. A
 #: function anywhere in Haute that calls one of them (or calls such a function) hands a
 #: failure to the module too: an edge's own adapter, which words what it knows and hands on
-#: everything else. A partial classifier (``classify_failure``, ``pipeline_failure``,
-#: ``node_failed_error``, ``memory_answer``) answers only what it names, so a catch that
-#: calls one and words the rest itself is the fallback this ratchet refuses.
+#: everything else. A partial classifier answers only what it names, so a catch that calls
+#: one and words the rest itself is the fallback this ratchet refuses.
 MODULE_FUNCTIONS = frozenset(
     {
         "answer_failure",
         "answer_pipeline_failure",
         "failure_refusal",
         "unexpected_failure",
-        "git_refusal_answer",
-        "database_refusal_answer",
         "record_incident",
     }
+)
+
+#: The module's functions that answer only the failures they name, ``None`` for the rest.
+PARTIAL_CLASSIFIERS = (
+    "classify_failure",
+    "pipeline_failure",
+    "node_failed_error",
+    "file_answer",
+    "git_refusal_answer",
+    "database_refusal_answer",
 )
 
 
@@ -172,6 +180,16 @@ ALLOWED_BROAD_CATCHES: dict[tuple[str, str], tuple[int, str]] = {
     ("src/haute/routes/mlflow.py", "_run_probe_bounded._worker"): (
         1,
         "the probe thread hands what it raised to the caller, which answers it",
+    ),
+    # The assistant's mechanics, never the turn's answer to the analyst.
+    ("src/haute/assistant/_loop.py", "_aclose_quietly"): (
+        1,
+        "a provider stream's close failing is logged; it must not mask the turn's own outcome",
+    ),
+    ("src/haute/assistant/_loop.py", "_RunningTool.settle"): (
+        1,
+        "an interrupted tool's failure is logged and the model is told only that it was "
+        "interrupted; the turn's answer is the loop's",
     ),
     # Background tasks nobody waits on.
     ("src/haute/server.py", "_watcher_forever"): (
@@ -357,13 +375,17 @@ def test_the_scan_finds_a_new_error_response(
         ("    except Exception as exc:\n        raise failure_refusal(exc) from exc\n", 0),
         # A partial classifier answers only what it names: wording the rest locally is the
         # fallback the ratchet refuses.
-        (
-            "    except Exception as exc:\n"
-            "        answer = classify_failure(exc)\n"
-            "        if answer is not None:\n"
-            "            return answer.message\n"
-            "        return 'Build failed.'\n",
-            1,
+        *(
+            pytest.param(
+                "    except Exception as exc:\n"
+                f"        answer = {partial}(exc)\n"
+                "        if answer is not None:\n"
+                "            return answer.message\n"
+                "        return 'Build failed.'\n",
+                1,
+                id=f"{partial}-then-fallback",
+            )
+            for partial in PARTIAL_CLASSIFIERS
         ),
         ("    except ValueError:\n        return None\n", 0),
     ],

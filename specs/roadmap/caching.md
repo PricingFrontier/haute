@@ -28,8 +28,9 @@ about four seconds; the workbench app's release build uses it. The
 publication of an input snapshot does not: it renames its staging folder
 once. A second process that opens one of the snapshot's new files, with full
 sharing so that it refuses nothing, and holds it for one second makes the
-build end "Input snapshot build failed." with nothing more. The server log
-holds the `PermissionError` on the rename. The earlier snapshot stays
+build fail on the `PermissionError` the rename meets (on the day it ended
+"Input snapshot build failed." with nothing more; the failure answers now
+name a file held open, when the error names it). The earlier snapshot stays
 current, no staging folder is left, and the same build succeeds once the
 file is let go. The plan's sweep of pairs of operations met the same failure
 with no stand-in, once in 18 rebuilds started straight after a cancelled

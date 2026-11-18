@@ -63,7 +63,7 @@ class TestSchemaValueErrorSanitisation:
     ``raise HTTPException(status_code=400, detail=str(e))``.
 
     The fix must either:
-      - hide the raw text behind a sanitized message (``_INTERNAL_ERROR_DETAIL``
+      - hide the raw text behind an incident (``haute._failure_answers``
         or similar), while logging the full error server-side, OR
       - restrict the raw message to a small, allow-listed domain (e.g.
         ``Unsupported file type: .xyz``) that is guaranteed not to embed

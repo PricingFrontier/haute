@@ -34,7 +34,8 @@ as were the additions that sweep made to `IOL-01` and `IOL-02`.
 be built, the run is told "Preparing this API Input's tables failed.
 (node_id=quote_input, identity_digest=..., build_class=bounded,
 reason_code=build_failed)", and the route behind the input's own panel
-answers "Input snapshot build failed." Both are fixed texts by design: the
+answers with an incident ("Haute hit a failure it does not recognise …"), the
+builder's message recorded under it. Both hide the cause by design: the
 error carries "digests and codes only: never a configured locator or a
 secret". The builder knew the cause each time. For text in an integer column
 the worker raised Haute's own message: "column 'fixture_value' has values
@@ -62,8 +63,8 @@ no published snapshot exists." and no file's name (run on 13 November
 
 **Plan:** Let a failure that is about the file's content through: Haute's
 schema errors as written, and a JSON syntax error as its line and column
-with the file's project-relative name. Keep the fixed text for everything
-else, where a provider's message may hold a connection string. Let Haute's
+with the file's project-relative name. Leave everything else an incident,
+where a provider's message may hold a connection string. Let Haute's
 own configuration errors through as well, such as a format whose reader
 package is not installed. Give
 `reason_code` a value for a content failure, so the remedy no longer speaks

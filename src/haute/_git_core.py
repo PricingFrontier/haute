@@ -459,10 +459,11 @@ def _run_git(
     """Run a git command and return stdout.  Raises ``GitError`` on failure.
 
     The raw subprocess stderr is wrapped in a plain :class:`GitError`
-    (the sanitize-by-default class) so the HTTP handler collapses the
-    detail to ``_INTERNAL_ERROR_DETAIL`` — raw stderr commonly contains
-    absolute paths, remote URLs, SSL errors, and credentials.
-    Full detail is retained in the ``git_command_failed`` structured log.
+    (the sanitize-by-default class), which an edge answers as git's refusal
+    under an incident (``git_refusal_answer``) and never says — raw stderr
+    commonly contains absolute paths, remote URLs, SSL errors, and
+    credentials. Full detail is retained in the ``git_command_failed``
+    structured log.
 
     *env* overlays the inherited environment (used to preserve author/committer
     identity + dates when replaying commits via ``commit-tree``).

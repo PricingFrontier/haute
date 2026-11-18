@@ -47,7 +47,7 @@ from haute._execution_admission import (
     create_isolated_execution_context,
 )
 from haute._execution_context import ExecutionContext, ExecutionMemoryLimitExceededError
-from haute._failure_answers import answer_failure
+from haute._failure_answers import AnsweredFailureError, FailureAnswer, answer_failure
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
 from haute._seed_plans import SeedPlanHandoff
@@ -295,6 +295,9 @@ def classify_optimiser_failure(
     if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
         detail = memory_limit_refusal(exc, operation_noun=operation_noun).detail
         return _memory_failure(detail, operation_noun=operation_noun)
+    if isinstance(exc, AnsweredFailureError):
+        # Already answered: its end state, words and job fields, the incident among them.
+        return _answered_failure(exc.answer)
     if isinstance(exc, RequestRefusedError):
         if exc.status_code == 507 and isinstance(exc.detail, Mapping):
             if exc.detail.get("error_code") == "memory_limit":
@@ -321,7 +324,11 @@ def classify_optimiser_failure(
         )
     # A node's own failure naming its node, a file the operating system refused, or an
     # incident whose record holds the exception (haute._failure_answers).
-    answer = answer_failure(exc, operation=log_event)
+    return _answered_failure(answer_failure(exc, operation=log_event))
+
+
+def _answered_failure(answer: FailureAnswer) -> OptimiserWorkerFailure:
+    """*answer* as the child's terminal record: its end state, message and job fields."""
     return OptimiserWorkerFailure(
         terminal_reason=answer.terminal_reason,
         message=answer.message,

@@ -35,7 +35,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._failure_answers import answer_failure, classify_failure, failure_refusal
+from haute._failure_answers import FailureAnswer, answer_failure, classify_failure, failure_refusal
 from haute._file_ops import PATH_TOO_LONG_REMEDIATION
 from haute._input_preparation import (
     capped_worker_config,
@@ -548,30 +548,42 @@ def _worker_build_failure(
             error_code="build_timed_out" if timed_out else "build_cancelled",
             phase="cancelled",
         )
-    if worker_failure_is_path_too_long(exc):
-        return _WorkerBuildError(
-            terminal="error",
-            message=PATH_TOO_LONG_REMEDIATION,
-            error_code="path_too_long",
-            phase="failed",
-        )
-    answer = classify_failure(exc)
+    answer = _path_too_long_answer(exc) or classify_failure(exc)
     if answer is None:
         return None
     return _WorkerBuildError(
-        terminal="error", message=answer.message, error_code=answer.code, phase="failed"
+        terminal=answer.terminal_reason,
+        message=answer.message,
+        error_code=answer.code,
+        phase="failed",
+        fields=_build_answer_fields(answer),
     )
 
 
-def _build_failure(
-    exc: BaseException, *, config: dict[str, Any], job_id: str
-) -> tuple[str, str, dict[str, Any]]:
-    """The message, error code and job fields of a build that failed, none naming a path
-    outside the project: a failure Haute names in the words every edge gives it (a file the
-    operating system refused, a node's own code, a refusal), else an incident, its record
-    the provider's own message redacted, since that can hold a connection string."""
-    if worker_failure_is_path_too_long(exc):
-        return PATH_TOO_LONG_REMEDIATION, "path_too_long", {}
+def _path_too_long_answer(exc: BaseException) -> FailureAnswer | None:
+    """A worker's write Windows refused for its length, which crosses as a missing file."""
+    if not worker_failure_is_path_too_long(exc):
+        return None
+    message = PATH_TOO_LONG_REMEDIATION
+    return FailureAnswer(422, "path_too_long", message, "contract_error", message)
+
+
+def _build_answer_fields(answer: FailureAnswer) -> dict[str, Any]:
+    """An answer's job fields as a build records them beside its own code and message."""
+    return {
+        key: value
+        for key, value in answer.job_fields().items()
+        if key not in {"error", "error_code"}
+    }
+
+
+def _build_failure(exc: BaseException, *, config: dict[str, Any], job_id: str) -> _WorkerBuildError:
+    """A build's failure as its job ends, naming no path outside the project: a failure
+    Haute names in the words every edge gives it (memory, a file the operating system
+    refused, a node's own code, a refusal), with its end state and fields, else an
+    incident, its record the provider's own message redacted, since that can hold a
+    connection string."""
+    named = _path_too_long_answer(exc)
 
     def record(incident: str, failed: BaseException, **known: Any) -> None:
         if isinstance(failed, WorkerRemoteError):
@@ -587,9 +599,14 @@ def _build_failure(
             **known,
         )
 
-    answer = answer_failure(exc, operation="input_cache_build", record=record)
-    fields = {} if answer.incident is None else {"incident": answer.incident}
-    return answer.message, answer.code, fields
+    answer = named or answer_failure(exc, operation="input_cache_build", record=record)
+    return _WorkerBuildError(
+        terminal=answer.terminal_reason,
+        message=answer.message,
+        error_code=answer.code,
+        phase="failed",
+        fields=_build_answer_fields(answer),
+    )
 
 
 def _job_worker_config(budget: IsolatedExecutionBudget, token: Any) -> IsolatedWorkerConfig:
@@ -769,6 +786,16 @@ def _run_build(
             elapsed_seconds=time.monotonic() - started_at,
         )
 
+    def fail_with(failure: _WorkerBuildError) -> None:
+        """Record *failure*, its end state, words and fields, as this build's end."""
+        fail_build(
+            failure.terminal,
+            failure.message,
+            error_code=failure.error_code,
+            phase=failure.phase,
+            **failure.fields,
+        )
+
     try:
         store.update_job(
             job_id,
@@ -839,13 +866,7 @@ def _run_build(
             reason=failure.terminal,
             error_code=failure.error_code,
         )
-        fail_build(
-            failure.terminal,
-            failure.message,
-            error_code=failure.error_code,
-            phase=failure.phase,
-            **failure.fields,
-        )
+        fail_with(failure)
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         logger.warning(
             "input_cache_memory_limited",
@@ -882,8 +903,7 @@ def _run_build(
                 phase="cancelled",
             )
         else:
-            message, error_code, fields = _build_failure(exc, config=config, job_id=job_id)
-            fail_build("error", message, error_code=error_code, phase="failed", **fields)
+            fail_with(_build_failure(exc, config=config, job_id=job_id))
     except PipelineSettingsError as exc:
         # Admission reads the settings file again; its message names what to fix.
         logger.warning("input_cache_pipeline_settings_invalid", job_id=job_id, error=str(exc))
@@ -896,8 +916,7 @@ def _run_build(
         )
     except Exception as exc:
         # A failure nothing names is an incident, its record the provider's text redacted.
-        message, error_code, fields = _build_failure(exc, config=config, job_id=job_id)
-        fail_build("error", message, error_code=error_code, phase="failed", **fields)
+        fail_with(_build_failure(exc, config=config, job_id=job_id))
     finally:
         timeout_timer.cancel()
         if execution_context is not None:

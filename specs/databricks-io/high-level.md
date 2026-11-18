@@ -74,8 +74,8 @@ fail-closed because a partial cache is worse than a failed refresh.
 Missing optional packages or credentials fail clearly. Invalid table/query configuration
 fails before provider access. Cancellation/deadline checkpoints abort before execute or
 between batches. Connector failures retain their original exception as the cause and are
-logged with exception type and a credential-scrubbed message; public build state remains a
-stable `build_failed` response.
+logged with exception type and a credential-scrubbed message under an incident; the build's
+public state names only the incident (`unexpected_failure`).
 
 A browsing failure the SDK raises is answered with its cause: refused credentials 401,
 naming the `.env` variables of the form in use; a missing grant 403, naming what was

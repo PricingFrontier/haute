@@ -44,7 +44,7 @@ from haute.routes._optimiser_worker import (
     classify_optimiser_failure,
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest
-from tests._failure_assertions import assert_unnamed, without_message
+from tests._failure_assertions import assert_unnamed, incident_in, without_message
 from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 from tests.optimiser_fixtures import optimiser_request
@@ -773,6 +773,32 @@ class TestWorkerOutcomes:
         assert worker.calls[0]["config"].timeout_seconds is None
         assert status["status"] == "error"
         assert_unnamed(status["message"])
+
+    def test_a_setup_worker_crash_keeps_its_incident_on_the_job(
+        self, client, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worker that died with no memory evidence is an incident: the job records the
+        answer's code and the incident its message names, not only its HTTP detail."""
+        from haute._worker_failures import WorkerCrashedError
+
+        _process_mode(monkeypatch)
+        worker = _InlineWorker(raises=WorkerCrashedError(3))
+        monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
+
+        started = client.post(
+            "/api/optimiser/solve",
+            json={
+                "graph": _online_graph(_scored_parquet(project)),
+                "target": {"occurrence": None, "node_id": "opt"},
+            },
+        )
+        status = _poll(client, started.json()["job_id"])
+
+        assert status["status"] == "error"
+        job = get_job_store("optimiser").require_job(started.json()["job_id"])
+        assert job["error_code"] == "unexpected_failure"
+        assert job["incident"] == incident_in(status["message"])
+        assert job["error_detail"] == status["message"]
 
     @pytest.mark.parametrize(
         "outcome",

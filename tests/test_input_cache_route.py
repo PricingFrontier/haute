@@ -505,10 +505,31 @@ def test_a_write_windows_refused_for_its_length_says_so_without_the_path(
     assert started.status_code == 202
 
     terminal = _wait_for_terminal(client, started.json()["job_id"])
-    assert terminal["status"] == "error"
+    assert terminal["status"] == "contract_error"  # the path is the analyst's to shorten
     assert terminal["error_code"] == "path_too_long"
     assert "long paths" in terminal["message"]
     assert "private" not in terminal["message"]
+
+
+def test_a_build_the_operating_system_refused_memory_for_ends_memory_limited(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ENOMEM, raised in the worker and classified there, ends the build as its answer says:
+    memory_limited with the memory code, never a plain error."""
+    import errno
+
+    def refused(*args: Any, **kwargs: Any) -> Any:
+        raise OSError(errno.ENOMEM, "Cannot allocate memory")
+
+    _child_build(monkeypatch, refused)
+    started = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _file_config()},
+    )
+
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+    assert (terminal["status"], terminal["error_code"]) == ("memory_limited", "memory_limit")
 
 
 class _WorkerHarness:
@@ -1626,7 +1647,7 @@ def test_api_input_worker_refused_a_path_for_its_length_says_so(
     started = client.post("/api/input-cache/build", json=_api_input_body())
     terminal = _wait_for_terminal(client, started.json()["job_id"])
 
-    assert terminal["status"] == "error"
+    assert terminal["status"] == "contract_error"  # the path is the analyst's to shorten
     assert terminal["error_code"] == "path_too_long"
     assert "long paths" in terminal["message"]
     assert "private" not in terminal["message"]

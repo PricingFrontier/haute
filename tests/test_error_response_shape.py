@@ -365,7 +365,7 @@ class TestInternalErrorDetailNotRawException:
 
     def test_unhandled_middleware_500_body_is_sanitized(self, isolated_client: TestClient) -> None:
         """Even an exception that escapes a handler entirely (handled by
-        ``_RequestIdMiddleware``) must produce ``{"detail": "<short str>"}``.
+        ``RequestFailureMiddleware``) must produce ``{"detail": "<short str>"}``.
         """
         from unittest.mock import patch
 
