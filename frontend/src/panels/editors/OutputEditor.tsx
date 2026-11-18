@@ -2,12 +2,12 @@ import {
   useMemo,
   useState,
   useCallback,
-  useLayoutEffect,
   useRef,
 } from "react"
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
-import { EditorLabel, ValidatedTextField } from "../../components/form"
+import { DraftTextField, EditorLabel, useCommittedDraft, ValidatedTextField } from "../../components/form"
+import { useRowKeys } from "./shared/useRowKeys"
 import { useDerivedRequestKey, useGraph, useRequestScope } from "../useGraph"
 import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
 import useNodeDataStore from "../../stores/useNodeDataStore"
@@ -204,30 +204,83 @@ function frameSchemaColumns(
 // persisted (writeV2 emits only the four entry fields). Auto-mapped rows start
 // Inferred (pilled); editing a row's column or path flips it to Confirmed.
 //
-// Status is keyed by a row's ABSOLUTE index into `output_mapping` — the SAME
-// coordinate the rows render and reconcile by (`key={r.index}`). Keying by the
-// per-frame LOCAL index (the old bug) desynced the pill from its row whenever
-// an earlier row shifted the locals. Removing a row compacts the array, so
-// `removeRow` REMAPS this map (drop the removed key, slide higher keys down)
-// so a surviving Inferred pill follows its row rather than smearing onto a
-// neighbour. Appends land at the end (`output_mapping.length`) and need no shift.
+// Status is keyed by a row's identity (`useRowKeys` over `output_mapping`), never
+// its index: the editor's own writes say what they do to the rows (an edit, an
+// addition, a removal, a frame cleared or pasted over), so a pill follows its row;
+// a mapping replaced from outside (an Undo, a Redo, a sync frame) gives every row a
+// new identity, so no pill passes to another row.
 
 type RowStatusMap = Record<number, OutputRowStatus>
 
+// ─── A frame's path prefix, edited in place ───────────────────────
+
 /**
- * Re-key a status map after the entry at `removedIndex` is deleted from
- * `output_mapping` (which compacts every higher index down by one). Drops the
- * removed entry's status and slides each higher key down so status keeps
- * tracking the row it belongs to.
+ * The typed prefix is the shared draft, so a header path changed from outside while the
+ * box is open is what it shows. Enter or the tick applies it across the frame's rows (an
+ * empty or unchanged prefix applies nothing); Escape, the cross or leaving the box cancels.
  */
-function remapStatusAfterRemoval(prev: RowStatusMap, removedIndex: number): RowStatusMap {
-  const next: RowStatusMap = {}
-  for (const [k, status] of Object.entries(prev)) {
-    const idx = Number(k)
-    if (idx === removedIndex) continue
-    next[idx > removedIndex ? idx - 1 : idx] = status
+function FramePathEdit({
+  headerPath,
+  testIdPrefix,
+  onApply,
+  onClose,
+}: {
+  headerPath: string
+  testIdPrefix: string
+  onApply: (prefix: string) => void
+  onClose: () => void
+}) {
+  const draft = useCommittedDraft(headerPath, (typed) => {
+    const prefix = typed.trim()
+    if (prefix !== "" && prefix !== headerPath) onApply(prefix)
+  })
+  const apply = () => {
+    draft.commit()
+    onClose()
   }
-  return next
+  return (
+    <div className="flex items-center gap-1 max-w-[40%] shrink-0">
+      <DraftTextField
+        draft={draft}
+        commitOnBlur={false}
+        autoFocus
+        // The cursor at the END (no select-all), so typing extends the existing prefix.
+        onFocus={(e) => e.currentTarget.setSelectionRange(e.currentTarget.value.length, e.currentTarget.value.length)}
+        data-testid={`${testIdPrefix}-path-edit-input`}
+        type="text"
+        onBlur={onClose}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault()
+            apply()
+          } else if (e.key === "Escape") onClose()
+        }}
+        placeholder={headerPath}
+        className="flex-1 min-w-0 text-left text-[10px] px-1 py-0.5 rounded font-mono"
+        style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+      />
+      <button
+        data-testid={`${testIdPrefix}-path-edit-apply`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={apply}
+        title="Apply the new path prefix across this frame's rows"
+        className="shrink-0 p-0.5 rounded"
+        style={{ color: "var(--text-muted)" }}
+      >
+        <Check size={11} />
+      </button>
+      <button
+        data-testid={`${testIdPrefix}-path-edit-cancel`}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onClose}
+        title="Cancel"
+        className="shrink-0 p-0.5 rounded"
+        style={{ color: "var(--text-muted)" }}
+      >
+        <X size={11} />
+      </button>
+    </div>
+  )
 }
 
 // ─── OutputEditor ─────────────────────────────────────────────────
@@ -314,6 +367,7 @@ export default function OutputEditor({
   // Editor-only row status (Inferred pill). Never persisted. Keyed by ABSOLUTE
   // index into v2.output_mapping.
   const [rowStatus, setRowStatus] = useState<RowStatusMap>({})
+  const mappingKeys = useRowKeys(v2.output_mapping)
   // Which frame blocks are expanded — keyed by EDGE id (stable per incoming
   // edge), not the resolved port, so two frames resolving to the same port
   // never share expand/collapse state.
@@ -485,74 +539,57 @@ export default function OutputEditor({
     (absIndex: number, patch: Partial<OutputMappingEntryV2>) => {
       const next: OutputConfigV2 = {
         ...v2,
-        output_mapping: v2.output_mapping.map((e, i) => (i === absIndex ? { ...e, ...patch } : e)),
+        output_mapping: mappingKeys.edit(v2.output_mapping.map((e, i) => (i === absIndex ? { ...e, ...patch } : e))),
       }
       writeBack(next)
     },
-    [v2, writeBack],
+    [v2, writeBack, mappingKeys],
   )
 
   const markConfirmed = useCallback((absIndex: number) => {
-    setRowStatus((prev) => ({ ...prev, [absIndex]: "Confirmed" }))
-  }, [])
+    const key = mappingKeys.keys[absIndex]
+    setRowStatus((prev) => ({ ...prev, [key]: "Confirmed" }))
+  }, [mappingKeys.keys])
 
   const addRow = useCallback(
     (port: string) => {
-      // The new entry is appended, so its absolute index is the current length.
-      const newAbsIndex = v2.output_mapping.length
-      const next: OutputConfigV2 = {
-        ...v2,
-        output_mapping: [
-          ...v2.output_mapping,
-          { source_port: port, source_column: "", output_path: "", enabled: true },
-        ],
-      }
+      const mapping = [
+        ...v2.output_mapping,
+        { source_port: port, source_column: "", output_path: "", enabled: true },
+      ]
       // A blank Add-row is Confirmed (the user is authoring it deliberately).
-      setRowStatus((prev) => ({ ...prev, [newAbsIndex]: "Confirmed" }))
-      writeBack(next)
+      const added = mappingKeys.expect(mapping, { kind: "add" }).at(-1) as number
+      setRowStatus((prev) => ({ ...prev, [added]: "Confirmed" }))
+      writeBack({ ...v2, output_mapping: mapping })
     },
-    [v2, writeBack],
+    [v2, writeBack, mappingKeys],
   )
 
   const removeRow = useCallback(
     (absIndex: number) => {
       const next: OutputConfigV2 = {
         ...v2,
-        output_mapping: v2.output_mapping.filter((_, i) => i !== absIndex),
+        output_mapping: mappingKeys.remove(absIndex, v2.output_mapping.filter((_, i) => i !== absIndex)),
       }
-      // The array compacts on removal, so re-key row status to match.
-      setRowStatus((prev) => remapStatusAfterRemoval(prev, absIndex))
       writeBack(next)
     },
-    [v2, writeBack],
+    [v2, writeBack, mappingKeys],
   )
 
   /**
    * CLEAR: drop EVERY row of the frame `port` in one writeBack (rows of other
-   * frames are untouched). The array compacts to just the survivors, so re-key
-   * row status the same way `pasteRowsForPort` does — carry each surviving
-   * (other-frame) row's status across to its new front index; the cleared
-   * frame's status keys are dropped entirely.
+   * frames are untouched); the survivors keep their identities, and so their pills.
    */
   const clearFrame = useCallback(
     (port: string) => {
       const survivors = v2.output_mapping
         .map((e, i) => ({ e, i }))
         .filter((x) => x.e.source_port !== port)
-      const next: OutputConfigV2 = {
-        ...v2,
-        output_mapping: survivors.map((x) => x.e),
-      }
-      setRowStatus((prev) => {
-        const m: RowStatusMap = {}
-        survivors.forEach((x, newIdx) => {
-          if (prev[x.i] !== undefined) m[newIdx] = prev[x.i]
-        })
-        return m
-      })
-      writeBack(next)
+      const mapping = survivors.map((x) => x.e)
+      mappingKeys.expect(mapping, { kind: "rows", from: survivors.map((x) => x.i) })
+      writeBack({ ...v2, output_mapping: mapping })
     },
-    [v2, writeBack],
+    [v2, writeBack, mappingKeys],
   )
 
   /**
@@ -566,15 +603,15 @@ export default function OutputEditor({
       if (oldPrefix === newPrefix) return
       const next: OutputConfigV2 = {
         ...v2,
-        output_mapping: v2.output_mapping.map((e) =>
+        output_mapping: mappingKeys.edit(v2.output_mapping.map((e) =>
           e.source_port === port
             ? { ...e, output_path: substitutePrefix(e.output_path, oldPrefix, newPrefix) }
             : e,
-        ),
+        )),
       }
       writeBack(next)
     },
-    [v2, writeBack],
+    [v2, writeBack, mappingKeys],
   )
 
   /**
@@ -603,24 +640,13 @@ export default function OutputEditor({
       const others = v2.output_mapping
         .map((e, i) => ({ e, i }))
         .filter((x) => x.e.source_port !== port)
-      const next: OutputConfigV2 = {
-        ...v2,
-        output_mapping: [...others.map((x) => x.e), ...pasted],
-      }
-      // Re-key status: `others` keep their relative order at the new front
-      // indices (0..others.length-1); carry each surviving row's status across
-      // from its old absolute index so sibling frames keep their Inferred pills.
-      // Pasted rows default to Confirmed by omission.
-      setRowStatus((prev) => {
-        const m: RowStatusMap = {}
-        others.forEach((x, newIdx) => {
-          if (prev[x.i] !== undefined) m[newIdx] = prev[x.i]
-        })
-        return m
-      })
-      writeBack(next)
+      const mapping = [...others.map((x) => x.e), ...pasted]
+      // `others` keep their identities, so sibling frames keep their Inferred pills;
+      // pasted rows are new, and Confirmed by omission.
+      mappingKeys.expect(mapping, { kind: "rows", from: [...others.map((x) => x.i), ...pasted.map(() => null)] })
+      writeBack({ ...v2, output_mapping: mapping })
     },
-    [v2, writeBack],
+    [v2, writeBack, mappingKeys],
   )
 
   const autoMap = useCallback(
@@ -632,26 +658,19 @@ export default function OutputEditor({
       )
       const fresh = columns.filter((c) => !existing.has(c))
       if (fresh.length === 0) return
-      // Additions are appended, so their absolute indices start at the current
-      // length and run sequentially.
-      const baseAbsIndex = v2.output_mapping.length
       const additions: OutputMappingEntryV2[] = fresh.map((column) => ({
         source_port: port,
         source_column: column,
         output_path: `$[:].${column}`,
         enabled: true,
       }))
-      // Auto-mapped rows are Inferred (pilled).
-      setRowStatus((prev) => {
-        const draft = { ...prev }
-        fresh.forEach((_, i) => {
-          draft[baseAbsIndex + i] = "Inferred"
-        })
-        return draft
-      })
-      writeBack({ ...v2, output_mapping: [...v2.output_mapping, ...additions] })
+      const mapping = [...v2.output_mapping, ...additions]
+      // Auto-mapped rows are Inferred (pilled), by the identities the additions take.
+      const added = mappingKeys.expect(mapping, { kind: "add" }).slice(v2.output_mapping.length)
+      setRowStatus((prev) => ({ ...prev, ...Object.fromEntries(added.map((key) => [key, "Inferred" as const])) }))
+      writeBack({ ...v2, output_mapping: mapping })
     },
-    [v2, writeBack],
+    [v2, writeBack, mappingKeys],
   )
 
   return (
@@ -833,7 +852,8 @@ export default function OutputEditor({
                   pathConflicts={pathConflicts}
                   isOpen={isOpen}
                   frameEnabled={anyEnabled}
-                  rowStatus={rowStatus}
+                  statusOf={(absIndex) => rowStatus[mappingKeys.keys[absIndex]] ?? "Confirmed"}
+                  rowKeyOf={(absIndex) => mappingKeys.keys[absIndex]}
                   frameSchema={writeV2({ ...v2, output_mapping: rows.map((r) => r.entry) })}
                   loadFrameData={() => previewFrameData(edge, columns)}
                   onToggleExpand={() => toggleExpanded(edge.id)}
@@ -841,9 +861,9 @@ export default function OutputEditor({
                     // Per-frame enable toggles every row in the frame at once.
                     const next: OutputConfigV2 = {
                       ...v2,
-                      output_mapping: v2.output_mapping.map((e) =>
+                      output_mapping: mappingKeys.edit(v2.output_mapping.map((e) =>
                         e.source_port === port ? { ...e, enabled: on } : e,
-                      ),
+                      )),
                     }
                     writeBack(next)
                   }}
@@ -880,7 +900,8 @@ function FrameBlock({
   pathConflicts,
   isOpen,
   frameEnabled,
-  rowStatus,
+  statusOf,
+  rowKeyOf,
   frameSchema,
   loadFrameData,
   onToggleExpand,
@@ -905,7 +926,10 @@ function FrameBlock({
   pathConflicts: ReadonlySet<number>
   isOpen: boolean
   frameEnabled: boolean
-  rowStatus: RowStatusMap
+  /** A row's Inferred or Confirmed status, by its absolute index. */
+  statusOf: (absIndex: number) => OutputRowStatus
+  /** A row's identity, by its absolute index: its key, so its draft stays with it. */
+  rowKeyOf: (absIndex: number) => number
   /** This frame's rows serialised as a standalone v2 schema — for Share/Save. */
   frameSchema: Record<string, unknown>
   /** Fetch this frame's INPUT rows (previews the upstream source node). */
@@ -933,36 +957,9 @@ function FrameBlock({
     [rows],
   )
   // Inline path edit: a single boolean drives whether the header slot shows the
-  // static path + pencil, or an in-place input + apply/cancel buttons. The draft
-  // is initialised to `headerPath` each time edit mode is entered.
+  // static path + pencil, or an in-place input + apply/cancel buttons.
   const [editingPath, setEditingPath] = useState(false)
-  const [newPath, setNewPath] = useState(headerPath)
-  const pathInputRef = useRef<HTMLInputElement>(null)
-
-  // On entering edit mode, focus the input and drop the cursor at the END (no
-  // select-all) so typing extends the existing prefix rather than replacing it.
-  useLayoutEffect(() => {
-    if (!editingPath) return
-    const el = pathInputRef.current
-    if (!el) return
-    el.focus()
-    el.setSelectionRange(el.value.length, el.value.length)
-  }, [editingPath])
-
-  // Enter inline edit mode, seeding the draft with the current header path.
-  const startEditingPath = useCallback(() => {
-    setNewPath(headerPath)
-    setEditingPath(true)
-  }, [headerPath])
-
-  // Apply the substitution (no-op + close when empty/unchanged), then exit.
-  const applyEditingPath = useCallback(() => {
-    const next = newPath.trim()
-    if (next !== "" && next !== headerPath) {
-      onApplyPathSubstitution(headerPath, next)
-    }
-    setEditingPath(false)
-  }, [newPath, headerPath, onApplyPathSubstitution])
+  const startEditingPath = () => setEditingPath(true)
 
   // The per-frame column table as a grid for Copy/Save (mirrors the Paste-in
   // shape: column<TAB>output_path<TAB>enabled).
@@ -1074,43 +1071,12 @@ function FrameBlock({
             + a pencil. Editing: a left-aligned input + tick/cross IN PLACE of
             the pencil; Enter applies, Escape/blur cancels. */}
         {editingPath ? (
-          <div className="flex items-center gap-1 max-w-[40%] shrink-0">
-            <input
-              ref={pathInputRef}
-              data-testid={`${testIdPrefix}-path-edit-input`}
-              type="text"
-              value={newPath}
-              onChange={(e) => setNewPath(e.target.value)}
-              onBlur={() => setEditingPath(false)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") applyEditingPath()
-                else if (e.key === "Escape") setEditingPath(false)
-              }}
-              placeholder={headerPath}
-              className="flex-1 min-w-0 text-left text-[10px] px-1 py-0.5 rounded font-mono"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-            />
-            <button
-              data-testid={`${testIdPrefix}-path-edit-apply`}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={applyEditingPath}
-              title="Apply the new path prefix across this frame's rows"
-              className="shrink-0 p-0.5 rounded"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <Check size={11} />
-            </button>
-            <button
-              data-testid={`${testIdPrefix}-path-edit-cancel`}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setEditingPath(false)}
-              title="Cancel"
-              className="shrink-0 p-0.5 rounded"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <X size={11} />
-            </button>
-          </div>
+          <FramePathEdit
+            headerPath={headerPath}
+            testIdPrefix={testIdPrefix}
+            onApply={(prefix) => onApplyPathSubstitution(headerPath, prefix)}
+            onClose={() => setEditingPath(false)}
+          />
         ) : (
           <>
             <span
@@ -1237,11 +1203,11 @@ function FrameBlock({
 
           {rows.map((r, rowIndex) => (
             <MappingRow
-              key={r.index}
+              key={rowKeyOf(r.index)}
               testIdPrefix={`${testIdPrefix}-row-${rowIndex}`}
               entry={r.entry}
               columns={columns}
-              status={rowStatus[r.index] ?? "Confirmed"}
+              status={statusOf(r.index)}
               pathConflict={pathConflicts.has(r.index)}
               onColumn={(source_column) => {
                 onUpdateEntry(r.index, { source_column })

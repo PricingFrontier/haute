@@ -23,6 +23,8 @@ export type RowChange =
   | { kind: "add" }
   | { kind: "remove"; index: number }
   | { kind: "move"; from: number; to: number }
+  /** Any reshaping: for each row written, the row it was, or null for a new one. */
+  | { kind: "rows"; from: readonly (number | null)[] }
 
 const fresh = (count: number, from: number): number[] => Array.from({ length: count }, (_, i) => from + i)
 
@@ -56,6 +58,12 @@ export function expectRows(state: RowIdentity, next: readonly unknown[], change:
     }
     case "remove":
       keys = state.keys.filter((_, i) => i !== change.index)
+      break
+    case "rows":
+      keys = change.from.map((index) => {
+        if (index !== null && index >= 0 && index < state.keys.length) return state.keys[index]
+        return counter++
+      })
       break
     case "move": {
       const moved = [...state.keys]

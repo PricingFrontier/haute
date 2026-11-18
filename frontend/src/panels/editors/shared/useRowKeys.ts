@@ -12,6 +12,8 @@ export type RowKeys<R> = {
   remove: (index: number, next: R[]) => R[]
   /** The list's own move of a row from one place to another. */
   move: (from: number, to: number, next: R[]) => R[]
+  /** Any other write of the list's own: the keys its rows will take. */
+  expect: (next: R[], change: RowChange) => readonly number[]
 }
 
 /**
@@ -30,15 +32,21 @@ export function useRowKeys<R>(rows: readonly R[]): RowKeys<R> {
     setState(followed)
     current = followed
   }
-  const expect = (next: R[], change: RowChange): R[] => {
-    setState(expectRows(current, next, change))
+  const expect = (next: R[], change: RowChange): readonly number[] => {
+    const after = expectRows(current, next, change)
+    setState(after)
+    return after.expected?.keys ?? after.keys
+  }
+  const wrote = (next: R[], change: RowChange): R[] => {
+    expect(next, change)
     return next
   }
   return {
     keys: current.keys,
-    edit: (next) => expect(next, { kind: "edit" }),
-    add: (next) => expect(next, { kind: "add" }),
-    remove: (index, next) => expect(next, { kind: "remove", index }),
-    move: (from, to, next) => expect(next, { kind: "move", from, to }),
+    edit: (next) => wrote(next, { kind: "edit" }),
+    add: (next) => wrote(next, { kind: "add" }),
+    remove: (index, next) => wrote(next, { kind: "remove", index }),
+    move: (from, to, next) => wrote(next, { kind: "move", from, to }),
+    expect,
   }
 }

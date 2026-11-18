@@ -1,4 +1,6 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react"
+import { useId, useMemo, type CSSProperties } from "react"
+import { DraftTextArea } from "../../components/form/CommittedTextField"
+import { useCommittedDraft } from "../../components/form/useCommittedDraft"
 import { Plus, X } from "lucide-react"
 import {
   CommittedTextArea,
@@ -52,6 +54,22 @@ function argumentRows(args: Record<string, unknown>): ArgumentRow[] {
   }))
 }
 
+/** Typed records: the array they hold, or why they are not one. */
+function parseRecords(value: string): unknown[] | string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return "Invalid JSON - changes have not been saved."
+  }
+  return Array.isArray(parsed) ? parsed : "Records must be a JSON array."
+}
+
+/** Two lists of argument rows say the same: names and value texts, in order, whatever their ids. */
+function sameArgumentRows(a: readonly ArgumentRow[], b: readonly ArgumentRow[]): boolean {
+  return a.length === b.length && a.every((row, i) => row.name === b[i].name && row.valueText === b[i].valueText)
+}
+
 function parsesAsJson(value: string): boolean {
   try {
     JSON.parse(value)
@@ -75,32 +93,33 @@ export function IoArgumentsEditor({
   inputStyle?: CSSProperties
 }) {
   const args = useMemo(() => (isPlainObject(value) ? value : {}), [value])
-  const argsJson = JSON.stringify(args)
-  const [rows, setRows] = useState<ArgumentRow[]>(() => argumentRows(args))
-  const lastSynced = useRef(argsJson)
+  const stored = useMemo(() => argumentRows(args), [args])
   const datalistId = useId()
 
-  useEffect(() => {
-    if (argsJson !== lastSynced.current) {
-      lastSynced.current = argsJson
-      setRows(argumentRows(args))
-    }
-  }, [args, argsJson])
-
-  const commit = (nextRows: ArgumentRow[]) => {
-    setRows(nextRows)
-    const next: Record<string, unknown> = {}
-    for (const row of nextRows) {
-      const name = row.name.trim()
-      if (!name) continue
-      try {
-        next[name] = JSON.parse(row.valueText)
-      } catch {
-        if (Object.hasOwn(args, name)) next[name] = args[name]
+  // The rows are a draft of the arguments: a row with no name, or a value that is not
+  // JSON, stays on screen though the arguments cannot hold it. The list's own commits
+  // keep the draft; an Undo, a Redo or any other change of the arguments lets it go.
+  const draft = useCommittedDraft(
+    stored,
+    (nextRows) => {
+      const next: Record<string, unknown> = {}
+      for (const row of nextRows) {
+        const name = row.name.trim()
+        if (!name) continue
+        try {
+          next[name] = JSON.parse(row.valueText)
+        } catch {
+          if (Object.hasOwn(args, name)) next[name] = args[name]
+        }
       }
-    }
-    lastSynced.current = JSON.stringify(next)
-    onCommit(next)
+      onCommit(next)
+      return { ok: true, stays: argumentRows(next) }
+    },
+    { equals: sameArgumentRows },
+  )
+  const rows = draft.shown
+  const commit = (nextRows: ArgumentRow[]) => {
+    draft.commit(nextRows)
   }
 
   return (
@@ -253,46 +272,17 @@ function RecordsField({
   const configText = JSON.stringify(raw ?? [], null, 2) ?? "[]"
   const configError =
     raw === undefined || Array.isArray(raw) ? null : "Records must be a JSON array."
-  const [editor, setEditor] = useState(() => ({
-    sourceText: configText,
-    text: configText,
-    error: configError,
-  }))
   const id = useId()
-
-  // React permits a guarded render-time adjustment when state is derived from
-  // a prop identity. This keeps undo/external config replacement in sync
-  // without an effect-driven extra render, while preserving an in-progress
-  // draft until the persisted value actually changes.
-  if (editor.sourceText !== configText) {
-    setEditor({
-      sourceText: configText,
-      text: configText,
-      error: configError,
-    })
-  }
-
-  const parseRecords = (value: string): unknown[] | null => {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(value)
-    } catch {
-      setEditor((current) => ({
-        ...current,
-        error: "Invalid JSON - changes have not been saved.",
-      }))
-      return null
-    }
-    if (!Array.isArray(parsed)) {
-      setEditor((current) => ({
-        ...current,
-        error: "Records must be a JSON array.",
-      }))
-      return null
-    }
-    setEditor((current) => ({ ...current, error: null }))
-    return parsed
-  }
+  // The records being typed: an Undo or any other change of the stored records lets the
+  // draft go; text that is not a JSON array is kept, with its reason, and never saved.
+  const draft = useCommittedDraft(configText, (text) => {
+    const parsed = parseRecords(text)
+    if (!Array.isArray(parsed)) return { ok: false }
+    if (JSON.stringify(parsed, null, 2) === configText) return
+    onUpdate(fieldName, parsed)
+  })
+  const typed = draft.editing ? parseRecords(draft.shown) : null
+  const error = !draft.editing ? configError : typeof typed === "string" ? typed : null
 
   return (
     <div>
@@ -300,33 +290,18 @@ function RecordsField({
         {label}
         {required ? " *" : ""}
       </EditorLabel>
-      <textarea
+      <DraftTextArea
+        draft={draft}
         id={id}
         aria-label={label}
-        value={editor.text}
         rows={6}
         placeholder='[{"column": "value"}]'
-        onChange={(event) => {
-          setEditor((current) => ({
-            ...current,
-            text: event.target.value,
-          }))
-          parseRecords(event.target.value)
-        }}
-        onBlur={() => {
-          const parsed = parseRecords(editor.text)
-          if (parsed === null) return
-          const canonical = JSON.stringify(parsed, null, 2)
-          setEditor({ sourceText: canonical, text: canonical, error: null })
-          if (canonical === configText) return
-          onUpdate(fieldName, parsed)
-        }}
         className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
         style={inputStyle}
       />
-      {editor.error && (
+      {error && (
         <p className="mt-1 text-[11px]" style={{ color: "var(--danger-text)" }}>
-          {editor.error}
+          {error}
         </p>
       )}
     </div>

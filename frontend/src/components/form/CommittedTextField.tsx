@@ -28,20 +28,22 @@ type DraftFieldProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "on
   ref?: Ref<HTMLInputElement>
   /** The draft the field shows and commits. */
   draft: CommittedDraft<string>
+  /** Whether leaving the field commits it; false where leaving cancels (an inline edit). */
+  commitOnBlur?: boolean
 }
 
 /**
  * A single-line field showing *draft*: typing edits it, blur commits it, and Enter commits
  * it unless the caller's `onKeyDown`, which runs first, prevented the default.
  */
-export function DraftTextField({ draft, onBlur, onKeyDown, ...rest }: DraftFieldProps) {
+export function DraftTextField({ draft, commitOnBlur = true, onBlur, onKeyDown, ...rest }: DraftFieldProps) {
   return (
     <input
       {...rest}
       value={draft.shown}
       onChange={(e) => draft.edit(e.target.value)}
       onBlur={(e) => {
-        draft.commit()
+        if (commitOnBlur) draft.commit()
         onBlur?.(e)
       }}
       onKeyDown={(e) => {
@@ -76,8 +78,9 @@ type CommittedTextFieldProps = Omit<DraftFieldProps, "draft"> & {
   /** The committed value from state — the source of truth when idle. */
   value: string
   /** Called once per commit boundary (blur / Enter) with the final
-   *  value. Never called per keystroke — that is the whole point. */
-  onCommit: (next: string) => void
+   *  value. Never called per keystroke — that is the whole point.
+   *  Returning `{ ok: false }` refuses it and keeps the draft on screen. */
+  onCommit: (next: string) => CommitResult<string>
   /** What the value belongs to (a row's identity), when the field is reused for another. */
   owner?: unknown
 }
@@ -104,7 +107,7 @@ type ValidatedTextFieldProps = {
   value: string
   /** Called once per commit boundary (blur / Enter) with a valid value.
    *  Returning `{ ok: false }` refuses it and keeps the draft. */
-  onCommit: (next: string) => CommitResult
+  onCommit: (next: string) => CommitResult<string>
   /** User-facing error for a candidate; null = valid. An invalid candidate
    *  is never committed, and an invalid committed value (from disk or an
    *  inference merge) shows its error without any interaction. */

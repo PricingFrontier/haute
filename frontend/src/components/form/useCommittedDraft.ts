@@ -11,8 +11,14 @@ import { useLayoutEffect, useState } from "react"
 // whenever the value it was typed over moves. `draftsByHand.test.ts` fails for a
 // panel that holds a copy another way.
 
-/** What a commit reports: nothing when it always lands, or `{ ok }` when its owner can refuse it — a refused commit keeps the draft on screen. */
-export type CommitResult = void | { ok: boolean }
+/**
+ * What a commit reports: nothing when it always lands, or `{ ok }` when its owner can
+ * refuse it — a refused commit keeps the draft on screen. A draft that holds more than the
+ * store can (a list row not yet complete) stays after its commit when the owner says
+ * `{ ok: true, stays: stored }`: the stored value that commit brings back moves the draft's
+ * basis, and any other change still lets it go.
+ */
+export type CommitResult<T = unknown> = void | { ok: boolean; stays?: T }
 
 /** An edit not yet committed, as a save sees it: committing it says whether it landed. */
 type OpenEdit = { commit: () => boolean }
@@ -58,8 +64,11 @@ export type CommittedDraft<T> = {
   editing: boolean
   /** Replace the draft with what was typed. */
   edit: (next: T) => void
-  /** Commit the draft once; whether it landed (true when there was nothing to commit). */
-  commit: () => boolean
+  /**
+   * Commit the draft once, or *next* in its place (a list's own edit, made in an event);
+   * whether it landed (true when there was nothing to commit).
+   */
+  commit: (next?: T) => boolean
   /** Drop the draft without committing it. */
   discard: () => void
 }
@@ -82,30 +91,45 @@ export type DraftOptions<T> = {
  */
 export function useCommittedDraft<T>(
   value: T,
-  onCommit: (next: T) => CommitResult,
+  onCommit: (next: T) => CommitResult<T>,
   { owner, equals = Object.is }: DraftOptions<T> = {},
 ): CommittedDraft<T> {
   // The typed value; null while nothing is typed.
   const [draft, setDraft] = useState<{ value: T } | null>(null)
-  // The stored value and owner the draft was typed over. React's adjust-state-on-render
-  // pattern drops a stale draft before it is shown for, or committed into, a new value.
-  const [basis, setBasis] = useState({ value, owner })
+  // The stored value and owner the draft was typed over, and the stored value a commit
+  // that keeps the draft brings back. React's adjust-state-on-render pattern drops a stale
+  // draft before it is shown for, or committed into, a new value.
+  const [basis, setBasis] = useState<{ value: T; owner: unknown; expected?: { value: T } }>({ value, owner })
   let held = draft
   if (!equals(basis.value, value) || !Object.is(basis.owner, owner)) {
+    const ownCommit = basis.expected !== undefined && Object.is(basis.owner, owner) && equals(basis.expected.value, value)
     setBasis({ value, owner })
-    setDraft(null)
-    held = null
-  }
-  const commit = (): boolean => {
-    if (held === null) return true
-    if (!equals(held.value, value)) {
-      const result = onCommit(held.value)
-      if (result && !result.ok) return false
+    if (!ownCommit) {
+      setDraft(null)
+      held = null
     }
-    setDraft(null)
+  }
+  const commit = (next?: T): boolean => {
+    const typed = next === undefined ? held : { value: next }
+    if (typed === null) return true
+    let result: CommitResult<T> = undefined
+    if (!equals(typed.value, value)) {
+      result = onCommit(typed.value)
+      if (result && !result.ok) {
+        if (next !== undefined) setDraft(typed)
+        return false
+      }
+    }
+    if (result && result.stays !== undefined) {
+      const stays = result.stays
+      setDraft(typed)
+      setBasis((current) => ({ ...current, expected: { value: stays } }))
+    } else {
+      setDraft(null)
+    }
     return true
   }
-  useOpenEdit(held === null ? null : commit)
+  useOpenEdit(held === null ? null : () => commit())
   return {
     shown: held === null ? value : held.value,
     editing: held !== null,

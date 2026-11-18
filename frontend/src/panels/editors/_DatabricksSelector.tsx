@@ -3,6 +3,7 @@ import { Check, ChevronDown, Loader2, RefreshCw } from "lucide-react"
 import { getWarehouses, getCatalogs, getSchemas, getTables } from "../../api/client"
 import { apiErrorMessage } from "../../api/errors"
 import { CommittedTextField } from "../../components/form"
+import { useCommittedDraft } from "../../components/form/useCommittedDraft"
 
 // ─── WarehousePicker ──────────────────────────────────────────────
 //
@@ -371,24 +372,31 @@ function CatalogSchemaSelects({
   )
 }
 
+/** A table's three parts, as the pickers show them. */
+type TableParts = { catalog: string; schema: string; table: string }
+
+function tableParts(table: string, quoted = false): TableParts {
+  const p = table ? (quoted ? table.replace(/`/g, "") : table).split(".") : []
+  return { catalog: p[0] || "", schema: p[1] || "", table: p[2] || "" }
+}
+
+const sameParts = (a: TableParts, b: TableParts) => a.catalog === b.catalog && a.schema === b.schema && a.table === b.table
+
 /**
- * A picker's own choice of table, told apart from a change made elsewhere (undo,
- * redo, another editor): `choose` records what it sends, and `isEcho` says
- * whether the `table` that came back is that choice, which the picker's local
- * state already holds.
+ * A picker's parts as the shared draft: a catalog or schema chosen before its table is
+ * written as `""`, which the config cannot hold, so the picker's own choice keeps the
+ * draft while an Undo, a Redo or another editor's change of the table lets it go.
  */
-function useOwnChoice(onSelect: (fullName: string) => void) {
-  const chosen = useRef<string | null>(null)
-  const choose = (fullName: string) => {
-    chosen.current = fullName
-    onSelect(fullName)
-  }
-  const isEcho = (table: string) => {
-    const echoed = table === chosen.current
-    chosen.current = null
-    return echoed
-  }
-  return { choose, isEcho }
+function useTableDraft(table: string, quoted: boolean, fullName: (parts: TableParts) => string, onSelect: (fullName: string) => void) {
+  return useCommittedDraft(
+    tableParts(table, quoted),
+    (next) => {
+      const full = fullName(next)
+      onSelect(full)
+      return { ok: true, stays: tableParts(full, quoted) }
+    },
+    { equals: sameParts },
+  )
 }
 
 /**
@@ -428,25 +436,11 @@ export function CatalogTablePicker({
   table: string
   onSelect: (fullName: string) => void
 }) {
-  const parts = table ? table.split(".") : []
-  const [catalog, setCatalog] = useState(parts[0] || "")
-  const [dbSchema, setDbSchema] = useState(parts[1] || "")
-  const [tableName, setTableName] = useState(parts[2] || "")
+  // Clearing the table on a new catalog or schema is written as `""`: the catalog and
+  // schema just chosen stay on screen.
+  const draft = useTableDraft(table, false, (p) => (p.catalog && p.schema && p.table ? `${p.catalog}.${p.schema}.${p.table}` : ""), onSelect)
+  const { catalog, schema: dbSchema, table: tableName } = draft.shown
   const [error, setError] = useState<string | null>(null)
-  const { choose, isEcho } = useOwnChoice(onSelect)
-
-  /* eslint-disable react-hooks/set-state-in-effect -- sync local state from prop */
-  useEffect(() => {
-    // Clearing the table on a new catalog or schema comes back as `""`: the
-    // catalog and schema just chosen stay.
-    if (isEcho(table)) return
-    const p = table ? table.split(".") : []
-    setCatalog(p[0] || "")
-    setDbSchema(p[1] || "")
-    setTableName(p[2] || "")
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isEcho reads a ref
-  }, [table])
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const { tables, loading: loadingTables, load: loadTables } = useSchemaTables(catalog, dbSchema, setError)
   const refreshTables = (cat: string, sch: string) => {
@@ -463,16 +457,9 @@ export function CatalogTablePicker({
         <CatalogSchemaSelects
           catalog={catalog}
           schema={dbSchema}
-          onCatalogChange={(cat) => {
-            setCatalog(cat)
-            setDbSchema("")
-            setTableName("")
-            choose("")
-          }}
+          onCatalogChange={(cat) => draft.commit({ catalog: cat, schema: "", table: "" })}
           onSchemaChange={(sch) => {
-            setDbSchema(sch)
-            setTableName("")
-            choose("")
+            draft.commit({ catalog, schema: sch, table: "" })
             if (sch) refreshTables(catalog, sch)
           }}
           onError={setError}
@@ -483,11 +470,7 @@ export function CatalogTablePicker({
           value={tableName}
           disabled={!dbSchema}
           onFocus={() => { if (catalog && dbSchema) refreshTables(catalog, dbSchema) }}
-          onChange={(e) => {
-            const tbl = e.target.value
-            setTableName(tbl)
-            choose(tbl ? `${catalog}.${dbSchema}.${tbl}` : "")
-          }}
+          onChange={(e) => draft.commit({ catalog, schema: dbSchema, table: e.target.value })}
           className={SELECT_CLASS}
           style={SELECT_STYLE}
         >
@@ -533,27 +516,18 @@ export function TargetTablePicker({
   table: string
   onSelect: (fullName: string) => void
 }) {
-  const parts = table ? table.replace(/`/g, "").split(".") : []
-  const [catalog, setCatalog] = useState(parts[0] || "")
-  const [dbSchema, setDbSchema] = useState(parts[1] || "")
-  const tableName = parts[2] || ""
-  const [draftName, setDraftName] = useState(tableName)
+  const tableName = tableParts(table, true).table
+  // An invalid name clears the destination: the previous table must not stay the one
+  // Write replaces while the field shows a different name. The picker's own choice keeps
+  // the invalid name, and its error, on screen; an outside change of the table lets it go.
+  const draft = useTableDraft(
+    table,
+    true,
+    (p) => (p.table && TABLE_NAME_RE.test(p.table) && p.catalog && p.schema ? `${p.catalog}.${p.schema}.${p.table}` : ""),
+    onSelect,
+  )
+  const { catalog, schema: dbSchema, table: draftName } = draft.shown
   const [error, setError] = useState<string | null>(null)
-  // When the change of `table` is this picker's choice coming back, the local
-  // state already holds it; re-syncing would wipe an invalid draft name (whose
-  // commit cleared the destination) along with its error.
-  const { choose, isEcho } = useOwnChoice(onSelect)
-
-  /* eslint-disable react-hooks/set-state-in-effect -- sync local state from prop */
-  useEffect(() => {
-    if (isEcho(table)) return
-    const p = table ? table.replace(/`/g, "").split(".") : []
-    if (p[0]) setCatalog(p[0])
-    if (p[1]) setDbSchema(p[1])
-    setDraftName(p[2] || "")
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isEcho reads a ref
-  }, [table])
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   // The schema's tables, for suggestions and to say whether the name exists.
   const { tables, load: loadTables } = useSchemaTables(catalog, dbSchema, setError)
@@ -565,15 +539,7 @@ export function TargetTablePicker({
   const exists = tables?.some((t) => t.name.toLowerCase() === tableName.toLowerCase())
 
   const commitName = (value: string) => {
-    const name = value.trim()
-    setDraftName(name)
-    // An invalid name clears the destination: the previous table must not stay
-    // the one Write replaces while the field shows a different name.
-    if (name && TABLE_NAME_RE.test(name) && catalog && dbSchema) {
-      choose(`${catalog}.${dbSchema}.${name}`)
-    } else {
-      choose("")
-    }
+    draft.commit({ catalog, schema: dbSchema, table: value.trim() })
   }
 
   return (
@@ -584,15 +550,8 @@ export function TargetTablePicker({
         <CatalogSchemaSelects
           catalog={catalog}
           schema={dbSchema}
-          onCatalogChange={(cat) => {
-            setCatalog(cat)
-            setDbSchema("")
-            choose("")
-          }}
-          onSchemaChange={(sch) => {
-            setDbSchema(sch)
-            choose(sch && draftName && TABLE_NAME_RE.test(draftName) ? `${catalog}.${sch}.${draftName}` : "")
-          }}
+          onCatalogChange={(cat) => draft.commit({ catalog: cat, schema: "", table: draftName })}
+          onSchemaChange={(sch) => draft.commit({ catalog, schema: sch, table: draftName })}
           onError={setError}
         />
 

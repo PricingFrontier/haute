@@ -77,16 +77,22 @@ describe("GlobalConstantsPanel", () => {
 
     fireEvent.focus(cell)
     for (const value of ["1.", "1.2", "1.25"]) fireEvent.change(cell, { target: { value } })
+    // Typing writes nothing: the edit reaches the store once, when the cell is left.
+    expect(constants()[0].value).toBe("1")
     fireEvent.blur(cell)
     fireEvent.focus(cell)
     fireEvent.change(cell, { target: { value: "2" } })
+    fireEvent.blur(cell)
     expect(useGraphStore.getState().undoStack).toHaveLength(2)
 
     act(() => useGraphStore.getState().undo())
     expect(constants()[0].value).toBe("1.25")
-    expect(cell).toHaveValue("1.25")
-    // Typing on after Undo starts a new step rather than joining the undone one.
-    fireEvent.change(cell, { target: { value: "1.3" } })
+    // An Undo gives the rows new identities: the cell is drawn afresh.
+    const undone = screen.getByTestId("constant-value-0")
+    expect(undone).toHaveValue("1.25")
+    // Typing on after Undo is a new step rather than joining the undone one.
+    fireEvent.change(undone, { target: { value: "1.3" } })
+    fireEvent.blur(undone)
     expect(useGraphStore.getState().undoStack).toHaveLength(2)
     expect(useGraphStore.getState().redoStack).toHaveLength(0)
 
@@ -120,6 +126,9 @@ describe("GlobalConstantsPanel", () => {
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
 
     fireEvent.change(screen.getByTestId("constant-value-0"), { target: { value: "abc" } })
+    // Marked as it is typed, and listed once it is committed.
+    expect(screen.getByTestId("constant-value-0")).toHaveAttribute("aria-invalid", "true")
+    fireEvent.blur(screen.getByTestId("constant-value-0"))
 
     expect(constants()[0].value).toBe("abc")
     expect(screen.getByTestId("constant-value-0")).toHaveAttribute("aria-invalid", "true")
@@ -135,6 +144,7 @@ describe("GlobalConstantsPanel", () => {
 
     fireEvent.change(screen.getByTestId("constant-value-0-nb_batch"), { target: { value: "" } })
     expect(screen.getByTestId("constant-value-0-nb_batch")).toHaveAttribute("placeholder", "missing")
+    fireEvent.blur(screen.getByTestId("constant-value-0-nb_batch"))
     expect(screen.getByTestId("constant-value-issue-0-nb_batch")).toHaveTextContent("rate · nb_batch — Missing")
   })
 
