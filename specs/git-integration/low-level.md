@@ -29,11 +29,13 @@ conversion in the routes).
 - `GitError(HauteError)` — base; wraps raw subprocess stderr.
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
-    - `GitTransactionError(GitDomainError)` — a recorded operation whose refs are where no
-      step of its record leaves them, so `recover` can neither put it back nor finish it:
-      "<operation> stopped part-way, and its branches have moved since. Inspect the
-      repository before retrying." The record stays. The milestone's hook pass raises it
-      too when the hooks' operation cannot put HEAD back on the ledger.
+    - `GitTransactionError(GitDomainError)` — a recorded operation `recover` can neither
+      put back nor finish: its refs are where no step of its record leaves them ("<operation>
+      stopped part-way, and its branches have moved since. Inspect the repository before
+      retrying."), git refuses the transaction that would set them ("<operation> could not
+      be put back." or "finished."), or the record cannot be read. The record stays, and
+      the operation's own failure is its cause. The milestone's hook pass raises it too
+      when the hooks' operation cannot put HEAD back on the ledger.
     - `GitInterruptedError(GitDomainError)` — a git action asked for while
       `.haute/operation.json` is there: "<operation> stopped part-way. Choose Retry first."
       Every `_serialized_mutation` raises it once it holds the lock; Retry, identity and
@@ -118,7 +120,8 @@ only those, or a clone, moves none. `update-ref`, `branch`, `checkout`, `switch`
 `reset`, `commit`, `rebase`, `cherry-pick`, `revert`, `pull`, `am`, `stash` and `worktree`
 move refs; `symbolic-ref` with a new target or `--delete`, and `tag` other than a listing
 (`-l`, `--list`, `--points-at`, `--merged`, `--contains`), move them; a `fetch` refspec whose
-destination is outside `refs/remotes/` moves one. Read-only and index-only commands are
+destination is outside `refs/remotes/` moves one (its first operand is the repository, a
+bundle's path on Windows holding a colon, and only the operands after it are refspecs). Read-only and index-only commands are
 named one by one, and a subcommand the core does not know raises `GitError` naming it, so a
 new kind of command is classified before it can run. A command that moves a ref raises
 `GitError` ("git <subcommand> would move a ref outside a recorded operation") unless it runs
@@ -347,7 +350,8 @@ is dropped when it would change nothing:
 - `head(ref)`: `symbolic-ref HEAD <ref>`, no files (the hooks' pass);
 - `working_branch(name | None)`: `state.json`;
 - `trash(entry_id, entry | None)`: one tombstone added or removed;
-- `call(fn)`: runs *fn* between two steps, setting no slot.
+- `call(fn)`: runs *fn* between two steps, setting no slot; a call is never the last step,
+  since only the refs show how far an operation got.
 
 `committed()` puts the commit point after the steps added so far; by default it is after the
 last. `run()` with no steps does nothing. Otherwise it refuses while another operation is in
@@ -368,8 +372,9 @@ caught failure and for Retry:
 1. It reads every slot live and finds the last step *k* whose state equals them all. With
    none, the refs moved after the operation stopped: `GitTransactionError`, the record kept.
 2. *k* at or past the commit point goes forward to the last step; before it, back to the
-   first state. A caught failure past the commit point (`direction="back"`) stops here and
-   keeps the record.
+   first state. An operation whose last state is its first (the hooks' HEAD swing) is put
+   back from any step, since both ways lead to the same state. A caught failure past the
+   commit point (`direction="back"`) stops here and keeps the record.
 3. Each of *files* on disk must hold one of the versions the operation's HEAD commits give
    it (`hash-object --stdin-paths`, with the path's filters); one that holds neither was
    changed after the operation stopped, and is refused by name ("<files> changed after
@@ -377,7 +382,8 @@ caught failure and for Retry:
    git cannot read is left to the check in step 6.
 4. It sets the refs in one `update-ref --stdin` transaction, expecting the values it read,
    then HEAD (`symbolic-ref`, or `update-ref --no-deref` for a commit), then the recorded
-   working branch and the tombstones.
+   working branch and the tombstones. A git or file error here raises
+   `GitTransactionError`, the record kept.
 5. It writes *files* from HEAD: `restore --source=HEAD --staged --worktree
    --pathspec-from-file=- --pathspec-file-nul` for each one the index or HEAD's tree holds,
    and removes one on disk that neither holds, a leftover of the operation.
@@ -827,7 +833,7 @@ the aside names and HEAD back from the record.
 
 **Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
 milestone, through the tree fence. A confirmed delete forces it over a dirty tree; an archive
-or an unconfirmed delete refuses tracked changes first, with `_switch_away_if_active`'s
+or an unconfirmed delete refuses tracked changes first, with `_leave_if_active`'s
 "You have unsaved changes on this branch. Save or discard them before archiving it." (or
 "deleting it"), and the tree is left as it was. The
 ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
@@ -1129,11 +1135,13 @@ process failures, and precise ref-movement races deterministic.
   past its commit point and otherwise puts every slot and file back, and removes the record.
   A second test fails each step in turn and catches it: before the commit point the call
   returns with every slot and file as before and no record; after it, the steps done kept,
-  the record there, and Retry finishing. A child process killed with `os._exit` at the
+  the record there, and Retry finishing; an operation that ends where it began is put back
+  from any step. A child process killed with `os._exit` at the
   restore's, the catch-up's, the spin-off's and the confirmed delete's most dangerous step
   leaves the same record and state. Further: a file holding neither version refused by
   Retry by name and kept, refs moved after the stop refused as `GitTransactionError` with
-  the record kept, the analyst's own edit and an untracked file never in a record nor
+  the record kept, a record that cannot be read reading `interrupted` with no operation named
+  and Retry refusing it, the analyst's own edit and an untracked file never in a record nor
   touched by a put-back, a catch-up over a file the remote deleted that another program
   holds refused with the ledger, the working branch and the files as they were and the
   next catch-up removing it (on Windows with a real open handle), and the runners refusing

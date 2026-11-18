@@ -50,6 +50,9 @@ _EXPECTED_DEBT_IDS = {
     # the git tree fence's real case lives; other platforms run the same fence
     # through a faked half-swap (tests/test_git_working_tree.py::TestTreeFence).
     "b8387c82cbbedb60",
+    # The same holds for a catch-up over a file the remote deleted or changed; other
+    # platforms run its faked case (tests/test_git_operations.py, held open).
+    "1abcc6888781ad80",
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
     # legs, catboost for the boosted / numeric-only legs), matching the

@@ -93,6 +93,9 @@ class TestRestoreVersion:
         assert (repo / ".haute" / "state.json").exists()
         assert result.read_text() == "kept"
         assert not (repo / ".haute_cache").exists()
+        # A restore that completes leaves no mark.
+        assert not (repo / ".haute" / "operation.json").exists()
+        assert working_branch_status(repo, cwd=repo).state == "ready"
 
     def test_restores_a_milestone_and_a_save_folded_into_one(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)

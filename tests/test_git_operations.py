@@ -206,6 +206,14 @@ def _arrange_create(base: Path) -> tuple[Path, _Call]:
     )
 
 
+def _arrange_create_from_detached(base: Path) -> tuple[Path, _Call]:
+    """A project left on a save by a checkout outside Haute, kept on a new branch."""
+    root = _new_repo(base)
+    first = _pair(root)
+    _git(root, "checkout", "-q", "--detach", first)
+    return root, _Call("set_working_branch", ("kept", ROOT), {"create": True, "cwd": ROOT})
+
+
 def _arrange_fork(**options: object) -> Callable[[Path], tuple[Path, _Call]]:
     def arrange(base: Path) -> tuple[Path, _Call]:
         root = _new_repo(base)
@@ -338,6 +346,7 @@ OPERATIONS = [
     _Operation("open-ledger", "open-ledger", 2, 2, _arrange_open_ledger),
     _Operation("seed", "seed", 2, 2, _arrange_seed),
     _Operation("create-branch", "create-branch", 3, 3, _arrange_create),
+    _Operation("create-from-detached", "create-branch", 3, 3, _arrange_create_from_detached),
     _Operation("fork-parallel", "create-branch", 1, 1, _arrange_fork()),
     _Operation("fork-switch", "create-branch", 3, 3, _arrange_fork(switch=True)),
     _Operation("fork-move", "create-branch", 4, 4, _arrange_fork(move=True)),
@@ -655,6 +664,57 @@ def test_retry_refuses_refs_that_moved_after_the_stop_and_keeps_the_record(
     assert read_operation(root) is not None
 
 
+def test_operations_do_not_nest_and_none_runs_over_a_record(tmp_path: Path) -> None:
+    root = _new_repo(tmp_path)
+    inner = git_operation.Operation("open-ledger", root, root)
+    inner.refs({f"refs/heads/{LEDGER}": _git(root, "rev-parse", WORKING)})
+    outer = git_operation.Operation("repair", root, root)
+    outer.refs({"refs/heads/elsewhere": _git(root, "rev-parse", WORKING)})
+    outer.call(inner.run)
+    outer.refs({"refs/heads/after-the-call": _git(root, "rev-parse", WORKING)})
+
+    with pytest.raises(RuntimeError, match="already running"):
+        outer.run()
+    assert _git(root, "branch", "--list", "elsewhere") == ""
+    assert _git(root, "branch", "--list", LEDGER) == ""
+    assert read_operation(root) is None  # the outer operation was put back
+
+    last_is_a_call = git_operation.Operation("repair", root, root)
+    last_is_a_call.refs({"refs/heads/elsewhere": _git(root, "rev-parse", WORKING)})
+    last_is_a_call.call(lambda: None)
+    with pytest.raises(ValueError, match="a call step needs a step that sets a slot after it"):
+        last_is_a_call.run()
+
+    stopped, call = _arrange_restore(tmp_path / "stopped")
+    _stop(stopped, call, "restore", 1)
+    late = git_operation.Operation("repair", stopped, stopped)
+    late.refs({"refs/heads/elsewhere": _git(stopped, "rev-parse", WORKING)})
+    with pytest.raises(GitInterruptedError, match="Restoring a version stopped part-way"):
+        late.run()
+    assert _git(stopped, "branch", "--list", "elsewhere") == ""
+
+
+def test_retry_finds_a_changed_file_when_git_cannot_hash_them_all_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file git cannot read fails the hash of the whole list; each is hashed alone, so
+    the readable ones are still checked, and the one git cannot read is left for later."""
+    root, call = _arrange_restore(tmp_path)
+    _stop(root, call, "restore", 1)
+    (root / "rating.py").write_text("# edited after the server stopped\n")
+    real = git_operation._run_git
+
+    def batch_refused(*args: str, **kwargs: object) -> str:
+        if args[:2] == ("hash-object", "--stdin-paths"):
+            raise GitError("fatal: could not open 'keep.txt' for reading")
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(git_operation, "_run_git", batch_refused)
+    with pytest.raises(GitDomainError, match="rating.py changed after restoring a version"):
+        retry_interrupted(root, cwd=root)
+    assert read_operation(root) is not None
+
+
 def test_a_record_that_cannot_be_read_is_an_interruption_retry_will_not_guess(
     tmp_path: Path,
 ) -> None:
@@ -694,7 +754,7 @@ def test_the_analysts_own_edits_are_never_in_a_record_nor_touched_by_a_put_back(
 
 
 # ---------------------------------------------------------------------------
-# A catch-up over a file the remote deleted that another program holds (VCS-01)
+# A catch-up over a file the remote deleted that another program holds
 # ---------------------------------------------------------------------------
 
 

@@ -178,9 +178,10 @@ const JUST_RESTORED_KEY = "haute:justRestored"
 // A project save whose fetch of the workbench's tables failed saves no pipeline.
 const WORKBENCH_TABLES_UNREAD = "The pipeline was not saved: the workbench's tables could not be read."
 
-// Save and Commit while a git action left files out of step (the toolbar's Files in use).
-const filesInUseRefusal = (doing: "saving" | "committing") =>
-  `Some files are still open in another program. Close them and choose Retry in the toolbar before ${doing}.`
+// Save and Commit while an operation that stopped part-way is recorded (the toolbar's
+// Unfinished): the server's line names the operation and its files.
+const interruptedRefusal = (detail: string | undefined, doing: "saving" | "committing") =>
+  `${detail ?? "A git action stopped part-way."} Choose Retry in the toolbar before ${doing}.`
 
 const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
   "edge-join-node-not-found": "Edge join swap rejected: selected edge join is no longer available",
@@ -1501,10 +1502,10 @@ function FlowEditor() {
       void saveProject()
       return
     }
-    // Files left out of step: a save would record the version they were left at,
-    // and no branch choice puts them back.
+    // An operation stopped part-way: a save would record the files as it left them,
+    // and no branch choice finishes it.
     if (st.state === "interrupted") {
-      addToast("error", filesInUseRefusal("saving"))
+      addToast("error", interruptedRefusal(st.errors[0], "saving"))
       return
     }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
@@ -1534,7 +1535,7 @@ function FlowEditor() {
       return
     }
     if (st.state === "interrupted") {
-      addToast("error", filesInUseRefusal("committing"))
+      addToast("error", interruptedRefusal(st.errors[0], "committing"))
       return
     }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {

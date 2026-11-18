@@ -208,11 +208,6 @@ class Operation:
     # -- running ----------------------------------------------------------------------
 
     @property
-    def files(self) -> list[str]:
-        """The paths the operation writes, worked out when it runs."""
-        return self._files
-
-    @property
     def step_count(self) -> int:
         """How many steps have been added (a step that changes nothing is not)."""
         return len(self._steps)
@@ -225,6 +220,10 @@ class Operation:
         raised when it could not. Any other stop leaves the record."""
         if not any(step.sets for step in self._steps):
             return
+        if self._steps[-1].kind == "call":
+            # Only the refs show how far an operation got, and a call sets none: one
+            # at the end could not be told done from not done.
+            raise ValueError("a call step needs a step that sets a slot after it")
         if _RUNNING.get():
             raise RuntimeError("a git operation is already running in this thread")
         existing = read_operation(self._root)

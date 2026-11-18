@@ -115,12 +115,12 @@ describe("BranchIndicator", () => {
     }
   })
 
-  it("names an interrupted clone's files and retries writing them", async () => {
+  it("names the operation that stopped and its files, and retries it", async () => {
     const loadStatus = vi.fn(async () => null)
     useGitStore.setState({
       status: status({
         state: "interrupted",
-        errors: ["rates.csv is open in another program, so Haute could not replace it."],
+        errors: ["Restoring a version stopped part-way: rates.csv."],
       }),
       loadStatus,
     })
@@ -129,9 +129,11 @@ describe("BranchIndicator", () => {
 
     const indicator = screen.getByTestId("toolbar-branch-indicator")
     expect(indicator).toHaveAttribute("data-branch-state", "interrupted")
-    expect(indicator).toHaveTextContent("Files in use")
+    expect(indicator).toHaveTextContent("Unfinished")
     fireEvent.focus(screen.getByTestId("branch-indicator-retry-interrupted"))
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("rates.csv is open in another program")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Restoring a version stopped part-way: rates.csv.",
+    )
 
     fireEvent.click(screen.getByTestId("branch-indicator-retry-interrupted"))
     await waitFor(() => expect(loadStatus).toHaveBeenCalledWith({ refresh: true }))
@@ -141,7 +143,7 @@ describe("BranchIndicator", () => {
   it("keeps an interrupted clone and says which files are still held when Retry is refused", async () => {
     const loadStatus = vi.fn(async () => null)
     useGitStore.setState({
-      status: status({ state: "interrupted", errors: ["rates.csv is open in another program."] }),
+      status: status({ state: "interrupted", errors: ["Restoring a version stopped part-way: rates.csv."] }),
       loadStatus,
     })
     mockRetryInterrupted.mockRejectedValueOnce(

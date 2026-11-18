@@ -847,12 +847,12 @@ describe("App integration - restoring a version", () => {
     )
   })
 
-  it("shows Files in use when a restore stops on a file held open", async () => {
+  it("shows the clone unfinished when a restore stops on a file held open", async () => {
     vi.mocked(api.restoreVersion).mockRejectedValueOnce(new Error("b.txt is open in another program."))
     render(<App />)
     await waitForAppReady()
     vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
-      working_branch: "dev", state: "interrupted", errors: ["b.txt is open in another program."],
+      working_branch: "dev", state: "interrupted", errors: ["Restoring a version stopped part-way: b.txt."],
       current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"],
       identity_set: true, user_name: "Test User", user_email: "test@example.com",
     }))
@@ -890,9 +890,9 @@ describe("App integration - restoring a version", () => {
     ])))
   })
 
-  it("Save and Commit with files in use say to close them, not to choose a branch", async () => {
+  it("Save and Commit while an operation stopped part-way name it and ask for Retry", async () => {
     vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
-      working_branch: "dev", state: "interrupted", errors: ["b.txt is open in another program."],
+      working_branch: "dev", state: "interrupted", errors: ["Restoring a version stopped part-way: b.txt."],
       current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"],
       identity_set: true, user_name: "Test User", user_email: "test@example.com",
     }))
@@ -904,8 +904,8 @@ describe("App integration - restoring a version", () => {
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
 
     await waitFor(() => expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "error", text: expect.stringContaining("choose Retry in the toolbar before saving") }),
-      expect.objectContaining({ type: "error", text: expect.stringContaining("choose Retry in the toolbar before committing") }),
+      expect.objectContaining({ type: "error", text: "Restoring a version stopped part-way: b.txt. Choose Retry in the toolbar before saving." }),
+      expect.objectContaining({ type: "error", text: "Restoring a version stopped part-way: b.txt. Choose Retry in the toolbar before committing." }),
     ])))
     expect(useGitStore.getState().modal).toBeNull()
     expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
