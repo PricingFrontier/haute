@@ -9,10 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { OnUpdateConfig } from "../../editors/_shared"
 import { HyperparametersConfig } from "../HyperparametersConfig"
-import {
-  formatHyperparameters,
-  formatTuningSearchSpace,
-} from "../hyperparameters"
+import { formatHyperparameters, formatTuningSearchSpace } from "../hyperparameters"
+import { useHyperparameterDrafts } from "../useHyperparameterDrafts"
 
 const STARTER_SEARCH_SPACE = {
   depth: [4, 6, 8, 10],
@@ -47,28 +45,37 @@ function Harness({
   publishesValidationFit?: boolean
   algorithmLabel?: string
 }) {
-  const [draft, setDraft] = useState(
-    formatHyperparameters(params, ["task_type"]),
-  )
-  const [searchSpaceDraft, setSearchSpaceDraft] = useState(
-    formatTuningSearchSpace(
-      (tuning?.search_space as Record<string, unknown> | undefined) ?? {},
-    ),
-  )
+  // The node's config as the store holds it: each update the editor makes lands in it.
+  const [config, setConfig] = useState<{ params: Record<string, unknown>; tuning: Record<string, unknown> | null }>({
+    params,
+    tuning,
+  })
+  const update: OnUpdateConfig = (...args) => {
+    const result = onUpdate(...args)
+    const [keyOrUpdates, value] = args
+    setConfig((current) => (typeof keyOrUpdates === "string"
+      ? { ...current, [keyOrUpdates]: value }
+      : { ...current, ...keyOrUpdates }))
+    return result
+  }
+  const drafts = useHyperparameterDrafts({
+    nodeId: "catboost_1",
+    params: config.params,
+    tuning: config.tuning,
+    reservedKeys: ["task_type"],
+    reservedKeysHelp: "GPU training is configured in the Train pane.",
+    onUpdate: update,
+  })
   return (
     <HyperparametersConfig
       algorithmLabel={algorithmLabel}
-      params={params}
       reservedKeys={["task_type"]}
       reservedKeysHelp="GPU training is configured in the Train pane."
-      onUpdate={onUpdate}
-      draft={draft}
-      setDraft={setDraft}
-      tuning={tuning}
+      onUpdate={update}
+      drafts={drafts}
+      tuning={config.tuning}
       evaluation={evaluation}
       metrics={["gini", "rmse"]}
-      searchSpaceDraft={searchSpaceDraft}
-      setSearchSpaceDraft={setSearchSpaceDraft}
       publishesValidationFit={publishesValidationFit}
       refitOnDevelopment
     />
@@ -132,7 +139,7 @@ describe("HyperparametersConfig", () => {
     expect(editor).toHaveValue(formatHyperparameters({ grow_policy: "Lossguide", depth: 8 }))
   })
 
-  it("autosaves arbitrary current and future fixed-parameter shapes", () => {
+  it("commits arbitrary current and future fixed-parameter shapes once, on blur", () => {
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
     render(
       <Harness
@@ -150,6 +157,9 @@ describe("HyperparametersConfig", () => {
         }),
       },
     })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(screen.getByLabelText("CatBoost hyperparameters JSON"))
+    expect(onUpdate).toHaveBeenCalledOnce()
     expect(onUpdate).toHaveBeenCalledWith("params", {
       grow_policy: "Lossguide",
       max_leaves: 64,
@@ -167,6 +177,7 @@ describe("HyperparametersConfig", () => {
       fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), {
         target: { value: draft },
       })
+      fireEvent.blur(screen.getByLabelText("CatBoost hyperparameters JSON"))
 
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue(
         draft,
@@ -219,6 +230,7 @@ describe("HyperparametersConfig", () => {
     fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), {
       target: { value: '{"task_type":"CPU"}' },
     })
+    fireEvent.blur(screen.getByLabelText("CatBoost hyperparameters JSON"))
     expect(screen.getByRole("alert")).toBeInTheDocument()
     expect(onUpdate).not.toHaveBeenCalled()
   })
@@ -295,7 +307,7 @@ describe("HyperparametersConfig", () => {
     expect(screen.queryByRole("button", { name: "Revert" })).toBeNull()
   })
 
-  it("autosaves valid Search space JSON", () => {
+  it("commits valid Search space JSON once, on blur", () => {
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
     render(
       <Harness
@@ -315,7 +327,10 @@ describe("HyperparametersConfig", () => {
         value: '{\n  "depth": [4, 6, 8, 10]\n}',
       },
     })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(screen.getByLabelText("CatBoost search space JSON"))
 
+    expect(onUpdate).toHaveBeenCalledOnce()
     expect(onUpdate).toHaveBeenCalledWith("tuning", {
       schema_version: 1,
       trial_count: 20,
@@ -349,6 +364,7 @@ describe("HyperparametersConfig", () => {
       fireEvent.change(screen.getByLabelText("CatBoost search space JSON"), {
         target: { value: draft },
       })
+      fireEvent.blur(screen.getByLabelText("CatBoost search space JSON"))
 
       expect(screen.getByLabelText("CatBoost search space JSON")).toHaveValue(draft)
       expect(onUpdate).not.toHaveBeenCalled()
