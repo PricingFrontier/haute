@@ -26,6 +26,37 @@ def format_byte_size(size_bytes: int) -> str:
     return f"{size_bytes} bytes" if unit == "bytes" else f"{value:.1f} {unit}"
 
 
+#: The names of the work whose memory reservation can refuse other work, by operation, as
+#: the editor's memory messages give them (``RUNNING_JOB_NAMES`` in
+#: ``frontend/src/utils/executionDiagnostics.ts``).
+RUNNING_WORK_NAMES: dict[str, str] = {
+    "frontier_auto_range": "Auto range",
+    "optimiser_solve": "Optimisation",
+    "optimiser_solve_worker": "Optimisation",
+    "optimiser_estimate": "Solve estimate",
+    "training_job": "Model training",
+    "training_pipeline": "Model training",
+    "training_evaluation_preview": "Training preview",
+    "explore_relationships": "Explore",
+    "explore_pivot": "Explore",
+    "explore_pivot_members": "Explore",
+    "node_snapshot": "Data caching",
+    "input_snapshot_build": "Data caching",
+    "pipeline_write_output": "Data output",
+}
+
+
+def running_work_names(holders: tuple[str, ...]) -> list[str]:
+    """The work named by an in-flight refusal's ``"<profile>:<operation>"`` holders, each
+    once, in order; an operation with no name is left out rather than shown by its own."""
+    names: list[str] = []
+    for holder in holders:
+        name = RUNNING_WORK_NAMES.get(holder.partition(":")[2])
+        if name is not None and name not in names:
+            names.append(name)
+    return names
+
+
 def _sizes_detail(used: int | None, allowed: int | None) -> str:
     # This runs on a failure path: a partially-populated exception must
     # degrade to omitting the sizes, never crash into a TypeError that
@@ -71,9 +102,8 @@ def memory_limit_user_message(
             if reserved is None or allowed is None:
                 detail = ""
             else:
-                holders = (
-                    f" by {', '.join(exc.in_flight_operations)}" if exc.in_flight_operations else ""
-                )
+                running = running_work_names(exc.in_flight_operations)
+                holders = f" by {', '.join(running)}" if running else ""
                 detail = (
                     f" ({format_byte_size(reserved)} reserved{holders}, "
                     f"{format_byte_size(allowed)} allowed)"
@@ -83,22 +113,25 @@ def memory_limit_user_message(
                 f"already reserved the server's memory budget{detail}. Wait for "
                 "other work to finish, then try again."
             )
-        detail = ""
         if (
             exc.reason == "process_rss_limit_exceeded"
             and exc.rss_at_admission_bytes is not None
             and exc.process_rss_limit_bytes is not None
         ):
-            # Not the "(X used, Y allowed)" runtime pair: nothing ran yet, so
-            # the numbers are the SERVER's current use against its cap.
-            detail = (
-                f" (the server is already using "
+            from haute._execution_admission import process_rss_limit_setting
+
+            # Not the "(X used, Y allowed)" runtime pair: nothing ran yet, so the numbers
+            # are the process's current use against its cap, which a setting raises.
+            return (
+                f"{operation_noun} was not started: Haute is already using "
                 f"{format_byte_size(exc.rss_at_admission_bytes)} of its "
-                f"{format_byte_size(exc.process_rss_limit_bytes)} memory cap)"
+                f"{format_byte_size(exc.process_rss_limit_bytes)} memory cap. Raise "
+                f"{process_rss_limit_setting(exc.profile)}, or wait for other work to finish, "
+                "then try again."
             )
         return (
             f"{operation_noun} was not started because the server does not have "
-            f"enough free memory for it{detail}. Wait for other work to finish, "
+            "enough free memory for it. Wait for other work to finish, "
             "reduce the data size, or run on a server with more memory, then "
             "try again."
         )

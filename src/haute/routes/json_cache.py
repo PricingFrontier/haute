@@ -19,14 +19,15 @@ from __future__ import annotations
 from typing import Any
 
 import orjson
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError
+from haute._failure_answers import failure_refusal
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._project_context import current_project
-from haute.routes._runtime_path_errors import runtime_path_http_exception
+from haute.errors import NotFoundError, UnprocessableError
 from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
 
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
@@ -58,7 +59,7 @@ def _resolve_data_path(path: str) -> str:
             )
         )
     except RuntimePathError as exc:
-        raise runtime_path_http_exception(exc) from None
+        raise failure_refusal(exc) from None
 
 
 @router.post("/infer", response_model=JsonCacheInferResponse)
@@ -81,12 +82,9 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
             sample_size=body.sample_size,
         )
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Data file not found") from None
+        raise NotFoundError("Data file not found") from None
     except orjson.JSONDecodeError as e:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid JSON in data file: {e}",
-        ) from None
+        raise UnprocessableError(f"Invalid JSON in data file: {e}") from None
     except ApiInputSchemaError as e:
         # e.g. a nested array (array of arrays) that can't be a flat table —
         # surface the structured 422 naming the field rather than an opaque 500.

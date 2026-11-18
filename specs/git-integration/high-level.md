@@ -56,7 +56,7 @@ In scope:
 
 Out of scope (owned by neighbouring components):
 - The HTTP framework wiring, request/response schemas as Pydantic models, and the
-  `_INTERNAL_ERROR_DETAIL` sanitization constant — see
+  failure answers that keep git's own message out of every answer — see
   [server-api](../server-api/high-level.md).
 - The panel UI that renders branch state, the graph rail, and the milestone/save history —
   see [frontend-git-ui](../frontend-git-ui/high-level.md).

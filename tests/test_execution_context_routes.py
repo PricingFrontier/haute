@@ -28,6 +28,7 @@ from haute.errors import (
     TraceTargetNotFoundError,
 )
 from haute.graph_utils import NodeType
+from tests._failure_assertions import UNNAMED, assert_detail, assert_unnamed
 from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.conftest import (
@@ -53,8 +54,7 @@ async def test_write_output_route_rejects_unconfigured_data_output(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -80,7 +80,7 @@ async def test_write_output_route_rejects_unconfigured_data_output(
         "_output_write_transaction",
         side_effect=AssertionError("invalid Data Output must not execute"),
     ):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await pipeline_route.write_output_node(
                 WriteOutputRequest(
                     graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
@@ -249,7 +249,7 @@ async def test_get_first_pipeline_keeps_first_authored_empty_document(
         (
             "unexpected trace failure",
             500,
-            "Operation failed. Check the server logs for details.",
+            UNNAMED,
         ),
     ],
 )
@@ -257,7 +257,7 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
     monkeypatch,
     message: str,
     expected_status: int,
-    expected_detail: str,
+    expected_detail: object,
 ) -> None:
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import TraceRequest
@@ -291,14 +291,12 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
     response = _app_client().post("/api/pipeline/trace", json=request.model_dump(mode="json"))
 
     assert response.status_code == expected_status
-    assert response.json()["detail"] == expected_detail
+    assert_detail(response.json()["detail"], expected_detail)
 
 
 @pytest.mark.asyncio
 async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> None:
-    from fastapi import HTTPException
-
-    from haute.errors import ContractMismatchError
+    from haute.errors import ContractMismatchError, RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import TraceRequest
 
@@ -323,7 +321,7 @@ async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> No
 
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_contract_mismatch)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         await pipeline_route.trace_row(
             TraceRequest(seed_plan=[], graph=graph, row_index=0, target=node_target("source"))
         )
@@ -351,7 +349,7 @@ async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
     response = _app_client().post("/api/pipeline/read-json", json={"path": "payload.json"})
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "Operation failed. Check the server logs for details."
+    assert_unnamed(response.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -513,8 +511,7 @@ async def test_preview_route_maps_admission_failure_to_http_507(
 async def test_preview_route_cancels_execution_context_on_timeout(
     monkeypatch, pipeline_settings
 ) -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
@@ -557,7 +554,7 @@ async def test_preview_route_cancels_execution_context_on_timeout(
         }
 
     with patch.object(pipeline_route, "execute_graph", side_effect=slow_execute_graph):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await pipeline_route.preview_node(
                 PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
             )
@@ -581,8 +578,7 @@ async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_t
 ) -> None:
     """The client leaves, the thread ignores cancellation past its timeout: its
     admission must still be released only once the thread finishes."""
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
@@ -629,7 +625,7 @@ async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_t
     monkeypatch.setattr(pipeline_route, "execute_graph", stubborn_execute_graph)
 
     try:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await pipeline_route.preview_node(
                 PreviewNodeRequest(graph=graph, target=node_target("source")),
                 cast(Request, _LeavingClient()),
@@ -657,8 +653,7 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
     monkeypatch,
     pipeline_settings,
 ) -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
@@ -718,7 +713,7 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
     monkeypatch.setattr(pipeline_route, "execute_graph", slow_execute_graph)
 
     try:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await pipeline_route.preview_node(
                 PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
             )
@@ -746,8 +741,7 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
 async def test_preview_route_releases_admission_when_timeout_task_already_finished(
     monkeypatch,
 ) -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.routes._timeouts import BlockingWorkTimeoutError
     from haute.schemas import PreviewNodeRequest
@@ -797,7 +791,7 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
         raise_finished_timeout,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         await pipeline_route.preview_node(
             PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
         )
@@ -816,8 +810,7 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
 async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
     monkeypatch,
 ) -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.routes._timeouts import BlockingWorkTimeoutError
     from haute.schemas import PreviewNodeRequest
@@ -844,7 +837,7 @@ async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
     )
     monkeypatch.setattr(pipeline_route, "_preview_supersession", TimeoutBeforeWorker())
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         await pipeline_route.preview_node(
             PreviewNodeRequest(graph=graph, target=node_target("source")), _CONNECTED
         )
@@ -988,9 +981,7 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
-    from haute.errors import BoundedMemoryUnsupportedError
+    from haute.errors import BoundedMemoryUnsupportedError, RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -1025,7 +1016,7 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
         "_output_write_transaction",
         side_effect=unsupported_sink,
     ):
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await pipeline_route.write_output_node(
                 WriteOutputRequest(
                     graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
@@ -1087,8 +1078,7 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -1114,7 +1104,7 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
 
     monkeypatch.setattr(pipeline_route, "create_admitted_execution_context", raise_timeout)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         await pipeline_route.write_output_node(
             WriteOutputRequest(
                 graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
@@ -1130,10 +1120,9 @@ async def test_sink_route_releases_admission_before_isolated_timeout_returns(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute._execution_admission import IsolatedExecutionBudget
     from haute._worker_failures import WorkerTimeoutError
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -1193,7 +1182,7 @@ async def test_sink_route_releases_admission_before_isolated_timeout_returns(
         raise_timeout,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         await pipeline_route.write_output_node(
             WriteOutputRequest(
                 graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
@@ -1210,10 +1199,9 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute._execution_admission import IsolatedExecutionBudget
     from haute._worker_failures import WorkerStoppedError
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -1273,7 +1261,7 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
         raise_cancelled,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         await pipeline_route.write_output_node(
             WriteOutputRequest(
                 graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"
@@ -1289,9 +1277,8 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
 async def test_sink_route_does_not_fall_back_after_isolated_timeout(
     monkeypatch, tmp_path, pipeline_settings
 ) -> None:
-    from fastapi import HTTPException
-
     from haute._worker_failures import WorkerTimeoutError
+    from haute.errors import RequestRefusedError
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -1324,7 +1311,7 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(
     monkeypatch.setattr(pipeline_route, "run_blocking_with_response_timeout", fallback)
 
     with patch.object(pipeline_route, "_output_write_transaction") as transaction:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             await pipeline_route.write_output_node(
                 WriteOutputRequest(
                     graph=graph, target={"occurrence": None, "node_id": "sink"}, source="batch"

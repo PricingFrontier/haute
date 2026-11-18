@@ -24,9 +24,9 @@ import pytest
 from haute._types import PipelineGraph
 from haute.errors import InvalidRequestError, NotFoundError, RequestRefusedError
 from haute.graph_utils import NodeType
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._optimiser_solver import SolveContext
 from tests import _optimiser_route_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._optimiser_route_helpers import (
     _anchor_result,
     _make_optimiser_graph,
@@ -505,7 +505,8 @@ class TestSolveRoute:
         job = store.require_job(job_id)
         assert job["status"] == "memory_limited"
         assert job["terminal_reason"] == "memory_limited"
-        assert job["error"] == str(failure)
+        # Said as the refusal's payload says it, its identity digest a field, never words.
+        assert job["error"] == "Preparing this Data Input's snapshot failed."
         assert job["error_code"] == "memory_limit"
         assert job["http_status_code"] == 507
         assert job["error_detail"]["reason_code"] == "memory_limited"
@@ -609,7 +610,7 @@ class TestSolveRoute:
         assert len(solve_jobs) == 1
         assert solve_jobs[0] == job
         assert job["status"] == "error"
-        assert "factor collection failed" in job["message"]
+        assert_unnamed(job["message"])
         build_grid.assert_not_called()
         launch_background.assert_not_called()
 
@@ -1316,7 +1317,8 @@ class TestSolveBackgroundErrors:
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
             assert status["terminal_reason"] == "error"
-            assert status["message"] == "Unexpected error: Invalid constraint column"
+            assert_unnamed(status["message"])
+            assert "Invalid constraint column" not in status["message"]
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_untyped_runtime_error_is_unexpected(self, client, scored_data):
@@ -1332,7 +1334,7 @@ class TestSolveBackgroundErrors:
             )
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
-            assert status["message"] == "Unexpected error: Solver diverged"
+            assert_unnamed(status["message"])
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_typed_input_error_is_contract_error(self, client, scored_data):
@@ -1384,7 +1386,7 @@ class TestSolveBackgroundErrors:
             )
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
-            assert "Unexpected error" in status["message"]
+            assert_unnamed(status["message"])
 
 
 # ---------------------------------------------------------------------------
@@ -1995,7 +1997,7 @@ class TestLaunchBackground:
         job = clean_job_store.require_job(job_id)
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
-        assert "Failed to start optimiser worker" in job["message"]
+        assert_unnamed(job["message"])
 
     def test_late_completion_does_not_overwrite_timeout(self, clean_job_store):
         """Late solver progress/completion must not overwrite a timeout error."""
@@ -2105,17 +2107,17 @@ class TestApplyException:
                 "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
                 side_effect=RuntimeError("boom"),
             ),
-            patch("haute.server.logger.error") as log_error,
+            patch("haute._failure_answers.logger.error") as log_error,
         ):
             resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
 
         assert resp.status_code == 500
-        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert_unnamed(resp.json()["detail"])
         # The application handler logs it; the route no longer catches it.
         log_error.assert_called_once()
-        assert log_error.call_args.args == ("unhandled_exception",)
+        assert log_error.call_args.args == ("unexpected_failure",)
         assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
-        assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
+        assert log_error.call_args.kwargs["operation"] == "POST /api/optimiser/apply"
         job = clean_job_store.require_job("apply_err")
         assert "solve_result" in job
 
@@ -2160,8 +2162,14 @@ class TestSaveExceptionPaths:
         assert job["solve_result"] is solve_result
         assert not solve_result.mock_calls
 
-    def test_save_os_error(self, client, clean_job_store, tmp_path):
-        """OSError during save returns 500 with filesystem error message."""
+    @pytest.mark.parametrize(
+        "named",
+        [pytest.param(False, id="no-file"), pytest.param(True, id="full-disk")],
+    )
+    def test_save_os_error(self, client, clean_job_store, tmp_path, named):
+        """An OSError naming the file it refused is answered in words naming that file; one
+        naming no file is an incident, its text logged under it."""
+        import errno
 
         seed_job(
             clean_job_store,
@@ -2180,21 +2188,35 @@ class TestSaveExceptionPaths:
         use_project(tmp_path)
         out_path = str(tmp_path / "out.json")
 
+        refused = (
+            OSError(errno.ENOSPC, "No space left on device", out_path)
+            if named
+            else OSError("disk full")
+        )
+
         with (
-            patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")),
-            patch("haute.routes.optimiser.logger.error") as log_error,
+            patch("pathlib.Path.write_bytes", side_effect=refused),
+            patch("haute._failure_answers.logger.error") as log_error,
         ):
             resp = client.post(
                 "/api/optimiser/save",
                 json={"job_id": "save_os", "output_path": out_path},
             )
-        assert resp.status_code == 500
-        assert "filesystem" in resp.json()["detail"].lower()
-        log_error.assert_called_once()
-        assert log_error.call_args.args == ("save_failed",)
-        assert log_error.call_args.kwargs["error"] == "disk full"
-        assert log_error.call_args.kwargs["job_id"] == "save_os"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        detail = resp.json()["detail"]
+        if named:
+            assert resp.status_code == 500
+            assert (
+                detail == "There isn't room on disk for out.json. Free some space, then try again."
+            )
+            # Named, so never an incident.
+            assert "unexpected_failure" not in [call.args[0] for call in log_error.call_args_list]
+        else:
+            assert resp.status_code == 500
+            assert_unnamed(detail)
+            log_error.assert_called_once()
+            assert log_error.call_args.args == ("unexpected_failure",)
+            assert log_error.call_args.kwargs["error_class"] == "OSError"
+            assert log_error.call_args.kwargs["incident"] in detail
         job = clean_job_store.require_job("save_os")
         assert "solver" in job
         assert "solve_result" in job
@@ -2221,19 +2243,19 @@ class TestSaveExceptionPaths:
 
         with (
             patch("pathlib.Path.write_bytes", side_effect=RuntimeError("unexpected")),
-            patch("haute.server.logger.error") as log_error,
+            patch("haute._failure_answers.logger.error") as log_error,
         ):
             resp = client.post(
                 "/api/optimiser/save",
                 json={"job_id": "save_gen", "output_path": out_path},
             )
         assert resp.status_code == 500
-        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert_unnamed(resp.json()["detail"])
         # The application handler logs it; the route no longer catches it.
         log_error.assert_called_once()
-        assert log_error.call_args.args == ("unhandled_exception",)
+        assert log_error.call_args.args == ("unexpected_failure",)
         assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
-        assert log_error.call_args.kwargs["path"] == "/api/optimiser/save"
+        assert log_error.call_args.kwargs["operation"] == "POST /api/optimiser/save"
 
 
 # ---------------------------------------------------------------------------

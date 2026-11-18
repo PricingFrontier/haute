@@ -16,6 +16,7 @@ from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
 from haute._cpu_performance import configure_process_high_qos
+from haute._failure_answers import worker_failure_payload
 from haute._file_ops import path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import (
@@ -670,8 +671,8 @@ def run_isolated_worker(
             result = cast(T, payload)
             has_result = True
         elif status == "error":
-            remote_type, remote_message, remote_traceback, is_memory = cast(
-                tuple[str, str, str, bool],
+            remote_type, remote_message, remote_traceback, is_memory, public_payload = cast(
+                tuple[str, str, str, bool, dict[str, object] | None],
                 payload,
             )
             raise WorkerRemoteError(
@@ -679,6 +680,7 @@ def run_isolated_worker(
                 remote_message=remote_message,
                 remote_traceback=remote_traceback,
                 is_memory=is_memory,
+                public_payload=public_payload,
             )
         else:  # pragma: no cover - guarded by child entrypoint protocol
             raise WorkerCrashedError(
@@ -777,9 +779,12 @@ def _isolated_worker_entrypoint(
             with project_scope(project):
                 envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:
-            envelope = _worker_error_envelope(
-                memory_error_for_thread_start_failure(exc) if applied else exc
-            )
+            # Classified in the request's project, so a file in it is named as the
+            # parent would name it.
+            with project_scope(project):
+                envelope = _worker_error_envelope(
+                    memory_error_for_thread_start_failure(exc) if applied else exc
+                )
         # The native limit deliberately remains active until the queue feeder has
         # flushed this possibly-large payload.  Do not restore or close the lease:
         # process teardown releases it, and the joined parent removes any private
@@ -812,9 +817,12 @@ def _is_ready_payload(process: BaseProcess, raw: Any) -> bool:
         return False
 
 
-def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str, bool]]:
+def _worker_error_envelope(
+    exc: BaseException,
+) -> tuple[str, tuple[str, str, str, bool, dict[str, object] | None]]:
     # Windows reports a path too long for it as a missing file; name the cause, so the
-    # parent can classify the failure, and keep the original traceback.
+    # parent can classify the failure, and keep the original traceback. The failure is
+    # put into words here, where it was raised (haute._failure_answers.failure_payload).
     reported: BaseException = path_too_long_error(exc) or exc
     return (
         "error",
@@ -823,6 +831,7 @@ def _worker_error_envelope(exc: BaseException) -> tuple[str, tuple[str, str, str
             str(reported),
             "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             isinstance(exc, MemoryError),
+            worker_failure_payload(exc),
         ),
     )
 

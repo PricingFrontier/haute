@@ -14,23 +14,18 @@ import hashlib
 import json
 import mimetypes
 import os
-import re
 import secrets
-import time
 import traceback
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import structlog
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
 from haute import __version__
@@ -38,6 +33,7 @@ from haute._cpu_performance import configure_process_high_qos
 from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_workers
 from haute._event_bus import DocumentUpdateExclusion, default_bus
 from haute._execution_context import configure_execution_telemetry
+from haute._failure_answers import answer_failure
 from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
     start_interactive_worker_pool,
@@ -67,12 +63,10 @@ from haute._project_context import (
 )
 from haute._sandbox import contained_path
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-from haute.errors import ConfigError, PathOutsideProjectError
-from haute.hosted import FORWARDED_USER_SCOPE_KEY
+from haute.errors import ConfigError, NotFoundError, PathOutsideProjectError
 from haute.routes._background_jobs import stop_background_jobs
-from haute.routes._error_handlers import install_exception_handlers
+from haute.routes._error_handlers import install_failure_answers
 from haute.routes._helpers import (
-    _INTERNAL_ERROR_DETAIL,
     _ensure_pipeline_index,
     broadcast,
     connection_owner,
@@ -154,9 +148,6 @@ WS_FRAME_PIPELINE_DOCUMENT_UPDATE = "pipeline_document_update"
 WS_FRAME_SYNC_CONNECTION = "sync_connection"
 WS_FRAME_WORKBENCH_FORM_CHANGED = "workbench_form_changed"
 PIPELINE_DOCUMENT_SCHEMA_VERSION = 1
-PIPELINE_DOCUMENT_LOAD_ERROR = (
-    "Pipeline document could not be loaded. Check the server logs for details."
-)
 # A git action took the pipeline away: the version now open does not have it.
 PIPELINE_NOT_IN_VERSION = "This pipeline isn't in the version now open. Switch back to see it."
 
@@ -331,14 +322,8 @@ def _prepare_ws_document_resync(
         if client_document_fingerprint == document_fingerprint:
             return _WsDocumentResyncResult(source_file=source_file, unchanged=True)
     except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "pipeline_document_recovery_failed",
-            file=pipeline_path.name,
-            error=str(exc),
-            exc_info=True,
-        )
         return _WsDocumentResyncResult(
-            error=PIPELINE_DOCUMENT_LOAD_ERROR,
+            error=answer_failure(exc, operation="pipeline_document_load").message,
             source_file=source_file,
         )
     return _WsDocumentResyncResult(
@@ -560,81 +545,6 @@ def _trusted_hosts() -> list[str]:
     return configured or list(_TRUSTED_LOCAL_HOSTS)
 
 
-_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z", re.ASCII)
-
-
-def _select_request_id(value: str | None) -> tuple[str, dict[str, str | int] | None]:
-    """Return a safe correlation token plus bounded rejection metadata."""
-    if value is None:
-        return uuid.uuid4().hex[:12], None
-    length = len(value)
-    if length > 64:
-        return uuid.uuid4().hex[:12], {"reason": "too_long", "length": length}
-    try:
-        value.encode("ascii")
-    except UnicodeEncodeError:
-        return uuid.uuid4().hex[:12], {"reason": "non_ascii", "length": length}
-    if _REQUEST_ID_RE.fullmatch(value) is None:
-        return uuid.uuid4().hex[:12], {"reason": "invalid_format", "length": length}
-    return value, None
-
-
-class _RequestIdMiddleware(BaseHTTPMiddleware):
-    """Bind request_id, log every request with timing, capture 500 tracebacks.
-
-    It is also the application's handler for unexpected exceptions: anything
-    the registered exception handlers do not claim is logged here with its
-    traceback and answered with the sanitized ``_INTERNAL_ERROR_DETAIL``.
-    """
-
-    async def dispatch(self, request: Request, call_next: Any) -> Any:
-        rid, rejection = _select_request_id(request.headers.get("x-request-id"))
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(request_id=rid)
-        if rejection is not None:
-            logger.warning("request_id_rejected", **rejection)
-
-        method = request.method
-        path = request.url.path
-        t0 = time.monotonic()
-
-        try:
-            response = await call_next(request)
-        except Exception as exc:
-            duration_ms = round((time.monotonic() - t0) * 1000, 1)
-            logger.error(
-                "unhandled_exception",
-                method=method,
-                path=path,
-                duration_ms=duration_ms,
-                error_class=type(exc).__name__,
-                traceback=traceback.format_exc(),
-            )
-            response = JSONResponse(
-                status_code=500,
-                content={"detail": _INTERNAL_ERROR_DETAIL},
-            )
-            response.headers["x-request-id"] = rid
-            return response
-
-        duration_ms = round((time.monotonic() - t0) * 1000, 1)
-        status = response.status_code
-        response.headers["x-request-id"] = rid
-
-        kw = dict(method=method, path=path, status=status, duration_ms=duration_ms)
-        forwarded_user = request.scope.get(FORWARDED_USER_SCOPE_KEY)
-        if forwarded_user is not None:
-            kw["user"] = forwarded_user
-        if status >= 500:
-            logger.error("request_error", **kw)
-        elif status >= 400:
-            logger.warning("request_client_error", **kw)
-        elif path.startswith("/api/"):
-            logger.info("request_ok", **kw)
-
-        return response
-
-
 # ---------------------------------------------------------------------------
 # Include route modules
 # ---------------------------------------------------------------------------
@@ -684,11 +594,8 @@ async def bootstrap_session(response: Response) -> SessionStatusResponse:
 
 
 async def _api_ws_not_found(request: Request) -> JSONResponse:
-    """Return a clean JSON 404 for any unmatched /api/* or /ws/* GET request."""
-    return JSONResponse(
-        {"detail": f"No such route: {request.url.path}"},
-        status_code=404,
-    )
+    """Refuse any unmatched /api/* or /ws/* GET request with a JSON 404."""
+    raise NotFoundError(f"No such route: {request.url.path}")
 
 
 # ---------------------------------------------------------------------------
@@ -813,14 +720,13 @@ def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
         )
     except Exception as e:  # noqa: BLE001 — one unreadable pipeline must not silence the rest
         # Only a document-load or serialization defect lands here; authored
-        # errors were already representable above.  Send the established safe
-        # message, never the raw exception.
+        # errors were already representable above.  Send its answer's words, never
+        # the raw exception.
         _last_broadcast_fp.pop(fp_key, None)
-        logger.error("parse_error", file=path.name, error=str(e), exc_info=True)
         default_bus.publish(
             "parse.error",
             {
-                "error": PIPELINE_DOCUMENT_LOAD_ERROR,
+                "error": answer_failure(e, operation="pipeline_document_load").message,
                 "source_file": wire_source_file(path),
             },
         )
@@ -1190,8 +1096,7 @@ def create_app(context: ProjectContext) -> FastAPI:
     context.
     """
     app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
-    install_exception_handlers(app)
-    app.add_middleware(_RequestIdMiddleware)
+    install_failure_answers(app)
     app.add_middleware(LocalSessionMiddleware)
     app.add_middleware(
         LocalTrustedHostMiddleware,

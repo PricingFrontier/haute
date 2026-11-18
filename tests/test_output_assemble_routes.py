@@ -34,6 +34,7 @@ from haute.errors import ConfigError, ContractColumnsMissingError, ContractMisma
 from haute.executor import _preview_cache
 from haute.routes._timeouts import BlockingWorkTimeoutError
 from haute.schemas import NodeResult
+from tests._failure_assertions import assert_unnamed, without_message
 from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots
 from tests.test_output_nested_roundtrip import (
@@ -262,7 +263,7 @@ def test_dry_run_admission_refusal_returns_structured_507(project) -> None:
         )
 
     assert resp.status_code == 507
-    assert resp.json() == {"detail": error.to_payload()}
+    assert without_message(resp.json()["detail"]) == error.to_payload()
 
 
 def test_dry_run_releases_admission_after_success(project) -> None:
@@ -567,15 +568,13 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
     if failure_kind == "memory":
         assert response.json()["detail"]["reason"] == "worker_rss_limit_exceeded"
     elif failure_kind == "crash_memory":
-        assert response.json()["detail"] == {
+        assert without_message(response.json()["detail"]) == {
             "error_code": "memory_limit",
             "operation": "output_assemble_dry_run",
             "reason": "worker_may_have_exceeded_memory_limit",
         }
     else:
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-
-        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert_unnamed(response.json()["detail"])
         assert "private child detail" not in response.text
     assert releases == [True]
 

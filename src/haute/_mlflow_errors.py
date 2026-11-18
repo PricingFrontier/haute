@@ -54,7 +54,7 @@ MLFLOW_LOG_FAILURE_MESSAGES: dict[MlflowFailureCategory, str] = {
         "Could not reach the MLflow tracking server, so the run was not logged. Test "
         "the connection in MLflow settings, then log again."
     ),
-    "unknown": "Logging to MLflow failed. Check the server logs for details.",
+    "unknown": "Logging to MLflow failed for a reason MLflow did not say. Try again.",
 }
 
 

@@ -414,8 +414,8 @@ the app's own origin check refuses another site's writes. Its tests are in
   this component; propagates to the caller (`_io.load_external_object` and its
   callers).
 - `PathOutsideProjectError` / `InvalidPathError` (`errors.py`) — raised by
-  `contained_path` (and so `validate_project_path`); mapped by
-  `routes/_error_handlers.py` to 403 / 400 with the bare message. A caller with its
+  `contained_path` (and so `validate_project_path`); answered by
+  the failure answers (`haute._failure_answers`) as 403 / 400 with the bare message. A caller with its
   own contract translates `PathOutsideProjectError` (see Containment callers);
   `InvalidPathError` propagates.
 - `ValueError` — raised by `safe_joblib_load` when joblib exposes a legacy

@@ -30,7 +30,9 @@ from haute._dedicated_workers import DedicatedWorker, WorkerDeadError, WorkerDea
 from haute._env import float_env, int_env
 from haute._execution_admission import admit_growth_grant
 from haute._execution_context import ExecutionCancellationToken, ExecutionProfile
+from haute._failure_answers import answer_failure
 from haute._logging import get_logger
+from haute._memory_messages import solver_session_memory_message
 from haute._native_memory_limit import model_thread_address_space_allowance
 from haute._step_progress import StepProgress
 from haute._worker_failures import (
@@ -42,7 +44,6 @@ from haute._worker_failures import (
 )
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.routes._job_store import JobStore
-from haute.routes._memory_messages import solver_session_memory_message
 
 logger = get_logger(component="server.optimiser.session")
 
@@ -310,22 +311,17 @@ class SolverSession:
                     "message": message,
                 },
             )
-        logger.error(
-            "solver_session_command_failed",
-            job_id=self.job_id,
-            operation=operation,
-            error=str(exc),
-            error_type=type(exc).__name__,
-            remote_traceback=getattr(exc, "remote_traceback", None),
-        )
+        # What the solver raised, worded where it was raised when Haute names it, else an
+        # incident whose record holds its traceback (haute._failure_answers).
+        answer = answer_failure(exc, operation=operation)
         terminal_reason: WorkerTerminalReason = (
             "contract_error" if exc.terminal_reason == "contract_error" else "error"
         )
         return SessionCommandError(
             terminal_reason=terminal_reason,
-            message=f"The optimiser's solver process failed while {stage}: {exc}",
-            http_status_code=500,
-            detail="The optimiser's solver process failed. Check the server logs for details.",
+            message=f"The optimiser's solver process failed while {stage}: {answer.message}",
+            http_status_code=answer.status,
+            detail=answer.detail,
         )
 
     def _record_death(self, death: WorkerDeath) -> None:

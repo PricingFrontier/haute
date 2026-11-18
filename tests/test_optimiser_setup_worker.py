@@ -18,7 +18,6 @@ from typing import Any
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
 from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
@@ -45,6 +44,7 @@ from haute.routes._optimiser_worker import (
     classify_optimiser_failure,
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest
+from tests._failure_assertions import assert_unnamed, incident_in, without_message
 from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 from tests.optimiser_fixtures import optimiser_request
@@ -710,7 +710,7 @@ class TestWorkerOutcomes:
         status = _solve(client, _online_graph(_scored_parquet(project)))
 
         assert status["status"] == "error"
-        assert status["message"] == "Optimiser worker failed. Check the server logs for details."
+        assert_unnamed(status["message"])
         assert _removed(worker.calls[0]["request"].output_path)
 
     def test_a_failed_input_write_removes_the_ratebook_factors_the_child_persisted(
@@ -772,7 +772,33 @@ class TestWorkerOutcomes:
 
         assert worker.calls[0]["config"].timeout_seconds is None
         assert status["status"] == "error"
-        assert "without a timeout timed out" in status["message"]
+        assert_unnamed(status["message"])
+
+    def test_a_setup_worker_crash_keeps_its_incident_on_the_job(
+        self, client, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worker that died with no memory evidence is an incident: the job records the
+        answer's code and the incident its message names, not only its HTTP detail."""
+        from haute._worker_failures import WorkerCrashedError
+
+        _process_mode(monkeypatch)
+        worker = _InlineWorker(raises=WorkerCrashedError(3))
+        monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
+
+        started = client.post(
+            "/api/optimiser/solve",
+            json={
+                "graph": _online_graph(_scored_parquet(project)),
+                "target": {"occurrence": None, "node_id": "opt"},
+            },
+        )
+        status = _poll(client, started.json()["job_id"])
+
+        assert status["status"] == "error"
+        job = get_job_store("optimiser").require_job(started.json()["job_id"])
+        assert job["error_code"] == "unexpected_failure"
+        assert job["incident"] == incident_in(status["message"])
+        assert job["error_detail"] == status["message"]
 
     @pytest.mark.parametrize(
         "outcome",
@@ -791,8 +817,9 @@ class TestWorkerOutcomes:
 
         status = _solve(client, _online_graph(_scored_parquet(project)))
 
+        # A worker that broke its protocol is Haute's fault: an incident.
         assert status["status"] == "error"
-        assert "Optimiser setup worker returned" in status["message"]
+        assert_unnamed(status["message"])
 
     @pytest.mark.parametrize(
         "outcome",
@@ -1040,8 +1067,9 @@ class TestFailureRecords:
             ValueError("internal detail"), operation_noun="Auto-range", log_event="test_failure"
         )
 
-        assert failure.message == "Auto-range failed: internal detail"
-        assert failure.http_detail == "Auto-range failed. Check the server logs for details."
+        assert "internal detail" not in failure.message
+        assert_unnamed(failure.message)
+        assert_unnamed(failure.http_detail)
 
     @pytest.mark.parametrize("noun", ["Optimiser setup", "Auto-range"])
     def test_a_memory_refusal_names_the_operation_that_was_refused(self, noun: str) -> None:
@@ -1220,11 +1248,11 @@ class TestEstimateWorker:
         monkeypatch.setattr(optimiser_routes, "interactive_worker_pool", _MemoryKilledPool)
         body = optimiser_request(OptimiserEstimateRequest, _online_graph(_scored_parquet(project)))
 
-        with pytest.raises(HTTPException) as raised:
+        with pytest.raises(RequestRefusedError) as raised:
             optimiser_routes._optimiser_input_metrics(body)
 
         assert raised.value.status_code == 507
-        assert raised.value.detail == {
+        assert without_message(raised.value.detail) == {
             "error_code": "memory_limit",
             "operation": "optimiser_estimate",
             "rss_bytes": 2048,
@@ -1282,7 +1310,7 @@ def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(
     assert type(raised.value) is MemoryError
     _process_mode(monkeypatch)
     monkeypatch.setattr(optimiser_routes, "interactive_worker_pool", _InlinePool)
-    with pytest.raises(HTTPException) as answered:
+    with pytest.raises(RequestRefusedError) as answered:
         optimiser_routes._optimiser_input_metrics(body)
     assert answered.value.status_code == 507
     assert answered.value.detail["error_code"] == "memory_limit"

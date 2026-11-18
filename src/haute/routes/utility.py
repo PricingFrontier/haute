@@ -17,15 +17,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi import Path as PathParam
 
 from haute._config_io import is_windows_reserved_filename
+from haute._failure_answers import classify_failure
 from haute._file_ops import atomic_create_text, atomic_write_text, file_revision
 from haute._io import read_user_source, read_user_text
 from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._sandbox import contained_path
+from haute.errors import ConflictError, InvalidRequestError, NotFoundError, RequestRefusedError
 from haute.routes._helpers import discover_pipelines, project_write
 from haute.routes._save_pipeline import capture_save_in_ledger
 from haute.schemas import (
@@ -66,15 +68,15 @@ def _display(project_root: Path, path: Path) -> str:
     return path.relative_to(project_root).as_posix()
 
 
-def _refusal(status: int, code: str, message: str) -> HTTPException:
+def _refusal(status: int, code: str, message: str) -> RequestRefusedError:
     """A refusal in the flat error contract: the message is the detail; the code is logged."""
     logger.info("utility_file_refused", code=code, status=status)
-    return HTTPException(status_code=status, detail=message)
+    return RequestRefusedError(message, status_code=status)
 
 
 def _require_file(target: Path) -> None:
     if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"Utility file not found: {target.name}")
+        raise NotFoundError(f"Utility file not found: {target.name}")
 
 
 def _require_revision(project_root: Path, target: Path, revision: str) -> None:
@@ -89,24 +91,22 @@ def _require_revision(project_root: Path, target: Path, revision: str) -> None:
 
 
 def _replace_or_remove(project_root: Path, target: Path, change: Callable[[], None]) -> None:
-    """Run *change* on *target*, answering a file another program holds open with 409."""
+    """Run *change* on *target*, a file the operating system refuses said as every edge says
+    it: held open by another program, read-only, or a full disk."""
     try:
         change()
-    except PermissionError:
-        raise _refusal(
-            409,
-            "file_in_use",
-            f"{_display(project_root, target)} is open in Haute or another program. "
-            "Try again once it's closed.",
-        ) from None
+    except OSError as exc:
+        answer = classify_failure(exc)
+        if answer is None:
+            raise
+        raise answer.refusal() from None
 
 
 def _validate_module_name(name: str) -> None:
     """Raise 400 if *name* is not a valid Python identifier or is reserved."""
     if not _VALID_NAME.match(name) or name.startswith("__"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid module name: '{name}'. Use only letters, digits, and underscores.",
+        raise InvalidRequestError(
+            f"Invalid module name: '{name}'. Use only letters, digits, and underscores."
         )
 
 
@@ -120,28 +120,25 @@ def _validate_new_module_name(name: str, utility_dir: Path) -> None:
     all three, whatever its own file system allows.
     """
     if keyword.iskeyword(name):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid module name: '{name}' is a Python keyword, so "
-            f"`from utility.{name} import *` could not be written. Choose another name.",
+        raise InvalidRequestError(
+            f"Invalid module name: '{name}' is a Python keyword, so "
+            f"`from utility.{name} import *` could not be written. Choose another name."
         )
     if is_windows_reserved_filename(name):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid module name: '{name}' is a reserved device name on Windows, "
-            "so the file could not exist there. Choose another name.",
+        raise InvalidRequestError(
+            f"Invalid module name: '{name}' is a reserved device name on Windows, "
+            "so the file could not exist there. Choose another name."
         )
     if utility_dir.is_dir():
         for entry in utility_dir.iterdir():
             if entry.suffix == ".py" and entry.stem.casefold() == name.casefold():
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Utility file already exists: {entry.name}"
+                raise ConflictError(
+                    f"Utility file already exists: {entry.name}"
                     + (
                         ""
                         if entry.stem == name
                         else " (names differing only in case are one file on Windows and macOS)."
-                    ),
+                    )
                 )
 
 
@@ -215,12 +212,9 @@ def _refuse_new_name_violations(module: str, content: str) -> None:
         if added:
             problems.append(f"Pipeline {pipeline_file.name!r}: " + " ".join(added))
     if problems:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Saving utility/{module}.py would break names in a pipeline that imports it. "
-                "Nothing was saved. " + " ".join(problems)
-            ),
+        raise InvalidRequestError(
+            f"Saving utility/{module}.py would break names in a pipeline that imports it. "
+            "Nothing was saved. " + " ".join(problems)
         )
 
 
@@ -301,12 +295,11 @@ def _refuse_syntax_error(module: str, content: str) -> None:
             error=err_msg,
             error_line=err_line,
         )
-        raise HTTPException(
-            status_code=400,
-            detail={
+        raise InvalidRequestError(
+            {
                 "line": err_line,
                 "message": _format_syntax_error(err_msg, err_line),
-            },
+            }
         )
 
 

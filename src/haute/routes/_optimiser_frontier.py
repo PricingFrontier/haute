@@ -29,6 +29,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._failure_answers import failure_refusal
 from haute._logging import get_logger
 from haute._polars_utils import streaming_collect
 from haute._price_contour import price_contour
@@ -52,7 +53,6 @@ from haute.routes._frontier_point_summary import (
     constraint_kinds,
     frontier_point_summary,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KEY,
@@ -999,13 +999,7 @@ class OptimiserFrontierService:
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise InsufficientMemoryError(exc.to_payload()) from None
         except WorkerError as exc:
-            logger.error(
-                "frontier_point_session_failed",
-                job_id=job_id,
-                point_index=point_index,
-                error=str(exc),
-            )
-            raise ServiceFailedError(_INTERNAL_ERROR_DETAIL) from None
+            raise failure_refusal(exc, operation="frontier_point_session") from None
         finally:
             if not adopted:
                 _remove_apply_artifact_directory(artifact_dir)

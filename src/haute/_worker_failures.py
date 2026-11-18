@@ -5,7 +5,7 @@ the warm interactive pool (:class:`haute._interactive_workers.InteractiveWorkerP
 the dedicated worker it leases (:mod:`haute._dedicated_workers`) and the versioned job
 transport (:mod:`haute._worker_protocol`) all fail through these classes. Each carries
 its job terminal reason, so a job's terminal state is read from the failure itself;
-:mod:`haute.routes._worker_failure_http` answers for each class once over HTTP.
+:mod:`haute.routes._worker_failure_refusals` answers for each class once over HTTP.
 """
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ class WorkerCrashedError(WorkerError):
             message = (
                 "The background process stopped unexpectedly before returning a result"
                 f"{exit_detail}. This usually means it crashed or was stopped by the "
-                "operating system — check the server logs, then try again."
+                "operating system. Try again."
             )
         super().__init__(
             message,

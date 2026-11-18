@@ -173,6 +173,64 @@ def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> Non
     assert pl.read_parquet(tmp_parquet)["target"].to_list() == [1.0]
 
 
+def test_training_preparation_refused_an_allocation_ends_memory_limited_naming_the_limit(
+    tmp_path,
+) -> None:
+    """An allocation the operating system refuses inside a container arrives as a Polars
+    error, not a ``MemoryError``: it ends ``memory_limited`` with the limit in force and
+    what to change, never "check the server logs"."""
+    from haute.routes._training_preparation import (
+        TrainingPreparationRequest,
+        prepare_training_data,
+    )
+
+    config = {"target": "target", "feature_columns": ["feature"]}
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "model",
+                    "data": {
+                        "label": "model",
+                        "nodeType": NodeType.MODELLING.value,
+                        "config": dict(config),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    context = ExecutionContext(
+        operation="training",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id="job-container-memory",
+        memory_limit_bytes=1_500 * 1024 * 1024,
+        memory_sampler=lambda: 1_000,
+    )
+
+    def refused(*_args: Any, **_kwargs: Any) -> Any:
+        raise pl.exceptions.ComputeError("Cannot allocate memory (os error 12)")
+
+    request = TrainingPreparationRequest(
+        graph=graph,
+        node_id="model",
+        job_id="job-container-memory",
+        source="live",
+        parquet_path=str(tmp_path / "prepared.parquet"),
+        config=config,
+    )
+    with patch("haute.routes._training_preparation.execute_lazy_graph", side_effect=refused):
+        outcome = prepare_training_data(request, execution_context=context)
+
+    failure = outcome.failure
+    assert failure is not None
+    assert failure.terminal_reason == "memory_limited"
+    assert failure.http_status_code == 507
+    assert "1.5 GiB" in failure.message
+    assert "fewer rows or columns" in failure.message
+    assert "server log" not in failure.message
+
+
 def test_deploy_score_graph_forwards_execution_context_to_lazy_executor() -> None:
     from haute.deploy._scorer import score_graph
 
@@ -1224,10 +1282,9 @@ def test_training_start_maps_admission_failure_to_http_507(
     # The public message/error is the shared curated admission wording; the
     # internal reason string stays in error_detail only.
     assert job["error"] == (
-        "Training was not started because the server does not have enough free "
-        "memory for it (the server is already using 65.0 MiB of its 64.0 MiB "
-        "memory cap). Wait for other work to finish, reduce the data size, or "
-        "run on a server with more memory, then try again."
+        "Training was not started: Haute is already using 65.0 MiB of its 64.0 MiB "
+        "memory cap. Raise HAUTE_TRAINING_PROCESS_RSS_LIMIT_MB, or wait for other work to "
+        "finish, then try again."
     )
 
 

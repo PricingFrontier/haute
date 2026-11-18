@@ -21,6 +21,7 @@ from urllib.parse import quote as escaped
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
+from structlog.testing import capture_logs
 
 from haute import _workbench_app_quotes, _workbench_app_store
 from haute._project_context import context_thread, current_project
@@ -46,6 +47,7 @@ from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec, with_quote_details
 from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
+from tests._failure_assertions import incident_in
 from tests._project import use_project
 from tests._store_servers import Target
 from tests.test_workbench_app import _graph
@@ -1102,17 +1104,71 @@ def test_a_column_dropped_under_a_running_app_closes_its_quotes(page: Page, path
     assert page.client.get("/api/app/quotes", headers=ANA).status_code == 503
 
 
-def test_a_statement_failing_on_tables_as_checked_is_raised_as_it_was(
+def test_a_statement_refused_on_tables_as_checked_is_said_with_an_incident(
     page: Page, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fails(*_args: Any, **_kwargs: Any) -> Any:
-        raise OperationalError("SELECT 1", {}, Exception("disk I/O error"))
+        raise OperationalError("SELECT 1", {}, Exception("a trigger refused it"))
 
     monkeypatch.setattr(QuoteBook, "page", fails)
 
-    with pytest.raises(OperationalError, match="disk I/O error"):
-        page.client.get("/api/app/quotes?view=team", headers=ANA)
+    with capture_logs() as logs:
+        answered = page.client.get("/api/app/quotes?view=team", headers=ANA)
+
+    assert answered.status_code == 422, answered.text
+    detail = answered.json()["detail"]
+    assert detail.startswith("The quote store refused this change")
+    assert "the quote's values are kept" in detail
+    assert "trigger" not in answered.text
+    # The database's own message is logged under the incident the answer names.
+    [record] = [log for log in logs if log.get("incident") == incident_in(detail)]
+    assert record["database_message"] == "a trigger refused it"
     # The tables still fit: the quotes stay open.
+    assert page.client.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
+
+
+def test_a_connection_lost_during_a_save_is_answered_503_and_the_retry_lands_once(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quote = page.create().json()["quote"]
+    body = page.body(quote)
+    saving = QuoteBook.save
+
+    def lost(*_args: Any, **_kwargs: Any) -> Any:
+        raise OperationalError(
+            "INSERT INTO quote_details ...",
+            {},
+            Exception("server closed the connection unexpectedly"),
+            connection_invalidated=True,
+        )
+
+    monkeypatch.setattr(QuoteBook, "save", lost)
+    answered = page.client.post(f"{address(quote)}/save", json=body, headers=ANA)
+
+    assert answered.status_code == 503, answered.text
+    assert answered.json()["detail"] == (
+        "The connection to the quote store's database was lost part-way through, so nothing "
+        "was saved. Send it again."
+    )
+    monkeypatch.setattr(QuoteBook, "save", saving)
+    retried = page.client.post(f"{address(quote)}/save", json=body, headers=ANA)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["quote"]["version"] == quote["version"] + 1
+
+
+def test_a_commit_another_program_blocks_says_so_and_leaves_the_quotes_open(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def busy(*_args: Any, **_kwargs: Any) -> Any:
+        raise OperationalError(None, None, sqlite3.OperationalError("database is locked"))
+
+    listing = QuoteBook.page
+    monkeypatch.setattr(QuoteBook, "page", busy)
+    answered = page.client.get("/api/app/quotes?view=team", headers=ANA)
+
+    assert answered.status_code == 409, answered.text
+    assert "Another program holds the quote store's file" in answered.json()["detail"]
+    monkeypatch.setattr(QuoteBook, "page", listing)
     assert page.client.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
 
 

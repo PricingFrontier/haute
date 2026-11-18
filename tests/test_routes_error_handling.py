@@ -25,10 +25,8 @@ import pytest
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
+from tests._failure_assertions import assert_unnamed, incident_in
 from tests._project import project_app, use_project
-
-_SAFE_DETAIL = "Operation failed. Check the server logs for details."
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -65,7 +63,7 @@ class TestSchemaValueErrorSanitisation:
     ``raise HTTPException(status_code=400, detail=str(e))``.
 
     The fix must either:
-      - hide the raw text behind a sanitized message (``_INTERNAL_ERROR_DETAIL``
+      - hide the raw text behind an incident (``haute._failure_answers``
         or similar), while logging the full error server-side, OR
       - restrict the raw message to a small, allow-listed domain (e.g.
         ``Unsupported file type: .xyz``) that is guaranteed not to embed
@@ -116,7 +114,7 @@ class TestSchemaValueErrorSanitisation:
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
         for forbidden_token in forbidden:
             assert forbidden_token not in detail, (
                 f"#11: /api/schema leaked internal detail: {forbidden_token!r} "
@@ -202,7 +200,7 @@ class TestSubmodelCreateValueErrorSanitisation:
             )
         assert resp.status_code == 500
         detail = resp.json()["detail"]
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
         assert "/root/secret/path.py" not in detail, (
             f"#11: /api/submodel/create leaked absolute path: {detail!r}"
         )
@@ -286,8 +284,8 @@ class TestSchemaBroadExceptionHandling:
     This masks bugs: a KeyError from a corrupted polars schema, a
     RuntimeError from a native parser crash, or an OSError from file
     permissions all look identical to the client.  The fix requires
-    that non-HTTPException failures are either:
-      1. re-classified into a meaningful HTTPException with structured
+    that non-RequestRefusedError failures are either:
+      1. re-classified into a meaningful RequestRefusedError with structured
          logging (distinct event name per error kind), OR
       2. allowed to propagate to FastAPI's default 500 handler, where
          middleware formats a generic response AND structured logging
@@ -388,16 +386,16 @@ class TestSchemaBroadExceptionHandling:
         project_client: TestClient,
         parquet_file: Path,
     ) -> None:
-        """HTTPException raised by inner helpers (e.g. 404 from a missing
+        """RequestRefusedError raised by inner helpers (e.g. 404 from a missing
         nested file) must not be caught by the broad ``except Exception``.
 
         This is the only path that the current broad catch gets right;
         the fix must preserve that behaviour.
         """
-        from fastapi import HTTPException
+        from haute.errors import RequestRefusedError
 
         def raise_http(*a, **kw):
-            raise HTTPException(status_code=404, detail="inner-404")
+            raise RequestRefusedError("inner-404", status_code=404)
 
         with patch("haute.graph_utils.read_source", side_effect=raise_http):
             resp = project_client.get(
@@ -445,8 +443,8 @@ class TestSchemaBroadExceptionStructuralFix:
             )
 
         assert resp.status_code == 500
-        assert resp.json()["detail"] == _SAFE_DETAIL
-        error_events = [e for e in captured if e.get("event") == "unhandled_exception"]
+        assert_unnamed(resp.json()["detail"])
+        error_events = [e for e in captured if e.get("event") == "unexpected_failure"]
         assert error_events, "#24: unexpected schema failure produced no structured error log"
         assert error_events[-1].get("error_class") == "RuntimeError"
         assert "native parquet decoder exploded" in error_events[-1]["traceback"]
@@ -582,12 +580,10 @@ def _handlers_app(*, raise_server_exceptions: bool = False) -> TestClient:
     from haute._execution_context import ExecutionProfile
     from haute._git import GitDomainError, GitError, GitGuardrailError
     from haute.errors import ConfigSettingError, PreambleError
-    from haute.routes._error_handlers import install_exception_handlers
-    from haute.server import _RequestIdMiddleware
+    from haute.routes._error_handlers import install_failure_answers
 
     app = FastAPI()
-    install_exception_handlers(app)
-    app.add_middleware(_RequestIdMiddleware)
+    install_failure_answers(app)
     raised = {
         "contract": PreambleError("Preamble line 3 failed", source_line=3),
         "admission": ExecutionAdmissionError(
@@ -639,20 +635,28 @@ class TestApplicationExceptionHandlers:
         detail = resp.json()["detail"]
         assert detail["error_code"] == "memory_limit"
         assert detail["reason"] == "memory_sampler_unavailable"
-        assert "message" not in detail
+        # Worded, never by its internal reason.
+        assert "could not measure its memory use" in detail["message"]
 
     @pytest.mark.parametrize(
         ("kind", "status", "detail"),
         [
             ("guardrail", 403, "protected branch"),
             ("domain", 400, "nothing to save"),
-            ("git", 400, _SAFE_DETAIL),
+            ("git", 400, "Git refused this."),
         ],
     )
     def test_git_errors_keep_their_safe_mapping(self, kind: str, status: int, detail: str) -> None:
         resp = _handlers_app().get(f"/raise/{kind}")
         assert resp.status_code == status
-        assert resp.json() == {"detail": detail}
+        answered = resp.json()["detail"]
+        if kind == "git":
+            # Git's own message can hold paths and keys: recorded under an incident only.
+            assert answered.startswith(detail)
+            assert "/home/admin" not in resp.text
+            assert_unnamed(answered)
+        else:
+            assert answered == detail
 
     def test_a_haute_validation_refusal_is_a_400_with_its_message(self) -> None:
         """A message Haute wrote for the user (a sidecar writer's refusal of a setting)
@@ -667,10 +671,11 @@ class TestApplicationExceptionHandlers:
         with structlog.testing.capture_logs() as captured:
             resp = _handlers_app().get("/raise/unexpected")
         assert resp.status_code == 500
-        assert resp.json() == {"detail": _SAFE_DETAIL}
+        detail = resp.json()["detail"]
+        assert_unnamed(detail)
         assert "secretuser" not in resp.text
         assert resp.headers["x-request-id"]
-        events = [e for e in captured if e.get("event") == "unhandled_exception"]
+        events = [e for e in captured if e.get("incident") == incident_in(detail)]
         assert events and events[-1]["error_class"] == "RuntimeError"
 
     def test_websocket_error_is_not_answered_with_an_http_response(self) -> None:

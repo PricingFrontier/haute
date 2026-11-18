@@ -73,6 +73,7 @@ def _handle_run_in_project(config: RunConfig) -> None:
     from haute._execute_lazy import _extract_error_line
     from haute._execution_admission import create_admitted_execution_context
     from haute._execution_context import ExecutionProfile
+    from haute._memory_errors import memory_error_in
     from haute._polars_utils import streaming_collect
     from haute._project_context import current_project, graph_pipeline_dir
     from haute._workbench_nodes import form_owner, with_form_tables
@@ -157,8 +158,14 @@ def _handle_run_in_project(config: RunConfig) -> None:
                         _fail(f"Error collecting the output of {label}: {e}")
                 collected.append((label, frame))
         except Exception as e:
-            # The walk names the node a failure came from, whatever the failure; only an
-            # expected one ends there, and anything else keeps its traceback.
+            # Out of memory, however it arrives, is said as every edge says it, with the
+            # limit and the setting that raises it (haute.cli._helpers.answer_command_failure).
+            if memory_error_in(e) is not None:
+                raise
+            # The walk names the node a failure came from, whatever the failure: a node's
+            # own failure is the analyst's, said with its node and line. An expected one
+            # the walk did not place ends with its own words; anything else is answered by
+            # the command line's edge.
             failed = failing_node(e)
             if failed is not None:
                 line = _extract_error_line(e)
@@ -166,8 +173,9 @@ def _handle_run_in_project(config: RunConfig) -> None:
                     f"  \u2717 {failed}{'' if line is None else f' (line {line})'}: {e}",
                     err=True,
                 )
+                _fail("")
             if isinstance(e, expected):
-                _fail("" if failed is not None else f"Error executing pipeline: {e}")
+                _fail(f"Error executing pipeline: {e}")
             raise
     finally:
         context.release_admission(preserve_primary_error=True)

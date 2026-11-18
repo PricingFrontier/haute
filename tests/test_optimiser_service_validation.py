@@ -31,6 +31,7 @@ from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
 from haute.routes._optimiser_solver import SolveContext
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+from tests._failure_assertions import assert_unnamed
 from tests.conftest import (
     make_edge,
     make_graph,
@@ -363,7 +364,7 @@ def test_build_grid_still_rejects_non_finite_scenario_grid() -> None:
         )
 
     assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == "Grid construction failed. Check the server logs for details."
+    assert_unnamed(exc_info.value.detail)
     job = store.require_job(job_id)
     assert job["status"] == "error"
     assert job["terminal_reason"] == "error"

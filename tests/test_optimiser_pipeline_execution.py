@@ -22,6 +22,7 @@ from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
 from haute.errors import ForbiddenError, RequestRefusedError
 from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
 from tests import _optimiser_route_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._optimiser_route_helpers import (
     _make_optimiser_graph,
     _make_scored_data,
@@ -738,7 +739,7 @@ class TestExecutePipelineArgs:
             assert "banding" in outputs
             assert "opt" in outputs
 
-    def test_execute_pipeline_contract_mismatch_returns_400(self, scored_data):
+    def test_execute_pipeline_contract_mismatch_returns_422(self, scored_data):
 
         from haute.errors import ContractMismatchError
         from haute.routes._job_store import JobStore
@@ -778,7 +779,8 @@ class TestExecutePipelineArgs:
                     required_columns_by_node={"source": frozenset({"volume"})},
                 )
 
-        assert exc_info.value.status_code == 400
+        # The pipeline's own contract: 422 as every edge answers it.
+        assert exc_info.value.status_code == 422
         assert "volume" in exc_info.value.detail
         job = store.require_job(job_id)
         assert job["status"] == "contract_error"
@@ -1059,8 +1061,8 @@ class TestExecutePipelineCleanup:
 
         assert plans[0]._closed
 
-    def test_execute_pipeline_error_raises_http_exception(self, scored_data):
-        """Pipeline execution errors are wrapped in HTTPException(500)."""
+    def test_an_unnamed_pipeline_failure_is_a_500_incident(self, scored_data):
+        """A pipeline failure nothing names is refused 500, in words with an incident."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -1094,6 +1096,57 @@ class TestExecutePipelineCleanup:
             with pytest.raises(RequestRefusedError) as exc_info:
                 service._execute_pipeline(body, job_id, resources)
             assert exc_info.value.status_code == 500
+        # Nothing named the failure: words and an incident, the job's message too.
+        detail = exc_info.value.detail
+        assert_unnamed(detail)
+        assert "boom" not in detail
+        assert store.require_job(job_id)["message"] == detail
+
+    def test_a_nodes_own_failure_in_setup_names_the_node(self, scored_data):
+        """A failure the walk marked with the node whose code raised it is the analyst's:
+        the solve's setup names the node and its message, and the job records the same."""
+
+        from haute.errors import mark_failing_node
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserSolveRequest
+
+        graph_dict = _make_optimiser_graph(scored_data)
+        body = optimiser_request(OptimiserSolveRequest, graph_dict)
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
+
+        def failing_execute_lazy(*args, **kwargs):
+            raised = ValueError("no rate for region 7")
+            mark_failing_node(raised, "rates")
+            raise raised
+
+        with (
+            contextlib.ExitStack() as resources,
+            patch(
+                "haute.routes._optimiser_service.execute_lazy_graph",
+                side_effect=failing_execute_lazy,
+            ),
+            patch("haute.executor._resolve_batch_scenario", return_value=None),
+            patch("haute.executor._compile_preamble", return_value={}),
+        ):
+            with pytest.raises(RequestRefusedError) as exc_info:
+                service._execute_pipeline(body, job_id, resources)
+
+        assert exc_info.value.status_code == 422
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert (detail["error_code"], detail["node_id"]) == ("node_failed", "rates")
+        assert detail["message"] == "'rates' failed: no rate for region 7"
+        job = store.require_job(job_id)
+        assert (job["status"], job["message"]) == ("contract_error", detail["message"])
 
 
 # ---------------------------------------------------------------------------
@@ -1182,7 +1235,8 @@ class TestExecutePipelineExtended:
         job = store.require_job(job_id)
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
-        assert "pipeline" in job["message"].lower()
+        assert_unnamed(job["message"])
+        assert "pipeline broke" not in job["message"]
 
     def test_execute_pipeline_preserves_configured_optimiser_data_input(
         self,
@@ -1445,7 +1499,7 @@ class TestValidateAndProject:
     """Tests for _validate_and_project."""
 
     def test_missing_columns_error(self):
-        """Missing required columns raises HTTPException with column names."""
+        """Missing required columns raises RequestRefusedError with column names."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -1867,15 +1921,12 @@ class TestBuildGrid:
             with pytest.raises(RequestRefusedError) as exc_info:
                 service._build_grid(scored_lf, [], config, "opt", job_id)
             assert exc_info.value.status_code == 500
-            assert (
-                exc_info.value.detail
-                == "Grid construction failed. Check the server logs for details."
-            )
+            assert_unnamed(exc_info.value.detail)
 
         job = store.require_job(job_id)
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
-        assert job["message"] == "Grid construction failed. Check the server logs for details."
+        assert job["message"] == exc_info.value.detail
 
     def test_build_grid_bounded_sink_failure_is_http_422(self) -> None:
         """Bounded streaming incompatibility must not be reported as a generic 500."""
@@ -2011,7 +2062,7 @@ class TestResolveDataInputFrame:
         assert job["terminal_reason"] == "contract_error"
 
     def test_no_data_raises_400(self):
-        """When no data arrives at the node, raises HTTPException."""
+        """When no data arrives at the node, raises RequestRefusedError."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService

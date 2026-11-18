@@ -9,9 +9,9 @@ and the files a run writes. The packages below come from the 9 November 2026
 codebase review. Each entry says whether it was reproduced, measured or read
 from the source against `HEAD` on that day.
 
-`MDL-01` and `MDL-02` are both a message the analyst needs arriving as
-"unexpected internal error"; they share the worker's failure mapping and go
-together. `MDL-05` removes code and has no behaviour of its own.
+`MDL-01` and `MDL-02` are both a message the analyst needs arriving as an
+incident ("Haute hit a failure it does not recognise"); they share the worker's
+failure mapping and go together. `MDL-05` removes code and has no behaviour of its own.
 
 `MDL-07` and `MDL-08` come from the review plan's sweep of 10 November 2026,
 which trained each model family through Haute and compared every way of
@@ -23,11 +23,6 @@ where it did not score.
 (Codex) over the code changed since the 31 October audit. It is about a
 model trained outside Haute, which the earlier sweep did not score, and was
 reproduced on 13 November against LightGBM's own `predict`.
-
-`MDL-10` comes from the review plan's phase 4, a sweep
-of the server and the commands on Linux (WSL2) under memory limits,
-signals and pipes. The main session ran each case again on 15 November
-2026.
 
 ## Priorities
 
@@ -42,7 +37,6 @@ signals and pipes. The main session ran each case again on 15 November
 | MDL-07 | Planned | P3 | A GLM asked to classify is refused by name, when it is trained from a script and when a Model Scoring node scores it. |
 | MDL-08 | Planned | P2 | A null in a GLM's numeric feature, or an infinity reaching an XGBoost model, is refused naming the column instead of failing the whole run with the library's own error. |
 | MDL-09 | Planned | P2 | An imported LightGBM model whose categorical feature has Boolean levels scores a False and a True as its own `predict` does, not both as missing. |
-| MDL-10 | Planned | P2 | Training that runs out of memory under a container's limit ends `memory_limited` with the limit and a remedy, not "Check the server logs". |
 
 ## Planned improvements
 
@@ -54,8 +48,8 @@ a bare `TypeError`: "date values must be ISO strings or native date/datetime
 values". Nothing checks the column first: the target's nulls are counted and
 filtered, the date column's are not. The training worker recognises only
 Haute's own validation errors as messages for the analyst, so the `TypeError`
-is answered as "Training of ... failed with an unexpected internal error
-(TypeError). The full error is recorded in the job's error details." A
+is answered as an incident: "Haute hit a failure it does not recognise
+(incident …)", its text recorded under the incident. A
 missing inception date on one row of the training data is enough. With 24
 rows: all dates planned; one null date raised the `TypeError`; an integer
 `yyyymmdd` column raised it too; a zone-aware datetime column raised Haute's
@@ -80,7 +74,7 @@ a message naming the column.
 **Evidence:** `src/haute/modelling/_evaluation.py::_date_codes`;
 `src/haute/modelling/_training_job.py::TrainingJob._build_evaluation_plan`;
 `src/haute/routes/_training_worker.py::_known_training_worker_failure`;
-`src/haute/routes/_training_worker.py::_friendly_error`.
+`src/haute/routes/_training_worker.py::_training_failure_answer`.
 
 ### MDL-02 — A tuning trial's validation message is not wrapped
 **Why:** Read from the source. The tuning loop re-raises cancellation, memory
@@ -267,8 +261,7 @@ deployed model is told only that the request failed. Training has the same
 gap for a GLM: nulls in a numeric feature raise RustyStats' "design matrix
 (X) contains 8 NaN values (0.7%)", which names no column, and the training
 worker passes on only Haute's own validation messages, so by the source the
-analyst is told "failed with an unexpected internal error
-(ValidationError)". The route was not run.
+analyst is told only of an incident. The route was not run.
 
 **Plan:** Before a GLM is fitted or scored, count the nulls and non-finite
 values in each numeric feature its terms use and refuse naming the column,
@@ -293,7 +286,7 @@ name, as proposed, or answer null for that row and carry on.
 **Evidence:** `src/haute/_mlflow_io.py::native_predictions`;
 `src/haute/modelling/_xgboost.py::XGBoostModel.matrix`;
 `src/haute/modelling/_rustystats.py::_rustystats_call`;
-`src/haute/routes/_training_worker.py::_friendly_error`;
+`src/haute/routes/_training_worker.py::_training_failure_answer`;
 `specs/modelling/high-level.md` (Unseen categorical values);
 `docs/building-models/nodes/model-score.md` (Values the model was not
 trained on).
@@ -332,27 +325,3 @@ model with a level of each type LightGBM records against the booster's own
 `src/haute/modelling/_native_encoding.py::encode_frame`;
 `src/haute/modelling/_lightgbm.py`; `specs/modelling/low-level.md`.
 
-### MDL-10 — Training that runs out of memory inside a container says so
-**Why:** Reproduced on 15 November 2026 on Linux. `haute serve` ran under a
-1,500 MiB memory limit with no swap, as a container gives it, and trained
-CatBoost on a 1.5 million row, 41 column Parquet file. The memory estimate
-cut the rows to about 297,000; data preparation then failed with "Cannot
-allocate memory (os error 12)". The job ends with status error and the
-message "Pipeline execution failed. Check the server logs for details."
-The same job with no limit completes. The preparation step maps a
-`MemoryError` to the memory message; an allocation the operating system
-refuses arrives as an `OSError` or a Polars error and falls to the
-catch-all. The analyst is told nothing they can act on.
-
-**Plan:** Treat an out-of-memory error from the operating system or from
-Polars as the memory refusal in training preparation: end
-`memory_limited` with the limit in force and what to change (fewer rows
-or columns, or a higher limit).
-
-**Acceptance:** The job above ends `memory_limited` with a message naming
-the limit and a remedy, and no reference to the server log.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_training_preparation.py`;
-`specs/execution-engine/high-level.md`.

@@ -22,6 +22,7 @@ from watchfiles import Change
 
 from haute._project_context import ProjectContext
 from tests import _server_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 from tests._server_helpers import (
     _file_input_config,
@@ -1587,15 +1588,10 @@ class TestFileWatcherParseError:
             finally:
                 loop.close()
 
-        assert broadcast_calls == [
-            {
-                "type": "parse_error",
-                "error": (
-                    "Pipeline document could not be loaded. Check the server logs for details."
-                ),
-                "source_file": "test_pipeline.py",
-            }
-        ]
+        [frame] = broadcast_calls
+        assert (frame["type"], frame["source_file"]) == ("parse_error", "test_pipeline.py")
+        assert "private" not in frame["error"]
+        assert_unnamed(frame["error"])
 
     def test_parse_error_then_success_recovers_without_restart(
         self,

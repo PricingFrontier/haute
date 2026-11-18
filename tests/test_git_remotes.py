@@ -852,11 +852,13 @@ class TestRemotesAndPush:
         with pytest.raises(GitDomainError) as refused:
             push_working_pair("origin", repo, cwd=repo)
 
-        assert str(refused.value) == (
+        said = str(refused.value)
+        assert said.startswith(
             "'origin' refused the push, so nothing was published and your work is unchanged. "
-            "The Haute server log has its reason, for example a branch rule or missing write "
-            "access."
+            "Its reason, for example a branch rule or missing write access, is recorded under "
+            "incident "
         )
+        assert "server log" not in said
         assert self._remote_refs(repo, bare) == ["refs/heads/main"]
 
     def test_bootstrap_race_with_same_default_tip_publishes_pair(

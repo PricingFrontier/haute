@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests import _server_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 from tests._server_helpers import (
     DOCUMENT_FINGERPRINT_HEADER,
@@ -531,15 +532,9 @@ class TestWebSocketResync:
                 )
             )
 
-        assert ws.frames == [
-            {
-                "type": "parse_error",
-                "error": (
-                    "Pipeline document could not be loaded. Check the server logs for details."
-                ),
-                "source_file": "test_pipeline.py",
-            }
-        ]
+        [frame] = ws.frames
+        assert (frame["type"], frame["source_file"]) == ("parse_error", "test_pipeline.py")
+        assert_unnamed(frame["error"])
 
     def test_resync_rejects_non_discovered_python_file_without_parsing(
         self,

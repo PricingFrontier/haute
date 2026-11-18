@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any, cast
 
 from haute._execution_context import ExecutionCancellationToken
+from haute._failure_answers import (
+    FAILURE_ANSWER_PAYLOAD_KEY,
+    FailureAnswer,
+    answer_failure,
+    record_incident,
+)
 from haute._logging import get_logger
 from haute._worker_failures import WorkerCrashedError, WorkerError, WorkerRemoteError
 from haute._worker_isolation import IsolatedWorkerConfig
@@ -313,6 +319,9 @@ class _UnrecordedOutcome:
 
     error: str
     error_class: str
+    #: What the job's status says of it, with the incident its failure was logged under.
+    message: str
+    incident: str | None
     recorded_at: float  # time.monotonic()
 
 
@@ -362,8 +371,12 @@ class IsolatedJobSupervisor:
             settled = self._lifecycle.transition(
                 job_id,
                 to="error",
-                message=_UNRECORDED_OUTCOME_MESSAGE,
-                fields={"error": failure.error, "supervisor_error_class": failure.error_class},
+                message=failure.message,
+                fields={
+                    "error": failure.error,
+                    "supervisor_error_class": failure.error_class,
+                    "incident": failure.incident,
+                },
             )
         except BaseException:
             with self._failures_lock:
@@ -381,8 +394,18 @@ class IsolatedJobSupervisor:
                 for kept_id, kept in self._unrecorded.items()
                 if now - kept.recorded_at < ttl_seconds
             }
+            incident = record_incident(
+                cause, event="isolated_job_outcome_unrecorded", job_id=job_id
+            )
             self._unrecorded[job_id] = _UnrecordedOutcome(
-                error=str(cause), error_class=type(cause).__name__, recorded_at=now
+                error=str(cause),
+                error_class=type(cause).__name__,
+                message=(
+                    "The job ended, but Haute could not record its outcome; why is recorded "
+                    f"under incident {incident}. Run it again."
+                ),
+                incident=incident,
+                recorded_at=now,
             )
 
     def launch_protocol(
@@ -476,10 +499,7 @@ class IsolatedJobSupervisor:
         try:
             start_job_thread(thread)
         except BaseException as exc:
-            outcome = _unexpected_supervisor_outcome(
-                exc,
-                message_prefix="Failed to start isolated supervisor: ",
-            )
+            outcome = _unexpected_supervisor_outcome(exc)
             outcome = self._finish_outcome(job_id, outcome, on_finished)
             self._persist_terminal_outcome(
                 job_id,
@@ -507,17 +527,16 @@ class IsolatedJobSupervisor:
             reported = failure_fields.get("execution_metrics")
             if failure_metrics is not None and isinstance(reported, dict):
                 failure_fields["execution_metrics"] = failure_metrics(reported)
+            terminal_reason, message, answered = _worker_terminal_answer(exc)
+            for key, value in answered.items():
+                failure_fields.setdefault(key, value)
             return _SupervisorOutcome(
-                terminal_reason=_coerce_worker_terminal_reason(exc.terminal_reason),
-                message=_worker_terminal_message(exc),
+                terminal_reason=terminal_reason,
+                message=message,
                 fields=failure_fields,
             )
         except BaseException as exc:
-            return _unexpected_supervisor_outcome(
-                exc,
-                generic_message=True,
-                report_exception=True,
-            )
+            return _unexpected_supervisor_outcome(exc, report_exception=True)
         return _SupervisorOutcome(
             terminal_reason="completed",
             message=completed_message,
@@ -594,12 +613,6 @@ class IsolatedJobSupervisor:
             raise RuntimeError(f"Isolated job {job_id!r} has incoherent terminal status and reason")
 
 
-_UNRECORDED_OUTCOME_MESSAGE = (
-    "The job finished, but the server could not record its outcome. "
-    "Check the server logs, then run it again."
-)
-
-
 def _coerce_worker_terminal_reason(reason: str) -> TerminalReason:
     if reason in TERMINAL_REASONS:
         return cast(TerminalReason, reason)
@@ -609,47 +622,55 @@ def _coerce_worker_terminal_reason(reason: str) -> TerminalReason:
 def _unexpected_supervisor_outcome(
     exc: BaseException,
     *,
-    message_prefix: str = "",
-    generic_message: bool = False,
     report_exception: bool = False,
 ) -> _SupervisorOutcome:
-    message = (
-        "Unexpected isolated worker supervisor failure."
-        if generic_message
-        else f"{message_prefix}{exc}"
-    )
-    fields: dict[str, Any] = {
+    """A supervisor that failed itself, answered in words with an incident."""
+    answer = answer_failure(exc, operation="isolated_job_supervisor")
+    fields = {
+        **_answer_fields(answer),
         "supervisor_error_class": type(exc).__name__,
     }
-    if not generic_message:
-        fields["error"] = str(exc)
     return _SupervisorOutcome(
-        terminal_reason="error",
-        message=message,
+        terminal_reason=_coerce_worker_terminal_reason(answer.terminal_reason),
+        message=answer.message,
         fields=fields,
         exception_to_report=exc if report_exception else None,
     )
 
 
-def _worker_terminal_message(exc: WorkerError) -> str:
-    """Prefer a child-curated user-facing message over the typed wrapper text.
+def _answer_fields(answer: FailureAnswer) -> dict[str, Any]:
+    """A failure answer's job fields, past the diagnostic ``error`` text the job keeps."""
+    return {key: value for key, value in answer.job_fields().items() if key != "error"}
+
+
+def _worker_terminal_answer(exc: WorkerError) -> tuple[TerminalReason, str, dict[str, Any]]:
+    """The job's end state and message for a worker failure, and the answer's fields.
 
     A worker failure payload whose fields carry ``WORKER_USER_MESSAGE_FIELD``
-    vouches that the value is safe and informative to show verbatim; the
-    "Isolated worker raised {type}: {message}" wrapper stays in the diagnostic
-    ``error`` field (see ``_isolated_worker_failure_fields``).
+    vouches that the value is safe and informative to show verbatim. Any other is put
+    into words by :func:`haute._failure_answers.answer_failure`, an incident for a failure
+    nothing names; the "Isolated worker raised {type}: {message}" wrapper stays in the
+    diagnostic ``error`` field (see ``_isolated_worker_failure_fields``).
     """
     fields = getattr(exc, "fields", None)
-    if isinstance(fields, Mapping):
+    # A child that classified its failure sent its answer: that answer decides, ahead of the
+    # message a worker writes for a failure only it can word.
+    if isinstance(fields, Mapping) and FAILURE_ANSWER_PAYLOAD_KEY not in fields:
         user_message = fields.get(WORKER_USER_MESSAGE_FIELD)
         if isinstance(user_message, str) and user_message:
-            return user_message
-    return str(exc)
+            return _coerce_worker_terminal_reason(exc.terminal_reason), user_message, {}
+    # Otherwise the job ends as its answer says: a broken protocol or a crash nothing
+    # names is Haute's fault, an error with its incident, never the request's.
+    answer = answer_failure(exc, operation="isolated_job")
+    terminal = _coerce_worker_terminal_reason(answer.terminal_reason)
+    return terminal, answer.message, _answer_fields(answer)
 
 
 def _isolated_worker_failure_fields(exc: WorkerError) -> dict[str, Any]:
     worker_fields = getattr(exc, "fields", None)
     fields: dict[str, Any] = dict(worker_fields) if isinstance(worker_fields, Mapping) else {}
+    # The transport's answer is the job's fields once answered, never a field of its own.
+    fields.pop(FAILURE_ANSWER_PAYLOAD_KEY, None)
     # The supervisor claims the "error" field for the typed wrapper text, but
     # the child's own diagnostic text (typically the raw exception message)
     # must survive the overwrite — it moves to "worker_error".

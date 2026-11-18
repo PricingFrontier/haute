@@ -19,7 +19,6 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._chunked_writes import ChunkedWrite
 from haute._execution_context import (
@@ -47,6 +46,7 @@ from haute.routes._training_preparation import (
     build_training_feature_selection,
 )
 from haute.routes._training_worker import _job_elapsed_seconds
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 from tests._training_helpers import join_training_preparation
 from tests.conftest import make_edge, make_graph, make_ram_estimate, make_ready_file_input_config
@@ -187,7 +187,9 @@ class TestEstimateRamFailure:
         detail = exc_info.value.detail
         assert isinstance(detail, dict)
         assert detail["error_code"] == "training_memory_estimate_failed"
-        assert detail["error"] == "probe blew up"
+        # What stopped the probe is an incident, its text logged, never said.
+        assert detail["incident"] in detail["message"]
+        assert "probe blew up" not in str(detail)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +257,7 @@ class TestCheckGpuFallbackFailure:
 
 class TestPreparationMissingTarget:
     def test_no_target_lf_becomes_an_error_outcome(self, tmp_path):
-        """If no LazyFrame arrives at the target node, fail with HTTP 500."""
+        """No data arriving at the modelling node is the pipeline's to fix: a 400 saying so."""
         body = _source_only_request()
         parquet_path = tmp_path / "prepared.parquet"
 
@@ -278,9 +280,9 @@ class TestPreparationMissingTarget:
 
         failure = outcome.failure
         assert failure is not None
-        assert failure.http_status_code == 500
-        assert failure.terminal_reason == "error"
-        assert "Pipeline execution failed" in failure.message
+        assert failure.http_status_code == 400
+        assert failure.terminal_reason == "contract_error"
+        assert failure.message.startswith("No training data arrived at the modelling node.")
         assert not parquet_path.exists()
 
 
@@ -978,7 +980,7 @@ class TestPreparationCleanupAbsentPaths:
         assert outcome.failure.terminal_reason == "contract_error"
 
     def test_http_failure_when_temp_absent(self, tmp_path: Path):
-        """An HTTPException raised inside the body keeps its status code."""
+        """An RequestRefusedError raised inside the body keeps its status code."""
 
         def lazy(*a, **k):
             raise RequestRefusedError("teapot", status_code=418)
@@ -1165,7 +1167,7 @@ class TestStartExecutionContextLifecycle:
         (job_id,) = store.list_jobs()
         job = store.require_job(job_id)
         assert job["status"] == "error"
-        assert "failed to start" in job["message"]
+        assert_unnamed(job["message"])
         assert service._training_jobs.cancel(job_id) is False
 
 
@@ -1631,7 +1633,7 @@ class TestPreparationTerminalPaths:
 
         service._persist_preparation_refusal(
             job_id,
-            HTTPException(status_code=500, detail="preparation exploded"),
+            RequestRefusedError("preparation exploded", status_code=500),
         )
 
         job = store.require_job(job_id)

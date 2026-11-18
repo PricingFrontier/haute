@@ -23,9 +23,10 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 import structlog.testing
-from fastapi import HTTPException
 from mlflow.store.entities.paged_list import PagedList
 
+from haute.errors import RequestRefusedError
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 
 
@@ -118,7 +119,7 @@ class TestListExperiments:
         """Returns 503 when mlflow is not installed."""
         with patch(
             "haute.routes.mlflow._ensure_tracking",
-            side_effect=HTTPException(status_code=503, detail="not installed"),
+            side_effect=RequestRefusedError("not installed", status_code=503),
         ):
             resp = client.get("/api/mlflow/experiments")
 
@@ -934,7 +935,7 @@ class TestEnsureTracking:
         """When mlflow is not installed, _ensure_tracking raises 503."""
         with patch(
             "haute.routes.mlflow._ensure_tracking",
-            side_effect=HTTPException(status_code=503, detail="mlflow is not installed"),
+            side_effect=RequestRefusedError("mlflow is not installed", status_code=503),
         ):
             resp = client.get("/api/mlflow/experiments")
         assert resp.status_code == 503
@@ -944,14 +945,14 @@ class TestEnsureTracking:
         """When tracking backend cannot be resolved, _ensure_tracking raises 502."""
         with patch(
             "haute.routes.mlflow._ensure_tracking",
-            side_effect=HTTPException(status_code=502, detail="Cannot resolve tracking backend"),
+            side_effect=RequestRefusedError("Cannot resolve tracking backend", status_code=502),
         ):
             resp = client.get("/api/mlflow/experiments")
         assert resp.status_code == 502
 
     def test_503_propagates_to_all_endpoints(self, client):
         """503 from _ensure_tracking propagates to all MLflow endpoints."""
-        side_effect = HTTPException(status_code=503, detail="not installed")
+        side_effect = RequestRefusedError("not installed", status_code=503)
 
         for path in [
             "/api/mlflow/experiments",
@@ -983,11 +984,11 @@ class TestEnsureTrackingDirect:
                 side_effect=RuntimeError("tracking backend misconfigured"),
             ),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 _ensure_tracking()
 
         assert exc_info.value.status_code == 502
-        assert "Check the server logs" in str(exc_info.value.detail)
+        assert_unnamed(str(exc_info.value.detail))
 
     def test_mlflow_client_initialization_failure_becomes_502(self):
         from haute.modelling._mlflow_settings import TrackingConfig
@@ -1002,11 +1003,11 @@ class TestEnsureTrackingDirect:
                 return_value=TrackingConfig("local", "sqlite:///mlruns", "sqlite:///mlruns", "env"),
             ),
         ):
-            with pytest.raises(HTTPException) as exc_info:
+            with pytest.raises(RequestRefusedError) as exc_info:
                 _ensure_tracking()
 
         assert exc_info.value.status_code == 502
-        assert "Check the server logs" in str(exc_info.value.detail)
+        assert_unnamed(str(exc_info.value.detail))
 
     def test_local_backend_opts_into_mlflow_file_store_before_client_init(self, monkeypatch):
         from haute.modelling._mlflow_settings import TrackingConfig
@@ -1082,7 +1083,7 @@ class TestEnsureTrackingDirect:
         monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             _ensure_tracking("databricks")
         assert excinfo.value.status_code == 502
         assert "DATABRICKS_MLFLOW_HOST" in excinfo.value.detail

@@ -21,14 +21,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._graph_walker import CollectPolicy, walk_graph
+from tests._failure_assertions import assert_unnamed
 from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests.job_store_support import seed_job
 from tests.training_artifacts_support import publish_trained_job
 
 # -- Shared constants and helpers ------------------------------------------
-
-_SAFE_DETAIL = "Operation failed. Check the server logs for details."
 
 
 def _completed_modelling_result() -> object:
@@ -421,8 +420,8 @@ class TestSafeDetailOnError:
         assert resp.status_code == expected_status
         detail = resp.json()["detail"]
         for substr in forbidden:
-            assert substr not in detail
-        assert "Check the server logs" in detail
+            assert substr not in str(detail)
+        assert_unnamed(detail)
 
     # -- MLflow model-versions needs two patches --
 
@@ -444,7 +443,7 @@ class TestSafeDetailOnError:
         assert resp.status_code == 502
         detail = resp.json()["detail"]
         assert "/Users/admin/secret" not in detail
-        assert "Check the server logs" in detail
+        assert_unnamed(detail)
 
     # -- Pipeline routes need the pipeline_graph fixture --
 
@@ -470,7 +469,7 @@ class TestSafeDetailOnError:
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "/home/user/secret.py" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
     def test_pipeline_preview_500_no_leak(self, client: TestClient, pipeline_graph) -> None:
         node_id = pipeline_graph.nodes[0].id
@@ -487,7 +486,7 @@ class TestSafeDetailOnError:
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "0x7fff" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
     def test_pipeline_sink_500_no_leak(self, client: TestClient, tmp_path: Path) -> None:
 
@@ -521,7 +520,7 @@ class TestSafeDetailOnError:
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "/secure/dir/" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
 
 # =====================================================================
@@ -559,7 +558,7 @@ class TestOptimiserRoutesSafeDetail:
         detail = resp.json()["detail"]
         assert "segfault" not in detail
         assert "0xdead" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
     def test_save_oserror_no_path_leak(
         self, client: TestClient, clean_job_store, tmp_path, monkeypatch
@@ -598,7 +597,7 @@ class TestOptimiserRoutesSafeDetail:
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "/secure/results/" not in detail
-        assert "Check the server logs" in detail
+        assert_unnamed(detail)
 
     def test_mlflow_log_500_no_leak(self, client: TestClient, clean_job_store) -> None:
         store = clean_job_store
@@ -634,7 +633,7 @@ class TestOptimiserRoutesSafeDetail:
         assert resp.status_code == 500
         detail = resp.json()["detail"]
         assert "internal-mlflow.corp" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
 
 class TestModellingRoutesSafeDetail:
@@ -658,7 +657,7 @@ class TestModellingRoutesSafeDetail:
             assert resp.status_code == 500
             detail = resp.json()["detail"]
             assert "/opt/simba/lib" not in detail
-            assert detail == _SAFE_DETAIL
+            assert_unnamed(detail)
         finally:
             _store.delete_job("test_err")
 
@@ -676,9 +675,9 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         "/api/databricks/warehouses",
         None,
         lambda err: _databricks_client_patch("warehouses.list", err),
-        # Unexpected failures are logged, with their traceback, by the
-        # application's unexpected-exception handler in the server module.
-        "haute.server",
+        # A failure nothing names is logged, with its traceback, under its incident
+        # by the failure answers.
+        "haute._failure_answers",
         "secret-err",
         500,
         id="databricks-warehouses-log",
@@ -688,8 +687,8 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         "/api/json-cache/infer",
         {"json": {"path": "data.jsonl"}},
         _json_cache_infer_patch,
-        # Left to the application's unexpected-exception handler, like Databricks.
-        "haute.server",
+        # Left to the failure answers, like Databricks.
+        "haute._failure_answers",
         "internal-json-error",
         500,
         id="json-cache-infer-log",
@@ -770,7 +769,7 @@ class TestLogOnError:
                 "haute.routes.pipeline.execute_trace",
                 side_effect=RuntimeError("real-trace-error"),
             ),
-            patch("haute.server.logger", mock_logger),
+            patch("haute._failure_answers.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/trace",
@@ -795,7 +794,7 @@ class TestLogOnError:
                 "haute.routes.pipeline.execute_graph",
                 side_effect=RuntimeError("real-preview-error"),
             ),
-            patch("haute.server.logger", mock_logger),
+            patch("haute._failure_answers.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/preview",
@@ -815,7 +814,7 @@ class TestLogOnError:
                 "haute.routes.pipeline._output_write_transaction",
                 side_effect=RuntimeError("real-sink-error"),
             ),
-            patch("haute.server.logger", mock_logger),
+            patch("haute._failure_answers.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/write-output",
@@ -849,28 +848,29 @@ class TestDomainErrorsStillExposed:
         """Phase 1C #11: ``GitError`` HTTP responses are sanitized.
 
         Raw ``git`` stderr (which commonly embeds absolute paths, remote
-        URLs, SSL errors, and credentials) is kept in the structured
-        server log only -- the HTTP body contains ``_INTERNAL_ERROR_DETAIL``.
-        Hand-written domain messages travel through a dedicated
+        URLs, SSL errors, and credentials) is kept under an incident in the
+        structured log only -- the HTTP body says git refused and names the
+        incident. Hand-written domain messages travel through a dedicated
         :class:`GitGuardrailError` subclass that remains user-facing.
         """
         from haute._git import GitError
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
         with patch(
             "haute.routes.git.working_branch_status",
-            side_effect=GitError("No git repository found"),
+            side_effect=GitError("fatal: /home/admin/repo: No git repository found"),
         ):
             resp = client.get("/api/git/working-branch")
         assert resp.status_code == 400
-        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        detail = resp.json()["detail"]
+        assert detail.startswith("Git refused this.")
+        assert "/home/admin" not in str(detail)
+        assert_unnamed(detail)
 
     # Phase 1C #11: this test's former assertion (raw "Unsupported
     # file format" text surfacing verbatim) is superseded by
-    # ``test_file_schema_value_error_sanitized`` above -- the new
-    # contract hides all ValueError detail behind
-    # ``_INTERNAL_ERROR_DETAIL`` so absolute paths / tracebacks / git
-    # output cannot leak through ``str(exc)``.
+    # ``test_file_schema_value_error_sanitized`` above -- an unnamed
+    # ValueError is answered with an incident, so absolute paths /
+    # tracebacks / git output cannot leak through ``str(exc)``.
 
     def test_databricks_missing_credentials_exposed(self, tmp_path, monkeypatch) -> None:
         use_project(tmp_path)
@@ -882,34 +882,6 @@ class TestDomainErrorsStillExposed:
         resp = c.get("/api/databricks/warehouses")
         assert resp.status_code == 503
         assert "DATABRICKS_HOST" in resp.json()["detail"]
-
-
-# =====================================================================
-# E3: Constant consistency check
-# =====================================================================
-
-
-class TestInternalErrorDetailConstant:
-    """Verify that each route module defines the safe error constant."""
-
-    @pytest.mark.parametrize(
-        "module_path",
-        [
-            "haute.server",
-            # Every route answers an unclassified worker failure through it.
-            "haute.routes._worker_failure_http",
-            # The frontier service records it as a failed sweep's message.
-            "haute.routes._optimiser_frontier",
-            "haute.routes.git",
-            "haute.routes.mlflow",
-        ],
-    )
-    def test_module_has_internal_error_detail(self, module_path: str) -> None:
-        import importlib
-
-        mod = importlib.import_module(module_path)
-        assert hasattr(mod, "_INTERNAL_ERROR_DETAIL")
-        assert "Check the server logs" in mod._INTERNAL_ERROR_DETAIL
 
 
 # =====================================================================
@@ -1144,8 +1116,8 @@ class TestSensitiveInfoLeakage:
         assert resp.status_code == expected_status
         detail = resp.json()["detail"]
         for substr in forbidden:
-            assert substr not in detail
-        assert "Check the server logs" in detail
+            assert substr not in str(detail)
+        assert_unnamed(detail)
 
     # -- Cases that need special setup (not easily parametrizable) --
 
@@ -1218,7 +1190,7 @@ class TestSensitiveInfoLeakage:
         assert "site-packages" not in detail
         assert "File " not in detail
         assert "Traceback" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
     def test_preview_traceback_string_no_leak(self, client: TestClient, pipeline_graph) -> None:
         """POST /api/pipeline/preview -- traceback-containing error must not leak."""
@@ -1242,7 +1214,7 @@ class TestSensitiveInfoLeakage:
         assert "executor.py" not in detail
         assert "exec(" not in detail
         assert "safe_globals" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
     def test_sink_cpython_error_no_leak(self, client: TestClient) -> None:
         """POST /api/pipeline/write-output -- CPython info in error must not leak."""
@@ -1265,7 +1237,7 @@ class TestSensitiveInfoLeakage:
         assert "CPython" not in detail
         assert "3.11.5" not in detail
         assert "GCC" not in detail
-        assert detail == _SAFE_DETAIL
+        assert_unnamed(detail)
 
     def test_optimiser_mlflow_log_tracking_uri_no_leak(self, client: TestClient) -> None:
         """POST /api/optimiser/mlflow/log -- databricks:// URI must not leak."""
@@ -1307,7 +1279,7 @@ class TestSensitiveInfoLeakage:
             detail = resp.json()["detail"]
             assert "dapi_secret" not in detail
             assert "acme.cloud.databricks.com" not in detail
-            assert detail == _SAFE_DETAIL
+            assert_unnamed(detail)
         finally:
             _store.clear_all()
 
@@ -1335,7 +1307,7 @@ class TestSensitiveInfoLeakage:
             assert "mlflow_admin" not in detail
             assert "db.internal.corp" not in detail
             assert "5432" not in detail
-            assert detail == _SAFE_DETAIL
+            assert_unnamed(detail)
         finally:
             _store.delete_job("test_pg_leak")
 

@@ -11,15 +11,21 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 
+from haute._failure_answers import failure_refusal
 from haute._file_ops import atomic_copy_files
 from haute._logging import get_logger
 from haute._node_addresses import labelled, resolved_request
 from haute._path_resolution import RuntimePathError
 from haute._project_context import current_project
-from haute.errors import HauteValidationError, RequestRefusedError
+from haute.errors import (
+    ConflictError,
+    HauteValidationError,
+    InvalidRequestError,
+    RequestRefusedError,
+)
 from haute.modelling._model_export import (
     MODEL_FILE_SUFFIXES,
     resolve_model_export_destination,
@@ -34,8 +40,7 @@ from haute.routes._export_receipts import (
 )
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
-from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
-from haute.routes._runtime_path_errors import runtime_path_http_exception
+from haute.routes._mlflow_log_errors import mlflow_log_refusal, require_mlflow_installed
 from haute.routes._training_artifacts import (
     hold_training_artifacts,
     require_training_artifacts,
@@ -382,10 +387,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             return _log_response_from_receipt(recorded)
         result: TrainResponse | None = job.get("result")
         if result is None or result.evaluation is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Completed training result has no evaluation report",
-            )
+            raise InvalidRequestError("Completed training result has no evaluation report")
         artifacts = require_training_artifacts(job)
         config = job.get("config", {})
         node_label = job.get("node_label", "model")
@@ -393,7 +395,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         try:
             _tracking_uri, backend = resolve_tracking_backend(body.destination)
         except MlflowConfigError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise InvalidRequestError(str(exc))
 
         # The request carries the node's current Export setting; the job's
         # training-time config snapshot is never a fallback.
@@ -463,14 +465,14 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             )
             record_receipt(_store, body.job_id, "mlflow", receipt.model_dump(mode="json"))
             return _log_response_from_receipt(receipt.model_dump(mode="json"))
-        except (HTTPException, RequestRefusedError):
+        except RequestRefusedError:
             raise
         except HauteValidationError as exc:
             # Haute's own artifact checks (an unloadable model, an incomplete
             # contract) fail before any run is created and say how to fix it.
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise InvalidRequestError(str(exc)) from None
         except Exception as exc:
-            raise mlflow_log_http_exception(exc, job_id=body.job_id) from None
+            raise mlflow_log_refusal(exc, job_id=body.job_id) from None
 
 
 @router.post("/save/destination", response_model=ModelSaveDestinationResponse)
@@ -483,7 +485,7 @@ def model_save_destination(body: ModelSaveDestinationRequest) -> ModelSaveDestin
             project_root=current_project().root,
         )
     except RuntimePathError as exc:
-        raise runtime_path_http_exception(exc) from None
+        raise failure_refusal(exc) from None
     return ModelSaveDestinationResponse(
         path=destination.display_path,
         suffix_mismatch=destination.suffix_mismatch,
@@ -527,14 +529,10 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
                 project_root=current_project().root,
             )
         except RuntimePathError as exc:
-            raise runtime_path_http_exception(exc) from None
+            raise failure_refusal(exc) from None
         if destination.suffix_mismatch:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Model file path must end with {source_model.suffix}, "
-                    "the trained model's format."
-                ),
+            raise InvalidRequestError(
+                f"Model file path must end with {source_model.suffix}, the trained model's format."
             )
 
         contract_name = model_contract_filename(destination.path.stem)
@@ -549,7 +547,7 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
                     "error_code": "model_file_exists",
                     "message": f"Model file already exists: {destination.display_path}",
                 }
-                raise HTTPException(status_code=409, detail=exists_detail)
+                raise ConflictError(exists_detail)
 
             try:
                 destination.path.parent.mkdir(parents=True, exist_ok=True)
@@ -560,11 +558,9 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
                     ]
                 )
             except OSError as exc:
-                logger.error("model_save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail="Filesystem error saving the model. Check the server logs for details.",
-                ) from None
+                # A model file another program holds, a read-only one or a full disk, named;
+                # anything else an incident.
+                raise failure_refusal(exc, operation="model_save") from None
     logger.info("model_saved", path=str(destination.path), job_id=body.job_id)
     record_receipt(
         _store,
@@ -606,7 +602,7 @@ async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
         script = generate_training_script(config, data_path)
     except TrainingConfigError as exc:
         logger.warning("modelling_export_invalid_config", error=str(exc), node_id=body.node_id)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise InvalidRequestError(str(exc)) from exc
     filename = f"train_{config.get('name', 'model')}.py"
 
     return ExportScriptResponse(script=script, filename=filename)

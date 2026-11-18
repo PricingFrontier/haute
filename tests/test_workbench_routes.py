@@ -24,7 +24,7 @@ from haute._project_context import context_thread
 from haute._workbench_folder import folder_revision
 from haute._workbench_form import QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_STORE_ONLY
 from haute._workbench_params import params_files
-from haute.routes._error_handlers import install_exception_handlers
+from haute.routes._error_handlers import install_failure_answers
 from haute.routes.workbench import router
 from tests._project import use_project
 from tests._workbench_helpers import FORM, enable, form_files, write_form
@@ -104,7 +104,7 @@ def files_of(project: Path) -> dict[str, bytes]:
 
 def app() -> FastAPI:
     application = FastAPI()
-    install_exception_handlers(application)
+    install_failure_answers(application)
     application.include_router(router)
     return application
 

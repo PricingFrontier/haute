@@ -18,9 +18,9 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._project_context import context_thread
+from haute.errors import RequestRefusedError
 from haute.routes._optimiser_solver import _as_solved_adjustments
 from haute.routes.optimiser import _build_artifact_payload
 from tests import _optimiser_route_helpers
@@ -1510,7 +1510,7 @@ class TestSaveArtifactGate:
     ):
         from haute.routes.optimiser import _validate_artifact_payload
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             _validate_artifact_payload(payload)
 
         assert exc_info.value.status_code == 400
@@ -1764,7 +1764,10 @@ class TestMlflowLogExceptionPath:
         log_error.assert_called_once()
         assert log_error.call_args.args == ("mlflow_log_failed",)
         # Category and type only: the raw text never reaches the log.
-        assert log_error.call_args.kwargs == {
+        logged = dict(log_error.call_args.kwargs)
+        # The incident the answer names, so the record can be found from what was said.
+        assert logged.pop("incident") in resp.json()["detail"]
+        assert logged == {
             "category": "unknown",
             "error_type": "RuntimeError",
             "job_id": "mlf_err",

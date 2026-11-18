@@ -505,13 +505,14 @@ class TestDeploy:
 
         assert result.exit_code == 1
 
-    def test_deploy_unexpected_runtime_error_propagates(
+    def test_deploy_unexpected_runtime_error_is_an_incident(
         self,
         runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Backend programming failures retain their original exception type."""
+        """A backend programming failure is not relabelled as a deployment failure: it ends
+        the command as an incident, its traceback written to the incident's record."""
         use_project(tmp_path)
         _make_toml(tmp_path)
         monkeypatch.setenv("CI", "true")
@@ -524,8 +525,10 @@ class TestDeploy:
         ):
             result = runner.invoke(cli, ["deploy"])
 
-        assert isinstance(result.exception, RuntimeError)
+        assert result.exit_code == 1
+        assert "does not recognise (incident " in result.output
         assert "Deployment failed" not in result.output
+        assert "Traceback" not in result.output
 
     def test_endpoint_suffix_override(
         self,
@@ -571,7 +574,7 @@ class TestResolutionFailures:
         assert isinstance(result.exception, SystemExit)
         assert f"Resolution failed: {failure}" in result.output
 
-    def test_a_type_error_reaches_the_terminal_with_its_traceback(
+    def test_a_type_error_is_an_incident_not_a_resolution_failure(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         use_project(tmp_path)
@@ -583,5 +586,5 @@ class TestResolutionFailures:
             result = runner.invoke(cli, ["deploy", "--dry-run"])
 
         assert result.exit_code == 1
-        assert isinstance(result.exception, TypeError)
+        assert "does not recognise (incident " in result.output
         assert "Resolution failed" not in result.output

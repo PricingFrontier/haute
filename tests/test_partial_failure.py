@@ -799,17 +799,17 @@ class TestOutOfMemoryDuringCollect:
         assert not tmp_parquet.exists()
 
     def test_memory_error_message_is_actionable(self) -> None:
-        """_friendly_error produces a useful message for memory errors.
+        """A fit that ran out of memory is answered as a memory outcome, with what to do.
 
         Catches: raw "MemoryError" shown to user with no guidance on
         how to fix it (e.g. reduce data, increase row_limit).
         """
-        from haute.routes._training_worker import _friendly_error
+        from haute.routes._training_worker import _training_failure_answer
 
-        err = MemoryError("cannot allocate memory")
-        msg = _friendly_error(err)
-        # Should contain the type name so user knows it's a memory issue
-        assert "MemoryError" in msg or "memory" in msg.lower()
+        answer = _training_failure_answer(MemoryError("cannot allocate memory"))
+        assert (answer.code, answer.terminal_reason) == ("memory_limit", "memory_limited")
+        assert "memory" in answer.message.lower()
+        assert "fewer rows" in answer.message
 
     def test_gc_collect_called_after_failed_sink(self) -> None:
         """Verify that gc.collect is invoked in the cleanup path.

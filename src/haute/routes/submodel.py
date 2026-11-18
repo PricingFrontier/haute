@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
@@ -17,7 +17,15 @@ from haute._submodel_paths import (
     validate_submodel_definition_id,
 )
 from haute._types import PipelineGraph, SubmodelInstanceConfig
-from haute.errors import ConfigError, ParseError
+from haute.errors import (
+    ConfigError,
+    ConflictError,
+    InvalidRequestError,
+    NotFoundError,
+    ParseError,
+    RequestRefusedError,
+    UnprocessableError,
+)
 from haute.routes._helpers import (
     load_pipeline_editor_document,
     load_sidecar_positions,
@@ -43,10 +51,7 @@ SUBMODEL_INSTANCE_ROUTE: Final[Literal["/api/submodel/instance"]] = "/api/submod
 
 def _require_parent_source_file(source_file: str) -> None:
     if not source_file.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="source_file is required to identify the parent pipeline.",
-        )
+        raise InvalidRequestError("source_file is required to identify the parent pipeline.")
 
 
 def _load_parent_document(source_file: str) -> tuple[Path, Path, str]:
@@ -59,18 +64,15 @@ def _load_parent_document(source_file: str) -> tuple[Path, Path, str]:
     project_root = current_project().root
     parent_path = contained_path(project_root, source_file)
     if not parent_path.is_file():
-        raise HTTPException(status_code=404, detail="Parent pipeline file not found.")
+        raise NotFoundError("Parent pipeline file not found.")
     editor_document = load_pipeline_editor_document(
         parent_path,
         project_root=project_root,
     )
     if editor_document.load_status != "ready":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "The parent pipeline is not ready on disk. Reload it and resolve "
-                "its diagnostics before changing submodels."
-            ),
+        raise ConflictError(
+            "The parent pipeline is not ready on disk. Reload it and resolve "
+            "its diagnostics before changing submodels."
         )
     if editor_document.source_revision is None:
         raise RuntimeError("Ready parent pipeline did not produce a source revision.")
@@ -91,15 +93,12 @@ def _require_valid_configs(graph: PipelineGraph) -> None:
         # A removed node-level reuse form: the application's 400, as before the check.
         raise
     except CONFIG_REFUSALS as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise UnprocessableError(str(exc)) from None
 
 
 def _require_current_revision(source_revision: str, base_revision: str) -> None:
     if source_revision != base_revision:
-        raise HTTPException(
-            status_code=409,
-            detail="The pipeline changed on disk. Reload it before editing submodels.",
-        )
+        raise ConflictError("The pipeline changed on disk. Reload it before editing submodels.")
 
 
 def _resolve_recorded_child(
@@ -109,10 +108,7 @@ def _resolve_recorded_child(
     project_root: Path,
 ) -> tuple[str, Path, Path]:
     if not isinstance(recorded_path, str) or not recorded_path:
-        raise HTTPException(
-            status_code=400,
-            detail="Submodel metadata has no valid source file path.",
-        )
+        raise InvalidRequestError("Submodel metadata has no valid source file path.")
     child_path, config_base = resolve_definition_file(
         recorded_path, parent_path=parent_path, project_root=project_root
     )
@@ -163,10 +159,9 @@ def _refuse_new_name_violations(
         if identity(violation) not in existing
     ]
     if added:
-        raise HTTPException(
-            status_code=400,
-            detail=f"A submodel named {name!r} would break the pipeline's names. "
-            "Nothing was changed. " + " ".join(added),
+        raise InvalidRequestError(
+            f"A submodel named {name!r} would break the pipeline's names. "
+            "Nothing was changed. " + " ".join(added)
         )
 
 
@@ -203,16 +198,13 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
 
         sm_filename = f"{_sanitize_func_name(body.name.strip())}.py"
         if is_windows_reserved_filename(sm_filename):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Submodel name {body.name!r} would create module file "
-                    f"'modules/{sm_filename}', whose name is a reserved "
-                    "device name on Windows (CON, PRN, AUX, NUL, COM1-COM9, "
-                    "LPT1-LPT9 — any casing, any extension). Windows treats "
-                    "it as a device, not a file, so it cannot be written or "
-                    "checked out there. Choose a different submodel name."
-                ),
+            raise InvalidRequestError(
+                f"Submodel name {body.name!r} would create module file "
+                f"'modules/{sm_filename}', whose name is a reserved "
+                "device name on Windows (CON, PRN, AUX, NUL, COM1-COM9, "
+                "LPT1-LPT9 — any casing, any extension). Windows treats "
+                "it as a device, not a file, so it cannot be written or "
+                "checked out there. Choose a different submodel name."
             )
 
         try:
@@ -224,7 +216,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             )
             result = create_submodel_graph(submitted_graph, body.node_ids, body.name)
         except SubmodelValidationError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+            raise RequestRefusedError(exc.detail, status_code=exc.status_code) from None
 
         _refuse_new_name_violations(
             submitted_graph,
@@ -243,7 +235,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
                 name=body.name,
                 error=str(exc),
             )
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise InvalidRequestError(str(exc)) from None
 
         response_graph = result.graph.model_copy(update={"source_revision": source_revision})
 
@@ -290,7 +282,7 @@ async def create_node_instance(body: CreateNodeInstanceRequest) -> CreateNodeIns
             node = instance_source_node(graph, body.node_id)
             base = _sanitize_func_name(node.data.label)
             if is_windows_reserved_filename(f"{base}.py"):
-                raise HTTPException(400, f"Rename {base!r}: it is a Windows reserved module name.")
+                raise InvalidRequestError(f"Rename {base!r}: it is a Windows reserved module name.")
             occupied = {key.casefold() for key in graph.submodels or {}}
             occupied.update(Path(d.file).stem.casefold() for d in (graph.submodels or {}).values())
             modules = contained_path(project_root, str(parent_path.parent / "modules"))
@@ -310,7 +302,7 @@ async def create_node_instance(body: CreateNodeInstanceRequest) -> CreateNodeIns
                 read_utility=utility_reader(parent_path.parent, project_root),
             )
         except SubmodelValidationError as exc:
-            raise HTTPException(exc.status_code, exc.detail) from None
+            raise RequestRefusedError(exc.detail, status_code=exc.status_code) from None
         _refuse_new_name_violations(
             graph,
             result.graph,
@@ -322,7 +314,7 @@ async def create_node_instance(body: CreateNodeInstanceRequest) -> CreateNodeIns
         try:
             service.validate_new_module_files([result.sm_file])
         except ConfigError as exc:
-            raise HTTPException(400, str(exc)) from None
+            raise InvalidRequestError(str(exc)) from None
         return CreateNodeInstanceResponse(
             graph=result.graph.model_copy(update={"source_revision": revision}),
             owner_name=result.owner_name,
@@ -360,7 +352,7 @@ def _get_submodel_blocking(
     try:
         validate_submodel_definition_id(definition_id)
     except MalformedSubmodelPathError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        raise InvalidRequestError(str(exc)) from None
 
     project_root, parent_path, _source_revision = _load_parent_document(source_file)
     # The definition registry, with each definition's recorded file, is the
@@ -368,27 +360,20 @@ def _get_submodel_blocking(
     parent_graph = parse_pipeline_to_graph(parent_path, project_root=project_root)
     metadata = (parent_graph.submodels or {}).get(definition_id)
     if metadata is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Submodel definition {definition_id!r} not found",
-        )
+        raise NotFoundError(f"Submodel definition {definition_id!r} not found")
     recorded_path, sm_path, config_base = _resolve_recorded_child(
         recorded_path=metadata.file,
         parent_path=parent_path,
         project_root=project_root,
     )
     if not sm_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Submodel definition {definition_id!r} not found",
-        )
+        raise NotFoundError(f"Submodel definition {definition_id!r} not found")
 
     sm_graph = parse_submodel_file(sm_path, _base_dir=config_base)
     sm_graph = _apply_sidecar_positions(sm_graph, sm_path)
     if sm_graph._parser_definition_id != definition_id:
-        raise HTTPException(
-            status_code=409,
-            detail="The submodel definition identity changed on disk. Reload the pipeline.",
+        raise ConflictError(
+            "The submodel definition identity changed on disk. Reload the pipeline."
         )
 
     return SubmodelGraphResponse(
@@ -406,16 +391,12 @@ def _definition_id_for_instance(
 ) -> str:
     node = graph.node_map.get(instance_id)
     if node is None or node_spec(node.data.nodeType).structural_role != "occurrence":
-        raise HTTPException(
-            status_code=404,
-            detail=f"Submodel instance {instance_id!r} not found in graph.",
-        )
+        raise NotFoundError(f"Submodel instance {instance_id!r} not found in graph.")
     try:
         config = SubmodelInstanceConfig.model_validate(node.data.config)
     except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Submodel instance {instance_id!r} has invalid identity metadata.",
+        raise InvalidRequestError(
+            f"Submodel instance {instance_id!r} has invalid identity metadata."
         ) from None
     return config.definition_id
 
@@ -448,12 +429,9 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
         definition_id = _definition_id_for_instance(graph, target_instance_id)
         definition = submodels.get(definition_id)
         if definition is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Submodel instance {target_instance_id!r} references missing "
-                    f"definition {definition_id!r}."
-                ),
+            raise InvalidRequestError(
+                f"Submodel instance {target_instance_id!r} references missing "
+                f"definition {definition_id!r}."
             )
         _resolve_recorded_child(
             recorded_path=definition.file,

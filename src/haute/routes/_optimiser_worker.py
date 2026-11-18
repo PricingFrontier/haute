@@ -47,6 +47,7 @@ from haute._execution_admission import (
     create_isolated_execution_context,
 )
 from haute._execution_context import ExecutionContext, ExecutionMemoryLimitExceededError
+from haute._failure_answers import AnsweredFailureError, FailureAnswer, answer_failure
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
 from haute._seed_plans import SeedPlanHandoff
@@ -70,7 +71,14 @@ if TYPE_CHECKING:
 logger = get_logger(component="server.optimiser.solve")
 
 #: The failure fields a terminal job record carries besides its status and message.
-_FAILURE_FIELDS = ("error", "error_code", "error_detail", "http_status_code", "execution_metrics")
+_FAILURE_FIELDS = (
+    "error",
+    "error_code",
+    "error_detail",
+    "http_status_code",
+    "incident",
+    "execution_metrics",
+)
 
 
 @dataclass(frozen=True)
@@ -264,9 +272,10 @@ def classify_optimiser_failure(
     message naming *operation_noun*; a refusal is ``contract_error`` for a
     4xx and ``error`` otherwise; a public contract error keeps its own
     reason; a pipeline that cannot run bounded is a 422 ``contract_error``.
-    Anything else, a library or Polars ``ValueError`` among them, is a
-    server fault: an ``error`` whose HTTP detail is fixed and whose cause is
-    logged as *log_event*. A replayed child failure is already classified.
+    Anything else is put into words by :func:`haute._failure_answers.answer_failure`:
+    a node's own failure naming its node, and anything unnamed an incident whose record,
+    logged as for *log_event*, holds the cause. A replayed child failure is already
+    classified.
     Stops and cancellations are the caller's, never a failure.
     """
     from haute.errors import BoundedMemoryUnsupportedError
@@ -286,6 +295,9 @@ def classify_optimiser_failure(
     if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
         detail = memory_limit_refusal(exc, operation_noun=operation_noun).detail
         return _memory_failure(detail, operation_noun=operation_noun)
+    if isinstance(exc, AnsweredFailureError):
+        # Already answered: its end state, words and job fields, the incident among them.
+        return _answered_failure(exc.answer)
     if isinstance(exc, RequestRefusedError):
         if exc.status_code == 507 and isinstance(exc.detail, Mapping):
             if exc.detail.get("error_code") == "memory_limit":
@@ -310,13 +322,20 @@ def classify_optimiser_failure(
             message=detail,
             fields={"http_status_code": 422, "error_detail": detail},
         )
-    logger.error(log_event, error=str(exc), exc_info=exc, **log_context)
+    # A node's own failure naming its node, a file the operating system refused, or an
+    # incident whose record holds the exception (haute._failure_answers).
+    return _answered_failure(answer_failure(exc, operation=log_event))
+
+
+def _answered_failure(answer: FailureAnswer) -> OptimiserWorkerFailure:
+    """*answer* as the child's terminal record: its end state, message and job fields."""
     return OptimiserWorkerFailure(
-        terminal_reason="error",
-        message=f"{operation_noun} failed: {exc}",
+        terminal_reason=answer.terminal_reason,
+        message=answer.message,
         fields={
-            "http_status_code": 500,
-            "error_detail": f"{operation_noun} failed. Check the server logs for details.",
+            key: value
+            for key, value in answer.job_fields().items()
+            if key in {"http_status_code", "error_detail", "error_code", "incident"}
         },
     )
 

@@ -65,6 +65,7 @@ from haute.routes._isolated_worker_async import (
 )
 from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import JobStore
+from tests._failure_assertions import assert_unnamed
 from tests._source_files import source_files
 
 
@@ -730,7 +731,7 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
     try:
         raise FileNotFoundError(2, "No such file or directory", path)
     except FileNotFoundError as exc:
-        kind, (remote_type, remote_message, remote_traceback, is_memory) = (
+        kind, (remote_type, remote_message, remote_traceback, is_memory, payload) = (
             isolation._worker_error_envelope(exc)
         )
 
@@ -739,6 +740,9 @@ def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
     assert f"a path of {len(path)} characters" in remote_message
     assert "FileNotFoundError" in remote_traceback
     assert is_memory is False
+    # Worded where it was raised, for the parent to answer in the same words.
+    assert payload is not None
+    assert payload["failure_answer"]["code"] == "path_too_long"
 
 
 @pytest.mark.parametrize(
@@ -1050,7 +1054,7 @@ def test_one_shot_notes_native_cleanup_failure_without_masking_remote_error(
     )
     monkeypatch.setattr(
         "haute._worker_isolation._wait_for_worker",
-        lambda *_args, **_kwargs: ("error", ("ValueError", "bad", "traceback", False)),
+        lambda *_args, **_kwargs: ("error", ("ValueError", "bad", "traceback", False, None)),
     )
     monkeypatch.setattr(
         "haute._worker_isolation.cleanup_private_cgroups_for_pid",
@@ -1368,7 +1372,8 @@ def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.Monkey
 
     status, payload = pickle.loads(results.get_nowait())
     assert status == "error"
-    error_type, message, remote_traceback, is_memory = payload  # type: ignore[misc]
+    error_type, message, remote_traceback, is_memory, public_payload = payload  # type: ignore[misc]
+    assert public_payload is None
     assert error_type == "ValueError"
     assert message == "child boom"
     assert "ValueError: child boom" in remote_traceback
@@ -1615,6 +1620,48 @@ def test_isolated_job_supervisor_records_completed_result(tmp_path: Path) -> Non
     assert job["sum"] == 6
 
 
+def _classified_protocol_worker(runtime, request):
+    """Fail with a failure Haute names: a refusal, or the operating system out of memory."""
+    import errno
+
+    from haute.errors import InvalidRequestError
+
+    del runtime
+    if request.payload["kind"] == "refusal":
+        raise InvalidRequestError("Name the node to run to.")
+    raise OSError(errno.ENOMEM, "Cannot allocate memory")
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "code", "http_status"),
+    [
+        pytest.param("refusal", "contract_error", "invalid_request", 400, id="refusal"),
+        pytest.param("enomem", "memory_limited", "memory_limit", 507, id="enomem"),
+    ],
+)
+def test_a_job_ends_as_its_childs_answer_says(
+    tmp_path: Path, kind: str, status: str, code: str, http_status: int
+) -> None:
+    """The child classifies its failure where it is raised; the job's end state, message
+    and fields are that answer's, through the real protocol and supervisor."""
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
+
+    thread = _launch(supervisor, job_id, tmp_path, _classified_protocol_worker, {"kind": kind})
+    thread.join(timeout=60)
+
+    job = store.require_job(job_id)
+    assert (job["status"], job["error_code"], job["http_status_code"]) == (
+        status,
+        code,
+        http_status,
+    )
+    assert "failure_answer" not in job
+    if kind == "refusal":
+        assert job["message"] == "Name the node to run to."
+
+
 def test_isolated_job_supervisor_records_remote_failure(tmp_path: Path) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
@@ -1630,7 +1677,9 @@ def test_isolated_job_supervisor_records_remote_failure(tmp_path: Path) -> None:
     assert job["status"] == "error"
     assert job["terminal_reason"] == "error"
     assert job["worker_error_type"] == "ValueError"
-    assert "bad input" in job["message"]
+    # A child's bare ValueError is not a refusal Haute words: an incident, its text logged.
+    assert_unnamed(job["message"])
+    assert "bad input" not in job["message"]
 
 
 def test_isolated_job_supervisor_terminalizes_unexpected_parent_error(
@@ -1655,7 +1704,7 @@ def test_isolated_job_supervisor_terminalizes_unexpected_parent_error(
     assert job["status"] == "error"
     assert job["terminal_reason"] == "error"
     assert job["supervisor_error_class"] == "RuntimeError"
-    assert job["message"] == "Unexpected isolated worker supervisor failure."
+    assert_unnamed(job["message"])
     assert "parent isolation bug" not in str(job)
     assert len(reported) == 1
     assert reported[0].exc_value is parent_error
@@ -1791,7 +1840,8 @@ def test_an_unrecorded_outcome_is_settled_as_an_error(tmp_path: Path) -> None:
     assert settled is not None
     assert settled["status"] == "error"
     assert settled["supervisor_error_class"] == "ValueError"
-    assert "could not record" in settled["message"]
+    assert "could not record its outcome" in settled["message"]
+    assert settled["incident"] in settled["message"]
     assert supervisor.settle_unrecorded_outcome(job_id) is None
 
 

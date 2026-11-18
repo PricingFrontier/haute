@@ -677,9 +677,8 @@ NAMES = [
 def test_the_panels_and_the_sweep_take_the_same_names(
     project: Path, name: str, versioned: bool
 ) -> None:
-    from fastapi import HTTPException
-
     from haute._git_transactions import _pipeline_folder_new_files
+    from haute.errors import RequestRefusedError
     from haute.routes.project_files import _target
 
     path = project / "rating" / "files" / name
@@ -690,7 +689,7 @@ def test_the_panels_and_the_sweep_take_the_same_names(
     try:
         _target(project, "pipeline", name)
         taken = True
-    except HTTPException:
+    except RequestRefusedError:
         taken = False
 
     assert (swept, taken) == (versioned, versioned)

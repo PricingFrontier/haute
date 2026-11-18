@@ -2,21 +2,23 @@
 
 ``_validate_config`` and ``_validate_glm_config_values`` refuse malformed configs, GLM term columns
 are checked against the unprojected input schema on ``/train`` and ``/dispersion/estimate``,
-``_friendly_error`` translates exceptions into messages and ``_clamp_row_limit`` applies row
+``_training_failure_answer`` puts a fit's failure into words and ``_clamp_row_limit`` applies row
 limits.
 """
 
 from __future__ import annotations
 
 import pytest
+from structlog.testing import capture_logs
 
 from haute.errors import HauteValidationError, RequestRefusedError
 from haute.modelling._descriptors import DESCRIPTORS
 from haute.routes._training_evaluation import _validate_glm_config_values
 from haute.routes._training_lifecycle import TrainService
 from haute.routes._training_preparation import _clamp_row_limit
-from haute.routes._training_worker import _friendly_error
+from haute.routes._training_worker import _training_failure_answer
 from tests import _modelling_route_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._modelling_route_helpers import (
     _MISSING_STEP_COUNT_PAYLOAD,
     _expander_without_step_count,
@@ -41,133 +43,82 @@ glm_collision_data = _modelling_route_helpers.glm_collision_data
 # ---------------------------------------------------------------------------
 
 
-class TestFriendlyError:
-    """Unit tests for _friendly_error — translates exceptions into user messages."""
+def _catboost_error(message: str) -> Exception:
+    """An error of a type named as CatBoost's are."""
+    return type("CatBoostError", (Exception,), {})(message)
 
-    def test_haute_validation_error_passthrough(self):
-        exc = HauteValidationError("Target column 'z' not found")
-        assert _friendly_error(exc) == "Target column 'z' not found"
 
-    def test_plain_value_error_takes_the_type_only_fallback(self):
-        """Provenance is enforced by the marker type: a dependency's bare
-        ``ValueError`` body is never promoted verbatim."""
-        exc = ValueError("could not parse '/private/tmp/leaky' as float")
-        result = _friendly_error(exc)
-        assert "leaky" not in result
-        assert "ValueError" in result
-        assert "unexpected internal error" in result
+def _said(exc: Exception, **options: str) -> str:
+    return _training_failure_answer(exc, **options).message
 
-    def test_file_not_found_does_not_quote_the_path(self):
-        """A fit-stage missing file is typically an internal staged asset —
-        the path stays diagnostic, never in the terminal message."""
-        exc = FileNotFoundError(2, "No such file or directory", "/data/missing.parquet")
-        result = _friendly_error(exc)
-        assert "could not find a file it needs" in result
-        assert "missing.parquet" not in result
-        assert "/data" not in result
 
-    def test_catboost_nan(self):
-        """CatBoost NaN/Inf errors should recommend upstream transforms."""
-        # Simulate CatBoost error class
-        exc = type("CatBoostError", (Exception,), {})("NaN values in features")
-        result = _friendly_error(exc)
-        assert "NaN" in result or "nan" in result.lower()
-        assert "transform node" in result.lower()
+class TestTrainingFailureAnswer:
+    """A fit's failure as its job answers it: CatBoost by its type, never its text; anything
+    else as every edge answers it (haute._failure_answers)."""
 
-    def test_catboost_feature_mismatch(self):
-        exc = type("CatBoostError", (Exception,), {})("feature number mismatch: expected 10 got 8")
-        result = _friendly_error(exc)
-        assert "feature mismatch" in result.lower()
-        # The third-party body is never interpolated.
-        assert "expected 10" not in result
+    def test_a_validation_refusal_is_its_own_words(self):
+        answer = _training_failure_answer(HauteValidationError("Target column 'z' not found"))
+        assert answer.message == "Target column 'z' not found"
+        assert answer.terminal_reason == "contract_error"
 
-    def test_catboost_generic(self):
-        """The generic CatBoost shape names the type, never the body."""
-        exc = type("CatBoostError", (Exception,), {})("internal pool error at /tmp/pool")
-        result = _friendly_error(exc)
-        assert "CatBoostError" in result
-        assert "internal pool error" not in result
-        assert "/tmp" not in result
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param(ValueError("could not parse '/private/tmp/leaky' as float"), id="value"),
+            pytest.param(RuntimeError("catboost cache failed at /var/lib/token=abc"), id="text"),
+            pytest.param(OSError(5, "failed opening /tmp/secret credential=xyz"), id="os-error"),
+            pytest.param(FileNotFoundError("internal staged asset"), id="no-file"),
+        ],
+    )
+    def test_anything_unnamed_is_an_incident_never_its_text(self, exc):
+        """A dependency's text can hold paths and secrets; a failure Haute does not name is
+        an incident, its text recorded under the id (an error mentioning catboost in its text
+        only is not a CatBoost error)."""
+        answer = _training_failure_answer(exc)
+        assert answer.terminal_reason == "error"
+        assert_unnamed(answer.message)
+        for leaked in ("leaky", "/var/lib", "token", "/tmp/secret", "credential", "staged"):
+            assert leaked not in answer.message
 
-    def test_catboost_generic_names_training_context(self):
-        exc = type("CatBoostError", (Exception,), {})("internal pool error")
-        result = _friendly_error(exc, context="target 'sev' (objective 'RMSE')")
-        assert "target 'sev' (objective 'RMSE')" in result
-        assert "internal pool error" not in result
+    def test_a_file_the_operating_system_refused_is_named(self, tmp_path):
+        exc = PermissionError(13, "Permission denied", str(tmp_path / "model.cbm"))
+        exc_path = tmp_path / "model.cbm"
+        exc_path.write_text("x", encoding="utf-8")
+        exc_path.chmod(0o444)
+        try:
+            said = _said(exc)
+        finally:
+            exc_path.chmod(0o644)
+        assert "model.cbm" in said
+        assert str(tmp_path) not in said
 
-    def test_catboost_in_message_only_is_not_classified_catboost(self):
-        """Classification keys on the exception TYPE — a non-CatBoost error
-        that merely mentions catboost in its text takes the generic fallback
-        and never embeds its body."""
-        exc = RuntimeError("catboost cache failed at /var/lib/haute/token=abc")
-        result = _friendly_error(exc)
-        assert "RuntimeError" in result
-        assert "CatBoost error" not in result
-        assert "/var/lib" not in result
-        assert "token" not in result
+    @pytest.mark.parametrize(
+        "message",
+        ["NaN values in column 'x'", "Found inf in column 3"],
+        ids=["nan", "inf"],
+    )
+    def test_catboost_non_finite_data_says_what_to_fix(self, message):
+        said = _said(_catboost_error(message))
+        assert "NaN or infinite values" in said
+        assert ".fill_null()" in said
+        assert "column" not in said
 
-    def test_os_error(self):
-        """The errno-derived OS reason is surfaced; the staging path is not."""
-        exc = OSError(13, "Permission denied", "/models/model.cbm")
-        result = _friendly_error(exc)
-        assert result.startswith("Training could not save its output files")
-        assert "Permission denied" in result
-        assert "/models" not in result
+    def test_catboost_feature_mismatch_never_quotes_the_library(self):
+        said = _said(_catboost_error("feature number mismatch: expected 5 but got 3"))
+        assert "feature mismatch" in said.lower()
+        assert "expected 5" not in said
 
-    def test_os_error_strerror_is_rederived_from_errno(self):
-        """OSError.strerror is constructor-supplied — a dependency can put
-        arbitrary text there. The reason comes from os.strerror(errno)."""
-        exc = OSError(5, "failed opening /tmp/secret credential=xyz")
-        result = _friendly_error(exc)
-        assert "/tmp/secret" not in result
-        assert "credential" not in result
-        assert "Input/output error" in result
-
-    def test_os_error_without_errno_uses_generic_reason(self):
-        exc = OSError("raw single-argument message")
-        result = _friendly_error(exc)
-        assert "file-system error" in result
-        assert "raw single-argument message" not in result
-        assert "OSError" not in result
-
-    def test_fallback_includes_type_but_not_third_party_text(self):
-        exc = RuntimeError("something unexpected")
-        result = _friendly_error(exc)
-        assert "RuntimeError" in result
-        assert "something unexpected" not in result
-        assert "error details" in result
-
-    def test_fallback_names_training_context(self):
-        exc = RuntimeError("boom")
-        result = _friendly_error(exc, context="target 'freq' (objective 'Poisson')")
-        assert result.startswith("Training of target 'freq' (objective 'Poisson') failed")
-
-    def test_catboost_inf_message(self):
-        """'inf' in message also triggers NaN/Inf advice."""
-        exc = type("CatBoostError", (Exception,), {})("Found inf in column 3")
-        result = _friendly_error(exc)
-        assert "infinite" in result.lower() or "inf" in result.lower()
-        assert "transform node" in result.lower()
-
-    def test_empty_exception_message(self):
-        exc = RuntimeError("")
-        result = _friendly_error(exc)
-        assert "RuntimeError" in result
-
-    def test_catboost_nan_recommends_fill_null(self):
-        exc = type("CatBoostError", (Exception,), {})("NaN values in column 'x'")
-        result = _friendly_error(exc)
-        assert ".fill_null()" in result or ".drop_nulls()" in result
-
-    def test_catboost_feature_mismatch_excludes_original_message(self):
-        """Flipped from the pre-curation pin: the CatBoost body is never
-        interpolated, even in the feature-mismatch shape."""
-        exc = type("CatBoostError", (Exception,), {})(
-            "feature number mismatch: expected 5 but got 3"
-        )
-        result = _friendly_error(exc)
-        assert "feature mismatch" in result.lower()
-        assert "expected 5 but got 3" not in result
+    def test_any_other_catboost_error_names_its_type_and_fit_under_an_incident(self):
+        with capture_logs() as logs:
+            answer = _training_failure_answer(
+                _catboost_error("internal pool error at /tmp/pool"),
+                context="target 'sev' (objective 'RMSE')",
+            )
+        assert "CatBoostError" in answer.message
+        assert "target 'sev' (objective 'RMSE')" in answer.message
+        assert "internal pool error" not in answer.message
+        assert answer.incident is not None and answer.incident in answer.message
+        assert [log for log in logs if log.get("incident") == answer.incident]
 
 
 class TestClampRowLimit:
@@ -685,14 +636,14 @@ class TestGlmInputSchemaGate:
         assert not store.list_jobs()
 
     @pytest.mark.parametrize(
-        ("code", "error_name"),
+        "code",
         [
-            ("df = source.with_columns(x2=undefined_name)", "NameError"),
-            ("", "NotImplementedError"),
+            pytest.param("df = source.with_columns(x2=undefined_name)", id="NameError"),
+            pytest.param("", id="NotImplementedError"),
         ],
     )
     def test_user_transform_error_becomes_422_on_training_and_dispersion_routes(
-        self, glm_collision_data, code, error_name
+        self, glm_collision_data, code
     ):
         """The schema-only build runs the user's own transform code, so any
         exception that code raises is the user's to fix — a named 422, never a
@@ -718,9 +669,10 @@ class TestGlmInputSchemaGate:
                     )
                 )
             )
+        # The user's own transform failing is named with its node (SRV-01's node_failed).
         assert raised.value.status_code == 422
-        assert "could not be resolved" in str(raised.value.detail)
-        assert error_name in str(raised.value.detail)
+        assert raised.value.detail["error_code"] == "node_failed"
+        assert raised.value.detail["message"].startswith("'prep' failed: ")
 
         with pytest.raises(RequestRefusedError) as raised:
             service.start_dispersion_estimate(
@@ -734,9 +686,10 @@ class TestGlmInputSchemaGate:
                     )
                 )
             )
+        # The user's own transform failing is named with its node (SRV-01's node_failed).
         assert raised.value.status_code == 422
-        assert "could not be resolved" in str(raised.value.detail)
-        assert error_name in str(raised.value.detail)
+        assert raised.value.detail["error_code"] == "node_failed"
+        assert raised.value.detail["message"].startswith("'prep' failed: ")
         assert not store.list_jobs()
 
 

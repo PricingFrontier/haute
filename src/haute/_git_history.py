@@ -9,6 +9,8 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
 
+from haute._failure_answers import record_incident
+
 # The command core is the sole process boundary.  Its helpers are imported
 # explicitly into this domain's namespace so extracted functions retain their
 # original signatures and semantics without a facade dependency.
@@ -56,10 +58,15 @@ _HISTORY_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
 # reads no paths from stdin, so a commit's paths are archived in batches within this.
 _ARCHIVE_COMMAND_BUDGET = 24_000
 _SAVE_RECORD_SEP = "\x1e"
-_HISTORY_UNREADABLE = (
-    "This branch's history could not be read. The repository may be damaged; "
-    "the Haute server log has git's reason."
-)
+
+
+def _history_unreadable(exc: BaseException) -> str:
+    """The words for history git could not read, naming the incident its reason is under."""
+    incident = record_incident(exc, event="git_history_unreadable")
+    return (
+        "This branch's history could not be read. The repository may be damaged; git's "
+        f"reason is recorded under incident {incident}."
+    )
 
 
 __all__ = [
@@ -105,7 +112,7 @@ def working_milestones(
     try:
         rows = _graph_log_cached(tip, limit, str(cwd) if cwd else "")
     except GitError as exc:
-        raise GitHistoryReadError(_HISTORY_UNREADABLE) from exc
+        raise GitHistoryReadError(_history_unreadable(exc)) from exc
 
     # ONE batched tag read for the whole page instead of a per-row
     # ``tag --points-at`` (the N+1 that dominated this endpoint).
@@ -341,7 +348,7 @@ def _parse_ledger_saves(range_spec: str, cwd: Path | None = None) -> list[GitLed
             cwd=cwd,
         )
     except GitError as exc:
-        raise GitHistoryReadError(_HISTORY_UNREADABLE) from exc
+        raise GitHistoryReadError(_history_unreadable(exc)) from exc
     if not raw:
         return []
 

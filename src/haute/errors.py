@@ -119,10 +119,12 @@ def _name_nodes_in_execution(error: HauteError) -> None:
 
 
 _FAILING_NODE_ATTRIBUTE = "haute_failing_node"
+_FAILING_NODE_NAME_ATTRIBUTE = "haute_failing_node_name"
 
 
 def mark_failing_node(exc: BaseException, node_id: str) -> None:
-    """Record that *exc* was raised while the graph walk built or ran *node_id*.
+    """Record that *exc* was raised while the graph walk built or ran *node_id*, and the
+    name the walk gives that node, so whoever answers the failure later can name it.
 
     The innermost record wins: a failure already marked keeps its node. A
     failure a lazy frame raises only when a later caller reads its schema is
@@ -131,6 +133,10 @@ def mark_failing_node(exc: BaseException, node_id: str) -> None:
 
     if failing_node(exc) is None:
         setattr(exc, _FAILING_NODE_ATTRIBUTE, node_id)
+        from haute._execution_context import current_node_namer
+
+        name_of = current_node_namer()
+        setattr(exc, _FAILING_NODE_NAME_ATTRIBUTE, node_id if name_of is None else name_of(node_id))
 
 
 def failing_node(exc: BaseException) -> str | None:
@@ -138,6 +144,13 @@ def failing_node(exc: BaseException) -> str | None:
 
     node_id = getattr(exc, _FAILING_NODE_ATTRIBUTE, None)
     return node_id if isinstance(node_id, str) else None
+
+
+def failing_node_name(exc: BaseException) -> str | None:
+    """The name of :func:`failing_node`'s node, as the walk named it when it marked *exc*."""
+
+    name = getattr(exc, _FAILING_NODE_NAME_ATTRIBUTE, None)
+    return name if isinstance(name, str) else failing_node(exc)
 
 
 def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:
@@ -164,9 +177,17 @@ class RequestRefusedError(HauteError):
 
     status: ClassVar[int] = 400
 
-    def __init__(self, detail: str | Mapping[str, Any], *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        detail: str | Mapping[str, Any],
+        *,
+        status_code: int | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.detail = detail
         self.status_code = self.status if status_code is None else status_code
+        #: Response headers the refusal is answered with, such as ``Retry-After``.
+        self.headers = dict(headers or {})
         message = detail if isinstance(detail, str) else detail.get("message")
         super().__init__(message if isinstance(message, str) else str(detail))
 
@@ -596,14 +617,15 @@ class TraceTargetNotFoundError(TraceRequestError):
     error_code = "trace_target_not_found"
 
 
-class TraceNodeFailedError(ExecutionError):
-    """A node's own code failed while a trace ran it: a syntax error, a missing column.
+class NodeFailedError(ExecutionError):
+    """A node's own code failed while a run walked it: a syntax error, a missing column.
 
     The user fixes it on the node, so it is a public contract error naming the node, as a
-    preview shows the same failure on its node.
+    preview shows the same failure on its node. A trace, a Data Output's Write, training
+    and the optimiser each answer one through :mod:`haute._failure_answers`.
     """
 
-    error_code = "trace_node_failed"
+    error_code = "node_failed"
     public_fields = ("node_id", "node")
 
     def __init__(

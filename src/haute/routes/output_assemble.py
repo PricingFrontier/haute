@@ -16,7 +16,7 @@ up to empty collections.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from haute._execution_admission import (
     IsolatedExecutionBudget,
@@ -28,12 +28,12 @@ from haute._logging import get_logger
 from haute._node_addresses import node_display_name, resolved_request
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
 from haute._pipeline_settings import project_pipeline_settings
-from haute.errors import ConfigError, ContractMismatchError
+from haute.errors import ConfigError, ContractMismatchError, InvalidRequestError, UnprocessableError
 from haute.executor import execute_graph
 from haute.graph_utils import NodeType
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
+    contract_error_refusal,
 )
 from haute.routes.pipeline import (
     _ensure_printable_target,
@@ -112,21 +112,20 @@ async def output_assemble_dry_run(
     try:
         validate_v2_output_mapping(body.output_mapping)
     except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-        raise contract_error_http_exception(exc) from None
+        raise contract_error_refusal(exc) from None
     except OutputMappingSchemaError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise UnprocessableError(str(exc)) from exc
 
     _ensure_printable_target(body.target)
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     if not graph.nodes:
-        raise HTTPException(status_code=400, detail="Empty graph")
+        raise InvalidRequestError("Empty graph")
     # The address resolves through the expansion's record, or is refused by name.
     body = resolved_request(body, graph)
     node = graph.node_map[body.node_id]
     if node.data.nodeType != NodeType.OUTPUT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"'{node_display_name(graph, body.node_id)}' is not an OUTPUT node",
+        raise InvalidRequestError(
+            f"'{node_display_name(graph, body.node_id)}' is not an OUTPUT node"
         )
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
@@ -159,4 +158,4 @@ async def output_assemble_dry_run(
             raise
         except (OutputMappingSchemaError, ConfigError, ContractMismatchError) as exc:
             # A port the mapping names is not wired into the OUTPUT node, etc.
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise UnprocessableError(str(exc)) from exc

@@ -82,14 +82,14 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/modelling/_model_export.py` | `MODEL_FILE_SUFFIXES` and `resolve_model_export_destination()`: the Export pane's model-file destination rules (see Save-model-after-the-fact). |
 | `src/haute/routes/_export_receipts.py` | Export receipts on training jobs: `record_receipt` (append an MLflow or model-file receipt, keeping the newest `MAX_RECEIPTS_PER_KIND`), `export_receipts` (the wire shape the status route returns), `mlflow_receipt_for_operation` (idempotent retries) and `single_flight_mlflow_log` (one MLflow log per job at a time, else a `409` in-progress refusal). |
-| `src/haute/routes/_mlflow_log_errors.py` | The shared HTTP outcomes of the modelling and optimiser MLflow log routes: `require_mlflow_installed` (the shared `503`) and `mlflow_log_http_exception` (configuration `400`, classified remote `502` with an `mlflow_<category>` code and write-specific copy, unclassified `500`; logs category and error type only). |
+| `src/haute/routes/_mlflow_log_errors.py` | The shared HTTP outcomes of the modelling and optimiser MLflow log routes: `require_mlflow_installed` (the shared `503`) and `mlflow_log_refusal` (configuration `400`, classified remote `502` with an `mlflow_<category>` code and write-specific copy, unclassified a `500` incident; logs category and error type only). |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow log, export, model-cache clear, and dispersion jobs. |
 | `src/haute/routes/_training_preparation.py` | Training input preparation rules plus the hard-capped preparation worker: deterministic sampling, feature/metadata demand and projection, modelling-node lookup, row-limit and RAM/VRAM feasibility helpers, the picklable `TrainingPreparationRequest`/`TrainingPreparationOutcome`/`TrainingPreparationFailure` transport, the in-process core `prepare_training_data`, the spawn entrypoint `prepare_training_data_worker`, and the target/task gate `_validate_target_task_pairing`. |
 | `src/haute/routes/_training_evaluation.py` | Route-side evaluation and GLM-dispersion rules: family/link validation, dispersion parameter contracts, and immutable evaluation-preview projection. |
 | `src/haute/routes/_training_worker.py` | Spawn-picklable training/dispersion worker protocol: request validation, child execution context, curated failure taxonomy, bounded progress/result payloads, and the two process entrypoints. It publishes only staged manifests. |
 | `src/haute/routes/_training_artifacts.py` | Sole parent-side training artifact publication owner: manifest/path/size/digest validation, strict evaluation/tuning reloads, rollback-capable generation replacement, and stale tuning retirement. |
 | `src/haute/routes/_training_lifecycle.py` | State-owning `TrainService` implementation. Composes `JobLifecycle`, `CancellableJobRegistry`, and `IsolatedJobSupervisor`; orchestrates preparation and worker launch, cancellation/timeout, parent cleanup, and atomic completion publication through the domain modules above. |
-| `src/haute/routes/_memory_messages.py` | Shared curated wording for memory-limit failures (`memory_limit_user_message`, `format_byte_size`) used by training, auto-range, and the input-snapshot build. |
+| `src/haute/_memory_messages.py` | Shared curated wording for memory-limit failures (`memory_limit_user_message`, `format_byte_size`) used by training, auto-range, and the input-snapshot build. |
 | `src/haute/schemas.py` | Shared Pydantic request/response contracts owned by [server-api](../server-api/low-level.md) and used by `/api/modelling/*` routes. |
 
 ## Key types and data structures
@@ -500,7 +500,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    `TrainingPreparationFailure` carries `terminal_reason`
    (`contract_error`|`memory_limited`|`cancelled`|`error`), the job `message`/`fields`, and the
    `http_status_code`/`http_detail`, computed in the child with the same
-   `_http_failure_job_parts`/`contract_error_job_fields`/`_memory_limit_http_exception`
+   `_refusal_job_parts`/`contract_error_job_fields`/`memory_answer`
    helpers the in-thread path used, so job records and HTTP payloads are unchanged. A cancelled
    run maps to `cancelled` with `CLIENT_CLOSED_REQUEST_STATUS`, both in the mapper and ahead of
    the worker's own catch-all, so a cancellation is never reported as a pipeline failure. Every
@@ -596,7 +596,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    GPU-VRAM 507 payload, and `worker_remote_traceback`: the formatted traceback that
    `IsolatedJobSupervisor` records on the job when the isolated worker raises
    (`WorkerRemoteFailureError`), `None` otherwise. It is diagnostic text for the UI's
-   failure details, not a stable contract to parse. It can hold what `_friendly_error` keeps
+   failure details, not a stable contract to parse. It can hold what `_training_failure_answer` keeps
    out of the terminal message (internal paths, a third-party message body), which is why
    the message stays curated and the traceback is a separate field the UI shows only on
    request: the status is served to the session that owns the local server, the person
@@ -756,8 +756,8 @@ experiment logs nothing.
    releases admission and the registry entry. A preparation failure lands in the job through
    `_record_preparation_failure`, shared with training: a cancellation takes the token's
    reason, an admission or memory failure is `memory_limited` (507), a `RequestRefusedError` keeps
-   its `contract_error`/`error` parts, and anything else is `error` with `_friendly_error`'s
-   curated "Dispersion estimation of …" message (the raw text stays in `error`).
+   its `contract_error`/`error` parts, and anything else ends as `_training_failure_answer` answers it
+   (an incident for a failure nothing names; the raw text stays in `error`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
    to materialise the node's training frame — same pipeline execution, projection, and
    seeded row sampling — so the profiled data matches what a real training run would
@@ -790,7 +790,7 @@ experiment logs nothing.
 7. On success, the job transitions to `"completed"` with `param`/`value`/`llf`/`n_fits`
    fields. `ValueError` (including "no candidate converged") maps to `contract_error`;
    execution cancellation maps to `cancelled`, memory exhaustion maps to
-   `memory_limited`, and anything else maps to `error` via `_friendly_error`. The
+   `memory_limited`, and anything else ends as `_training_failure_answer` answers it. The
    parent supervisor always releases the job registry entry and RAM admission and
    deletes the temp parquet and staging root.
 8. `GET /dispersion/status/{job_id}` and `POST /dispersion/cancel/{job_id}` mirror the
@@ -1148,14 +1148,15 @@ Failures map through `routes/_mlflow_log_errors.py`, shared with the optimiser l
 `require_mlflow_installed()` runs first, so a missing MLflow package is the shared `503` with
 `MLFLOW_NOT_INSTALLED_DETAIL` on every MLflow route. A `HauteValidationError` from haute's own
 artifact checks (an unloadable model, an incomplete contract, a missing artifact) is a `400`
-with its message, raised before any run exists. `mlflow_log_http_exception(exc, job_id=...)`
+with its message, raised before any run exists. `mlflow_log_refusal(exc, job_id=...)`
 maps an `MlflowConfigError` to `400` with its message; classifies anything else with
 `haute._mlflow_errors.classify_mlflow_error`, logging `mlflow_log_failed` with only the
 category, error type and job id; returns a classified remote failure as `502` with detail
 `{"error_code": "mlflow_<category>", "message": ...}` — an `MlflowRemoteError`'s own message, or
 the write-specific copy in `MLFLOW_LOG_FAILURE_MESSAGES` for authentication, permission,
 missing_resource and connectivity; and returns an unclassified failure (including a local disk
-error, which is never connectivity) as the generic `500`.
+error, which is never connectivity) as a `500` incident whose record holds the category, type and
+job id only (`unexpected_failure`).
 
 **Export receipts.** Every successful export is recorded on the training job so the Export
 pane can say where a result went after a pane switch or a browser reload.
@@ -1272,8 +1273,8 @@ forward-slash spelling is the display path. It rejects reserved device names
 (`MalformedRuntimePathError`) and drive-relative Windows paths, resolves the path against the
 project root (an absolute path stands alone), and raises `RuntimePathOutsideProjectError` when
 the result leaves the root. `suffix_mismatch` is true when an explicit suffix differs from
-`model_suffix` ignoring case. Routes map these errors through `runtime_path_http_exception`
-(`400` malformed, `403` outside) and resolve against the current project's root.
+`model_suffix` ignoring case. Routes hand these errors to the failure answers (`failure_refusal`: `400` malformed,
+`403` outside) and resolve against the current project's root.
 
 `POST /save/destination` (`ModelSaveDestinationRequest`: non-empty `output_path`, `algorithm:
 Literal["catboost", "glm"]`) returns `ModelSaveDestinationResponse` (`path` display spelling,
@@ -1511,9 +1512,9 @@ rows/features) and retry.
   `_run_training_process_job` maps a `HauteValidationError` from `TrainingJob.run()`
   to a `contract_error` failure payload carrying its message verbatim (distinct from
   the catch-all `error`); a bare `ValueError` — a dependency's, or a deliberately
-  plain result-shape check — is a system fault that takes `error` with
-  `_friendly_error`'s type-only public message, the raw text surviving only in the
-  diagnostic `error` field. The parent supervisor persists that terminal reason.
+  plain result-shape check — is a system fault: an `error` with an incident
+  (`_training_failure_answer`), the raw text surviving only in the diagnostic `error`
+  field and the incident's record. The parent supervisor persists that terminal reason.
 - **Execution-engine exceptions** (`ExecutionCancelledError`,
   `ExecutionMemoryLimitExceededError`, `BoundedMemoryUnsupportedError`) — each maps to
   a distinct failure payload (`cancelled`, `memory_limited`, `contract_error`
@@ -1524,51 +1525,37 @@ rows/features) and retry.
   additionally transitions the job record to the matching terminal state
   (`memory_limited` for 507, `contract_error` for other 4xx, `error` otherwise) before
   re-raising, so the job store and the HTTP response can never disagree about outcome.
-- **Generic `Exception`** catch-all in each process entrypoint maps to an `error`
-  failure payload with the message produced by
-  `_friendly_error(exc, operation_noun=..., context=...)` — a heuristic
-  translator whose every shape is haute-authored, and which — apart from the
-  validation channel — never interpolates a third-party message body:
-  `HauteValidationError` messages verbatim (the validation channel; provenance
-  is enforced by the marker type, defined in `_validation_error.py` as a
-  `ValueError` subclass, re-exported by `errors.py`, and raised at haute's own
-  validation sites — gates, column checks,
-  the metric wrap, config/protocol validation; `TrainingConfigError` extends
-  it. A dependency's plain `ValueError` — including a pydantic
-  `ValidationError` — does not ride the channel: it takes the type-only
-  unexpected-error fallback, closing the #159 design's dependency-`ValueError`
-  residual), `FileNotFoundError` as a
-  path-free could-not-find-a-file shape (a fit-stage missing file is typically
-  an internal staged asset, so this deliberately narrows #159's
-  path-as-actionable ruling — the path stays in the diagnostic fields and
-  traceback), CatBoost failures keyed on the exception TYPE name (never a
-  message substring, so a non-CatBoost error that mentions catboost in its text
-  cannot take these shapes) with a NaN/Inf hint, a body-free feature-mismatch
-  shape, and a body-free generic shape naming the type and training context,
-  `OSError` rendered as a save failure whose reason is re-derived from the
-  numeric errno via `os.strerror` (`exc.strerror` is constructor-supplied and
-  untrusted; no errno → a generic file-system-error wording) — never the
-  internal temp/staging path embedded in `str(exc)` — and an unexpected-error
-  fallback naming the operation, the target/objective context, and the exception
-  type. `context` is built by
-  `_training_context_phrase(job_kwargs)` (`target 'x' (objective 'y')`, falling
-  back to `"the model"`); the entrypoints capture it right after parsing
-  `job_kwargs` so a fit-stage failure names what was being trained. The fallback
-  stays a plain system `error` — a system fault is never relabelled as
-  `contract_error`.
+- **Generic `Exception`** catch-all in each process entrypoint, and the preparation
+  owners' `_record_preparation_failure`, answer through
+  `_training_failure_answer(exc, operation_noun=..., context=...)`: a CatBoost error is worded
+  by its exception TYPE (never a message substring, so an error that mentions catboost in its
+  text is not one) and never its text, data with NaN or infinite values with the upstream
+  Transform hint and a feature mismatch body-free, any other CatBoost error naming its type
+  and the training context under an incident (`record_incident`); everything else is
+  answered as every edge answers it (`haute._failure_answers.answer_failure`):
+  `HauteValidationError` in its own words (the validation channel; provenance is enforced by
+  the marker type, so a dependency's plain `ValueError`, a pydantic `ValidationError`
+  included, does not ride it), a file the operating system refused named in the project, a
+  full disk, and anything unnamed an incident whose record holds the text and traceback.
+  The payload carries the answer's end state, message and job fields (its code and any
+  incident), the raw `str(exc)` in `fields["error"]` (`_answered_failure_payload`).
+  `context` is built by `_training_context_phrase(job_kwargs)` (`target 'x' (objective
+  'y')`, falling back to `"the model"`); the entrypoints capture it right after parsing
+  `job_kwargs` so a fit-stage failure names what was being trained. A system fault is never
+  relabelled as `contract_error`.
 - **Curated failure surfacing** — `_worker_failure_payload` takes an explicit
   `user_facing` decision from every call site and stamps the payload's
   `user_message` field (`src/haute/_worker_protocol.py::WORKER_USER_MESSAGE_FIELD`) only for
   deliberately curated, haute-authored wording: the cancelled/memory-limit/
   contract-error/bounded-memory branches of `_known_training_worker_failure`
   (the memory-limit branch authors its message from the exception's structured
-  attributes via the shared `src/haute/routes/_memory_messages.py::memory_limit_user_message`
+  attributes via the shared `src/haute/_memory_messages.py::memory_limit_user_message`
   — human-readable used/allowed sizes plus a call to action, never the internal
   operation name, which stays in the diagnostic `error` field; the same shape
   serves the training 507 response, the auto-range job, and the input-snapshot
   build, so the wording cannot drift between surfaces), the
   `HauteValidationError` validation channel (which carries the gate and
-  metric-wrap messages), and every `_friendly_error` shape
+  metric-wrap messages), and every `_training_failure_answer` answer
   (all curated as above, so the entrypoints pass `user_facing=True` and thread
   the raw `str(exc)` into `fields["error"]` explicitly). Raw `MemoryError` text
   is NOT stamped and keeps the typed "Isolated worker raised {type}: {message}"
@@ -1674,8 +1661,8 @@ rows/features) and retry.
   candidate fit failed"; inside the process worker, `HauteValidationError` maps the job
   to `contract_error` with its message verbatim, `ExecutionCancelledError` maps to
   `cancelled`, `MemoryError` to `memory_limited`, and any other exception — a
-  dependency's plain `ValueError` included — maps to `error` via `_friendly_error`'s
-  type-only public message, the same taxonomy the training entrypoint uses.
+  dependency's plain `ValueError` included — ends as `_training_failure_answer` answers it, the same taxonomy the training
+  entrypoint uses.
 
 ## Testing
 

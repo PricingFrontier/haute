@@ -29,6 +29,7 @@ from typing import Any, NamedTuple
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._ast_helpers import _extract_global_constants_declaration
+from haute._failure_answers import answer_failure, git_refusal_answer
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._git_lock import repository_mutation
 from haute._global_constants import (
@@ -418,10 +419,11 @@ def capture_save_in_ledger(
     except _git.GitDomainError as exc:
         # Hand-authored messages (incl. guardrails) are safe verbatim.
         warnings.append(f"Changes saved; version capture failed: {exc}")
-    except _git.GitError:
-        # Raw git stderr may leak paths/remotes — full detail is already
-        # in the structured log from _run_git.
-        warnings.append("Changes saved; version capture failed (git error — see server log).")
+    except _git.GitError as exc:
+        # Raw git stderr may leak paths/remotes: it is recorded under the incident the
+        # warning names, never said.
+        answer = git_refusal_answer(exc) or answer_failure(exc, operation="save_capture")
+        warnings.append(f"Changes saved; version capture failed: {answer.message}")
     return LedgerCapture(None, False, list(rel_paths))
 
 

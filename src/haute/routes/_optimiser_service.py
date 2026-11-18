@@ -50,6 +50,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._failure_answers import answer_failure, answer_pipeline_failure, failure_refusal
 from haute._flatten import flatten_executable_graph
 from haute._graph_utils import (
     upstream_node_ids,
@@ -95,13 +96,10 @@ from haute.routes._background_jobs import (
     start_job_thread,
 )
 from haute.routes._contract_errors import (
-    PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_job_fields,
-    contract_error_refusal,
     contract_error_terminal_reason,
-    is_pipeline_error,
-    pipeline_error_message,
+    is_public_contract_error,
 )
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
@@ -378,23 +376,30 @@ def solve_failure_transition(
                 },
             },
         )
-    if isinstance(exc, _OptimiserSolveInputError):
-        category, error_msg, reason = "data", f"Data error: {exc}", "contract_error"
-    elif isinstance(exc, _OptimiserSolverExecutionError):
-        category, error_msg, reason = "algorithm", f"Algorithm error: {exc}", "error"
-    else:
-        category, error_msg, reason = "unexpected", f"Unexpected error: {exc}", "error"
-    logger.error(
-        "solve_failed",
-        error=str(exc),
-        node_id=node_id,
-        category=category,
-        exc_info=True,
-    )
+    if isinstance(exc, _OptimiserSolveInputError | _OptimiserSolverExecutionError):
+        if isinstance(exc, _OptimiserSolveInputError):
+            category, error_msg, reason = "data", f"Data error: {exc}", "contract_error"
+        else:
+            category, error_msg, reason = "algorithm", f"Algorithm error: {exc}", "error"
+        logger.error(
+            "solve_failed",
+            error=str(exc),
+            node_id=node_id,
+            category=category,
+            exc_info=True,
+        )
+        return (
+            cast(TerminalReason, reason),
+            error_msg,
+            {"message": error_msg, "elapsed_seconds": elapsed_seconds},
+        )
+    # Anything else, said as every edge says it: a node's own failure naming its node, a
+    # file the operating system refused, or an incident whose record holds the traceback.
+    answer = answer_pipeline_failure(exc, operation="optimiser_solve")
     return (
-        cast(TerminalReason, reason),
-        error_msg,
-        {"message": error_msg, "elapsed_seconds": elapsed_seconds},
+        answer.terminal_reason,
+        answer.message,
+        {**answer.job_fields(), "message": answer.message, "elapsed_seconds": elapsed_seconds},
     )
 
 
@@ -1234,23 +1239,16 @@ class OptimiserSolveService:
         try:
             start_job_thread(thread)
         except Exception as exc:
-            logger.error(
-                "solve_setup_worker_start_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                job_id=job_id,
-                exc_info=True,
-            )
+            answer = answer_failure(exc, operation="optimiser_setup_worker_start")
             self._lifecycle.transition(
                 job_id,
-                to="error",
-                message=f"Failed to start optimiser setup worker: {exc}",
+                to=answer.terminal_reason,
+                message=answer.message,
+                fields=answer.job_fields(),
                 elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
             )
             self._release_job_ownership(job_id, setup_singleflight_key=setup_job_key)
-            raise ServiceFailedError(
-                "Optimiser setup worker failed to start. Check the server logs for details."
-            ) from exc
+            raise answer.refusal() from exc
 
     def _run_solve_setup_and_launch(
         self,
@@ -1923,17 +1921,7 @@ class OptimiserSolveService:
                         memory_limit_bytes=budget.memory_limit_bytes,
                     )
                 ) from None
-            logger.error(
-                "optimiser_worker_failed",
-                job_id=job_id,
-                node_id=node_id,
-                operation=budget.operation,
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
-            raise ServiceFailedError(
-                "Optimiser worker failed. Check the server logs for details."
-            ) from None
+            raise failure_refusal(exc, operation=budget.operation) from None
 
     def _record_solve_setup_failure(
         self,
@@ -2839,32 +2827,30 @@ class OptimiserSolveService:
                 except RequestRefusedError:
                     return
                 except Exception as exc:
-                    logger.error(
-                        "frontier_auto_range_worker_failed",
-                        error=str(exc),
-                        node_id=body.node_id,
-                        exc_info=True,
+                    # The job's own mapping records what it knows; anything that escaped
+                    # it ends the job in words here, so no job is left running.
+                    answer = answer_failure(exc, operation="frontier_auto_range")
+                    self._lifecycle.transition(
+                        job_id,
+                        to=answer.terminal_reason,
+                        message=answer.message,
+                        fields=answer.job_fields(),
+                        elapsed_seconds=time.monotonic() - start_time,
                     )
 
         thread = context_thread(_auto_range_background, daemon=True)
         try:
             start_job_thread(thread)
         except Exception as exc:
-            logger.error(
-                "frontier_auto_range_worker_start_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                exc_info=True,
-            )
+            answer = answer_failure(exc, operation="frontier_auto_range_worker_start")
             self._lifecycle.transition(
                 job_id,
-                to="error",
-                message=f"Failed to start auto-range worker: {exc}",
+                to=answer.terminal_reason,
+                message=answer.message,
+                fields=answer.job_fields(),
                 elapsed_seconds=time.monotonic() - start_time,
             )
-            raise ServiceFailedError(
-                "Auto-range worker failed to start. Check the server logs for details."
-            ) from exc
+            raise answer.refusal() from exc
 
     # ------------------------------------------------------------------
     # Private orchestration steps
@@ -3136,39 +3122,12 @@ class OptimiserSolveService:
         """Record and translate a failure while opening or executing setup's pipeline."""
         try:
             yield
-        except RequestRefusedError:
-            raise
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            self._record_setup_failure(
-                job_id,
-                to=contract_error_terminal_reason(exc),
-                message=str(exc),
-                fields=contract_error_job_fields(exc),
-                execution_context=execution_context,
-            )
-            raise contract_error_refusal(exc) from None
-        except PIPELINE_ERROR_TYPES as exc:
-            # The pipeline's own code, contracts or data, as a preview of the node shows it;
-            # out of memory behind one goes on as a memory failure does.
-            if not is_pipeline_error(exc):
-                raise
-            error_msg = f"Pipeline execution failed: {pipeline_error_message(exc)}"
-            logger.warning(
-                "pipeline_contract_mismatch",
-                error=str(exc),
-                node_id=body.node_id,
-                exc_info=True,
-            )
-            self._record_http_setup_failure(
-                job_id,
-                status_code=400,
-                detail=error_msg,
-                execution_context=execution_context,
-            )
-            raise InvalidRequestError(error_msg) from exc
-        except (ExecutionCancelledError, ExecutionMemoryLimitExceededError):
+        except (RequestRefusedError, ExecutionCancelledError, ExecutionMemoryLimitExceededError):
             raise
         except BoundedMemoryUnsupportedError as exc:
+            if is_public_contract_error(exc):
+                # A public contract error (the group-by refusal among them) keeps its payload.
+                self._answer_setup_failure(exc, job_id, execution_context)
             error_msg = f"Pipeline cannot run in bounded streaming mode: {exc}"
             logger.warning(
                 "pipeline_bounded_streaming_unsupported",
@@ -3183,25 +3142,30 @@ class OptimiserSolveService:
             )
             raise UnprocessableError(error_msg) from exc
         except Exception as exc:
-            # Anything else is a fault the user cannot act on: the job says what the
-            # answer says, and the log keeps the exception.
-            error_msg = "Pipeline execution failed. Check the server logs for details."
-            logger.error(
-                "pipeline_exec_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                exc_info=True,
-            )
-            self._record_setup_failure(
-                job_id,
-                to="error",
-                message=error_msg,
-                execution_context=execution_context,
-            )
-            raise ServiceFailedError(error_msg) from exc
+            # Out of memory under any translation goes on as a memory failure does.
+            if memory_error_in(exc) is not None:
+                raise
+            self._answer_setup_failure(exc, job_id, execution_context)
         finally:
             if execution_context is not None:
                 self._record_execution_metrics(job_id, execution_context)
+
+    def _answer_setup_failure(
+        self, exc: Exception, job_id: str, execution_context: ExecutionContext | None
+    ) -> NoReturn:
+        """Record *exc* as setup's terminal state and raise its answer: the pipeline's own
+        code, contracts or data as a preview of the node shows it, a node's own failure
+        naming its node, a public contract error with its payload, and anything unnamed an
+        incident; the job says what the answer says."""
+        answer = answer_pipeline_failure(exc, operation="optimiser_setup")
+        self._record_setup_failure(
+            job_id,
+            to=answer.terminal_reason,
+            message=answer.message,
+            fields=answer.job_fields(),
+            execution_context=execution_context,
+        )
+        raise answer.refusal() from exc
 
     @contextlib.contextmanager
     def _recorded_setup_failures(
@@ -3656,16 +3620,12 @@ class OptimiserSolveService:
         try:
             start_job_thread(thread)
         except Exception as exc:
-            logger.error(
-                "solve_worker_start_failed",
-                error=str(exc),
-                node_id=node_id,
-                exc_info=True,
-            )
+            answer = answer_failure(exc, operation="optimiser_solve_worker_start")
             self._lifecycle.transition(
                 job_id,
-                to="error",
-                message=f"Failed to start optimiser worker: {exc}",
+                to=answer.terminal_reason,
+                message=answer.message,
+                fields=answer.job_fields(),
                 elapsed_seconds=time.monotonic() - start_time,
             )
             if not ctx.registration_already_active:
@@ -3685,6 +3645,4 @@ class OptimiserSolveService:
                     job_id=job_id,
                     event="solve_worker_start_orphan_ratebook_factors_cleanup_failed",
                 )
-            raise ServiceFailedError(
-                "Optimiser worker failed to start. Check the server logs for details."
-            ) from exc
+            raise answer.refusal() from exc

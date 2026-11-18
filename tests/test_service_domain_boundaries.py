@@ -271,8 +271,7 @@ HTTP_EDGE_MODULES = frozenset(
         "haute.routes._contract_errors",
         "haute.routes._error_handlers",
         "haute.routes._mlflow_log_errors",
-        "haute.routes._worker_failure_http",
-        "haute.routes._runtime_path_errors",
+        "haute.routes._worker_failure_refusals",
     }
 )
 

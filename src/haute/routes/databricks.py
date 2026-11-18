@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from haute._credential_security import redact_sensitive_text
 from haute._databricks_credentials import (
@@ -15,7 +15,9 @@ from haute._databricks_credentials import (
     databricks_workspace_client,
     resolve_databricks_credentials,
 )
+from haute._failure_answers import unexpected_failure
 from haute._logging import get_logger
+from haute.errors import ForbiddenError, NotFoundError, RequestRefusedError
 from haute.schemas import (
     CatalogItem,
     CatalogListResponse,
@@ -37,15 +39,15 @@ def _get_databricks_client() -> Any:
     try:
         from databricks.sdk import WorkspaceClient  # noqa: F401
     except ImportError:
-        raise HTTPException(
+        raise RequestRefusedError(
+            "databricks-sdk is not installed. Install with: pip install haute[databricks]",
             status_code=503,
-            detail="databricks-sdk is not installed. Install with: pip install haute[databricks]",
         )
 
     try:
         credentials = resolve_databricks_credentials()
     except DatabricksConfigError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise RequestRefusedError(str(exc), status_code=503) from exc
 
     return databricks_workspace_client(credentials)
 
@@ -71,15 +73,29 @@ def _browsing(subject: str, *, within: str | None = None) -> Iterator[Any]:
         raise
 
 
-def _browsing_failure(exc: Exception, subject: str, within: str | None) -> HTTPException:
+def _browsing_failure(exc: Exception, subject: str, within: str | None) -> RequestRefusedError:
     """The answer to *exc*, raised listing *subject*, with the SDK's text only in the log.
 
     The SDK's text is the workspace's own and can name hosts; it is logged with the
-    credentials scrubbed, and the answer is written here.
+    credentials scrubbed, and the answer is written here: refused credentials, a missing
+    permission and a missing parent in words, any other refusal under an incident.
     """
     from databricks.sdk.errors import NotFound, PermissionDenied
 
     credentials = resolve_databricks_credentials()
+    secrets = (credentials.token or "", credentials.client_secret or "")
+
+    def record(incident: str | None, failed: BaseException, *, status_code: int) -> None:
+        logger.warning(
+            "databricks_browsing_failed",
+            subject=subject,
+            status_code=status_code,
+            error_type=type(failed).__name__,
+            error=redact_sensitive_text(str(failed), known_secrets=secrets),
+            incident=incident,
+        )
+
+    failure: RequestRefusedError
     if credentials_rejected(exc):
         detail = (
             f"Databricks refused DATABRICKS_TOKEN, so {subject} could not be listed: "
@@ -88,33 +104,27 @@ def _browsing_failure(exc: Exception, subject: str, within: str | None) -> HTTPE
             else f"Databricks refused DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET, so "
             f"{subject} could not be listed: check the service principal's credentials in .env."
         )
-        failure = HTTPException(status_code=401, detail=detail)
+        failure = RequestRefusedError(detail, status_code=401)
     elif isinstance(exc, PermissionDenied):
-        failure = HTTPException(
-            status_code=403,
-            detail=(
-                f"The Databricks credentials may not list {subject}: ask a workspace admin "
-                "for access."
-            ),
+        failure = ForbiddenError(
+            f"The Databricks credentials may not list {subject}: ask a workspace admin for access."
         )
     elif isinstance(exc, NotFound) and within is not None:
-        failure = HTTPException(
-            status_code=404,
-            detail=f"{within[:1].upper()}{within[1:]} was not found in the Databricks workspace.",
+        failure = NotFoundError(
+            f"{within[:1].upper()}{within[1:]} was not found in the Databricks workspace."
         )
     else:
-        failure = HTTPException(
-            status_code=502,
-            detail=f"Databricks could not list {subject}. Check the server logs for details.",
+        answer = unexpected_failure(
+            exc,
+            operation="databricks_browse",
+            record=lambda incident, failed, **_known: record(incident, failed, status_code=502),
         )
-    secrets = (credentials.token or "", credentials.client_secret or "")
-    logger.warning(
-        "databricks_browsing_failed",
-        subject=subject,
-        status_code=failure.status_code,
-        error_type=type(exc).__name__,
-        error=redact_sensitive_text(str(exc), known_secrets=secrets),
-    )
+        return RequestRefusedError(
+            f"Databricks could not list {subject}. Its reason is recorded under incident "
+            f"{answer.incident}.",
+            status_code=502,
+        )
+    record(None, exc, status_code=failure.status_code)
     return failure
 
 

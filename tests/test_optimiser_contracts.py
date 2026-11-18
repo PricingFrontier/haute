@@ -35,6 +35,7 @@ from haute.schemas import (  # noqa: E402
     OptimiserRatebookFrontierPoint,
     OptimiserSolveResult,
 )
+from tests._failure_assertions import assert_unnamed
 from tests.conftest import (
     make_edge,
     make_graph,
@@ -1120,7 +1121,8 @@ def test_build_grid_sanitises_a_refusal_that_is_not_the_quote_layout() -> None:
         failure, job = _build_grid_failure(_solver_input(["q1", "q1", "q2", "q2"], [0, 1, 0, 1]))
 
     assert failure.status_code == 500
-    assert failure.detail == "Grid construction failed. Check the server logs for details."
+    assert_unnamed(failure.detail)
+    assert "internal builder detail" not in failure.detail
     assert job["status"] == "error"
     assert job["terminal_reason"] == "error"
 
@@ -1803,13 +1805,12 @@ class TestStatusFiniteWalk:
 
 
 def test_a_summary_with_many_non_finite_values_names_five_and_counts_them() -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes.optimiser import _require_finite_summary_artifacts
 
     summary = {"artifacts": {"lambdas": {f"c{i}": float("nan") for i in range(6)}}}
 
-    with pytest.raises(HTTPException) as caught:
+    with pytest.raises(RequestRefusedError) as caught:
         _require_finite_summary_artifacts(summary)
 
     assert caught.value.status_code == 400

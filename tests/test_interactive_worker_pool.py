@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 import haute._interactive_workers as worker_mod
+from haute._failure_answers import worker_failure_payload
 from haute._interactive_workers import (
     InteractiveWorkerPool,
     resolve_interactive_execution_mode,
@@ -549,14 +550,14 @@ def test_exception_payload_and_entrypoint_protocols(monkeypatch: pytest.MonkeyPa
         def to_payload(self):
             return {1: "ok"}
 
-    assert worker_mod._public_exception_payload(PayloadError()) == {"1": "ok"}
-    assert worker_mod._public_exception_payload(Exception()) is None
+    assert worker_failure_payload(PayloadError()) == {"1": "ok"}
+    assert worker_failure_payload(Exception()) is None
 
     class BadPayloadError(Exception):
         def to_payload(self):
             return lambda: None
 
-    assert worker_mod._public_exception_payload(BadPayloadError()) is None
+    assert worker_failure_payload(BadPayloadError()) is None
     request = _Queue(
         [
             pickle.dumps(
@@ -1038,7 +1039,7 @@ def test_stopped_error_rejects_completed_and_payload_must_be_a_mapping() -> None
         def to_payload(self):
             return ("serialisable", "but not a mapping")
 
-    assert worker_mod._public_exception_payload(SequencePayloadError()) is None
+    assert worker_failure_payload(SequencePayloadError()) is None
 
 
 def test_partial_pool_start_closes_every_started_slot(monkeypatch: pytest.MonkeyPatch) -> None:

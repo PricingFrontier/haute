@@ -16,7 +16,7 @@ from queue import Empty, Queue
 from time import perf_counter
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
 if TYPE_CHECKING:
     import types as _types
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from mlflow.tracking import MlflowClient
     from mlflow.utils.rest_utils import MlflowHostCreds
 
+from haute._failure_answers import unexpected_failure
 from haute._logging import get_logger
 from haute._mlflow_errors import (
     MLFLOW_NOT_INSTALLED_DETAIL,
@@ -37,8 +38,7 @@ from haute._mlflow_utils import (
 )
 from haute._model_flavors import model_file_suffixes
 from haute._project_context import context_thread, current_project
-from haute.errors import MlflowConfigError, RequestRefusedError
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from haute.errors import InvalidRequestError, MlflowConfigError, RequestRefusedError
 from haute.schemas import (
     MlflowDestinationEntry,
     MlflowDestinationsResponse,
@@ -174,8 +174,8 @@ def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowCl
     try:
         import mlflow
     except ImportError:
-        raise HTTPException(
-            status_code=MLFLOW_NOT_INSTALLED_STATUS, detail=MLFLOW_NOT_INSTALLED_DETAIL
+        raise RequestRefusedError(
+            MLFLOW_NOT_INSTALLED_DETAIL, status_code=MLFLOW_NOT_INSTALLED_STATUS
         )
 
     try:
@@ -194,19 +194,14 @@ def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowCl
         registry_uri = registry_uri_for_tracking(tracking_uri)
         client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
         return mlflow, client
-    except (HTTPException, RequestRefusedError):
+    except RequestRefusedError:
         raise
     except MlflowConfigError as exc:
         # Our own configuration messages are actionable and never secret.
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise RequestRefusedError(str(exc), status_code=502)
     except Exception as exc:
         # Never str(exc): a client construction failure can echo the tracking URI.
-        logger.error(
-            "mlflow_tracking_setup_failed",
-            category=_classify_probe_error(exc),
-            error_type=type(exc).__name__,
-        )
-        raise HTTPException(status_code=502, detail=_INTERNAL_ERROR_DETAIL)
+        raise _unnamed_mlflow_failure(exc, "mlflow_tracking_setup_failed") from None
 
 
 # Actionable, non-leaking details for expected discovery failures. The
@@ -223,15 +218,36 @@ _DISCOVERY_CATEGORY_DETAILS = {
 }
 
 
-def _discovery_http_error(exc: BaseException, event: str) -> HTTPException:
+def _discovery_http_error(exc: BaseException, event: str) -> RequestRefusedError:
     """Map a discovery failure to a 502 with a categorised, non-secret detail."""
     category = _classify_probe_error(exc)
+    detail = _DISCOVERY_CATEGORY_DETAILS.get(category)
+    if detail is None:
+        return _unnamed_mlflow_failure(exc, event)
     # Category and exception type only: the raw text may carry tokens or
     # credential-bearing URIs, and the client already gets the mapped detail.
     logger.error(event, category=category, error_type=type(exc).__name__)
-    return HTTPException(
+    return RequestRefusedError(detail, status_code=502)
+
+
+def _unnamed_mlflow_failure(exc: BaseException, event: str) -> RequestRefusedError:
+    """An MLflow failure no category names: a 502 naming the incident under which its
+    category and type, never its text, are logged."""
+
+    def record(incident: str, failed: BaseException, **_known: object) -> None:
+        logger.error(
+            event,
+            category=_classify_probe_error(failed),
+            error_type=type(failed).__name__,
+            incident=incident,
+        )
+
+    answer = unexpected_failure(exc, operation="mlflow", record=record)
+    return RequestRefusedError(
+        {**answer.detail, "message": f"MLflow could not answer. {answer.message}"}
+        if isinstance(answer.detail, dict)
+        else answer.message,
         status_code=502,
-        detail=_DISCOVERY_CATEGORY_DETAILS.get(category, _INTERNAL_ERROR_DETAIL),
     )
 
 
@@ -302,7 +318,7 @@ def put_mlflow_settings(body: MlflowSettingsUpdateRequest) -> MlflowSettingsResp
     try:
         save_mlflow_settings(settings, current_project().root)
     except MlflowConfigError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise InvalidRequestError(str(exc))
     return _settings_response()
 
 

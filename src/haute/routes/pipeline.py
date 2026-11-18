@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -41,10 +41,16 @@ from haute._execution_admission import (
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
-    ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
+)
+from haute._failure_answers import (
+    FailureAnswer,
+    failure_refusal,
+    node_failed_error,
+    own_failing_node,
+    pipeline_failure,
 )
 from haute._flatten import flatten_executable_graph
 from haute._global_constants import reference_problem
@@ -141,19 +147,23 @@ from haute._worker_isolation import (
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
+    ConflictError,
     ContractColumnsMissingError,
     ContractMismatchError,
+    InsufficientMemoryError,
+    InvalidRequestError,
+    NotFoundError,
     ParseError,
+    RequestRefusedError,
     SchemaMismatchError,
-    TraceNodeFailedError,
+    ServiceFailedError,
     TraceRequestError,
     TraceRowAmbiguousError,
     TraceRowMismatchError,
     TraceRowOutOfRangeError,
     TraceTargetNotFoundError,
     TraceTargetUnsupportedError,
-    failing_node,
-    is_public_contract_error,
+    UnprocessableError,
 )
 from haute.execution import _runtime_input_path_fields, prune_source_switch_edges
 from haute.executor import (
@@ -181,10 +191,9 @@ from haute.graph_utils import (
 from haute.routes._contract_errors import (
     PIPELINE_ERROR_TYPES,
     PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
     contract_error_payload,
+    contract_error_refusal,
     is_pipeline_error,
-    pipeline_error_message,
     raise_memory_behind,
 )
 from haute.routes._helpers import (
@@ -202,7 +211,6 @@ from haute.routes._isolated_worker_async import (
     run_cancellable_worker_transaction,
 )
 from haute.routes._preview_progress import preview_progress
-from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._save_operations import (
     SaveOperationReusedError,
     committed_saves,
@@ -215,7 +223,7 @@ from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
     run_blocking_with_response_timeout,
 )
-from haute.routes._worker_failure_http import RemoteAnswer, worker_failure_http_exception
+from haute.routes._worker_failure_refusals import RemoteAnswer, worker_failure_refusal
 from haute.schemas import (
     ColumnInfo,
     EditorIdentitiesRequest,
@@ -413,7 +421,7 @@ async def resolve_pipeline_editor_identities(
                 )
             )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise UnprocessableError(str(exc)) from exc
     violations = (
         None if graph is None else name_violations_payload(name_violations(graph, read_utility))
     )
@@ -551,7 +559,7 @@ async def resolve_free_code_columns_endpoint(
     try:
         rendered = render_polars_steps(body.steps, body.input_names, start=body.start)
     except PolarsStepError as exc:
-        raise HTTPException(status_code=422, detail=exc.message) from None
+        raise UnprocessableError(exc.message) from None
     if not any(step["kind"] == "free_code" for step in body.steps):
         return PolarsFreeCodeColumnsResponse(free_code_columns=[])
     key = ("polars_free_code_columns", body.node_id)
@@ -581,7 +589,7 @@ async def resolve_free_code_columns_endpoint(
             detail="The client closed the free-code column request before it finished.",
         )
     except (SupersededRequestError, WorkerStoppedError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+        raise ConflictError(str(exc)) from None
     return PolarsFreeCodeColumnsResponse(
         free_code_columns=[
             FreeCodeColumns(
@@ -613,10 +621,7 @@ _trace_work_slots = asyncio.Semaphore(_TRACE_MAX_CONCURRENCY)
 
 def _ensure_printable_lookup_id(value: str | None, field_name: str) -> None:
     if value is not None and not value.isprintable():
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} contains control characters",
-        )
+        raise InvalidRequestError(f"{field_name} contains control characters")
 
 
 def _ensure_printable_target(target: NodeAddressPayload | FrameTargetPayload) -> None:
@@ -646,7 +651,7 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
             # With no pipeline directory, the one candidate is the project root's.
             resolve_node_input_path(graph.source_file, project_root=current_project().root)
         except RuntimePathError as exc:
-            raise runtime_path_http_exception(exc) from None
+            raise failure_refusal(exc) from None
 
     for node in graph.nodes:
         config = node.data.config
@@ -658,7 +663,7 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
             try:
                 resolve_node_input_path(raw_path, source_file=graph.source_file)
             except RuntimePathError as exc:
-                raise runtime_path_http_exception(exc) from None
+                raise failure_refusal(exc) from None
 
 
 def _validate_data_output_path(
@@ -677,7 +682,7 @@ def _validate_data_output_path(
             project_root=project_root,
         )
     except RuntimePathError as exc:
-        raise runtime_path_http_exception(exc) from None
+        raise failure_refusal(exc) from None
 
 
 DataOutputRequestT = TypeVar("DataOutputRequestT", OutputDestinationRequest, WriteOutputRequest)
@@ -693,14 +698,13 @@ def _prepare_data_output_request(
     graph = flatten_executable_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
-        raise HTTPException(status_code=400, detail="Empty graph")
+        raise InvalidRequestError("Empty graph")
     _validate_runtime_input_paths(graph)
     body = resolved_request(body, graph)
     output_node = graph.node_map[body.node_id]
     if output_node.data.nodeType != NodeType.DATA_OUTPUT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"'{node_display_name(graph, body.node_id)}' is not a Data Output",
+        raise InvalidRequestError(
+            f"'{node_display_name(graph, body.node_id)}' is not a Data Output"
         )
     try:
         config = validate_node_config(
@@ -711,10 +715,7 @@ def _prepare_data_output_request(
             node_label=node_display_name(graph, body.node_id),
         )
     except (ConfigError, PolarsIoConfigError, TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Data Output configuration.",
-        ) from None
+        raise InvalidRequestError("Invalid Data Output configuration.") from None
     project_root = current_project().root
     _validate_data_output_path(graph, output_node, project_root=project_root)
     return body, output_node, config, project_root
@@ -820,30 +821,30 @@ class _PreviewTargetNotReturnedError(RuntimeError):
 def _pipeline_remote_answer(operation: str) -> RemoteAnswer:
     """The answers a preview, a trace and an OUTPUT dry run give remote exceptions of their own."""
 
-    def answer(exc: WorkerRemoteError) -> HTTPException | None:
+    def answer(exc: WorkerRemoteError) -> RequestRefusedError | None:
         identity = (exc.remote_module, exc.remote_type)
         payload = exc.public_payload
         if operation == "pipeline_preview":
             if identity == _PREVIEW_PROJECTION_REMOTE_IDENTITY:
-                return HTTPException(status_code=400, detail=exc.remote_message)
+                return InvalidRequestError(exc.remote_message)
             if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
-                return HTTPException(status_code=404, detail=exc.remote_message)
+                return NotFoundError(exc.remote_message)
         if (
             operation == "output_assemble_dry_run"
             and identity in _OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES
         ):
-            return HTTPException(status_code=422, detail=exc.remote_message)
+            return UnprocessableError(exc.remote_message)
         if operation == "pipeline_trace":
             if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
-                return HTTPException(status_code=422, detail=exc.remote_message)
+                return UnprocessableError(exc.remote_message)
             refusal = _TRACE_REFUSAL_REMOTE.get(identity)
             if (
                 refusal is not None
                 and payload is not None
                 and payload.get("error_code") == refusal.error_code
             ):
-                return HTTPException(
-                    status_code=_TRACE_REFUSAL_STATUS[refusal], detail=str(payload["message"])
+                return RequestRefusedError(
+                    str(payload["message"]), status_code=_TRACE_REFUSAL_STATUS[refusal]
                 )
         return None
 
@@ -936,7 +937,7 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
 
     A deadline answers 504 with *timed_out*, the run's token cancelled so its work
     stops; a newer request 409 with ``request_superseded``; a worker's failure what
-    :func:`worker_failure_http_exception` answers for it, with this route's own remote
+    :func:`worker_failure_refusal` answers for it, with this route's own remote
     exceptions; a public contract error its own payload. A thread still running past
     its deadline keeps the admission until it ends.
     """
@@ -945,18 +946,18 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
     except BlockingWorkTimeoutError as exc:
         run.token.cancel()
         run.release(once_done=exc.background_task)
-        raise HTTPException(status_code=504, detail=timed_out) from None
+        raise RequestRefusedError(timed_out, status_code=504) from None
     except TimeoutError:
         run.token.cancel()
-        raise HTTPException(status_code=504, detail=timed_out) from None
+        raise RequestRefusedError(timed_out, status_code=504) from None
     except SupersededRequestError as exc:
         # The browser drops a superseded preview silently, so it is named by a
         # code rather than recognised by its wording.
-        raise HTTPException(status_code=409, detail=exc.to_payload()) from None
+        raise ConflictError(exc.to_payload()) from None
     except WorkerError as exc:
         if isinstance(exc, WorkerTimeoutError):
             run.token.cancel()
-        raise worker_failure_http_exception(
+        raise worker_failure_refusal(
             exc,
             operation=run.operation,
             timed_out=timed_out,
@@ -968,7 +969,7 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
             operation=run.operation,
             **contract_error_payload(exc),
         )
-        raise contract_error_http_exception(exc) from None
+        raise contract_error_refusal(exc) from None
     finally:
         run.release()
 
@@ -1328,7 +1329,7 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
                 default_bus.publish("pipeline.document.update", update)
             return response
     except SaveOperationReusedError as exc:
-        raise HTTPException(status_code=409, detail=f"save_operation_reused: {exc}") from None
+        raise ConflictError(f"save_operation_reused: {exc}") from None
     except StaleDocumentRevisionError as exc:
         # The client's document is behind the disk; nothing was written.
         # The detail keeps the repository's flat-string error shape and
@@ -1338,10 +1339,10 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
             expected_revision=exc.expected_revision,
             provided_revision=exc.provided_revision,
         )
-        raise HTTPException(status_code=409, detail=f"{exc.code}: {exc}") from None
+        raise ConflictError(f"{exc.code}: {exc}") from None
     except ConfigError as exc:
         logger.warning("save_pipeline_config_invalid", error=str(exc))
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        raise InvalidRequestError(str(exc)) from None
 
 
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)
@@ -1349,18 +1350,18 @@ async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
     """Read a JSON artifact from the project root and return its object payload."""
     target = contained_path(current_project().root, body.path)
     if target.suffix.lower() != ".json":
-        raise HTTPException(status_code=400, detail="Only .json files are supported")
+        raise InvalidRequestError("Only .json files are supported")
     if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found: {body.path}")
+        raise NotFoundError(f"File not found: {body.path}")
 
     try:
         return ReadJsonResponse(await run_in_threadpool(_read_json_object_blocking, target))
     except json.JSONDecodeError as exc:
         logger.warning("read_json_invalid_json", path=body.path, error=str(exc))
-        raise HTTPException(status_code=400, detail="Invalid JSON file") from None
+        raise InvalidRequestError("Invalid JSON file") from None
     except ValueError as exc:
         logger.warning("read_json_invalid_payload", path=body.path, error=str(exc))
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        raise InvalidRequestError(str(exc)) from None
 
 
 def _occurrence_output_columns(
@@ -1588,30 +1589,6 @@ def _listed_seeds(body: TraceRequest) -> list[ListedSeed]:
     ]
 
 
-def _own_node_failure(exc: BaseException) -> str | None:
-    """The node whose own code raised *exc*, or ``None`` for a failure of the run.
-
-    The graph walk marks what it raises with the node it was building or running.
-    Contract and schema mismatches, public contract errors, the trace's own refusals
-    and execution control (cancellation, the memory budget) end the run wherever they
-    are raised, so they are never a node's.
-    """
-    node_id = failing_node(exc)
-    if node_id is None or is_public_contract_error(exc):
-        return None
-    run_level = (
-        ContractMismatchError,
-        SchemaMismatchError,
-        TraceRequestError,
-        ExecutionCancelledError,
-        ExecutionAdmissionError,
-        ExecutionMemoryLimitExceededError,
-        MemoryError,
-        TimeoutError,
-    )
-    return None if isinstance(exc, run_level) else node_id
-
-
 @contextmanager
 def _trace_node_failures(graph: PipelineGraph) -> Iterator[None]:
     """Raise a node's own failure during a trace as the error naming it (422), the
@@ -1619,15 +1596,13 @@ def _trace_node_failures(graph: PipelineGraph) -> Iterator[None]:
     try:
         yield
     except Exception as exc:
-        node_id = _own_node_failure(exc)
-        if node_id is None:
-            raise
-        reference = node_reference(graph, node_id) if node_id in graph.node_map else None
-        raise TraceNodeFailedError(
-            f"'{node_display_name(graph, node_id)}' failed: {exc}",
-            node_id=node_id,
-            node=reference,
-        ) from exc
+        node_id = own_failing_node(exc)
+        if node_id is not None:
+            reference = node_reference(graph, node_id) if node_id in graph.node_map else None
+            failed = node_failed_error(exc, node=reference)
+            if failed is not None:
+                raise failed from exc
+        raise
 
 
 def _trace_payload(
@@ -1683,7 +1658,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     graph = flatten_executable_graph(body.graph, sample=body.workbench_sample)
     _ensure_source_file(graph)
     if not graph.nodes:
-        raise HTTPException(status_code=400, detail="Empty graph")
+        raise InvalidRequestError("Empty graph")
     # The address resolves through the expansion's record, or is refused by name.
     target = resolve_target(graph, body.target)
     _validate_runtime_input_paths(graph)
@@ -1742,11 +1717,11 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             # "check the logs" reply — the point of the contract error is
             # that the user can fix the bad contract in one edit.
             logger.warning("trace_contract_mismatch", error=str(e))
-            raise HTTPException(status_code=422, detail=str(e)) from None
+            raise UnprocessableError(str(e)) from None
         except TraceRequestError as e:
             logger.warning("trace_refused", error_code=e.error_code, error=e.message)
-            raise HTTPException(
-                status_code=_TRACE_REFUSAL_STATUS[type(e)], detail=e.message
+            raise RequestRefusedError(
+                e.message, status_code=_TRACE_REFUSAL_STATUS[type(e)]
             ) from None
         # ``trace_dict`` is already JSON-safe and was validated against
         # ``TraceResponse`` where it ran. Encode it directly so the event
@@ -1792,7 +1767,7 @@ async def _preview_canonical_graph(
                 )
                 _ensure_source_file(graph)
                 if not graph.nodes:
-                    raise HTTPException(status_code=400, detail="Empty graph")
+                    raise InvalidRequestError("Empty graph")
                 # The address resolves through the expansion's record, or is refused by name.
                 target = resolve_target(graph, body.target)
                 _validate_runtime_input_paths(graph)
@@ -1852,9 +1827,9 @@ async def _preview_canonical_graph(
                 return _preview_error(str(e))
             except PreviewProjectionError as e:
                 logger.warning("preview_bad_request", error=str(e))
-                raise HTTPException(status_code=400, detail=str(e)) from None
+                raise InvalidRequestError(str(e)) from None
             except _PreviewTargetNotReturnedError as e:
-                raise HTTPException(status_code=404, detail=str(e)) from None
+                raise NotFoundError(str(e)) from None
     finally:
         if request_id is not None:
             preview_progress.close(request_id)
@@ -1872,7 +1847,7 @@ def preview_progress_of(request_id: str) -> PreviewProgressResponse:
     """
     progress = preview_progress.get(request_id)
     if progress is None:
-        raise HTTPException(status_code=404, detail="No preview in progress with this id.")
+        raise NotFoundError("No preview in progress with this id.")
     return PreviewProgressResponse(
         request_id=request_id,
         phase=progress.phase,
@@ -1907,7 +1882,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
         return PreviewInputsResponse(input_node_ids=[], node_addresses={})
     _ensure_source_file(graph)
     if not graph.nodes:
-        raise HTTPException(status_code=400, detail="Empty graph")
+        raise InvalidRequestError("Empty graph")
     target = resolve_target(graph, body.target)
     _validate_runtime_input_paths(graph)
 
@@ -1931,17 +1906,17 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
             operation="pipeline_preview_inputs",
         )
     except PreviewProjectionError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
+        raise InvalidRequestError(str(e)) from None
     except (ParseError, ConfigError, ContractMismatchError, SchemaMismatchError) as e:
         logger.info("preview_inputs_graph_invalid", error=str(e))
         return PreviewInputsResponse(input_node_ids=[], node_addresses={})
     except (BlockingWorkTimeoutError, TimeoutError):
-        raise HTTPException(
+        raise RequestRefusedError(
+            f"Preview input resolution timed out ({_pipeline_time_limit():.0f}s limit)",
             status_code=504,
-            detail=f"Preview input resolution timed out ({_pipeline_time_limit():.0f}s limit)",
         ) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
-        raise contract_error_http_exception(e) from None
+        raise contract_error_refusal(e) from None
     return labelled(PreviewInputsResponse, graph, input_node_ids=list(node_ids))
 
 
@@ -2344,12 +2319,25 @@ def _prepare_data_output_worker(
         )
     except PIPELINE_ERROR_TYPES as exc:
         raise_memory_behind(exc)
+        # The pipeline's own failure as every edge says it: a node's own naming its node.
+        answer = _pipeline_answer(exc)
         return _OutputWriteWorkerOutcome(
-            failure_kind="contract", detail=pipeline_error_message(exc)
+            failure_kind="contract",
+            detail=answer.message,
+            payload=dict(answer.detail) if isinstance(answer.detail, Mapping) else None,
         )
     finally:
         if context is not None:
             context.release_admission(preserve_primary_error=True)
+
+
+def _pipeline_answer(exc: BaseException) -> FailureAnswer:
+    """One of the ``PIPELINE_ERROR_TYPES``, as :func:`haute._failure_answers.pipeline_failure`
+    words it."""
+    answer = pipeline_failure(exc)
+    if answer is None:  # pragma: no cover - every pipeline error type is worded
+        raise TypeError(f"{type(exc).__name__} is not a pipeline failure") from exc
+    return answer
 
 
 def _with_parent_evidence(
@@ -2504,10 +2492,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         and resolved_output.exists()
         and not body.overwrite
     ):
-        raise HTTPException(
-            status_code=409,
-            detail=str(DataOutputDestinationExistsError(display_path)),
-        )
+        raise ConflictError(str(DataOutputDestinationExistsError(display_path)))
     staging_path = (
         new_data_output_staging_path(resolved_output)
         if is_file_target and resolved_output is not None
@@ -2554,20 +2539,20 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         return result
     except _OutputWriteWorkerError as e:
         if e.kind == "contract":
-            raise HTTPException(status_code=422, detail=e.payload or e.detail) from None
+            raise UnprocessableError(e.payload or e.detail) from None
         if e.kind == "bounded":
-            raise HTTPException(status_code=422, detail=e.detail) from None
+            raise UnprocessableError(e.detail) from None
         if e.kind == "destination_exists":
-            raise HTTPException(status_code=409, detail=e.detail) from None
+            raise ConflictError(e.detail) from None
         if e.kind == "databricks_config":
-            raise HTTPException(status_code=400, detail=e.detail) from None
+            raise InvalidRequestError(e.detail) from None
         if e.kind == "databricks_write":
-            raise HTTPException(status_code=502, detail=e.detail) from None
+            raise RequestRefusedError(e.detail, status_code=502) from None
         if e.kind == "memory":
-            raise HTTPException(status_code=507, detail=e.payload or e.detail) from None
+            raise InsufficientMemoryError(e.payload or e.detail) from None
         raise AssertionError(f"unhandled output worker failure kind: {e.kind}")
     except WorkerError as e:
-        raise worker_failure_http_exception(
+        raise worker_failure_refusal(
             e,
             operation="pipeline_write_output",
             timed_out=f"Sink execution timed out ({_pipeline_time_limit():.0f}s limit)",
@@ -2575,7 +2560,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
         ) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("sink_public_contract_error", **contract_error_payload(e))
-        raise contract_error_http_exception(e) from None
+        raise contract_error_refusal(e) from None
     except BoundedMemoryUnsupportedError as e:
         logger.warning(
             "sink_bounded_streaming_unsupported",
@@ -2586,36 +2571,34 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
                 else None
             ),
         )
-        raise HTTPException(status_code=422, detail=str(e)) from None
+        raise UnprocessableError(str(e)) from None
     except TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail=f"Sink execution timed out ({_pipeline_time_limit():.0f}s limit)",
+        raise RequestRefusedError(
+            f"Sink execution timed out ({_pipeline_time_limit():.0f}s limit)", status_code=504
         ) from None
     except DataOutputDestinationExistsError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from None
+        raise ConflictError(str(e)) from None
     except DataOutputPublicationError as e:
         logger.warning(
             "sink_publication_unsupported",
             path=e.display_path,
             error=repr(e.__cause__),
         )
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise ServiceFailedError(str(e)) from None
     except DataOutputDurabilityError as e:
         logger.error(
             "sink_durability_unconfirmed",
             path=e.display_path,
             error=repr(e.__cause__),
         )
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise ServiceFailedError(str(e)) from None
     except PIPELINE_ERROR_TYPES as e:
         # The parent's planning or input preparation met the pipeline's own error. A graph
         # the shape check refuses answers 400 through the application handler, as on every
         # route.
         if isinstance(e, ParseError) or not is_pipeline_error(e):
             raise
-        logger.warning("sink_pipeline_error", error=str(e))
-        raise HTTPException(status_code=422, detail=pipeline_error_message(e)) from None
+        raise _pipeline_answer(e).refusal() from None
     finally:
         if output_context is not None:
             output_context.release_admission(preserve_primary_error=True)

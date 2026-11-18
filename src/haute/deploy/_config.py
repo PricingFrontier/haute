@@ -30,7 +30,7 @@ from haute.deploy._pruner import (
     find_source_nodes,
     prune_for_deploy,
 )
-from haute.errors import DeployError
+from haute.errors import ConfigError, DeployError
 from haute.graph_utils import PipelineGraph
 
 if TYPE_CHECKING:
@@ -375,7 +375,13 @@ class DeployConfig:
         _load_env(path.resolve().parent)
 
         text = read_user_text(path)
-        data = tomllib.loads(text)
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            # Named as every other reader of haute.toml names it.
+            raise ConfigError(
+                f"{path.name} is malformed and could not be parsed: {exc}", path=str(path)
+            ) from None
 
         _validate_toml_keys(data, path)
 

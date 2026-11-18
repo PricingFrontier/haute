@@ -674,7 +674,9 @@ pipeline.connect("source", "bad")
         assert isinstance(result.exception, SystemExit)
         assert "Error executing pipeline: no rows" in result.output
 
-    def test_a_defect_in_execution_keeps_its_traceback(self, runner: CliRunner, project_dir: Path):
+    def test_a_defect_in_execution_is_an_incident_not_a_traceback(
+        self, runner: CliRunner, project_dir: Path
+    ):
         from unittest.mock import patch
 
         with patch("haute.execution.execute_lazy_graph", side_effect=TypeError("boom")):
@@ -682,7 +684,9 @@ pipeline.connect("source", "bad")
                 cli, ["run", str(project_dir / "main.py"), "--node", "transform"]
             )
         assert result.exit_code == 1
-        assert isinstance(result.exception, TypeError)
+        assert "does not recognise (incident " in result.output
+        assert "Traceback" not in result.output
+        assert "boom" not in result.output
 
     def test_an_unknown_node_is_refused(self, runner: CliRunner, project_dir: Path):
         result = runner.invoke(cli, ["run", str(project_dir / "main.py"), "--node", "nope"])

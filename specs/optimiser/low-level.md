@@ -1251,9 +1251,9 @@ whose message already names every problem and the remedy.
   Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
   the exclusion lease until it can no longer mutate state.
 - **Generic setup failure detail is boundary-safe.** Unknown `_execute_pipeline` and
-  `_build_grid` failures are fixed-detail 500s and preserve their raw
-  exception only in server logs, as defined by
-  [OPT-D01](error-detail-policy.md).
+  `_build_grid` failures are 500 incidents (`haute._failure_answers.unexpected_failure`) whose
+  raw exception is recorded only under the incident, and a node's own failure names its node,
+  as defined by [OPT-D01](error-detail-policy.md).
 - **`decision_score`/`is_baseline` tie-breaking is fully owned by `price-contour`.** The
   [`with_explainer_columns` contract](#withexplainercolumns-contract) requires it to match
   `apply(df)`'s tie-breaking exactly, including which `scenario_value` is treated as baseline
@@ -1274,7 +1274,9 @@ whose message already names every problem and the remedy.
   missing ratebook banding source, malformed frontier-point data, incomplete job summaries), 404
   (job not found or wrong job type), 409 (concurrent job/graph-node conflict, or an atomic job-store update losing a race against a
   concurrent state change), 422 (`BoundedMemoryUnsupportedError` from solve setup or a bounded
-  streaming collect, and the frontier compute-budget rejection; a projection gap keeps a
+  streaming collect, the pipeline's own contracts, schemas or data failing while setup runs it
+  (`pipeline_failure`: a source projection naming a missing column among them, as every edge
+  says it), and the frontier compute-budget rejection; a projection gap keeps a
   full-width boundary, never 422), 410 (a valid
   server-owned handle whose artifact is no longer present), 500 (a background
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
@@ -1282,7 +1284,7 @@ whose message already names every problem and the remedy.
   (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
   mapped by the shared `memory_limit_refusal(exc, operation_noun=...)` with the refused
   operation's noun, "Optimiser setup" or "Auto-range", whose payload `message` is the
-  shared curated wording from `routes/_memory_messages.memory_limit_user_message`
+  shared curated wording from `_memory_messages.memory_limit_user_message`
   — the same shape training and the input-snapshot build use — and the
   memory-limited job's terminal message reuses it rather than the generic
   exceeded-its-memory-budget fallback). Any other exception a request handler raises is not
@@ -1305,9 +1307,10 @@ whose message already names every problem and the remedy.
   refusal without one reads "<noun> exceeded its memory budget (<reason>)."); a
   `RequestRefusedError` as `contract_error` for every 4xx (a 409 conflict included) and
   `error` otherwise; a public contract error with its own reason and fields; a
-  `BoundedMemoryUnsupportedError` as a 422 `contract_error`; and anything else — a library or
-  Polars `ValueError` among them — as `error` with the fixed detail "<noun> failed. Check the
-  server logs for details." and its cause logged. Stops and cancellations never reach it. The
+  `BoundedMemoryUnsupportedError` as a 422 `contract_error`; and anything else as
+  `haute._failure_answers.answer_failure` says it: a node's own failure naming its node, a file
+  the operating system refused, and anything unnamed — a library or Polars `ValueError`
+  among them — as `error` with an incident whose record holds its cause. Stops and cancellations never reach it. The
   auto-range reducer refuses an empty frame, null quote ids and a non-finite or inverted
   estimated range with `InvalidRequestError` (400), so no bare `ValueError` is read as the
   user's input's fault.
@@ -2621,8 +2624,9 @@ and drops the solve result.
 ### Memory failures are fatal in every stage
 
 The solver, adjustment, inline-frontier and summary catches re-raise, in both modes, when
-`memory_error_in(exc)` finds a `MemoryError` behind the exception. Running out of memory is
-therefore never recorded as a diagnostic on a `completed` solve.
+`memory_error_in(exc)` finds running out of memory behind the exception (a `MemoryError`, or
+an allocation the operating system or Polars refused). Running out of memory is therefore never
+recorded as a diagnostic on a `completed` solve.
 
 ### Job record
 

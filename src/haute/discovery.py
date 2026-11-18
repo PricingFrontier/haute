@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from haute._project import _looks_like_pipeline_file, _toml_configured_pipeline
+from haute._project import (
+    PipelineFileError,
+    _looks_like_pipeline_file,
+    _toml_configured_pipeline,
+)
 from haute._project_context import current_project
 from haute.errors import ConfigError
 
@@ -49,16 +53,9 @@ def discover_pipelines(root: Path | None = None) -> list[Path]:
     configured = _configured_pipeline(root)
     if configured is not None:
         if not configured.exists():
-            raise FileNotFoundError(
-                "Pipeline file configured in haute.toml [project].pipeline "
-                f"does not exist: {configured}. Fix the path in haute.toml or create the file."
-            )
+            raise PipelineFileError(str(configured), reason="missing")
         if not _looks_like_pipeline_file(configured):
-            raise FileNotFoundError(
-                "Pipeline file configured in haute.toml [project].pipeline "
-                f"does not look like a Haute pipeline: {configured}. "
-                "Point [project].pipeline at a .py file containing 'haute.Pipeline'."
-            )
+            raise PipelineFileError(str(configured), reason="not_a_pipeline")
         try:
             text = configured.read_text(errors="replace")
         except OSError as exc:

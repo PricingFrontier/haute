@@ -26,10 +26,11 @@ from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 from urllib.parse import quote as url_quoted
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Response
 from fastapi.concurrency import run_in_threadpool
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
+from haute._failure_answers import answer_pipeline_failure
 from haute._git_lock import repository_mutation
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
@@ -81,8 +82,14 @@ from haute._workbench_test_quotes import (
     test_quote_file,
     too_large,
 )
-from haute.errors import HauteError
-from haute.routes._contract_errors import contract_error_http_exception
+from haute.errors import (
+    ConflictError,
+    HauteError,
+    NotFoundError,
+    RequestRefusedError,
+    UnprocessableError,
+)
+from haute.routes._contract_errors import contract_error_refusal
 from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import (
     LedgerCapture,
@@ -140,8 +147,8 @@ async def _enabled_config() -> WorkbenchConfig:
     """The workbench's config, or 404 while the workbench is not enabled."""
     config = await run_in_threadpool(_config)
     if not config.enabled:
-        raise HTTPException(
-            404, "The workbench is not enabled: set [workbench] enabled = true in haute.toml."
+        raise NotFoundError(
+            "The workbench is not enabled: set [workbench] enabled = true in haute.toml."
         )
     return config
 
@@ -167,7 +174,7 @@ def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
     try:
         tables = workbench_tables(spec)
     except WorkbenchTablesError as exc:
-        raise contract_error_http_exception(exc) from exc
+        raise contract_error_refusal(exc) from exc
     # Not checked against the tables here: a sample that doesn't fit fails the previews
     # that read it, and never stops the tables updating.
     return WorkbenchTablesResponse(
@@ -214,15 +221,15 @@ def _save_form(
     try:
         files = folder_files(form, config.form_folder)
     except FormFolderNameError as exc:
-        raise HTTPException(status_code=422, detail=exc.message) from None
+        raise UnprocessableError(exc.message) from None
     try:
         # What a save writes reads back: a reference kept under a name the schema did not
         # hold, which another column of the component's has taken since, would otherwise
         # leave a folder no read takes (a second look for one column, say).
         form_from_files(config, files)
     except WorkbenchFormError as exc:
-        raise HTTPException(
-            status_code=422, detail=f"its files would not read back as a form: {exc.message}"
+        raise UnprocessableError(
+            f"its files would not read back as a form: {exc.message}"
         ) from None
     with form_folder_lock(config.project_root):
         if not config.form_folder.is_dir():
@@ -234,16 +241,15 @@ def _save_form(
             # The save deletes only the form's own files: the folder must hold no other.
             folder_index(config, snapshot.files)
         except WorkbenchFormError as exc:
-            raise HTTPException(status_code=409, detail=exc.message) from None
+            raise ConflictError(exc.message) from None
         writes = {path: data for path, data in files.items() if snapshot.files.get(path) != data}
         deletes = sorted(path for path in snapshot.files if path not in files)
         for path in [*writes, *deletes]:
             _, problem = ordinary_path_problem(config.project_root, f"{config.form}/{path}")
             if problem is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"{config.form}/{path} {PATH_PROBLEMS[problem]}: the form folder "
-                    "holds files of its own.",
+                raise ConflictError(
+                    f"{config.form}/{path} {PATH_PROBLEMS[problem]}: the form folder "
+                    "holds files of its own."
                 )
         touched: list[_TouchedFile] = []
         try:
@@ -262,7 +268,7 @@ def _save_form(
                 )
                 detail += f"; {kept} could not be put back: restore them from version history"
             logger.warning("workbench_form_write_failed", form=config.form, error=str(exc))
-            raise HTTPException(status_code=409, detail=detail) from None
+            raise ConflictError(detail) from None
     # The written and deleted files are one save on the ledger, as the pipeline's written
     # files are, so a milestone's sweep takes them from then on. Each path is an ordinary
     # one inside the project (checked above), where the ledger is.
@@ -336,7 +342,7 @@ def _checked_form(form: FormSpec) -> FormSpec:
         input_tables(spec)
         output_tables(spec)
     except WorkbenchTablesError as exc:
-        raise contract_error_http_exception(exc) from exc
+        raise contract_error_refusal(exc) from exc
     return spec
 
 
@@ -397,11 +403,11 @@ async def export_workbench_file(body: WorkbenchExportRequest) -> Response:
             preview_export, body.form, body.component, body.sample, body.tables
         )
     except ExportRefusedError as exc:
-        raise HTTPException(status_code=422, detail=exc.message) from None
+        raise UnprocessableError(exc.message) from None
     except StaleExportError as exc:
-        raise HTTPException(status_code=409, detail=exc.message) from None
+        raise ConflictError(exc.message) from None
     except WorkbenchTablesError as exc:
-        raise contract_error_http_exception(exc) from exc
+        raise contract_error_refusal(exc) from exc
     return Response(
         content=data,
         media_type=XLSX_MEDIA_TYPE,
@@ -564,7 +570,7 @@ async def put_workbench_form(body: WorkbenchFormSaveRequest) -> WorkbenchFormSav
             expected_revision=exc.expected_revision,
             provided_revision=exc.provided_revision,
         )
-        raise HTTPException(status_code=409, detail=f"{exc.code}: {exc}") from None
+        raise ConflictError(f"{exc.code}: {exc}") from None
 
 
 @router.get("/params", response_model=WorkbenchParamFileResponse)
@@ -672,8 +678,8 @@ def _priced_on_release(config: WorkbenchConfig, work: Callable[[ResolvedRelease]
         release.close()
 
 
-def _http(refused: _RefusedError) -> HTTPException:
-    return HTTPException(status_code=refused.status, detail=refused.detail)
+def _http(refused: _RefusedError) -> RequestRefusedError:
+    return RequestRefusedError(refused.detail, status_code=refused.status)
 
 
 def _written(
@@ -726,7 +732,7 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
     written under a new name or over the test quote it replaces."""
     config = await _enabled_config()
     if (body.name is None) == (body.replace is None):
-        raise HTTPException(422, "Name a new test quote, or the one it replaces.")
+        raise UnprocessableError("Name a new test quote, or the one it replaces.")
 
     def priced(release: ResolvedRelease) -> tuple[dict[str, Any], dict[str, Any]]:
         if release.document.revision != body.form_revision:
@@ -744,10 +750,11 @@ async def save_test_quote(body: WorkbenchTestQuoteSaveRequest) -> WorkbenchTestQ
             raise _RefusedError(422, f"The quote cannot be kept: {large}.")
         try:
             return request, price_request(release, request)
-        # A pipeline's own code can raise anything on a request: the save says why.
+        # A pipeline's own code can raise anything on a request: the save says why, as
+        # every edge says it (a node's own failure naming its node, else an incident).
         except Exception as exc:  # noqa: BLE001
-            message = getattr(exc, "message", None) or str(exc) or type(exc).__name__
-            raise _RefusedError(422, f"The quote did not price: {message}") from None
+            said = answer_pipeline_failure(exc, operation="workbench_test_quote").message
+            raise _RefusedError(422, f"The quote did not price: {said}") from None
 
     def took_too_long() -> tuple[dict[str, Any], dict[str, Any]]:
         raise _RefusedError(
@@ -964,7 +971,8 @@ def _accept_one(
         answer = price_request(release, quote.input)
     # A pipeline's own code can raise anything on a request: the quote is named, not accepted.
     except Exception as exc:  # noqa: BLE001
-        return f"it did not price: {getattr(exc, 'message', None) or exc}"
+        said = answer_pipeline_failure(exc, operation="workbench_test_quote").message
+        return f"it did not price: {said}"
     # An editor outside Haute takes no lock: the file is checked again just before it is
     # staged, so an edit made while it priced is never overwritten.
     try:

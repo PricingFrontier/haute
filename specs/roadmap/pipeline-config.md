@@ -104,8 +104,7 @@ dry run. The editor opened on that file, or on one whose `[project]` table
 is misspelt, names the key or the table instead of showing an empty
 canvas.
 
-**Dependencies:** None. `CLI-01` covers the traceback that precedes some of
-these messages.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_project.py::_toml_configured_pipeline`;
 `src/haute/deploy/_config.py::_validate_toml_keys`;

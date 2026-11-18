@@ -76,8 +76,8 @@ A cause several packages here share has its own file and is taken first:
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
 | WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
 | WB-53 | Decision | P2 | A pricing failure in the underwriter app gives the underwriter a fixed message and an id, and keeps the exception's text for the log. |
-| WB-54 | Planned | P2 | A write the quote store refuses is answered in words, with a code and an id, not with a bare "Internal Server Error". |
-| WB-55 | Planned | P3 | A SQLite quote store that is busy, damaged or missing is reported as that, not as unreachable "just now" or as a journal mode. |
+| WB-54 | Planned | P2 | The release route does not report the quotes open while the app's store cannot be written to. |
+| WB-55 | Planned | P3 | A SQLite store held exclusively, damaged or deleted is said as such at start, naming its file. |
 | WB-56 | Planned | P3 | On SQL Server a quote address with a trailing space names no quote, as on the other databases; no row is stored under a padded reference. |
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
@@ -91,7 +91,6 @@ A cause several packages here share has its own file and is taken first:
 | WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
 | WB-68 | Planned | P3 | A number in a params file is read as the same text typed in a cell, thousands separators included. |
 | WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
-| WB-71 | Planned | P2 | A store connection lost in the middle of a write answers 503 in words, not a bare 500. |
 | WB-72 | Planned | P3 | The store check reports a foreign key that refers to other columns or another schema. |
 | WB-73 | Planned | P2 | The store check reports a missing unique constraint on the operation key, so one alternative sent twice cannot make two options. |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
@@ -807,82 +806,51 @@ failed. The app's test and the impact command's test are changed to match.
 the answer to match;
 `specs/workbench/low-level.md`; `specs/deploy/high-level.md`.
 
-### WB-54 — The underwriter app says why its store refused a write
+### WB-54 — The release route reports a store the app cannot write to
 **Why:** Reproduced on 11 November 2026 on a SQLite quote store, with
-nothing patched. While a second program holds a write transaction on the
-store's file, as a database browser with an unsaved edit does, a write the
-app makes answers 500 with the plain text "Internal Server Error": no JSON,
-no message, no id. The main session archived a quote and added a note; the
-review plan's sweep ran create, save, final, amend, archive, restore, assign
-and note, each with the same answer after about six seconds. The same answer
-comes from a store file that is read-only when the app starts, while
-`GET /api/app/release` reports the quotes open. The sweep saw it too for a
-folder that refuses new files and for an administrator's trigger, whose own
-message is lost. Nothing is lost: the same request succeeds once the cause
-is gone.
+nothing patched. With the store's file read-only when the app starts,
+`GET /api/app/release` reports the quotes open, so the page opens them, and
+every save, note and change is then refused: the app answers each in words
+(the store's file is read-only, the change not saved, the quote's values
+kept), but the page offered a write it could not make. The store's check
+reads the tables and never tries a write.
 
-The specification says a statement the database refuses "fails as it would
-have" when the store's check finds its tables in order. What it fails as is
-an unhandled error: the app has no handler of its own, where the editor
-answers a structured 500 with an id. The case is not SQLite's alone, since a
-server database refuses statements too: a lock wait, a permission, a
-trigger. One was run on 12 November 2026: PostgreSQL refuses a text that
-holds a NUL character, which SQLite and SQL Server store, and a save, a
-note and a list search carrying one each answer the same bare 500 there.
+**Plan:** Have the store's check find a store it cannot write to (for
+SQLite, a read-only file or folder) and have the release route report the
+quotes closed for that reason, naming it.
 
-**Plan:** Answer a refused statement as the app answers its other store
-failures: JSON with an error code and a sentence saying that the store
-refused the change and that the quote's values are kept, with the
-database's own message in the log under an id. For SQLite, name the two
-cases an owner can act on: the file is held by another program, and the
-file is read-only. Have the release route report a store it cannot write
-to.
+**Acceptance:** With the SQLite store's file read-only when the app starts,
+`GET /api/app/release` does not report the quotes open, and says why.
 
-**Acceptance:** With the SQLite store held in a write transaction by a
-second process, and with the file read-only, a save answers JSON naming the
-cause. With the file read-only the release route does not report the quotes
-open. A refusal raised by a trigger answers JSON with an id, and the log
-holds the trigger's message under it.
+**Dependencies:** None.
 
-**Dependencies:** None. `WB-53` decides how much of an exception's text the
-app shows.
+**Evidence:** `src/haute/_workbench_app_store.py`;
+`src/haute/_quote_store/_store.py`; `specs/workbench/high-level.md`.
 
-**Evidence:** `src/haute/_workbench_app_quotes.py`;
-`src/haute/_workbench_app.py::create_app`;
-`src/haute/_workbench_app_store.py`; `specs/workbench/high-level.md`.
+### WB-55 — A SQLite store held exclusively, damaged or deleted is called what it is
+**Why:** Reproduced on 11 November 2026, with nothing patched. A store file
+cut to half its length is now said to be damaged at every start, but not
+which file. While a second program holds the file exclusively, the app
+answers after 14 seconds: "The quote store's database is in 'database is
+locked' mode and could not be put back to a rollback journal: close
+whatever else has it open and try again." The lock's error text sits where a
+journal mode's name belongs. The sweep saw a store file deleted between runs
+come back empty and be refused as a mismatch, with nothing saying that the
+file was gone.
 
-### WB-55 — A busy or damaged SQLite store is called what it is
-**Why:** Reproduced on 11 November 2026, with nothing patched. While a
-second program holds a read transaction on the store's file, as a backup or
-a report does, a save's commit is refused and the app answers 503 "The app
-cannot reach its quote store just now." It then closes every quote for ten
-seconds, reads included, though the file is readable throughout. A store
-file cut to half its length gets the same sentence at every start: nothing
-says that the file is damaged, and "just now" suggests waiting. While a
-second program holds the file exclusively, the app answers after 14
-seconds: "The quote store's database is in 'database is locked' mode and
-could not be put back to a rollback journal: close whatever else has it
-open and try again." The lock's error text sits where a journal mode's name
-belongs. The sweep saw a store file deleted between runs come back empty
-and be refused as a mismatch, with nothing saying that the file was gone.
+**Plan:** Name the damaged file. Tell an exclusive lock apart from a journal
+mode the store cannot leave, and say that another program holds the file.
+Say that the file is gone before making an empty one.
 
-The specification keeps "cannot reach" for "a server database the app
-cannot reach or that refuses its sign-in".
-
-**Plan:** Tell the SQLite cases apart before answering. Busy: another
-program holds the file; say so, and do not close the quotes for a commit
-that was only refused. Not a database: name the file as damaged. Missing:
-say that the file is gone before making an empty one.
-
-**Acceptance:** With a reader's transaction open on the file, a save answers
-that another program holds the store, and reads carry on. With the file cut
-short the app says at start that the store's file is damaged, and names it.
-With an exclusive lock held, the answer names the lock, not a journal mode.
+**Acceptance:** With the file cut short the app says at start that the
+store's file is damaged, and names it. With an exclusive lock held, the
+answer names the lock, not a journal mode. With the file deleted, the app
+says that it is gone.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_quote_store/_store.py`;
-`src/haute/_workbench_app_quotes.py`; `src/haute/_workbench_app_store.py`.
+`src/haute/_workbench_app_store.py`; `src/haute/_failure_answers.py`.
 
 ### WB-56 — A quote's address with a trailing space names no quote on SQL Server
 **Why:** Reproduced on 12 November 2026 on SQLite, SQL Server 2022 and
@@ -1234,30 +1202,6 @@ one quote on PostgreSQL and on SQL Server with either setting.
 
 **Evidence:** `src/haute/_quote_store/_book.py`;
 `specs/workbench/high-level.md`.
-
-### WB-71 — A store connection lost in the middle of a write is answered in words
-**Why:** Reproduced on 16 November 2026 on PostgreSQL 16 and SQL Server
-2022. The app's own session was ended from a second connection part-way
-through a save, as a failover, a server restart or a dropped idle link
-does. The save answers 500 with the plain text "Internal Server Error".
-Nothing is half-written and the retry lands once. The app answers 503
-with a message only when the store could not be reached before any
-statement ran; a connection lost after the first statement is raised as
-it is. A worker's sweep saw the same for a create and an amendment, at
-every statement before the commit.
-
-**Plan:** Answer a connection lost during a write as the unreachable
-store is answered: 503, naming the store and saying the request can be
-sent again.
-
-**Acceptance:** The save above answers 503 in words on both servers, and
-the retry still lands once.
-
-**Dependencies:** `WB-54`, which gives the same remedy for a write the
-store refuses.
-
-**Evidence:** `src/haute/_workbench_app_quotes.py`;
-`src/haute/_quote_store/_store.py`.
 
 ### WB-72 — The store check reads what a foreign key refers to
 **Why:** Reproduced on 16 November 2026 on SQLite, PostgreSQL 16 and SQL

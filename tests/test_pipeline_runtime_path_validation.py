@@ -7,8 +7,8 @@ import unicodedata
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
+from haute._failure_answers import classify_failure
 from haute._path_resolution import (
     MalformedRuntimePathError,
     RuntimePathError,
@@ -18,7 +18,6 @@ from haute._types import GraphNode, NodeData, NodeType, PipelineGraph, SubmodelD
 from haute.errors import RequestRefusedError
 from haute.routes import modelling as modelling_routes
 from haute.routes import optimiser as optimiser_routes
-from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.pipeline import _prepare_runtime_graph, _validate_runtime_input_paths
 from haute.schemas import (
@@ -70,7 +69,7 @@ def test_validate_runtime_input_paths_rejects_project_escape_for_file_backed_nod
         edges=[],
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _validate_runtime_input_paths(graph)
 
     assert exc_info.value.status_code == 403
@@ -92,7 +91,7 @@ def test_validate_runtime_input_paths_maps_embedded_null_byte_to_400() -> None:
         edges=[],
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _validate_runtime_input_paths(graph)
 
     assert exc_info.value.status_code == 400
@@ -110,15 +109,18 @@ def test_runtime_path_http_status_uses_exception_type(
     error: RuntimePathError,
     expected_status: int,
 ) -> None:
-    mapped = runtime_path_http_exception(error)
+    mapped = classify_failure(error)
 
-    assert mapped.status_code == expected_status
+    assert mapped is not None
+    assert mapped.status == expected_status
     assert mapped.detail == str(error)
 
 
-def test_runtime_path_http_status_rejects_unknown_subtype() -> None:
-    with pytest.raises(TypeError, match="Unsupported runtime path error"):
-        runtime_path_http_exception(RuntimePathError("unclassified"))
+def test_a_runtime_path_error_of_no_known_kind_is_a_refused_request() -> None:
+    mapped = classify_failure(RuntimePathError("unclassified"))
+
+    assert mapped is not None
+    assert (mapped.status, mapped.detail) == (400, "unclassified")
 
 
 @pytest.mark.parametrize(
@@ -153,7 +155,7 @@ def test_modelling_execution_routes_reject_external_graph_source(
         route = modelling_routes.estimate_training
         body = TrainEstimateRequest(graph=graph, target=model)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         route(body)
 
     assert exc_info.value.status_code == 403
@@ -188,7 +190,7 @@ def test_optimiser_execution_routes_reject_external_graph_source(
         route = optimiser_routes.start_frontier_auto_range
         body = OptimiserFrontierAutoRangeRequest(graph=graph, target=optimiser)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         route(body)
 
     assert exc_info.value.status_code == 403
@@ -227,7 +229,7 @@ def test_prepare_runtime_graph_validates_paths_inside_submodels() -> None:
         },
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _prepare_runtime_graph(graph)
 
     assert exc_info.value.status_code == 403
@@ -262,7 +264,7 @@ def test_validate_runtime_input_paths_rejects_model_score_escape(
         edges=[],
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _validate_runtime_input_paths(graph)
 
     assert exc_info.value.status_code == 403
@@ -569,7 +571,7 @@ def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() ->
         edges=[],
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _validate_runtime_input_paths(file_graph)
     assert exc_info.value.status_code == 403
 

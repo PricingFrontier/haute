@@ -15,8 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from haute.routes.json_cache import _resolve_data_path
 
 # ── path resolution: traversal + null-byte (security + status contract) ──
@@ -24,12 +24,12 @@ from haute.routes.json_cache import _resolve_data_path
 
 def test_resolve_data_path_outside_root_raises_403(tmp_path: Path) -> None:
     """L158 ``else 403`` (number) and L157 ``except ValueError`` (changing the
-    caught type lets ValueError escape instead of becoming HTTPException).
+    caught type lets ValueError escape instead of becoming RequestRefusedError).
 
     The test's project is ``tmp_path``, so its parent's file is outside it and
     ``resolve_node_input_path`` raises ValueError -> HTTPException(403).
     """
-    with pytest.raises(HTTPException) as ei:
+    with pytest.raises(RequestRefusedError) as ei:
         _resolve_data_path(str(tmp_path.parent / "outside.json"))
     assert ei.value.status_code == 403
 
@@ -40,6 +40,6 @@ def test_resolve_data_path_null_byte_raises_400() -> None:
     An embedded NUL makes ``resolve_node_input_path`` raise
     ``MalformedRuntimePathError`` and the shared route adapter selects 400.
     """
-    with pytest.raises(HTTPException) as ei:
+    with pytest.raises(RequestRefusedError) as ei:
         _resolve_data_path("data\x00.json")
     assert ei.value.status_code == 400

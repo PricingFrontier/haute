@@ -478,11 +478,16 @@ pipeline's sources.
   dry-run request/response models are route-local, and resource-exhaustion
   and deadline errors deliberately extend stdlib bases instead, so existing `except
   MemoryError` / `except TimeoutError` handlers keep working).
-- **Sanitized error detail, always.** `_INTERNAL_ERROR_DETAIL` ("Operation failed. Check the
-  server logs for details.") is the only text an unexpected exception returns to the
-  client; the real exception — which can embed absolute filesystem paths, OS error strings,
-  or git stderr — is logged server-side with its traceback. This is deliberate defence
-  against information disclosure, not an oversight; contrast with explicitly surfaced
+- **Every failure in words, once.** `haute._failure_answers` puts a failure into words for the
+  editor's server, the underwriter app, a job's outcome and the command line alike. A failure
+  Haute names is said in the same words at every edge: memory however it ran out, a file the
+  operating system refused (held open, read-only, a full disk, a path too long), the quote
+  store's database refusing a statement or losing its connection, a node's own failure, and
+  Haute's own refusals. A failure nothing names is answered "Haute hit a failure it does not
+  recognise (incident <id>) …" with the id; the real exception — which can embed absolute
+  filesystem paths, OS error strings, or git stderr — is recorded under the id with its
+  traceback, never returned. No answer is a bare 500, a traceback or "check the server
+  logs", which an analyst on a hosted editor cannot read. Contrast with explicitly surfaced
   domain subclasses such as `ConfigError`, `ContractMismatchError`, and
   `SchemaMismatchError`, whose hand-authored messages are safe to return. A failure of the
   pipeline's own code or data (a Polars error) is the user's to fix too: the routes and jobs
@@ -658,19 +663,20 @@ detail, and the assistant shows the same message.
   with a `type` discriminator, while preview/write execution uses the stable public-contract
   payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.
-- **Error families are translated once, at the application edge.** Application exception
-  handlers (`routes/_error_handlers.py`, installed on the app by `server.py`) answer the
-  same way for every route: a public contract error with its stable payload, a memory
-  refusal or overrun with 507, a `ParseError` with 400, and a `GitError` through the git
-  mapping. A route keeps an `except` clause only where it maps an error differently from its
-  family's handler (the explicit mappings above, the trace's refusals), and route code never
-  catches `Exception` merely to log it and answer 500. No route answers 400 with the
-  internal-error text: a failure the request did not cause reaches the backstop below.
-- **Everything else** — any exception no handler claims — reaches `_RequestIdMiddleware`,
-  which logs it with its error class and traceback and returns `{"detail": "Operation
-  failed. Check the server logs for details."}` with the request ID. No response exposes a
-  traceback; outer trusted-host and session middleware rejections bypass request-ID
-  middleware entirely.
+- **Error families are translated once, at the application edge.** `RequestFailureMiddleware`
+  (`routes/_error_handlers.py`, installed by `install_failure_answers` on the editor's server
+  and the underwriter app) answers what any route raises through the failure answers: a
+  public contract error with its stable payload, a memory refusal or overrun with 507, a
+  `ParseError` with 400, a `GitError` through the git mapping, a refusal with its own status.
+  Routes raise Haute's refusals, never an HTTP type. A route keeps an `except` clause only
+  where it maps an error differently from its family (the explicit mappings above, the
+  trace's refusals), and route code never catches `Exception` merely to log it and answer
+  500 (`tests/test_failure_boundaries.py`).
+- **Everything else** — any exception nothing names — is answered with
+  `error_code: "unexpected_failure"`, words and an incident id, its error class and
+  traceback logged under the id, with the request ID. No response exposes a traceback;
+  outer trusted-host and session middleware rejections bypass request-ID middleware
+  entirely.
 - **Resource limits** surface as their own status codes rather than a generic 500:
   `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 from any synchronous
   route, through the one memory-limit mapping; a superseded request →
@@ -775,8 +781,8 @@ source-only states. Status, capabilities, diagnostics, source identity, and revi
 even when a dirty client retains its local graph. Sidecar changes are dependency events. A source-only
 update replaces the canvas with the parse-error view; no earlier canvas stays visible, and a dirty
 local graph stays in the client, fenced and hidden, until a renderable document arrives. If the editor document itself cannot
-be read or built, the server logs the underlying exception and sends a sanitized
-`parse_error`; that frame carries only document transport failure — authored errors always
+be read or built, the server sends a `parse_error` holding that failure's answer (its words,
+or an incident under which the exception is logged); that frame carries only document transport failure — authored errors always
 arrive as degraded or source-only documents. A change on disk to a file of the workbench's form
 folder is announced as `workbench_form_changed`, naming the folder; the workbench reads
 it again.

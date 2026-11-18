@@ -580,6 +580,15 @@ def _resolve_optional_rss_limit(profile: ExecutionProfile) -> tuple[int | None, 
     return None, None
 
 
+def process_rss_limit_setting(profile: ExecutionProfile) -> str:
+    """The setting that raises *profile*'s process memory cap: the one in force, else the
+    profile's own variable in MiB."""
+    _limit, key = _resolve_optional_rss_limit(profile)
+    if key is not None:
+        return key
+    return _PROFILE_PROCESS_RSS_ENV.get(profile, _GLOBAL_PROCESS_RSS_ENV)[1]
+
+
 def create_admitted_execution_context(
     *,
     operation: str,

@@ -345,10 +345,9 @@ async def test_a_newer_free_code_request_for_the_node_stops_the_older(
     import asyncio
     import threading
 
-    from fastapi import HTTPException
-
     import haute._interactive_workers as workers_module
     import haute.routes.pipeline as pipeline_module
+    from haute.errors import RequestRefusedError
     from haute.schemas import PolarsFreeCodeColumnsRequest
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
@@ -382,7 +381,7 @@ async def test_a_newer_free_code_request_for_the_node_stops_the_older(
     assert await asyncio.to_thread(running.wait, 30)
     newer = await pipeline_module.resolve_free_code_columns_endpoint(body, _ConnectedClient())  # type: ignore[arg-type]
 
-    with pytest.raises(HTTPException) as stopped:
+    with pytest.raises(RequestRefusedError) as stopped:
         await older
     assert stopped.value.status_code == 409
     assert reasons == ["superseded"]

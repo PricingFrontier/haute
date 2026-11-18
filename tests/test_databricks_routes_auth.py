@@ -11,8 +11,8 @@ import sys
 import types
 
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import RequestRefusedError
 from haute.routes.databricks import _get_databricks_client
 
 
@@ -47,7 +47,7 @@ def test_missing_credentials_reports_both_auth_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _get_databricks_client()
     assert exc_info.value.status_code == 503
     assert "DATABRICKS_TOKEN" in exc_info.value.detail

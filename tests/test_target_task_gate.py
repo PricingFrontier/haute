@@ -43,6 +43,7 @@ from haute.routes._background_jobs import IsolatedJobSupervisor
 from haute.routes._training_lifecycle import TrainService
 from haute.routes._training_preparation import _validate_target_task_pairing
 from haute.routes._training_worker import _worker_failure_payload
+from tests._failure_assertions import assert_unnamed
 from tests._training_helpers import join_training_preparation
 from tests.conftest import make_ram_estimate
 
@@ -789,9 +790,12 @@ class TestWorkerBoundaryUserMessage:
     def test_plain_value_error_does_not_ride_the_validation_channel(self) -> None:
         """Provenance is enforced by the marker type: a dependency's bare
         ``ValueError`` is not vouched for, so it falls through to the
-        entrypoint's ``_friendly_error`` fallback (a plain ``error``) instead
+        entrypoint's failure answer (an incident, a plain ``error``) instead
         of surfacing verbatim as a ``contract_error``."""
-        from haute.routes._training_worker import _friendly_error, _known_training_worker_failure
+        from haute.routes._training_worker import (
+            _known_training_worker_failure,
+            _training_failure_answer,
+        )
 
         exc = ValueError("could not convert string to float: '/tmp/leaky/path'")
         assert (
@@ -801,9 +805,10 @@ class TestWorkerBoundaryUserMessage:
             )
             is None
         )
-        message = _friendly_error(exc, context="target 'sev'")
-        assert "could not convert" not in message
-        assert "ValueError" in message
+        answer = _training_failure_answer(exc, context="target 'sev'")
+        assert answer.terminal_reason == "error"
+        assert "could not convert" not in answer.message
+        assert_unnamed(answer.message)
 
     def test_metric_stage_wrapper_rides_the_validation_channel(self) -> None:
         """The metric-stage wrap is haute-authored, user-facing wording: it
@@ -846,36 +851,33 @@ class TestWorkerBoundaryUserMessage:
         assert WORKER_USER_MESSAGE_FIELD not in payload.fields
 
     def test_unexpected_exception_fallback_is_curated_without_third_party_text(self) -> None:
-        """The fallback names the fit context and exception type only — the
-        arbitrary third-party message body (which may carry internal paths)
-        stays in the diagnostic ``error`` field, and the failure remains a
-        plain system ``error``, never a ``contract_error``."""
-        from haute.routes._training_worker import _friendly_error
+        """An unexpected failure is an incident: the arbitrary third-party message body
+        (which may carry internal paths) stays in the diagnostic ``error`` field and the
+        incident's record, and the failure remains a plain system ``error``, never a
+        ``contract_error``."""
+        from haute.routes._training_worker import (
+            _answered_failure_payload,
+            _training_failure_answer,
+        )
 
         exc = RuntimeError("failed to lock /var/lib/haute/internal/state.db")
-        message = _friendly_error(exc, context="target 'sev' (objective 'Tweedie')")
-        assert "RuntimeError" in message
-        assert "target 'sev' (objective 'Tweedie')" in message
-        assert "/var/lib" not in message
-        payload = _worker_failure_payload(
-            exc,
-            terminal_reason="error",
-            message=message,
-            fields={"error": str(exc)},
-            user_facing=True,
-        )
+        answer = _training_failure_answer(exc, context="target 'sev' (objective 'Tweedie')")
+        assert_unnamed(answer.message)
+        assert "/var/lib" not in answer.message
+        payload = _answered_failure_payload(exc, answer)
         assert payload.terminal_reason == "error"
-        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == message
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == answer.message
+        assert payload.fields["incident"] == answer.incident
         assert payload.fields["error"] == "failed to lock /var/lib/haute/internal/state.db"
 
-    def test_model_save_os_error_names_the_reason_not_the_staging_path(self) -> None:
-        from haute.routes._training_worker import _friendly_error
+    def test_model_save_os_error_names_the_full_disk_not_the_staging_path(self) -> None:
+        from haute.routes._training_worker import _training_failure_answer
 
         exc = OSError(28, "No space left on device", "/tmp/.haute-training-j1/output/model.cbm")
-        message = _friendly_error(exc)
-        assert "No space left on device" in message
-        assert "/tmp" not in message
-        assert "model.cbm" not in message
+        answer = _training_failure_answer(exc)
+        assert (answer.code, answer.terminal_reason) == ("disk_full", "error")
+        assert "Free some space" in answer.message
+        assert "/tmp" not in answer.message
 
     def test_memory_limit_failure_names_budget_and_call_to_action(self) -> None:
         from haute._execution_context import ExecutionMemoryLimitExceededError
@@ -908,7 +910,7 @@ class TestWorkerBoundaryUserMessage:
         size omission when a bound is missing — a partially-populated
         exception must degrade to omitting sizes, never TypeError."""
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._memory_messages import memory_limit_user_message
+        from haute._memory_messages import memory_limit_user_message
 
         sampler_lost = ExecutionMemoryLimitExceededError(
             "training_job",
@@ -964,7 +966,7 @@ class TestWorkerBoundaryUserMessage:
         unknown reason degrades to the generic refusal with no sizes."""
         from haute._execution_admission import ExecutionAdmissionError
         from haute._execution_context import ExecutionProfile
-        from haute.routes._memory_messages import memory_limit_user_message
+        from haute._memory_messages import memory_limit_user_message
 
         process_cap = ExecutionAdmissionError(
             "training_job",
@@ -978,7 +980,7 @@ class TestWorkerBoundaryUserMessage:
         assert message.startswith("Training was not started")
         # Not the runtime "(X used, Y allowed)" pair: nothing ran yet, so the
         # sizes are attributed to the server, not the refused operation.
-        assert "the server is already using 2.0 GiB of its 1.0 GiB memory cap" in message
+        assert "Haute is already using 2.0 GiB of its 1.0 GiB memory cap" in message
         assert "process_rss_limit_exceeded" not in message
 
         sampler_lost = ExecutionAdmissionError(
@@ -1027,7 +1029,7 @@ class TestWorkerBoundaryUserMessage:
         must pair with the absolute enforced bound (rss_limit_bytes), never
         the growth budget, and omit sizes when no absolute bound is known."""
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._memory_messages import memory_limit_user_message
+        from haute._memory_messages import memory_limit_user_message
 
         absolute_bound = ExecutionMemoryLimitExceededError(
             "training_job",
@@ -1149,7 +1151,7 @@ class TestWorkerBoundaryUserMessage:
         assert payload.fields[WORKER_USER_MESSAGE_FIELD] == "Cancelled"
         assert "training_job" in payload.fields["error"]
 
-    def test_supervisor_keeps_wrapper_for_uncurated_failures(self) -> None:
+    def test_an_uncurated_child_failure_is_an_incident(self) -> None:
         payload = WorkerFailurePayload(
             terminal_reason="error",
             error_type="KeyError",
@@ -1166,7 +1168,8 @@ class TestWorkerBoundaryUserMessage:
             completed_fields=lambda result: {"result": result},
             completed_message="Completed",
         )
-        assert outcome.message == "The worker raised KeyError: 'frame'"
+        assert_unnamed(outcome.message)
+        assert "frame" not in outcome.message
 
     def test_child_error_text_survives_the_wrapper_overwrite(self) -> None:
         """The supervisor claims the "error" field for the typed wrapper text;
@@ -1194,18 +1197,16 @@ class TestWorkerBoundaryUserMessage:
     @pytest.mark.parametrize(
         ("make_exc", "expected_fragment", "expected_reason"),
         [
-            (
-                lambda: WorkerCrashedError(-9),
-                "stopped unexpectedly before returning a result",
-                "error",
-            ),
+            # A crash with no memory evidence names nothing: an incident, its exit code
+            # recorded under it.
+            (lambda: WorkerCrashedError(-9), "does not recognise (incident ", "error"),
             (
                 # SIGKILL under a configured cap: the OOM wording is hedged —
                 # the exit-code heuristic is indicative, not proof.
                 lambda: WorkerCrashedError(
                     -9, memory_limited=exitcode_looks_memory_limited(-9, 100)
                 ),
-                "may have run out of memory",
+                "most likely because it ran out of memory",
                 "memory_limited",
             ),
             (
@@ -1221,7 +1222,7 @@ class TestWorkerBoundaryUserMessage:
         expected_fragment: str,
         expected_reason: str,
     ) -> None:
-        """Failures that never produce a payload keep the typed wrapper text."""
+        """Failures that never produce a payload are worded by the parent."""
 
         def execute() -> None:
             raise make_exc()

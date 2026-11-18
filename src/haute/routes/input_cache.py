@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, status
 
 from haute._config_validation import validate_node_config
 from haute._credential_security import redact_sensitive_text
@@ -35,6 +35,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._failure_answers import FailureAnswer, answer_failure, classify_failure, failure_refusal
 from haute._file_ops import PATH_TOO_LONG_REMEDIATION
 from haute._input_preparation import (
     capped_worker_config,
@@ -48,6 +49,7 @@ from haute._input_providers import (
     source_signature,
 )
 from haute._logging import get_logger
+from haute._memory_messages import memory_limit_user_message
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
@@ -71,7 +73,13 @@ from haute._worker_failures import (
     worker_memory_detail,
 )
 from haute._worker_isolation import IsolatedWorkerConfig, run_isolated_worker
-from haute.errors import ConfigError
+from haute.errors import (
+    ConfigError,
+    ConflictError,
+    ForbiddenError,
+    InvalidRequestError,
+    RequestRefusedError,
+)
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
     SingleFlightCoordinator,
@@ -79,8 +87,6 @@ from haute.routes._background_jobs import (
 )
 from haute.routes._job_lifecycle import JobLifecycle, require_job_status
 from haute.routes._job_store import RunningJobFields, TerminalReason, get_job_store
-from haute.routes._memory_messages import memory_limit_user_message
-from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import (
     InputCacheBuildRequest,
     InputCacheBuildResponse,
@@ -169,9 +175,8 @@ def _safe_config(
             NodeType.DATA_INPUT, body.config, require_complete=True, persisted=False
         )
     except (ConfigError, PolarsIoConfigError, TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="invalid_input_config: The Data Input configuration is invalid.",
+        raise InvalidRequestError(
+            "invalid_input_config: The Data Input configuration is invalid."
         ) from None
 
     if config["input_type"] in {"file", "lakehouse"}:
@@ -190,7 +195,7 @@ def _safe_config(
                 )
             )
         except RuntimePathError as exc:
-            raise runtime_path_http_exception(exc) from None
+            raise failure_refusal(exc) from None
 
     if config["input_type"] == "database" and "uri" in config:
         from haute._database_io import (
@@ -205,28 +210,23 @@ def _safe_config(
                 project_root=current_project().root,
             )
         except DatabaseConfigError:
-            raise HTTPException(
-                status_code=400,
-                detail="invalid_input_config: The Data Input configuration is invalid.",
+            raise InvalidRequestError(
+                "invalid_input_config: The Data Input configuration is invalid."
             ) from None
         except ValueError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from None
+            raise ForbiddenError(str(exc)) from None
 
     try:
         identity = source_cache_identity(config, base_dir=current_project().pipeline_dir)
     except (PolarsIoConfigError, TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="invalid_input_config: The Data Input configuration is invalid.",
+        raise InvalidRequestError(
+            "invalid_input_config: The Data Input configuration is invalid."
         ) from None
     return config, identity
 
 
-def _invalid_api_input() -> HTTPException:
-    return HTTPException(
-        status_code=400,
-        detail="invalid_input_config: The API Input configuration is invalid.",
-    )
+def _invalid_api_input() -> RequestRefusedError:
+    return InvalidRequestError("invalid_input_config: The API Input configuration is invalid.")
 
 
 def _safe_api_input(body: InputCacheSourceRequest) -> ApiInputSnapshotSource:
@@ -248,18 +248,15 @@ def _safe_api_input(body: InputCacheSourceRequest) -> ApiInputSnapshotSource:
             path, pipeline_dir=current_project().pipeline_dir, project_root=current_project().root
         )
     except RuntimePathError as exc:
-        raise runtime_path_http_exception(exc) from None
+        raise failure_refusal(exc) from None
     try:
         source = api_input_snapshot_source(config, data_path)
     except (ApiInputSchemaError, TypeError, ValueError, KeyError):
         raise _invalid_api_input() from None
     if not source.tables:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "invalid_input_config: The API Input emits no table; tick 'emit' and at "
-                "least one column on a table."
-            ),
+        raise InvalidRequestError(
+            "invalid_input_config: The API Input emits no table; tick 'emit' and at "
+            "least one column on a table."
         )
     return source
 
@@ -490,7 +487,6 @@ class _WorkerBuildError(Exception):
         error_code: str,
         phase: str,
         fields: dict[str, Any] | None = None,
-        diagnostic: tuple[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.terminal = terminal
@@ -498,8 +494,6 @@ class _WorkerBuildError(Exception):
         self.error_code = error_code
         self.phase = phase
         self.fields = fields or {}
-        # A failed build's own error, type and text, for the server log only.
-        self.diagnostic = diagnostic
 
 
 def _worker_build_failure(
@@ -507,8 +501,9 @@ def _worker_build_failure(
     *,
     budget: IsolatedExecutionBudget,
     token: Any,
-) -> _WorkerBuildError:
-    """Map one worker failure onto this job's terminal lifecycle state."""
+) -> _WorkerBuildError | None:
+    """Map one worker failure onto this job's terminal lifecycle state, or ``None`` for one
+    nothing names, which the build answers as every other failure of its own."""
     if worker_failure_is_cap_unavailable(exc):
         # Not a memory outcome: nothing ran, because the cap could not be installed.
         return _WorkerBuildError(
@@ -553,25 +548,65 @@ def _worker_build_failure(
             error_code="build_timed_out" if timed_out else "build_cancelled",
             phase="cancelled",
         )
-    message, error_code = _build_failure(exc)
+    answer = _path_too_long_answer(exc) or classify_failure(exc)
+    if answer is None:
+        return None
     return _WorkerBuildError(
-        terminal="error",
-        message=message,
-        error_code=error_code,
+        terminal=answer.terminal_reason,
+        message=answer.message,
+        error_code=answer.code,
         phase="failed",
-        diagnostic=(
-            (exc.remote_type, exc.remote_message)
-            if isinstance(exc, WorkerRemoteError)
-            else (type(exc).__name__, str(exc))
-        ),
+        fields=_build_answer_fields(answer),
     )
 
 
-def _build_failure(exc: BaseException) -> tuple[str, str]:
-    """The message and error code of a build that failed, neither naming a path."""
-    if worker_failure_is_path_too_long(exc):
-        return PATH_TOO_LONG_REMEDIATION, "path_too_long"
-    return "Input snapshot build failed.", "build_failed"
+def _path_too_long_answer(exc: BaseException) -> FailureAnswer | None:
+    """A worker's write Windows refused for its length, which crosses as a missing file."""
+    if not worker_failure_is_path_too_long(exc):
+        return None
+    message = PATH_TOO_LONG_REMEDIATION
+    return FailureAnswer(422, "path_too_long", message, "contract_error", message)
+
+
+def _build_answer_fields(answer: FailureAnswer) -> dict[str, Any]:
+    """An answer's job fields as a build records them beside its own code and message."""
+    return {
+        key: value
+        for key, value in answer.job_fields().items()
+        if key not in {"error", "error_code"}
+    }
+
+
+def _build_failure(exc: BaseException, *, config: dict[str, Any], job_id: str) -> _WorkerBuildError:
+    """A build's failure as its job ends, naming no path outside the project: a failure
+    Haute names in the words every edge gives it (memory, a file the operating system
+    refused, a node's own code, a refusal), with its end state and fields, else an
+    incident, its record the provider's own message redacted, since that can hold a
+    connection string."""
+    named = _path_too_long_answer(exc)
+
+    def record(incident: str, failed: BaseException, **known: Any) -> None:
+        if isinstance(failed, WorkerRemoteError):
+            error_type, error_text = failed.remote_type, failed.remote_message
+        else:
+            error_type, error_text = type(failed).__name__, str(failed)
+        logger.error(
+            "input_cache_build_failed",
+            incident=incident,
+            job_id=job_id,
+            error_type=error_type,
+            error=_provider_error_diagnostic(error_text, config),
+            **known,
+        )
+
+    answer = named or answer_failure(exc, operation="input_cache_build", record=record)
+    return _WorkerBuildError(
+        terminal=answer.terminal_reason,
+        message=answer.message,
+        error_code=answer.code,
+        phase="failed",
+        fields=_build_answer_fields(answer),
+    )
 
 
 def _job_worker_config(budget: IsolatedExecutionBudget, token: Any) -> IsolatedWorkerConfig:
@@ -624,7 +659,10 @@ def _supervise_data_input_build(
         progress=progress,
     )
     if build.failure is not None:
-        raise _worker_build_failure(build.failure, budget=budget, token=token) from build.failure
+        failure = _worker_build_failure(build.failure, budget=budget, token=token)
+        if failure is None:
+            raise build.failure
+        raise failure from build.failure
     published_data_input(store, identity, build)
     return store.open_generation(identity)
 
@@ -671,7 +709,12 @@ def _supervise_api_input_build(
             spawn=run_isolated_worker,
         )
     except Exception as exc:
-        raise _worker_build_failure(exc, budget=budget, token=token) from exc
+        # What the build names becomes its terminal state; anything else is raised on, for
+        # the build to answer as an incident.
+        failure = _worker_build_failure(exc, budget=budget, token=token)
+        if failure is not None:
+            raise failure from exc
+        raise
 
 
 def _run_build(
@@ -741,6 +784,16 @@ def _run_build(
                 },
             },
             elapsed_seconds=time.monotonic() - started_at,
+        )
+
+    def fail_with(failure: _WorkerBuildError) -> None:
+        """Record *failure*, its end state, words and fields, as this build's end."""
+        fail_build(
+            failure.terminal,
+            failure.message,
+            error_code=failure.error_code,
+            phase=failure.phase,
+            **failure.fields,
         )
 
     try:
@@ -813,22 +866,7 @@ def _run_build(
             reason=failure.terminal,
             error_code=failure.error_code,
         )
-        if failure.diagnostic is not None:
-            # As an in-process failure is logged: the worker's own error, redacted.
-            error_type, error_text = failure.diagnostic
-            logger.error(
-                "input_cache_build_failed",
-                job_id=job_id,
-                error_type=error_type,
-                error=_provider_error_diagnostic(error_text, config),
-            )
-        fail_build(
-            failure.terminal,
-            failure.message,
-            error_code=failure.error_code,
-            phase=failure.phase,
-            **failure.fields,
-        )
+        fail_with(failure)
     except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
         logger.warning(
             "input_cache_memory_limited",
@@ -865,8 +903,7 @@ def _run_build(
                 phase="cancelled",
             )
         else:
-            message, error_code = _build_failure(exc)
-            fail_build("error", message, error_code=error_code, phase="failed")
+            fail_with(_build_failure(exc, config=config, job_id=job_id))
     except PipelineSettingsError as exc:
         # Admission reads the settings file again; its message names what to fix.
         logger.warning("input_cache_pipeline_settings_invalid", job_id=job_id, error=str(exc))
@@ -878,14 +915,8 @@ def _run_build(
             error=str(exc),
         )
     except Exception as exc:
-        logger.error(
-            "input_cache_build_failed",
-            job_id=job_id,
-            error_type=type(exc).__name__,
-            error=_provider_error_diagnostic(str(exc), config),
-        )
-        message, error_code = _build_failure(exc)
-        fail_build("error", message, error_code=error_code, phase="failed")
+        # A failure nothing names is an incident, its record the provider's text redacted.
+        fail_with(_build_failure(exc, config=config, job_id=job_id))
     finally:
         timeout_timer.cancel()
         if execution_context is not None:
@@ -1002,9 +1033,9 @@ def _start_build(
             _jobs.release(active.job_id)
 
         if _active_builds >= _max_concurrent_builds():
-            raise HTTPException(
+            raise RequestRefusedError(
+                "input_cache_busy: The input snapshot build limit is currently reached.",
                 status_code=429,
-                detail=("input_cache_busy: The input snapshot build limit is currently reached."),
             )
 
         # Read before the job exists: an invalid settings file refuses the
@@ -1086,9 +1117,8 @@ def build_input_cache(body: InputCacheBuildRequest) -> InputCacheBuildResponse:
     try:
         profile, build_class = _chosen_build(config)
     except (PolarsIoConfigError, TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="snapshot_build_unsupported: This Data Input cannot build a snapshot.",
+        raise InvalidRequestError(
+            "snapshot_build_unsupported: This Data Input cannot build a snapshot."
         ) from None
 
     return _start_build(
@@ -1161,12 +1191,8 @@ def clear_input_cache(
         if active is not None:
             job = _store.get_job(active.job_id)
             if job is not None and job.get("status") == "running":
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "snapshot_build_active: Cancel the active snapshot "
-                        "build before clearing it."
-                    ),
+                raise ConflictError(
+                    "snapshot_build_active: Cancel the active snapshot build before clearing it."
                 )
         for cleared in identities:
             _cache_store().clear(cleared)

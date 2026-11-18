@@ -32,7 +32,7 @@ from haute._workbench_export import (
 )
 from haute._workbench_form import FormSpec, SchemaColumn, with_quote_details
 from haute._workbench_tables import sample_quote
-from haute.routes._error_handlers import install_exception_handlers
+from haute.routes._error_handlers import install_failure_answers
 from haute.routes.workbench import router
 from tests._project import use_project
 from tests._workbench_helpers import enable, write_form
@@ -1039,7 +1039,7 @@ def project(tmp_path: Path) -> Path:
 
 def client() -> TestClient:
     application = FastAPI()
-    install_exception_handlers(application)
+    install_failure_answers(application)
     application.include_router(router)
     return TestClient(application)
 

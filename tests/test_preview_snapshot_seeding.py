@@ -23,7 +23,7 @@ from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
 from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from tests._failure_assertions import assert_unnamed
 from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 
@@ -72,17 +72,15 @@ def test_preview_inputs_rejects_absent_target(
 def test_preview_inputs_preserves_error_contracts(
     project: Path, api: Any, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    from fastapi import HTTPException
-
     import haute.routes.pipeline as pipeline
-    from haute.errors import ParseError, PreambleError
+    from haute.errors import ParseError, PreambleError, RequestRefusedError
     from haute.executor import PreviewProjectionError
 
     error = {
         "projection": PreviewProjectionError("unknown requested column"),
         "parse": ParseError("invalid source"),
         "timeout": TimeoutError("private worker detail"),
-        "http": HTTPException(status_code=409, detail="source changed"),
+        "http": RequestRefusedError("source changed", status_code=409),
         "public": PreambleError("preamble failed", source_line=2),
         "unexpected": RuntimeError("private worker detail"),
     }[kind]
@@ -118,7 +116,7 @@ def test_preview_inputs_preserves_error_contracts(
     elif kind == "timeout":
         assert "Preview input resolution timed out" in response.json()["detail"]
     else:
-        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert_unnamed(response.json()["detail"])
     assert "private worker detail" not in response.text
 
 

@@ -70,12 +70,6 @@ logger = get_logger(component="server")
 
 
 # ---------------------------------------------------------------------------
-# Safe error detail — prevents leaking internal exception strings (E3)
-# ---------------------------------------------------------------------------
-
-_INTERNAL_ERROR_DETAIL = "Operation failed. Check the server logs for details."
-
-# ---------------------------------------------------------------------------
 # Refusal helpers (structured logging + the refusal, written once)
 # ---------------------------------------------------------------------------
 
