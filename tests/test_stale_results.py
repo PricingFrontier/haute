@@ -26,6 +26,7 @@ from haute._node_snapshots import BOUNDED_SEMANTICS_CLASS, node_snapshot_signatu
 from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import preview_lineage_cache_key
 from tests._project import use_project
+from tests._source_files import source_files
 
 _REPO_SRC = Path(__file__).resolve().parents[1] / "src" / "haute"
 
@@ -187,6 +188,7 @@ CONSUMERS: dict[CacheConsumer, str] = {
 }
 
 
+@pytest.mark.meta
 def test_every_cache_consumer_is_driven_or_excluded_by_name() -> None:
     assert set(CONSUMERS) == set(CacheConsumer)
     driven = {reason for reason in CONSUMERS.values() if reason in READERS}
@@ -243,8 +245,9 @@ def _with_params_file(
 ) -> PipelineGraph:
     from haute._workbench_params import params_files
 
-    [path, *_] = params_files(project).values()
-    path.write_bytes(path.read_bytes() + b"ZZ\n")
+    [name, *_] = params_files(project)
+    target = project / "rating" / "files" / "params" / name
+    target.write_bytes(target.read_bytes() + b"ZZ\n")
     return graph
 
 
@@ -540,24 +543,45 @@ _LISTING_CALLS = frozenset({"rglob", "glob", "iterdir", "walk", "scandir", "list
 
 def _utility_listings() -> list[str]:
     """Each function in ``src/haute`` that lists a folder and names the utility package."""
-    found = []
-    for path in sorted(_REPO_SRC.rglob("*.py")):
+    found: set[str] = set()
+
+    class Listings(ast.NodeVisitor):
+        """One pass per module: a listing call counts for every function enclosing it."""
+
+        def __init__(self, module: str, lines: list[str]) -> None:
+            self.module = module
+            self.lines = lines
+            self.enclosing: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+
+        def _function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            self.enclosing.append(node)
+            self.generic_visit(node)
+            self.enclosing.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._function(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._function(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in _LISTING_CALLS:
+                for function in self.enclosing:
+                    text = "\n".join(self.lines[function.lineno - 1 : function.end_lineno])
+                    if "utility" in text.lower():
+                        found.add(f"{self.module}::{function.name}")
+            self.generic_visit(node)
+
+    for path in source_files(_REPO_SRC):
         source = path.read_text(encoding="utf-8")
-        for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            body = ast.get_source_segment(source, node) or ""
-            if "utility" not in body.lower():
-                continue
-            for call in ast.walk(node):
-                if not isinstance(call, ast.Call):
-                    continue
-                func = call.func
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                if name in _LISTING_CALLS:
-                    found.append(f"{path.relative_to(_REPO_SRC).as_posix()}::{node.name}")
-                    break
-    return sorted(set(found))
+        if "utility" not in source.lower():
+            continue
+        Listings(path.relative_to(_REPO_SRC).as_posix(), source.splitlines()).visit(
+            ast.parse(source)
+        )
+    return sorted(found)
 
 
 #: Functions that list a folder and mention ``utility`` without listing its tree, each with
@@ -573,6 +597,16 @@ _NOT_UTILITY_LISTINGS: dict[str, str] = {
 }
 
 
+@pytest.mark.meta
 def test_the_utility_tree_is_listed_by_one_function() -> None:
     listings = set(_utility_listings()) - set(_NOT_UTILITY_LISTINGS)
     assert listings == {"_project_imports.py::utility_tree_files"}
+
+
+def test_a_fingerprint_that_is_not_project_code_has_no_utility_generation() -> None:
+    from haute._cache import utility_generation
+
+    assert utility_generation("abc.def") == "def"
+    for malformed in ("abcdef", ".def", "abc."):
+        with pytest.raises(ValueError, match="not a project code fingerprint"):
+            utility_generation(malformed)

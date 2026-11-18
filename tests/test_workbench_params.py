@@ -214,3 +214,39 @@ def test_a_column_whose_file_can_no_longer_give_its_values_is_named(project: Pat
         "The allowed values of policy.state could not be read again: "
         "rating/files/params/states.csv doesn't exist."
     )
+
+
+def test_params_files_lists_each_ordinary_csv_directly_in_the_folder(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The files a form's revision signs: what a read of a params file would take, and no
+    other: not a dotfile, another kind of file, a folder or a link."""
+    params(project, "states.csv", b"code\nCA\n")
+    params(project, "linked.csv", b"code\nNY\n")
+    params(project, ".hidden.csv", b"code\nTX\n")
+    params(project, "notes.txt", b"x\n")
+    (project / "rating" / "files" / "params" / "nested.csv").mkdir()
+    real = _workbench_params.ordinary_path_problem
+
+    def a_link(root: Path, name: str):  # type: ignore[no-untyped-def]
+        path, problem = real(root, name)
+        return path, ("link" if name.endswith("linked.csv") else problem)
+
+    monkeypatch.setattr(_workbench_params, "ordinary_path_problem", a_link)
+
+    assert list(_workbench_params.params_files(project)) == ["states.csv"]
+    with pytest.raises(ParamFileError, match="isn't an ordinary file"):
+        read_param_file(project, "linked.csv")
+
+
+def test_captured_values_are_read_from_the_bytes_taken_never_the_working_tree(
+    project: Path,
+) -> None:
+    params(project, "states.csv", b"code\nTX\n")
+    read = _workbench_params.captured_param_values(project, {"states.csv": b"code\nCA\nNY\n"})
+
+    assert read("states.csv", "code") == ["CA", "NY"]
+    with pytest.raises(ParamFileError, match="doesn't exist"):
+        read("other.csv", "code")
+    with pytest.raises(ParamFileError, match="isn't the name of a CSV file"):
+        read("../states.csv", "code")

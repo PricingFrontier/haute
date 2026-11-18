@@ -211,3 +211,27 @@ def test_a_text_index_of_values_longer_than_a_key_is_refused_as_its_file_is_read
 
     with pytest.raises(ParamFileError, match=f"longer than the {limit} a Text index holds"):
         read_form_document(config(project))
+
+
+def test_a_params_file_that_cannot_be_read_names_itself_in_the_forms_refusal(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A form's revision signs every params file, so one that cannot be read refuses the
+    read of the form, naming the file, rather than leaving it out of the revision."""
+    from haute._workbench_form import WorkbenchFormError
+
+    _write(project, _sourced({"file": "perils.csv", "column": "peril"}))
+    unreadable = (project / PARAMS / "perils.csv").resolve()
+    read_bytes = Path.read_bytes
+
+    def refuse(path: Path) -> bytes:
+        if path.resolve() == unreadable:
+            raise PermissionError(13, "Access is denied")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+
+    with pytest.raises(
+        WorkbenchFormError, match=r"rating/files/params/perils\.csv could not be read"
+    ):
+        read_form_document(config(project))
